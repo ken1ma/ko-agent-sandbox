@@ -1,0 +1,56 @@
+#!/bin/sh
+# Teach one JVM to trust this session's egress inspection CA.
+#
+# The image's own JDK already trusts it — the launcher merges the CA into that JDK's cacerts on the
+# host and mounts the result read-only — so this is for the JVMs the launcher cannot reach: one the
+# agent installed itself with `cs java --jvm temurin:25`, or any JDK unpacked by hand. Those carry
+# an untouched trust store, so a build resolving from an inspected forge host (github.com,
+# raw.githubusercontent.com, …) fails there with a certificate error and nothing else explains why.
+#
+#   ko-agent-sandbox-trust-ca                  # $JAVA_HOME
+#   ko-agent-sandbox-trust-ca /path/to/jdk     # some other JDK
+#
+# Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
+# failing on the read-only store. The certificate is public — the private key that signs with it
+# never enters this container (SECURITY.md, "Who holds the CA key").
+set -eu
+
+CA=/etc/ko-agent-sandbox/egress-ca.crt
+ALIAS=ko-agent-sandbox-egress
+# The password every JDK ships cacerts under; not a secret, and the store holds only certificates.
+STOREPASS=changeit
+
+# An argument overrides the environment; either way the target is named JAVA_HOME, because that is
+# what it is — the home of the JDK being taught. The `:-` fallbacks are what let this line survive
+# an unset variable under the `set -u` above: a bare $1 or $JAVA_HOME would abort right here with
+# sh's terse "unbound variable", while `${...:-}` substitutes an empty string — so an absent value
+# reaches the check below and fails there, with the usage message.
+JAVA_HOME="${1:-${JAVA_HOME:-}}"
+
+if [ -z "$JAVA_HOME" ]; then
+    echo "usage: ${0##*/} [JAVA_HOME]" >&2
+    echo "  no argument and JAVA_HOME is unset, so there is no JDK to teach" >&2
+    exit 2
+fi
+
+if [ ! -x "$JAVA_HOME/bin/keytool" ]; then
+    echo "${0##*/}: no keytool at $JAVA_HOME/bin/keytool" >&2
+    exit 1
+fi
+
+if [ ! -r "$CA" ]; then
+    echo "${0##*/}: $CA is absent, so this session inspects no host" >&2
+    echo "  (the launcher mounts it; an unfiltered or uninspected run has none)" >&2
+    exit 1
+fi
+
+# -cacerts targets the store belonging to the keytool being run, which is why the target JDK's own
+# keytool is invoked rather than whichever one is on PATH.
+if "$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null 2>&1; then
+    echo "already trusted: $JAVA_HOME"
+    exit 0
+fi
+
+"$JAVA_HOME/bin/keytool" -importcert -noprompt -cacerts -storepass "$STOREPASS" \
+    -alias "$ALIAS" -file "$CA"
+echo "egress CA added to $JAVA_HOME"

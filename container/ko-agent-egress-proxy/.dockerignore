@@ -1,0 +1,14 @@
+# Build output and editor caches must not reach the context: slow, and a
+# stale class could be copied instead of one this build produced. The same
+# set is excluded from the launcher jar's bundled copy of this directory
+# (the resourceGenerators task in the repository root's build.sbt); keep the
+# two in step. `**/`, because a bare name only matches at the context root
+# and sbt writes .bsp under app/. .dockerignore rather than .containerignore
+# because both podman and docker look for it.
+**/target
+**/project/project
+**/.bsp
+**/.scala-build
+**/.bloop
+**/.metals
+**/.DS_Store

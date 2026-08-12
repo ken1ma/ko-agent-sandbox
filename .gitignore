@@ -1,0 +1,24 @@
+# mill
+out/
+
+# sbt
+target/
+.bsp/
+
+# Scala
+.scala-build/
+.bloop/
+.metals/
+
+# JVM crash/replay logs
+hs_err_pid*
+replay_pid*
+
+# npm
+node_modules/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

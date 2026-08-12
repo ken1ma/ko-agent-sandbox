@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# Build ko-agent-fs
+# ---------------------------------------------------------------------------
+#
+# Who runs this, and what happens to the result, is `docs/architecture.md`
+# ("Build and install"). In short: the launcher unpacks this directory out of
+# its own jar and builds it, passing the digest of that bundled source as
+# KO_AGENT_FS_SOURCE_ID; it then extracts the binary from the image and
+# installs it where the filter must run — on macOS and Windows that is inside
+# the Podman machine, not the host.
+#
+#     podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+#         -t ko-agent-fs:<tag> ko-agent-fs
+#
+# Compiled from source on the user's own machine rather than shipped as a
+# binary, so what runs is what the user can read. The output is a *static*
+# musl executable because it is installed into a VM whose libc is not ours to
+# assume. The final stage is `scratch` holding only the binary, so the
+# extraction step has exactly one obvious thing to take.
+
+# Debian 13 (trixie), matching the rest of this project's images. If this tag
+# ever stops existing the build fails immediately and loudly, which is the
+# right failure for a base image.
+ARG RUST_VERSION=1.97.1
+FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
+
+# musl-tools supplies musl-gcc, which the musl target needs to link.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+# `uname -m` (aarch64, x86_64) is exactly the first component of the Rust
+# target triple, so no architecture mapping is needed — the same trick the
+# sandbox image uses for rustup.
+RUN set -eux; \
+    rustup target add "$(uname -m)-unknown-linux-musl"
+
+# The licence gate. Pinned so a gate that passes today passes tomorrow, and
+# --locked so it cannot quietly resolve something new.
+ARG CARGO_DENY_VERSION=0.20.2
+RUN set -eux; \
+    cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked
+
+WORKDIR /build
+COPY . .
+
+# The identity the launcher checks. It digests the source it bundles and passes
+# the digest here; `--version` reports it back, so an installed binary that is
+# not the one this launcher would build is detected rather than trusted.
+ARG KO_AGENT_FS_SOURCE_ID=unstamped
+ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
+
+# Gate, then test, then build — in that order, so a licence or test failure
+# stops the image before a binary exists to install. The mounted tests are
+# `#[ignore]`d and do not run here: they need /dev/fuse and CAP_SYS_ADMIN,
+# which an image build has not got. What runs is the policy core, the guard,
+# the git corpus and the binary's own argument and refusal handling.
+#
+# The tests build for the musl triple too, not the host's glibc, so that the
+# gate is testing the thing this step is about to install. The raw
+# `SYS_renameat2` in src/fs.rs, and the reason recorded there, is what that
+# difference looks like when it bites.
+#
+# The cache mounts carry cargo's target directory and registry between builds.
+# The source id is compiled in (`option_env!`), so every change to it busts the
+# ENV layer and re-runs this step; without the mounts that means recompiling
+# the whole dependency tree twice each time — once for `test`, once for
+# `--release` — rather than the one crate that changed. A mount is not a layer,
+# hence the `install` below lifting the binary out of it while still inside
+# this RUN.
+#
+# A warm cache cannot leave a stale source id compiled into the binary, and the
+# reason is not cargo's env-var tracking. The launcher unpacks this context to a
+# new temporary directory on every --build (AgentSandboxLauncher.
+# unpackBuildContext), so every file reaches podman with a fresh mtime, and
+# cargo fingerprints a path dependency by mtime: whenever this step runs at all,
+# the crate recompiles. When nothing changed, the COPY and ENV layers are cached
+# and the step does not run. `installKoAgentFs` refusing a binary whose
+# `--version` does not echo the digest is the backstop, not the reason.
+#
+# /usr/local/cargo is the rust image's CARGO_HOME, spelled out because a mount
+# target is not a shell word.
+RUN --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    set -eux; \
+    triple="$(uname -m)-unknown-linux-musl"; \
+    cargo deny --locked check licenses bans sources; \
+    cargo test --locked --target "${triple}"; \
+    cargo build --locked --release --target "${triple}"; \
+    install -m 0755 "target/${triple}/release/ko-agent-fs" /ko-agent-fs; \
+    # A dynamically linked binary here would fail in the VM rather than in the
+    # build, which is the wrong place to find out.
+    ldd /ko-agent-fs 2>&1 | grep -q "statically linked\|not a dynamic executable"
+
+
+FROM scratch
+COPY --from=build /ko-agent-fs /ko-agent-fs

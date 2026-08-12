@@ -1,0 +1,37 @@
+# The license gate, run in the build container before the binary is produced (`Containerfile`), so a
+# dependency arriving under an unexpected licence fails the build rather than shipping unnoticed.
+#
+# Only permissive licences, and only the ones the tree actually carries — cargo-deny warns on an
+# allowance nothing uses, so a speculative entry is noise on every build; extend the list when a
+# dependency actually arrives under a new (still permissive) licence. Copyleft is deliberately
+# absent, including weak copyleft such as MPL-2.0: this binary ships inside a user's environment,
+# and `SECURITY.md` ("The workspace filter") names this gate as permissive-only.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+# A duplicate major version of a dependency is noise, not an error, in a tree this small.
+multiple-versions = "allow"
+# Nothing here should need a C toolchain at build time beyond the linker, so the two crates that
+# would introduce one are named: `cc` compiles C sources during a build, `bindgen` runs libclang over
+# headers. Neither is in Cargo.lock today — this is the tripwire for the day a dependency brings one
+# in, not a fact about the current tree.
+deny = ["cc", "bindgen"]
+
+[advisories]
+# `cargo deny check advisories` needs the advisory database, which the build container has no network
+# for after the dependency fetch; the licence gate is what runs there. Run advisories separately.
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

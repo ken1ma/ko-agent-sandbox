@@ -1,0 +1,85 @@
+# Debian 13 (trixie)
+#
+# This aligns with the distroless java25-debian13 runtime base.
+# `debian:13.6-slim` is a mutable tag, and most APT package versions are unpinned,
+# so the resulting image is not reproducible.
+FROM docker.io/library/debian:13.6-slim
+
+ARG TEMURIN_VERSION=25.0.4
+
+# TARGETARCH is populated by Podman 5.2.0+ (Buildah 1.37.0+).
+ARG TARGETARCH
+
+# Debian recommends C.UTF-8; musl recognizes that spelling while bionic rejects the glibc-normalized C.utf8.
+ENV LANG=C.UTF-8
+
+# Avoid `debconf: unable to initialize frontend: Dialog` and similar warnings.
+# This is `ENV` rather than `ARG` so descendant images and containers inherit it.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The uid/gid distroless :nonroot uses; USER still decides who runs.
+# `--no-log-init`: uid 65532 would otherwise leave a large sparse faillog.
+#
+# `;` not `&&` throughout: `set -e` already sequences. `set -x` would expose
+# secrets passed to commands, so keep build logs private. dash supports
+# pipefail since Debian 13.
+RUN set -euxo pipefail; \
+    groupadd --gid 65532 nonroot; \
+    useradd \
+        --uid 65532 \
+        --gid 65532 \
+        --create-home \
+        --shell /sbin/nologin \
+        --no-log-init \
+        nonroot
+
+
+# Temurin (Java)
+#
+# APT on Debian 13 can consume an ASCII-armored OpenPGP key directly.
+#
+# Signed-By restricts this repository to both the specified keyring and Adoptium's published signing-key fingerprint.
+
+RUN set -euxo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        curl \
+        # avoids `curl: (77) error setting certificate file: /etc/ssl/certs/ca-certificates.crt`
+        ca-certificates \
+        # jlink --strip-debug on needs objcopy
+        # See https://github.com/adoptium/containers/blob/main/25/jdk/ubuntu/resolute/Dockerfile
+        binutils; \
+    rm -rf /var/lib/apt/lists/*
+
+# `%%.*` (25.0.4 -> 25) is not in the Dockerfile spec; podman accepts it
+# since 5.2.0. The closing `test -x` fails the build if that ever stops
+# holding.
+ENV JAVA_HOME=/usr/lib/jvm/temurin-${TEMURIN_VERSION%%.*}-jdk-${TARGETARCH}
+
+RUN set -euxo pipefail; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+        -o /etc/apt/keyrings/adoptium.asc; \
+    chmod 0644 /etc/apt/keyrings/adoptium.asc; \
+    printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://packages.adoptium.net/artifactory/deb' \
+        'Suites: trixie' \
+        'Components: main' \
+        'Signed-By: /etc/apt/keyrings/adoptium.asc 3B04D753C9050D9A5D343F39843C48A565F8F04B' \
+        > /etc/apt/sources.list.d/adoptium.sources; \
+    apt-get update; \
+    TEMURIN_DEB_PACKAGE="temurin-${TEMURIN_VERSION%%.*}-jdk"; \
+    # Select the latest Adoptium Debian package for the requested Temurin release.
+    # `dpkg --compare-versions` is authoritative, but `sort -V` suffices for Adoptium's version format.
+    TEMURIN_DEB_VERSION="$( \
+        apt-cache madison "$TEMURIN_DEB_PACKAGE" \
+        | awk -v v="$TEMURIN_VERSION" 'index($3, v ".") == 1 { print $3 }' \
+        | sort -V \
+        | tail -n 1 \
+    )"; \
+    test -n "$TEMURIN_DEB_VERSION"; \
+    apt-get install -y --no-install-recommends "$TEMURIN_DEB_PACKAGE=$TEMURIN_DEB_VERSION"; \
+    rm -rf /var/lib/apt/lists/*; \
+    # Make sure JAVA_HOME is correct, particularly the `%%` expansion above
+    test -x "$JAVA_HOME/bin/java"
