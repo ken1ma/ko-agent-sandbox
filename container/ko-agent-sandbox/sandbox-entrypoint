@@ -1,0 +1,97 @@
+#!/bin/sh
+# The image's ENTRYPOINT. Seeds ~/persistent-volume one agent directory at a time, only where the
+# directory is absent: a fresh volume receives every seed, one created by an older image only the
+# directories it lacks, and a directory that exists is agent state, never touched. Podman's own
+# copy-up into an empty volume would cover only the first case.
+#
+# Each directory is published by one rename, so a session racing another on the same volume sees
+# either nothing or the whole seed; the loser's rename fails on the winner's directory, which is
+# the outcome wanted, and its staging directory is removed.
+#
+# Then the machine's health, read from here rather than by the launcher: /proc/meminfo and
+# /proc/pressure are the VM's own, not the container's, and the same read serves a podman machine
+# and a native Linux host. It is a warning at the last moment the terminal is still this script's,
+# held on screen because the agent's TUI clears it; the launcher's SESSION_START setting is
+# honoured, and a launch with no terminal is never held.
+set -eu
+
+seed=$SANDBOX_VOLUME_SEED
+volume=$HOME/persistent-volume
+# The tests substitute a fixture for /proc; nothing else sets it.
+proc=${SANDBOX_PROC:-/proc}
+
+# No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the
+# launcher mounts the named volume over it — so its absence means a container run by hand, likely
+# as root, whose $HOME holds none. Seeding would only abort on the mktemp under set -eu and take
+# the command down with it, over state such a container was never going to keep.
+if [ -d "$volume" ]; then
+    for entry in "$seed"/*; do
+        name=$(basename "$entry")
+        [ -e "$volume/$name" ] && continue
+        staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
+        # Do not preserve metadata: on SELinux, the image seed carries this container's private MCS
+        # categories. Copying that context into the shared volume makes the directory unreadable to
+        # every later session. The staging directory and new children inherit the volume's shared
+        # label.
+        cp -R "$entry/." "$staging/"
+        mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
+    done
+fi
+
+# kB, as /proc/meminfo counts; empty when the field is absent.
+meminfo() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/meminfo" 2>/dev/null; }
+gib() { awk -v kb="$1" 'BEGIN { printf "%.1f GiB", kb / 1048576 }'; }
+
+warnings=
+warn() { warnings="$warnings  $1
+"; }
+
+available=$(meminfo MemAvailable)
+total=$(meminfo MemTotal)
+if [ -n "$available" ] && [ "$available" -lt 1048576 ]; then
+    warn "$(gib "$available") of $(gib "$total") memory available"
+fi
+
+# Pages left in swap after pressure has passed stay there until touched, so occupied swap alone
+# says nothing; it is pressure when memory is tight now as well: under a quarter available.
+swap_total=$(meminfo SwapTotal)
+swap_free=$(meminfo SwapFree)
+if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_free" ] \
+    && [ -n "$available" ] && [ "$available" -lt $((total / 4)) ]; then
+    warn "$(gib $((swap_total - swap_free))) of swap in use"
+fi
+
+# A kernel built with PSI disabled has the file and refuses the read (RHEL); then no line.
+pressure=$(cat "$proc/pressure/memory" 2>/dev/null \
+    | awk '$1 == "some" { split($3, avg, "="); print avg[2] }')
+if [ -n "$pressure" ] && awk -v p="$pressure" 'BEGIN { exit !(p > 10) }'; then
+    warn "memory pressure: tasks stalled on memory $pressure% of the last minute"
+fi
+
+# The persistent volume sits on the machine's own storage, so its filesystem is what image layers
+# and containers fill; the root here is an overlay whose free space is one step removed.
+disk=$(df -Pk "$volume" 2>/dev/null | awk 'NR == 2 { print $4 }')
+if [ -n "$disk" ] && [ "$disk" -lt 2097152 ]; then
+    warn "$(gib "$disk") of disk left on the machine"
+fi
+
+if [ -n "$warnings" ]; then
+    ceiling=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+    case "$ceiling" in
+        ''|max) ceiling= ;;
+        *) ceiling=" This session may use up to $(gib $((ceiling / 1024))) of it"
+           ceiling="$ceiling (KO_AGENT_SANDBOX_MEMORY)." ;;
+    esac
+    {
+        printf 'warning: the machine podman runs on is under pressure; '
+        printf 'every session on it slows down or fails together\n%s' "$warnings"
+        printf '  Stop other sessions and containers, or give the machine more (on a podman machine,\n'
+        printf '  podman machine set --memory, machine stopped; podman system prune for disk).%s\n' "$ceiling"
+    } >&2
+    if [ -t 0 ] && [ "${KO_AGENT_SANDBOX_SESSION_START:-pause}" != immediate ]; then
+        printf '\nPress Enter to start anyway ' >&2
+        read -r _ || :
+    fi
+fi
+
+exec "$@"

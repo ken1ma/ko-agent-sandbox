@@ -1,0 +1,119 @@
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+ARG IMG_TAG_VER
+FROM debian-coursier:${IMG_TAG_VER} AS build
+
+# This layer precedes the application COPY so the named build-stage cache retains the toolchain
+# across proxy source changes; only native compilation itself must repeat.
+ARG GRAALVM_RELEASE=graal-25.3.4.1
+
+# Even Coursier's latest unpublished index stops at GraalVM Community 25.0.2:
+#   cs java --jvm graalvm-community:25.0.4.1 --jvm-index \
+#     https://raw.githubusercontent.com/coursier/jvm-index/refs/heads/create-pull-request/patch/index.json
+# cannot install the JDK matching this image.
+
+RUN set -euxo pipefail; \
+    . "$JAVA_HOME/release"; \
+    GRAALVM_JAVA_VERSION="$JAVA_VERSION"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        zlib1g-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    case "$(uname -m)" in \
+        aarch64) \
+            GRAALVM_ARCH=aarch64; \
+            GRAALVM_SHA256=7e8a3fbc2e4c28566107039a298cef690d86a37599a8e50536fc5a65b7f1bd56 \
+            ;; \
+        x86_64) \
+            GRAALVM_ARCH=x64; \
+            GRAALVM_SHA256=b2bc38d0c4141426eb44d0eefa3cc172c96faf92727d703b61541699128b6fc7 \
+            ;; \
+        *) \
+            echo "Unsupported architecture: $(uname -m)" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    GRAALVM_ARCHIVE="graalvm-community-jdk-25i3-${GRAALVM_JAVA_VERSION}"; \
+    GRAALVM_ARCHIVE="${GRAALVM_ARCHIVE}_linux-${GRAALVM_ARCH}_bin.tar.gz"; \
+    GRAALVM_BASE_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/${GRAALVM_RELEASE}"; \
+    GRAALVM_URL="${GRAALVM_BASE_URL}/${GRAALVM_ARCHIVE}"; \
+    curl -fsSL "$GRAALVM_URL" -o "/tmp/$GRAALVM_ARCHIVE"; \
+    printf '%s  %s\n' "$GRAALVM_SHA256" "/tmp/$GRAALVM_ARCHIVE" | sha256sum -c -; \
+    install -d -m 0755 /opt/graalvm; \
+    tar -xzf "/tmp/$GRAALVM_ARCHIVE" --strip-components=1 -C /opt/graalvm; \
+    rm "/tmp/$GRAALVM_ARCHIVE"; \
+    test -x /opt/graalvm/bin/native-image
+
+ENV JAVA_HOME=/opt/graalvm
+ENV PATH="/opt/graalvm/bin:$PATH"
+
+# Build as nonroot: cs setup's cache lives under /home/nonroot, and root
+# would populate a second, cold one on every build.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot /build
+USER nonroot
+
+COPY --chown=nonroot:nonroot app /build/app
+WORKDIR /build/app
+
+RUN set -euxo pipefail; \
+    sbt -batch dist; \
+    # Bodies pass through fixed buffers instead of accumulating in the managed heap. \
+    native-image \
+        -R:MaxHeapSize=64m \
+        -o /build/agent-egress-proxy \
+        -jar target/dist/agent-egress-proxy.jar
+
+# The leaf cert/key mount point, created here because distroless has no
+# shell to mkdir with; in the image the contract is visible and independent
+# of podman's --read-only behaviour.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0755 /build/tls
+
+# The audit-log mount point, same reasoning; the file ships empty so the image still runs on its own, logging to stderr.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0755 /build/var-log; \
+    install -o nonroot -g nonroot -m 0644 /dev/null /build/var-log/proxy.log
+
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+#
+# A policy enforcement point should hold nothing an attacker could use:
+# distroless has no shell, package manager, interpreter or JVM, so an ad-hoc
+# command cannot run inside it. The cost is no HEALTHCHECK; liveness is the log
+# (--proxy-log). `nonroot` is a mutable tag resolving to uid 65532.
+FROM gcr.io/distroless/base-debian13:nonroot
+
+LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
+LABEL org.opencontainers.image.description="CONNECT-only allowlisting egress proxy for ko-agent-sandbox"
+LABEL org.opencontainers.image.base.name="gcr.io/distroless/base-debian13:nonroot"
+
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
+
+# The single native executable; its Debian build environment matches this
+# Debian runtime, and each image architecture compiles its own binary.
+COPY --from=build /build/agent-egress-proxy /usr/local/bin/agent-egress-proxy
+
+# TLS inspection material lands here; with neither variable set the proxy
+# runs uninspected, which keeps the image runnable on its own. The CA key
+# never enters this container.
+COPY --from=build /build/tls /etc/agent-egress-proxy
+
+# The per-run audit log lands here, a bind-mounted host file that outlives the container.
+COPY --from=build /build/var-log /var/log/agent-egress-proxy
+
+# Documentation only; not published, so a workstation process cannot borrow the sandbox's egress allowance.
+EXPOSE 3128
+
+# The base already runs as 65532; restated as a security property of this image.
+USER 65532:65532
+
+ENTRYPOINT ["/usr/local/bin/agent-egress-proxy"]

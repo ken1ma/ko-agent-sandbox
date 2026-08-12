@@ -1,0 +1,143 @@
+#!/bin/sh
+# The sandbox's apt-get: same verbs, different destination — packages unpack into $HOME with
+# dependencies resolved, because real `apt-get install` can never work on a read-only rootfs as
+# uid 65532, which is why this exists.
+#
+#   sandbox-apt-get update           # fetch the package lists — explicit, exactly as apt-get's
+#   sandbox-apt-get install podman   # dependencies arrive too; `podman` is then on PATH
+#
+# What install does: apt-get with its directories under ~/.local/deb — the image's real dpkg
+# status stays apt's baseline, so only what the image lacks is fetched, and Release signatures are
+# still verified against the image's own /etc/apt keyrings — then every archive is unpacked and
+# each new command gets a wrapper in ~/.local/bin (already on PATH) carrying the library path it
+# needs. Nothing is exported, so it works from any shell, script, or pipe.
+#
+# What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
+# users or setuid bits a package expects do not materialize. Like everything under ~, it is gone
+# when the session ends — if the same tool gets installed session after session, tell the user;
+# only the image installs it for good, one line in the Containerfile.
+set -eu
+
+root=$HOME/.local/deb
+apt=$root/apt
+
+usage() {
+    echo "usage: ${0##*/} update | install PACKAGE..." >&2
+    exit 2
+}
+
+[ $# -ge 1 ] || usage
+verb=$1
+shift
+
+mkdir -p "$apt/lists/partial" "$apt/cache/archives/partial" "$root" "$HOME/.local/bin"
+[ -f "$apt/sources.list" ] \
+    || printf 'deb https://deb.debian.org/debian trixie main\n' > "$apt/sources.list"
+
+aptc() {
+    apt-get \
+        -o Dir::State::Lists="$apt/lists" \
+        -o Dir::Cache="$apt/cache" \
+        -o Dir::Etc::SourceList="$apt/sources.list" \
+        -o Dir::Etc::SourceParts=/dev/null \
+        -o Dir::Etc::Preferences=/dev/null \
+        -o Dir::Etc::PreferencesParts=/dev/null \
+        -o Acquire::Languages=none \
+        -o Debug::NoLocking=1 \
+        "$@"
+}
+
+# The rm complaint about /var/cache/apt/archives/partial is apt touching the read-only system
+# cache; expected and harmless, so it is filtered rather than left to read like a failure. The
+# filtering goes through a file, not a pipe: a pipeline reports its last stage, and apt's own
+# failure must be the one that decides.
+update_lists() {
+    status=0
+    # Error-Mode=any: a failed index fetch is otherwise a warning and exit 0 — with one
+    # configured repository, "ignored, or old ones used instead" is a silent stale resolve.
+    aptc update -qq -o APT::Update::Error-Mode=any > "$apt/update.log" 2>&1 || status=$?
+    grep -v "/var/cache/apt/archives/partial" "$apt/update.log" >&2 || true
+    return $status
+}
+
+case $verb in
+    update)
+        [ $# -eq 0 ] || usage
+        update_lists
+        exit 0
+        ;;
+    install)
+        [ $# -ge 1 ] || usage
+        ;;
+    *)
+        usage
+        ;;
+esac
+
+# install, from here on. Lists come only from an explicit `update`, exactly as apt-get behaves —
+# but the bare-lists failure here is a hint instead of apt's "Unable to locate package".
+if [ -z "$(find "$apt/lists" -maxdepth 1 -name '*Packages*' -print -quit 2>/dev/null)" ]; then
+    echo "${0##*/}: no package lists yet — run '${0##*/} update' first" >&2
+    exit 1
+fi
+
+# --download-only resolves against the image's installed set (the default, still-readable dpkg
+# status), so only genuinely missing packages and their dependencies are fetched. Through a file
+# for the same reason as update above — a download that still fails after the retries must fail
+# the install here, or the stranded archive surfaces only much later, as some unpacked binary
+# failing to load a library it arrived without.
+if ! aptc install --download-only -y -o Acquire::Retries=3 "$@" > "$apt/install.log" 2>&1; then
+    grep -E "newly installed|^Get:|^Err|^E:" "$apt/install.log" | tail -5 >&2
+    # Renamed aside, or the retry that heals a transient failure overwrites the evidence of it.
+    mv "$apt/install.log" "$apt/install-failed.log"
+    echo "${0##*/}: download failed; nothing unpacked (apt output kept: $apt/install-failed.log)" >&2
+    exit 1
+fi
+grep -E "newly installed|^Get:" "$apt/install.log" | tail -1
+
+# The cache is the only record of what was fetched — nothing registers with dpkg — and it is
+# deliberately not cleaned: deleting archives would turn every repeated install of the same
+# package into a re-download. A stamp per archive is the unpack bookkeeping dpkg would have kept:
+# re-runs skip what is already extracted, and a version bump is a new filename, unpacked afresh.
+# The stamp lands only after dpkg-deb succeeds, so an aborted extraction is retried, not skipped.
+unpacked=$root/.unpacked
+mkdir -p "$unpacked"
+for archive in "$apt/cache/archives"/*.deb; do
+    [ -e "$archive" ] || continue
+    [ -e "$unpacked/${archive##*/}" ] && continue
+    dpkg-deb -x "$archive" "$root"
+    : > "$unpacked/${archive##*/}"
+done
+
+# One wrapper per unpacked command: LD_LIBRARY_PATH scoped to that process tree instead of exported
+# globally, so nothing agent-unpacked shadows libraries for the image's own binaries. A command the
+# image already provides is left alone for the same reason — a dependency chain that happens to
+# carry python3 must not change which python3 the session runs. Our own earlier wrappers do get
+# rewritten, so re-running stays idempotent.
+libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib:$root/lib"
+wrapped=""
+skipped=""
+for dir in "$root/usr/bin" "$root/usr/sbin" "$root/bin" "$root/sbin"; do
+    [ -d "$dir" ] || continue
+    for command in "$dir"/*; do
+        [ -f "$command" ] && [ -x "$command" ] || continue
+        name=${command##*/}
+        if [ ! -e "$HOME/.local/bin/$name" ] && command -v "$name" >/dev/null 2>&1; then
+            skipped="$skipped $name"
+            continue
+        fi
+        cat > "$HOME/.local/bin/$name" <<WRAP
+#!/bin/sh
+export LD_LIBRARY_PATH=$libs\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
+export PATH=$root/usr/bin:$root/usr/sbin:\$PATH
+exec $command "\$@"
+WRAP
+        chmod 0755 "$HOME/.local/bin/$name"
+        wrapped="$wrapped $name"
+    done
+done
+
+summary=$(printf '%s' "$wrapped" | tr ' ' '\n' | grep -c . || true)
+echo "unpacked under $root; $summary commands wrapped into ~/.local/bin:${wrapped:- (libraries only)}" \
+    | cut -c1-200
+[ -z "$skipped" ] || echo "already provided by the image, left alone:$skipped" | cut -c1-200

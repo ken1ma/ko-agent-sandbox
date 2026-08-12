@@ -1,0 +1,36 @@
+ARG IMG_TAG_VER
+FROM debian-temurin:${IMG_TAG_VER}
+
+# Coursier, from https://get-coursier.io/docs/cli-installation — latest
+# rather than stable, intentionally. Installs to the default ~/.local/share
+# path: this is a development environment.
+USER nonroot
+RUN set -euxo pipefail; \
+    case "$(uname -m)" in \
+        aarch64) \
+            CS_URL='https://github.com/VirtusLab/coursier-m1/releases/latest/download/cs-aarch64-pc-linux.gz' \
+            ;; \
+        x86_64) \
+            CS_URL='https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz' \
+            ;; \
+        *) \
+            echo "Unsupported architecture: $(uname -m)" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    curl -fsSL "$CS_URL" | gzip -d > /tmp/cs; \
+    chmod 0755 /tmp/cs; \
+    # cs setup detects the Temurin installed in the parent image; `--env` avoids updating `.profile`
+    /tmp/cs setup --yes --env; \
+    rm /tmp/cs
+
+# Make `apt-get install` usable again; descendant images set `USER nonroot` themselves
+USER root
+
+# Modify `PATH` since `$HOME/.profile` will not be sourced by `podman run --rm -it image bash`
+ENV PATH="/home/nonroot/.local/share/coursier/bin:$PATH"
+
+
+# Known problem: `cs java --installed` OOMs (memory.events shows oom_kill).
+# A Coursier JVM-index problem — the JVM-based coursier launcher also throws
+# OutOfMemoryError even with a 2GB heap.

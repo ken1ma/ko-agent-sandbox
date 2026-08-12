@@ -1,0 +1,481 @@
+ARG IMG_TAG_VER
+FROM debian-coursier:${IMG_TAG_VER}
+
+# This image stays on `latest`: rebuilds pick up agent releases, which
+# IMG_TAG_VER says nothing about; the label records the base instead.
+ARG IMG_TAG_VER
+LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
+
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
+
+ARG UV_VERSION=0.12.5
+ARG PYTHON_VERSION=3.14
+ARG NODE_VERSION=24.19.0
+
+# ---------------------------------------------------------------------------
+# Development utilities
+# ---------------------------------------------------------------------------
+#
+# ripgrep: Claude Code bundles `rg`, but generated scripts use it.
+# openssl: present anyway — ca-certificates depends on it.
+# Excluded: git-lfs; sqlite3 (python3 covers it); shellcheck (40 MB).
+
+RUN set -euxo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        # curl and ca-certificates are installed in the parent image
+        git \
+        ripgrep \
+        patch \
+        unzip \
+        xz-utils \
+        zstd \
+        # ps, pgrep, top, free, uptime
+        procps \
+        # pstree, fuser, killall
+        psmisc \
+        file \
+        jq; \
+    rm -rf /var/lib/apt/lists/*
+
+# Avoid interactive pagers when Claude executes commands and needs their complete output.
+ENV GIT_PAGER=cat
+ENV PAGER=cat
+
+
+# ---------------------------------------------------------------------------
+# uv + Python
+# ---------------------------------------------------------------------------
+#
+# 2026 models like to use python.
+#
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+
+# /opt/uv/python and /usr/local/bin are image-managed; runtime uv keeps
+# using ~/.local.
+RUN set -euxo pipefail; \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_PYTHON_BIN_DIR=/usr/local/bin \
+    uv python install "${PYTHON_VERSION}" --default
+
+ENV PATH="/home/nonroot/.local/bin:$PATH"
+
+
+# ---------------------------------------------------------------------------
+# Node.js
+# ---------------------------------------------------------------------------
+#
+# Not for Node development — `npx` is the de-facto MCP launcher, and agents
+# reach for one-off JS tooling. Debian's nodejs+npm resolve to 374 packages
+# and lag LTS; the official tarball is one artifact.
+#
+# SHASUMS256.txt over TLS from the same host is an integrity check, not a
+# signature (the .sig would need gnupg plus the release keyring).
+#
+# Dropped: include/ (63 MB, only for native addons — node-gyp fetches its
+# own headers, and the image has no make or g++ to build one anyway) and
+# share/ + docs (no man reader). Bump NODE_VERSION and rebuild to move LTS.
+RUN set -euxo pipefail; \
+    case "$(uname -m)" in \
+        aarch64) NODE_ARCH=arm64 ;; \
+        x86_64)  NODE_ARCH=x64 ;; \
+        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
+    # `sha256sum -c` resolves the filename relative to the current directory.
+    cd /tmp; \
+    curl -fsSL -O "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}"; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+        | grep -F "  ${NODE_TARBALL}" \
+        | sha256sum -c -; \
+    install -d -m 0755 /opt/node; \
+    tar -xJf "${NODE_TARBALL}" -C /opt/node --strip-components=1; \
+    rm "${NODE_TARBALL}"; \
+    rm -rf \
+        /opt/node/include \
+        /opt/node/share \
+        /opt/node/CHANGELOG.md \
+        /opt/node/README.md; \
+    /opt/node/bin/node --version
+
+# `npm` and `npx` are `#!/usr/bin/env node` scripts, so this is what makes them work at all, not merely a convenience.
+ENV PATH="/opt/node/bin:$PATH"
+
+# npm's default global prefix is the read-only Node installation; without
+# this, `npm install -g` and `npx` both fail. ~/.local is per-session by
+# intent: an npx run in one repository must not leave code behind for the
+# next.
+ENV npm_config_prefix=/home/nonroot/.local
+
+
+# ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+#
+# Tracks stable and moves on rebuild, like the agents.
+#
+# gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
+# rustc's own LLVM emits the objects and only shells out to cc to drive ld
+# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's tool table for that
+# reason — nothing here invites C development, though gcc compiles C if asked.
+#
+# Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
+# dylibs always build for the host whatever the final target, so a working host
+# linker is unavoidable, and the musl target added below does not displace it.
+# musl-tools is the other half — musl-gcc, which linking that target wants, the
+# same package ko-agent-fs's own build container installs.
+#
+# RUSTUP_HOME holds the toolchain in the image; CARGO_HOME is deliberately
+# left unset, so registry caches land in ~/.cargo and die with the session
+# like every other cache.
+
+ENV RUSTUP_HOME=/opt/rust/rustup
+
+RUN set -euxo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        libc6-dev \
+        musl-tools; \
+    rm -rf /var/lib/apt/lists/*; \
+    cd /tmp; \
+    # uname -m (aarch64, x86_64) is the exact first component of Rust's target triple, so no arch mapping.
+    RUSTUP_URL="https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init"; \
+    curl -fsSL -O "$RUSTUP_URL"; \
+    # The .sha256 file's name field carries a dist path, so compare the digest alone.
+    expected="$(curl -fsSL "$RUSTUP_URL.sha256" | awk '{print $1}')"; \
+    echo "$expected  rustup-init" | sha256sum -c -; \
+    chmod 0755 rustup-init; \
+    CARGO_HOME=/opt/rust/cargo ./rustup-init -y --no-modify-path \
+        --profile minimal --default-toolchain stable \
+        --component rustfmt --component clippy; \
+    # The triple ko-agent-fs ships as, so a session can run its tests against the
+    # libc that ships (fuse/ko-agent-fs/doc/testing.md). It has to be added here:
+    # RUSTUP_HOME is read-only at runtime, so a session cannot add it later.
+    CARGO_HOME=/opt/rust/cargo /opt/rust/cargo/bin/rustup target add \
+        "$(uname -m)-unknown-linux-musl"; \
+    rm rustup-init
+
+ENV PATH="/opt/rust/cargo/bin:$PATH"
+
+
+# ---------------------------------------------------------------------------
+# Persisted agent state
+# ---------------------------------------------------------------------------
+#
+# The launcher mounts a per-project named volume at ~/persistent-volume;
+# each agent's dot-directory is a relative symlink into it, so no relocation
+# variables are needed. The volume's content starts as the seed below, which
+# sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
+# not only into a fresh volume, as Podman's copy-up would, but into one an
+# older image created before an agent was added. A directory the volume has
+# is agent state and is never touched, so a seed change reaches existing
+# volumes only through --reset, which also discards their logins.
+
+ENV SANDBOX_VOLUME_SEED=/etc/ko-agent-sandbox/persistent-volume-seed
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0700 /home/nonroot/persistent-volume; \
+    # nonroot-owned: sandbox-entrypoint reads the seed as nonroot, and the copies keep the mode
+    install -d -o nonroot -g nonroot -m 0700 \
+        $SANDBOX_VOLUME_SEED/claude \
+        $SANDBOX_VOLUME_SEED/codex \
+        $SANDBOX_VOLUME_SEED/antigravity \
+        $SANDBOX_VOLUME_SEED/copilot; \
+    ln -s persistent-volume/claude /home/nonroot/.claude; \
+    ln -s persistent-volume/codex /home/nonroot/.codex; \
+    # agy reads its state from ~/.gemini, not a name of its own
+    ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
+    ln -s persistent-volume/copilot /home/nonroot/.copilot; \
+    chown -h nonroot:nonroot \
+        /home/nonroot/.claude \
+        /home/nonroot/.codex \
+        /home/nonroot/.gemini \
+        /home/nonroot/.copilot
+
+
+# ---------------------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------------------
+#
+# `latest` rather than `stable`: the update check compares against `latest`,
+# and `stable` lags it into a permanent "Update available!" banner. Updates
+# arrive by rebuilding.
+
+RUN set -euxo pipefail; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL \
+        https://downloads.claude.ai/keys/claude-code.asc \
+        -o /etc/apt/keyrings/claude-code.asc; \
+    printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://downloads.claude.ai/claude-code/apt/latest' \
+        'Suites: latest' \
+        'Components: main' \
+        'Signed-By: /etc/apt/keyrings/claude-code.asc 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE' \
+        > /etc/apt/sources.list.d/claude-code.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        claude-code \
+        # Claude Code's own sandbox for Bash commands, off in the managed settings below.
+        # Carried because an organization's server-managed settings, which outrank that
+        # file, can enforce sandbox.failIfUnavailable: without these the session exits,
+        # with the reason on stderr, which the TUI discards. Enabled in here it would
+        # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
+        # podman's masked /proc entries (measured, as for Codex below).
+        bubblewrap \
+        socat; \
+    rm -rf /var/lib/apt/lists/*
+
+# .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
+ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
+
+# Seed the /workspace trust decision — one entry covers every project. These
+# keys are Claude Code internals and may change between releases.
+RUN set -euxo pipefail; \
+    printf '%s\n' \
+        '{' \
+        '  "projects": {' \
+        '    "/workspace": {' \
+        '      "hasTrustDialogAccepted": true,' \
+        '      "hasCompletedProjectOnboarding": true' \
+        '    }' \
+        '  }' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/claude/.claude.json
+
+# Skip permission prompts: this container is the boundary, and an
+# in-container prompt only trains the operator to approve without reading.
+#
+# Managed settings is the highest-precedence scope a project can reach, in
+# the read-only image: a mounted project cannot weaken it (the trust dialog
+# above is pre-accepted, so project settings take effect unreviewed),
+# removing the volume cannot drop it, and it does not depend on launcher
+# flags. One source outranks it: an organization's server-managed settings,
+# fetched when the session signs in to Anthropic directly. Claude Code
+# reads a single admin source, so under one this file is ignored whole —
+# prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
+# the source in force — and can require the sandbox (the apt step above).
+#
+# `bypassPermissions` refuses to start as root; USER below is nonroot.
+# `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time
+# dialog. None of this touches prompt injection (SECURITY.md); consider
+# `"defaultMode": "auto"` where that matters.
+#
+# `disableAllHooks` is about persistence: a project's hooks would run
+# unreviewed and could write ~/.claude/settings.json — startup input for
+# every later session of that project. This narrows the class, not closes
+# it: the volume stays trusted input (SECURITY.md), and per-project volumes
+# bound whatever survives to the one project.
+#
+# `sandbox` off: this container is the boundary, and Claude Code's own
+# bubblewrap sandbox would be a second one inside it, which a project's
+# `sandbox.failIfUnavailable` could otherwise demand. Off also keeps
+# anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
+# distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
+#
+# `disableAllHooks`'s own effect is unverified from inside: the managed file
+# cannot be displaced there (a writable /etc is needed, and
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH does not displace it either), which is
+# itself evidence for the premise above. Verifying it needs a host-side run
+# where the managed file is yours to vary.
+RUN set -euxo pipefail; \
+    install -d -m 0755 /etc/claude-code; \
+    printf '%s\n' \
+        '{' \
+        '  "permissions": {' \
+        '    "defaultMode": "bypassPermissions"' \
+        '  },' \
+        '  "skipDangerousModePermissionPrompt": true,' \
+        '  "disableAllHooks": true,' \
+        '  "sandbox": {' \
+        '    "enabled": false,' \
+        '    "failIfUnavailable": false,' \
+        '    "allowUnsandboxedCommands": true' \
+        '  }' \
+        '}' \
+        > /etc/claude-code/managed-settings.json
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI
+# ---------------------------------------------------------------------------
+#
+# OpenAI publishes no APT repository, and the npm package wraps the same
+# native build. The musl build is static. `releases/latest` mirrors the
+# Claude `latest` suite; verifying the *.sigstore bundles would need cosign,
+# so TLS to github.com is the integrity boundary.
+RUN set -euxo pipefail; \
+    CODEX_ARTIFACT="codex-package-$(uname -m)-unknown-linux-musl"; \
+    install -d -m 0755 /opt/codex; \
+    curl -fsSL \
+        "https://github.com/openai/codex/releases/latest/download/${CODEX_ARTIFACT}.tar.gz" \
+        | tar -xzf - -C /opt/codex
+
+# Codex is run from the package directory rather than symlinked into
+# /usr/local/bin, so that nothing depends on how the helper lookup resolves a
+# symlinked argv[0].
+ENV PATH="/opt/codex/bin:$PATH"
+
+# What codex/bash-env restores (codex/config.toml has why).
+ENV SANDBOX_TOOLCHAIN_PATH="$PATH"
+
+# /etc/codex/config.toml is the documented system layer, lowest precedence:
+# in the read-only image like managed settings, but supplying *defaults* the
+# user config can override — opting back into approval prompts for a scary
+# repository should not need an image rebuild (enforcement would be
+# managed_config.toml).
+#
+# danger-full-access: the container is the boundary, and Codex's own Linux
+# sandbox cannot finish setting up here. Measured, not assumed: unshare -Ur
+# works under --cap-drop=ALL, but mounting a fresh /proc fails while
+# podman's masked /proc entries are in place, and the bubblewrap-style
+# sandbox needs one for its pid namespace.
+#
+# trust_level: the Codex counterpart of the trust seeding above, same warning.
+COPY --chmod=0644 codex/config.toml /etc/codex/config.toml
+COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
+
+
+# ---------------------------------------------------------------------------
+# Antigravity CLI
+# ---------------------------------------------------------------------------
+#
+# Google distributes agy through an install script that resolves a
+# per-platform manifest {version, url, sha512}; the manifest is used
+# directly so the binary lands in the read-only image, keeping the sha512
+# check and skipping the shell-profile editing. agy self-updates only where
+# its binary is writable; /usr/local/bin is not, so it updates on rebuild
+# like the others. The smoke test gets a throwaway HOME because agy writes
+# state on every invocation and this RUN is root.
+
+RUN set -euxo pipefail; \
+    AGY_MANIFEST="$(curl -fsSL \
+        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_$(dpkg \
+        --print-architecture).json")"; \
+    curl -fsSL "$(printf '%s' "$AGY_MANIFEST" | jq -re .url)" -o /tmp/agy.tar.gz; \
+    printf '%s  /tmp/agy.tar.gz\n' "$(printf '%s' "$AGY_MANIFEST" | jq -re .sha512)" \
+        | sha512sum -c -; \
+    tar -xzf /tmp/agy.tar.gz -C /tmp antigravity; \
+    install -m 0755 /tmp/antigravity /usr/local/bin/agy; \
+    rm /tmp/agy.tar.gz /tmp/antigravity; \
+    HOME=/tmp/agy-smoke agy --version >/dev/null; \
+    rm -rf /tmp/agy-smoke
+
+# All agy state lives under ~/.gemini, a symlink into
+# the persistent volume. Unlike the others, permission prompts are not
+# pre-disabled: agy has no settings key for it, only
+# --dangerously-skip-permissions or the in-app /permissions, which persists.
+
+
+# ---------------------------------------------------------------------------
+# Copilot CLI
+# ---------------------------------------------------------------------------
+#
+# GitHub's install script (gh.io/copilot-install) fetches the release tarball
+# and checks it against the release's SHA256SUMS; the same two fetches here,
+# without the shell-profile editing. The npm package wraps the same binary.
+# `releases/latest` as for Codex, so a release landing between the two
+# fetches fails the checksum and the build, never installs a mismatch. The
+# smoke test gets a throwaway HOME because copilot writes a package cache on
+# every invocation and this RUN is root.
+RUN set -euxo pipefail; \
+    COPILOT_ASSET="copilot-linux-$(dpkg --print-architecture | sed s/amd64/x64/).tar.gz"; \
+    COPILOT_RELEASE=https://github.com/github/copilot-cli/releases/latest/download; \
+    curl -fsSL "${COPILOT_RELEASE}/${COPILOT_ASSET}" -o /tmp/copilot.tar.gz; \
+    printf '%s  /tmp/copilot.tar.gz\n' \
+        "$(curl -fsSL "${COPILOT_RELEASE}/SHA256SUMS.txt" \
+            | awk -v asset="$COPILOT_ASSET" '$2 == asset { print $1 }')" \
+        | sha256sum -c -; \
+    tar -xzf /tmp/copilot.tar.gz -C /tmp copilot; \
+    install -m 0755 /tmp/copilot /usr/local/bin/copilot; \
+    rm /tmp/copilot.tar.gz /tmp/copilot; \
+    HOME=/tmp/copilot-smoke copilot --version >/dev/null; \
+    rm -rf /tmp/copilot-smoke
+
+# A read-only binary does not stop copilot's updater: it extracts new
+# versions into a package cache under ~/.cache/copilot and runs those. Off,
+# so it updates on rebuild like the others.
+ENV COPILOT_AUTO_UPDATE=false
+
+# Tool prompts off, the Codex counterpart above. Copilot has no system config
+# layer, so the default is an environment variable a launch can override
+# (COPILOT_ALLOW_ALL=false). It covers tools only; --yolo adds paths outside
+# /workspace and URLs, whose prompts the user keeps otherwise.
+ENV COPILOT_ALLOW_ALL=true
+
+# The trust seeding for copilot: ~/.copilot/config.json is user state that
+# copilot rewrites, in the persistent volume like Claude's .claude.json.
+RUN set -euxo pipefail; \
+    printf '%s\n' \
+        '{' \
+        '  "trustedFolders": [' \
+        '    "/workspace"' \
+        '  ]' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/copilot/config.json
+
+
+# ---------------------------------------------------------------------------
+# Environment documentation for the agents
+# ---------------------------------------------------------------------------
+#
+# AGENTS-SANDBOX.md tells the running agent what this container is;
+# AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
+# every link below. The launcher mounts its own assembly over AGENTS.md — the
+# policy in force appended, and a project's
+# .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
+# why the parts ship beside the whole.
+# Without them an agent reads `Read-only file system` as breakage, or writes
+# deliverables somewhere discarded on exit.
+#
+#   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
+#           first, project-unexcludable, read-only like managed-settings
+#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; copilot
+#           ~/.copilot/copilot-instructions.md — no system scope, so each
+#           resolves through the persistent volume. (Codex's
+#           model_instructions_file would *replace* the built-in
+#           instructions, so it is not used.)
+#
+# Symlinks, not copies: a seeded directory is never touched again, and this
+# text must change with the image. Absolute, because a relative link would
+# have to climb out of the volume.
+#
+# Each script's own header says what it is for; they ship because an agent would otherwise retype
+# them from the instructions.
+COPY --chmod=0755 \
+    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman ko-agent-clipboard \
+    sandbox-entrypoint \
+    /usr/local/bin/
+RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
+
+COPY AGENTS-SANDBOX.md AGENTS-CUSTOM.md /etc/ko-agent-sandbox/
+
+RUN set -euxo pipefail; \
+    { cat /etc/ko-agent-sandbox/AGENTS-SANDBOX.md; echo; \
+      cat /etc/ko-agent-sandbox/AGENTS-CUSTOM.md; } \
+        > /etc/ko-agent-sandbox/AGENTS.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md
+
+
+# ---------------------------------------------------------------------------
+# Unprivileged runtime user
+# ---------------------------------------------------------------------------
+
+RUN set -euxo pipefail; \
+    install -d \
+      -o nonroot \
+      -g nonroot \
+      /workspace
+WORKDIR /workspace
+
+USER nonroot
+
+ENTRYPOINT ["sandbox-entrypoint"]
+CMD ["bash"]

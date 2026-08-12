@@ -1,0 +1,45 @@
+#!/bin/sh
+# The host clipboard, through the launcher's broker: SECURITY.md "Clipboard" has the channel and its
+# limits. Installed under the names Claude Code and Copilot CLI shell out to on Linux (xclip, xsel,
+# wl-paste, wl-copy), answering only the argument shapes they use; anything else is a usage error.
+#
+# One transaction: take the lock, write a request line (plus body for `set`) to the request FIFO,
+# read the whole response FIFO. The broker's absence is a missing FIFO: an immediate failure in a
+# session launched without KO_AGENT_SANDBOX_CLIPBOARD, a short wait in one launched with it, since
+# the broker makes the FIFO only once the container runs. A broker that has died leaves the FIFO,
+# which is the bounded wait further down.
+set -eu
+
+dir=/tmp/ko-agent-sandbox/clipboard
+if [ -n "${KO_AGENT_SANDBOX_CLIPBOARD:-}" ]; then
+  i=0
+  while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
+fi
+[ -p "$dir/req" ] || exit 1
+
+case "$(basename "$0")${*:+ $*}" in
+  "xclip -selection clipboard -t TARGETS -o") request=types ;;
+  "wl-paste -l")                              request=types ;;
+  "xclip -selection clipboard -t image/"*)    request="get $4" ;;
+  "wl-paste --type image/"*)                  request="get $2" ;;
+  "xclip -selection clipboard"|"xclip -selection clipboard -i"|"xsel --clipboard --input"|"wl-copy"|"wl-copy --primary")
+                                              request=set ;;
+  "wl-copy --type text/plain"|"wl-copy --type text/html")  # copilot's /copy
+                                              request=set ;;
+  *) echo "$0: unsupported arguments: $*" >&2; exit 64 ;;
+esac
+
+exec 9> "$dir/lock"
+flock -w 5 9
+
+if [ "$request" = set ]; then
+  body=$(mktemp "$dir/set.XXXXXX")
+  trap 'rm -f "$body"' EXIT
+  cat > "$body"
+  { printf 'set %s\n' "$(wc -c < "$body")"; cat "$body"; } | timeout 5 sh -c "cat > $dir/req"
+  # No response: the broker either set the host clipboard or, in paste mode, dropped it.
+  exit 0
+fi
+
+printf '%s\n' "$request" | timeout 5 sh -c "cat > $dir/req"
+timeout 10 cat "$dir/rsp"

@@ -1,0 +1,24 @@
+[package]
+name = "ko-agent-fs"
+version = "0.1.0"
+edition = "2024"
+description = "FUSE filter that keeps a sandbox from planting host-executable Git metadata in a shared workspace"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The policy core (src/policy.rs) imports nothing external — that is the audited heart. The
+# dependencies below serve only the plumbing (src/fs.rs, src/main.rs): fuser for the FUSE protocol,
+# nix/libc for the fd-relative syscalls. fuser without its libfuse feature has no C linkage and
+# mounts unprivileged (`doc/architecture.md`, "Build and install").
+[dependencies]
+fuser = { version = "0.18", default-features = false }
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = ["fs", "dir", "uio"] }
+
+[lib]
+name = "ko_agent_fs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ko-agent-fs"
+path = "src/main.rs"

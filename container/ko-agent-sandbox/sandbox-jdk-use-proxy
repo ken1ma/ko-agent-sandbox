@@ -1,0 +1,166 @@
+#!/bin/sh
+# Give one JVM what this session's network needs: the egress proxy's inspection CA, and the proxy
+# itself.
+#
+# The image's own JDK has both already: the launcher runs this same script on it in a throwaway
+# container at launch and mounts the two files it wrote read-only (JdkTrust.scala). In a session it
+# is for the JVMs the launcher cannot reach: one the agent installed with `cs java --jvm
+# temurin:25`, or any JDK unpacked by hand. Untouched, such a JDK fails a dependency resolve twice
+# over — no route to the proxy, and no trust for the certificate an inspected host presents — with
+# nothing to say why.
+#
+#   sandbox-jdk-use-proxy                  # $JAVA_HOME
+#   sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
+#
+# Not for a GraalVM native image (cs, scala-cli): it has no conf/ to edit and takes the same facts
+# as -D options — KO_AGENT_SANDBOX_JAVA_OPTS, in the agent instructions.
+#
+# Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
+# failing on the read-only files. The certificate is public — the private key that signs with it
+# never enters this container (SECURITY.md, "Who holds the CA key").
+set -eu
+
+# The proxy's address is read from HTTPS_PROXY rather than spelled here, so the launcher — which
+# sets that variable for every session and for its own run of this script — is its only home.
+case "${HTTPS_PROXY:-}" in
+    http://*) ;;
+    *)
+        echo "${0##*/}: HTTPS_PROXY is not an http:// URL, so there is no proxy to point the JDK at" >&2
+        exit 2
+        ;;
+esac
+proxy_address=${HTTPS_PROXY#http://}
+proxy_address=${proxy_address%/}
+PROXY_HOST=${proxy_address%:*}
+PROXY_PORT=${proxy_address##*:}
+if [ -z "$PROXY_HOST" ] || [ "$PROXY_HOST" = "$PROXY_PORT" ]; then
+    echo "${0##*/}: HTTPS_PROXY=$HTTPS_PROXY names no host:port" >&2
+    exit 2
+fi
+
+CA=/etc/ko-agent-sandbox/egress-ca.crt
+ALIAS=ko-agent-sandbox-egress
+# The password every JDK ships cacerts under; not a secret, and the store holds only certificates.
+STOREPASS=changeit
+
+# Named JAVA_HOME because that is what it is — the home of the JDK being taught.
+JAVA_HOME="${1:-${JAVA_HOME:-}}"
+
+if [ $# -gt 1 ] || [ -z "$JAVA_HOME" ]; then
+    echo "usage: ${0##*/} [JAVA_HOME]" >&2
+    [ $# -gt 1 ] || echo "  no argument and JAVA_HOME is unset, so there is no JDK to prepare" >&2
+    exit 2
+fi
+
+if [ ! -x "$JAVA_HOME/bin/keytool" ]; then
+    echo "${0##*/}: no keytool at $JAVA_HOME/bin/keytool" >&2
+    exit 1
+fi
+
+# The proxy, written where the JDK's own ProxySelector reads it. JAVA_TOOL_OPTIONS would also
+# work, and adds a banner to every JVM start that corrupts output other tools parse; this sets no
+# system property at all. Appended, because a properties file takes the last assignment of a key;
+# http.nonProxyHosts is left as shipped, since it already spells the loopback exemptions NO_PROXY
+# carries.
+set_proxy() {
+    net=$JAVA_HOME/conf/net.properties
+    # A failure, not a report: every Java 9+ runtime ships this file, and without the proxy the
+    # JDK reaches no host at all — a success here would certify a JDK that is half prepared.
+    if [ ! -f "$net" ]; then
+        echo "${0##*/}: no $net, so this JDK cannot be pointed at the proxy; it is not a runtime" >&2
+        echo "  layout this tool can prepare. Install a full JDK (cs java --jvm temurin:25)." >&2
+        exit 1
+    fi
+    # "Already set" means the file's *effective* values are this proxy's, judged by the parser
+    # that will consume the file — the target JDK's own Properties.load. A shell reading only
+    # approximates that format (`key : value` and `key value` are legal spellings a grep for
+    # `key=` misses, a regex dot in the key matches characters it should not, and the last
+    # assignment is the one that counts), and an approximation errs in both directions. A JDK
+    # whose java cannot run the probe answers nothing, which reads as unprepared: the block is
+    # appended again, and the appended block is the last word either way.
+    probe_dir=$(mktemp -d)
+    cat > "$probe_dir/EffectiveProperties.java" <<'EOF'
+import java.io.FileInputStream;
+import java.util.Properties;
+
+public class EffectiveProperties {
+    public static void main(String[] args) throws Exception {
+        Properties loaded = new Properties();
+        try (FileInputStream in = new FileInputStream(args[0])) {
+            loaded.load(in);
+        }
+        for (int i = 1; i < args.length; i++) {
+            System.out.println(loaded.getProperty(args[i], ""));
+        }
+    }
+}
+EOF
+    effective=$("$JAVA_HOME/bin/java" "$probe_dir/EffectiveProperties.java" "$net" \
+        http.proxyHost http.proxyPort https.proxyHost https.proxyPort 2>/dev/null || true)
+    rm -rf "$probe_dir"
+    wanted=$(printf '%s\n%s\n%s\n%s' "$PROXY_HOST" "$PROXY_PORT" "$PROXY_HOST" "$PROXY_PORT")
+    if [ "$effective" = "$wanted" ]; then
+        echo "egress proxy already set: $net"
+        return
+    fi
+    # The original beside it before the first append, and only if no copy is there yet, so a
+    # re-run cannot overwrite the true original with an already-appended one. Named for this
+    # tool rather than `.dist`, which would claim an as-distributed pristineness nobody
+    # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
+    [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"
+    cat >> "$net" <<EOF
+
+# ko-agent-sandbox: the proxy is the only route out, and a JVM reads none of the
+# HTTPS_PROXY family.
+http.proxyHost=$PROXY_HOST
+http.proxyPort=$PROXY_PORT
+https.proxyHost=$PROXY_HOST
+https.proxyPort=$PROXY_PORT
+EOF
+    echo "egress proxy added to $net (original: $net.ko-agent-sandbox.orig)"
+}
+
+set_proxy
+
+# The CA is the other half, and only exists where the session inspects something. Absent is a
+# report rather than a failure: the proxy above is what a read-write-only policy needs.
+if [ ! -r "$CA" ]; then
+    echo "${0##*/}: $CA is absent, so this session inspects no host; nothing to trust"
+    exit 0
+fi
+
+# The colon-hex SHA-256 both keytool outputs below carry, whatever label they print it under.
+fingerprint_of() {
+    grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' | head -1
+}
+
+# -cacerts targets the store belonging to the keytool being run, which is why the target JDK's own
+# keytool is invoked rather than whichever one is on PATH.
+#
+# Idempotence must compare the certificate, not just find the alias: a JDK kept on a volume shared
+# across projects can carry this alias for another project's CA, and "already trusted" over the
+# wrong certificate would be exactly the unexplained TLS failure this tool exists to end.
+want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
+have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \
+    | fingerprint_of)
+
+# An empty want must fail here, never compare: two empty fingerprints are equal, and a keytool
+# that cannot fingerprint the CA would otherwise report "already trusted" against a broken store.
+if [ -z "$want" ]; then
+    echo "${0##*/}: $JAVA_HOME/bin/keytool could not fingerprint $CA" >&2
+    exit 1
+fi
+
+if [ "$have" = "$want" ]; then
+    echo "egress CA already trusted: $JAVA_HOME"
+    exit 0
+fi
+
+if [ -n "$have" ]; then
+    echo "alias $ALIAS holds a different certificate (another project's CA?); replacing it"
+    "$JAVA_HOME/bin/keytool" -delete -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null
+fi
+
+"$JAVA_HOME/bin/keytool" -importcert -noprompt -cacerts -storepass "$STOREPASS" \
+    -alias "$ALIAS" -file "$CA"
+echo "egress CA added to $JAVA_HOME"

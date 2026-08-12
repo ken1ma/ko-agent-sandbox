@@ -1,0 +1,13 @@
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# Leave full environment inheritance at Codex's default.
+
+[shell_environment_policy.set]
+# Unified exec replaces PATH after Codex builds the child environment.
+# Each non-interactive `bash` reads this file and restores the PATH captured at image build time.
+# This keeps image-installed tools such as `sbt` visible to Codex subprocesses.
+BASH_ENV = "/etc/codex/bash-env"
+
+[projects."/workspace"]
+trust_level = "trusted"

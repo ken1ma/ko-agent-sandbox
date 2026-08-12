@@ -1,0 +1,9 @@
+# Build output must not reach the context: slow, and a stale artefact could be copied instead of one
+# this build produced. Keep in step with the launcher jar's bundled copy of this directory (the
+# resourceGenerators task in the repository root's build.sbt). `.dockerignore` rather than
+# `.containerignore` because both podman and docker look for it.
+target
+
+# Neither is a build input (build.sbt, the resourceGenerators task).
+doc
+probe
