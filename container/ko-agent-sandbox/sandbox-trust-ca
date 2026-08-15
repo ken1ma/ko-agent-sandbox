@@ -4,11 +4,11 @@
 # The image's own JDK already trusts it — the launcher merges the CA into that JDK's cacerts on the
 # host and mounts the result read-only — so this is for the JVMs the launcher cannot reach: one the
 # agent installed itself with `cs java --jvm temurin:25`, or any JDK unpacked by hand. Those carry
-# an untouched trust store, so a build resolving from an inspected forge host (github.com,
-# raw.githubusercontent.com, …) fails there with a certificate error and nothing else explains why.
+# an untouched trust store, so a build resolving from any inspected host (the git hosts, the doc
+# sites, javadoc.io, …) fails there with a certificate error and nothing else explains why.
 #
-#   ko-agent-sandbox-trust-ca                  # $JAVA_HOME
-#   ko-agent-sandbox-trust-ca /path/to/jdk     # some other JDK
+#   sandbox-trust-ca                  # $JAVA_HOME
+#   sandbox-trust-ca /path/to/jdk     # some other JDK
 #
 # Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
 # failing on the read-only store. The certificate is public — the private key that signs with it
@@ -27,9 +27,9 @@ STOREPASS=changeit
 # reaches the check below and fails there, with the usage message.
 JAVA_HOME="${1:-${JAVA_HOME:-}}"
 
-if [ -z "$JAVA_HOME" ]; then
+if [ $# -gt 1 ] || [ -z "$JAVA_HOME" ]; then
     echo "usage: ${0##*/} [JAVA_HOME]" >&2
-    echo "  no argument and JAVA_HOME is unset, so there is no JDK to teach" >&2
+    [ $# -gt 1 ] || echo "  no argument and JAVA_HOME is unset, so there is no JDK to teach" >&2
     exit 2
 fi
 
@@ -44,11 +44,36 @@ if [ ! -r "$CA" ]; then
     exit 1
 fi
 
+# The colon-hex SHA-256 both keytool outputs below carry, whatever label they print it under.
+fingerprint_of() {
+    grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' | head -1
+}
+
 # -cacerts targets the store belonging to the keytool being run, which is why the target JDK's own
 # keytool is invoked rather than whichever one is on PATH.
-if "$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null 2>&1; then
+#
+# Idempotence must compare the certificate, not just find the alias: a JDK kept on a volume shared
+# across projects can carry this alias for another project's CA, and "already trusted" over the
+# wrong certificate would be exactly the unexplained TLS failure this tool exists to end.
+want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
+have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \
+    | fingerprint_of)
+
+# An empty want must fail here, never compare: two empty fingerprints are equal, and a keytool
+# that cannot fingerprint the CA would otherwise report "already trusted" against a broken store.
+if [ -z "$want" ]; then
+    echo "${0##*/}: $JAVA_HOME/bin/keytool could not fingerprint $CA" >&2
+    exit 1
+fi
+
+if [ "$have" = "$want" ]; then
     echo "already trusted: $JAVA_HOME"
     exit 0
+fi
+
+if [ -n "$have" ]; then
+    echo "alias $ALIAS holds a different certificate (another project's CA?); replacing it"
+    "$JAVA_HOME/bin/keytool" -delete -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null
 fi
 
 "$JAVA_HOME/bin/keytool" -importcert -noprompt -cacerts -storepass "$STOREPASS" \

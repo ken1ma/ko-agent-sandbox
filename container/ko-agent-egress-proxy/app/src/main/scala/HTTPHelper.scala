@@ -15,6 +15,11 @@ import IPAddrHelper.normalizeHost
  * Content-Lengths, bare CR or LF — because a proxy and an origin reading
  * the same bytes differently is what request smuggling exploits. (The
  * duplicate-Host refusal is the policy's: authorizeInspectedRequest.)
+ *
+ * Clients speak HTTP/1.1, and an HTTP/1.0 request is refused by name: no
+ * such client exists here, and half-supporting one — it could not parse a
+ * relayed chunked response — would be a silent gap instead of a log line.
+ * Origin responses are accepted at any HTTP/1.x, which framing covers.
  */
 object HTTPHelper:
 
@@ -36,7 +41,11 @@ object HTTPHelper:
 
       val value = in.read()
       if value < 0 then
-        throw BadRequest("connection closed before HTTP header completed")
+        // Zero bytes then EOF is its own case: a pooled client discarding a spare connection is
+        // routine and must not be logged as a refused request, while EOF inside a half-sent
+        // header stays the anomaly it is.
+        if count == 0 then throw ClosedWithoutRequest()
+        else throw BadRequest("connection closed before HTTP header completed")
 
       val byte = value.toByte
       out.write(value)
@@ -73,12 +82,18 @@ object HTTPHelper:
 
     def parseRequestLine(line: String): ConnectRequest =
       line.split(" ", -1).toList match
-        case "CONNECT" :: authority :: version :: Nil
-            if version == "HTTP/1.1" || version == "HTTP/1.0" =>
+        case "CONNECT" :: authority :: "HTTP/1.1" :: Nil =>
           parseAuthority(authority)
 
+        case _ :: _ :: "HTTP/1.0" :: Nil =>
+          throw BadRequest("HTTP/1.0 is not supported")
+
+        case method :: _ :: version :: Nil
+            if version.startsWith("HTTP/") && method.nonEmpty && method.forall(_.isLetter) =>
+          throw BadRequest(s"$method non-CONNECT request")
+
         case _ =>
-          throw BadRequest("expected CONNECT authority HTTP/1.1 or HTTP/1.0")
+          throw BadRequest("expected CONNECT authority HTTP/1.1")
 
     def parseAuthority(authority: String): ConnectRequest =
       if authority.isEmpty ||
@@ -139,6 +154,10 @@ object HTTPHelper:
     case Empty
     case Length(count: Long)
     case Chunked
+    /** Response-only: no framing header, so the body runs to the connection's end — the one
+      * framing where EOF is the terminator rather than a possible truncation. Request parsing
+      * never produces it (a request without framing headers has no body). */
+    case UntilClose
 
   case class HttpRequestHead(
     method: String,
@@ -184,15 +203,27 @@ object HTTPHelper:
         BodyFraming.Length(declared.head)
       else BodyFraming.Empty
 
-    /** HTTP/1.1, hop-by-hop headers removed, `Connection: close` added —
-      * end-of-stream then frames the response. */
+    /** The client is waiting for a 100 before it sends its body (RFC 9110 §10.1.1). This proxy
+      * answers the 100 itself (relayInspected) and forwards the body unconditionally, so
+      * toUpstreamBytes drops the Expect — an origin must not be left waiting for a body this
+      * proxy sends regardless. Without this, the client stalls until its own 100 timeout on
+      * every large POST (git's fetch negotiation past http.postBuffer sends it). */
+    def expectsContinue: Boolean =
+      values("Expect").exists(_.trim.equalsIgnoreCase("100-continue"))
+
+    /** HTTP/1.1, this hop's headers removed — the fixed hop-by-hop set plus whatever the
+      * message's own Connection header names — and `Connection: close` added: end-of-stream
+      * then frames the response. */
     def toUpstreamBytes: Array[Byte] =
       val builder = StringBuilder()
 
       builder.append(s"$method $target HTTP/1.1\r\n")
 
+      val dropped =
+        HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
+          ++ (if expectsContinue then Set("expect") else Set.empty)
       headers
-        .filterNot((name, _) => HopByHopHeaders.contains(name.toLowerCase(Locale.ROOT)))
+        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
         .foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
       builder.append("Connection: close\r\n\r\n")
@@ -211,6 +242,15 @@ object HTTPHelper:
       "upgrade"
     )
 
+  /** The header names a message's own Connection header declares hop-by-hop (RFC 9110 §7.6.1):
+    * those are this hop's to remove too, not just the fixed set above. */
+  def connectionNamedHeaders(values: Vector[String]): Set[String] =
+    values
+      .flatMap(_.split(','))
+      .map(_.trim.toLowerCase(Locale.ROOT))
+      .filter(_.nonEmpty)
+      .toSet
+
   object HttpRequestHead:
     def parse(bytes: Array[Byte]): HttpRequestHead =
       val text = String(bytes, StandardCharsets.ISO_8859_1)
@@ -227,14 +267,16 @@ object HTTPHelper:
       val requestLine = lines.headOption.getOrElse(throw BadRequest("missing request line"))
 
       requestLine.split(" ", -1).toList match
-        case method :: target :: version :: Nil
-            if version == "HTTP/1.1" || version == "HTTP/1.0" =>
+        case method :: target :: "HTTP/1.1" :: Nil =>
           if method.isEmpty || !method.forall(isHttpTokenChar) then
             throw BadRequest("invalid HTTP method")
 
           if target.isEmpty then throw BadRequest("empty request target")
 
-          HttpRequestHead(method, target, version, parseHeaders(lines.drop(1)))
+          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(lines.drop(1)))
+
+        case _ :: _ :: "HTTP/1.0" :: Nil =>
+          throw BadRequest("HTTP/1.0 is not supported")
 
         case _ =>
           throw BadRequest("malformed HTTP request line")
@@ -252,6 +294,109 @@ object HTTPHelper:
           throw BadRequest("invalid HTTP header name")
 
         (name, line.substring(colon + 1).trim)
+
+  /**
+   * The response head, parsed for status and framing only — just enough to tell a completed body
+   * from a truncated one — and relayed with only its hop-by-hop headers replaced (toClientBytes):
+   * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
+   * response content, because that would grow into the policy language this proxy refuses to
+   * have. Origin-side malformations are IOExceptions, never BadRequests: the world failed, and
+   * the 502 should blame the origin.
+   */
+  case class HttpResponseHead(
+    statusLine: String,
+    status: Int,
+    headers: Vector[(String, String)],
+    rawBytes: Array[Byte]
+  ):
+    def values(name: String): Vector[String] =
+      val wanted = name.toLowerCase(Locale.ROOT)
+
+      headers.collect:
+        case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+
+    /** The head as the client receives it: status line and end-to-end headers unchanged, but the
+      * hop-by-hop headers are this hop's own (they describe the origin↔proxy leg), and this
+      * proxy's answer is always `Connection: close` — a session is one request, and the client
+      * must hear that even when the origin's headers omit it. A client that misses it reuses or
+      * pipelines, its next request meets the closed socket's RST, and the RST destroys this
+      * response's unread tail in the client's buffer — measured as apt's intermittent
+      * mid-download EOFs, invisible in the proxy's own log. */
+    def toClientBytes: Array[Byte] =
+      val builder = StringBuilder()
+
+      builder.append(s"$statusLine\r\n")
+
+      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
+      headers
+        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
+        .foreach((name, value) => builder.append(s"$name: $value\r\n"))
+
+      builder.append("Connection: close\r\n\r\n")
+
+      builder.toString.getBytes(StandardCharsets.ISO_8859_1)
+
+    /** RFC 9112 §6.3 for the one-request sessions this proxy runs. Mirrors the request side's
+      * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
+      * UntilClose, because this proxy sends `Connection: close` upstream. */
+    def bodyFraming(requestMethod: String): BodyFraming =
+      if requestMethod == "HEAD" || status / 100 == 1 || status == 204 || status == 304 then
+        BodyFraming.Empty
+      else
+        val encodings = values("Transfer-Encoding")
+        val lengths = values("Content-Length")
+
+        if encodings.nonEmpty && lengths.nonEmpty then
+          throw IOException("origin sent both Transfer-Encoding and Content-Length")
+
+        if encodings.nonEmpty then
+          if encodings.size != 1 ||
+            encodings.head.trim.toLowerCase(Locale.ROOT) != "chunked"
+          then throw IOException("origin sent a Transfer-Encoding other than chunked")
+
+          BodyFraming.Chunked
+        else if lengths.nonEmpty then
+          val declared =
+            lengths.map: value =>
+              value.trim.toLongOption
+                .filter(_ >= 0)
+                .getOrElse(throw IOException("origin sent an invalid Content-Length"))
+
+          if declared.distinct.size != 1 then
+            throw IOException("origin sent conflicting Content-Length headers")
+
+          BodyFraming.Length(declared.head)
+        else BodyFraming.UntilClose
+
+  object HttpResponseHead:
+    def parse(bytes: Array[Byte]): HttpResponseHead =
+      def malformed(reason: String): Nothing =
+        throw IOException(s"origin response head: $reason")
+
+      val text = String(bytes, StandardCharsets.ISO_8859_1)
+
+      if !text.endsWith("\r\n\r\n") then malformed("incomplete")
+
+      val withoutCrLf = text.replace("\r\n", "")
+      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then malformed("bare CR or LF")
+
+      val lines = text.dropRight(4).split("\r\n", -1).toVector
+      val statusLine = lines.headOption.getOrElse(malformed("missing status line"))
+
+      statusLine.split(" ", 3).toList match
+        case version :: statusText :: _ if version.startsWith("HTTP/1.") =>
+          val status =
+            statusText.toIntOption
+              .filter(value => value >= 100 && value <= 599)
+              .getOrElse(malformed(s"status '$statusText'"))
+
+          val headers =
+            try HttpRequestHead.parseHeaders(lines.drop(1))
+            catch case ex: BadRequest => malformed(ex.getMessage)
+
+          HttpResponseHead(statusLine, status, headers, bytes)
+
+        case _ => malformed(s"status line '$statusLine'")
 
   def isHttpTokenChar(ch: Char): Boolean =
     (ch >= 'A' && ch <= 'Z') ||
@@ -290,6 +435,40 @@ object HTTPHelper:
       case BodyFraming.Empty         => ()
       case BodyFraming.Length(count) => copyExactly(in, out, count)
       case BodyFraming.Chunked       => copyChunked(in, out)
+      case BodyFraming.UntilClose =>
+        // Request parsing never produces it (see the enum case); reaching here is a proxy bug.
+        throw IllegalStateException("request bodies cannot be close-delimited")
+
+  /**
+   * The response-body relay, framing enforced: an upstream EOF inside a declared length or an
+   * unterminated chunk sequence is TruncatedResponse — the caller must end the connection so the
+   * stump cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
+   * is the terminator.
+   */
+  def forwardResponseBody(
+    in: InputStream,
+    out: OutputStream,
+    framing: BodyFraming
+  ): Unit =
+    framing match
+      case BodyFraming.Empty => ()
+
+      case BodyFraming.Length(count) =>
+        try copyExactly(in, out, count)
+        catch
+          case ex: EOFException =>
+            throw TruncatedResponse(s"$count-byte response truncated: ${ex.getMessage}")
+
+      case BodyFraming.Chunked =>
+        try copyChunked(in, out)
+        catch
+          case _: EOFException =>
+            throw TruncatedResponse("response truncated inside a chunked body")
+          case ex: BadRequest =>
+            throw TruncatedResponse(s"origin chunking unparseable: ${ex.getMessage}")
+
+      case BodyFraming.UntilClose =>
+        in.transferTo(out)
 
   def copyExactly(in: InputStream, out: OutputStream, count: Long): Unit =
     val buffer = new Array[Byte](16 * 1024)
@@ -301,7 +480,7 @@ object HTTPHelper:
         val read = in.read(buffer, 0, wanted)
 
         if read < 0 then
-          throw EOFException(s"request body ended $remaining bytes early")
+          throw EOFException(s"body ended $remaining bytes early")
 
         out.write(buffer, 0, read)
         loop(remaining - read)

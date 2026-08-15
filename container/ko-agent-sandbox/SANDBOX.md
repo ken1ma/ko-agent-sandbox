@@ -51,24 +51,35 @@ The repository under `/workspace` is real and writable, but this container carri
 `user.name`, no `user.email`, no credential helper, and no SSH key. Reading history — `log`, `diff`,
 `show`, `blame` — works normally, as do `git add` and `git fetch`.
 
-`.git/config` and `.git/hooks` are mounted read-only: `git config` on this repository and installing
-hooks fail by design, not as breakage to work around.
+Git's control state — `config`, `hooks/`, the redirection files, rebase todo — is frozen by the
+workspace filter serving `/workspace`: writing any of it fails with `Operation not permitted`, in
+every repository in the tree, by design and not as breakage to work around. Operational state
+(`index`, refs, objects, `HEAD`, reflogs) stays writable, so `status`, `add`, `commit`, `checkout`,
+`switch`, `fetch` and `merge` work normally.
 
-A project without a repository stays that way for the session: `git init` fails on a read-only
-mount, by design. A repository the user creates on the host mid-session appears here readable but
-entirely read-only until the next session. In either case report it to the user rather than working
-around it.
+The same filter refuses to create any entry named `.git`, at any depth and under any spelling a
+case-insensitive filesystem would fold to it. Consequences, each enforced rather than conventional:
 
-`git commit` therefore fails until an identity is set, and `git push` cannot authenticate to any
-remote. Only this repository's config is pinned, so `git config --global`, `git -c` and the
+- `git init` and `git clone` anywhere under `/workspace` fail. Clone under `/tmp` (more below).
+- `git rebase` (any form), `git am`, and a ranged or conflicted `cherry-pick`/`revert` fail: their
+  todo files can carry `exec` lines a later host-side `git rebase --continue` would run. A single
+  clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `/tmp`.
+- `git worktree add` into `/workspace` fails (it writes a `.git` pointer file at the new worktree).
+
+Report these to the user rather than working around them. A repository the user creates on the
+host mid-session appears here immediately — the filter serves the live tree — writable in its
+operational state like any other, with the same control files frozen.
+
+`git commit` fails until an identity is set, and `git push` cannot authenticate to any remote.
+Repository config is frozen, but `git config --global`, `git -c` and the
 `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables do still work — do not use them to invent a name and
 email: the missing identity is policy, not breakage. Ask the user instead, and leave the work as
 uncommitted changes in the meantime.
 
-Pushing to GitHub, GitLab and Codeberg is disabled outright: the egress proxy refuses it with a
-`403`, whatever the remote URL says, while fetching and cloning public repositories works normally —
-the Network section below has the mechanics. That is policy, not a misconfiguration — report it
-rather than work around it.
+Pushing to GitHub, GitLab or Codeberg is disabled outright: the proxy refuses it whatever the
+remote URL says, while fetching and cloning public repositories works normally — the Network
+section below has the mechanics. That is policy, not a misconfiguration — report it rather than
+work around it.
 
 Clone upstream repositories under `/tmp`, never into `/workspace`: the workspace is the user's own
 checkout, and a repository created inside it is residue the user then has to distrust and clean up.
@@ -102,36 +113,27 @@ curl -fsSL URL -o ~/.local/bin/TOOL && chmod +x ~/.local/bin/TOOL
 `npm install -g` works and lands in `~/.local`, but is discarded on exit like everything else in
 `~`.
 
-Last resort, when only a Debian package will do — unpack one into `$HOME` without root:
+Last resort, when only a Debian package will do: `sandbox-apt-get` (preinstalled) speaks
+apt-get's verbs but unpacks into `$HOME` without root, dependencies resolved against what the
+image already has:
 
 ```sh
-deb-install() {
-  local root=$HOME/.local/deb apt=$root/apt
-  mkdir -p "$apt"/lists/partial "$apt"/cache/archives/partial "$apt/log" "$root"
-  printf 'deb https://deb.debian.org/debian trixie main\n' > "$apt/sources.list"
-  local o=(-o Dir::State::Lists="$apt/lists" -o Dir::Cache="$apt/cache"
-           -o Dir::Etc::SourceList="$apt/sources.list" -o Dir::Etc::SourceParts=/dev/null
-           -o Dir::Etc::Preferences="$apt/prefs" -o Dir::Etc::PreferencesParts=/dev/null
-           -o Dir::Log="$apt/log" -o Acquire::Languages=none)
-  apt-get "${o[@]}" update -qq
-  ( cd "$apt/cache/archives" && apt-get "${o[@]}" download "$@" )
-  for d in "$apt"/cache/archives/*.deb; do dpkg-deb -x "$d" "$root"; done
-  export PATH="$root/usr/bin:$root/bin:$PATH"
-  local libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib"
-  export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-}
-
-deb-install shellcheck          # then run it normally
+sandbox-apt-get update
+sandbox-apt-get install shellcheck   # `shellcheck` is then on PATH
 ```
 
-Three things about it:
+Behind it is plain apt pointed at directories under `~/.local/deb` — Release signatures still
+verified through the image's own keyrings — then every fetched archive is unpacked and each new
+command gets a wrapper in `~/.local/bin` carrying the library path it needs, so nothing has to be
+exported and it works from any shell, script, or pipe. Three things about it:
 
-- Dependencies are **not** resolved. Name them yourself, as in `deb-install procps libproc2-0`.
-- Do not call it through a pipe. The `export`s would be lost to the subshell and the tool would
-  appear not to have installed.
-- `apt-get update` prints `rm: cannot remove '/var/cache/apt/archives/partial/*.deb': Permission
-  denied`. That is expected and harmless — it is the read-only system cache, not the private one
-  above.
+- **It is not an install**, and `apt-get install` itself never works here (read-only rootfs,
+  uid 65532) — that is why this exists. No maintainer scripts run and nothing registers with dpkg,
+  so a package expecting users, services, or setuid bits will not function.
+- **A command the image already provides is never shadowed**: a dependency chain that happens to
+  carry `python3` cannot change which `python3` the session runs. The tool says what it skipped.
+- **Recommends are included**, so a metapackage arrives runnable (installing `podman` brings
+  `netavark`, `passt`, `fuse-overlayfs`, …) at the cost of pulling more than the strict minimum.
 
 ## Report what you installed
 
@@ -146,23 +148,27 @@ there is no other route out. It allows `CONNECT` to port 443 for an exact list o
 wildcards — and requires the TLS SNI to match. In practice: `https://` to an allowed host behaves
 completely normally, plain `http://` never works whatever the host, and everything else fails.
 
-The GitHub, GitLab and Codeberg hosts are the exception to "behaves completely normally". The proxy
-terminates their TLS with a certificate this image trusts, and admits only reading: `GET`, `HEAD`,
-and the `POST` that `git clone` and `git fetch` need. A write — `git push`, a `POST` to the API, a
-`PUT` — comes back as `403 Forbidden` from `ko-agent-egress-proxy` with the reason in the body. The
-GraphQL endpoints are a `POST` and are refused with everything else, so use the REST endpoints to
-read. None of that is a bug to route around; report it if it blocks the task.
+Most hosts are an exception to "behaves completely normally". The policy is two tiers:
+read-write hosts (the agent endpoints) behave normally; every other host is read-only — the proxy
+terminates TLS with a certificate this image trusts and admits `GET` and `HEAD` only. Package
+installs work normally, npm's install-time audit included. The read-only entries tagged
+`=git-fetch` — GitHub, GitLab
+and Codeberg — additionally admit the `POST` that `git clone` and `git fetch` need. A write —
+`git push`, a `POST` to an API, a `PUT` — comes back as `403 Forbidden` from
+`ko-agent-egress-proxy` with the reason in the body. The GraphQL endpoints are a `POST` and
+are refused with everything else, so use the REST endpoints to read. None of that is a bug to
+route around; report it if it blocks the task.
 
 There is also no resolver configured: name lookups are the proxy's job, not this container's, so
 `getent hosts` and friends fail by design and that is not the reason a fetch failed. Tools that do
 not read `HTTPS_PROXY` need it spelled out — e.g. `openssl s_client -connect host:443 -servername
 host -proxy egress-proxy:3128`.
 
-The allowlist actually in force for this session is at the end of these instructions, under "Egress
-policy in force for this session" — the proxy's own answer, not a copy.
-`KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines for a script to read. Consult it before
-assuming a host is unreachable, and before spending a turn on a request that will be refused; the
-inspected hosts in the second line are the forges, reachable but for reading only.
+The policy actually in force for this session is at the end of these instructions, under "Egress
+policy in force for this session" — the proxy's own answer, one line per tier, not a copy.
+`KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines for a script to read. Consult it
+before assuming a host is unreachable, and before spending a turn on a request that will be
+refused.
 
 Built-in web search (Claude Code's WebSearch, Codex's equivalent) runs on the model provider's
 servers, not from in here, so it works regardless of this proxy and can describe hosts you cannot
@@ -188,20 +194,79 @@ JVM start, which corrupts output that other tools parse.
 
 A second JVM quirk, if you install one: the JDK in this image already trusts the egress proxy's
 inspection CA, but a JVM you install yourself (`cs java --jvm temurin:25`) brings its own trust
-store, so a build resolving from an inspected forge host fails there with a certificate error.
-`ko-agent-sandbox-trust-ca` fixes that JVM — no argument for `$JAVA_HOME`, or pass the JDK's path.
+store, so a build resolving from any inspected host (a git host, `javadoc.io`, a doc site) fails
+there with a certificate error.
+`sandbox-trust-ca` fixes that JVM — no argument for `$JAVA_HOME`, or pass the JDK's path.
 It is idempotent and reports what it did. Set it only on the build that needs the
 network, and only the allowlisted registries (`repo1.maven.org`, `repo.maven.apache.org`) will
 answer — a dependency from anywhere else still fails, and that is the policy, not a
 misconfiguration.
 
-## No containers in here
+## Containers in here: only if this session opted in
 
-There is no container runtime, and the container deliberately lacks what one would need
-(`/dev/net/tun`, `/dev/fuse`, an unmasked `/proc`), so installing a rootless Podman does not work
-either. This is a decision, not a gap.
-
+Check `KO_AGENT_SANDBOX_NESTING`. At `none` (the default, what unset means), there is no
+container runtime and the container deliberately lacks what one would need (an unmasked `/proc`,
+a chroot for layer unpack), so installing a rootless Podman does not work: the attempt dies with
+a permission error, at layer unpack (``after fallback to chroot: operation not permitted``) or at
+crun's fresh `/proc` mount. That is a decision, not a podman bug.
 When a task calls for Testcontainers or docker/podman, do not install a runtime and fight it. Run
 the service itself: PostgreSQL works rootless via `initdb`/`pg_ctl` as this uid, and a JVM S3 mock
-(e.g. Adobe S3Mock) is a `java -jar` away. Bind to 127.0.0.1 and point the tests at localhost. If a
-task genuinely cannot proceed without a real container runtime, say so to the user and stop.
+(e.g. Adobe S3Mock) is a `java -jar` away. Bind to 127.0.0.1 and point the tests at localhost.
+If a task genuinely cannot proceed without a real container runtime, say so to the user and stop —
+relaunching with the variable is the user's call.
+
+With `KO_AGENT_SANDBOX_NESTING=same-uid`, a runtime can run, within hard limits it cannot exceed:
+
+- **Single uid.** Exactly one uid exists in a nested namespace, so an image that switches `USER` or
+  chowns to a second uid fails by design — stock `postgres` and `nginx` included (each chowns its
+  data or cache directories to its service user), and
+  any `Containerfile` doing `useradd` or `install -o`. Root-only images and builds work: `alpine`,
+  `debian`, `eclipse-temurin`, and the distroless root variants. Nonroot-by-default images —
+  distroless `:nonroot`, Chainguard — run with `--user 0`, which lands on the same one uid anyway.
+  For databases, the run-it-as-a-process guidance above still stands.
+- **Host network only.** Inner containers share this sandbox's network namespace: `-p` does not
+  exist, services bind 127.0.0.1 directly (which is where tests want them), and egress remains the
+  proxy's — an inner container can reach nothing this sandbox cannot. They share the hostname too:
+  the recipe's `utsns = "host"`, because `sethostname` in a fresh UTS namespace is refused for
+  want of a capability this sandbox does not carry.
+- **Most registries need the allowlist.** A pull is ordinary egress. Docker Hub, `gcr.io`
+  (distroless) and `public.ecr.aws` (Amazon Linux) are on the built-in list and pull as-is; any
+  other registry (`+ghcr.io`, `+quay.io`) goes in the project's
+  `.ko-agent-sandbox/egress-hosts/read-only` first. If a pull stalls, the proxy log on the host
+  names the refused host to add.
+- **Storage dies with the session** (it lives under `~`), so every session re-pulls; and inner
+  containers run cgroup-less, so per-container resource limits are unavailable.
+
+podman is not preinstalled — it would be dead weight in every default session.
+`sandbox-apt-get install podman` brings the whole rootless stack (crun, conmon, netavark — unused
+under host networking, but podman refuses to start without the binary):
+
+```sh
+sandbox-apt-get update
+sandbox-apt-get install podman
+
+export XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p $XDG_RUNTIME_DIR ~/.config/containers
+cat > ~/.config/containers/containers.conf <<EOF
+[containers]
+netns = "host"
+utsns = "host"
+cgroups = "disabled"
+[engine]
+events_logger = "file"
+helper_binaries_dir = ["$HOME/.local/deb/usr/lib/podman", "$HOME/.local/deb/usr/bin"]
+[engine.runtimes]
+# via the ~/.local/bin wrapper: helper_binaries_dir would resolve the unwrapped crun,
+# which cannot find its own libraries
+crun = ["$HOME/.local/bin/crun"]
+EOF
+printf '{ "default": [ { "type": "insecureAcceptAnything" } ] }\n' \
+    > ~/.config/containers/policy.json
+printf 'unqualified-search-registries = ["docker.io"]\n' > ~/.config/containers/registries.conf
+printf '[storage]\ndriver = "overlay"\n[storage.options]\nignore_chown_errors = "true"\n' \
+    > ~/.config/containers/storage.conf
+
+podman run --rm docker.io/library/alpine:latest echo hello-from-alpine
+```
+
+podman's startup warning — "Using rootless single mapping into the namespace. This might break some
+images." — is this mode working as designed, not a problem to fix.

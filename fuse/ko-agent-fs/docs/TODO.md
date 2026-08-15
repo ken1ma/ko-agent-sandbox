@@ -129,12 +129,10 @@ the launcher mounting for a real container can.
   | `listxattr` | OK                   | `ENOTSUP`             |
   | `cp -a`     | exit 0, xattr kept   | exit 0, xattr dropped |
 
-  So the cost is cosmetic, and that settles what this entry used to leave open. `cp -a` carries no
-  attribute across and says nothing about it, because coreutils reads `ENOTSUP` as "the destination
-  does not do xattrs" rather than as a failure — the earlier worry that `ENOSYS` was a regression
-  from the raw bind was wrong about what callers see. `ENOSYS` stays; implementing xattrs is a
-  compatibility feature to schedule, not a regression to repair. Re-run the probe if a tool ever
-  does complain.
+  The cost is cosmetic: `cp -a` carries no attribute across and says nothing about it, because
+  coreutils reads `ENOTSUP` as "the destination does not do xattrs" rather than as a failure.
+  `ENOSYS` stays; implementing xattrs is a compatibility feature to schedule, not a regression to
+  repair. Re-run the probe if a tool ever does complain.
 
   Two things to know before picking it up. `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
   `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
@@ -248,9 +246,8 @@ Two delivery decisions, so they are not relitigated:
   inside the dead mount. The failure is already total, loud and fail-closed, so outside machinery
   would only convert one obvious dead session into another; the user exits and the reaper cleans up.
 
-The filter became the **default** enforcement on every platform ahead of that verification, so the
-opt-in wording is gone from `README.md`, `SECURITY.md`, `architecture.md` and the probes, and
-`KO_AGENT_SANDBOX_NO_FUSE_FILTER` is the way back to the pin. What that leaves:
+The filter is the **default** enforcement on every platform, ahead of that verification;
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the pin. What that leaves:
 
 - [ ] `SECURITY.md` still carries the filter under **Not defended**, now headed by the honest
   caveat — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows, the

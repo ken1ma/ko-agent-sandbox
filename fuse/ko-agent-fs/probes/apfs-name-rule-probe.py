@@ -65,7 +65,7 @@ def main() -> int:
         os.mkdir(".git")
         os.rmdir(".git")
         print("abort: created .git — this session is NOT filtered;")
-        print("       unset KO_AGENT_SANDBOX_NO_FUSE_FILTER and relaunch")
+        print("       unset KO_AGENT_SANDBOX_WORKSPACE_GUARD and relaunch")
         return 2
     except PermissionError:
         print("ok denied  '.git' (the canary: this session is filtered)")

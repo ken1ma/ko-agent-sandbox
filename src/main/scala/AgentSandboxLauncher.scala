@@ -40,8 +40,8 @@
 //    |
 //    +-- egress proxy ------------------> allowlisted hosts, CONNECT :443 only
 //    |                                       (EgressProxyPolicy.scala; the flags are below)
-//    |                                    forge hosts additionally TLS-inspected
-//    |                                       and admitted for reading only
+//    |                                    most hosts TLS-inspected read-only;
+//    |                                       git hosts additionally refuse git push
 //    X-- everything else                    NO ROUTE
 //
 // The rest of /home/nonroot is an anonymous Podman volume: build caches work, and disappear with the container.
@@ -81,18 +81,6 @@ object AgentSandboxLauncher:
   val ContainerUid = 65532
   val ContainerGid = 65532
 
-  // The leaf certificate's names. Must agree with DefaultInspectedHosts in AgentEgressProxy.scala; the proxy refuses to
-  // start over a drift.
-  val InspectedHosts = Vector(
-    "github.com",
-    "raw.githubusercontent.com",
-    "objects.githubusercontent.com",
-    "codeload.github.com",
-    "api.github.com",
-    "codeberg.org",
-    "gitlab.com"
-  )
-
   // A month before expiry, so no session starts on a certificate that expires mid-run.
   val ReissueMarginSeconds = 2592000L
 
@@ -105,6 +93,43 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
+   * Whether a container runtime may run inside the sandbox: `none` — the default, what an unset
+   * variable means — or `same-uid`, which buys the three loosenings below for the whole session,
+   * the cost SECURITY.md's "No containers inside the sandbox" section prices. `unmask=ALL`
+   * because a nested pid namespace must mount a fresh /proc, refused while the masked entries
+   * sit on it (the measured refusal is crun's "mount `proc` to `proc`: Permission denied");
+   * label=disable because on the SELinux podman machine that same mount is also denied for
+   * container_t (measured: EACCES with /proc fully unmasked, reproduced by bare unshare with no
+   * runtime involved — TODO.md has a narrowing candidate); SYS_CHROOT because layer unpack
+   * chroots, and the seccomp profile compiled for a no-capability container answers chroot with
+   * EPERM even for root in a nested user namespace (the measured failure is every pull's "after
+   * fallback to chroot: operation not permitted"). /dev/fuse is deliberately absent: nested
+   * storage runs on kernel-native overlay in the user namespace — measured, the container rootfs
+   * mounts as `overlay` and the matrix passes with the fuse-overlayfs binary removed.
+   * The resolved mode is always set in the session's environment — `none` included — so an
+   * agent reads one variable with one spelling instead of also handling unset.
+   *
+   * What is deliberately NOT loosened names the value: no-new-privileges stays, which blocks
+   * setuid newuidmap, so a nested runtime maps only the uid this session already runs as —
+   * images that switch USER or chown to a second uid fail by design, this repository's own among
+   * them.
+   */
+  val NestingVariable = "KO_AGENT_SANDBOX_NESTING"
+  val NestingLoosenings =
+    Vector("--security-opt=unmask=ALL", "--security-opt=label=disable", "--cap-add=SYS_CHROOT")
+
+  def nestingMode(value: Option[String]): Either[String, String] =
+    closedChoice(
+      NestingVariable,
+      value,
+      Vector("none", "same-uid"),
+      "none",
+      "Unset it (or set it to none) to keep /proc masked and /dev/fuse absent; set it\nto " +
+        "same-uid to loosen both so a container runtime installed in the session can run " +
+        "(SECURITY.md)."
+    )
+
+  /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus EGRESS_POLICY, which it sets inside
    * the sandbox rather than reads, so a launcher nested in a sandbox session is not warned about
    * the variable that session legitimately carries.
@@ -114,7 +139,8 @@ object AgentSandboxLauncher:
     "KO_AGENT_SANDBOX_PROXY_IMAGE",
     "KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
     "KO_AGENT_SANDBOX_MEMORY",
-    NoFuseFilterVariable,
+    WorkspaceGuardVariable,
+    NestingVariable,
     "KO_AGENT_SANDBOX_EGRESS_POLICY"
   )
 
@@ -215,33 +241,49 @@ object AgentSandboxLauncher:
    * Containerfile leans on that: it is what stops a warm cargo cache from
    * reusing a build with an older source id compiled into it.
    */
+  private def bundleResource(name: String): Array[Byte] =
+    val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
+    if stream == null then
+      fail(
+        s"""error: the launcher jar has no bundled build-context entry '$name'
+           |
+           |Rebuild the launcher: sbt dist, from the repository root""".stripMargin
+      )
+    try stream.readAllBytes()
+    finally stream.close()
+
+  private def bundleIndex(): Vector[String] =
+    String(bundleResource("INDEX"), StandardCharsets.UTF_8).linesIterator.filter(_.nonEmpty).toVector
+
   def unpackBuildContext(): Path =
-    def resource(name: String): java.io.InputStream =
-      val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
-      if stream == null then
-        fail(
-          s"""error: the launcher jar has no bundled build-context entry '$name'
-             |
-             |Rebuild the launcher: sbt dist, from the repository root""".stripMargin
-        )
-      stream
-
-    val index =
-      val stream = resource("INDEX")
-      try String(stream.readAllBytes(), StandardCharsets.UTF_8)
-      finally stream.close()
-
     val root = Files.createTempDirectory("ko-agent-sandbox-build")
 
-    index.linesIterator.filter(_.nonEmpty).foreach: relative =>
+    bundleIndex().foreach: relative =>
       val target = root.resolve(relative)
       Files.createDirectories(target.getParent)
-      val stream = resource(relative)
-      try Files.copy(stream, target)
-      finally stream.close()
+      Files.write(target, bundleResource(relative))
 
     System.err.println(s"build context: $root")
     root
+
+  val BundleLabel = "ko-agent-sandbox.bundle"
+
+  /**
+   * The version-lock verdict for one built image: None when its label
+   * carries the jar's own digest of that image's bundled sources. The only
+   * way a default-named image exists is --build, so a mismatch means a jar
+   * other than this one built it — launch refuses it. An explicitly overridden
+   * KO_AGENT_SANDBOX_*_IMAGE only warns: a custom image is a supported
+   * case, and its interface drift still fails closed at runtime (the
+   * retired-variable refusals, the --print-policy parse, the leaf's exact
+   * names).
+   */
+  def bundleMismatch(image: String, expected: String, label: String): Option[String] =
+    Option.when(label.trim != expected)(
+      s"$image was not built from the sources this launcher bundles" +
+        (if label.trim.isEmpty then " (it carries no bundle label)" else "") +
+        "; rebuild with --build"
+    )
 
   /**
    * The five images in dependency order. Leaf images stay on `latest`: a
@@ -254,7 +296,13 @@ object AgentSandboxLauncher:
    * layer cache; podman otherwise deletes non-final stages, re-running the
    * expensive sbt step on every --build.
    */
-  def buildCommands(podman: String, version: String, fsSourceId: String): Vector[Vector[String]] =
+  def buildCommands(
+    podman: String,
+    version: String,
+    fsSourceId: String,
+    sandboxBundleId: String,
+    proxyBundleId: String
+  ): Vector[Vector[String]] =
     Vector(
       Vector(podman, "build", "-t", s"debian-temurin:$version", "debian-temurin"),
       Vector(
@@ -263,10 +311,12 @@ object AgentSandboxLauncher:
       ),
       Vector(
         podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
+        "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
       ),
       Vector(
         podman, "build", "--save-stages", "--build-arg", s"IMG_TAG_VER=$version",
+        "--build-arg", s"BUNDLE_ID=$proxyBundleId",
         "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy"
       ),
       Vector(
@@ -279,10 +329,11 @@ object AgentSandboxLauncher:
    * `--no-cache`: new agent releases arrive through RUN steps whose inputs
    * look unchanged to the cache. Base images and the proxy are --build's.
    */
-  def updateCommands(podman: String, version: String): Vector[Vector[String]] =
+  def updateCommands(podman: String, version: String, sandboxBundleId: String): Vector[Vector[String]] =
     Vector(
       Vector(
         podman, "build", "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
+        "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
       )
     )
@@ -389,10 +440,10 @@ object AgentSandboxLauncher:
 
   /**
    * The policy this project would apply, without a session: the same
-   * readPolicyHosts + resolvedPolicy a launch uses. Data to stdout, context
-   * to stderr, so the effective list pipes cleanly.
+   * readPolicyFiles + resolvedPolicy a launch uses. Data to stdout, context
+   * to stderr, so the effective lists pipe cleanly.
    */
-  def proxyAllowed(os: Os): Nothing =
+  def proxyEffective(os: Os): Nothing =
     val projectDir = resolveProjectDir()
     val projectId = projectIdOf(projectDir, os)
     val proxyImage =
@@ -405,15 +456,15 @@ object AgentSandboxLauncher:
            |Build it first: run this launcher with --build.""".stripMargin
       )
 
-    val policyFile = projectDir.resolve(".ko-agent-sandbox").resolve("egress-hosts")
-    val policyHosts = readPolicyHosts(policyFile)
+    val hostsDir = projectDir.resolve(".ko-agent-sandbox").resolve("egress-hosts")
+    val policyFiles = readPolicyFiles(hostsDir).fold(fail(_), identity)
 
-    if policyHosts.nonEmpty then
-      System.err.println(s"egress policy ($policyFile): $policyHosts")
-    else
-      System.err.println("egress policy: the proxy image's built-in list")
+    if policyFiles.nonEmpty then
+      policyFiles.foreach: (name, text) =>
+        System.err.println(s"egress policy ($hostsDir/$name): $text")
+    else System.err.println("egress policy: the proxy image's built-in lists")
 
-    val resolved = resolvedPolicy(podman, proxyImage, policyHosts)
+    val resolved = resolvedPolicy(podman, proxyImage, policyFiles)
     System.out.write(resolved.out)
     System.out.flush()
     if !resolved.ok then
@@ -599,36 +650,39 @@ object AgentSandboxLauncher:
        |verbatim except the verbs below, each recognized only as the first
        |argument; whatever follows belongs to the verb, never to a container:
        |
-       |  --build          build the container images for the sandbox
-       |  --update         rebuild ko-agent-sandbox only without cache, for new
-       |                   claude/codex/agy releases
+       |  --build            build the container images for the sandbox
+       |  --update           rebuild ko-agent-sandbox only without cache, for new
+       |                     claude/codex/agy releases
        |
-       |  --reset          remove this project's containers (ending any live
-       |                   session), volume (signing its agents out), networks,
-       |                   TLS inspection CA, cached policy resolution, logs,
-       |                   and workspace-filter mount; images and any shared
-       |                   volume are left untouched
-       |  --reset-all      the same, for every project
+       |  --reset            remove this project's containers (ending any live
+       |                     session), volume (signing its agents out), networks,
+       |                     TLS inspection CA, cached policy resolution, logs,
+       |                     and workspace-filter mount; images and any shared
+       |                     volume are left untouched
+       |  --reset-all        the same, for every project
        |
-       |  --proxy-allowed  print the egress allowlist this project would apply —
-       |                   the built-in list adjusted by any +/- delta — without
-       |                   starting a session
-       |  --proxy-log      print this project's retained proxy audit logs; with
-       |                   extra args (-f, --tail 50), run podman logs on the
-       |                   running proxies instead
+       |  --proxy-effective  print this project's effective egress policy
+       |  --proxy-log        print this project's retained proxy audit logs; with
+       |                     extra args (-f, --tail 50), run podman logs on the
+       |                     running proxies instead
        |
-       |  --help           this text
+       |  --help             this text
        |
        |Environment:
        |  KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
        |  KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
        |  KO_AGENT_SANDBOX_PERSISTENT_VOLUME  share one agent-state volume across projects
        |  KO_AGENT_SANDBOX_MEMORY             container memory ceiling, e.g. 8g
-       |  KO_AGENT_SANDBOX_NO_FUSE_FILTER     set to 1 to bind /workspace directly instead of
-       |                                      through the ko-agent-fs filter — a weaker boundary,
+       |  KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) mounts /workspace through the ko-agent-fs
+       |                                      filter; "none" binds it directly — a weaker boundary,
        |                                      pinning only .git/config and .git/hooks (SECURITY.md)
+       |  KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
+       |                                      allows one: unmasks /proc, disables SELinux
+       |                                      labeling and adds SYS_CHROOT for the whole
+       |                                      session, one mapped uid only (SECURITY.md)
        |
-       |.ko-agent-sandbox/egress-hosts replaces or adjusts the built-in egress allowlist.""".stripMargin
+       |Files in .ko-agent-sandbox/egress-hosts/ adjust the egress policy: a +/- delta file per
+       |tier ("read-write", "read-only"), and "blocked" applied last.""".stripMargin
 
   def usage(): Nothing =
     println(UsageText)
@@ -645,14 +699,25 @@ object AgentSandboxLauncher:
         requirePodman()
         val context = unpackBuildContext()
         val fsSourceId = koAgentFsSourceId(context)
-        runBuilds(context, buildCommands(podman, ImgTagVersion, fsSourceId))
+        runBuilds(
+          context,
+          buildCommands(
+            podman, ImgTagVersion, fsSourceId,
+            contextSourceId(context, "ko-agent-sandbox"),
+            contextSourceId(context, "ko-agent-egress-proxy")
+          )
+        )
         installKoAgentFs(podman, currentOs, fsSourceId)
         sys.exit(0)
 
       case "--update" :: rest =>
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman()
-        runBuilds(unpackBuildContext(), updateCommands(podman, ImgTagVersion))
+        val context = unpackBuildContext()
+        runBuilds(
+          context,
+          updateCommands(podman, ImgTagVersion, contextSourceId(context, "ko-agent-sandbox"))
+        )
         sys.exit(0)
 
       case "--reset" :: rest =>
@@ -671,10 +736,10 @@ object AgentSandboxLauncher:
       case "--proxy-log" :: rest =>
         proxyLog(currentOs, rest)
 
-      case "--proxy-allowed" :: rest =>
-        if rest.nonEmpty then fail("error: --proxy-allowed takes no further arguments")
+      case "--proxy-effective" :: rest =>
+        if rest.nonEmpty then fail("error: --proxy-effective takes no further arguments")
         requirePodman()
-        proxyAllowed(currentOs)
+        proxyEffective(currentOs)
 
       case first :: _ if first.startsWith("--") =>
         fail(s"error: unknown option $first\nRun --help for the launcher verbs.")
@@ -688,7 +753,8 @@ object AgentSandboxLauncher:
 
     // Read before anything is created, like the egress policy below: a variable that would weaken
     // the boundary must not be discovered halfway through a launch that has already made resources.
-    val filterDisabled = fuseFilterDisabled(env(NoFuseFilterVariable)).fold(fail(_), identity)
+    val guard = workspaceGuard(env(WorkspaceGuardVariable)).fold(fail(_), identity)
+    val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
@@ -762,6 +828,26 @@ object AgentSandboxLauncher:
            |Build it first: run this launcher with --build.""".stripMargin
       )
 
+    // One inspect answers three questions: the id (the CA-bundle and agents.md stamps below),
+    // the bundle label (the version lock), and Config.Env (JdkTrust's JAVA_HOME) — the first
+    // line is the id, the second the label, the rest the environment.
+    val imageInspect = run(
+      podman, "image", "inspect",
+      "--format",
+      s"{{.Id}}\n{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}\n" +
+        "{{range .Config.Env}}{{println .}}{{end}}",
+      image
+    ).text
+    val imageId = imageInspect.linesIterator.nextOption().getOrElse("")
+    val imageLabel = imageInspect.linesIterator.drop(1).nextOption().getOrElse("")
+    val imageEnv = imageInspect.linesIterator.drop(2).mkString("\n")
+
+    // A jar upgrade must never run silently against last month's images; checked before any
+    // resource exists. bundleMismatch has the refuse-versus-warn reasoning.
+    bundleMismatch(image, bundledSourceId("ko-agent-sandbox"), imageLabel).foreach: mismatch =>
+      if env("KO_AGENT_SANDBOX_IMAGE").isDefined then System.err.println(s"warning: $mismatch")
+      else fail(s"error: $mismatch")
+
     // -----------------------------------------------------------------------
     // This run's egress proxy
     // -----------------------------------------------------------------------
@@ -791,23 +877,39 @@ object AgentSandboxLauncher:
            |--build.""".stripMargin
       )
 
+    // The proxy side of the version lock above: this is the image whose --print-policy output
+    // and environment interface the launcher parses, so a mismatched default image must not get
+    // as far as a cryptic parse failure.
+    val proxyInspect = run(
+      podman, "image", "inspect",
+      "--format", s"{{.Id}}\n{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}",
+      proxyImage
+    ).text
+    val proxyImageId = proxyInspect.linesIterator.nextOption().getOrElse("")
+    val proxyImageLabel = proxyInspect.linesIterator.drop(1).nextOption().getOrElse("")
+
+    bundleMismatch(proxyImage, bundledSourceId("ko-agent-egress-proxy"), proxyImageLabel).foreach:
+      mismatch =>
+        if env("KO_AGENT_SANDBOX_PROXY_IMAGE").isDefined then
+          System.err.println(s"warning: $mismatch")
+        else fail(s"error: $mismatch")
+
     // -----------------------------------------------------------------------
     // This project's policy
     // -----------------------------------------------------------------------
     //
-    // The project's egress-hosts is read here on the host and handed to the proxy at startup; the directory is mounted
-    // back read-only further down. policyGuardVolume has the shapes, SECURITY.md the why.
+    // The project's egress-hosts/ is read here on the host and handed to the proxy at startup; the directory is mounted
+    // back read-only further down. policyGuardVolume and readPolicyFiles have the shapes, SECURITY.md the why.
     val policyDir = projectDir.resolve(".ko-agent-sandbox")
-    val policyFile = policyDir.resolve("egress-hosts")
     val policyVolume = policyGuardVolume(policyDir).fold(fail(_), identity)
 
-    val policyHosts = readPolicyHosts(policyFile)
+    val policyFiles = readPolicyFiles(policyDir.resolve("egress-hosts")).fold(fail(_), identity)
 
     // Validated before anything is created: an invalid policy would otherwise surface as "could not determine the
     // egress proxy's address" after the --rm proxy died, the reason buried in its log. Cached like the CA bundle below,
-    // keyed on (image Id, verbatim policy string) — everything the dry run reads — and only success is written.
-    // Enforcement never reads this cache: the proxy re-resolves the same string at startup, so corruption can at worst
-    // misprint the banner, never widen what is enforced.
+    // keyed on (image Id, policy files verbatim) — everything the dry run reads — and only success is written.
+    // Enforcement never reads this cache: the proxy re-resolves the same variables at startup, so corruption can at
+    // worst misprint the banner, never widen what is enforced.
     val policyCacheDir = policyStateRoot(os).resolve(projectId)
     Files.createDirectories(policyCacheDir)
     if posixPermissions(policyCacheDir) then
@@ -815,8 +917,9 @@ object AgentSandboxLauncher:
 
     val resolvedHostsFile = policyCacheDir.resolve("resolved.hosts")
     val resolvedStampFile = policyCacheDir.resolve("resolved.stamp")
-    val proxyImageId = run(podman, "image", "inspect", "--format", "{{.Id}}", proxyImage).text
-    val policyStamp = s"$proxyImageId $policyHosts"
+    // The files are multi-part, so the stamp hashes them into its one line.
+    val policyStamp =
+      s"$proxyImageId ${sha256Hex(policyFiles.map((name, text) => s"$name: $text").mkString("\n"))}"
 
     val policyResolvedText =
       readIfPresent(resolvedHostsFile)
@@ -824,13 +927,20 @@ object AgentSandboxLauncher:
         .filter(_ => firstLine(resolvedStampFile) == policyStamp) match
         case Some(cached) => cached
         case None =>
-          val resolved = resolvedPolicy(podman, proxyImage, policyHosts)
+          val resolved = resolvedPolicy(podman, proxyImage, policyFiles)
           if !resolved.ok then
             fail(s"error: this project's egress policy is not valid\n${resolved.err}")
           // content before stamp: a cut-short write mismatches and re-runs
           writeReadable(resolvedHostsFile, resolved.text + "\n")
           writeReadable(resolvedStampFile, policyStamp + "\n")
           resolved.text
+
+    // The leaf certificate's names: the read-only line of the dry run above, tags stripped — the
+    // proxy image's own answer under this project's policy — so no second copy of any list
+    // exists to drift (the proxy still refuses a mismatched leaf at startup), and a policy that
+    // moves a host in or out of the read-only tier reissues the leaf through leaf.sans below.
+    // Empty is a policy that inspects nothing: no leaf, and no inspection material for the proxy.
+    val inspectedHosts = inspectedHostsOf(policyResolvedText).fold(fail(_), identity)
 
     // The workspace FUSE filter, mounted before any volume is assembled (the lifecycle banner above
     // ensureKoAgentFsMounted has the shape). Every session's enforcement now, on every platform;
@@ -839,16 +949,16 @@ object AgentSandboxLauncher:
     // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
     // (observed as a container-start failure, not deduced).
     val sandboxContainer = sandboxRunContainer(projectId, runSuffix)
-    val filteredWorkspace =
-      if filterDisabled then
+    val filteredWorkspace = guard match
+      case "none" =>
         // Said every session it happens, because this is the weaker boundary and silence about it
         // is how a user forgets which one they are running under.
         System.err.println(
-          s"workspace FUSE filter: DISABLED by $NoFuseFilterVariable — /workspace is bound " +
+          s"workspace guard: NONE by $WorkspaceGuardVariable — /workspace is bound " +
             "directly, with only .git/config and .git/hooks pinned read-only"
         )
         None
-      else Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
+      case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
     // The last-session teardown the reaper (or the resident path) runs after this session ends.
     val filterReap = filteredWorkspace.map: _ =>
       koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer)
@@ -864,7 +974,7 @@ object AgentSandboxLauncher:
     // This project's TLS inspection CA
     // -----------------------------------------------------------------------
     //
-    // The CA the sandbox trusts for forge inspection. Minted here; the key stays on the host, only the leaf and its own
+    // The CA the sandbox trusts for TLS inspection. Minted here; the key stays on the host, only the leaf and its own
     // key reach the proxy. SECURITY.md ("Who holds the CA key") has the reasoning.
     val tlsDir = tlsStateRoot(os).resolve(projectId)
 
@@ -880,7 +990,7 @@ object AgentSandboxLauncher:
     val bundleFile = tlsDir.resolve("sandbox-ca-bundle.crt")
     val bundleStampFile = tlsDir.resolve("bundle.stamp")
 
-    val sanList = InspectedHosts.map("DNS:" + _).mkString(",")
+    val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
 
     if !certificateCurrent(readIfPresent(caCertFile), reissueDeadline)
@@ -897,16 +1007,17 @@ object AgentSandboxLauncher:
           fail(s"error: could not create this project's inspection CA in $tlsDir\n$ex")
 
     // The leaf is reissued when the CA is (deleted just above), when the list of inspected names changes, and before it
-    // expires.
-    if !certificateCurrent(readIfPresent(leafCertFile), reissueDeadline)
-      || readIfPresent(leafKeyFile).forall(_.isEmpty)
-      || firstLine(leafSansFile) != sanList
+    // expires — and not minted at all for a policy that inspects nothing.
+    if inspectedHosts.nonEmpty
+      && (!certificateCurrent(readIfPresent(leafCertFile), reissueDeadline)
+        || readIfPresent(leafKeyFile).forall(_.isEmpty)
+        || firstLine(leafSansFile) != sanList)
     then
       try
         val leaf = mintLeaf(
           Files.readString(caCertFile),
           Files.readString(caKeyFile),
-          InspectedHosts
+          inspectedHosts
         )
         writePrivate(leafKeyFile, leaf.privateKeyPem)
         writePrivate(leafCertFile, leaf.certificatePem)
@@ -916,13 +1027,8 @@ object AgentSandboxLauncher:
           fail(s"error: could not issue this project's inspection certificate\n$ex")
 
     // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set entirely — plus this
-    // project's CA. Re-read when image or CA changes; the stamp records both.
-    // One inspect answers two questions: the id (this stamp and the agents.md one) and Config.Env
-    // (JdkTrust's JAVA_HOME) — the first line is the id, the rest the environment.
-    val imageInspect =
-      run(podman, "image", "inspect", "--format", "{{.Id}}\n{{range .Config.Env}}{{println .}}{{end}}", image).text
-    val imageId = imageInspect.linesIterator.nextOption().getOrElse("")
-    val imageEnv = imageInspect.linesIterator.drop(1).mkString("\n")
+    // project's CA. Re-read when image or CA changes; the stamp records both (imageId came from
+    // the inspect beside the image-exists check).
     val caFingerprint = certificateFingerprint(pemBody(Files.readString(caCertFile)))
     val bundleStamp = s"$imageId $caFingerprint"
 
@@ -971,8 +1077,10 @@ object AgentSandboxLauncher:
              |# Egress policy in force for this session
              |
              |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
-             |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines. Anything
-             |not named here is refused, and the inspected hosts are readable but not writable.
+             |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines.
+             |Anything not named here is refused. The read-write hosts are opaque tunnels; the
+             |read-only hosts answer only GET and HEAD, and those tagged `=git` also serve
+             |`git clone`/`fetch` — `git push` is refused.
              |
              |$indented
              |""".stripMargin
@@ -982,19 +1090,23 @@ object AgentSandboxLauncher:
     val agentDocArgs = Vector(s"--volume=$agentDocFile:$agentDocPath:ro")
 
     // The leaf and its key only: the CA key sits beside them and must not be mounted. --userns makes the owner-only key
-    // readable as uid 65532; without it the key would have to be world-readable on the host.
-    val proxyTlsArgs = Vector(
-      s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
-      s"--volume=$leafCertFile:/etc/agent-egress-proxy/leaf.crt:ro",
-      s"--volume=$leafKeyFile:/etc/agent-egress-proxy/leaf.key:ro",
-      "--env=EGRESS_TLS_CERTIFICATE=/etc/agent-egress-proxy/leaf.crt",
-      "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key"
-    )
+    // readable as uid 65532; without it the key would have to be world-readable on the host. (The userns flag itself
+    // stays on the create call: the proxy writes its owner-only log file through the same mapping.) A policy that
+    // inspects nothing gets no material — the proxy refuses material it has nothing to inspect with.
+    val proxyTlsArgs =
+      if inspectedHosts.isEmpty then Vector.empty
+      else
+        Vector(
+          s"--volume=$leafCertFile:/etc/agent-egress-proxy/leaf.crt:ro",
+          s"--volume=$leafKeyFile:/etc/agent-egress-proxy/leaf.key:ro",
+          "--env=EGRESS_TLS_CERTIFICATE=/etc/agent-egress-proxy/leaf.crt",
+          "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key"
+        )
 
     // The bundle replaces the image's; the variables cover tools carrying their own trust store (certifi, Node's
     // roots), and the keystore covers the JVM, which reads neither.
     val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
-    // The CA on its own, for ko-agent-sandbox-trust-ca: a JVM the agent installs itself is out of
+    // The CA on its own, for sandbox-trust-ca: a JVM the agent installs itself is out of
     // the launcher's reach, and that script hands it this file. No new exposure — the same
     // certificate is already inside the bundle above — it just saves a script parsing one out.
     val sandboxEgressCa = "/etc/ko-agent-sandbox/egress-ca.crt"
@@ -1059,10 +1171,6 @@ object AgentSandboxLauncher:
     //
     // A session keeps the policy it started with; the next launch re-reads.
     // --rm, so a proxy whose JVM exits removes itself.
-    val policyEnvArgs =
-      if policyHosts.nonEmpty then Vector(s"--env=EGRESS_ALLOWED_HOSTS=$policyHosts")
-      else Vector.empty
-
     // The sandbox's hardening; --tmpfs /tmp because the JVM writes its perf-data file at startup.
     val proxyCreated = run(
       Vector(
@@ -1078,8 +1186,9 @@ object AgentSandboxLauncher:
         "--read-only",
         "--tmpfs=/tmp",
         "--pids-limit=512",
-        "--http-proxy=false"
-      ) ++ policyEnvArgs ++ proxyTlsArgs ++ proxyLogArgs ++ Vector(proxyImage)*
+        "--http-proxy=false",
+        s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid"
+      ) ++ policyEnvArgs(policyFiles) ++ proxyTlsArgs ++ proxyLogArgs ++ Vector(proxyImage)*
     )
     if !proxyCreated.ok then
       fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
@@ -1095,12 +1204,15 @@ object AgentSandboxLauncher:
       sandboxNetwork
     ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    // A policy that arrived with the repository never takes effect unseen: the policy as written, then the dry run's
-    // two lines — the proxy's own answers, exactly what is enforced.
-    if policyHosts.nonEmpty then
-      System.err.println(s"egress policy (.ko-agent-sandbox/egress-hosts): $policyHosts")
-    else System.err.println("egress policy: the proxy image's built-in list")
+    // A policy that arrived with the repository never takes effect unseen: the files as written, then the dry run's
+    // tier lines — the proxy's own answers, exactly what is enforced.
+    if policyFiles.nonEmpty then
+      policyFiles.foreach: (name, text) =>
+        System.err.println(s"egress policy (.ko-agent-sandbox/egress-hosts/$name): $text")
+    else System.err.println("egress policy: the proxy image's built-in lists")
     System.err.println(s"egress ${policyCounts(policyResolvedText)}")
+    if inspectedHosts.isEmpty then
+      System.err.println("egress tls inspection: this policy inspects no hosts; no leaf minted")
     System.err.println(s"egress log: $hostLogFile")
 
     // -----------------------------------------------------------------------
@@ -1139,6 +1251,20 @@ object AgentSandboxLauncher:
       // write the allowlist governing the *next* session (SECURITY.md; policyGuardVolume refused the bad shapes above).
       policyVolume
     ) ++ gitGuardArgs
+
+    // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
+    // they apply: the weaker boundary must never be the silent one. The resolved mode goes into
+    // the session either way — none included — so agents read one variable with one spelling and
+    // never also handle unset.
+    val nestingEnv = s"--env=$NestingVariable=$nesting"
+    val nestedArgs = nesting match
+      case "none" => Vector(nestingEnv)
+      case mode =>
+        System.err.println(
+          s"nested containers: $mode by $NestingVariable — /proc unmasked, SELinux label " +
+            "disabled and CAP_SYS_CHROOT added, for the whole session"
+        )
+        NestingLoosenings :+ nestingEnv
 
     // -----------------------------------------------------------------------
     // Project bind mount
@@ -1206,7 +1332,7 @@ object AgentSandboxLauncher:
 
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
       "--http-proxy=false"
-    ) ++ egressArgs ++ Vector(
+    ) ++ nestedArgs ++ egressArgs ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
       // project checkout").

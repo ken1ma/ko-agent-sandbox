@@ -1,6 +1,8 @@
 // The project directory as the launcher judges it: identity, the refused directories, and the
 // .git / .ko-agent-sandbox mount guards — where a wrong answer either exposes the host or lets a
-// session write the policy governing the next one.
+// session write the policy governing the next one. The .git pin tests cover the opt-out fallback
+// (KO_AGENT_SANDBOX_WORKSPACE_GUARD=none); default sessions get the FUSE filter, whose policy is
+// tested in fuse/ko-agent-fs.
 
 package agentsandbox.launcher
 
@@ -160,6 +162,20 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(policyGuardVolume(dir).isLeft)
     // Refused, not replaced: whatever sits there is the user's to remove.
     assert(Files.isRegularFile(dir))
+
+  test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
+    // A typo'd egress-hosts one level up would otherwise be silently ignored config — the exact
+    // failure class the unknown-filename rule inside egress-hosts/ exists to kill. Dot-named
+    // editor and OS metadata is exempt: no configuration will ever be named that way.
+    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+    Files.createDirectory(dir)
+    Files.createDirectory(dir.resolve("egress-hosts"))
+    Files.createFile(dir.resolve(".DS_Store"))
+    assert(policyGuardVolume(dir).isRight)
+
+    Files.createDirectory(dir.resolve("egres-hosts"))
+    val refused = policyGuardVolume(dir)
+    assert(refused.swap.exists(_.contains("egres-hosts")), refused.toString)
 
   test("a symlinked policy directory or egress-hosts refuses the launch"):
     val project = Files.createTempDirectory("policy-guard")

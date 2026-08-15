@@ -1,12 +1,15 @@
 // What remains launcher-owned after the per-file suites split off: the run/reset naming that
 // keeps projects apart, the configuration surface, the build verbs, and the documents the code
-// must stay in step with (README's --help copy, SECURITY.md's forge list, the bundled context).
+// must stay in step with (README's --help copy, SECURITY.md's forge list against the proxy's
+// source, the bundled context).
 
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
 
 import AgentSandboxLauncher.*
+import EgressProxyPolicy.*
+import KoAgentFs.bundledSourceId
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
 
@@ -23,6 +26,25 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // the sandbox rather than reads, so a launcher nested in a session is not warned about it.
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
+
+  test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
+    // The same fail-closed contract as the workspace guard, through the same closedChoice —
+    // the old on/off values are refused, not remapped.
+    assertEquals(nestingMode(None), Right("none"))
+    assertEquals(nestingMode(Some("")), Right("none"))
+    assertEquals(nestingMode(Some("none")), Right("none"))
+    assertEquals(nestingMode(Some("same-uid")), Right("same-uid"))
+    Vector("on", "off", "ON", "1", "true", "single-uid", "SAME-UID", " same-uid ").foreach: value =>
+      assert(nestingMode(Some(value)).isLeft, s"'$value' was not refused")
+    val refused = nestingMode(Some("on")).swap.getOrElse("")
+    assert(refused.contains("the only values are none and same-uid, exactly"), refused)
+    assert(refused.contains("Unset it (or set it to none) to keep /proc masked"), refused)
+    // What a nesting-enabled session loosens is these three flags and nothing else; SECURITY.md
+    // prices exactly this set, so a fourth entry here is a doc change too.
+    assertEquals(
+      NestingLoosenings,
+      Vector("--security-opt=unmask=ALL", "--security-opt=label=disable", "--cap-add=SYS_CHROOT")
+    )
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
@@ -50,7 +72,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(addressOn(output, "missing"), None)
 
   test("build commands run in dependency order with the pinned base tag"):
-    val commands = buildCommands("podman", "1.2-3", "sourceid")
+    val commands = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid")
     assertEquals(commands.map(_.last), Vector(
       "debian-temurin",
       "debian-coursier",
@@ -74,12 +96,36 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(commands(4).contains("ko-agent-fs:latest"))
     assert(commands(4).containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=sourceid")))
     assert(!commands(4).exists(_.startsWith("IMG_TAG_VER=")))
+    // The two launcher-facing images carry their bundle digest (the version lock); the base
+    // images and the filter do not — the filter's identity is its own source id above.
+    assert(commands(2).containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
+    assert(commands(3).containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
+    (commands.take(2) :+ commands(4)).foreach: command =>
+      assert(!command.exists(_.startsWith("BUNDLE_ID=")))
 
   test("update rebuilds only the sandbox image, without cache"):
-    val commands = updateCommands("podman", "1.2-3")
+    val commands = updateCommands("podman", "1.2-3", "sandboxid")
     assertEquals(commands.map(_.last), Vector("ko-agent-sandbox"))
     assert(commands.head.contains("--no-cache"))
     assert(commands.head.contains("ko-agent-sandbox:latest"))
+    assert(commands.head.containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
+
+  test("the bundle version lock refuses a mismatch and knows an unlabeled image"):
+    // The digests compared come from the jar's own bundle, one per image directory — real,
+    // 64-hex, and distinct, or the lock would equate the two images.
+    val sandboxId = bundledSourceId("ko-agent-sandbox")
+    val proxyId = bundledSourceId("ko-agent-egress-proxy")
+    Vector(sandboxId, proxyId).foreach: id =>
+      assert(id.length == 64 && id.forall(ch => ch.isDigit || (ch >= 'a' && ch <= 'f')), id)
+    assert(sandboxId != proxyId)
+
+    assertEquals(bundleMismatch("ko-agent-sandbox:latest", sandboxId, sandboxId), None)
+    // podman's template yields a trailing newline; the comparison must not trip on it.
+    assertEquals(bundleMismatch("ko-agent-sandbox:latest", sandboxId, s"$sandboxId\n"), None)
+    val stale = bundleMismatch("ko-agent-sandbox:latest", sandboxId, proxyId)
+    assert(stale.exists(_.contains("rebuild with --build")), stale.toString)
+    val unlabeled = bundleMismatch("ko-agent-sandbox:latest", sandboxId, "")
+    assert(unlabeled.exists(_.contains("no bundle label")), unlabeled.toString)
 
   private def buildContextResource(name: String): String =
     val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
@@ -103,10 +149,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // The one executable the sandbox image adds itself. It is the only way an agent-installed JVM
     // reaches an inspected forge host, so a bundle without it is a silently degraded sandbox.
-    assert(index.contains("ko-agent-sandbox/ko-agent-sandbox-trust-ca"), "trust-ca script missing")
+    assert(index.contains("ko-agent-sandbox/sandbox-trust-ca"), "trust-ca script missing")
     assert(
-      buildContextResource("ko-agent-sandbox/ko-agent-sandbox-trust-ca").contains("-importcert"),
+      buildContextResource("ko-agent-sandbox/sandbox-trust-ca").contains("-importcert"),
       "the trust-ca script does not import anything"
+    )
+    assert(index.contains("ko-agent-sandbox/sandbox-apt-get"), "sandbox-apt-get script missing")
+    assert(
+      buildContextResource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),
+      "sandbox-apt-get does not resolve dependencies"
     )
 
     // ko-agent-fs is compiled from source on the user's machine rather than shipped as a binary, so its sources —
@@ -141,17 +192,44 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         )
       case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
 
-  test("SECURITY.md names exactly the forge hosts the leaf certificate covers"):
-    // The forge list has three homes: this vector, the proxy's DefaultInspectedHosts, and the
-    // SECURITY.md section that reasons about them. TlsInspection.load refuses to start when the
-    // first two drift; only this holds the document to them.
+  test("SECURITY.md names exactly the =git-tagged hosts the proxy ships"):
+    // The git-host list has two homes: the =git-fetch entries of the proxy's DefaultReadOnlyHosts and
+    // the SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
+    // names come from the image's own --print-policy at launch). This scrapes both texts; it
+    // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
+    // SECURITY.md — prose or a different marker keeps this green.
     val Listed = """^1\. `([^`]+)`$""".r
     val listed = Files
-      .readString(Paths.get("SECURITY.md"))
+      .readString(Paths.get("docs/SECURITY.md"))
       .linesIterator
       .collect { case Listed(host) => host }
       .toVector
-    assertEquals(listed, InspectedHosts)
+    val proxySource = Files.readString(
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala")
+    )
+    val block = proxySource.substring(proxySource.indexOf("val DefaultReadOnlyHosts"))
+    val gitHosts = "\"([^\"]+)=git-fetch\"".r
+      .findAllMatchIn(block.substring(0, block.indexOf(").map(")))
+      .map(_.group(1))
+      .toVector
+    assertEquals(listed, gitHosts)
+
+  test("the read-only line of --print-policy parses to the leaf's names, tags stripped"):
+    // What launch feeds mintLeaf: the image's own read-only line — the leaf names hosts; which
+    // treatment each gets is the proxy's business. A zero-count line is a real answer, not a
+    // parse error: it means no leaf at all.
+    assertEquals(
+      inspectedHostsOf(
+        "read-write hosts (1): api.example\n" +
+          "read-only hosts (3): docs.example github.com=git-fetch gitlab.com=git-fetch"
+      ),
+      Right(Vector("docs.example", "github.com", "gitlab.com"))
+    )
+    assertEquals(
+      inspectedHostsOf("read-write hosts (1): api.example\nread-only hosts (0):"),
+      Right(Vector.empty[String])
+    )
+    assert(inspectedHostsOf("garbage").isLeft)
 
   test("reset removes exactly this project's per-run networks"):
     val names = Seq(

@@ -214,20 +214,20 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the ko-agent-fs source id keys on content, name and file set — nothing else"):
     def bytes(text: String) = text.getBytes("UTF-8")
     val base = Seq("src/lib.rs" -> bytes("pub mod policy;"), "Cargo.toml" -> bytes("[package]"))
-    val id = koAgentFsSourceId(base)
+    val id = bundleSourceId(base)
     assertEquals(id.length, 64)
     assert(id.forall(c => c.isDigit || ('a' to 'f').contains(c)))
 
     // Bundling order is not identity.
-    assertEquals(koAgentFsSourceId(base.reverse), id)
+    assertEquals(bundleSourceId(base.reverse), id)
     // Content, a rename, and an added file each are.
-    assertNotEquals(koAgentFsSourceId(Seq(base(0), "Cargo.toml" -> bytes("[patch]"))), id)
-    assertNotEquals(koAgentFsSourceId(Seq(base(0), "Cargo.lock" -> bytes("[package]"))), id)
-    assertNotEquals(koAgentFsSourceId(base :+ ("deny.toml" -> bytes(""))), id)
+    assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.toml" -> bytes("[patch]"))), id)
+    assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.lock" -> bytes("[package]"))), id)
+    assertNotEquals(bundleSourceId(base :+ ("deny.toml" -> bytes(""))), id)
     // File boundaries cannot shift: a name eating into its content is a different identity.
     assertNotEquals(
-      koAgentFsSourceId(Seq("ab" -> bytes("c"))),
-      koAgentFsSourceId(Seq("a" -> bytes("bc")))
+      bundleSourceId(Seq("ab" -> bytes("c"))),
+      bundleSourceId(Seq("a" -> bytes("bc")))
     )
 
   test("the ko-agent-fs source id of a build context digests exactly its files"):
@@ -245,7 +245,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
       assertEquals(
         koAgentFsSourceId(context),
-        koAgentFsSourceId(Seq(
+        bundleSourceId(Seq(
           "src/lib.rs" -> "pub mod policy;".getBytes("UTF-8"),
           "Cargo.toml" -> "[package]".getBytes("UTF-8")
         ))
@@ -254,19 +254,21 @@ class KoAgentFsTest extends munit.FunSuite:
 
   /** A bundled build-context entry, as the resourceGenerators task in build.sbt wrote it into the jar. */
 
-  test("the filter opt-out fails closed on anything it does not recognize"):
-    // The only variable whose setting weakens the boundary, so an unclear value must not be read as
-    // the weaker option (TODO.md, "Security configuration must fail closed"). `false` is the sharp
-    // one: a reader could write it meaning "do not disable" and a presence test would disable.
-    assertEquals(fuseFilterDisabled(None), Right(false))
-    assertEquals(fuseFilterDisabled(Some("")), Right(false))
-    Vector("1", "true", "TRUE", "yes", "on", " 1 ").foreach: value =>
-      assertEquals(fuseFilterDisabled(Some(value)), Right(true), value)
-    Vector("false", "0", "no", "off", "maybe").foreach: value =>
-      assert(fuseFilterDisabled(Some(value)).isLeft, s"'$value' was not refused")
-    // The refusal says what to do instead, both ways.
-    val refused = fuseFilterDisabled(Some("false")).swap.getOrElse("")
-    assert(refused.contains("Unset it to keep the filter"), refused)
+  test("the workspace guard fails closed on anything it does not recognize"):
+    // A variable that can weaken the boundary (NESTING is the other), so an unclear value
+    // must not be read as the weaker option (DESIGN.md, "Security configuration must fail closed").
+    // Exactly fuse and none, case-sensitive: every accepted spelling is surface that must stay
+    // correct everywhere it is parsed — and the old on/off values are refused, not remapped.
+    assertEquals(workspaceGuard(None), Right("fuse"))
+    assertEquals(workspaceGuard(Some("")), Right("fuse"))
+    assertEquals(workspaceGuard(Some("fuse")), Right("fuse"))
+    assertEquals(workspaceGuard(Some("none")), Right("none"))
+    Vector("on", "off", "1", "0", "None", "Fuse", "FUSE", "true", "no", " none ").foreach: value =>
+      assert(workspaceGuard(Some(value)).isLeft, s"'$value' was not refused")
+    // The refusal says what to do instead.
+    val refused = workspaceGuard(Some("on")).swap.getOrElse("")
+    assert(refused.contains("the only values are fuse and none, exactly"), refused)
+    assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
 
   test("the ko-agent-fs dev rig runs the Rust its image build pins"):
     // docs/testing.md's privileged-rig container and the image build have to be the same toolchain,

@@ -62,13 +62,13 @@ object IPAddrHelper:
     val addresses = InetAddress.getAllByName(host).toVector
 
     if addresses.isEmpty then
-      throw PolicyViolation(s"$host resolved to no addresses")
+      throw PolicyViolation("resolved to no addresses")
 
     addresses.filterNot(isPublicDestination) match
       case Vector() => addresses
       case rejected =>
         throw PolicyViolation(
-          s"$host resolved to non-public address ${rejected.head.getHostAddress}"
+          s"resolved to non-public address ${rejected.head.getHostAddress}"
         )
 
   /**

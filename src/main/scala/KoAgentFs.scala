@@ -3,7 +3,7 @@
 // the per-project mount lifecycle every session now runs through.
 //
 // It is a separate program with its own source tree, docs, tests and version contract
-// (fuse/ko-agent-fs/), and it reaches the launch through exactly two calls — fuseFilterDisabled and
+// (fuse/ko-agent-fs/), and it reaches the launch through exactly two calls — workspaceGuard and
 // ensureKoAgentFsMounted. That is why it is a file rather than a section.
 
 package agentsandbox.launcher
@@ -39,7 +39,10 @@ object KoAgentFs:
    * and editing a design document or a platform probe does not invalidate
    * every installed binary.
    */
-  def koAgentFsSourceId(entries: Seq[(String, Array[Byte])]): String =
+  /** The one source-identity digest, for the filter binary and the image bundle labels alike:
+    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and
+    * its length so no rename or byte shuffle across file boundaries can collide. */
+  def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
     val digest = MessageDigest.getInstance("SHA-256")
     entries.sortBy(_._1).foreach: (path, content) =>
       digest.update(path.getBytes(StandardCharsets.UTF_8))
@@ -49,11 +52,11 @@ object KoAgentFs:
     digest.digest().map(b => f"$b%02x").mkString
 
   /**
-   * Digest the unpacked context's ko-agent-fs/ tree — the literal build
-   * input, so the id describes exactly what podman build is about to see.
+   * Digest one directory of the unpacked context — the literal build input,
+   * so the id describes exactly what podman build is about to see.
    */
-  def koAgentFsSourceId(context: Path): String =
-    val root = context.resolve("ko-agent-fs")
+  def contextSourceId(context: Path, dir: String): String =
+    val root = context.resolve(dir)
     val entries = Files
       .walk(root)
       .iterator()
@@ -61,7 +64,9 @@ object KoAgentFs:
       .filter(Files.isRegularFile(_))
       .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
       .toVector
-    koAgentFsSourceId(entries)
+    bundleSourceId(entries)
+
+  def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs")
 
   /**
    * Where the filter binary lives, relative to the home of the user the
@@ -249,37 +254,36 @@ object KoAgentFs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The one escape hatch out of the workspace FUSE filter, which is otherwise every session's
-   * enforcement. Named for what it does rather than for what it configures: presence is what
-   * disables, so it cannot be reached by accident and there is no value to misread as "keep the
-   * filter".
-   *
-   * Which is why the values are enumerated rather than taken as a bare presence test, the way
-   * the opt-in variable it replaces did. This is the only variable in the launcher that *weakens* the
-   * boundary, and "security configuration must fail closed: unknown, malformed, or ambiguously
-   * interpreted policy must not silently weaken the effective boundary" (TODO.md's design
-   * principles) applies to it exactly. So `=false` — which a reader could well write meaning "do
-   * not disable" — is a refused launch, never a filter quietly switched off.
+   * Which mechanism guards the workspace's git control state: `fuse` — the default, what an
+   * unset variable means — mounts /workspace through the FUSE filter; `none` binds it directly
+   * with only the mount pins, the weaker boundary. The variable names the effect and the value
+   * names the mechanism, so a better guard someday is a new value here, not a new variable.
+   * This is one of the two launcher variables that can weaken the boundary, and "security
+   * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
+   * not silently weaken the effective boundary" (DESIGN.md's principles) applies to it
+   * exactly: any other value is a refused launch, never a guard quietly switched off
+   * (HostCommands.closedChoice).
    */
-  val NoFuseFilterVariable = "KO_AGENT_SANDBOX_NO_FUSE_FILTER"
-  val NoFuseFilterValues = Vector("1", "true", "yes", "on")
+  val WorkspaceGuardVariable = "KO_AGENT_SANDBOX_WORKSPACE_GUARD"
 
-  def fuseFilterDisabled(value: Option[String]): Either[String, Boolean] =
-    value.map(_.trim.toLowerCase(java.util.Locale.ROOT)) match
-      case None | Some("")                                => Right(false)
-      case Some(text) if NoFuseFilterValues.contains(text) => Right(true)
-      case Some(text) =>
-        Left(
-          s"""error: $NoFuseFilterVariable is set to '$text', which is not one of ${NoFuseFilterValues.mkString(", ")}
-             |
-             |This variable only ever weakens the boundary, so an unrecognized value is refused
-             |rather than guessed at. Unset it to keep the filter; set it to 1 to bind /workspace
-             |directly, with only .git/config and .git/hooks pinned read-only.""".stripMargin
-        )
+  def workspaceGuard(value: Option[String]): Either[String, String] =
+    closedChoice(
+      WorkspaceGuardVariable,
+      value,
+      Vector("fuse", "none"),
+      "fuse",
+      "Unset it (or set it to fuse) to keep the workspace filter; set it to none\nto bind " +
+        "/workspace directly, with only .git/config and .git/hooks pinned read-only."
+    )
 
-  /** The digest of the ko-agent-fs source bundled in this jar — what an installed binary's
-    * `--version` must report before a session may mount through it. */
-  def bundledKoAgentFsSourceId(): String =
+  /**
+   * The digest of one bundle directory as this jar carries it — the same
+   * bytes unpackBuildContext writes and contextSourceId hashes, read
+   * straight from the jar so no unpack is needed. What the filter binary's
+   * `--version` must report, and what --build stamps into the sandbox and
+   * proxy images as their bundle label (AgentSandboxLauncher.bundleMismatch).
+   */
+  def bundledSourceId(dir: String): String =
     def resource(name: String): Array[Byte] =
       val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
       if stream == null then fail(s"error: the launcher jar has no bundled entry '$name'")
@@ -287,10 +291,14 @@ object KoAgentFs:
       finally stream.close()
     val entries =
       String(resource("INDEX"), StandardCharsets.UTF_8).linesIterator
-        .filter(_.startsWith("ko-agent-fs/"))
-        .map(entry => entry.stripPrefix("ko-agent-fs/") -> resource(entry))
+        .filter(_.startsWith(s"$dir/"))
+        .map(entry => entry.stripPrefix(s"$dir/") -> resource(entry))
         .toVector
-    koAgentFsSourceId(entries)
+    bundleSourceId(entries)
+
+  /** The digest of the ko-agent-fs source bundled in this jar — what an installed binary's
+    * `--version` must report before a session may mount through it. */
+  def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs")
 
   def koAgentFsMountDir(projectId: String): String = s"$KoAgentFsInstallDir/mounts/$projectId"
 

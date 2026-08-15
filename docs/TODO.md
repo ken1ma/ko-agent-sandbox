@@ -1,7 +1,7 @@
 # TODO
 
-Remaining work that buys real security or maintainability for the actual threat model. Ideas without
-a concrete gain live under **Non-TODOs** so they stop resurfacing.
+Remaining work that buys real security or maintainability for the actual threat model. Ideas
+without a concrete gain live in DESIGN.md as Non-TODOs so they stop resurfacing.
 
 ## P1 — Add black-box security integration tests
 
@@ -41,25 +41,57 @@ Relevant issues:
   https://github.com/anthropic-experimental/sandbox-runtime/issues/225
 - Anthropic Sandbox Runtime #88: https://github.com/anthropic-experimental/sandbox-runtime/issues/88
 
-### Forge policy
+### Egress tier policy
 
 Use real HTTPS/Git traffic where practical so these tests cross the TLS and container boundaries
 rather than re-testing only parser helpers.
 
-- [ ] Anonymous public `git clone` / `git fetch` succeeds for an inspected forge.
+- [ ] Anonymous public `git clone` / `git fetch` succeeds for a `=git-fetch` host.
 - [ ] `git push` fails at the proxy.
-- [ ] An arbitrary forge `POST` fails.
+- [ ] An arbitrary `POST` to a `=git-fetch` host fails.
 - [ ] The proxy's upstream leg refuses a server presenting an untrusted or wrong-name certificate.
   Inspection moves origin verification from the client to the proxy, and skipping it is invisible
   in normal operation — the classic TLS-interception failure.
-- [ ] A forge `GET` / `HEAD` succeeds.
+- [ ] A `=git-fetch` host's `GET` / `HEAD` succeeds.
 - [ ] GitHub GraphQL remains refused.
 - [ ] Git LFS batch access remains refused unless download-only LFS support is
   deliberately implemented later.
+- [ ] A read-only host serves a `GET` (a doc-site fetch; a registry pull end to end) and refuses a
+  `POST`/`PUT` — `storage.googleapis.com` with a signed upload URL is the case the tier exists
+  for.
+- [ ] A read-write host (an agent endpoint) is still an opaque tunnel.
+- [ ] A host a project adds to `egress-hosts/read-only` is inspected end to end: the leaf carries
+  it, a `GET` succeeds, a `POST` fails.
+- [ ] A project-tagged `+host=git-fetch` clones end to end.
+- [ ] `npm install` gets its audit answer end to end (the `=npm-audit` allowance), and reports
+  vulnerabilities for a package known to have them.
+- [ ] A `blocked` `.defaults` lockdown still signs in: the agent endpoints re-added in
+  `read-write`, everything else refused.
+- [x] The relay enforces response framing: a truncated body is logged (`relay: …-byte response
+  truncated…`) and the client end closed abortively; a zero-byte connection is an `error`, a
+  half-sent header a `deny` (SECURITY.md, "The audit line grammar"). Unit-tested.
+- [x] The relayed response head speaks this hop's own `Connection: close`, and the close is
+  drained — HTTPHelper.toClientBytes has the RST mechanism; the symptom was apt's intermittent
+  fetch EOFs with no proxy-side trace. Unit-tested. Verify after a rebuild: repeated fresh
+  `install podman` runs are clean.
+- [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
+  measurably hurts (a 104-archive install's 104 handshakes cost seconds today). Both legs'
+  framing is parsed and enforced, so the shape is a request loop per client connection with a
+  fresh upstream connection per request; the price is a larger state machine at the enforcement
+  point and the one-request stance's smuggling argument re-argued in SECURITY.md.
+- [x] The minted CA and leaf carry Subject/Authority Key Identifiers — strict verifiers
+  (OpenSSL X509_STRICT, Python's default since 3.13) refuse a chain without them; the
+  measurement is with mintLeaf. Unit-tested, the leaf AKI naming the CA's key id included. No
+  migration: an identifier-less CA is rotated by hand — delete the project's tls state files
+  and relaunch.
 
 ### Filesystem and credential boundary
 
 - [ ] `/workspace` is writable.
+- [ ] Default (filtered) session: no `.git` entry can be created at any depth; control state
+  (`config`, `hooks/`, redirections, rebase todo) is immutable in every repository in the tree; a
+  host-created repository appears live with the same control state frozen.
+- [ ] Opted-out session (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`), the rows below:
 - [ ] `/workspace/.git/config` is read-only and cannot be replaced from inside.
 - [ ] `/workspace/.git/hooks` is read-only and cannot be replaced from inside.
 - [ ] An absent or pointer-file `.git` has the intended read-only behavior.
@@ -72,9 +104,12 @@ rather than re-testing only parser helpers.
 
 ### Nested read-only mount stability under host-side mutation
 
-The `.git/config` and `.git/hooks` protections are nested read-only mounts inside the writable
-`/workspace` bind mount. That is a sensible design, but a directly analogous failure has been
-reported in Docker Sandboxes: after host-side mutation, a nested read-only mount can disappear and
+Scope: sessions opted out of the workspace filter (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`) — the
+default session's enforcement is the FUSE filter, which has no nested mounts to lose. In the
+opted-out fallback, the `.git/config` and `.git/hooks` protections are nested read-only mounts
+inside the writable `/workspace` bind mount. That is a sensible design, but a directly analogous
+failure has been reported in Docker Sandboxes: after host-side mutation, a nested read-only mount
+can disappear and
 access can fall through to the writable parent.
 
 There is currently **no evidence that Podman has the same bug**. Treat this as an
@@ -103,6 +138,44 @@ Relevant prior art:
 
 - Docker Sandboxes #388: https://github.com/docker/sbx-releases/issues/388
 
+### Nested containers (KO_AGENT_SANDBOX_NESTING=same-uid)
+
+The loosenings and their whys are SECURITY.md's "The opt-in, and its price"; the recipe, its
+`utsns = "host"` hostname dodge and the image-compatibility rules are SANDBOX.md's "Containers
+in here". Findings recorded only here: a newer inner podman would change nothing — 6.0.2's
+vendored layer unpack (`chrootarchive`, moved to `go.podman.io/storage`) is logically identical
+to 5.4.2's, and the deciding seccomp filter is the outer container's, compiled by the host
+podman; Docker Hub and ECR Public moved their blob CDNs, and both successors are verified live
+and built in.
+
+Measured end to end in a same-uid session (podman-machine backend):
+
+- [x] `docker.io/library/alpine` runs ("hello-from-alpine"); `public.ecr.aws` and `gcr.io` pulls
+  work; `quay.io` is refused by the proxy. `unmask=ALL` suffices for the `/proc` mount (whether
+  an enumerated `/proc/*` list would too stays unmeasured).
+- [x] Distroless: the root variant runs (`java25-debian13 --version` prints Temurin 25.0.4);
+  `:nonroot` bare is refused (`setresgid 65532` EINVAL); with `--user 0` it runs.
+- [x] The designed failures fail: stock `postgres` and `nginx` die chowning to their service
+  user (EINVAL); a `USER 65532` image builds (`USER` is metadata), is refused at run
+  (`setresuid` EINVAL), and runs under `--user 0`.
+- [x] `/dev/fuse` is unnecessary: the container rootfs mounts as kernel-native `overlay`, and
+  the matrix passes with the fuse-overlayfs binary removed and again in a session launched
+  without the device — `NestingLoosenings` holds three loosenings.
+- [x] sandbox-apt-get refuses an install whose download failed instead of unpacking the partial
+  set: apt's exit decides (through a log file — a pipeline reports its last stage), fetches
+  retry, `update` runs under `APT::Update::Error-Mode=any`, and a failing run's apt output is
+  kept as `install-failed.log`.
+
+Open:
+
+- [ ] A default session still fails closed. Today that should mean a pull dying at layer unpack
+  (`chroot` seccomp-refused with no capability granted) before crun's `/proc` refusal is even
+  reachable — yet the earliest default-session measurement reached crun, implying an unpack once
+  succeeded under the same filter. Re-measure and explain.
+- [ ] A narrower SELinux answer than `label=disable`: measure whether the machine's policy has a
+  type that permits the nested `/proc` mount (`label=type:container_engine_t` is the candidate) —
+  if it works, narrow `NestingLoosenings` and SECURITY.md's price.
+
 ### Effective runtime hardening
 
 Inspect or probe the running containers. Do not limit these tests to checking that
@@ -119,7 +192,10 @@ For the sandbox, verify at least:
 - [ ] memory limit when `KO_AGENT_SANDBOX_MEMORY` is supplied;
 - [ ] only the intended project-internal network;
 - [ ] no inherited host proxy configuration beyond the explicitly supplied sandbox
-  proxy variables.
+  proxy variables;
+- [ ] the bundle version lock end to end: a default-named image whose label mismatches this
+  jar's digest (or predates the label) refuses the launch with the rebuild hint, and an
+  explicitly overridden image only warns.
 
 For the egress proxy, verify at least:
 
@@ -150,11 +226,18 @@ command syntax while changing effective behavior.
 - fragmented/truncated TLS ClientHello;
 - ECH detection;
 - CONNECT hostname ↔ SNI binding;
-- forge Host-header checks;
+- inspected-host Host-header checks;
+- the read-only tier (GET/HEAD only, no POST exception, tier-aware refusals);
+- per-tier delta and blocked resolution (fail-closed refusals, `.defaults`, overlap, the
+  closed tag set and its one-tagging override);
 - origin-form-only inspected requests;
 - HTTP Upgrade rejection;
 - `Content-Length` / `Transfer-Encoding` ambiguity;
-- forge method/path rules.
+- response-framing enforcement (truncation detection, the no-body statuses, origin-fault
+  refusals) and the unused-connection / half-sent-header split;
+- the relay on loopback socket pairs: the hop-owned `Connection: close` on the wire, a pipelined
+  straggler drained, mid-body truncation, `Expect: 100-continue`, 1xx forwarding;
+- the `=git-fetch` and `=npm-audit` method/path rules.
 
 Keep those tests. Add a second layer aimed at **parser disagreement, canonicalization bugs, and
 fail-open policy parsing**, rather than duplicating existing examples.
@@ -242,190 +325,3 @@ channel — however narrow — should exist for a convenience. Two constraints o
 command builders must take the podman path as a parameter, never read the global (the global fails
 fast on podman-less machines and kills the test JVM); and Scala 3 lambdas cannot early-`return`
 under `-Werror`.
-
-
-## Non-TODOs / deliberate design choices
-
-These ideas were reviewed against broader prior art and relevant issue histories. Do not implement
-them without a new requirement.
-
-### No general capability broker
-
-The current architecture deliberately avoids most cases in which a broker is useful by keeping
-valuable credentials outside the sandbox.
-
-A capability layer would create a second security-policy language and another enforcement surface
-while providing little reduction in authority under the current operating model. Prior art proposing
-exactly this shape — a host-side MCP auth broker/gateway holding credentials the agent container
-never sees — solves a real problem for workflows that need credentialed MCP servers, a requirement
-this project's operating model deliberately avoids:
-
-- https://github.com/mattolson/agent-sandbox/issues/122
-
-### No per-repository `GitRead(repository)` policy
-
-Public repository discovery/read access is useful. There is no private forge credential in the
-sandbox whose authority needs to be attenuated, and forge writes are already blocked at the protocol
-boundary.
-
-### No Git/SSH/cloud credential injection into the proxy
-
-Private/privileged operations happen on the host. Credential injection becomes worth considering
-only if that operating model changes.
-
-### No generic "GET is safe, POST is dangerous" rule
-
-A URL is outbound information. For example:
-
-```text
-GET https://allowed.example/<encoded-project-secret>
-```
-
-is a write from an information-flow perspective.
-
-### No general HTTP method/path policy language
-
-Keep protocol-specific inspection only where it buys a concrete property, as it does for forge reads
-versus writes. Do not turn the proxy into a general-purpose policy engine without concrete use cases
-that outgrow the current model.
-
-### No command-name safe lists
-
-`git`, `npm`, `python`, build tools, MCP servers, and other "normal" programs can execute
-repository-controlled behavior. The outer container/network boundary should contain them all instead
-of trying to classify command names as safe.
-
-### No per-project agent-instruction override in `.ko-agent-sandbox`
-
-Style and workflow instructions already have a native per-project channel every agent reads with no
-launcher help: the project's own CLAUDE.md / AGENTS.md / GEMINI.md in the workspace, committed and
-reviewed like any other file. `.ko-agent-sandbox` is mounted read-only because its content governs
-the boundary — a session must not write the egress policy governing the next one — and prose
-instructions govern nothing enforceable, so the ceremony would protect nothing a hostile repo cannot
-already do through any file in the checkout. The image-side AGENTS.md admits only what a project
-cannot know about itself (the environment, SANDBOX.md) or must not be trusted to declare (the
-policy in force, appended at launch); the operator changes its defaults by editing SANDBOX.md or
-STYLE.md and rebuilding.
-
-### No richer egress-policy format
-
-The policy stays a whole-list replacement or a `+host` / `-host` / `-**.domain` delta against the
-built-in list — no fields, no globs beyond the one removal subtree, no precedence, no deny list.
-SECURITY.md ("Adding hosts, not patterns") carries the reasoning; `resolvePolicy` enforces it,
-tested rule by rule. The failure classes it keeps out — a validator and a runtime reading one
-configuration differently, and an allow silently overriding a deny — are well attested:
-
-- https://github.com/docker/sbx-releases/issues/410
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/434
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/122
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/154
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/432
-- https://github.com/stripe/smokescreen/issues/236
-
-Do not add wildcard additions, a deny list, ranked rules, or a richer removal-pattern language
-without a concrete need that outweighs that surface.
-
-### No PATH-resolved host executables
-
-Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) to an absolute path
-through absolute `PATH` entries only — `HostCommands.findOnPath` — and the reaper receives
-that path as an argument, so no host-side invocation consults `PATH` or, on Windows, CreateProcess's
-implicit current-directory search. The launcher is started inside the repository being sandboxed, so
-its working directory is untrusted by definition; a `podman.exe` shipped in a checkout must never be
-what executes on the host. Prior art:
-
-- https://github.com/docker/sbx-releases/issues/392
-
-### No following symlinks at sandbox setup
-
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox` or `egress-hosts` refuses the
-launch (`gitGuardVolumes`, `policyGuardVolume`, tested). Podman resolves mount sources on the host,
-so mounting through a repository-controlled link would expose its target into the sandbox, and
-following the link to pin its resolved target would make the pinned surface depend on where the link
-points at launch time. The refusal is loud, names the path, and comes before the launcher creates
-anything, so setup writes nothing through a pre-seeded link (tested: "a refused symlink shape leaves
-no artifact through the link"); the project directory itself is `toRealPath()`-canonical before any
-of this. Prior art for both failure shapes — a sandbox that crashed mid-setup on a symlink, and
-setup code whose mount-target creation wrote through one to paths outside its root:
-
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/221
-- https://github.com/bazelbuild/bazel/issues/28515
-
-The cost is that a repository sharing hooks through a symlinked `.git/hooks` cannot be sandboxed
-as-is; its user replaces the link with a real directory first. Accept that cost rather than
-following links.
-
-### No DLP/entropy/LLM firewall
-
-It would be incomplete against encoding, timing, allowed-host selection, and protocol-specific
-channels while adding false positives and another complex policy engine. Destination restriction
-remains the primary exfiltration control.
-
-### No gVisor/microVM migration yet
-
-Rootless Podman is the chosen portability/security trade-off. Revisit only if
-host-kernel/container-runtime exploitation enters the threat model.
-
-The gVisor issue history also shows that stronger runtime isolation brings additional
-rootless/nesting/mount compatibility complexity — e.g. rootless uid mapping breaking same-uid host
-file access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
-design; it means the additional boundary should be purchased only when the threat model requires it.
-
-- https://gvisor.dev/
-- https://github.com/google/gvisor/issues/9918
-
-## Prior-art references worth retaining
-
-Comparison points for future decisions, not dependencies. The specific issues that shaped a decision
-are linked inline where that decision is recorded; these are the broader sources.
-
-- Docker AI sandboxes — microVM isolation, direct-vs-clone workspace models:
-  https://docs.docker.com/ai/sandboxes/ https://docs.docker.com/ai/sandboxes/security/isolation/
-- Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
-  model: https://www.anthropic.com/engineering/claude-code-sandboxing
-  https://docs.anthropic.com/en/docs/claude-code/settings
-- Stripe Smokescreen — mature egress-proxy prior art; the two ACL-bypass advisories are permanent
-  regression inputs (see "Host/authority regression corpus"): https://github.com/stripe/smokescreen
-  https://github.com/stripe/smokescreen/security/advisories/GHSA-qwrf-gfpj-qvj6
-  https://github.com/stripe/smokescreen/security/advisories/GHSA-gcj7-j438-hjj2
-- Bazel sandboxing/hermeticity — minimizing ambient inputs/outputs, testing effective boundaries:
-  https://bazel.build/versions/9.1.0/docs/sandboxing
-- Agent sandbox/proxy comparisons, including credential brokering:
-  https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
-
-## Design principles to preserve
-
-These are short enough to keep near the implementation as comments.
-
-```text
-Anything requiring valuable credentials happens outside the sandbox,
-unless the agent fundamentally cannot function without those credentials.
-```
-
-```text
-Repository-controlled execution stays inside the outer sandbox.
-Do not create a host-side execution path merely to make an agent workflow easier.
-```
-
-```text
-The writable workspace is untrusted output.
-Protect implicit host execution paths, but keep ordinary project files writable
-because editing them is the purpose of the sandbox.
-```
-
-```text
-An allowed host is a possible recipient of sandbox data.
-HTTP "read" semantics do not make the request an information-flow read.
-```
-
-```text
-Prefer a small, observable boundary over a richer policy language.
-Add policy machinery only when it removes authority the sandbox would otherwise
-have to possess.
-```
-
-```text
-Security configuration must fail closed.
-Unknown, malformed, or ambiguously interpreted policy must not silently weaken the
-effective boundary.
-```

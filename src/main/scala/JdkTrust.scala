@@ -2,7 +2,7 @@
 // bundle and the SSL_CERT_FILE family that cover everything else in the sandbox mean nothing to it.
 // This file locates the image's JDK, merges the CA into that JDK's own store, and hands the launch
 // the mount that puts the result back. The one JVM the launcher cannot reach — installed by the
-// agent itself — gets the same CA from inside, via the image's ko-agent-sandbox-trust-ca script.
+// agent itself — gets the same CA from inside, via the image's sandbox-trust-ca script.
 //
 // Java 25's standard library alone, deliberately: KeyStore and CertificateFactory are JCA, and
 // BouncyCastleHelper's contract is to be the only file that imports org.bouncycastle. What

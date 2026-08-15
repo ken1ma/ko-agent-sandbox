@@ -7,6 +7,12 @@ FROM debian-coursier:${IMG_TAG_VER}
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
+
 ARG UV_VERSION=0.12.3
 ARG PYTHON_VERSION=3.14
 ARG NODE_VERSION=24.19.0
@@ -371,7 +377,10 @@ RUN set -euxo pipefail; \
 # The launcher merges this session's inspection CA into the image JDK's cacerts and mounts the
 # result, but it can only reach the JDK it shipped. This teaches an agent-installed JVM (`cs java`)
 # the same CA, from the certificate the launcher mounts beside these instructions.
-COPY --chmod=0755 ko-agent-sandbox-trust-ca /usr/local/bin/
+#
+# sandbox-apt-get is the SANDBOX.md-documented package unpacker: real apt-get install can never
+# work on a read-only rootfs as uid 65532, and shipping the workaround beats retyping it.
+COPY --chmod=0755 sandbox-trust-ca sandbox-apt-get /usr/local/bin/
 
 COPY SANDBOX.md STYLE.md /etc/ko-agent-sandbox/
 

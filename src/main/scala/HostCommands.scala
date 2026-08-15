@@ -164,3 +164,29 @@ object HostCommands:
         .iterator()
         .asScala
         .foreach(Files.delete)
+
+  /**
+   * A boundary-weakening variable takes exactly one of a closed value set, case-sensitive —
+   * never a bare presence test, and no alternate spellings (`1`, `true`, `yes`, …): such a
+   * variable can weaken the boundary, so an unclear value must refuse the launch rather than be
+   * read as either side of it (DESIGN.md, "Security configuration must fail closed"), and each
+   * accepted spelling is surface that has to stay correct everywhere it is parsed. Unset and
+   * empty mean the default, which is always the choice that weakens nothing.
+   */
+  def closedChoice(
+      variable: String,
+      value: Option[String],
+      choices: Vector[String],
+      default: String,
+      advice: String
+  ): Either[String, String] =
+    value match
+      case None | Some("")                      => Right(default)
+      case Some(text) if choices.contains(text) => Right(text)
+      case Some(text) =>
+        Left(
+          s"""error: $variable is set to '$text'; the only values are ${choices.mkString(" and ")}, exactly
+             |
+             |This variable can weaken the boundary, so an unrecognized value is refused rather
+             |than guessed at. $advice""".stripMargin
+        )

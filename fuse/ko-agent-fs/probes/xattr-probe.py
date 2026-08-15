@@ -9,7 +9,7 @@ unfiltered one, and compare. The unfiltered run is the control, exactly as the p
 column is:
 
     cp .../xattr-probe.py <scratch-project>/
-    java -jar ko-agent-sandbox.jar bash          # then again with KO_AGENT_SANDBOX_NO_FUSE_FILTER=1
+    java -jar ko-agent-sandbox.jar bash          # then again with KO_AGENT_SANDBOX_WORKSPACE_GUARD=none
     python3 xattr-probe.py
 
 Rows that differ between the two runs are what implementing xattrs would buy. Rows that fail in both

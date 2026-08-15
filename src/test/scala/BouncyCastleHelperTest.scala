@@ -8,7 +8,6 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import scala.jdk.CollectionConverters.*
 
-import AgentSandboxLauncher.InspectedHosts
 import BouncyCastleHelper.*
 
 class BouncyCastleHelperTest extends munit.FunSuite:
@@ -48,13 +47,37 @@ class BouncyCastleHelperTest extends munit.FunSuite:
 
   test("the leaf carries exactly the inspected hosts and chains to the CA"):
     val ca = mintCa("proj")
-    val leaf = parse(mintLeaf(ca.certificatePem, ca.privateKeyPem, InspectedHosts).certificatePem)
+    // A sample list: which hosts the leaf must name is the proxy image's to say at launch; this
+    // pins the mechanics — every requested name arrives as a DNS SAN, in order.
+    val hosts = Vector("github.com", "gitlab.com", "docs.example.org")
+    val leaf = parse(mintLeaf(ca.certificatePem, ca.privateKeyPem, hosts).certificatePem)
     val sans = leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector
-    assertEquals(sans, InspectedHosts)
+    assertEquals(sans, hosts)
     assertEquals(leaf.getBasicConstraints, -1) // CA:FALSE
     val eku = leaf.getExtendedKeyUsage.asScala.toVector
     assertEquals(eku, Vector("1.3.6.1.5.5.7.3.1")) // serverAuth
     leaf.verify(parse(ca.certificatePem).getPublicKey)
+
+  test("the chain carries the key identifiers strict verifiers require"):
+    // OpenSSL's X509_STRICT — Python's default since 3.13 — refuses a chain without them with
+    // "Missing Authority Key Identifier"; curl and apt merely tolerate the omission, which is
+    // why nothing else notices. The leaf's AKI must name the CA's SKI, or matching still fails.
+    val SkiOid = "2.5.29.14"
+    val AkiOid = "2.5.29.35"
+    val ca = mintCa("proj")
+    val caCert = parse(ca.certificatePem)
+    val leaf = parse(mintLeaf(ca.certificatePem, ca.privateKeyPem, Vector("github.com")).certificatePem)
+
+    val caSki = caCert.getExtensionValue(SkiOid)
+    assert(caSki != null, "CA Subject Key Identifier")
+    assert(leaf.getExtensionValue(SkiOid) != null, "leaf Subject Key Identifier")
+    val leafAki = leaf.getExtensionValue(AkiOid)
+    assert(leafAki != null, "leaf Authority Key Identifier")
+    // The SKI extension value is DER octet-string wrapping; its last 20 bytes are the key id,
+    // which the AKI must contain verbatim.
+    val keyId = caSki.takeRight(20)
+    assert(leafAki.toVector.containsSlice(keyId.toVector), "leaf AKI names the CA's key id")
+
 
   test("certificates are backdated against VM clock skew"):
     val now = Instant.now()
@@ -65,7 +88,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     val now = Instant.now()
     val shortCa = mintCa("proj", now, days = 40)
     val leaf = parse(
-      mintLeaf(shortCa.certificatePem, shortCa.privateKeyPem, InspectedHosts, now).certificatePem
+      mintLeaf(shortCa.certificatePem, shortCa.privateKeyPem, Vector("github.com"), now).certificatePem
     )
     val caNotAfter = parse(shortCa.certificatePem).getNotAfter
     assert(!leaf.getNotAfter.after(caNotAfter))

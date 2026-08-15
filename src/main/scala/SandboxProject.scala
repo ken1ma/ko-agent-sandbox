@@ -85,6 +85,10 @@ object SandboxProject:
     s"${slugOf(dir.getFileName.toString)}-${projectHash(dir.toString, os)}"
 
   /**
+   * The opt-out fallback's enforcement: default sessions get the workspace
+   * FUSE filter instead, whose policy is a strict superset of these pins
+   * (AgentSandboxLauncher's header map has the split).
+   *
    * Host git executes what .git configures — hooks, and commands named in
    * .git/config (core.hooksPath, core.fsmonitor, filters, pagers) — so
    * writing either from inside would turn the user's next `git status` into
@@ -160,10 +164,14 @@ object SandboxProject:
    * whose machine path refuses a missing bind source. This creation is the
    * one enumerated exception to "the project tree is never written by the
    * launcher" (SECURITY.md, "Silent changes to what you own"). Refused
-   * shapes: a
-   * symlink of the directory or of egress-hosts (podman resolves mount
-   * sources on the host, and the policy read follows this check), or
-   * anything that is not a directory.
+   * shapes: a symlink of the directory or of egress-hosts (podman resolves
+   * mount sources on the host, and the policy read follows this check),
+   * anything that is not a directory, or an entry that is no configuration
+   * of this launcher's — the directory is a closed namespace, decided
+   * before it has a second tenant, so a typo'd `egres-hosts/` is a refused
+   * launch and not ignored config, the same rule egress-hosts/ applies
+   * inside itself. The tier files inside egress-hosts/ are vetted where
+   * they are read (EgressProxyPolicy.readPolicyFiles).
    */
   def policyGuardVolume(policyDir: Path): Either[String, String] =
     def refuse(path: Path): Either[String, String] =
@@ -171,17 +179,46 @@ object SandboxProject:
         s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
       )
 
-    val policyFile = policyDir.resolve("egress-hosts")
+    val hostsDir = policyDir.resolve("egress-hosts")
     if Files.isSymbolicLink(policyDir) then refuse(policyDir)
-    else if Files.isSymbolicLink(policyFile) then refuse(policyFile)
+    else if Files.isSymbolicLink(hostsDir) then refuse(hostsDir)
     else if Files.exists(policyDir) && !Files.isDirectory(policyDir) then
       Left(
         s"error: $policyDir must be a directory\n" +
           "Remove what is in its place; the launcher recreates the policy directory itself."
       )
-    else
-      if !Files.exists(policyDir) then Files.createDirectory(policyDir)
+    else if !Files.exists(policyDir) then
+      Files.createDirectory(policyDir)
       Right(s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro")
+    else
+      strayPolicyEntries(policyDir) match
+        case Vector() => Right(s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro")
+        case stray =>
+          Left(
+            s"""error: $policyDir contains ${stray.mkString(", ")}, which this launcher does not read
+               |The directory is boundary configuration and holds only:
+               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name — a typo'd
+               |egress-hosts, notes, a backup — must fail the launch, never sit as ignored config.""".stripMargin
+          )
+
+  /**
+   * The entries .ko-agent-sandbox may contain. Names beginning with `.` are
+   * exempt as editor and OS metadata (.DS_Store, .gitkeep) — no
+   * configuration will ever be named that way, so the typo protection loses
+   * nothing to the exemption.
+   */
+  val PolicyDirEntries: Set[String] = Set("egress-hosts")
+
+  private def strayPolicyEntries(policyDir: Path): Vector[String] =
+    Files
+      .list(policyDir)
+      .iterator()
+      .asScala
+      .map(_.getFileName.toString)
+      .filterNot(_.startsWith("."))
+      .filterNot(PolicyDirEntries)
+      .toVector
+      .sorted
 
   // -------------------------------------------------------------------------
   // Launcher verbs: --build, --update and --reset

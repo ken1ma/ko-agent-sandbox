@@ -1,6 +1,6 @@
 # Running the `ko-agent-fs` tests
 
-Two tiers, split by whether a test has to mount. Both build for the musl triple, and so does the
+Two suites, split by whether a test has to mount. Both build for the musl triple, and so does the
 image build's own gate (`Containerfile`) — one triple everywhere, because that is the one that ships
 and the difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename`
 is invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the

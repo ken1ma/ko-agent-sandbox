@@ -12,7 +12,9 @@ import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.{
   BasicConstraints, ExtendedKeyUsage, Extension, GeneralName, GeneralNames, KeyPurposeId, KeyUsage
 }
-import org.bouncycastle.cert.jcajce.{JcaX509CertificateConverter, JcaX509v3CertificateBuilder}
+import org.bouncycastle.cert.jcajce.{
+  JcaX509CertificateConverter, JcaX509ExtensionUtils, JcaX509v3CertificateBuilder
+}
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 /**
@@ -93,6 +95,12 @@ object BouncyCastleHelper:
     )
     builder.addExtension(Extension.basicConstraints, true, BasicConstraints(0))
     builder.addExtension(Extension.keyUsage, true, KeyUsage(KeyUsage.keyCertSign | KeyUsage.cRLSign))
+    // The identifier the leaf's Authority Key Identifier points at; the whys are with the leaf's.
+    builder.addExtension(
+      Extension.subjectKeyIdentifier,
+      false,
+      JcaX509ExtensionUtils().createSubjectKeyIdentifier(keyPair.getPublic)
+    )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.getPrivate)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
     Minted(
@@ -141,6 +149,21 @@ object BouncyCastleHelper:
       Extension.extendedKeyUsage,
       false,
       ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth)
+    )
+    // Strict verifiers refuse a chain without the key identifiers — OpenSSL's X509_STRICT, which
+    // Python enables by default since 3.13, fails with "Missing Authority Key Identifier"
+    // (measured: the image's own urllib against every inspected host). curl and apt merely
+    // tolerate the omission.
+    val extensionUtils = JcaX509ExtensionUtils()
+    builder.addExtension(
+      Extension.subjectKeyIdentifier,
+      false,
+      extensionUtils.createSubjectKeyIdentifier(keyPair.getPublic)
+    )
+    builder.addExtension(
+      Extension.authorityKeyIdentifier,
+      false,
+      extensionUtils.createAuthorityKeyIdentifier(issuer)
     )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(issuerKey)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))

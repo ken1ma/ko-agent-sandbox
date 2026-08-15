@@ -8,7 +8,7 @@ host filesystem -> virtiofs -> (filter, when enabled) -> container.
 Run INSIDE a sandbox session, in a scratch project, with a host terminal beside it:
 
     cp .../coherency-probe.py <scratch-project>/
-    java -jar ko-agent-sandbox.jar bash          # add KO_AGENT_SANDBOX_NO_FUSE_FILTER=1 to compare
+    java -jar ko-agent-sandbox.jar bash          # add KO_AGENT_SANDBOX_WORKSPACE_GUARD=none to compare
     python3 coherency-probe.py
 
 then follow the printed instruction in the HOST terminal. The probe reports the polling delay at

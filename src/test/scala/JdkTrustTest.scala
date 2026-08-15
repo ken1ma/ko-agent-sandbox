@@ -30,8 +30,8 @@ class JdkTrustTest extends munit.FunSuite:
     assertEquals(javaHomeOf("XJAVA_HOME=/nope"), None)
 
   test("the JDK trust store gains this project's CA and keeps every root it shipped with"):
-    // The JVM reads `cacerts`, not the PEM bundle, so this merge is what lets a JVM tool verify an
-    // inspected forge host. Dropping a shipped root would be the silent half of getting it wrong:
+    // The JVM reads `cacerts`, not the PEM bundle, so this merge is what lets a JVM tool verify any
+    // inspected host. Dropping a shipped root would be the silent half of getting it wrong:
     // the sandbox would keep working until something needed a public CA.
     val shipped = KeyStore.getInstance("PKCS12")
     shipped.load(null, CacertsPassword)

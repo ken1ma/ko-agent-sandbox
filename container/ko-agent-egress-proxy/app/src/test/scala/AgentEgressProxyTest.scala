@@ -1,6 +1,6 @@
 package agentsandbox.egress
 
-import java.io.ByteArrayInputStream
+import java.io.{ByteArrayInputStream, IOException}
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets
 
@@ -48,31 +48,18 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       parseConnect("GET https://api.anthropic.com/ HTTP/1.1\r\n\r\n")
 
-  test("authorizeRequest accepts an allowed host on port 443"):
-    assertEquals(
-      authorize("API.Anthropic.com.", 443),
-      "api.anthropic.com"
-    )
-
-  test("authorizeRequest accepts the forge read hosts in the default list"):
-    assertEquals(authorize("github.com", 443), "github.com")
-    assertEquals(
-      authorize("raw.githubusercontent.com", 443),
-      "raw.githubusercontent.com"
-    )
-    assertEquals(authorize("gitlab.com", 443), "gitlab.com")
-    assertEquals(authorize("codeberg.org", 443), "codeberg.org")
-
-  test("the default list carries each agent's sign-in and model endpoints"):
+  test("the pull hosts are reachable and read-only inspected"):
+    // The registry APIs and blob CDNs have no unauthenticated write of their own; membership in
+    // the read-only tier is defense in depth plus a method-and-path log line per pull. The one
+    // member that needs the tier is storage.googleapis.com — its own test below.
     Vector(
-      // Claude Code
-      "api.anthropic.com", "claude.ai", "platform.claude.com",
-      // Codex: API-key use, and the ChatGPT device-code sign-in the README documents
-      "api.openai.com", "auth.openai.com", "chatgpt.com",
-      // Antigravity
-      "accounts.google.com", "oauth2.googleapis.com", "cloudcode-pa.googleapis.com"
+      "registry-1.docker.io", "auth.docker.io",
+      "production.cloudflare.docker.com", "production.cloudfront.docker.com",
+      "gcr.io", "storage.googleapis.com", "public.ecr.aws",
+      "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net"
     ).foreach: host =>
       assertEquals(authorize(host, 443), host)
+      assert(DefaultReadOnlyHosts.contains(host), host)
 
   test("authorizeRequest rejects ports other than 443"):
     intercept[PolicyViolation]:
@@ -136,130 +123,198 @@ class AgentEgressProxyTest extends munit.FunSuite:
     ).foreach(host => assert(!isIpLiteral(host), host))
 
   // ---------------------------------------------------------------------------
-  // Policy resolution: the replacement form, and the +host / -host delta
-  // against the built-in list
+  // Policy resolution: one +/- delta per tier, tags on read-only additions,
+  // blocked applied last
   // ---------------------------------------------------------------------------
 
-  private val builtin = Set("github.com", "pypi.org", "docs.python.org")
+  private def tiersOf(
+    readWrite: String = "",
+    readOnly: String = "",
+    blocked: String = ""
+  ): HostTiers =
+    def opt(value: String) = Option(value).filter(_.nonEmpty)
+    resolveTiers(opt(readWrite), opt(readOnly), opt(blocked))
 
-  test("a replacement policy splits, normalizes and de-duplicates"):
+  test("with no variables set the tiers are the built-in lists"):
+    assertEquals(tiersOf(), HostTiers(DefaultReadWriteHosts, DefaultReadOnlyHosts))
+
+  test("a tier delta adds to and removes from its own built-in list"):
+    val tiers = tiersOf(readOnly = "+html.spec.whatwg.org -pypi.org")
     assertEquals(
-      resolvePolicy(" api.anthropic.com, PyPI.org\n  api.anthropic.com. ", builtin),
-      Set("api.anthropic.com", "pypi.org")
+      tiers.readOnly,
+      DefaultReadOnlyHosts - "pypi.org" + ("html.spec.whatwg.org" -> Set.empty[String])
+    )
+    assertEquals(tiers.readWrite, DefaultReadWriteHosts)
+    // Normalization applies after the prefix is stripped, and tags after the host.
+    assertEquals(
+      tiersOf(readOnly = "-GitLab.COM. +Git.Example=git-fetch").readOnly,
+      DefaultReadOnlyHosts - "gitlab.com" + ("git.example" -> Set("git-fetch"))
     )
 
-  test("policy entries are enforced in the normalized form they resolve to"):
-    // The launcher flattens the file, resolvePolicy normalizes the entries, and authorizeRequest normalizes the
+  test("tier entries are enforced in the normalized form they resolve to"):
+    // The launcher flattens the files, resolveTiers normalizes the entries, and authorizeRequest normalizes the
     // CONNECT target: whatever spelling either side used, enforcement compares one canonical form.
-    val resolved = resolvePolicy("GitHub.COM. Example.org", builtin)
-    assertEquals(authorizeRequest(ConnectRequest("github.com", 443), resolved), "github.com")
+    val resolved = tiersOf(readOnly = "+Example.ORG.").allowed
     assertEquals(authorizeRequest(ConnectRequest("EXAMPLE.ORG.", 443), resolved), "example.org")
     intercept[PolicyViolation]:
       authorizeRequest(ConnectRequest("example.com", 443), resolved)
 
-  test("an empty policy is refused"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("   \n ", builtin)
+  test("an entry without its +/- prefix is refused; the replacement form is retired"):
+    // A forgotten prefix must not flip a line's meaning unseen — and the refusal points at what
+    // replaced whole-list replacement.
+    val ex = intercept[IllegalArgumentException](tiersOf(readOnly = "pypi.org +docs.example"))
+    assert(ex.getMessage.contains(".defaults"), ex.getMessage)
 
-  test("a replacement policy rejects an IP literal"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("api.anthropic.com 10.0.0.1", builtin)
+  test("a present-but-empty tier variable is refused"):
+    intercept[IllegalArgumentException](resolveTiers(Some("   \n "), None, None))
+    intercept[IllegalArgumentException](resolveTiers(None, None, Some(" ")))
 
-  test("a replacement policy rejects a malformed hostname"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("api..anthropic.com", builtin)
-
-  test("a replacement policy is the whole allowlist, ignoring the built-in list"):
-    assertEquals(resolvePolicy("api.anthropic.com pypi.org", builtin), Set("api.anthropic.com", "pypi.org"))
-
-  test("a delta adds to and removes from the built-in list"):
-    // + adds a new host, - drops one; the rest of the built-in list stays.
-    assertEquals(
-      resolvePolicy("+api.anthropic.com -github.com", builtin),
-      Set("api.anthropic.com", "pypi.org", "docs.python.org")
-    )
-    // Normalization applies after the prefix is stripped.
-    assertEquals(
-      resolvePolicy("-GitHub.COM. +Extra.Example", builtin),
-      Set("pypi.org", "docs.python.org", "extra.example")
-    )
-
-  test("a delta adding a host already built in is a harmless no-op"):
+  test("restating a built-in entry identically is a harmless no-op"):
     // Deliberately not an error: a defensively added host must not start failing when a later image adopts it into the
     // built-in list.
-    assertEquals(resolvePolicy("+pypi.org", builtin), builtin)
+    assertEquals(tiersOf(readOnly = "+pypi.org").readOnly, DefaultReadOnlyHosts)
+    assertEquals(tiersOf(readOnly = "+github.com=git-fetch").readOnly, DefaultReadOnlyHosts)
 
-  test("mixing delta and replacement entries is refused"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("+api.anthropic.com pypi.org", builtin)
+  test("a =git-fetch tag admits git fetch, and retagging is one restated entry"):
+    // An addition states its host's complete tagging and overrides the built-in entry for that
+    // host — explicit, printed as written at launch, never a merge.
+    val mirror = tiersOf(readOnly = "+mirror.example=git-fetch")
+    assert(mirror.tagged("git-fetch").contains("mirror.example"))
+    authorizeInspectedRequest(
+      "mirror.example",
+      head(
+        "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\n" +
+          "Host: mirror.example\r\nContent-Length: 0\r\n\r\n"
+      ),
+      Set("git-fetch")
+    )
+    // Revoking: a bare restatement strips the built-in =git-fetch; the host stays read-only.
+    val demoted = tiersOf(readOnly = "+gitlab.com")
+    assert(!demoted.tagged("git-fetch").contains("gitlab.com"))
+    assert(demoted.readOnly.contains("gitlab.com"))
+    // Granting is just as explicit — legal, and the entry says exactly what it opens.
+    assert(tiersOf(readOnly = "+pypi.org=git-fetch").tagged("git-fetch").contains("pypi.org"))
 
-  test("adding and removing the same host is refused"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("+github.com -github.com", builtin)
+  test("one host, one tagging: two project entries that disagree are refused"):
+    val ex =
+      intercept[IllegalArgumentException](tiersOf(readOnly = "+docs.example +docs.example=git-fetch"))
+    assert(ex.getMessage.contains("two different taggings"), ex.getMessage)
 
-  test("removing a host the built-in list lacks is refused, not a silent no-op"):
-    // The sharp fail-open edge: a typo'd '-githib.com' that removed nothing would read as a narrowing that never
-    // happened.
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-githib.com", builtin)
+  test("an unknown tag is refused with the tag list in hand"):
+    // The closed set is the guardrail: a tag names a fixed treatment, never describes one — and
+    // the port habit (host=8443) fails closed here too.
+    val ex = intercept[IllegalArgumentException](tiersOf(readOnly = "+mirror.example=lfs"))
+    assert(ex.getMessage.contains("the tags are: git-fetch, npm-audit"), ex.getMessage)
+    intercept[IllegalArgumentException](tiersOf(readOnly = "+mirror.example=8443"))
 
-  test("a delta that empties the allowlist is refused"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-github.com -pypi.org -docs.python.org", builtin)
+  test("a tag belongs on a read-only addition and nowhere else"):
+    intercept[IllegalArgumentException](tiersOf(readWrite = "+api.example=git-fetch"))
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-github.com=git-fetch"))
+    intercept[IllegalArgumentException](tiersOf(blocked = "github.com=git-fetch"))
+
+  test("adding and removing the same host in one tier is refused"):
+    intercept[IllegalArgumentException](tiersOf(readOnly = "+pypi.org -pypi.org"))
+
+  test("a removal matching nothing in its own tier is refused, not a silent no-op"):
+    // The sharp fail-open edge: a typo'd '-githib.example' that removed nothing would read as a narrowing that never
+    // happened...
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-githib.example"))
+    // ...and a removal aimed at the wrong tier is the same error: api.anthropic.com is read-write.
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-api.anthropic.com"))
 
   test("delta entries reject IP literals and malformed hostnames like any other"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("+10.0.0.1", builtin)
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-github.com +api..example", builtin)
+    intercept[IllegalArgumentException](tiersOf(readWrite = "+10.0.0.1"))
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-pypi.org +api..example"))
+
+  test("a comma joins nothing: entries split on whitespace alone, like the policy files"):
+    // A comma-joined pair must not silently become two entries — it stays one token and fails
+    // hostname validation, so the mistake is a refused launch, not a policy nobody wrote.
+    intercept[IllegalArgumentException](tiersOf(readOnly = "+a.example,+b.example"))
+    intercept[IllegalArgumentException](tiersOf(blocked = "gitlab.com,chatgpt.com"))
 
   test("a -**.domain removal drops the domain and everything under it"):
-    // Apex and subdomains go; a look-alike that only shares a suffix without a label boundary stays (evilgithub.com is
-    // not under github.com).
-    val tree = Set("github.com", "api.github.com", "codeberg.org", "evilgithub.com")
-    assertEquals(
-      resolvePolicy("-**.github.com", tree),
-      Set("codeberg.org", "evilgithub.com")
-    )
+    val tiers = tiersOf(readOnly = "-**.github.com")
+    assert(!tiers.readOnly.contains("github.com"))
+    assert(!tiers.readOnly.contains("api.github.com"))
+    assert(!tiers.readOnly.contains("codeload.github.com"))
+    // A label boundary, not a suffix match: the .githubusercontent.com hosts stay.
+    assert(tiers.readOnly.contains("raw.githubusercontent.com"))
 
-  test("a -**.domain matching nothing in the built-in list is refused"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-**.absent.example", builtin)
+  test("a -**.domain matching nothing in its tier is refused"):
+    intercept[IllegalArgumentException](tiersOf(readWrite = "-**.github.com"))
 
   test("a + that falls under a -**.domain is a contradiction, not a precedence"):
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-**.github.com +api.github.com", Set("github.com", "api.github.com"))
-
-  test("a -**.domain composes with adds and exact removals"):
-    assertEquals(
-      resolvePolicy("-**.github.com -pypi.org +docs.rs", builtin ++ Set("api.github.com")),
-      Set("docs.python.org", "docs.rs")
-    )
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-**.github.com +api.github.com=git-fetch"))
 
   test("a bare -* is not a subtree pattern and is refused"):
     // Only -**.domain is a wildcard; -* is neither a valid pattern nor a host.
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-*", builtin)
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-*"))
 
   test("the undotted -**domain spelling is refused, never suffix-matched"):
     // The pattern's dot is load-bearing: without it the spelling reads as a suffix match (barfoo.com), so it is not a
     // second way to write the subtree removal.
-    intercept[IllegalArgumentException]:
-      resolvePolicy("-**github.com", builtin)
+    intercept[IllegalArgumentException](tiersOf(readOnly = "-**pypi.org"))
 
-  test("--proxy-allowed's inspection line is the forges left after resolution"):
-    // What printPolicy reports for inspection: DefaultInspectedHosts ∩ the
-    // resolved allowlist. A delta dropping one forge drops exactly it; the
-    // launcher prints this same line in every launch banner, from its
-    // --print-policy dry run of this image.
-    assertEquals(
-      DefaultInspectedHosts.intersect(resolvePolicy("-github.com", DefaultAllowedHosts)),
-      DefaultInspectedHosts - "github.com"
+  test("blocked removes a host from whichever tier holds it"):
+    val tiers = tiersOf(blocked = "gitlab.com developer.mozilla.org chatgpt.com")
+    assert(!tiers.readOnly.contains("gitlab.com"))
+    assert(!tiers.readOnly.contains("developer.mozilla.org"))
+    assert(!tiers.readWrite.contains("chatgpt.com"))
+
+  test("blocked beats an addition"):
+    assert(!tiersOf(readOnly = "+docs.example", blocked = "docs.example").allowed.contains("docs.example"))
+
+  test("a blocked **.domain subtree crosses tier boundaries"):
+    val tiers = tiersOf(blocked = "**.googleapis.com")
+    assert(!tiers.readOnly.contains("storage.googleapis.com"))
+    assert(!tiers.readWrite.contains("oauth2.googleapis.com"))
+    assert(!tiers.readWrite.contains("cloudcode-pa.googleapis.com"))
+
+  test("a blocked entry matching nothing is refused"):
+    intercept[IllegalArgumentException](tiersOf(blocked = "example.org"))
+    intercept[IllegalArgumentException](tiersOf(blocked = "**.absent.example"))
+
+  test("a +/- prefix in blocked is refused"):
+    intercept[IllegalArgumentException](tiersOf(blocked = "-gitlab.com"))
+
+  test(".defaults removes the built-in contribution, never the project's own + entries"):
+    // The replacement form: block the defaults, then + back what the project needs. .defaults is
+    // not a host matcher — it names the built-in lists, and a host a tier delta explicitly +adds
+    // is the project's own entry even when the same host is built in.
+    val tiers = tiersOf(
+      readWrite = "+api.anthropic.com +claude.ai +platform.claude.com",
+      readOnly = "+docs.python.org",
+      blocked = ".defaults"
     )
+    assertEquals(tiers.readWrite, Set("api.anthropic.com", "claude.ai", "platform.claude.com"))
+    assertEquals(tiers.readOnly, Map("docs.python.org" -> Set.empty[String]))
+
+    // An explicit blocked host matches by name and beats everything, the re-add included.
     assertEquals(
-      DefaultInspectedHosts.intersect(resolvePolicy("+docs.example", DefaultAllowedHosts)),
-      DefaultInspectedHosts
+      tiersOf(readWrite = "+api.anthropic.com +claude.ai", blocked = ".defaults claude.ai").readWrite,
+      Set("api.anthropic.com")
     )
+
+  test(".defaults alone would allow nothing and is refused"):
+    intercept[IllegalArgumentException](tiersOf(blocked = ".defaults"))
+
+  test("a host claimed by both tiers is refused"):
+    val ex = intercept[IllegalArgumentException](tiersOf(readOnly = "+api.anthropic.com"))
+    assert(ex.getMessage.contains("api.anthropic.com is in both read-write and read-only"), ex.getMessage)
+
+  test("--print-policy is one line per tier, in the shape the launcher mints the leaf from"):
+    val lines = tierLines(tiersOf())
+    assertEquals(lines.length, 2)
+    assert(lines(0).startsWith(s"read-write hosts (${DefaultReadWriteHosts.size}): "), lines(0))
+    assert(lines(1).startsWith(s"read-only hosts (${DefaultReadOnlyHosts.size}): "), lines(1))
+    // Tags travel in the line; the launcher strips them when minting the leaf's names.
+    assert(lines(1).contains(" github.com=git-fetch "), lines(1))
+    assert(lines(1).contains(" registry.npmjs.org=npm-audit "), lines(1))
+    assert(lines(1).contains(" pypi.org "), lines(1))
+
+  test("an emptied tier prints a zero count, parseable like any other line"):
+    val emptied = tiersOf(readWrite = "+api.anthropic.com", blocked = ".defaults")
+    assertEquals(tierLines(emptied)(1), "read-only hosts (0):")
 
   test("IPv4 public-destination policy"):
     assert(isPublicDestination(InetAddress.getByName("8.8.8.8")))
@@ -310,6 +365,242 @@ class AgentEgressProxyTest extends munit.FunSuite:
         ByteArrayInputStream(ascii("0123456789\r\n\r\n")),
         8
       )
+
+  test("readHttpHeader tells an unused connection from a half-sent header"):
+    // Zero bytes then EOF is routine pooled-client behavior and must not read as a refused
+    // request; EOF inside a header stays the BadRequest it always was.
+    intercept[ClosedWithoutRequest](readHttpHeader(ByteArrayInputStream(Array.emptyByteArray), 4096))
+    intercept[BadRequest](readHttpHeader(ByteArrayInputStream(ascii("GET / HT")), 4096))
+
+  test("a response head parses for status and framing, and malformations blame the origin"):
+    val head = HttpResponseHead.parse(
+      ascii("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+    )
+    assertEquals(head.status, 200)
+    assertEquals(head.bodyFraming("GET"), BodyFraming.Length(5))
+    // Origin-side malformations are IOExceptions — the 502 blames the world, never the client.
+    intercept[IOException](HttpResponseHead.parse(ascii("ICY 200 OK\r\n\r\n")))
+    intercept[IOException](HttpResponseHead.parse(ascii("HTTP/1.1 abc OK\r\n\r\n")))
+
+  test("response framing: HEAD and status codes without bodies, chunked, and the refusals"):
+    def head(lines: String): HttpResponseHead = HttpResponseHead.parse(ascii(lines))
+
+    assertEquals(head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n").bodyFraming("HEAD"), BodyFraming.Empty)
+    assertEquals(head("HTTP/1.1 304 Not Modified\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
+    assertEquals(head("HTTP/1.1 204 No Content\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
+    assertEquals(
+      head("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").bodyFraming("GET"),
+      BodyFraming.Chunked
+    )
+    // No framing header: the body runs to the connection's end — this proxy sends
+    // Connection: close upstream, so EOF is the terminator there, not a truncation.
+    assertEquals(head("HTTP/1.1 200 OK\r\n\r\n").bodyFraming("GET"), BodyFraming.UntilClose)
+    assertEquals(head("HTTP/1.1 100 Continue\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
+    // The request side's ambiguity refusals, as origin faults.
+    intercept[IOException](
+      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n").bodyFraming("GET")
+    )
+    intercept[IOException](
+      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n").bodyFraming("GET")
+    )
+    intercept[IOException](
+      head("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n").bodyFraming("GET")
+    )
+
+  test("the relayed response head speaks this hop's own Connection: close"):
+    // The origin's connection options describe the origin↔proxy leg; the client must hear close
+    // from this proxy, whatever the origin sent — a client that misses it reuses or pipelines,
+    // and its next request turns the proxy's close into an RST that eats the response's tail.
+    val head = HttpResponseHead.parse(
+      ascii(
+        "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n" +
+          "Content-Length: 5\r\nETag: \"abc\"\r\n\r\n"
+      )
+    )
+    val relayed = String(head.toClientBytes, StandardCharsets.ISO_8859_1)
+    assert(relayed.startsWith("HTTP/1.1 200 OK\r\n"), relayed)
+    assert(relayed.endsWith("Connection: close\r\n\r\n"), relayed)
+    assert(!relayed.toLowerCase.contains("keep-alive"), relayed)
+    assert(relayed.contains("Content-Length: 5\r\n"), relayed)
+    assert(relayed.contains("ETag: \"abc\"\r\n"), relayed)
+
+  test("headers the message's own Connection header names are this hop's to remove, both ways"):
+    // RFC 9110 §7.6.1's second half: hop-by-hop is not only the fixed set — a peer can declare
+    // any header hop-by-hop by naming it in Connection, and forwarding it would leak this hop's
+    // negotiation to the other side.
+    val request = HttpRequestHead.parse(
+      ascii(
+        "GET /x HTTP/1.1\r\nHost: docs.python.org\r\nConnection: x-tracing, close\r\n" +
+          "X-Tracing: abc\r\nAccept: */*\r\n\r\n"
+      )
+    )
+    val upstream = String(request.toUpstreamBytes, StandardCharsets.ISO_8859_1)
+    assert(!upstream.contains("X-Tracing"), upstream)
+    assert(upstream.contains("Accept: */*\r\n"), upstream)
+
+    val response = HttpResponseHead.parse(
+      ascii("HTTP/1.1 200 OK\r\nConnection: x-server-hint\r\nX-Server-Hint: h2\r\nVary: A\r\n\r\n")
+    )
+    val relayed = String(response.toClientBytes, StandardCharsets.ISO_8859_1)
+    assert(!relayed.contains("X-Server-Hint"), relayed)
+    assert(relayed.contains("Vary: A\r\n"), relayed)
+
+  test("HTTP/1.0 is refused by name, at CONNECT and inside the tunnel"):
+    // No such client exists here, and half-supporting one — it could not parse a relayed
+    // chunked response — would be a silent gap instead of this log line.
+    val connect = intercept[BadRequest](
+      ConnectRequest.parse(ascii("CONNECT github.com:443 HTTP/1.0\r\n\r\n"))
+    )
+    assertEquals(connect.getMessage, "HTTP/1.0 is not supported")
+    val inTunnel = intercept[BadRequest](
+      HttpRequestHead.parse(ascii("GET / HTTP/1.0\r\nHost: github.com\r\n\r\n"))
+    )
+    assertEquals(inTunnel.getMessage, "HTTP/1.0 is not supported")
+
+  test("Expect: 100-continue is answered by this proxy and never forwarded"):
+    // The proxy forwards every body unconditionally, so an origin must not be left waiting for
+    // one — and the client must not stall until its own 100 timeout (git's large fetch
+    // negotiation sends the Expect).
+    val head = HttpRequestHead.parse(
+      ascii(
+        "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
+          "Content-Length: 4\r\n\r\n"
+      )
+    )
+    assert(head.expectsContinue)
+    val upstream = String(head.toUpstreamBytes, StandardCharsets.ISO_8859_1)
+    assert(!upstream.toLowerCase.contains("expect"), upstream)
+    assert(!HttpRequestHead.parse(ascii("GET /x HTTP/1.1\r\nHost: a.example\r\n\r\n")).expectsContinue)
+
+  test("forwardResponseBody relays complete bodies and turns early EOF into TruncatedResponse"):
+    // The invisible-kill fix: an upstream close inside a declared length must become a loggable
+    // failure, never a quiet end the client can mistake for a completed response.
+    def relay(bytes: Array[Byte], framing: BodyFraming): Array[Byte] =
+      val out = java.io.ByteArrayOutputStream()
+      forwardResponseBody(ByteArrayInputStream(bytes), out, framing)
+      out.toByteArray
+
+    assertEquals(relay(ascii("hello"), BodyFraming.Length(5)).toVector, ascii("hello").toVector)
+    assertEquals(relay(ascii("anything"), BodyFraming.Empty).toVector, Vector.empty)
+    assertEquals(relay(ascii("to the end"), BodyFraming.UntilClose).toVector, ascii("to the end").toVector)
+    assertEquals(
+      relay(ascii("5\r\nhello\r\n0\r\n\r\n"), BodyFraming.Chunked).toVector,
+      ascii("5\r\nhello\r\n0\r\n\r\n").toVector
+    )
+
+    val short = intercept[TruncatedResponse](relay(ascii("hel"), BodyFraming.Length(5)))
+    assert(short.getMessage.contains("truncated"), short.getMessage)
+    intercept[TruncatedResponse](relay(ascii("5\r\nhel"), BodyFraming.Chunked))
+    // An origin whose chunking cannot be parsed is the same abort, not a 400 at the client.
+    intercept[TruncatedResponse](relay(ascii("zz\r\n"), BodyFraming.Chunked))
+
+  // ---------------------------------------------------------------------------
+  // The relay on real sockets: loopback pairs, a thread playing the origin, the in-tunnel client
+  // observed on the wire. These are the tests that catch what head-level assertions cannot — the
+  // bytes a client actually receives, and what a straggling client does to the close.
+
+  private def socketPair(): (java.net.Socket, java.net.Socket) =
+    val server = java.net.ServerSocket(0, 1, InetAddress.getLoopbackAddress)
+    val connecting = java.net.Socket(InetAddress.getLoopbackAddress, server.getLocalPort)
+    val accepted = server.accept()
+    server.close()
+    (connecting, accepted)
+
+  private def playOrigin(socket: java.net.Socket, response: Array[Byte]): Thread =
+    Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(socket.getInputStream, 64 * 1024)
+        socket.getOutputStream.write(response)
+        socket.getOutputStream.close()
+      catch case _: Exception => ()
+
+  test("relayInspected puts this hop's close on the wire and survives a pipelined straggler"):
+    val (client, clientPeer) = socketPair()
+    val (upstream, upstreamPeer) = socketPair()
+    val origin = playOrigin(
+      upstreamPeer,
+      ascii("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhello")
+    )
+    // The client pipelines a second request past the close notice, then half-closes: the drain
+    // must consume it so the proxy's close stays a clean FIN, never an RST eating the tail.
+    clientPeer.getOutputStream.write(ascii("GET /again HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    relayInspected(client, upstream, "docs.python.org", head)
+    client.close()
+    origin.join()
+
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.contains("Connection: close\r\n"), received)
+    assert(!received.toLowerCase.contains("keep-alive"), received)
+    assert(received.endsWith("\r\n\r\nhello"), received)
+
+  test("relayInspected turns an origin that quits mid-body into TruncatedResponse"):
+    val (client, clientPeer) = socketPair()
+    val (upstream, upstreamPeer) = socketPair()
+    val origin = playOrigin(
+      upstreamPeer,
+      ascii("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf")
+    )
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    intercept[TruncatedResponse]:
+      relayInspected(client, upstream, "docs.python.org", head)
+    origin.join()
+
+  test("relayInspected answers Expect: 100-continue before the origin says anything"):
+    val (client, clientPeer) = socketPair()
+    val (upstream, upstreamPeer) = socketPair()
+    // The origin answers only after the whole request (head and body) arrives, so a 100 in front
+    // of its response can only have come from the proxy.
+    val origin = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(upstreamPeer.getInputStream, 64 * 1024)
+        val body = new Array[Byte](4)
+        upstreamPeer.getInputStream.readNBytes(body, 0, 4)
+        upstreamPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+        upstreamPeer.getOutputStream.close()
+      catch case _: Exception => ()
+    clientPeer.getOutputStream.write(ascii("ping"))
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(
+      ascii(
+        "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
+          "Content-Length: 4\r\n\r\n"
+      )
+    )
+    relayInspected(client, upstream, "github.com", head)
+    client.close()
+    origin.join()
+
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
+    assert(received.endsWith("\r\n\r\nok"), received)
+
+  test("relayInspected forwards an origin's own 1xx and frames the body by the final head"):
+    val (client, clientPeer) = socketPair()
+    val (upstream, upstreamPeer) = socketPair()
+    val origin = playOrigin(
+      upstreamPeer,
+      ascii(
+        "HTTP/1.1 100 Continue\r\n\r\n" +
+          "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata"
+      )
+    )
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    relayInspected(client, upstream, "docs.python.org", head)
+    client.close()
+    origin.join()
+
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
+    assert(received.contains("HTTP/1.1 200 OK\r\n"), received)
+    assert(received.endsWith("\r\n\r\ndata"), received)
 
   test("TLS ClientHello extracts SNI"):
     val bytes = clientHello("api.anthropic.com")
@@ -388,13 +679,30 @@ class AgentEgressProxyTest extends munit.FunSuite:
         64 * 1024
       )
 
-  test("every inspected host is one the proxy is allowed to reach"):
+  test("the built-in tiers are disjoint, read-write is the agent endpoints, tags pinned"):
+    // Disjointness is load-bearing (resolveTiers would refuse an overlap the lists shipped
+    // with); the read-write pin is the privacy boundary: the opaque tier is the hosts whose TLS
+    // must not be read — the agent endpoints — and not one host more. The tag pins bound each
+    // POST allowance to the hosts that genuinely serve the operation.
+    assertEquals(DefaultReadWriteHosts.intersect(DefaultReadOnlyHosts.keySet), Set.empty[String])
     assertEquals(
-      DefaultInspectedHosts -- DefaultAllowedHosts,
-      Set.empty[String]
+      DefaultReadWriteHosts,
+      Set(
+        "api.anthropic.com", "claude.ai", "platform.claude.com",
+        "api.openai.com", "auth.openai.com", "chatgpt.com",
+        "accounts.google.com", "oauth2.googleapis.com", "cloudcode-pa.googleapis.com"
+      )
     )
+    assertEquals(
+      builtinGitHosts,
+      Set(
+        "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
+        "codeload.github.com", "api.github.com", "codeberg.org", "gitlab.com"
+      )
+    )
+    assertEquals(tiersOf().tagged("npm-audit"), Set("registry.npmjs.org"))
 
-  test("the leaf must name exactly the built-in inspected set, in either direction"):
+  test("the leaf must name exactly the inspected hosts, in either direction"):
     val required = Set("github.com", "gitlab.com")
 
     assertEquals(TlsInspection.inspectedNamesError(required, required), None)
@@ -411,6 +719,100 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Both at once report both.
     val both = TlsInspection.inspectedNamesError(Set("github.com", "gist.github.com"), required)
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
+
+  test("a read-only inspected host allows reading and nothing else"):
+    // The tier exists for storage.googleapis.com: all of GCS, where an attacker-signed URL
+    // accepts writes — so unlike a =git-tagged host there is no POST exception at all. The sharp case is a
+    // POST whose path mimics git-upload-pack: an object name is anyone's to choose, and it must
+    // NOT ride the =git-fetch rule through.
+    def storage(request: String): Unit =
+      authorizeInspectedRequest("storage.googleapis.com", head(request), Set.empty)
+
+    storage("GET /bucket/blobs/sha256:abc?X-Goog-Signature=x HTTP/1.1\r\nHost: storage.googleapis.com\r\n\r\n")
+    storage("HEAD /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\n\r\n")
+
+    Vector("PUT", "POST", "PATCH", "DELETE").foreach: method =>
+      intercept[PolicyViolation]:
+        storage(
+          s"$method /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+        )
+    intercept[PolicyViolation]:
+      storage(
+        "POST /bucket/x/git-upload-pack HTTP/1.1\r\n" +
+          "Host: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+      )
+    // The user-facing concern is not the method name but the channel: a GET carrying a body is
+    // an upload wearing a read method, and is refused on every inspected host — the fact named,
+    // never a git host blamed for one that is not.
+    val bodied = intercept[PolicyViolation]:
+      storage(
+        "GET /bucket/object HTTP/1.1\r\n" +
+          "Host: storage.googleapis.com\r\nContent-Length: 9\r\n\r\n"
+      )
+    assert(bodied.getMessage.contains("request body"), bodied.getMessage)
+
+    // The other refusal branches carry the tier in their wording too.
+    val optioned = intercept[PolicyViolation]:
+      storage(
+        "OPTIONS /bucket HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+      )
+    assert(optioned.getMessage.contains("read-only host"), optioned.getMessage)
+
+    // Uniform deny-side rules still apply: push ref discovery is refused here as anywhere.
+    intercept[PolicyViolation]:
+      storage(
+        "GET /x/info/refs?service=git-receive-pack HTTP/1.1\r\n" +
+          "Host: storage.googleapis.com\r\n\r\n"
+      )
+
+    // A documentation site wears the same tier: reads pass, anything else does not.
+    authorizeInspectedRequest(
+      "developer.mozilla.org",
+      head("GET /en-US/docs/Web HTTP/1.1\r\nHost: developer.mozilla.org\r\n\r\n"),
+      Set.empty
+    )
+    intercept[PolicyViolation]:
+      authorizeInspectedRequest(
+        "developer.mozilla.org",
+        head("POST /api/x HTTP/1.1\r\nHost: developer.mozilla.org\r\nContent-Length: 0\r\n\r\n"),
+        Set.empty
+      )
+
+    // A package registry wears the tier too — security is not traded for performance — so a
+    // fetch reads, npm's measured install-time audit POST is its =npm-audit allowance, and an
+    // older npm's endpoint (or any other POST) earns an honest refusal.
+    authorizeInspectedRequest(
+      "registry.npmjs.org",
+      head("GET /lodash HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n"),
+      Set("npm-audit")
+    )
+    authorizeInspectedRequest(
+      "registry.npmjs.org",
+      head(
+        s"POST $NpmAuditPath HTTP/1.1\r\n" +
+          "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n"
+      ),
+      Set("npm-audit")
+    )
+    val oldNpm = intercept[PolicyViolation]:
+      authorizeInspectedRequest(
+        "registry.npmjs.org",
+        head(
+          "POST /-/npm/v1/security/audits/quick HTTP/1.1\r\n" +
+            "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n"
+        ),
+        Set("npm-audit")
+      )
+    assert(oldNpm.getMessage.contains("read-only path"), oldNpm.getMessage)
+    // The =npm-audit allowance opens nothing on a =git-fetch host, and vice versa.
+    intercept[PolicyViolation]:
+      authorizeInspectedRequest(
+        "github.com",
+        head(
+          s"POST $NpmAuditPath HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+        ),
+        Set("git-fetch")
+      )
 
   test("HTTP request head parses a request line and its headers"):
     val request = head(
@@ -438,7 +840,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       head("GET / HTTP/1.1\r\nHost: github.com\r\n continued\r\n\r\n")
 
-  test("reading a forge is allowed"):
+  test("reading a =git-tagged host is allowed"):
     inspected("GET /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(
@@ -473,7 +875,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       head(
         "POST /group/subgroup/project.git/git-upload-pack HTTP/1.1\r\n" +
           "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n"
-      )
+      ),
+      Set("git-fetch")
     )
 
     intercept[PolicyViolation]:
@@ -482,7 +885,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
         head(
           "POST /group/subgroup/project.git/git-receive-pack HTTP/1.1\r\n" +
             "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n"
-        )
+        ),
+        Set("git-fetch")
       )
 
   test("git push ref discovery is refused even though it is a GET"):
@@ -601,7 +1005,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val forwarded =
       String(
         head(
-          "GET /owner/repo HTTP/1.0\r\n" +
+          "GET /owner/repo HTTP/1.1\r\n" +
             "Host: github.com\r\n" +
             "Proxy-Connection: keep-alive\r\n" +
             "Proxy-Authorization: Basic x\r\n" +
@@ -628,6 +1032,30 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       readCrLfLine(ByteArrayInputStream(ascii("0123456789\r\n")), 4)
 
+  test("audit lines are verb host method [target] tail, with - for fields never learned"):
+    // The stable head SECURITY.md ("The audit line grammar") documents: fields 1-3 always
+    // present, the target exactly when a parsed inspected request exists, the rest human text.
+    assertEquals(
+      auditLine("allow", "github.com", "GET", "/r?tab=readme", "-> 140.82.112.3"),
+      "allow github.com GET /r?tab=readme -> 140.82.112.3"
+    )
+    assertEquals(
+      auditLine("allow", "api.anthropic.com", "CONNECT", "", "-> 160.79.104.10"),
+      "allow api.anthropic.com CONNECT -> 160.79.104.10"
+    )
+    assertEquals(
+      auditLine("deny", "tracker.example", "CONNECT", "", "host not allowed"),
+      "deny tracker.example CONNECT host not allowed"
+    )
+    assertEquals(
+      auditLine("deny", "-", "-", "", "invalid CONNECT port"),
+      "deny - - invalid CONNECT port"
+    )
+    assertEquals(
+      auditLine("deny", "github.com", "POST", "/r.git/git-receive-pack", "read-only path"),
+      "deny github.com POST /r.git/git-receive-pack read-only path"
+    )
+
   test("the audit tee writes and flushes every byte to both sinks"):
     val a = java.io.ByteArrayOutputStream()
     val b = java.io.ByteArrayOutputStream()
@@ -643,8 +1071,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
+  /** The built-in =git-fetch hosts, as the resolved default policy carries them. */
+  private lazy val builtinGitHosts: Set[String] = tiersOf().tagged("git-fetch")
+
   private def inspected(value: String): Unit =
-    authorizeInspectedRequest("github.com", head(value))
+    authorizeInspectedRequest("github.com", head(value), Set("git-fetch"))
 
   private def parseConnect(value: String): ConnectRequest =
     ConnectRequest.parse(ascii(value))

@@ -46,6 +46,12 @@ LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
 LABEL org.opencontainers.image.description="CONNECT-only allowlisting egress proxy for ko-agent-sandbox"
 LABEL org.opencontainers.image.base.name="gcr.io/distroless/java25-debian13:nonroot"
 
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
+
 # The application jar plus the Scala library jars its manifest Class-Path names. See the `dist` task in app/build.sbt.
 COPY --from=build /build/app/target/dist /opt/agent-egress-proxy
 

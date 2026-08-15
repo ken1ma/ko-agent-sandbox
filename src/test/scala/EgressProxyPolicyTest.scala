@@ -3,6 +3,8 @@
 
 package agentsandbox.launcher
 
+import java.nio.file.{Files, Paths}
+
 import EgressProxyPolicy.*
 
 class EgressProxyPolicyTest extends munit.FunSuite:
@@ -31,19 +33,59 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // The banner is read every session; a thousand characters of hostnames is a line people learn
     // to skip, and skipping it is how an unexpected policy goes unnoticed.
     assertEquals(
-      policyCounts("allowed hosts (75): a.example b.example\ntls inspection (7): github.com"),
-      "allowed hosts (75); tls inspection (7)"
-    )
-    // A line carrying a reason rather than a list is not shortened — there is nothing to drop.
-    assertEquals(
       policyCounts(
-        "allowed hosts (2): a.example b.example\n" +
-          "tls inspection: none; every allowed host is an opaque tunnel"
+        "read-write hosts (2): a.example b.example\nread-only hosts (1): github.com=git-fetch"
       ),
-      "allowed hosts (2); tls inspection: none; every allowed host is an opaque tunnel"
+      "read-write hosts (2); read-only hosts (1)"
     )
+    // A line with no count is not shortened — there is nothing to drop.
+    assertEquals(policyCounts("some reason instead"), "some reason instead")
     // Whatever the proxy says, no hostname survives into the banner.
-    assert(!policyCounts("allowed hosts (1): secret.example").contains("secret.example"))
+    assert(!policyCounts("read-only hosts (1): secret.example").contains("secret.example"))
+
+  test("the policy directory reads present tier files, flattened, in tier order"):
+    val dir = Files.createTempDirectory("egress-hosts")
+    Files.writeString(dir.resolve("blocked"), "gitlab.com\n**.example.org # a comment\n")
+    Files.writeString(dir.resolve("read-only"), "+ghcr.io\n")
+    assertEquals(
+      readPolicyFiles(dir),
+      Right(Vector("read-only" -> "+ghcr.io", "blocked" -> "gitlab.com **.example.org"))
+    )
+
+  test("a missing policy directory is an empty policy"):
+    assertEquals(readPolicyFiles(Paths.get("/nonexistent/egress-hosts")), Right(Vector.empty))
+
+  test("the policy directory's refused shapes each name their reason"):
+    // Every one of these would otherwise be silently ignored or misread config.
+    val parent = Files.createTempDirectory("policy-shapes")
+
+    // The retired single-file form: a policy that must never be skipped unseen.
+    val asFile = parent.resolve("egress-hosts")
+    Files.writeString(asFile, "+ghcr.io\n")
+    assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
+    Files.delete(asFile)
+
+    // A typo'd tier name configures nothing.
+    val dir = Files.createDirectory(parent.resolve("egress-hosts"))
+    Files.writeString(dir.resolve("read-onyl"), "+ghcr.io\n")
+    assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
+    Files.delete(dir.resolve("read-onyl"))
+
+    // A symlinked tier file: the read must see the bytes the sandbox's mount will show.
+    Files.createSymbolicLink(dir.resolve("blocked"), parent.resolve("elsewhere"))
+    assert(readPolicyFiles(dir).swap.exists(_.contains("symlink")))
+    Files.delete(dir.resolve("blocked"))
+
+    // Present but empty: more likely a forgotten edit than a deliberate no-op.
+    Files.writeString(dir.resolve("read-write"), "# only a comment\n")
+    assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
+
+  test("the policy env args carry each file to its tier variable"):
+    // The dry run and the proxy container get these same args, so what was vetted is enforced.
+    assertEquals(
+      policyEnvArgs(Vector("read-write" -> "+api.example", "blocked" -> ".defaults")),
+      Vector("--env=EGRESS_READ_WRITE_HOSTS=+api.example", "--env=EGRESS_BLOCKED_HOSTS=.defaults")
+    )
 
   test("log pruning keeps the newest files and leaves room for the new one"):
     val names = Vector(

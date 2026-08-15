@@ -18,7 +18,7 @@ import IPAddrHelper.normalizeHost
 /**
  * The TLS surface: parsing a ClientHello within a fixed byte budget to get
  * at its SNI, the identity check that ties that SNI to the CONNECT target,
- * and TlsInspection — the MITM for the forge hosts.
+ * and TlsInspection — the MITM for the inspected hosts.
  */
 object TLSHelper:
 
@@ -27,7 +27,7 @@ object TLSHelper:
     hello: TlsClientHello
   ): Unit =
     if hello.echPresent then
-      throw PolicyViolation("TLS Encrypted ClientHello is not allowed")
+      throw PolicyViolation("encrypted ClientHello")
 
     val sni =
       hello.serverName match
@@ -41,9 +41,7 @@ object TLSHelper:
           throw PolicyViolation("TLS ClientHello has no SNI")
 
     if sni != connectHost then
-      throw PolicyViolation(
-        s"CONNECT host $connectHost does not match TLS SNI $sni"
-      )
+      throw PolicyViolation(s"SNI $sni differs from target")
 
   /**
    * The MITM, and the one place holding a private key — the leaf's only.
@@ -105,17 +103,17 @@ object TLSHelper:
     def load(
       certificate: Path,
       privateKey: Path,
-      hosts: Set[String],
-      requiredNames: Set[String]
+      hosts: Set[String]
     ): TlsInspection =
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
 
-      // Exact equality with the built-in inspected set, not mere coverage of `hosts` (which a policy may have
-      // narrowed): a missing name would surface as an inexplicable certificate error inside the sandbox, and an extra
-      // one means the launcher expects an inspection this proxy would not perform — that host would tunnel opaquely,
-      // writable. Refusing to start says so here instead, whichever direction drifted.
-      inspectedNamesError(subjectAlternativeNames(chain.head), requiredNames).foreach: reason =>
+      // Exact equality with the inspected tiers this policy resolves to: the launcher minted the leaf from the same
+      // policy's --print-policy, so a mismatch in either direction is drift — a missing name would surface as an
+      // inexplicable certificate error inside the sandbox, and an extra one means the launcher expects an inspection
+      // this proxy would not perform; that host would tunnel opaquely, writable. Refusing to start says so here
+      // instead, whichever direction drifted.
+      inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 
       val password = Array.emptyCharArray
@@ -146,7 +144,7 @@ object TLSHelper:
             Option.when(extra.nonEmpty)(
               s"names ${extra.mkString(" ")}, which this proxy does not inspect"
             )
-        Some(s"must name exactly the built-in inspected hosts; it ${reasons.mkString(", and ")}")
+        Some(s"must name exactly the hosts this policy inspects; it ${reasons.mkString(", and ")}")
 
     def readCertificateChain(path: Path): Vector[X509Certificate] =
       val stream = Files.newInputStream(path)
