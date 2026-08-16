@@ -119,14 +119,38 @@ stamp the proxy's presence and software onto every inspected request for every o
 metadata this design sends nowhere, and some origins vary caching behavior on it. The client side
 is not deceived: it addressed the proxy by CONNECT.
 
+### No test hook that pauses a launch mid-flight
+
+The workspace filter's reference count has one window worth attacking: a launch between its mount
+and its `podman create`, where the marker exists and the container does not (`KoAgentFs`, "The
+workspace FUSE filter's mount lifecycle"). Arranging that interleaving at an arbitrary instant would
+need the launcher pausable from outside — a variable read on the launch path, which would then have
+to be a known variable, documented in `--help`, and fail closed like every other one: boundary code
+carrying scaffolding for a test, on the path that decides whether the filter is mounted at all.
+
+`MountLifecycleTest` reaches the same evidence without it. The state a paused launch
+presents to a reap is a marker whose container does not exist, and that state is created directly;
+that a real launch passes through it is the marker's mtime against its container's creation time;
+and that the project lock serializes a reap against a launch is a blocked `FLOCK` request in
+`/proc/locks`, observed rather than inferred from how long a teardown took. What stays out of reach
+is an interleaving at some other instant — which a pause hook would not enumerate either, since it
+can only stop where someone thought to put it.
+
 ### No PATH-resolved host executables
 
-Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) to an absolute path
-through absolute `PATH` entries only — `HostCommands.findOnPath` — and the reaper receives
-that path as an argument, so no host-side invocation consults `PATH` or, on Windows, CreateProcess's
-implicit current-directory search. The launcher is started inside the repository being sandboxed, so
-its working directory is untrusted by definition; a `podman.exe` shipped in a checkout must never be
-what executes on the host. Prior art:
+Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries
+that are absolute **and** outside the repository being sandboxed — `HostCommands.findOnPath` — and
+the reaper receives the resolved path as an argument, so no host-side invocation consults `PATH` or,
+on Windows, CreateProcess's implicit current-directory search.
+
+Both halves of that filter are load-bearing, and neither subsumes the other. A relative entry
+(`.`, `bin`, `../tools`) resolves against the working directory, which is the checkout. An
+*absolute* entry inside the checkout does the same thing while looking deliberate: `npm run` puts
+`$PWD/node_modules/.bin` on `PATH` absolutely, and a transitive dependency can ship a `bin` entry
+named `podman` without executing a line of its own code — `--ignore-scripts` and all. The launcher
+would then be the first thing to run it, on the host, before any confinement exists. Absoluteness
+is not consent, and a repository must never be what supplies the host's container runtime. Entries
+are compared canonically, so the rule is not one `ln -s` from decorative. Prior art:
 
 - https://github.com/docker/sbx-releases/issues/392
 
@@ -180,7 +204,7 @@ are linked inline where that decision is recorded; these are the broader sources
   model: https://www.anthropic.com/engineering/claude-code-sandboxing
   https://docs.anthropic.com/en/docs/claude-code/settings
 - Stripe Smokescreen — mature egress-proxy prior art; the two ACL-bypass advisories are permanent
-  regression inputs (TODO.md, "Host/authority regression corpus"):
+  regression inputs, in the proxy's `AgentEgressProxyTest`:
   https://github.com/stripe/smokescreen
   https://github.com/stripe/smokescreen/security/advisories/GHSA-qwrf-gfpj-qvj6
   https://github.com/stripe/smokescreen/security/advisories/GHSA-gcj7-j438-hjj2
@@ -188,6 +212,19 @@ are linked inline where that decision is recorded; these are the broader sources
   https://bazel.build/versions/9.1.0/docs/sandboxing
 - Agent sandbox/proxy comparisons, including credential brokering:
   https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
+
+## Naming
+
+Directory names follow the terse Unix tradition where the choice is free: an abbreviation drops
+the plural marker with the rest of the word (`doc`, like `bin`, `lib`, `src`), and a full word
+names the directory's role in the singular (`probe`, like `spec`, `vendor`, `container`), never its
+contents' count. An abbreviation is cut as short as it stays unambiguous — `conf`, not `config`.
+Where a tool mandates the name, the tool wins: Cargo's `tests/` and `examples/`, sbt's
+`src/main/resources` and `src/test`, XDG's `~/.config`. The accepted prices of `doc` over
+`docs`: SECURITY.md stays at the repository root (GitHub's community-health lookup reads only
+root, `.github/` and `docs/`); a future GitHub Pages site publishes through an Actions workflow
+rather than the branch-folder setting; a future mdoc build sets `mdocIn` instead of inheriting
+its default.
 
 ## Design principles to preserve
 

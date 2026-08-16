@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Does the filter's `ENOSYS` on extended attributes cost anything real (docs/TODO.md,
+"""Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
 "Correctness")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
 an execution vector — but the raw bind mount underneath *does* support `user.*` xattrs, so the
 question is not whether ENOSYS is safe. It is whether ENOSYS is a regression the tools notice.
@@ -13,7 +13,7 @@ column is:
     python3 xattr-probe.py
 
 Rows that differ between the two runs are what implementing xattrs would buy. Rows that fail in both
-are the environment's, not the filter's. Record the result in docs/TODO.md with the OS and podman
+are the environment's, not the filter's. Record the result in doc/TODO.md with the OS and podman
 versions, the way the name-rule and coherency probes do.
 
 Writes only under a temporary directory it removes; leaves nothing in the project.

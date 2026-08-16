@@ -8,12 +8,20 @@
 //! fail-closed classifier will freeze it — caught there as a broken git command, and worth adding
 //! here once identified.
 
-use ko_agent_fs::policy::{classify_relative_path, GitPathClass};
+use ko_agent_fs::policy::{GitPathClass, classify_relative_path};
+
+/// Where this corpus's submodule gitdirs are. Stated rather than assumed, because a submodule's
+/// name defaults to its *path*: `libs/foo` is an ordinary name, so `.git/modules/libs/foo` is one
+/// gitdir and not two levels of one, and no rule over the path alone can tell those apart
+/// (`policy::GitContext::ModuleNamespace`). The FUSE layer learns the same fact from the tree.
+/// Linked worktrees need no entry — their name is the basename of their path, always one component
+/// (`doc/git-metadata.md`, P1).
+const GITDIR_ROOTS: &[&[u8]] = &[b".git/modules/sub", b".git/modules/libs/foo"];
 
 #[track_caller]
 fn operational(path: &str) {
     assert_eq!(
-        classify_relative_path(path.as_bytes()),
+        classify_relative_path(path.as_bytes(), GITDIR_ROOTS),
         GitPathClass::Operational,
         "expected {path} to be writable"
     );
@@ -22,7 +30,7 @@ fn operational(path: &str) {
 #[track_caller]
 fn control(path: &str) {
     assert_eq!(
-        classify_relative_path(path.as_bytes()),
+        classify_relative_path(path.as_bytes(), GITDIR_ROOTS),
         GitPathClass::Control,
         "expected {path} to be frozen"
     );
@@ -57,12 +65,18 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
         ".git/objects/pack/pack-0123.pack",
         ".git/objects/ab/cdef0123456789",
         ".git/info/exclude",
-        // A submodule's own gitdir (.git/modules/<name>) re-roots, so its state is writable.
+        // A submodule's own gitdir (.git/modules/<name>) re-roots, so its *operational* state is
+        // writable — its own config, hooks and redirections are frozen, and are asserted so below.
         ".git/modules/sub/HEAD",
         ".git/modules/sub/index",
         ".git/modules/sub/refs/heads/main",
         ".git/modules/sub/objects/ab/cd",
         ".git/modules/sub/logs/HEAD",
+        // A submodule in a subdirectory — the common shape, and a two-component name.
+        ".git/modules/libs/foo/HEAD",
+        ".git/modules/libs/foo/index",
+        ".git/modules/libs/foo/objects/ab/cd",
+        ".git/modules/libs/foo/refs/heads/main",
         // A linked worktree's gitdir (.git/worktrees/<name>) re-roots; its per-worktree state too.
         ".git/worktrees/wt/HEAD",
         ".git/worktrees/wt/ORIG_HEAD",
@@ -84,6 +98,11 @@ fn control_state_stays_frozen() {
         // A submodule gitdir's own config and hooks, reached through the re-root.
         ".git/modules/sub/config",
         ".git/modules/sub/hooks/pre-commit",
+        ".git/modules/libs/foo/config",
+        ".git/modules/libs/foo/hooks/pre-commit",
+        // The namespace between `modules` and the gitdir holds only gitdirs, so nothing is written
+        // directly in it — and freezing it is what stops a `HEAD` being planted there.
+        ".git/modules/libs",
         // A worktree's redirection markers — re-aiming these would relocate config/hooks resolution.
         ".git/worktrees/wt/gitdir",
         ".git/worktrees/wt/commondir",
@@ -98,7 +117,7 @@ fn control_state_stays_frozen() {
 
 #[test]
 fn rebase_and_sequencer_todo_state_is_frozen() {
-    // Frozen like hooks despite git writing them constantly (`docs/git-metadata.md`, group 1): the
+    // Frozen like hooks despite git writing them constantly (`doc/git-metadata.md`, group 1): the
     // one place security overrides compatibility, so those commands do not work in /workspace.
     for path in [
         ".git/rebase-merge/git-rebase-todo",

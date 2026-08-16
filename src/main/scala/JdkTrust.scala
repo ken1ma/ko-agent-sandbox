@@ -1,8 +1,9 @@
-// Making JVMs trust the egress proxy's inspection CA. A JVM reads a `cacerts` keystore, so the PEM
-// bundle and the SSL_CERT_FILE family that cover everything else in the sandbox mean nothing to it.
-// This file locates the image's JDK, merges the CA into that JDK's own store, and hands the launch
-// the mount that puts the result back. The one JVM the launcher cannot reach — installed by the
-// agent itself — gets the same CA from inside, via the image's sandbox-trust-ca script.
+// Making the image's JVM usable: trusting the egress proxy's inspection CA, and reaching the proxy
+// at all. A JVM reads a `cacerts` keystore and a `net.properties` file, so the PEM bundle and the
+// SSL_CERT_FILE / HTTPS_PROXY families that cover everything else in the sandbox mean nothing to
+// it. Both halves are the same move: locate the image's JDK, take its own file, add this session's
+// part, and hand the launch a mount that puts the result back. The one JVM the launcher cannot
+// reach — installed by the agent itself — gets both from inside, via `sandbox-prepare-jdk`.
 //
 // Java 25's standard library alone, deliberately: KeyStore and CertificateFactory are JCA, and
 // BouncyCastleHelper's contract is to be the only file that imports org.bouncycastle. What
@@ -12,6 +13,7 @@
 package agentsandbox.launcher
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.KeyStore
@@ -110,3 +112,65 @@ object JdkTrust:
               fail(s"error: could not add this project's CA to the image's $cacertsPath\n$ex")
 
         Vector(s"--volume=$cacertsFile:$cacertsPath:ro")
+
+  /**
+   * The mount that makes the image's JDK reach the egress proxy. A JVM ignores `HTTPS_PROXY` and
+   * wants `https.proxyHost`/`https.proxyPort`, which `$JAVA_HOME/conf/net.properties` supplies to
+   * the default `ProxySelector` — without setting a system property, so unlike `JAVA_TOOL_OPTIONS`
+   * it adds no banner to every JVM start for build output to trip over. Measured: with these lines
+   * in place the selector answers the proxy and `System.getProperty("https.proxyHost")` is still
+   * null.
+   *
+   * Appended rather than substituted into the commented-out lines a JDK ships: a properties file
+   * takes the last assignment of a key, so this holds whatever the image's own file says and needs
+   * no pattern to match against it. `http.nonProxyHosts` is left as shipped — it already spells
+   * the loopback exemptions NO_PROXY carries.
+   *
+   * Keyed on the image and the address alone: unlike the trust store this has nothing per-project
+   * in it, so the CA rotating does not rebuild it.
+   */
+  def jdkProxyArgs(
+    podman: String,
+    image: String,
+    imageEnv: String,
+    tlsDir: Path,
+    imageId: String,
+    proxyHost: String,
+    proxyPort: Int
+  ): Vector[String] =
+    javaHomeOf(imageEnv) match
+      case None => Vector.empty
+      case Some(javaHome) =>
+        val netPropertiesPath = s"$javaHome/conf/net.properties"
+        val netPropertiesFile = tlsDir.resolve("net.properties")
+        val stampFile = tlsDir.resolve("net.properties.stamp")
+        val stamp = s"$imageId $proxyHost:$proxyPort"
+
+        if !Files.isRegularFile(netPropertiesFile) || Files.size(netPropertiesFile) == 0L
+          || firstLine(stampFile) != stamp
+        then
+          val shipped = run(
+            podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", netPropertiesPath
+          )
+          if !shipped.ok || shipped.out.isEmpty then
+            fail(s"error: could not read $netPropertiesPath out of $image\n${shipped.err}")
+          writeReadable(
+            netPropertiesFile,
+            String(shipped.out, StandardCharsets.UTF_8).stripLineEnd + "\n"
+              + netProxyProperties(proxyHost, proxyPort)
+          )
+          writeReadable(stampFile, stamp + "\n")
+
+        Vector(s"--volume=$netPropertiesFile:$netPropertiesPath:ro")
+
+  /** The lines appended to the JDK's `net.properties`; separated so a test can read them without a
+    * podman image. */
+  def netProxyProperties(proxyHost: String, proxyPort: Int): String =
+    s"""
+       |# ko-agent-sandbox: the proxy is the only route out, and a JVM reads none of the
+       |# HTTPS_PROXY family.
+       |http.proxyHost=$proxyHost
+       |http.proxyPort=$proxyPort
+       |https.proxyHost=$proxyHost
+       |https.proxyPort=$proxyPort
+       |""".stripMargin

@@ -1,6 +1,7 @@
 //! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String`
 //! (Linux names are byte sequences). This is the whole security surface worth auditing closely;
-//! `docs/git-metadata.md` is the reasoning it transcribes.
+//! `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
+//! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]).
 //!
 //! The plumbing (the FUSE layer) never re-derives protection from a path string. It caches one
 //! [`GitContext`] per inode, computed once at lookup from the parent's context plus the child's
@@ -16,7 +17,7 @@
 /// [`authorize_create`] instead, because the `.git` name rule has to see the new name. A truncate
 /// arrives as `open(O_TRUNC)` or a `setattr` carrying a size, so it is `Write` or `SetAttr` by the
 /// time it reaches here. Xattr variants belong here the day `setxattr`/`removexattr` are
-/// implemented at all (`docs/TODO.md`, "Correctness") and not before.
+/// implemented at all (`doc/TODO.md`, "Correctness") and not before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutation {
     Write,
@@ -45,7 +46,10 @@ pub enum GitPathClass {
     Control,
 }
 
-/// The cached position of an inode relative to Git metadata. Stored per inode by the FUSE layer.
+/// The cached position of an inode relative to the state this filter protects. Stored per inode by
+/// the FUSE layer. Git metadata is the bulk of it and `doc/git-metadata.md` the reasoning; the
+/// launcher's own configuration directory is protected here too, for the reason
+/// [`is_sandbox_config_name`] gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitContext {
     /// Not inside any gitdir — ordinary writable project data.
@@ -53,6 +57,20 @@ pub enum GitContext {
     /// Inside a gitdir; the path components relative to that gitdir's root. An empty vector is the
     /// gitdir entry itself — the `.git` directory root or a `.git` pointer file — which is control.
     InGit(Vec<Vec<u8>>),
+    /// A directory under `<gitdir>/modules` that is not itself a gitdir root — the namespace a
+    /// submodule whose name carries a `/` creates.
+    ///
+    /// It exists because a submodule's name defaults to its *path*, so `libs/foo` puts the real
+    /// gitdir at `modules/libs/foo` and leaves `modules/libs` holding nothing but other gitdirs.
+    /// Names alone cannot say which of the two a directory is — `modules/a/b` is `a/b`'s gitdir if
+    /// the submodule is at `a/b`, and `a`'s own subdirectory if it is at `a` — so this is the one
+    /// position the core cannot derive, and [`gitdir_root`] is what the plumbing swaps in once it
+    /// has looked. Control until then, which is what stops a namespace being written into and so
+    /// made to *look* like a gitdir.
+    ModuleNamespace,
+    /// The `.ko-agent-sandbox` entry itself or anything below it. No depth is tracked because
+    /// nothing in there is writable: unlike a gitdir, it holds no operational state.
+    SandboxConfig,
 }
 
 impl GitContext {
@@ -77,7 +95,7 @@ const IGNORABLE: &[&[u8]] = &[
 ///
 /// Conservative superset, on every platform, because the backing store may be a case-insensitive
 /// host filesystem (macOS APFS, Windows NTFS) that resolves `lstat(".git")` to a differently-cased
-/// or trailing-punctuated entry the sandbox created (`docs/git-metadata.md`, "The name rule").
+/// or trailing-punctuated entry the sandbox created (`doc/git-metadata.md`, "The name rule").
 ///
 /// Definite rule: strip trailing `.` and space (Win32 ignores them), then ASCII case-fold and
 /// compare to `.git`. The four target bytes are ASCII.
@@ -97,10 +115,34 @@ const IGNORABLE: &[&[u8]] = &[
 ///
 /// This stays a small explicit rule rather than a case-fold table, because the fold set cannot be
 /// known statically anyway: NTFS folds through a *per-volume* `$UpCase` table. The superset is the
-/// belt; the per-backing empirical test (`docs/git-metadata.md`) is the braces.
+/// belt; the per-backing empirical test (`doc/git-metadata.md`) is the braces.
 ///
 /// Byte-safe: a non-UTF-8 `name` simply fails to match `.git` and is allowed, never a panic.
 pub fn is_dotgit_name(name: &[u8]) -> bool {
+    folds_to(name, b".git")
+}
+
+/// Whether `name` must be refused as a new `.ko-agent-sandbox` entry — the launcher's own
+/// boundary configuration, which a session must never write because the *next* launch reads it
+/// (`SECURITY.md`, "A project loosening its own confinement"). The launcher mounts that directory
+/// back over itself read-only, and this rule is what holds when that mount is not there: a mount
+/// cannot follow its source, so a host that removes or replaces the directory takes the mount with
+/// it and leaves the path writable inside an otherwise writable workspace.
+///
+/// At any depth, not only the workspace root, because a launch takes its policy from whatever
+/// directory it starts in: a session at the repository root planting `apps/web/.ko-agent-sandbox`
+/// would be writing boundary configuration for a later launch from `apps/web`. The host creates
+/// these directories, as it creates repositories.
+///
+/// Folded exactly like `.git` and for the same reason: the launcher resolves the name on the host,
+/// so a case-insensitive backing would find `.KO-AGENT-SANDBOX` under it.
+pub fn is_sandbox_config_name(name: &[u8]) -> bool {
+    folds_to(name, b".ko-agent-sandbox")
+}
+
+/// The single fold behind every reserved-name rule, so no two of them can disagree about what a
+/// backing filesystem might treat as the same name. `target` is ASCII.
+fn folds_to(name: &[u8], target: &[u8]) -> bool {
     // Fold the i-family (UTF-8: U+0130 = C4 B0, U+0131 = C4 B1) to ASCII 'i' and drop ignorables,
     // copying to a small buffer.
     let mut folded: Vec<u8> = Vec::with_capacity(name.len());
@@ -127,7 +169,14 @@ pub fn is_dotgit_name(name: &[u8]) -> bool {
         end -= 1;
     }
 
-    folded[..end].eq_ignore_ascii_case(b".git")
+    folded[..end].eq_ignore_ascii_case(target)
+}
+
+/// The context of a directory the plumbing has identified as a gitdir root in its own right. The
+/// one position this core cannot derive from names ([`GitContext::ModuleNamespace`] has why), and
+/// so the one it is told.
+pub fn gitdir_root() -> GitContext {
+    GitContext::InGit(Vec::new())
 }
 
 /// Compute a child's context from its parent's context and the child's raw name. O(1), called once
@@ -135,22 +184,35 @@ pub fn is_dotgit_name(name: &[u8]) -> bool {
 ///
 /// The subtle case is nested gitdirs: `<gitdir>/modules/<name>` and `<gitdir>/worktrees/<name>` are
 /// themselves gitdirs, so classification must restart at `<name>` — otherwise a submodule's
-/// writable `objects/` would be judged against the outer gitdir's layout and wrongly frozen. When
-/// the parent is exactly `<gitdir>/modules` or `<gitdir>/worktrees`, the child re-roots to a fresh
-/// gitdir. This composes recursively for nested submodules.
+/// writable `objects/` would be judged against the outer gitdir's layout and wrongly frozen.
+///
+/// The two differ in how far `<name>` reaches, which is a measured fact rather than a symmetry
+/// (`doc/git-metadata.md`, P1). A linked worktree is named for the basename of its path, so it
+/// is always one component and re-roots here. A submodule is named for its whole path, so `libs/foo`
+/// is an ordinary name and the re-root point is not knowable from the path: those children become
+/// [`GitContext::ModuleNamespace`] until the plumbing says otherwise. Both compose recursively.
 pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
     match parent {
         GitContext::NotGit => {
             if is_dotgit_name(child_name) {
                 // The `.git` entry itself (directory root or pointer file) — an empty relative path.
                 GitContext::InGit(Vec::new())
+            } else if is_sandbox_config_name(child_name) {
+                GitContext::SandboxConfig
             } else {
                 GitContext::NotGit
             }
         }
+        // Everything below it, at any depth: a `.git` inside would be the launcher's business, not
+        // a repository, and there is nothing there git should discover either way.
+        GitContext::SandboxConfig => GitContext::SandboxConfig,
+        // A namespace holds only gitdirs, so its children are candidates for the same question.
+        GitContext::ModuleNamespace => GitContext::ModuleNamespace,
         GitContext::InGit(rel) => {
-            if rel.len() == 1 && (rel[0] == b"modules" || rel[0] == b"worktrees") {
-                GitContext::InGit(Vec::new())
+            if rel.len() == 1 && rel[0] == b"worktrees" {
+                gitdir_root()
+            } else if rel.len() == 1 && rel[0] == b"modules" {
+                GitContext::ModuleNamespace
             } else {
                 let mut child = rel.clone();
                 child.push(child_name.to_vec());
@@ -164,6 +226,11 @@ pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
 pub fn classify(context: &GitContext) -> GitPathClass {
     match context {
         GitContext::NotGit => GitPathClass::Operational,
+        GitContext::SandboxConfig => GitPathClass::Control,
+        // Git writes nothing directly into the namespace between `modules` and a submodule's
+        // gitdir, so freezing it costs nothing — and it is what keeps the sandbox from writing a
+        // `HEAD` there and passing the plumbing's question off as a gitdir of its own.
+        GitContext::ModuleNamespace => GitPathClass::Control,
         GitContext::InGit(rel) => {
             let refs: Vec<&[u8]> = rel.iter().map(Vec::as_slice).collect();
             classify_within_gitdir(&refs)
@@ -175,13 +242,26 @@ pub fn classify(context: &GitContext) -> GitPathClass {
 /// convenience for validation and tests — the FUSE layer never splits a path, it computes each
 /// inode's context incrementally at lookup; this reproduces the same result so tests and the
 /// real-git corpus exercise identical logic.
-pub fn classify_relative_path(rel: &[u8]) -> GitPathClass {
+///
+/// `gitdir_roots` supplies what the walk cannot derive: the workspace-relative paths of the
+/// submodule gitdirs, which the FUSE layer learns by looking at the tree
+/// ([`GitContext::ModuleNamespace`]). A caller that names none is saying there are none, and every
+/// directory under `modules/` then reads as a namespace — control, the stricter answer.
+pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClass {
     let mut context = GitContext::root();
+    let mut walked: Vec<u8> = Vec::new();
     for component in rel.split(|&byte| byte == b'/') {
         if component.is_empty() || component == b"." {
             continue;
         }
+        if !walked.is_empty() {
+            walked.push(b'/');
+        }
+        walked.extend_from_slice(component);
         context = child_context(&context, component);
+        if context == GitContext::ModuleNamespace && gitdir_roots.contains(&walked.as_slice()) {
+            context = gitdir_root();
+        }
     }
     classify(&context)
 }
@@ -253,7 +333,7 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         // git writes `<name>.lock` beside anything it locks and renames it into place, so a lock
         // inherits its target's class: `HEAD.lock` and `AUTO_MERGE.lock` are operational, while
         // `config.lock` stays control. Enumerating lockable names by hand instead freezes whichever
-        // one it forgot — `AUTO_MERGE.lock`, breaking `git merge` (`docs/git-observations.md`, P2).
+        // one it forgot — `AUTO_MERGE.lock`, breaking `git merge` (`doc/git-metadata.md`, P2).
         if let Some(base) = first.strip_suffix(b".lock") {
             return classify_within_gitdir(&[base]);
         }
@@ -269,8 +349,21 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
     if is_dotgit_name(new_name) {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
     }
+    // Named separately from the control-state refusal below, which would also catch it: the deny
+    // log's reason is what a user reads when a legitimate name is swallowed, and "control state"
+    // would send them looking through git's.
+    if is_sandbox_config_name(new_name) {
+        return Decision::Deny(
+            "protected-sandbox-config: refusing to create a .ko-agent-sandbox entry",
+        );
+    }
     if classify(&child_context(parent_ctx, new_name)) == GitPathClass::Control {
-        return Decision::Deny("protected-git-control: refusing to create control state");
+        return Decision::Deny(match parent_ctx {
+            GitContext::SandboxConfig => {
+                "protected-sandbox-config: refusing to create inside .ko-agent-sandbox"
+            }
+            _ => "protected-git-control: refusing to create control state",
+        });
     }
     Decision::Allow
 }
@@ -278,16 +371,25 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
 /// Authorize a mutation of an existing inode with context `ctx` (write/truncate/unlink/rename-to/
 /// etc.). Creation goes through [`authorize_create`] so the name rule fires.
 pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
-    if classify(ctx) == GitPathClass::Control {
-        return Decision::Deny(match op {
-            Mutation::Unlink | Mutation::Rmdir => {
-                "protected-git-control: refusing to remove control state"
-            }
-            Mutation::RenameFrom => "protected-git-control: refusing to rename control state",
-            _ => "protected-git-control: refusing to mutate control state",
-        });
+    if classify(ctx) != GitPathClass::Control {
+        return Decision::Allow;
     }
-    Decision::Allow
+    Decision::Deny(match (ctx, op) {
+        (GitContext::SandboxConfig, Mutation::Unlink | Mutation::Rmdir) => {
+            "protected-sandbox-config: refusing to remove the launcher's configuration"
+        }
+        (GitContext::SandboxConfig, Mutation::RenameFrom) => {
+            "protected-sandbox-config: refusing to rename the launcher's configuration"
+        }
+        (GitContext::SandboxConfig, _) => {
+            "protected-sandbox-config: refusing to mutate the launcher's configuration"
+        }
+        (_, Mutation::Unlink | Mutation::Rmdir) => {
+            "protected-git-control: refusing to remove control state"
+        }
+        (_, Mutation::RenameFrom) => "protected-git-control: refusing to rename control state",
+        (_, _) => "protected-git-control: refusing to mutate control state",
+    })
 }
 
 #[cfg(test)]
@@ -380,6 +482,121 @@ mod tests {
         assert!(!is_dotgit_name(b"   "));
     }
 
+    // --- The .ko-agent-sandbox name rule ------------------------------------
+
+    #[test]
+    fn the_launcher_configuration_name_is_matched_through_the_same_fold() {
+        assert!(is_sandbox_config_name(b".ko-agent-sandbox"));
+        for name in [
+            b".KO-AGENT-SANDBOX".as_slice(),
+            b".Ko-Agent-Sandbox",
+            b".ko-agent-sandbox.",
+            b".ko-agent-sandbox ",
+            b".ko-agent-sandbox. ",
+        ] {
+            assert!(is_sandbox_config_name(name), "{name:?}");
+        }
+        // An ignorable code point inside it collapses on a backing that ignores them, exactly as
+        // for `.git`; the launcher then resolves the name and finds what the sandbox wrote.
+        assert!(is_sandbox_config_name(
+            "\u{200b}.ko-agent-sandbox".as_bytes()
+        ));
+        assert!(is_sandbox_config_name(".ko-agent\u{ad}-sandbox".as_bytes()));
+    }
+
+    #[test]
+    fn names_merely_resembling_the_launcher_configuration_stay_allowed() {
+        for name in [
+            b".ko-agent-sandbox-notes".as_slice(),
+            b"ko-agent-sandbox",
+            b".ko-agent",
+            b".ko_agent_sandbox",
+            b".ko-agent-sandboxes",
+        ] {
+            assert!(!is_sandbox_config_name(name), "{name:?}");
+            assert!(!is_dotgit_name(name), "{name:?}");
+        }
+        assert!(!is_sandbox_config_name(b""));
+        assert!(!is_sandbox_config_name(&[0xff, 0xfe]));
+    }
+
+    #[test]
+    fn the_launcher_configuration_is_control_at_every_depth() {
+        // Its read-only mount is the first line and this is the second: when a host-side removal
+        // takes the mount with it, the name cannot be recreated and nothing under it can be
+        // written. Unlike a gitdir it has no operational half, so depth changes nothing.
+        assert_eq!(
+            classify_relative_path(b".ko-agent-sandbox", &[]),
+            GitPathClass::Control
+        );
+        assert_eq!(
+            classify_relative_path(b".ko-agent-sandbox/egress-hosts", &[]),
+            GitPathClass::Control
+        );
+        assert_eq!(
+            classify_relative_path(b".ko-agent-sandbox/egress-hosts/read-only", &[]),
+            GitPathClass::Control
+        );
+        assert_eq!(
+            classify_relative_path(b"apps/web/.ko-agent-sandbox/egress-hosts/read-write", &[]),
+            GitPathClass::Control
+        );
+        // A repository below it is the launcher's own business, not something to re-root into a
+        // gitdir with a writable objects/.
+        assert_eq!(
+            classify_relative_path(b".ko-agent-sandbox/.git/objects/ab/cdef", &[]),
+            GitPathClass::Control
+        );
+        // And the name is ordinary project data everywhere it is not that name.
+        assert_eq!(
+            classify_relative_path(b"docs/ko-agent-sandbox/notes.md", &[]),
+            GitPathClass::Operational
+        );
+    }
+
+    #[test]
+    fn creating_or_mutating_the_launcher_configuration_is_refused_by_its_own_reason() {
+        let root = GitContext::root();
+        assert_eq!(
+            authorize_create(&root, b".ko-agent-sandbox"),
+            Decision::Deny(
+                "protected-sandbox-config: refusing to create a .ko-agent-sandbox entry"
+            )
+        );
+        assert_eq!(
+            authorize_create(&GitContext::SandboxConfig, b"egress-hosts"),
+            Decision::Deny("protected-sandbox-config: refusing to create inside .ko-agent-sandbox")
+        );
+        assert_eq!(
+            authorize(&GitContext::SandboxConfig, Mutation::Write),
+            Decision::Deny(
+                "protected-sandbox-config: refusing to mutate the launcher's configuration"
+            )
+        );
+        assert_eq!(
+            authorize(&GitContext::SandboxConfig, Mutation::Unlink),
+            Decision::Deny(
+                "protected-sandbox-config: refusing to remove the launcher's configuration"
+            )
+        );
+        // Every mutation the enum carries, so the deny surface is the type rather than the cases
+        // thought of here. A rename's destination is not among them: it creates a name, so it goes
+        // through authorize_create above.
+        for op in [
+            Mutation::Write,
+            Mutation::SetAttr,
+            Mutation::Unlink,
+            Mutation::Rmdir,
+            Mutation::RenameFrom,
+            Mutation::Link,
+        ] {
+            assert!(
+                matches!(authorize(&GitContext::SandboxConfig, op), Decision::Deny(_)),
+                "{op:?}"
+            );
+        }
+    }
+
     // --- Context transitions (child_context) --------------------------------
 
     fn ingit(parts: &[&[u8]]) -> GitContext {
@@ -411,10 +628,70 @@ mod tests {
     }
 
     #[test]
-    fn a_submodule_gitdir_re_roots_so_its_objects_stay_writable() {
-        // .git/modules/foo is itself a gitdir; classification must restart there.
+    fn a_directory_under_modules_is_a_namespace_until_the_plumbing_says_otherwise() {
+        // Names cannot say where a submodule's gitdir begins, because its name defaults to its
+        // path. Until the plumbing looks, the answer is the strict one: a namespace, frozen — which
+        // is also what stops a `HEAD` being planted there to manufacture the answer.
         let modules = ingit(&[b"modules"]);
-        let foo = child_context(&modules, b"foo"); // .git/modules/foo
+        assert_eq!(
+            child_context(&modules, b"libs"),
+            GitContext::ModuleNamespace
+        );
+        assert_eq!(
+            child_context(&GitContext::ModuleNamespace, b"foo"),
+            GitContext::ModuleNamespace
+        );
+        assert_eq!(
+            classify(&GitContext::ModuleNamespace),
+            GitPathClass::Control
+        );
+        assert!(matches!(
+            authorize_create(&GitContext::ModuleNamespace, b"HEAD"),
+            Decision::Deny(_)
+        ));
+        for op in [Mutation::Write, Mutation::Unlink, Mutation::RenameFrom] {
+            assert!(
+                matches!(
+                    authorize(&GitContext::ModuleNamespace, op),
+                    Decision::Deny(_)
+                ),
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_submodule_name_may_carry_a_slash_and_its_gitdir_still_re_roots() {
+        // `libs/foo` is the ordinary name for a submodule at `libs/foo`, so the gitdir is two
+        // components below `modules` — and once the plumbing has identified it, everything under it
+        // classifies exactly as a top-level submodule's does.
+        let namespace = child_context(&ingit(&[b"modules"]), b"libs");
+        assert_eq!(namespace, GitContext::ModuleNamespace);
+        let foo = gitdir_root(); // what the plumbing swaps in for `.git/modules/libs/foo`
+        for (name, expected) in [
+            (b"objects".as_slice(), GitPathClass::Operational),
+            (b"refs", GitPathClass::Operational),
+            (b"HEAD", GitPathClass::Operational),
+            (b"index", GitPathClass::Operational),
+            (b"config", GitPathClass::Control),
+            (b"hooks", GitPathClass::Control),
+        ] {
+            assert_eq!(
+                classify(&child_context(&foo, name)),
+                expected,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
+
+    #[test]
+    fn a_submodule_gitdir_re_roots_so_its_objects_stay_writable() {
+        // .git/modules/foo is itself a gitdir; classification must restart there, which for a
+        // one-component name is what the plumbing's answer amounts to.
+        let modules = ingit(&[b"modules"]);
+        assert_eq!(child_context(&modules, b"foo"), GitContext::ModuleNamespace);
+        let foo = gitdir_root(); // .git/modules/foo
         assert_eq!(foo, ingit(&[]));
         // .git/modules/foo/objects/ab is operational, not frozen by the outer layout.
         let objects = child_context(&foo, b"objects");

@@ -75,7 +75,7 @@ fn incomplete_arguments_are_refused_with_usage() {
 fn a_workspace_whose_hooks_live_inside_it_is_refused_before_mounting() {
     // The startup guard, end to end through the binary: a repository whose hook directory the host
     // relocated into the worktree is refused, because no amount of per-operation filtering can
-    // protect files that live at an ordinary worktree path (`docs/git-metadata.md`).
+    // protect files that live at an ordinary worktree path (`doc/git-metadata.md`).
     let source = scratch("relocated-source");
     let mount = scratch("relocated-mount");
     fs::create_dir_all(source.join(".git")).unwrap();
@@ -119,10 +119,10 @@ fn a_hooks_path_inside_the_workspace_is_refused_before_mounting() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("core.hooksPath"),
-        "unexpected refusal: {stderr}"
-    );
+    // "hooksPath", not "core.hooksPath": the scanner reads no section headers, so the refusal names
+    // what it saw rather than the key it cannot confirm (`guard.rs`, `scan_hooks_path`).
+    assert!(stderr.contains("hooksPath"), "unexpected refusal: {stderr}");
+    assert!(stderr.contains("githooks"), "unexpected refusal: {stderr}");
 
     let _ = fs::remove_dir_all(&source);
     let _ = fs::remove_dir_all(&mount);

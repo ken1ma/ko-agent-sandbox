@@ -1,4 +1,4 @@
-//! The FUSE filesystem (model B — `docs/architecture.md`): a coherent passthrough of the backing
+//! The FUSE filesystem (model B — `doc/architecture.md`): a coherent passthrough of the backing
 //! tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
@@ -14,39 +14,41 @@
 //! Deferred: xattrs — unimplemented, so the daemon answers `ENOSYS`, which the kernel converts to
 //! `ENOTSUP` for the caller and then latches, never asking again. Tools therefore read the mount as
 //! a filesystem that simply has no extended attributes, which is an ordinary answer rather than a
-//! failure (measured: `docs/TODO.md`, "Correctness"). Also deferred: the performance mechanisms
+//! failure (measured: `doc/TODO.md`, "Correctness"). Also deferred: the performance mechanisms
 //! (READDIRPLUS, multithreading, passthrough).
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{
-    BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, SessionACL,
-    TimeOrNow, WriteFlags,
+    BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+    SessionACL, TimeOrNow, WriteFlags,
 };
 use nix::dir::Dir;
 use nix::errno::Errno as NixErrno;
-use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, ResolveFlag};
+use nix::fcntl::{AtFlags, FcntlArg, OFlag, OpenHow, ResolveFlag, fcntl, openat2};
 use nix::sys::stat::{
-    fchmodat, fstat, fstatat, mkdirat, mknodat, utimensat, FchmodatFlags, FileStat, Mode, SFlag,
-    UtimensatFlags,
+    FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags, fchmodat, fstat, fstatat, mkdirat,
+    mknodat, utimensat,
 };
 use nix::sys::time::TimeSpec;
 use nix::sys::uio::{pread, pwrite};
-use nix::unistd::{fchownat, ftruncate, linkat, symlinkat, unlinkat, Gid, Uid, UnlinkatFlags};
+use nix::unistd::{
+    Gid, Uid, UnlinkatFlags, fchownat, fdatasync, fsync, ftruncate, linkat, symlinkat, unlinkat,
+};
 
 use crate::inode::InodeTable;
-use crate::policy::{authorize, authorize_create, child_context, Decision, GitContext, Mutation};
+use crate::policy::{Decision, GitContext, Mutation, authorize, authorize_create, child_context};
 
 /// Entry/attribute TTL. Zero, always: the host writes the backing tree concurrently, so the kernel
-/// must re-ask on every access or it would serve a stale view (`docs/architecture.md`, coherency).
+/// must re-ask on every access or it would serve a stale view (`doc/architecture.md`, coherency).
 const TTL: Duration = Duration::ZERO;
 
 /// The mount options, in one place because every mount has to be the same mount: a self-test that
@@ -55,7 +57,7 @@ const TTL: Duration = Duration::ZERO;
 ///
 /// `SessionACL::All` is fuser's spelling of `allow_other`, which the daemon and the sandbox being
 /// different uids by construction makes unavoidable; `DefaultPermissions` is what keeps widening
-/// *who* may reach the mount from widening what they may do. `docs/architecture.md`, "Who may reach
+/// *who* may reach the mount from widening what they may do. `doc/architecture.md`, "Who may reach
 /// the mount", has the argument for both.
 pub fn mount_config() -> Config {
     let mut config = Config::default();
@@ -75,11 +77,39 @@ struct DirEntry {
     name: OsString,
 }
 
+/// One open file handle: the backing fd, and whether *that descriptor* currently carries
+/// `O_APPEND`.
+///
+/// It records the backing state rather than the caller's, because the caller's can change without
+/// another `open`: `fcntl(F_SETFL)` toggles `O_APPEND` on a live file description, and the kernel
+/// sends the flags as they are with every write (`fuse_write_flags` reads `f_flags`). So this is
+/// what [`Filesystem::write`] reconciles against, and the reconciliation is not cosmetic — with the
+/// two out of step, a positional write on a still-appending descriptor lands at the end and an
+/// appending write on a plain one lands at a stale offset.
+struct Handle {
+    fd: Arc<OwnedFd>,
+    append: bool,
+}
+
+/// Match a backing descriptor's `O_APPEND` to what the caller's file description carries now.
+/// Read-modify-write rather than a bare set, so the other status flags `F_SETFL` honours are left
+/// as they are.
+fn set_backing_append(fd: &OwnedFd, append: bool) -> Result<(), NixErrno> {
+    let current = OFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFL)?);
+    let wanted = if append {
+        current | OFlag::O_APPEND
+    } else {
+        current & !OFlag::O_APPEND
+    };
+    fcntl(fd, FcntlArg::F_SETFL(wanted))?;
+    Ok(())
+}
+
 struct Inner {
     table: InodeTable,
-    /// Open read handles: fh → the backing fd. `Arc` so a read can clone the handle out from under
-    /// the lock and `pread` without serializing on it.
-    handles: HashMap<u64, Arc<OwnedFd>>,
+    /// Open file handles. The fd is behind an `Arc` so a read, write or sync can clone it out from
+    /// under the lock and issue its syscall without serializing on it.
+    handles: HashMap<u64, Handle>,
     /// Open directory handles: fh → the snapshot taken at `opendir`.
     dirs: HashMap<u64, Arc<Vec<DirEntry>>>,
     next_fh: u64,
@@ -122,16 +152,33 @@ impl KoAgentFs {
     }
 
     /// Open `ino` relative to the backing root with kernel-enforced containment. `RESOLVE_IN_ROOT`
-    /// clamps `..` and every symlink to the root, so resolution cannot escape the backing tree.
+    /// clamps `..` to the root, so resolution cannot escape the backing tree.
     /// `RESOLVE_NO_MAGICLINKS` is set explicitly: `RESOLVE_IN_ROOT` only *implies* it for now, and
     /// openat2(2) says that may change. `RESOLVE_NO_XDEV` is deliberately not set — a mount the host
     /// placed inside the workspace should stay visible, and crossing into it is lateral, not an
     /// escape above the root.
+    ///
+    /// `RESOLVE_NO_SYMLINKS` is what keeps the object this resolves and the object the policy
+    /// classified the same object, and it is the flag to understand before changing anything here.
+    /// The path above names an inode by the names it was looked up under, and the tree moves after
+    /// that: the kernel goes on addressing a renamed directory by the inode it already holds, while
+    /// this walk still spells the name that directory vacated. Refusing a symlink costs nothing
+    /// legitimate, because the kernel resolves the sandbox's own symlinks — it reads the link and
+    /// looks up each resolved component in turn — so every component of a live chain is a directory
+    /// and a symlink can only appear in one that has gone stale. Following one there is exactly
+    /// what would let a name classified as ordinary project data resolve into a gitdir. With the
+    /// flag, the resolved object's path *is* the chain the context was computed from, and a stale
+    /// chain fails closed with `ELOOP` — no `DENY` line, because no policy decision was reached.
+    ///
+    /// The callers that must see a link still do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is
+    /// how `getattr` and `setattr` stat one, and `readlink` goes through its parent's fd instead.
     fn open_ino(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
         let rel = self.relpath(ino).ok_or(NixErrno::ESTALE)?;
-        let how = OpenHow::new()
-            .flags(oflag | OFlag::O_CLOEXEC)
-            .resolve(ResolveFlag::RESOLVE_IN_ROOT | ResolveFlag::RESOLVE_NO_MAGICLINKS);
+        let how = OpenHow::new().flags(oflag | OFlag::O_CLOEXEC).resolve(
+            ResolveFlag::RESOLVE_IN_ROOT
+                | ResolveFlag::RESOLVE_NO_MAGICLINKS
+                | ResolveFlag::RESOLVE_NO_SYMLINKS,
+        );
         // openat2 returns EAGAIN when it cannot prove a `..` stayed within the root under a
         // concurrent rename; the kernel expects the caller to retry. Bounded, so a relentless racer
         // cannot spin us forever — the attacker only delays their own request.
@@ -157,6 +204,35 @@ impl KoAgentFs {
             .table
             .get(ino)
             .map_or(GitContext::NotGit, |node| node.git.clone())
+    }
+
+    /// Whether `name` under `parentfd` is a gitdir root in its own right — the one position the
+    /// policy core is told rather than derives ([`GitContext::ModuleNamespace`] has why).
+    ///
+    /// Asked only where it can matter, and answered by the fact that defines a gitdir: it holds a
+    /// `HEAD`. The question is safe to answer from the tree because a namespace classifies as
+    /// control, so the sandbox cannot write a `HEAD` into one to manufacture a root — and it is
+    /// never asked again once inside a gitdir, so a `HEAD` the sandbox *can* write (under
+    /// `objects/`, say) is never a candidate. Any error answers `false`, leaving the namespace
+    /// reading, which is the stricter one.
+    fn is_gitdir_root(&self, parent: u64, parentfd: &OwnedFd, name: &OsStr, st: &FileStat) -> bool {
+        if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return false;
+        }
+        if child_context(&self.context(parent), name.as_bytes()) != GitContext::ModuleNamespace {
+            return false;
+        }
+        let mut probe = name.to_os_string();
+        probe.push("/HEAD");
+        let Ok(head) = cstr(&probe) else {
+            return false;
+        };
+        // A regular file specifically: a submodule named `HEAD` would put a *directory* there, and
+        // a gitdir old enough to symlink its `HEAD` is one this would rather freeze than guess at.
+        match fstatat(parentfd, head.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(st) => st.st_mode & libc::S_IFMT == libc::S_IFREG,
+            Err(_) => false,
+        }
     }
 
     /// Gate a creation of `name` in `parent`: the `.git` name rule plus destination classification.
@@ -210,7 +286,9 @@ impl KoAgentFs {
             Ok(st) => st,
             Err(err) => return reply.error(to_errno(err)),
         };
-        let ino = self.inner.lock().unwrap().table.lookup(parent, name);
+        // Never a gitdir root: creating one under `modules/` is refused, so nothing this replies
+        // for can be one (`is_gitdir_root`).
+        let ino = self.inner.lock().unwrap().table.lookup(parent, name, false);
         reply.entry(&TTL, &to_file_attr(ino, &st), Generation(0));
     }
 
@@ -246,12 +324,18 @@ impl KoAgentFs {
             let fd = self.open_ino(ino, OFlag::O_WRONLY | OFlag::O_NOFOLLOW)?;
             ftruncate(&fd, size as i64)?;
         }
-        let (parent, name) = match self.inner.lock().unwrap().table.parent_and_name(ino) {
-            Some(pair) => pair,
-            None => return Ok(()), // the mount root; nothing further to apply
+        // The root has no parent to act through, so it acts on itself: `.` against the backing
+        // root's own fd names the same directory. Returning early instead would answer a
+        // `chmod`/`chown`/`touch` of the mount root with a success it never performed. Bound before
+        // the match, or the lock guard would still be held while the arms take it again.
+        let position = self.inner.lock().unwrap().table.parent_and_name(ino);
+        let (parentfd, cname) = match position {
+            Some((parent, name)) => (self.parent_dir(parent)?, cstr(&name)?),
+            None => (
+                self.open_ino(ino, OFlag::O_PATH | OFlag::O_DIRECTORY)?,
+                cstr(OsStr::new("."))?,
+            ),
         };
-        let cname = cstr(&name)?;
-        let parentfd = self.parent_dir(parent)?;
         if let Some(mode) = mode {
             let perm = Mode::from_bits_truncate(mode & 0o7777);
             fchmodat(
@@ -283,16 +367,61 @@ impl KoAgentFs {
     }
 }
 
+/// The `open`/`create` flags this filter carries through to the backing store, out of whatever the
+/// caller asked for. An allowlist, so a flag nobody reasoned about never reaches a backing fd:
+///
+///   - the access mode, so the handle is no wider than what was asked and a newly created
+///     write-only file does not fail the daemon's own read permission;
+///   - `O_EXCL`, which is what makes `open(O_CREAT | O_EXCL)` a lock at all. Dropping it let every
+///     contender succeed, and `<gitdir>/index.lock` is exactly that pattern — two of a project's
+///     concurrent sessions could each believe they held the index;
+///   - `O_TRUNC`, the caller's own request to start from an empty file;
+///   - `O_APPEND`, without which an append is not one. The kernel computes an appending write's
+///     offset from the size it has cached, and refreshes that size first *only* when writeback
+///     caching is on — the kernel's `fuse_cache_write_iter` puts the refresh inside
+///     `if (fc->writeback_cache)`, and this filesystem turns writeback off deliberately and
+///     permanently (`doc/architecture.md`, "Coherency"). So a host that grew the file leaves that
+///     offset stale, and a `pwrite` there overwrites the bytes it should have followed. Carrying
+///     the flag puts the guarantee where POSIX puts it, in the backing filesystem, and git appends
+///     its reflogs. [`Filesystem::write`] is the other half: an `O_APPEND` fd must be written with
+///     `write`, because Linux has `pwrite` on one append regardless of the offset it was given.
+///
+/// `O_SYNC` and `O_DSYNC` are deliberately absent, and they are the pair most likely to look like
+/// an oversight: the kernel already ends a write with `generic_write_sync`, which lands in this
+/// filesystem's own `fsync`, so carrying them to the backing fd would buy a second flush per write
+/// rather than a guarantee. That reasoning holds only while `fsync` really syncs — which is
+/// [`Filesystem::fsync`]'s own subject. Everything else — `O_DIRECT`, `O_NOATIME` — is surface
+/// nobody reasoned about, and the allowlist is what keeps that true as the platform grows flags.
+fn passthrough_flags(flags: i32) -> OFlag {
+    let mut oflag = OFlag::from_bits_truncate(flags & libc::O_ACCMODE);
+    for carried in [OFlag::O_EXCL, OFlag::O_TRUNC, OFlag::O_APPEND] {
+        if flags & carried.bits() != 0 {
+            oflag |= carried;
+        }
+    }
+    oflag
+}
+
 /// A requested timestamp as `utimensat` wants it. `None` leaves the field alone (`UTIME_OMIT`), so
-/// setting one of the pair does not clobber the other. A time before the epoch clamps to it rather
-/// than wrapping into a negative that would mean something else.
+/// setting one of the pair does not clobber the other. A time before the epoch is carried as the
+/// negative seconds and positive nanoseconds a `timespec` is defined in rather than clamped to the
+/// epoch: extracting an archive of pre-1970 files is the ordinary way to meet one, and clamping
+/// would silently rewrite the very timestamp the extraction is restoring.
 fn time_spec(value: Option<TimeOrNow>) -> TimeSpec {
     match value {
         None => TimeSpec::UTIME_OMIT,
         Some(TimeOrNow::Now) => TimeSpec::UTIME_NOW,
         Some(TimeOrNow::SpecificTime(time)) => match time.duration_since(UNIX_EPOCH) {
             Ok(since) => TimeSpec::new(since.as_secs() as i64, since.subsec_nanos() as i64),
-            Err(_) => TimeSpec::new(0, 0),
+            // `duration_since` reports the magnitude when the time is the earlier one. A
+            // `timespec`'s nanoseconds are always positive, so a fractional second borrows one.
+            Err(before) => {
+                let magnitude = before.duration();
+                match (magnitude.as_secs() as i64, magnitude.subsec_nanos() as i64) {
+                    (secs, 0) => TimeSpec::new(-secs, 0),
+                    (secs, nanos) => TimeSpec::new(-secs - 1, 1_000_000_000 - nanos),
+                }
+            }
         },
     }
 }
@@ -358,22 +487,72 @@ fn to_errno(err: NixErrno) -> Errno {
     Errno::from_i32(err as i32)
 }
 
+/// Whether a symlink `target`, created in a directory `depth` components below the workspace root,
+/// has the *shape* of a portable one: relative, and never climbing above the directory it is created
+/// in by more than that directory's own depth. `symlink` has the why.
+///
+/// A conservative shape test, not a decision about meaning, and it errs in both directions rather
+/// than claiming a semantics it cannot compute:
+///
+///   - it accepts a target whose own components are symlinks the host may resolve differently,
+///     since it walks the target lexically and resolves nothing;
+///   - it refuses every absolute target, including `/workspace/...` — which is right for a host
+///     checkout anywhere else, and needlessly strict for a native Linux one that really is at
+///     `/workspace`.
+///
+/// Shape is what a filter serving an unknown host layout can judge. The rule earns its place on the
+/// second direction anyway: what a caching tool plants is the container's own store path, which
+/// cannot be assumed portable to a host layout this side never sees.
+///
+/// This is therefore a portability rule and not a containment one — containment is
+/// `RESOLVE_IN_ROOT` on every path the daemon itself resolves, and it does not resolve this one.
+///
+/// The other reason, and the limit to state before anyone leans on this: `depth` is judged once,
+/// where the link is created, while a relative target is interpreted afresh from whichever directory
+/// holds the link. Moving the link, aliasing it at a shallower name with `link`, or moving a
+/// directory above it therefore re-aims it against a depth this never saw, and it can then resolve
+/// outside the workspace. Neither `rename` nor `link` re-judges — not an oversight to correct:
+/// doing it for a directory means walking everything under it on every rename, at a cost this rule
+/// does not earn. What this refuses is a target written in a non-portable shape, which is the accidental
+/// tool behaviour the rule is aimed at; a session set on leaving a link that resolves elsewhere
+/// still can.
+fn target_has_portable_shape(target: &Path, depth: usize) -> bool {
+    let mut at = depth;
+    for component in target.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match at.checked_sub(1) {
+                Some(up) => at = up,
+                None => return false,
+            },
+            Component::Normal(_) => at += 1,
+            // Absolute: refused on the shape alone, with nothing resolved or interpreted.
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
+}
+
 fn cstr(name: &OsStr) -> Result<CString, NixErrno> {
     CString::new(name.as_bytes()).map_err(|_| NixErrno::EINVAL)
 }
 
 fn system_time(secs: i64, nsecs: i64) -> SystemTime {
+    let nsecs = nsecs.clamp(0, 999_999_999) as u32;
     if secs >= 0 {
         UNIX_EPOCH
-            .checked_add(Duration::new(
-                secs as u64,
-                nsecs.clamp(0, 999_999_999) as u32,
-            ))
+            .checked_add(Duration::new(secs as u64, nsecs))
             .unwrap_or(UNIX_EPOCH)
     } else {
-        UNIX_EPOCH
-            .checked_sub(Duration::from_secs((-secs) as u64))
-            .unwrap_or(UNIX_EPOCH)
+        // `time_spec`'s mirror: negative seconds carry positive nanoseconds, so a nonzero
+        // nanosecond field means the magnitude is one second less than the seconds field.
+        // `unsigned_abs` because `i64::MIN` has no positive counterpart to negate.
+        let magnitude = if nsecs == 0 {
+            Duration::new(secs.unsigned_abs(), 0)
+        } else {
+            Duration::new(secs.unsigned_abs() - 1, 1_000_000_000 - nsecs)
+        };
+        UNIX_EPOCH.checked_sub(magnitude).unwrap_or(UNIX_EPOCH)
     }
 }
 
@@ -449,19 +628,24 @@ fn dir_type(kind: nix::dir::Type) -> FileType {
 //
 // So the deny surface is closed by construction: unimplemented ops fail, and every implemented op is
 // gated on *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never gated. This
-// is the deny side only; whether the *policy* is complete is `docs/git-metadata.md` (P0–P6).
+// is the deny side only; whether the *policy* is complete is `doc/git-metadata.md`, resting on the
+// git-behaviour premises `doc/git-metadata.md` records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         // Data-cache coherency: the zero metadata TTL keeps *attributes* fresh, but cached or
         // mmap'd file *pages* could still lag a host write. Why this rather than FOPEN_DIRECT_IO
-        // is `docs/architecture.md`, "Coherency".
+        // is `doc/architecture.md`, "Coherency" — where it is an invariant and not a tunable,
+        // which is why a kernel that cannot offer it gets no mount rather than a degraded one:
+        // serving stale pages to a build tool is a wrong answer, not a slow one.
         if config
             .add_capabilities(InitFlags::FUSE_AUTO_INVAL_DATA)
             .is_err()
         {
             eprintln!(
-                "ko-agent-fs: kernel lacks AUTO_INVAL_DATA; cached file data may lag host writes"
+                "ko-agent-fs: this kernel does not offer AUTO_INVAL_DATA, so cached and mmap'd\n\
+                 pages could lag a host write; refusing to mount rather than serve a stale view"
             );
+            return Err(std::io::Error::from_raw_os_error(libc::ENOTSUP));
         }
         Ok(())
     }
@@ -480,7 +664,13 @@ impl Filesystem for KoAgentFs {
             Ok(st) => st,
             Err(err) => return reply.error(to_errno(err)),
         };
-        let ino = self.inner.lock().unwrap().table.lookup(parent.0, name);
+        let root = self.is_gitdir_root(parent.0, &dirfd, name, &st);
+        let ino = self
+            .inner
+            .lock()
+            .unwrap()
+            .table
+            .lookup(parent.0, name, root);
         reply.entry(&TTL, &to_file_attr(ino, &st), Generation(0));
     }
 
@@ -520,29 +710,30 @@ impl Filesystem for KoAgentFs {
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let accmode = flags.0 & libc::O_ACCMODE;
+        let appending = flags.0 & libc::O_APPEND != 0;
         let wants_write =
             accmode == libc::O_WRONLY || accmode == libc::O_RDWR || (flags.0 & libc::O_TRUNC) != 0;
 
         // The write gate: opening a control target for writing is where mutation is refused, so a
         // subsequent write() on the returned handle never needs re-checking.
-        if wants_write {
-            if let Err(err) = self.allow_ino(ino.0, Mutation::Write, "open-write") {
-                return reply.error(err);
-            }
+        if wants_write && let Err(err) = self.allow_ino(ino.0, Mutation::Write, "open-write") {
+            return reply.error(err);
         }
 
-        let mut oflag = OFlag::from_bits_truncate(accmode);
-        if (flags.0 & libc::O_TRUNC) != 0 {
-            oflag |= OFlag::O_TRUNC;
-        }
-        let fd = match self.open_ino(ino.0, oflag) {
+        let fd = match self.open_ino(ino.0, passthrough_flags(flags.0)) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
         let mut inner = self.inner.lock().unwrap();
         let fh = inner.next_fh;
         inner.next_fh += 1;
-        inner.handles.insert(fh, Arc::new(fd));
+        inner.handles.insert(
+            fh,
+            Handle {
+                fd: Arc::new(fd),
+                append: appending,
+            },
+        );
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
 
@@ -557,7 +748,13 @@ impl Filesystem for KoAgentFs {
         _lock: Option<fuser::LockOwner>,
         reply: ReplyData,
     ) {
-        let handle = self.inner.lock().unwrap().handles.get(&fh.0).cloned();
+        let handle = self
+            .inner
+            .lock()
+            .unwrap()
+            .handles
+            .get(&fh.0)
+            .map(|h| h.fd.clone());
         let fd = match handle {
             Some(fd) => fd,
             None => return reply.error(Errno::EBADF),
@@ -668,7 +865,7 @@ impl Filesystem for KoAgentFs {
         name: &OsStr,
         mode: u32,
         umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
         if let Err(err) = self.allow_create(parent.0, name, "create") {
@@ -678,12 +875,17 @@ impl Filesystem for KoAgentFs {
             Ok(pair) => pair,
             Err(err) => return reply.error(err),
         };
-        // O_EXCL is not forced: create() may reopen an existing allowed file. O_NOFOLLOW stops a
+        // O_EXCL is not forced but is carried through (`passthrough_flags`): create() may reopen an
+        // existing allowed file, and only the caller knows whether it meant to. O_NOFOLLOW stops a
         // pre-planted symlink at the target from redirecting the create elsewhere.
         let how = OpenHow::new()
-            .flags(OFlag::O_CREAT | OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .flags(passthrough_flags(flags) | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
             .mode(Mode::from_bits_truncate(mode & !umask & 0o7777))
-            .resolve(ResolveFlag::RESOLVE_IN_ROOT | ResolveFlag::RESOLVE_NO_MAGICLINKS);
+            .resolve(
+                ResolveFlag::RESOLVE_IN_ROOT
+                    | ResolveFlag::RESOLVE_NO_MAGICLINKS
+                    | ResolveFlag::RESOLVE_NO_SYMLINKS,
+            );
         let fd = match openat2(&parentfd, cname.as_c_str(), how) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
@@ -693,10 +895,16 @@ impl Filesystem for KoAgentFs {
             Err(err) => return reply.error(to_errno(err)),
         };
         let mut inner = self.inner.lock().unwrap();
-        let ino = inner.table.lookup(parent.0, name);
+        let ino = inner.table.lookup(parent.0, name, false);
         let fh = inner.next_fh;
         inner.next_fh += 1;
-        inner.handles.insert(fh, Arc::new(fd));
+        inner.handles.insert(
+            fh,
+            Handle {
+                fd: Arc::new(fd),
+                append: flags & libc::O_APPEND != 0,
+            },
+        );
         drop(inner);
         reply.created(
             &TTL,
@@ -768,6 +976,32 @@ impl Filesystem for KoAgentFs {
     ) {
         if let Err(err) = self.allow_create(parent.0, link_name, "symlink") {
             return reply.error(err);
+        }
+        // Not a policy decision — the target is never what the policy classifies (the mutation
+        // tests say why) — but the one thing a session writes whose stored content the host's own
+        // kernel follows as a path, with the user's privileges and nothing having to run.
+        // `target_has_portable_shape` has the shape this accepts and how far that shape is only an
+        // approximation; SECURITY.md, "A symlink is the sharpest case", has the threat.
+        //
+        // The population is tools that cache outside the project and link into it, and sbt 2 is the
+        // measured case at both ends. Unrefused, it materializes a build-cache hit as a link into
+        // its own store — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas` on the
+        // host — and the host's next compile of a changed source dies with `NoSuchFileException`
+        // writing its own class files through the dangling link, until `git clean -xdf`. Refused,
+        // its `DiskActionCacheStore` matches the `Operation not permitted` this returns, stops
+        // linking for the session and copies out of the store instead: builds keep working, and the
+        // cost is a copy per cached output rather than a link.
+        let depth = match self.inner.lock().unwrap().table.components(parent.0) {
+            Some(components) => components.len(),
+            None => return reply.error(Errno::ESTALE),
+        };
+        if !target_has_portable_shape(target, depth) {
+            return reply.error(deny(
+                "symlink",
+                &format!("{link_name:?}"),
+                "nonportable-target-shape: refusing a target that is absolute or climbs above \
+                 the workspace root",
+            ));
         }
         let (cname, parentfd) = match self.child_target(parent.0, link_name) {
             Ok(pair) => pair,
@@ -939,22 +1173,52 @@ impl Filesystem for KoAgentFs {
         offset: u64,
         data: &[u8],
         _write_flags: WriteFlags,
-        _flags: OpenFlags,
+        flags: OpenFlags,
         _lock: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
         // The write access was authorized at open(); the handle only exists for an allowed target.
-        let handle = self.inner.lock().unwrap().handles.get(&fh.0).cloned();
-        let fd = match handle {
-            Some(fd) => fd,
-            None => return reply.error(Errno::EBADF),
+        let handle = self
+            .inner
+            .lock()
+            .unwrap()
+            .handles
+            .get(&fh.0)
+            .map(|h| (h.fd.clone(), h.append));
+        let Some((fd, backing_append)) = handle else {
+            return reply.error(Errno::EBADF);
         };
-        match pwrite(fd.as_ref(), data, offset as i64) {
+        // The caller's flags as they are *now*, not as they were at open: `fcntl(F_SETFL)` can add
+        // or drop `O_APPEND` on a live file description, and the kernel sends the current word with
+        // every write. The backing descriptor is brought into step before the syscall is chosen,
+        // because both halves depend on it — `pwrite` on an appending fd ignores its offset.
+        let append = flags.0 & libc::O_APPEND != 0;
+        if append != backing_append {
+            if let Err(err) = set_backing_append(fd.as_ref(), append) {
+                return reply.error(to_errno(err));
+            }
+            if let Some(handle) = self.inner.lock().unwrap().handles.get_mut(&fh.0) {
+                handle.append = append;
+            }
+        }
+        // An appending write goes through `write`, not `pwrite`: the end is the backing
+        // filesystem's to decide, and the offset the kernel supplies came from a size it does not
+        // refresh on this path (`passthrough_flags`). Everything else is positional, which is what
+        // that offset means when the description is not appending.
+        let outcome = if append {
+            nix::unistd::write(fd.as_ref(), data)
+        } else {
+            pwrite(fd.as_ref(), data, offset as i64)
+        };
+        match outcome {
             Ok(written) => reply.written(written as u32),
             Err(err) => reply.error(to_errno(err)),
         }
     }
 
+    /// Nothing to do, and that is a property rather than a stub: a `write` is a `pwrite` straight to
+    /// the backing fd, so the daemon holds no buffered data a `close(2)` could still lose. Durability
+    /// is `fsync`'s question, below.
     fn flush(
         &self,
         _req: &Request,
@@ -966,21 +1230,97 @@ impl Filesystem for KoAgentFs {
         reply.ok();
     }
 
+    /// Actually sync. Replying `ok()` without the syscall would be a false guarantee to the caller
+    /// that most depends on it: git fsyncs a loose object and a ref before it treats the write as
+    /// committed, so a machine that lost power here would leave the user's own checkout corrupt
+    /// while every call had reported success.
     fn fsync(
         &self,
         _req: &Request,
         _ino: INodeNo,
-        _fh: FileHandle,
-        _datasync: bool,
+        fh: FileHandle,
+        datasync: bool,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        let handle = self
+            .inner
+            .lock()
+            .unwrap()
+            .handles
+            .get(&fh.0)
+            .map(|h| h.fd.clone());
+        let fd = match handle {
+            Some(fd) => fd,
+            None => return reply.error(Errno::EBADF),
+        };
+        // `datasync` is the caller's own narrowing — fdatasync skips a metadata flush the data does
+        // not depend on — so honour it rather than always paying for the wider one.
+        let synced = if datasync {
+            fdatasync(fd.as_ref())
+        } else {
+            fsync(fd.as_ref())
+        };
+        match synced {
+            Ok(()) => reply.ok(),
+            Err(err) => reply.error(to_errno(err)),
+        }
+    }
+
+    /// The directory twin, and needed for the same reason: git syncs the directory holding a ref it
+    /// just renamed into place. The `opendir` handle carries a name snapshot rather than an fd, so
+    /// this re-resolves the inode — which is what every other operation here does anyway.
+    fn fsyncdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
+            Ok(fd) => fd,
+            Err(err) => return reply.error(to_errno(err)),
+        };
+        let synced = if datasync { fdatasync(&fd) } else { fsync(&fd) };
+        match synced {
+            Ok(()) => reply.ok(),
+            Err(err) => reply.error(to_errno(err)),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symlink_target_has_portable_shape_when_it_is_relative_and_lands_inside() {
+        let portable =
+            |target: &str, depth: usize| target_has_portable_shape(Path::new(target), depth);
+
+        // depth 0 is a link in the workspace root.
+        assert!(portable("sibling.rs", 0));
+        assert!(portable("./sibling.rs", 0));
+        assert!(portable("src/main.rs", 0));
+        assert!(!portable("..", 0));
+        assert!(!portable("../outside", 0));
+
+        // From src/, one `..` is the root itself — still inside — and the second leaves.
+        assert!(portable("..", 1));
+        assert!(portable("../src/main.rs", 1));
+        assert!(!portable("../..", 1));
+        assert!(!portable("../../../../etc/passwd", 1));
+
+        // Descending first buys depth back, and the running count is what decides.
+        assert!(portable("a/../b", 0));
+        assert!(portable("a/b/../../c", 0));
+        assert!(!portable("a/../../b", 0));
+
+        // Absolute is absolute at any depth, and what it names is not consulted — `/workspace/...`
+        // is refused with the rest, which is the conservative half of the shape.
+        assert!(!portable("/etc/passwd", 9));
+        assert!(!portable("/workspace/src/main.rs", 9));
+    }
 
     #[test]
     fn the_deny_log_caps_detail_but_never_loses_the_count() {
@@ -1015,7 +1355,50 @@ mod tests {
     #[test]
     fn negative_and_overflowing_times_do_not_panic() {
         let _ = system_time(-1, 0);
+        let _ = system_time(i64::MIN, 999_999_999);
         let _ = system_time(i64::MAX, 1_000_000_000);
         let _ = system_time(0, 999_999_999);
+    }
+
+    #[test]
+    fn a_pre_epoch_time_round_trips_rather_than_clamping() {
+        // Extracting an archive of pre-1970 files is the ordinary way to meet one, and the claim
+        // this pins is `doc/TODO.md`'s: times round-trip. Clamping rewrote the timestamp the
+        // extraction was restoring, and reading a negative one back dropped its nanoseconds.
+        for when in [
+            UNIX_EPOCH,
+            UNIX_EPOCH + Duration::new(1, 500_000_000),
+            UNIX_EPOCH - Duration::new(1, 0),
+            UNIX_EPOCH - Duration::new(0, 500_000_000),
+            UNIX_EPOCH - Duration::new(86_400 * 365 * 10, 250_000_000),
+        ] {
+            let spec = time_spec(Some(TimeOrNow::SpecificTime(when)));
+            assert_eq!(
+                system_time(spec.tv_sec(), spec.tv_nsec()),
+                when,
+                "{when:?} did not survive the round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn the_carried_open_flags_are_the_allowlist_and_nothing_else() {
+        // Each of these changes what the backing fd is: the access mode, the exclusivity that makes
+        // a lock file a lock, and the truncation the caller asked for.
+        assert_eq!(passthrough_flags(libc::O_WRONLY), OFlag::O_WRONLY);
+        assert_eq!(passthrough_flags(libc::O_RDWR), OFlag::O_RDWR);
+        assert!(passthrough_flags(libc::O_WRONLY | libc::O_EXCL).contains(OFlag::O_EXCL));
+        assert!(passthrough_flags(libc::O_WRONLY | libc::O_TRUNC).contains(OFlag::O_TRUNC));
+        // O_APPEND is carried, and `write` honours it: the kernel does not refresh the size it
+        // computes an append's offset from, so only the backing fd knows where the end is.
+        assert!(passthrough_flags(libc::O_WRONLY | libc::O_APPEND).contains(OFlag::O_APPEND));
+        // O_SYNC and O_DSYNC are not, and that is the deliberate one: the kernel routes a
+        // synchronous write through this filesystem's `fsync` already, so carrying them would buy
+        // a second flush per write.
+        assert!(!passthrough_flags(libc::O_WRONLY | libc::O_SYNC).contains(OFlag::O_SYNC));
+        assert!(!passthrough_flags(libc::O_WRONLY | libc::O_DSYNC).contains(OFlag::O_DSYNC));
+        // The rest is surface nobody reasoned about, so the allowlist drops it.
+        assert!(!passthrough_flags(libc::O_RDONLY | libc::O_NOATIME).contains(OFlag::O_NOATIME));
+        assert!(!passthrough_flags(libc::O_WRONLY | libc::O_DIRECT).contains(OFlag::O_DIRECT));
     }
 }

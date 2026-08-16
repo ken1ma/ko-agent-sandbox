@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The platform-verification probe for the .git name rule (docs/TODO.md, "P1 — Platform
+"""The platform-verification probe for the .git name rule (doc/TODO.md, "P1 — Platform
 verification"): creates each candidate spelling through the mounted filter and reports which were
-denied, with which errno. The corpus in docs/TODO.md carries one row this script does not — the
+denied, with which errno. The corpus in doc/TODO.md carries one row this script does not — the
 Windows 8.3 short name GIT~1 — because it means nothing off NTFS; run that one by hand there.
 Run INSIDE a filtered sandbox session, in a scratch project:
 

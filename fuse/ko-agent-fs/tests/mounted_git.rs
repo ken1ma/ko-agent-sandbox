@@ -1,7 +1,7 @@
 //! Real `git` driven through a real mount: the everyday commands must keep working on a host
 //! repository, and the deliberately-blocked ones must fail.
 //!
-//! This is the compatibility half of the evidence (`docs/git-observations.md`): the allowlist is
+//! This is the compatibility half of the evidence (`doc/git-metadata.md`, "Premises"): the allowlist is
 //! fail-closed, so an operational path we failed to enumerate shows up here as a broken git command
 //! rather than as a security hole. The blocked commands are asserted too, so a later widening of the
 //! allowlist that quietly reopened them would be caught.
@@ -185,6 +185,98 @@ fn the_deliberately_blocked_commands_fail() {
     assert!(
         !config.contains("hooksPath"),
         "the config was modified despite the block:\n{config}"
+    );
+}
+
+/// A superproject whose submodule sits in a subdirectory — so git names it `libs/foo` and puts its
+/// gitdir two levels below `modules/`, which is the common shape and the one a depth rule misses.
+/// The upstream lives beside the backing tree rather than inside it, so the mount serves only the
+/// superproject.
+fn super_with_nested_submodule(backing: &Path) {
+    let upstream = backing
+        .parent()
+        .expect("the harness puts the backing tree in a base directory")
+        .join("upstream");
+    fs::create_dir_all(&upstream).unwrap();
+    succeeds(
+        "upstream init",
+        git_in(&upstream, &["init", "-q", "-b", "main"]),
+    );
+    fs::write(upstream.join("dep.txt"), b"dep\n").unwrap();
+    succeeds("upstream add", git_in(&upstream, &["add", "dep.txt"]));
+    succeeds(
+        "upstream commit",
+        git_in(&upstream, &["commit", "-qm", "dep"]),
+    );
+
+    host_repository(backing);
+    succeeds(
+        "host submodule add",
+        git_in(
+            backing,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                upstream.to_str().expect("a UTF-8 scratch path"),
+                "libs/foo",
+            ],
+        ),
+    );
+    succeeds(
+        "host commit",
+        git_in(backing, &["commit", "-qm", "add submodule"]),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_submodule_in_a_subdirectory_works_like_any_other() {
+    // A submodule's name defaults to its path, so `libs/foo` puts the gitdir at
+    // `.git/modules/libs/foo`. Reading it never needed anything — the filter gates no read — so what
+    // this pins is the writing: the operational state of a nested-name submodule must be as writable
+    // as a top-level one's, or every ordinary command in it fails on `index`.
+    let mount = TestMount::new(super_with_nested_submodule);
+    let submodule = mount.at("libs/foo");
+
+    succeeds("git log", git_in(&submodule, &["log", "--oneline"]));
+    succeeds("git status", git_in(&submodule, &["status", "--porcelain"]));
+
+    fs::write(submodule.join("dep.txt"), b"dep\nfrom the sandbox\n").unwrap();
+    succeeds("git add", git_in(&submodule, &["add", "dep.txt"]));
+    succeeds(
+        "git commit",
+        git_in(&submodule, &["commit", "-qm", "sandbox work"]),
+    );
+    succeeds(
+        "git switch",
+        git_in(&submodule, &["switch", "-qc", "feature"]),
+    );
+
+    // And the widening stops exactly where it should: that gitdir's own control state is frozen,
+    // and so is the namespace above it.
+    fails(
+        "git config --local in the submodule",
+        git_in(
+            &submodule,
+            &["config", "--local", "core.hooksPath", "/tmp/evil"],
+        ),
+    );
+    assert_eq!(
+        fs::write(mount.at(".git/modules/libs/foo/config"), b"[core]\n")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EPERM),
+        "the submodule's config was writable"
+    );
+    assert_eq!(
+        fs::write(mount.at(".git/modules/libs/planted"), b"x")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EPERM),
+        "the namespace above the submodule was writable"
     );
 }
 

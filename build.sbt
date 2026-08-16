@@ -18,6 +18,12 @@ scalacOptions ++= Seq(
   "-Werror"
 )
 
+// The container-launching suites share one podman, and each asserts on resources scoped to a
+// project it created. Run in parallel they interleave — one suite's launch observing another's
+// container, one suite's teardown racing another's `--reset`. The ordinary suites take seconds, so
+// serial costs almost nothing and removes the whole class of interference.
+Test / parallelExecution := false
+
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 Compile / run / javaOptions += "--enable-native-access=ALL-UNNAMED"
 Compile / run / fork := true
@@ -43,12 +49,12 @@ Compile / resourceGenerators += Def.task {
   // exclude the same set from the podman build context. Two known divergences, neither reachable today:
   // "project/project" is a substring test here but segment-anchored (**/) there, so a path like myproject/project
   // would be dropped only here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only
-  // target, docs and probes, since a Rust crate grows none of the sbt and editor directories below — a stray .DS_Store
+  // target, doc and probe, since a Rust crate grows none of the sbt and editor directories below — a stray .DS_Store
   // there would reach a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the
   // source digest is computed from the bundle, never from a checkout).
   //
-  // ko-agent-fs/docs and ko-agent-fs/probes are excluded for a different reason: neither is a build input nor
-  // distribution — probes/ holds the platform-verification probes a developer runs by hand, not under cargo — and
+  // ko-agent-fs/doc and ko-agent-fs/probe are excluded for a different reason: neither is a build input nor
+  // distribution — probe/ holds the platform-verification probes a developer runs by hand, not under cargo — and
   // leaving them out keeps them out of AgentSandboxLauncher.koAgentFsSourceId too, so editing a design document or a
   // probe does not invalidate every installed filter binary. Its .dockerignore drops the same paths, so a direct
   // `podman build` from a checkout sees what a jar-built one does.
@@ -56,8 +62,8 @@ Compile / resourceGenerators += Def.task {
     val relative = IO.relativize(root, file).getOrElse("")
     val parts = relative.split("/").toSet
     file.isFile &&
-      !relative.startsWith("ko-agent-fs/docs/") &&
-      !relative.startsWith("ko-agent-fs/probes/") &&
+      !relative.startsWith("ko-agent-fs/doc/") &&
+      !relative.startsWith("ko-agent-fs/probe/") &&
       !parts.contains("target") &&
       !parts.contains(".scala-build") &&
       !parts.contains(".bsp") &&
@@ -102,8 +108,13 @@ assembly / assemblyMergeStrategy := {
     default(path)
 }
 
-// Enable-Native-Access: the execvp downcall, warning-free and future-proof. Multi-Release: BouncyCastle's versioned
-// class entries.
+// Enable-Native-Access: the execvp downcall, warning-free and future-proof.
+//
+// Multi-Release is required, not an optimization: the assembled jar carries BouncyCastle's versioned
+// trees, and 49 of those classes — the X25519 and Ed25519 key implementations among them — exist
+// *only* under META-INF/versions, so without the attribute the JVM never looks there and they are
+// missing rather than merely older. sbt-assembly copies the entries but does not set the flag; a fat
+// jar built from multi-release inputs is not itself multi-release.
 assembly / packageOptions += Package.ManifestAttributes(
   "Enable-Native-Access" -> "ALL-UNNAMED",
   "Multi-Release" -> "true"

@@ -95,15 +95,21 @@ object AgentSandboxLauncher:
   /**
    * Whether a container runtime may run inside the sandbox: `none` — the default, what an unset
    * variable means — or `same-uid`, which buys the three loosenings below for the whole session,
-   * the cost SECURITY.md's "No containers inside the sandbox" section prices. `unmask=ALL`
-   * because a nested pid namespace must mount a fresh /proc, refused while the masked entries
-   * sit on it (the measured refusal is crun's "mount `proc` to `proc`: Permission denied");
-   * label=disable because on the SELinux podman machine that same mount is also denied for
-   * container_t (measured: EACCES with /proc fully unmasked, reproduced by bare unshare with no
-   * runtime involved — TODO.md has a narrowing candidate); SYS_CHROOT because layer unpack
+   * the cost SECURITY.md's "No containers inside the sandbox by default" section prices. `unmask=ALL`
+   * because a nested pid namespace must mount a fresh /proc, and the kernel refuses that while
+   * the masked entries sit on it (measured: EPERM from a bare unshare with the masks in
+   * place, SELinux permitting the mount and SYS_CHROOT granted);
+   * label=disable because that mount is denied for plain container_t (EACCES, reproduced by
+   * bare unshare with no runtime involved), and the narrower candidate — container_engine_t,
+   * container-selinux's type for containers that run containers — permits the mount but cannot
+   * exec the `--init` podman injects (measured: "exec /run/podman-init: Permission denied" at
+   * session start), so any future candidate must be probed with --init in the run;
+   * SYS_CHROOT because layer unpack
    * chroots, and the seccomp profile compiled for a no-capability container answers chroot with
    * EPERM even for root in a nested user namespace (the measured failure is every pull's "after
-   * fallback to chroot: operation not permitted"). /dev/fuse is deliberately absent: nested
+   * fallback to chroot: operation not permitted") — inner podman 6.0.2 behaves identically to
+   * the 5.4.2 the recipe installs: the vendored unpack is the same code, and the deciding
+   * filter is this outer container's. /dev/fuse is deliberately absent: nested
    * storage runs on kernel-native overlay in the user namespace — measured, the container rootfs
    * mounts as `overlay` and the matrix passes with the fuse-overlayfs binary removed.
    * The resolved mode is always set in the session's environment — `none` included — so an
@@ -114,6 +120,14 @@ object AgentSandboxLauncher:
    * images that switch USER or chown to a second uid fail by design, this repository's own among
    * them.
    */
+  /**
+   * How the sandbox addresses the proxy: a name `--add-host` puts in /etc/hosts, so no resolver is
+   * involved, and the port the proxy listens on. Named apart rather than only spelled into a URL,
+   * because a JVM wants them as two properties rather than one (JdkTrust.jdkProxyArgs).
+   */
+  val EgressProxyHost = "egress-proxy"
+  val EgressProxyPort = 3128
+
   val NestingVariable = "KO_AGENT_SANDBOX_NESTING"
   val NestingLoosenings =
     Vector("--security-opt=unmask=ALL", "--security-opt=label=disable", "--cap-add=SYS_CHROOT")
@@ -130,6 +144,37 @@ object AgentSandboxLauncher:
     )
 
   /**
+   * Everything a launch prints — which guard this session runs under, the egress policy, every
+   * warning — is on screen for as long as it takes the agent to start, and claude's fullscreen TUI
+   * and codex both clear the screen as they do. So the last thing before the handover is a hold:
+   * the terminal stays the reader's until they release it. `immediate` prints the same lines and
+   * starts the agent at once, for whoever has read them enough times; with no terminal there is
+   * nothing to hold.
+   */
+  val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
+
+  def sessionStart(value: Option[String]): Either[String, String] =
+    closedChoice(
+      SessionStartVariable,
+      value,
+      Vector("pause", "immediate"),
+      "pause",
+      "Unset it (or set it to pause) to keep the hold; set it to immediate to start the\nagent " +
+        "at once, leaving what the launch printed to be read from the scrollback afterwards."
+    )
+
+  /**
+   * The command names what is about to take the screen, so the prompt says what it is waiting on.
+   * isTerminal, not a null check: since JDK 22 System.console() answers a Console for a redirected
+   * stream too, and holding a pipe open would hang a scripted launch instead of skipping the hold.
+   */
+  def holdForReader(mode: String, command: String): Unit =
+    val console = System.console()
+    if mode == "pause" && console != null && console.isTerminal then
+      console.printf("%nPress Enter to start %s. ", command)
+      console.readLine()
+
+  /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus EGRESS_POLICY, which it sets inside
    * the sandbox rather than reads, so a launcher nested in a sandbox session is not warned about
    * the variable that session legitimately carries.
@@ -141,6 +186,7 @@ object AgentSandboxLauncher:
     "KO_AGENT_SANDBOX_MEMORY",
     WorkspaceGuardVariable,
     NestingVariable,
+    SessionStartVariable,
     "KO_AGENT_SANDBOX_EGRESS_POLICY"
   )
 
@@ -275,14 +321,24 @@ object AgentSandboxLauncher:
    * other than this one built it — launch refuses it. An explicitly overridden
    * KO_AGENT_SANDBOX_*_IMAGE only warns: a custom image is a supported
    * case, and its interface drift still fails closed at runtime (the
-   * retired-variable refusals, the --print-policy parse, the leaf's exact
-   * names).
+   * --print-policy parse, the leaf's exact names).
+   *
+   * "container image", spelled out: the reader of this message is upgrading
+   * the launcher, not thinking about images at all, and the bare name reads
+   * as noise until the mechanism is named.
+   *
+   * Both digests are printed because the mismatch alone cannot say which
+   * side is stale — an old image, or a launch through a different jar than
+   * the one that ran --build.
    */
   def bundleMismatch(image: String, expected: String, label: String): Option[String] =
     Option.when(label.trim != expected)(
-      s"$image was not built from the sources this launcher bundles" +
+      s"container image $image was not built from the sources this launcher bundles" +
         (if label.trim.isEmpty then " (it carries no bundle label)" else "") +
-        "; rebuild with --build"
+        "; rebuild with --build" +
+        s"\n  launcher bundle digest: $expected" +
+        s"\n  image label $BundleLabel: " +
+        (if label.trim.isEmpty then "(none)" else label.trim)
     )
 
   /**
@@ -295,6 +351,14 @@ object AgentSandboxLauncher:
    * `--save-stages` keeps the proxy's compile-and-test stage as ordinary
    * layer cache; podman otherwise deletes non-final stages, re-running the
    * expensive sbt step on every --build.
+   *
+   * The bundle id travels twice: as BUNDLE_ID for the Containerfile's LABEL
+   * (what a hand-run `podman build` from a checkout uses) and as `--label`
+   * on the command line, which wins. The duplication is deliberate: podman's
+   * layer cache does not key ARG-derived config instructions on the arg's
+   * value (buildah #5501, #5095), so a cached LABEL step can commit a stale
+   * digest; a command-line --label is applied at commit, outside that cache.
+   * --build still verifies the committed label (verifyBuiltBundleLabels).
    */
   def buildCommands(
     podman: String,
@@ -312,11 +376,13 @@ object AgentSandboxLauncher:
       Vector(
         podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
+        "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
       ),
       Vector(
         podman, "build", "--save-stages", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$proxyBundleId",
+        "--label", s"$BundleLabel=$proxyBundleId",
         "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy"
       ),
       Vector(
@@ -334,9 +400,41 @@ object AgentSandboxLauncher:
       Vector(
         podman, "build", "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
+        "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
       )
     )
+
+  /**
+   * --build's check of what it just stamped, immediately after the builds:
+   * the layer-cache staleness above is exactly the kind of silent drift the
+   * version lock exists for, so the freshly committed labels are read back
+   * rather than assumed. A failure here is podman misbehaving, not a wrong
+   * jar — the remediation is clearing the build cache, not --build again.
+   */
+  def verifyBuiltBundleLabels(expected: Seq[(String, String)]): Unit =
+    expected.foreach: (image, id) =>
+      val inspected = run(
+        podman, "image", "inspect",
+        "--format", s"{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}",
+        image
+      )
+      if !inspected.ok then
+        fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
+      if inspected.text.trim != id then
+        fail(
+          s"""error: --build committed $image with a stale bundle label
+             |  launcher bundle digest: $id
+             |  image label $BundleLabel: ${
+                if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
+             |
+             |podman's layer cache can serve a LABEL derived from a changed
+             |build arg stale (buildah #5501); this launcher passes --label to
+             |bypass that cache, so this failing means podman dropped --label
+             |too. Clear the cache and rebuild:
+             |  podman image rm $image && podman image prune -f
+             |then run --build again.""".stripMargin
+        )
 
   def runBuilds(context: Path, commands: Vector[Vector[String]]): Unit =
     commands.foreach: command =>
@@ -643,16 +741,15 @@ object AgentSandboxLauncher:
     """Run an AI agent inside the sandbox container.
        |
        |Usage, from a project directory (which becomes /workspace):
-       |  java -jar ko-agent-sandbox.jar <command> [args...]
+       |  java -jar ko-agent-sandbox.jar [<command> [args...]]
        |
        |<command> runs inside the sandbox: claude, codex, agy, bash, ...
-       |No arguments gives an interactive bash. Everything is forwarded
-       |verbatim except the verbs below, each recognized only as the first
-       |argument; whatever follows belongs to the verb, never to a container:
+       |Everything is forwarded verbatim except the verbs below, each recognized
+       |only as the first argument; whatever follows belongs to the verb:
        |
        |  --build            build the container images for the sandbox
-       |  --update           rebuild ko-agent-sandbox only without cache, for new
-       |                     claude/codex/agy releases
+       |  --update           rebuild only the sandbox container without cache,
+       |                     for new claude/codex/agy releases
        |
        |  --reset            remove this project's containers (ending any live
        |                     session), volume (signing its agents out), networks,
@@ -662,8 +759,8 @@ object AgentSandboxLauncher:
        |  --reset-all        the same, for every project
        |
        |  --proxy-effective  print this project's effective egress policy
-       |  --proxy-log        print this project's retained proxy audit logs; with
-       |                     extra args (-f, --tail 50), run podman logs on the
+       |  --proxy-log        print this project's retained proxy audit logs;
+       |                     with extra args (-f, --tail 50), run podman logs on the
        |                     running proxies instead
        |
        |  --help             this text
@@ -680,13 +777,39 @@ object AgentSandboxLauncher:
        |                                      allows one: unmasks /proc, disables SELinux
        |                                      labeling and adds SYS_CHROOT for the whole
        |                                      session, one mapped uid only (SECURITY.md)
+       |  KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
+       |                                      screen until you press Enter, because the agent TUIs
+       |                                      clear the screen; "immediate" starts the agent at once
        |
-       |Files in .ko-agent-sandbox/egress-hosts/ adjust the egress policy: a +/- delta file per
-       |tier ("read-write", "read-only"), and "blocked" applied last.""".stripMargin
+       |Files in .ko-agent-sandbox/egress-hosts/ modify the egress policy: a +/- delta file per
+       |tier ("read-write", "read-only"), and "blocked" applied with highest precedence.""".stripMargin
 
   def usage(): Nothing =
     println(UsageText)
     sys.exit(0)
+
+  /**
+   * The section appended to the image's agent instructions, naming what this session may reach.
+   * A named value rather than a literal at the one call site, because it states the *tag*
+   * vocabulary and the proxy owns that: an agent told a tag the proxy does not define writes a
+   * policy file that fails the next launch with "no treatment this proxy defines", which is a
+   * confusing way to learn that these instructions drifted. A test holds the two together
+   * (AgentSandboxLauncherTest, "the appended egress section names only tags the proxy defines").
+   */
+  def egressPolicySection(resolved: String): String =
+    val indented = resolved.linesIterator.map("    " + _).mkString("\n")
+    s"""
+       |
+       |# Egress policy in force for this session
+       |
+       |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
+       |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines.
+       |Anything not named here is refused. The read-write hosts are opaque tunnels; the
+       |read-only hosts answer only GET and HEAD, and those tagged `=git-fetch` also serve
+       |`git clone`/`fetch` — `git push` is refused.
+       |
+       |$indented
+       |""".stripMargin
 
   def main(args: Array[String]): Unit =
     unknownSandboxVariables(System.getenv().keySet().asScala).foreach: name =>
@@ -699,14 +822,16 @@ object AgentSandboxLauncher:
         requirePodman()
         val context = unpackBuildContext()
         val fsSourceId = koAgentFsSourceId(context)
+        val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
+        val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
         runBuilds(
           context,
-          buildCommands(
-            podman, ImgTagVersion, fsSourceId,
-            contextSourceId(context, "ko-agent-sandbox"),
-            contextSourceId(context, "ko-agent-egress-proxy")
-          )
+          buildCommands(podman, ImgTagVersion, fsSourceId, sandboxBundleId, proxyBundleId)
         )
+        verifyBuiltBundleLabels(Seq(
+          "ko-agent-sandbox:latest" -> sandboxBundleId,
+          "ko-agent-egress-proxy:latest" -> proxyBundleId
+        ))
         installKoAgentFs(podman, currentOs, fsSourceId)
         sys.exit(0)
 
@@ -714,10 +839,9 @@ object AgentSandboxLauncher:
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman()
         val context = unpackBuildContext()
-        runBuilds(
-          context,
-          updateCommands(podman, ImgTagVersion, contextSourceId(context, "ko-agent-sandbox"))
-        )
+        val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
+        runBuilds(context, updateCommands(podman, ImgTagVersion, sandboxBundleId))
+        verifyBuiltBundleLabels(Seq("ko-agent-sandbox:latest" -> sandboxBundleId))
         sys.exit(0)
 
       case "--reset" :: rest =>
@@ -755,20 +879,17 @@ object AgentSandboxLauncher:
     // the boundary must not be discovered halfway through a launch that has already made resources.
     val guard = workspaceGuard(env(WorkspaceGuardVariable)).fold(fail(_), identity)
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
+    val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
     // -----------------------------------------------------------------------
     // Refuse obviously wrong project directories
     // -----------------------------------------------------------------------
-    if isForbiddenProjectDir(projectDir, os, env) then
-      fail(
-        s"""error: refusing to mount $projectDir as /workspace
-           |
-           |This would expose the whole directory to the agent, including
-           |anything like .ssh, .aws or .config beneath it.
-           |Change into a project directory and run this again.""".stripMargin
-      )
+    val homeProtection = protectedHomeDirectories(os, env).fold(fail(_), identity)
+    homeProtection.warnings.foreach(warning => System.err.println(s"warning: $warning"))
+    forbiddenProjectDirReason(projectDir, homeProtection).foreach: reason =>
+      fail(s"error: refusing to mount $projectDir as /workspace\n\n$reason")
 
     // -----------------------------------------------------------------------
     // Per-project identity
@@ -949,19 +1070,38 @@ object AgentSandboxLauncher:
     // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
     // (observed as a container-start failure, not deduced).
     val sandboxContainer = sandboxRunContainer(projectId, runSuffix)
+
+    // Derived from the guard rather than from the mount, so it exists before the mount does: the
+    // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript),
+    // and a failure after that would otherwise leave the marker to age out of a later reap.
+    val filterReap = Option.when(guard != "none")(
+      koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer)
+    )
+
+    // Everything this run creates, in one place: the shutdown hook and the resident teardown both
+    // run exactly this, so the two cannot drift into removing different sets.
+    val removeWhatThisRunCreated = () =>
+      removeRunResources(podman, proxyContainer, Seq(sandboxNetwork, egressNetwork))
+      // Best effort, as on the reaper's path: this run's session marker goes now rather than
+      // waiting out the launch bound, and the mount follows if no other session holds it.
+      filterReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
+
+    // Armed before the first resource this run owns — the filter's session marker, which the mount
+    // below writes. What precedes it is this project's policy cache, which outlives every run by
+    // design. From here on this process is the only thing that knows what to remove, and every
+    // refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
+    val cleanup = armRunCleanup(removeWhatThisRunCreated)
+
     val filteredWorkspace = guard match
       case "none" =>
         // Said every session it happens, because this is the weaker boundary and silence about it
         // is how a user forgets which one they are running under.
         System.err.println(
-          s"workspace guard: NONE by $WorkspaceGuardVariable — /workspace is bound " +
-            "directly, with only .git/config and .git/hooks pinned read-only"
+          s"workspace guard: NONE by $WorkspaceGuardVariable — /workspace is bound directly, with " +
+            "only .git/config and .git/hooks pinned read-only, and only until the host rewrites one"
         )
         None
       case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
-    // The last-session teardown the reaper (or the resident path) runs after this session ends.
-    val filterReap = filteredWorkspace.map: _ =>
-      koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer)
 
     // gitGuardVolumes has the threat and the shapes.
     val gitGuardArgs =
@@ -1068,22 +1208,10 @@ object AgentSandboxLauncher:
       )
       if !imageDoc.ok || imageDoc.out.isEmpty then
         fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
-      val indented = policyResolvedText.linesIterator.map("    " + _).mkString("\n")
       writeReadable(
         agentDocFile,
-        String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd +
-          s"""
-             |
-             |# Egress policy in force for this session
-             |
-             |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
-             |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same two lines.
-             |Anything not named here is refused. The read-write hosts are opaque tunnels; the
-             |read-only hosts answer only GET and HEAD, and those tagged `=git` also serve
-             |`git clone`/`fetch` — `git push` is refused.
-             |
-             |$indented
-             |""".stripMargin
+        String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
+          + egressPolicySection(policyResolvedText)
       )
       writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
@@ -1106,7 +1234,7 @@ object AgentSandboxLauncher:
     // The bundle replaces the image's; the variables cover tools carrying their own trust store (certifi, Node's
     // roots), and the keystore covers the JVM, which reads neither.
     val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
-    // The CA on its own, for sandbox-trust-ca: a JVM the agent installs itself is out of
+    // The CA on its own, for sandbox-prepare-jdk: a JVM the agent installs itself is out of
     // the launcher's reach, and that script hands it this file. No new exposure — the same
     // certificate is already inside the bundle above — it just saves a script parsing one out.
     val sandboxEgressCa = "/etc/ko-agent-sandbox/egress-ca.crt"
@@ -1126,6 +1254,9 @@ object AgentSandboxLauncher:
     //
     // --internal removes the gateway; without it the proxy would be
     // advisory.
+    // Armed before the first network exists, not after both: `createNetwork` refuses by ending the
+    // JVM, so arming between the two would leak the first when the second fails. Removing what was
+    // never created costs a failed `podman rm` nobody sees.
     createNetwork(sandboxNetwork, internal = true)
     createNetwork(egressNetwork, internal = false)
 
@@ -1143,7 +1274,16 @@ object AgentSandboxLauncher:
     if posixPermissions(logDir) then
       Files.setPosixFilePermissions(logDir, PosixFilePermissions.fromString("rwx------"))
 
-    logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs)
+    // Which of this project's runs are still writing: a log names its run in the same suffix its
+    // proxy container carries, so the running set is what tells a finished record from a live one.
+    val proxyPrefix = proxyRunContainer(projectId, "")
+    val liveRuns = run(podman, "ps", "--format", "{{.Names}}").text.linesIterator
+      .map(_.trim)
+      .filter(_.startsWith(proxyPrefix))
+      .map(_.stripPrefix(proxyPrefix))
+      .toSet
+
+    logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, liveRuns)
       .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
     val logStamp = DateTimeFormatter
@@ -1228,11 +1368,18 @@ object AgentSandboxLauncher:
     // tools read lowercase. HTTP_PROXY is set although plain HTTP is
     // refused, so an http:// attempt lands in the proxy log instead of
     // failing as an unexplained resolution error.
-    val egressProxyUrl = "http://egress-proxy:3128"
+    val egressProxyUrl = s"http://$EgressProxyHost:$EgressProxyPort"
+
+    // A JVM reads none of the variables below, so the image's JDK is pointed at the proxy through
+    // its own configuration instead — the same read-add-mount the CA bundle gets, one directory
+    // over (JdkTrust.jdkProxyArgs). Empty when the image ships no JDK.
+    val jdkProxy =
+      jdkProxyArgs(podman, image, imageEnv, tlsDir, imageId, EgressProxyHost, EgressProxyPort)
+
     val egressArgs = Vector(
       s"--network=$sandboxNetwork",
       "--dns=none",
-      s"--add-host=egress-proxy:$proxyIp",
+      s"--add-host=$EgressProxyHost:$proxyIp",
       s"--env=HTTPS_PROXY=$egressProxyUrl",
       s"--env=https_proxy=$egressProxyUrl",
       s"--env=HTTP_PROXY=$egressProxyUrl",
@@ -1246,7 +1393,7 @@ object AgentSandboxLauncher:
       // it. It grants nothing: an agent can already enumerate the allowlist by probing, slowly and
       // noisily, and reading a refusal as breakage is the usual outcome of not knowing.
       s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=$policyResolvedText"
-    ) ++ sandboxTlsArgs ++ agentDocArgs ++ Vector(
+    ) ++ sandboxTlsArgs ++ jdkProxy ++ agentDocArgs ++ Vector(
       // Always mounted read-only, even with no policy shipped: without it an agent could mkdir .ko-agent-sandbox and
       // write the allowlist governing the *next* session (SECURITY.md; policyGuardVolume refused the bad shapes above).
       policyVolume
@@ -1270,10 +1417,10 @@ object AgentSandboxLauncher:
     // Project bind mount
     // -----------------------------------------------------------------------
     //
-    // With the workspace filter enabled (opt-in), /workspace binds the filter's mountpoint, never
-    // the raw tree — and a failure anywhere in the gate aborted the launch above; there is no
-    // fallback to an unfiltered bind. The .git pins were skipped in that case, where the volumes
-    // were assembled.
+    // With the workspace filter on — every session but one that opted out — /workspace binds the
+    // filter's mountpoint, never the raw tree, and a failure anywhere in the gate aborted the launch
+    // above; there is no fallback to an unfiltered bind. The .git pins were skipped in that case,
+    // where the volumes were assembled.
     //
     // :Z only on native SELinux Linux, and only on the raw bind; podman-machine sources must not
     // be relabelled, and neither must a FUSE mountpoint.
@@ -1322,8 +1469,8 @@ object AgentSandboxLauncher:
       // Prevent setuid/file-capability binaries from regaining privilege.
       "--security-opt=no-new-privileges",
 
-      // /tmp and /var/tmp stay writable through podman's --read-only-tmpfs default — the writability SANDBOX.md's table
-      // documents.
+      // /tmp and /var/tmp stay writable through podman's --read-only-tmpfs default — the writability
+      // SANDBOX.md promises the agents.
       "--read-only",
 
       // Defense against accidental or hostile fork bombs. Raise this if a particular parallel build genuinely needs
@@ -1373,11 +1520,13 @@ object AgentSandboxLauncher:
         "note: could not spawn the proxy reaper; staying resident to remove the proxy on exit"
       )
 
+    // Last, so the hold covers every line this launch printed. A Ctrl-C here is the documented
+    // killed-between-create-and-start edge: the reaper removes the stray container it is waiting
+    // on, and the proxy and networks with it.
+    holdForReader(sessionStartMode, args.headOption.getOrElse("bash"))
+
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),
       viaExec = reaperArmed,
-      afterWait = () =>
-        removeRunResources(podman, proxyContainer, Seq(sandboxNetwork, egressNetwork))
-        // The resident-path twin of the reaper's teardown step; best effort for the same reason.
-        filterReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
+      cleanup = cleanup
     )

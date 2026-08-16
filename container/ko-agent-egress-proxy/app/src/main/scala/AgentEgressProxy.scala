@@ -434,8 +434,8 @@ object AgentEgressProxy:
    * host keeps working when the image adopts it.
    *
    * Fails closed on every ambiguity: an entry without its `+`/`-` prefix in
-   * a tier delta (the retired whole-list replacement form is spelled
-   * `.defaults` in blocked now); a host both added and removed, or a `+host`
+   * a tier delta (whole-list replacement is spelled `.defaults` in
+   * blocked); a host both added and removed, or a `+host`
    * under a `-**.domain`, within one tier — under taking-away-wins that `+`
    * could never take effect, and a dead entry is a config error, not a
    * precedence to resolve silently; a removal matching nothing in its

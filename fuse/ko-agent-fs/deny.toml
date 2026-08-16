@@ -28,8 +28,12 @@ multiple-versions = "allow"
 deny = ["cc", "bindgen"]
 
 [advisories]
-# `cargo deny check advisories` needs the advisory database, which the build container has no network
-# for after the dependency fetch; the licence gate is what runs there. Run advisories separately.
+# The image build runs `check licenses bans sources` and not `advisories`, deliberately: those three
+# are decided by Cargo.lock, so they answer the same today and next year, while the advisory database
+# is a moving external input. Gating on it would make a build that passed yesterday fail today with
+# no source change — and this build is how a user installs the filter, so it would also block the
+# `--build` needed to ship the fix. Advisories belong to a scheduled run instead, which is the CI row
+# in the repository's `doc/TODO.md`; nothing runs them today.
 yanked = "warn"
 
 [sources]

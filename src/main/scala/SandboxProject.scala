@@ -1,16 +1,15 @@
 // The project directory — the thing that becomes /workspace, and everything the launcher decides
 // about it before any resource exists: the real path it resolves to, the directories refused as
 // projects outright, the identity its path hashes to (which names every per-project resource), and
-// the mount guards that pin or refuse its .git and .ko-agent-sandbox shapes. All pure given their
-// arguments, and the most SECURITY.md-cited functions in the launcher; the session's configuration
-// variables are deliberately NOT here — they describe a launch, not the project, and live beside
-// the --help text they must stay in step with.
+// the mount guards that pin or refuse its .git and .ko-agent-sandbox shapes. The session's
+// configuration variables are deliberately NOT here — they describe a launch, not the project,
+// and live beside the --help text they must stay in step with.
 
 package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths}
+import java.nio.file.{Files, InvalidPathException, Path, Paths}
 import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
 
@@ -31,24 +30,193 @@ object SandboxProject:
       case ex: IOException =>
         fail(s"error: cannot resolve the current directory to a real path\n$ex")
 
+  private def normalizedAndCanonical(path: Path): Seq[Path] =
+    val normalized = path.normalize()
+    try Seq(normalized, normalized.toRealPath()).distinct
+    catch case _: IOException => Seq(normalized)
+
   /**
-   * Launching from $HOME or a filesystem root would mount ~/.ssh, ~/.aws
-   * and ~/.config into the sandbox. Catches the accident, not an attacker:
-   * `cd` one directory down and it no longer applies. The environment is a
-   * parameter for the same reason the Os is.
+   * The outcome of home discovery: the directories refused as projects,
+   * which of them are *containers* of homes rather than homes — their direct
+   * children are refused too, because a child of /home is somebody's home and
+   * exposes that account's credentials exactly as this one's would — and
+   * anything the user should hear about how the set was derived: a home
+   * variable that was dropped, could not be canonicalized, or was never set.
+   * Warnings rather than errors: this guard catches accidents, and a degraded
+   * guard that says so beats a refused launch in a HOME-less environment.
    */
-  def isForbiddenProjectDir(dir: Path, os: Os, env: String => Option[String]): Boolean =
-    def trimmed(p: String) = p.replaceAll("[/\\\\]+$", "")
-    val dirText = trimmed(dir.toString)
+  final case class HomeProtection(paths: Seq[Path], containers: Seq[Path], warnings: Seq[String])
+
+  /**
+   * One home variable: Left when the value cannot name a directory at all,
+   * Right with the normalized and (best-effort) canonical spellings. A value
+   * that fails toRealPath is still protected by its exact spelling, but with
+   * a warning — silently keeping only the symbolic form while the candidate
+   * project dir is always canonical would disable the comparison unnoticed.
+   */
+  private def parseHomeVariable(name: String, value: String): Either[String, (Seq[Path], Seq[String])] =
+    try
+      val candidate = Paths.get(value)
+      if !candidate.isAbsolute then Left(s"$name must name an absolute directory")
+      else
+        val normalized = candidate.normalize()
+        try Right((Seq(normalized, normalized.toRealPath()).distinct, Seq.empty))
+        catch
+          case _: IOException =>
+            Right(
+              (
+                Seq(normalized),
+                Seq(s"$name ($value) does not resolve to a real path; only this exact spelling is refused as a project")
+              )
+            )
+    catch case _: InvalidPathException => Left(s"$name is not a valid path")
+
+  /**
+   * Refused whether or not a configured home sits beneath them: the
+   * directories operating systems keep user homes in, so a relocated or
+   * unset HOME never leaves /home or /Users mountable. Returned as
+   * (containers, homes) — `/home` and `/Users` hold homes, `/root` and
+   * `/var/root` are homes — because only a container's direct children are
+   * refused. The Windows profiles root is derived from SystemDrive rather
+   * than from USERPROFILE's parent, so it stays protected when the current
+   * profile lives on another drive, and falls back to `C:` so an environment
+   * without even SystemDrive keeps the boundary SECURITY.md states.
+   * Best-effort canonicalized; a root absent on this machine is kept as
+   * spelled and protects nothing that exists.
+   */
+  private def wellKnownHomeRoots(os: Os, env: String => Option[String]): (Seq[Path], Seq[Path]) =
     os match
+      case Os.Linux | Os.Mac =>
+        (
+          Seq("/home", "/Users").map(Paths.get(_)).flatMap(normalizedAndCanonical),
+          Seq("/root", "/var/root").map(Paths.get(_)).flatMap(normalizedAndCanonical)
+        )
       case Os.Windows =>
-        val forbidden = Seq("HOME", "USERPROFILE", "PUBLIC").flatMap(env(_)).map(trimmed)
-        // A drive root is compared through the path API rather than by trimming, since trimming "C:\" would leave the
-        // ambiguous drive-relative "C:".
-        forbidden.contains(dirText) || dir.getRoot == dir
-      case _ =>
-        val forbidden = env("HOME").map(trimmed).toSeq ++ Seq("/", "/home", "/Users", "/root")
-        forbidden.contains(dirText) || dirText.isEmpty
+        val drive = env("SystemDrive").filter(_.nonEmpty).getOrElse("C:")
+        val profiles =
+          try normalizedAndCanonical(Paths.get(drive + java.io.File.separator + "Users"))
+          catch case _: InvalidPathException => Seq.empty
+        (profiles, Seq.empty)
+
+  /**
+   * macOS exposes the writable data volume both at / and at
+   * /System/Volumes/Data — a firmlink, which toRealPath does not collapse
+   * (it is not a symlink). Every protected path therefore also gets its
+   * other spelling, so `cd /System/Volumes/Data/Users/me` cannot mount the
+   * home the guard refuses as /Users/me.
+   */
+  private val MacDataVolumePrefix = "/System/Volumes/Data"
+  private def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
+    paths.flatMap: path =>
+      val text = path.toString
+      val alias =
+        if text.startsWith(MacDataVolumePrefix + "/") then Some(Paths.get(text.stripPrefix(MacDataVolumePrefix)))
+        else if text.startsWith("/") && text != MacDataVolumePrefix then Some(Paths.get(MacDataVolumePrefix + text))
+        else None
+      path +: alias.toSeq
+
+  /**
+   * The directories whose contents must never become a project mount, and
+   * the warnings describing any degradation in deriving them. The configured
+   * homes (HOME on POSIX; USERPROFILE, HOME and PUBLIC — the shared profile —
+   * on Windows) are protected together with the well-known home roots above,
+   * with macOS data-volume spellings treated as the same directory. A home
+   * variable that is set but invalid refuses the launch on POSIX; on Windows
+   * it is dropped with a warning as long as another home variable resolved,
+   * because Git Bash and MSYS2 export a POSIX-style HOME (/c/Users/me) beside
+   * a perfectly good USERPROFILE. No home variable at all degrades to the
+   * well-known roots, with a warning — HOME-less environments (cron, CI,
+   * env -i) stay launchable under the static guard.
+   */
+  def protectedHomeDirectories(
+    os: Os,
+    env: String => Option[String]
+  ): Either[String, HomeProtection] =
+    val homeVariables = os match
+      case Os.Linux | Os.Mac => Seq("HOME")
+      case Os.Windows        => Seq("USERPROFILE", "HOME")
+
+    val configured = homeVariables.flatMap: name =>
+      env(name).filter(_.nonEmpty).map(name -> _)
+    val parsed = configured.map((name, value) => (name, value, parseHomeVariable(name, value)))
+    val resolved = parsed.collect { case (_, _, Right(result)) => result }
+
+    if configured.nonEmpty && resolved.isEmpty then
+      val problem = parsed.collectFirst { case (_, _, Left(problem)) => problem }.get
+      Left(
+        s"""error: $problem
+           |Cannot determine which project directories are safe to mount.""".stripMargin
+      )
+    else
+      val unsetWarnings =
+        if configured.isEmpty then
+          val missing = os match
+            case Os.Linux | Os.Mac => "HOME is not set"
+            case Os.Windows        => "neither USERPROFILE nor HOME is set"
+          Seq(s"$missing; only the well-known home directories are refused as projects")
+        else Seq.empty
+      val droppedWarnings = parsed.collect { case (_, _, Left(problem)) =>
+        s"$problem; dropped — the remaining home variables cover the boundary"
+      }
+
+      val public = os match
+        case Os.Windows =>
+          env("PUBLIC").filter(_.nonEmpty).toSeq.map(value => (value, parseHomeVariable("PUBLIC", value)))
+        case Os.Linux | Os.Mac => Seq.empty
+      val publicPaths = public.collect { case (_, Right((paths, _))) => paths }.flatten
+      val publicWarnings = public.flatMap {
+        case (_, Right((_, warnings))) => warnings
+        case (_, Left(problem))        => Seq(s"$problem; dropped")
+      }
+
+      val (containers, wellKnownHomes) = wellKnownHomeRoots(os, env)
+      val paths = resolved.flatMap(_._1) ++ publicPaths ++ containers ++ wellKnownHomes
+      val alias = (values: Seq[Path]) =>
+        if os == Os.Mac then withMacDataVolumeAliases(values) else values
+      Right(
+        HomeProtection(
+          alias(paths).distinct,
+          alias(containers).distinct,
+          unsetWarnings ++ droppedWarnings ++ resolved.flatMap(_._2) ++ publicWarnings
+        )
+      )
+
+  /**
+   * Why dir must not become /workspace, or None if it may. The reason is
+   * user-facing and names the rule that fired: telling someone inside
+   * ~/.config to "change into a project directory" would send them deeper
+   * into a tree the dot rule refuses everywhere. A project at <home>/project
+   * remains valid: the guard protects homes, what contains them and the other
+   * homes those containers hold, never the projects inside a home.
+   */
+  def forbiddenProjectDirReason(dir: Path, homes: HomeProtection): Option[String] =
+    val candidate = dir.normalize()
+    val dotDirectory = candidate.iterator().asScala.map(_.toString).find(_.startsWith("."))
+
+    if candidate.getRoot == candidate || candidate.toString.isEmpty then
+      Some(
+        "It is a filesystem root: the whole system would be exposed to the agent.\n" +
+          "Change into a project directory and run this again."
+      )
+    else
+      dotDirectory match
+        case Some(name) =>
+          Some(
+            s"The resolved path contains the dot-prefixed directory '$name'. Dot directories hold\n" +
+              "configuration and credentials (~/.ssh, ~/.aws, ~/.config), so nothing beneath one is\n" +
+              "mounted; symlinks are resolved first, so the dot directory may come from where a link\n" +
+              "leads rather than from the path as typed. Move the project outside dot-prefixed\n" +
+              "directories and run this again."
+          )
+        case None =>
+          val insideAContainer = Option(candidate.getParent).exists(homes.containers.contains)
+          if homes.paths.exists(_.startsWith(candidate)) || insideAContainer then
+            Some(
+              "It is a home directory, or a directory containing one: anything like .aws, .ssh or\n" +
+                ".config beneath it would be exposed to the agent.\n" +
+                "Change into a project directory and run this again."
+            )
+          else None
 
   /**
    * Podman accepts [a-zA-Z0-9][a-zA-Z0-9_.-]* only, so fold anything else out.
@@ -219,7 +387,3 @@ object SandboxProject:
       .filterNot(PolicyDirEntries)
       .toVector
       .sorted
-
-  // -------------------------------------------------------------------------
-  // Launcher verbs: --build, --update and --reset
-  // -------------------------------------------------------------------------

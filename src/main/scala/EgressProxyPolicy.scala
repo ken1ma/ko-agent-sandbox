@@ -47,18 +47,24 @@ object EgressProxyPolicy:
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names
-   * embed a UTC stamp and sort chronologically. Accepted edge: retention
-   * counts sessions, not liveness, so more than RetainedProxyLogs
-   * interleaved sessions of one project prune a live session's file from
-   * under it.
+   * embed a UTC stamp and sort chronologically.
+   *
+   * A run still holding its log open is never pruned, however old the file
+   * is: its proxy is appending to that inode, and unlinking it would leave
+   * the session writing where nothing can read, losing the whole record at
+   * exit — which is what a retention rule counting sessions rather than
+   * liveness does to a project running more than `retain` of them at once.
+   * So `retain` is a floor on what is kept, not a ceiling.
    */
-  def logsToPrune(names: Seq[String], retain: Int): Seq[String] =
-    names.sorted.dropRight((retain - 1).max(0))
+  def logsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
+    names.sorted
+      .dropRight((retain - 1).max(0))
+      .filterNot(name => liveRuns.exists(run => name.endsWith(s"-$run.log")))
 
   val RetainedProxyLogs = 20
 
   /**
-   * The four files .ko-agent-sandbox/egress-hosts/ may hold, each paired with
+   * The files .ko-agent-sandbox/egress-hosts/ may hold, each paired with
    * the proxy variable that carries it. The order is the proxy's tier order,
    * which the launch banner reuses.
    */
@@ -71,13 +77,14 @@ object EgressProxyPolicy:
   /**
    * The policy directory's files as (name, flattened text), present files
    * only. Refused shapes, each of which would otherwise be silently ignored
-   * or misread config: egress-hosts as a regular file (the retired
-   * single-file form, kept fatal so its policy is never skipped unseen); a
+   * or misread config: egress-hosts as a regular file rather than a
+   * directory, fatal so a policy written that way is never skipped unseen; a
    * filename that is no tier file (a typo'd tier configures nothing); a
    * symlinked tier file (podman resolves mount sources on the host, and
-   * this read must see the bytes the sandbox's mount will show); a
-   * present-but-empty file, more likely a forgotten edit than a deliberate
-   * no-op.
+   * this read must see the bytes the sandbox's mount will show); a tier name
+   * that is not a regular file, which would leave its tier silently at the
+   * built-in list; a present-but-empty file, more likely a forgotten edit
+   * than a deliberate no-op.
    */
   def readPolicyFiles(hostsDir: Path): Either[String, Vector[(String, String)]] =
     def symlinkRefusal(path: Path): String =
@@ -88,7 +95,7 @@ object EgressProxyPolicy:
     else if !Files.isDirectory(hostsDir) then
       Left(
         s"""error: $hostsDir is a file
-           |The single-file egress-hosts form was replaced by a directory of per-tier delta files:
+           |egress-hosts is a directory of per-tier delta files:
            |${PolicyTierFiles.map(_(0)).mkString(", ")}. Split the entries by tier and remove the
            |file; README ("Modifying the egress policy") has the grammar.""".stripMargin
       )
@@ -106,6 +113,11 @@ object EgressProxyPolicy:
             s"error: $entry is not a policy file\negress-hosts/ holds only " +
               s"${PolicyTierFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
+          // The one stray shape the name check cannot see: a tier's own name on something the read
+          // below skips, which would leave that tier at its built-in list with nothing said.
+          case entry if !Files.isRegularFile(entry) =>
+            s"error: $entry is not a regular file\negress-hosts/ holds a text file per tier; " +
+              "anything else would leave this tier silently at its built-in list."
         .orElse:
           PolicyTierFiles
             .map(_(0))

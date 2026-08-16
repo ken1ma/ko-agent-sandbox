@@ -2,10 +2,15 @@
 
 This is the crux: *what is the complete set of Git administrative state that must be immutable so
 that a sandbox cannot cause a later host `git` invocation to execute sandbox-controlled code?*
-Everything the filter enforces derives from this document; the policy code is its transcription.
+The policy code is this document's transcription, and the git half of the filter is all of it.
 
 The scope is narrow on purpose. The filter is not protecting repository integrity, correctness, or
 the agent from itself. It defends exactly one property.
+
+One rule in `policy.rs` derives from elsewhere: `.ko-agent-sandbox` cannot be created or written
+either — the launcher's own boundary configuration, protected for the reason `SECURITY.md` ("A
+project loosening its own confinement") gives rather than for anything about git. It shares this
+document's name rule, because the launcher resolves that name on the same case-folding backing.
 
 
 ## The property
@@ -118,7 +123,7 @@ Everything else stays writable — see the classifier.
 
 ## The classifier: writable vs immutable *inside* a gitdir
 
-The plan's constraint "do not make the entire `.git` read-only" is essential: `git` must write its
+The whole of `.git` cannot be read-only: `git` must write its
 operational state for `status`, `commit`, `checkout`, `fetch`, `merge` to work at all — `index`,
 `HEAD` and the other `*_HEAD` refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`,
 `COMMIT_EDITMSG`, `MERGE_MSG`, and so on. (`rebase` is the deliberate exception — its todo is
@@ -142,7 +147,7 @@ command-executing file is denied by default.
 
 One caution the `rebase-merge` case taught: the operational set is enumerated by the **execution
 lens** ("can a write here cause host git to execute?"), *not* "does git write here". Watching real
-git (`git-observations.md`) validates the opposite direction — that we do not *over*-freeze the
+git ("Premises", below) validates the opposite direction — that we do not *over*-freeze the
 agent's own legitimate git — but it must not decide what is *safe* to allow. `rebase-merge`,
 `rebase-apply`, and `sequencer` are exactly where the two diverge: git writes them constantly, yet
 group 1 puts them under control. Where compatibility and security conflict, security wins, and the
@@ -170,21 +175,17 @@ Applied to the raw filename **bytes** (`OsStr`), never a lossy `String` — Linu
 sequences and a non-UTF-8 name must not panic, bypass, or normalize into a surprise. The cost is
 no one can create a file named `.GIT` or `.gi<U+200C>t`, which nothing needs.
 
-**Unicode normalization deliberately needs no handling.** NFC/NFD only relate composed and
-decomposed forms of one character; neither produces an ASCII `g`, `i` or `t`. Since `.git` is pure
-ASCII, APFS being *normalization*-insensitive — its headline difference from HFS+ — introduces no
-`.git` collision, so the audited core needs no normalization library. Case folding, ignorables and
-the Win32 trailing-punctuation layer are the whole surface.
+**A superset, not the exact fold set**, because the exact set is not statically knowable — NTFS
+folds through a per-volume `$UpCase` table. Unicode normalization needs no handling at all, `.git`
+being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the research
+`security-research.md` records.
 
-**Why a superset rather than the exact fold set.** The exact set is not statically knowable: NTFS
-folds through a **per-volume `$UpCase` table**, so two NTFS volumes can disagree. The superset is
-the belt; the per-backing empirical test below is the braces.
-
-**The empirical test (open).** Reasoning bounds the candidate list; only the real filesystem settles
-it. On each supported backing (APFS case-insensitive, NTFS, ext4) create each candidate name through
-the mount and assert host `lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification")
-carries the full corpus, the procedure and the pass criterion; until it runs on real APFS and NTFS,
-the coverage of this rule on those filesystems is an assumption, not a result.
+**The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it. On
+each supported backing, create every candidate name through the mount and assert host
+`lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") carries the corpus, the
+procedure and the pass criterion; `security-research.md` carries each run with its OS and filesystem
+versions, since a fold table is specific to both. APFS case-insensitive — the default macOS volume —
+passes. On case-sensitive APFS, ext4 and NTFS this rule's coverage is an assumption, not a result.
 
 
 ## Positional, not string-based
@@ -195,6 +196,15 @@ gitdir root**, resolved during the fd-relative walk — not on matching an absol
 gitdir discovered along the path (`modules/<n>/`, `worktrees/<n>/`). Path reconstruction plus a
 string test is exactly the TOCTOU/`..`/symlink surface `architecture.md` ("Inode model") rules out;
 the classifier consumes the resolver's position state instead.
+
+Position is derived from names with one exception, and it is worth knowing where the exception is.
+A submodule's name defaults to its *path*, so `modules/a/b` is `a/b`'s gitdir when the submodule is
+at `a/b` and `a`'s own subdirectory when it is at `a` — the same string, two positions, and nothing
+in the path distinguishes them ("Premises", P1). The FUSE layer therefore asks the tree
+which it is, by the `HEAD` a gitdir holds, and the core is told rather than deriving it. The
+untold answer is the strict one: until a root is identified, everything under `modules/` is control,
+which is also what stops the sandbox writing a `HEAD` into a namespace to be asked a question it
+chose the answer to.
 
 
 ## Operations that carry these mutations
@@ -266,10 +276,20 @@ The refusal is deliberately narrow — it fires only when the hook directory res
 workspace. Hooks kept outside it are unreachable through the mount (`RESOLVE_IN_ROOT` clamps the
 resolution), so there is nothing to refuse and those repositories are served normally.
 
-Two doubts refuse rather than guess: a `core.hooksPath` beginning with `~` (expanding it would need
-the host's home directory, which the daemon does not have) and a config carrying an `include`
-directive (the setting could live in a file the scanner does not follow). Both are rare in a
-*repository-local* config, and the message tells the operator what to change.
+The scanner behind it does not read section headers, so it cannot tell `core.hooksPath` from a
+`hooksPath` under a section git never consults for hooks. It therefore judges **every** `hooksPath`
+the file states and refuses if any one of them lands inside the workspace. Keeping only the last
+would be the fail-open shape: a stray `[tool] hooksPath = /opt/hooks` after a real
+`[core] hooksPath = ./githooks` would answer for both, and the worktree hooks git actually runs
+would be served as ordinary writable data. The price is over-refusing a config whose only
+inside-workspace `hooksPath` is one git ignores — a refused mount, never a lost guarantee.
+
+The doubts refuse rather than guess, each of them a value the scanner would otherwise compare in a
+different spelling than the one hooks run from: a `~` (expanding it needs the host's home directory,
+which the daemon does not have), a backslash (git decodes escapes the scanner does not), an
+unterminated quote, and a bare `path` key, which under `include` or `includeIf` names a file the
+scanner never opens. All are rare in a *repository-local* config, and the message tells the operator
+what to change.
 
 Scope: the repository at the workspace root, matching the launcher's own root-only pin. A repository
 the **host** nested deeper in the tree is not scanned — the sandbox cannot create one, so this is
@@ -300,19 +320,20 @@ existed.
 These follow from the name rule and must be documented, not silently broken (the manual explains the
 security reason for each):
 
-- `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `/tmp`.
+- `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `~`.
 - `git worktree add <path>` with `<path>` in `/workspace` — writes a `.git` **file** at the new
   worktree. Blocked.
 - Submodule checkout that would materialize a submodule's worktree `.git` file in `/workspace` —
-  the `.git/modules/<n>/` side is permitted (under the existing gitdir), the new `.git` pointer in
-  the worktree is blocked.
+  the operational state of the `.git/modules/<n>/` side is permitted (that gitdir's own control
+  state is frozen like any other's, by the recursion in "The immutable set"), the new `.git`
+  pointer in the worktree is blocked.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
 - `git rebase` (any form — the merge backend writes `rebase-merge/` even for a clean rebase),
   `git am` (writes `rebase-apply/`), and `git cherry-pick`/`git revert` of a *range* or when a
   conflict makes git open a sequence (writes `sequencer/`) — all blocked, because their todo
   can carry `exec` lines a later host `git rebase --continue` would run. A single, clean
   `cherry-pick`/`revert` (no sequence) still works. Do rebases on the host, or on a clone under
-  `/tmp`.
+  `~`.
 
 Existing host repositories keep working for the everyday commands: `status`, `add`, `commit`,
 `checkout`, `switch`, `fetch`, `merge` touch only operational state. The rebase family is the
@@ -322,33 +343,22 @@ deliberate exception above.
 ## Prior art: git's own CVE history
 
 Git's security advisories are a direct catalog of how repository state becomes host code execution.
-They validate this design, reveal a strength, and sharpen the tests. The living log — the reviewed-
-CVE snapshot, the watch-list, and how to redo the research — is `security-research.md`; the
-conclusions are below.
+The per-CVE verdicts, the watch-list and how to redo the research are `security-research.md`; the
+two conclusions that shape this policy are below.
 
-**Validated.** CVE-2014-9390 is the case-insensitive `.Git`/`.GIT` write into `.git/hooks` — exactly
-why the name rule is a case-fold superset. CVE-2024-32021 is git creating hardlinks during a local
-clone — the same inode-aliasing concern the `link` source-side rule addresses.
+**The filter backstops a whole class.** The CVE-2024-32002 / CVE-2021-21300 / CVE-2014-9390 class
+all end the same way: git is tricked, via symlink + case-insensitivity + submodules, into a *write*
+whose path it believes is in a worktree but resolves into `.git/hooks`. Because the filter
+classifies the **resolved destination** of every mutation — following symlinks through its own
+resolver — the sandbox-side git performing that final write is denied at `open`/`create`, however
+clever the trick that produced the path. (Host-side git bypasses the filter by design; there the
+mitigation is a patched git, as for any untrusted clone.)
 
-**A strength worth stating.** The CVE-2024-32002 / CVE-2021-21300 / CVE-2014-9390 class all end the
-same way: git is tricked, via symlink + case-insensitivity + submodules, into a *write* whose path
-it believes is in a worktree but resolves into `.git/hooks`. Because the filter classifies the
-**resolved destination** of every mutation — following symlinks through its own resolver — the
-sandbox-side git performing that final write is denied at `open`/`create`, however clever the trick
-that produced the path. The filter backstops the whole class on the sandbox side. (Host-side git
-bypasses the filter by design; there the mitigation is a patched git, as for any untrusted clone.)
-
-**Sharper name-rule tests (per-backing).** CVE-2014-9390 names two spellings the ASCII + i-family
-superset does not cover, both backing-specific and historical: HFS+ Unicode-*ignorable* codepoints
-(`.gi<U+200C>t` collapsing to `.git` on old macOS) and Windows 8.3 short names (`GIT~1`). Neither
-affects a case-sensitive Linux backing; both belong in the per-backing empirical name-rule test
-(APFS, NTFS) that is already the open item — this is its concrete corpus.
-
-**The `.gitmodules` residual, made concrete.** Leaving `.gitmodules` writable (P0/P5) assumes git
-handles hostile `.gitmodules` correctly. CVE-2018-11235, CVE-2024-32002, CVE-2025-48384 are cases
-where a git *bug* broke that — submodule name/path handling leading to a planted hook. These are the
-accepted "hostile data + a git bug" residual (SECURITY.md): on the sandbox side the filter
-still denies the final `.git` write; on the host side the mitigation is keeping git patched.
+**The `.gitmodules` residual.** Leaving `.gitmodules` writable rests on "Premises"'s P0 and
+P5, so it assumes git handles hostile `.gitmodules` correctly — and CVE-2018-11235, CVE-2024-32002
+and CVE-2025-48384 are cases where a git bug broke that. Accepted as "hostile data plus a git bug"
+(SECURITY.md): on the sandbox side the filter still denies the final `.git` write; on the host side
+the mitigation is keeping git patched.
 
 
 ## Test list (each vector → a test through the real FUSE mount)
@@ -382,21 +392,67 @@ assert the block, so a later widening of the allowlist that reopened them would 
 
 **Symlink / escape:** `<gitdir>/hooks` is itself a symlink (protect the link, not just its target);
 a symlink whose target escapes the backing root; `.git/hooks/x → outside`. Cannot mutate the
-protected object; cannot escape the root.
+protected object; cannot escape the root. And the stale-handle case, which is neither of those: a
+directory the sandbox renames while still holding it open, with a symlink to a gitdir left at the
+name it vacated — the held handle must not reach what its old name no longer describes, at the
+workspace root or inside a gitdir's operational tree.
 
 **Races (TOCTOU):** rename vs open, rename vs classifier lookup, host-side rename while the sandbox
 holds a descriptor — concurrency tests aimed specifically at the resolve-then-act window.
 
 
-## Settled decisions
+## Premises: the git behaviour this rests on
 
-**Denylist vs allowlist inside a gitdir** (see the classifier section): **allowlist / fail-closed**.
-The operational set is enumerated by the execution lens and guarded by the integration suite; a
-forgotten operational file breaks a git command loudly rather than opening a hole.
+Everything above is derived from how a specific `git` lays out and writes its metadata. Those are
+**premises**, not universal truths: a future `git` could change them, and the classifier's
+correctness assumptions change with it.
 
-**Rebase/sequencer todo state** (`rebase-merge`, `rebase-apply`, `sequencer`): **control** (group 1
-has the why). The cost — no rebase/am/sequenced cherry-pick there — is accepted; security over
-convenience.
+**Observed under `git 2.47.3`.** `probe/observe-git.sh` re-derives them — it drives a real git
+through init/commit/branch/switch/merge/rebase/tag/stash/fetch/gc/`worktree add`/`submodule add` and
+classifies everything written under `.git` with the actual policy. Run it after a git upgrade,
+compare against the premises below, and record the new version here.
 
-The remaining open item is the name rule's Unicode completeness on a case-insensitive backing — a
-per-backing empirical test, not a code-review question (see "The name rule").
+That script validates *compatibility* — that the allowlist does not over-freeze the legitimate git
+the agent itself runs. It is not a security oracle, for the reason the classifier section gives, and
+it has three blind spots worth knowing: it sees only state that *persists* after a command, so a
+clean `git rebase` (which creates and deletes `rebase-merge/` in one command) never appears in a
+run, and neither does any `.lock`, which git renames away within the same command; and a path being
+written does not make it safe to allow. Only real git against a real mount exercises the locks, so
+`tests/mounted_git.rs` is the authority for the operational set — the script maps the layout.
+
+- **P0 — command execution is configured only through the config files** (group 2 has the set and
+  the argument). The whole design rests on it. Re-check on upgrade by scanning git's release notes
+  for a new configuration *source*, or a new worktree-data→command path; human judgement, not a
+  scripted check.
+- **P1 — nested gitdirs live at `modules/<name>` and `worktrees/<name>`, one of them depth 1.**
+  A submodule's name defaults to its path, so `git submodule add <url> libs/foo` yields
+  `[submodule "libs/foo"]` and the gitdir `.git/modules/libs/foo`; a linked worktree is named for
+  the *basename* of its path, so `git worktree add ../wt/deep/foo` yields `.git/worktrees/foo`,
+  always one component (both measured, git 2.47). Any submodule under `deps/`, `vendor/` or
+  `third_party/` has a multi-component name, so this is the common shape, not an edge case. If it
+  drifted, a submodule's writable `objects/` would be judged against the wrong root and frozen —
+  fail-closed, but quiet. Guarded by `tests/git_corpus.rs`, `tests/mounted_git.rs`
+  (`a_submodule_in_a_subdirectory_works_like_any_other`) and `observe-git.sh`, which locates roots
+  by the `HEAD` they hold rather than by depth.
+- **P2 — a `<name>.lock` inherits the class of what it locks.** git writes one beside anything it
+  locks and renames it into place, so `HEAD.lock` and `AUTO_MERGE.lock` are operational while
+  `config.lock` is not — a rule rather than a list, since a list freezes whichever name it forgot.
+  A new operational file that is *not* listed is frozen by default: a broken git command in the
+  live-mount tests, not a hole, but a maintenance signal to add it to the allowlist and to
+  `git_corpus.rs`. The `rebase-merge`/`rebase-apply`/`sequencer` exception is group 1's; do not add
+  them back on the grounds that git writes them.
+- **P3 — the control files are written only at creation time.** `config`, `config.worktree`,
+  `hooks/**`, `commondir`, `gitdir`, `description`, `branches/**` are written by init,
+  `submodule add` and `worktree add`, never during ordinary commit/checkout/merge/fetch — which is
+  why freezing them costs an existing repository nothing, and why creating a submodule or linked
+  worktree inside `/workspace` is blocked ("Consequences", above). Guarded by `tests/git_corpus.rs`.
+- **P5 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
+  data (group 2). Re-check on upgrade that git still refuses a `submodule.<name>.update = !command`
+  sourced from it; if that ever changed, `.gitmodules` would need protecting.
+- **P6 — repository discovery keys on an entry named exactly `.git`**, a directory or a `gitdir:`
+  pointer file. That is the basis of the name rule and of freezing the pointer entry. Re-check on
+  upgrade that git introduces no second discovery name.
+
+Most drift shows up as a broken git command rather than a silent hole — P2 especially. **P0 and P5
+are the two that could weaken the boundary if they regressed**, and neither is caught by a script:
+both need a human read of git's release notes on upgrade.

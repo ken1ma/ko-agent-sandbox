@@ -159,9 +159,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation]:
       authorizeRequest(ConnectRequest("example.com", 443), resolved)
 
-  test("an entry without its +/- prefix is refused; the replacement form is retired"):
-    // A forgotten prefix must not flip a line's meaning unseen — and the refusal points at what
-    // replaced whole-list replacement.
+  test("an entry without its +/- prefix is refused, and names where replacement lives"):
+    // A forgotten prefix must not flip a line's meaning unseen — and the refusal points at where
+    // whole-list replacement is spelled instead.
     val ex = intercept[IllegalArgumentException](tiersOf(readOnly = "pypi.org +docs.example"))
     assert(ex.getMessage.contains(".defaults"), ex.getMessage)
 
@@ -670,6 +670,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation]:
       validateTlsIdentity("api.anthropic.com", hello)
 
+  test("TLS identity validation rejects a ClientHello carrying no SNI"):
+    // The third refusal beside the mismatch and the ECH above. Built directly rather than read off
+    // the wire: what is under test is the identity check, and a hello with no server_name extension
+    // is exactly the absence the case class already models.
+    intercept[PolicyViolation]:
+      validateTlsIdentity(
+        "api.anthropic.com",
+        TlsClientHello(Array.emptyByteArray, None, echPresent = false)
+      )
+
   test("TLS parser rejects a truncated ClientHello"):
     val bytes = clientHello("api.anthropic.com")
 
@@ -722,7 +732,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a read-only inspected host allows reading and nothing else"):
     // The tier exists for storage.googleapis.com: all of GCS, where an attacker-signed URL
-    // accepts writes — so unlike a =git-tagged host there is no POST exception at all. The sharp case is a
+    // accepts writes — so unlike a =git-fetch host there is no POST exception at all. The sharp case is a
     // POST whose path mimics git-upload-pack: an object name is anyone's to choose, and it must
     // NOT ride the =git-fetch rule through.
     def storage(request: String): Unit =
@@ -840,7 +850,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       head("GET / HTTP/1.1\r\nHost: github.com\r\n continued\r\n\r\n")
 
-  test("reading a =git-tagged host is allowed"):
+  test("reading a =git-fetch host is allowed"):
     inspected("GET /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(

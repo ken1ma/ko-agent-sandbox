@@ -96,8 +96,11 @@ object HTTPHelper:
           throw BadRequest("expected CONNECT authority HTTP/1.1")
 
     def parseAuthority(authority: String): ConnectRequest =
+      // `isWhitespace` misses the controls that matter most in the audit log — ESC and BEL are not
+      // whitespace, and DEL is not above 0x7f — and this authority is logged as requested on every
+      // refusal, before any normalization has vouched for it.
       if authority.isEmpty ||
-          authority.exists(ch => ch.isWhitespace || ch > 0x7f)
+          authority.exists(ch => ch.isWhitespace || ch > 0x7f || isForbiddenControl(ch))
       then
         throw BadRequest("invalid CONNECT authority")
 
@@ -272,6 +275,8 @@ object HTTPHelper:
             throw BadRequest("invalid HTTP method")
 
           if target.isEmpty then throw BadRequest("empty request target")
+          if target.exists(isForbiddenControl) then
+            throw BadRequest("control character in request target")
 
           HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(lines.drop(1)))
 
@@ -293,7 +298,11 @@ object HTTPHelper:
         if !name.forall(isHttpTokenChar) then
           throw BadRequest("invalid HTTP header name")
 
-        (name, line.substring(colon + 1).trim)
+        val value = line.substring(colon + 1).trim
+        if value.exists(ch => isForbiddenControl(ch) && ch != '\t') then
+          throw BadRequest("control character in HTTP header value")
+
+        (name, value)
 
   /**
    * The response head, parsed for status and framing only — just enough to tell a completed body
@@ -397,6 +406,18 @@ object HTTPHelper:
           HttpResponseHead(statusLine, status, headers, bytes)
 
         case _ => malformed(s"status line '$statusLine'")
+
+  /**
+   * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
+   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. Two things ride on that.
+   * The target is written verbatim into the audit log, so a tab would break the field grammar
+   * tooling greps and an escape sequence would let a request choose how the record of itself reads
+   * on the operator's terminal. And an origin is entitled to a well-formed request: CR and LF are
+   * already refused above, which is what closes smuggling, but forwarding NUL or DEL into a header
+   * hands the origin's parser a decision this one did not make. HTAB is the single exception, legal
+   * inside a field value and nowhere else.
+   */
+  def isForbiddenControl(ch: Char): Boolean = ch < 0x20 || ch == 0x7f
 
   def isHttpTokenChar(ch: Char): Boolean =
     (ch >= 'A' && ch <= 'Z') ||

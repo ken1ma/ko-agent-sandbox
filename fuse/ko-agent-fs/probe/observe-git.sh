@@ -1,5 +1,6 @@
 #!/bin/sh
-# Re-derive the git-layout premises docs/git-observations.md records: drive a real git through a
+# Re-derive the git-layout premises doc/git-metadata.md records under "Premises": drive a real git
+# through a
 # battery of ordinary operations and classify every path it writes under .git with the actual
 # policy (via the classify_paths example). Run this after a git upgrade; if the CONTROL set grows
 # a path that is not config/hooks/description/commondir/gitdir/config.worktree/branches, or an
@@ -48,11 +49,19 @@ git commit -qm "add sub" >/dev/null 2>&1 || true
 
 echo "git $(git --version | awk '{print $3}')"
 echo
-echo "# nested gitdir roots git created (premise: depth-1 modules/ and worktrees/)"
-find .git/modules .git/worktrees -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | sed 's/^/  /'
+# Where the submodule gitdirs actually are. Not a maxdepth-1 listing: a submodule's name defaults
+# to its path, so `modules/libs/foo` is one gitdir rather than two levels of one. A `HEAD` is what
+# marks a root, which is the same question the filter's plumbing asks of the tree.
+module_roots=$(find .git/modules -mindepth 1 -name HEAD -type f 2>/dev/null | sed 's|/HEAD$||' | sort)
+
+echo "# nested gitdir roots git created"
+{ printf '%s\n' "$module_roots"
+  find .git/worktrees -maxdepth 1 -mindepth 1 -type d 2>/dev/null; } | grep . | sort | sed 's/^/  /'
 echo
 echo "# CONTROL-classified writes during normal ops (premise: all in the frozen set)"
-find .git \( -type f -o -type l \) -newer "$mark" | sort | "$tool" | grep '^CONTROL' | sed 's/^/  /'
+# $module_roots unquoted on purpose: each root is a separate argument to the classifier.
+find .git \( -type f -o -type l \) -newer "$mark" | sort \
+    | "$tool" $module_roots | grep '^CONTROL' | sed 's/^/  /'
 echo
 echo "# OPERATIONAL writes at the main gitdir root (premise: all must stay writable)"
 find .git -maxdepth 1 \( -type f -o -type l \) -newer "$mark" | sort | "$tool" | grep '^OPERATIONAL' | sed 's/^/  /'

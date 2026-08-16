@@ -4,8 +4,8 @@
 # `.containerignore` because both podman and docker look for it.
 target
 
-# Neither is a build input nor distribution — probes/ holds the platform-verification probes a
+# Neither is a build input nor distribution — probe/ holds the platform-verification probes a
 # developer runs by hand, not under cargo. The jar does not bundle either, which is what keeps
 # editing one from changing the source digest the launcher checks.
-docs
-probes
+doc
+probe

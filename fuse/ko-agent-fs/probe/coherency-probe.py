@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The platform-verification probe for end-to-end coherency (docs/TODO.md, "End-to-end coherency
+"""The platform-verification probe for end-to-end coherency (doc/TODO.md, "End-to-end coherency
 through the real host share"): does a host-side write become visible inside the sandbox promptly —
 through read(), and through an already-established mmap (the AUTO_INVAL_DATA path, which nothing
 else exercises)? The rig's coherency tests use a local backing; this one crosses the real stack:
@@ -18,7 +18,9 @@ coherency-probe-data afterwards (the probe prints a reminder).
 
 import mmap
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 DATA = "coherency-probe-data"
@@ -27,11 +29,19 @@ NEW = b"BBBB"  # same length: the mapped page is compared in place, no size chan
 
 
 def stack() -> str:
+    """Filtered or not, decided by the one property that separates the filter from the launcher's
+    mount pin: `.git` is refused at *any* depth, not only at the workspace root. Probing inside a
+    fresh subdirectory rather than at the root is what makes that work in a project that already
+    has a `.git` — including the empty one an unfiltered launch leaves behind in a project that had
+    none (`SECURITY.md`, "Silent changes to what you own"), which is the control run this probe is
+    meant to be compared against."""
+    probe = tempfile.mkdtemp(prefix=".coherency-probe-stack-", dir=".")
     try:
-        os.mkdir(".git")
+        os.mkdir(os.path.join(probe, ".git"))
     except PermissionError:
         return "filtered"
-    os.rmdir(".git")
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
     return "raw bind (unfiltered)"
 
 

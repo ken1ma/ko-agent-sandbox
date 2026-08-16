@@ -12,7 +12,7 @@ Decisions that research has already closed are in **Non-TODOs** so they stop res
 
 ## P1 — Platform verification (needs real filesystems)
 
-### The `.git` name rule on a case-insensitive backing
+### The `.git` name rule per backing filesystem
 
 The decisive question is not "what does our fold rule cover" but the property itself:
 
@@ -21,39 +21,38 @@ The decisive question is not "what does our fold rule cover" but the property it
 
 This cannot be reasoned to a conclusion: the fold tables are per-volume on NTFS and tied to a
 Unicode version on APFS (`git-metadata.md`, "The name rule"). Reasoning bounds the candidate list;
-only the filesystem settles it.
+only the filesystem settles it. `probe/apfs-name-rule-probe.py` creates each candidate *through the
+mount* inside a filtered session and runs the host-side checks (its header has the procedure and the
+cleanup). The corpus:
 
-Run on each supported backing — APFS case-insensitive (the default macOS variant), APFS
-case-sensitive, NTFS, and ext4 as the control — creating each candidate *through the mount* and
-asserting the host sees no repository. `probes/apfs-name-rule-probe.py` runs the candidate rows
-inside a filtered session (its header has the procedure, the host-side checks, and cleanup):
-
-- [ ] `.git` itself (the base case must be refused).
-- [ ] Case variants: `.GIT`, `.Git`, `.gIt`, `.giT`.
-- [ ] Turkish i-family: `.gıt` (U+0131), `.gİt` (U+0130).
-- [ ] Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
-- [ ] Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
-- [ ] A Windows 8.3 short name, `GIT~1` — to **confirm rather than assume** that an 8.3 name cannot
-  alias a dot-leading long name.
-- [ ] Names that must stay **allowed**, so the superset has not over-reached into ordinary use:
+- `.git` itself (the base case must be refused).
+- Case variants: `.GIT`, `.Git`, `.gIt`, `.giT`.
+- Turkish i-family: `.gıt` (U+0131), `.gİt` (U+0130).
+- Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
+- Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
+- A Windows 8.3 short name, `GIT~1`, on NTFS — to **confirm rather than assume** that an 8.3 name
+  cannot alias a dot-leading long name.
+- Names that must stay **allowed**, so the superset has not over-reached into ordinary use:
   `.gitignore`, `.gitattributes`, `.gitmodules`, `.github`, and an accented non-ASCII name in both
   NFC and NFD (the normalization control — it must remain creatable).
 
 Pass criterion: for every denied spelling the create fails with `EPERM`; for every allowed spelling
 it succeeds *and* host `lstat` of `.git` still finds nothing. A failure on any row means the fold
-rule needs widening in `policy::is_dotgit_name` — fix the code, not the test.
+rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Every run belongs in
+`security-research.md` with its OS and filesystem versions: fold tables are version-specific, so a
+bare pass with no version recorded is not evidence for the next release.
 
-Status by backing: **APFS case-insensitive — all rows pass** (macOS 26.4.1; recorded with versions
-in `security-research.md`). APFS case-sensitive, ext4 and NTFS remain; the 8.3 row is NTFS-only.
+APFS case-insensitive, the default macOS variant, passes on macOS 26.4.1. What is left is one run
+per remaining backing:
 
-Every run's result belongs in `security-research.md` with the OS and filesystem versions: the fold
-tables are version-specific, so a bare pass with no version recorded is not evidence for the next
-release.
+- [ ] APFS case-sensitive.
+- [ ] ext4, the control.
+- [ ] NTFS, the only backing where the 8.3 row means anything.
 
 ### End-to-end coherency through the real host share
 
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
-writes promptly (`architecture.md`). `probes/coherency-probe.py` measures both paths a write can
+writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
 travel, `read()` and an established `mmap`, across the whole stack. It passes on macOS 26.4.1, and
 `security-research.md` records the result and why the premise it rests on is behavioural rather than
 declarative — which is what makes re-running it the only thing that notices a changed default.
@@ -63,36 +62,12 @@ declarative — which is what makes re-running it the only thing that notices a 
 ### The platform matrix itself
 
 - [ ] linux-x86_64 and linux-aarch64 (the two architectures every image here builds for).
-- [ ] macOS Podman machine (aarch64, and x86_64 if it still matters).
+- [ ] macOS Podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
 
 Windows is **decided: experimental, NTFS unverified.** The name-rule candidates for NTFS (the
 per-volume `$UpCase` fold, the 8.3 row above) stay untested until someone runs them on a real
 volume; until then the release says plainly that the filter on Windows is experimental, rather than
 claiming a verification nobody ran.
-
-
-## Relocated hooks — closed by refusing to serve (residue below)
-
-Where the **host** relocated its hook directory into the worktree, the files host `git` executes
-sit at an ordinary worktree path the filter calls writable. Closed by a startup refusal
-(`src/guard.rs`, `git-metadata.md`) covering the symlink form, the `core.hooksPath` form, a
-symlinked `.git`, and the two undecidable cases (a `~`-relative path, a config carrying an
-`include`) — and firing only when the target resolves *inside* the workspace.
-
-**Nested host-created repositories are documented, not walked.** Only the workspace-root repository
-is scanned, matching the launcher pin's root-only precedent: the sandbox cannot create a nested
-repository (the filter denies `.git` at every depth), so one can only be host residue, and
-SECURITY.md's "The project checkout" already tells the user a nested repository is the agent's
-output to distrust. A startup walk over a 100k-file workspace would contradict the perf posture for
-a case the docs already own. `guard.rs`'s header records the scope.
-
-**The guard is a startup snapshot, and stays one.** A host that relocates its hooks into the
-worktree *mid-session* is not caught. Recorded rather than polled: a scheduled re-read of `config`
-and re-`lstat` of `hooks` buys a guarantee only as fresh as its last poll, and puts that work on the
-hot path the performance section is already fighting. The window is one the **host** opens — the
-sandbox cannot cause the relocation, since `.git/config` is frozen and the `.git/hooks` node is
-control state. `git-metadata.md` ("Relocated hook directories") carries the reasoning, `SECURITY.md`
-tells the user, and `guard.rs`'s header says it where the check runs.
 
 
 ## Test infrastructure
@@ -120,7 +95,7 @@ the launcher mounting for a real container can.
   therefore reads to tools as a filesystem that simply has no extended attributes, and that is an
   answer every xattr-aware tool already knows how to take.
 
-  Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probes/xattr-probe.py`, the
+  Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probe/xattr-probe.py`, the
   filtered session against the raw bind as control:
 
   | operation   | raw bind (control)   | filtered              |
@@ -149,49 +124,43 @@ the launcher mounting for a real container can.
 
 ## P1 — Performance (the measurements say the target workload would hurt)
 
-Now that the filter is every session's enforcement rather than an opt-in, this cost is not chosen by
-whoever sets a variable — it is what the sandbox is. The numbers below are one ad-hoc run on one
-machine; a feature that everybody pays for is owed a repeatable measurement on every platform it
-ships to.
+The filter is every session's enforcement, so this cost is not chosen by whoever sets a variable —
+it is what the sandbox is. `probe/perf-probe.py` is the measurement: it
+builds its own corpus, so two runs are comparable across machines, and reports per-entry times for
+the five shapes below. Run it once in a filtered session and once with the guard off — the ratio
+between the columns is the answer, and the control is the half that matters, since the raw bind is
+fast for precisely the reason the invariant forbids.
 
-- [ ] **Turn the run below into a repeatable benchmark**, checked in beside the probes so a
-  before/after is a command rather than a reconstruction: the same corpus, the same five commands,
-  filtered and raw-bind, reporting per-entry times and the ratio.
-- [ ] **Re-run it on macOS** — the numbers here predate the flip and were taken by hand, yet they
-  are the baseline every later optimisation is measured against, so they should come from the
-  benchmark instead.
+Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
+virtiofs, against the same corpus over a plain bind mount:
+
+| operation                       | raw bind | filtered | ratio | shape                            |
+| ------------------------------- | -------- | -------- | ----- | -------------------------------- |
+| `find` (readdir only)           | 65 µs    | 317 µs   | 4.9×  | batched per directory            |
+| `find -printf` (readdir + stat) | 147 µs   | 1052 µs  | 7.2×  | ≈ a lookup + getattr round trip  |
+| `rm -rf`                        | 277 µs   | 1391 µs  | 5.0×  |                                  |
+| `cp -r` (create + write)        | 1149 µs  | 5842 µs  | 5.1×  |                                  |
+| `ls -lR` (stat + xattr probes)  | 644 µs   | 7793 µs  | 12.1× | ≈ 4–8 round trips: each          |
+|                                 |          |          |       | *path-based* syscall re-resolves |
+|                                 |          |          |       | every component                  |
+
+The margin over that honest baseline is **~5–12×**. The raw bind is fast because the VM kernel
+caches virtiofs metadata across processes, so virtiofs is not the ceiling — what the ratio prices is
+the invariant, which forbids exactly the caching the control enjoys.
+
+Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
+(tolerable); walk+stat ~1.8 min; `ls -lR`-shaped traffic ~13 min — the `sbt`/`metals` stat-storm
+shape, on this project's own stated target workload. The dominant term is per-syscall LOOKUPs: entry
+TTL 0 means every path component of every syscall is a fresh round trip, which no batching
+downstream can amortize.
+
 - [ ] **Run it on Linux**, where there is no virtiofs under the filter and the ratio should differ
-  in kind rather than degree — that number is unknown today, and Linux is now a platform the filter
-  is mandatory on.
+  in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
+  mandatory on.
 - [ ] **Run it on Windows/WSL**, same reason, lowest priority.
-
-Measured 2026-08-14, in a live filtered session on a macOS Podman machine — 1,796 entries,
-8.7 MB, container → FUSE → daemon → virtiofs, runs stable to ±3%:
-
-| operation                        | per entry | shape                                    |
-| -------------------------------- | --------- | ---------------------------------------- |
-| `find` (readdir only)            | 0.09 ms   | batched per directory — already cheap    |
-| `find -printf` (readdir + stat)  | 0.76 ms   | ≈ one lookup + getattr round trip        |
-| `rm -rf`                         | 1.25 ms   |                                          |
-| `cp -r` (create + write)         | 2.35 ms   |                                          |
-| `ls -lR` (stat + xattr probes)   | 6.13 ms   | ≈ 4–8 round trips: each *path-based*     |
-|                                  |           | syscall re-resolves every component      |
-
-One round trip costs ~0.7–1.4 ms, and cost scales linearly with syscall count. Linear extrapolation
-to a 100k-file tree: readdir walk ~9 s (fine); walk+stat ~76 s; `ls -lR`-shaped traffic ~10 min —
-the `sbt`/`metals` stat-storm shape, on this project's own stated target workload. The dominant term
-is per-syscall LOOKUPs: entry TTL 0 means every path component of every syscall is a fresh round
-trip, which no batching downstream can amortize.
-
-The control, same corpus and commands over a plain bind mount: readdir 21 µs, walk+stat 57 µs,
-`ls -lR` 627 µs, `cp` 648 µs, `rm` 280 µs per entry. The raw bind is fast because the VM kernel
-caches virtiofs metadata across processes (first and second `find` identical — observed, not
-assumed), so virtiofs is not the ceiling; the filter's margin over that honest baseline is
-**~4–13×** (walk+stat 760 vs 57 µs; `ls -lR` 6.1 vs 0.63 ms), and the invariant forbids precisely
-the caching the raw bind enjoys.
-
-- [ ] **Profile where the ~700 µs goes.** With the VM's virtiofs cache warm underneath the daemon,
-  the backing syscalls should be tens of µs, yet a filtered stat costs ~760 µs. Suspects: the
+- [ ] **Profile where the millisecond goes.** With the VM's virtiofs cache warm underneath the
+  daemon, the backing answers a walk+stat in 147 µs, yet the filtered one costs 1052 µs. Suspects:
+  the
   container→daemon FUSE hop itself, model B's full-path `openat2` re-resolution per op, per-op fd
   open/close, and the single-threaded session serializing round trips. Candidate fix if resolution
   dominates: parent-directory fd reuse *within one operation*, never a cache across operations.
@@ -225,39 +194,19 @@ the trail loses detail past the cap, never magnitude (`fs.rs`, `deny_log_action`
 
 ## P2 — Launcher and deployment integration
 
-The pipeline runs end to end. `--build` compiles the binary from bundled source in a pinned
-`rust:slim` container (static musl, `cargo-deny` as the licence gate in the same build), stamps it
-with the digest of that source, installs it where the daemon must run, and proves the whole stack
-there with `--self-test`; each launch re-checks the digest and re-runs the self-test before mounting
-the project. Every failure path — absent binary, wrong version, failed self-test, failed mount,
-non-empty mountpoint — aborts the launch, and no fallback to an unfiltered bind mount exists in the
-code. `architecture.md` ("Build and install") and `AgentSandboxLauncher` ("The workspace-filter
-mount lifecycle") carry the mechanics; the static-musl link constraint that forces the raw
-`SYS_renameat2` syscall is recorded where it binds, in `fs.rs`.
-
-Two delivery decisions, so they are not relitigated:
-
-- **Install into the VM rather than run a FUSE sidecar container.** Rootless podman cannot propagate
-  a container-made mount up to where the sandbox's bind source resolves, while an ordinary VM user
-  can mount through the setuid `fusermount3` (fuser's pure-Rust fallback).
-- **No supervisor watching the daemon.** A daemon that dies mid-session makes every access fail
-  `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty directory or
-  the raw one — scoped to `/workspace` alone, and even shells die at spawn because their cwd is
-  inside the dead mount. The failure is already total, loud and fail-closed, so outside machinery
-  would only convert one obvious dead session into another; the user exits and the reaper cleans up.
-
 The filter is the **default** enforcement on every platform, ahead of that verification;
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the pin. What that leaves:
 
-- [ ] `SECURITY.md` still carries the filter under **Not defended**, now headed by the honest
-  caveat — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows, the
-  passage moves under **Defended** and replaces the mount-pin entry it supersedes.
+- [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
+  unverified — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows that
+  entry has nothing left to say and goes; the claim it qualifies already sits under **Defended**.
 - [ ] The guard refuses to serve a repository whose hooks resolve inside the workspace, and refuses
-  two undecidable configs with them: a `core.hooksPath` beginning with `~`, and a repository-local
-  `include`/`includeIf`. As an opt-in that refusal only reached people who asked for it; as the
-  default it means a project that launched yesterday does not launch today, and the remedy is to
-  edit one's own `.git/config`. Decide whether that is acceptable, or whether those two cases should
-  fall back to the pin rather than refuse.
+  the configs whose `hooksPath` it cannot read faithfully with them — a `~`, a backslash, an
+  unterminated quote, a bare `path` key — plus any `hooksPath` inside the workspace even where git
+  would read a different one (`git-metadata.md`, "Relocated hook directories"). As the default
+  enforcement that means a project which launched yesterday does not launch today, and the remedy
+  is to edit one's own `.git/config`. Decide whether that is acceptable, or whether the undecidable
+  cases should fall back to the pin rather than refuse.
 
 
 ## Deferred research
@@ -274,6 +223,12 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 
 ## Non-TODOs — settled, do not reopen without new evidence
 
+- **A supervisor watching the daemon.** A daemon that dies mid-session makes every access
+  fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
+  directory or the raw one — scoped to `/workspace` alone, and even shells die at spawn
+  because their cwd is inside the dead mount. The failure is already total, loud and
+  fail-closed, so outside machinery would only convert one obvious dead session into
+  another; the user exits and the reaper cleans up.
 - **A Unicode normalization library in the policy core.** `.git` is pure ASCII, so a
   normalization-insensitive backing creates no collision (`git-metadata.md`, "The name rule").
   Settled by research, pinned by a test.
@@ -281,10 +236,14 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   statically knowable. Conservative superset plus the empirical test above, instead.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.
-- **Guarding against inode reuse under `forget`.** Model B reuses an inode number for a recreated
-  `(parent, name)`, which is safe because context and resolution are path-derived rather than tied
-  to the backing inode's identity. A backing mount point makes `readdir`'s reported `d_ino`
-  cosmetic; harmless.
+- **Guarding against inode reuse.** Model B reuses an inode number for a recreated
+  `(parent, name)`, which is safe because context and resolution derive from the *same* names
+  rather than from the backing inode's identity — `RESOLVE_NO_SYMLINKS` is what keeps the two from
+  parting company (`fs.rs`, `open_ino`). Reuse while the old object is still referenced — a name
+  recreated with a different file type — is the kernel's to police and it does, invalidating the
+  inode it held so operations on the old handle fail `EIO`; the stale-handle tests hold their
+  handle one level below the recreated name precisely so that the filter's own refusal is what
+  they measure. A backing mount point makes `readdir`'s reported `d_ino` cosmetic; harmless.
 - **`FOPEN_DIRECT_IO` for coherency.** It would work, and it disables shared `mmap`, which git needs
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **A cache TTL as a performance knob.** Real-time bidirectional visibility is the defining

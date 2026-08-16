@@ -1,19 +1,23 @@
 #!/bin/sh
-# Teach one JVM to trust this session's egress inspection CA.
+# Give one JVM what this session's network needs: the egress proxy's inspection CA, and the proxy
+# itself.
 #
-# The image's own JDK already trusts it — the launcher merges the CA into that JDK's cacerts on the
-# host and mounts the result read-only — so this is for the JVMs the launcher cannot reach: one the
-# agent installed itself with `cs java --jvm temurin:25`, or any JDK unpacked by hand. Those carry
-# an untouched trust store, so a build resolving from any inspected host (the git hosts, the doc
-# sites, javadoc.io, …) fails there with a certificate error and nothing else explains why.
+# The image's own JDK has both already — the launcher merges the CA into its cacerts and the proxy
+# into its net.properties, and mounts the results read-only. This is for the JVMs the launcher
+# cannot reach: one the agent installed with `cs java --jvm temurin:25`, or any JDK unpacked by
+# hand. Untouched, such a JDK fails a dependency resolve twice over — no route to the proxy, and no
+# trust for the certificate an inspected host presents — with nothing to say why.
 #
-#   sandbox-trust-ca                  # $JAVA_HOME
-#   sandbox-trust-ca /path/to/jdk     # some other JDK
+#   sandbox-prepare-jdk                  # $JAVA_HOME
+#   sandbox-prepare-jdk /path/to/jdk     # some other JDK
 #
 # Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
-# failing on the read-only store. The certificate is public — the private key that signs with it
+# failing on the read-only files. The certificate is public — the private key that signs with it
 # never enters this container (SECURITY.md, "Who holds the CA key").
 set -eu
+
+PROXY_HOST=egress-proxy
+PROXY_PORT=3128
 
 CA=/etc/ko-agent-sandbox/egress-ca.crt
 ALIAS=ko-agent-sandbox-egress
@@ -29,7 +33,7 @@ JAVA_HOME="${1:-${JAVA_HOME:-}}"
 
 if [ $# -gt 1 ] || [ -z "$JAVA_HOME" ]; then
     echo "usage: ${0##*/} [JAVA_HOME]" >&2
-    [ $# -gt 1 ] || echo "  no argument and JAVA_HOME is unset, so there is no JDK to teach" >&2
+    [ $# -gt 1 ] || echo "  no argument and JAVA_HOME is unset, so there is no JDK to prepare" >&2
     exit 2
 fi
 
@@ -38,10 +42,43 @@ if [ ! -x "$JAVA_HOME/bin/keytool" ]; then
     exit 1
 fi
 
+# The proxy, written where the JDK's own ProxySelector reads it. JAVA_TOOL_OPTIONS would also
+# work, and adds a banner to every JVM start that corrupts output other tools parse; this sets no
+# system property at all. Appended, because a properties file takes the last assignment of a key.
+set_proxy() {
+    net=$JAVA_HOME/conf/net.properties
+    if [ ! -f "$net" ]; then
+        echo "${0##*/}: no $net; this JDK gets no proxy" >&2
+        return
+    fi
+    if grep -qx "https.proxyHost=$PROXY_HOST" "$net"; then
+        echo "egress proxy already set: $net"
+        return
+    fi
+    # The original beside it before the first append, and only if no copy is there yet, so a
+    # re-run cannot overwrite the true original with an already-appended one. Named for this
+    # tool rather than `.dist`, which would claim an as-distributed pristineness nobody
+    # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
+    [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"
+    cat >> "$net" <<EOF
+
+# ko-agent-sandbox: the proxy is the only route out, and a JVM reads none of the
+# HTTPS_PROXY family.
+http.proxyHost=$PROXY_HOST
+http.proxyPort=$PROXY_PORT
+https.proxyHost=$PROXY_HOST
+https.proxyPort=$PROXY_PORT
+EOF
+    echo "egress proxy added to $net (original: $net.ko-agent-sandbox.orig)"
+}
+
+set_proxy
+
+# The CA is the other half, and only exists where the session inspects something. Absent is a
+# report rather than a failure: the proxy above is what a read-write-only policy needs.
 if [ ! -r "$CA" ]; then
-    echo "${0##*/}: $CA is absent, so this session inspects no host" >&2
-    echo "  (the launcher mounts it; an unfiltered or uninspected run has none)" >&2
-    exit 1
+    echo "${0##*/}: $CA is absent, so this session inspects no host; nothing to trust"
+    exit 0
 fi
 
 # The colon-hex SHA-256 both keytool outputs below carry, whatever label they print it under.
@@ -67,7 +104,7 @@ if [ -z "$want" ]; then
 fi
 
 if [ "$have" = "$want" ]; then
-    echo "already trusted: $JAVA_HOME"
+    echo "egress CA already trusted: $JAVA_HOME"
     exit 0
 fi
 

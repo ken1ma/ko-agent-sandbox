@@ -16,6 +16,8 @@ All filter state sits in the daemon user's home, per project:
                                                             you want after a crash
         source-id                                           the source digest the daemon serves
         sessions/<container>                                one marker per live session
+        lock                                                serializes a launch's reuse decision
+                                                            against a reap's unmount
 
 The log starts with a banner (`ko-agent-fs <version> source <id> t=<unix-secs> serving ...`), so an
 empty file means the daemon never started, not that nothing happened. Denials are one line each:
@@ -31,17 +33,39 @@ The one-look health check:
 
 ## "Operation not permitted" on something that should be allowed
 
-The matching `DENY` line in `daemon.log` names the operation, the target and the rule. Two cases:
+The matching `DENY` line in `daemon.log` names the operation, the target and the rule:
 
 - `reason=protected-git-control` on a file git needs for a normal command — most likely an
-  operational path missing from the fail-closed allowlist (`git-observations.md`, P2: a forgotten
+  operational path missing from the fail-closed allowlist (`git-metadata.md`, P2: a forgotten
   file breaks a git command, never opens a hole). Report it with the DENY line; the fix is one
   allowlist entry plus its tests.
 - `reason=protected-git-entry` on a name that is not `.git` — the conservative name rule
   (`git-metadata.md`, "The name rule") swallowed a legitimate name. Report the exact bytes.
+- `reason=protected-sandbox-config` — something tried to create or write `.ko-agent-sandbox`, the
+  launcher's own configuration. Editing it is the host's job (`SECURITY.md`, "A project loosening
+  its own confinement"); the same reason on a name that is merely *like* it is the fold rule
+  over-reaching, and worth reporting with the exact bytes.
+- `reason=nonportable-target-shape` on a `symlink` — a tool tried to create a link whose target is
+  absolute or climbs above the workspace root, neither of which can be trusted to mean the same
+  thing to the host (`SECURITY.md`, "A symlink is the sharpest case"; the rule and its limits are
+  `fs.rs`, `target_has_portable_shape`). Give the tool a relative target landing inside the
+  workspace, or let it cache inside the project. Tools that link into a store of their own generally
+  fall back to copying: sbt 2 turns off linking for the session on the first refusal and copies out
+  of its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an absolute
+  link to the interpreter — `--copies` builds the same environment, and a virtualenv under `~` is the
+  better answer anyway, since one under `/workspace` names container paths in its `pyvenv.cfg` and
+  shebangs and is unusable on the host regardless.
 
 No DENY line for the failure? Then the `EPERM` did not come from the filter — check the backing
 share's own permissions and SELinux label from inside the machine.
+
+## "Too many levels of symbolic links" (ELOOP) on a path that has none
+
+A handle held across a rename. The daemon reconstructs an inode's path from the names it was looked
+up under, and something now stands at one of those names that is not what stood there before; the
+resolver refuses to follow it rather than serve an object the path no longer describes (`fs.rs`,
+`open_ino`). There is no `DENY` line, because no policy decision was reached. Reopen the path — a
+fresh lookup builds a current chain.
 
 ## "Transport endpoint is not connected" (ENOTCONN)
 
@@ -74,13 +98,15 @@ Every gate prints its reason; the message is the diagnosis.
 
 ## `/workspace` is empty inside the container
 
-The bind captured the bare mountpoint directory instead of a live mount — the daemon died (or was
-reaped) in the window between the launcher's mount check and the container start. By construction
-the directory under the mount is empty, so nothing is exposed. Quit and relaunch.
+The bind captured the bare mountpoint directory instead of a live mount — the daemon died in the
+window between the launcher's mount check and the container start. By construction the directory
+under the mount is empty, so nothing is exposed. Quit and relaunch. A *reap* cannot cause this:
+`lock` above holds the mount check and the unmount apart. On a machine with no `flock` it can,
+and then the marker's age is the only thing keeping the two apart.
 
 ## Everything works but slowly
 
-Expected, quantified, and being worked: metadata through the filter costs ~4–13× the raw bind
+Expected, quantified, and being worked: metadata through the filter costs ~5–12× the raw bind
 (`TODO.md`, "Performance", has the table). If it is much worse than that, suspect the layer below —
 see the next section.
 
@@ -98,12 +124,14 @@ Remedies: raise the machine's memory (`podman machine set --memory ...`, machine
 call); cap the container with `KO_AGENT_SANDBOX_MEMORY` so sbt dies before the VM does; keep
 gigabyte-scale work under `~` in the container, not `/tmp`. After a hard stop, `--reset` sweeps the
 stray proxy and networks; the filter needs nothing — mounts died with the VM and stale session
-markers are pruned at the next reap.
+markers are pruned at a later reap.
 
 ## Stale state after crashes
 
-Self-healing by design, so intervention is rarely needed: a leaked session marker is pruned at the
-next reap (its container no longer exists); a stale or version-skewed mount is unmounted and
+Self-healing by design, so intervention is rarely needed: a leaked session marker is pruned by the
+first reap that finds it older than the launch bound of ten minutes (its container no longer exists,
+and by then no launch could still be on its way to creating one); a stale or version-skewed mount is
+unmounted and
 replaced at the next launch; `--reset` removes the project's whole `mounts/<project>` tree. The
 one thing worth checking after repeated crashes is that `pgrep -a ko-agent-fs` matches the projects
 that actually have sessions.

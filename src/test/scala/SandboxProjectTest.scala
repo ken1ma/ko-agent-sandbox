@@ -6,16 +6,26 @@
 
 package agentsandbox.launcher
 
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Path, Paths}
 
 import HostCommands.Os
 import SandboxProject.*
 
 class SandboxProjectTest extends munit.FunSuite:
 
+  /** Stand-ins for the launcher-owned empty bind sources (emptyMountSources), outside any project. */
   private object emptyFixture:
     val dir = Files.createTempDirectory("git-guard-empty-dir")
     val file = Files.createTempFile("git-guard-empty", "file")
+
+  private val isWindows = System.getProperty("os.name").toLowerCase.contains("win")
+
+  private def protectedHomes(os: Os, values: Map[String, String]): HomeProtection =
+    protectedHomeDirectories(os, values.get).fold(message => fail(message), identity)
+
+  /** The launcher asks the guard *why* a directory is refused; these tests mostly ask whether. */
+  private def isForbiddenProjectDir(dir: Path, homes: HomeProtection): Boolean =
+    forbiddenProjectDirReason(dir, homes).isDefined
 
   test("slug keeps podman-safe characters and folds the rest"):
     assertEquals(slugOf("my-app_1.0"), "my-app_1.0")
@@ -41,30 +51,155 @@ class SandboxProjectTest extends munit.FunSuite:
       projectHash("/home/user/app", Os.Linux)
     )
 
-  test("home and top-level directories are refused on POSIX"):
-    val env = Map("HOME" -> "/home/user").get
-    assert(isForbiddenProjectDir(Paths.get("/home/user"), Os.Linux, env))
-    assert(isForbiddenProjectDir(Paths.get("/"), Os.Linux, env))
-    assert(isForbiddenProjectDir(Paths.get("/home"), Os.Linux, env))
-    assert(isForbiddenProjectDir(Paths.get("/Users"), Os.Mac, env))
-    assert(isForbiddenProjectDir(Paths.get("/root"), Os.Linux, env))
-    assert(!isForbiddenProjectDir(Paths.get("/home/user/project"), Os.Linux, env))
+  test("home boundary refuses homes and their ancestors, never the projects inside"):
+    assume(!isWindows)
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
 
-  test("the Windows home directories are refused, from any runner"):
-    // The comparison is textual, so a POSIX runner exercises it; only the drive-root check below needs a real Windows
-    // filesystem.
-    val env = Map("USERPROFILE" -> "C:\\Users\\me", "PUBLIC" -> "C:\\Users\\Public").get
-    assert(isForbiddenProjectDir(Paths.get("C:\\Users\\me"), Os.Windows, env))
-    assert(isForbiddenProjectDir(Paths.get("C:\\Users\\me\\"), Os.Windows, env))
-    assert(isForbiddenProjectDir(Paths.get("C:\\Users\\Public"), Os.Windows, env))
-    assert(!isForbiddenProjectDir(Paths.get("C:\\Users\\me\\project"), Os.Windows, env))
+    Seq(
+      "/" -> true,
+      "/home" -> true,
+      "/home/user" -> true,
+      // Another account's home, reached by name rather than through HOME.
+      "/home/other" -> true,
+      "/home/user/project" -> false,
+      "/home/user/src/project" -> false,
+      "/work/project" -> false
+    ).foreach: (path, expected) =>
+      assertEquals(isForbiddenProjectDir(Paths.get(path), homes), expected, path)
 
-  test("drive roots are refused on Windows"):
-    // Only meaningful where the default filesystem is Windows: Paths.get on POSIX never parses "C:\" into a rooted
-    // path.
-    assume(System.getProperty("os.name").toLowerCase.contains("win"))
-    assert(isForbiddenProjectDir(Paths.get("C:\\"), Os.Windows, _ => None))
-    assert(!isForbiddenProjectDir(Paths.get("C:\\src\\app"), Os.Windows, _ => None))
+  test("well-known home containers are refused on POSIX, wherever HOME points"):
+    assume(!isWindows)
+    Seq(Os.Linux -> "/srv/homes/user", Os.Mac -> "/srv/homes/user").foreach: (os, home) =>
+      val homes = protectedHomes(os, Map("HOME" -> home))
+      Seq("/home", "/Users", "/root", "/var/root").foreach: container =>
+        assert(isForbiddenProjectDir(Paths.get(container), homes), s"$os $container")
+      // A container holds homes, so its children go too; /root is a home itself and its
+      // children are ordinary projects.
+      Seq("/home/someone", "/Users/someone").foreach: otherHome =>
+        assert(isForbiddenProjectDir(Paths.get(otherHome), homes), s"$os $otherHome")
+      assert(!isForbiddenProjectDir(Paths.get("/root/project"), homes), s"$os /root/project")
+
+  test("no home variable at all degrades to the well-known containers, with a warning"):
+    val posix = protectedHomes(Os.Linux, Map.empty)
+    assert(posix.warnings.exists(_.contains("HOME is not set")))
+    assert(isForbiddenProjectDir(Paths.get("/home"), posix))
+    assert(isForbiddenProjectDir(Paths.get("/Users"), posix))
+    assert(isForbiddenProjectDir(Paths.get("/home/someone"), posix))
+    assert(!isForbiddenProjectDir(Paths.get("/srv/build/app"), posix))
+
+    // Windows falls back to C: for the profiles root, so an environment with neither a home
+    // variable nor SystemDrive still refuses somewhere rather than nowhere.
+    val windows = protectedHomes(Os.Windows, Map.empty)
+    assert(windows.warnings.exists(_.contains("USERPROFILE")))
+    assert(windows.paths.exists(_.endsWith("Users")), windows.paths.toString)
+
+  test("a home that does not resolve to a real path is refused by its spelling, with a warning"):
+    assume(!isWindows)
+    val result = protectedHomes(Os.Linux, Map("HOME" -> "/nonexistent-launcher-home/user"))
+    assert(result.warnings.exists(_.contains("real path")))
+    assert(isForbiddenProjectDir(Paths.get("/nonexistent-launcher-home/user"), result))
+    assert(isForbiddenProjectDir(Paths.get("/nonexistent-launcher-home"), result))
+
+  test("macOS data-volume spellings protect the same boundary as their aliases"):
+    assume(!isWindows)
+    val homes = protectedHomes(Os.Mac, Map("HOME" -> "/Users/user"))
+    assert(isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users/user"), homes))
+    assert(isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users"), homes))
+    // The container's children too, in both spellings.
+    assert(isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users/someone"), homes))
+    assert(!isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users/user/project"), homes))
+
+    val reversed = protectedHomes(Os.Mac, Map("HOME" -> "/System/Volumes/Data/Users/user"))
+    assert(isForbiddenProjectDir(Paths.get("/Users/user"), reversed))
+
+  test("the refusal reason names the rule that fired"):
+    assume(!isWindows)
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
+    assert(forbiddenProjectDirReason(Paths.get("/"), homes).exists(_.contains("filesystem root")))
+    assert(forbiddenProjectDirReason(Paths.get("/home/user"), homes).exists(_.contains("home directory")))
+    assert(forbiddenProjectDirReason(Paths.get("/work/.config/app"), homes).exists(_.contains("'.config'")))
+    assertEquals(forbiddenProjectDirReason(Paths.get("/work/app"), homes), None)
+
+  test("a dot-prefixed current or ancestor directory is refused"):
+    assume(!isWindows)
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
+
+    Seq("/work/.hidden/project", "/work/src/.project").foreach { path =>
+      assert(isForbiddenProjectDir(Paths.get(path), homes), path)
+    }
+
+    assert(!isForbiddenProjectDir(Paths.get("/work/src/project"), homes))
+
+  test("an invalid HOME fails closed on POSIX; Windows drops it when another home resolved"):
+    assert(protectedHomeDirectories(Os.Linux, Map("HOME" -> "relative/home").get).isLeft)
+    assert(protectedHomeDirectories(Os.Linux, Map("HOME" -> "\u0000").get).isLeft)
+    assert(
+      protectedHomeDirectories(
+        Os.Windows,
+        Map("USERPROFILE" -> "relative/profile", "HOME" -> "relative/home").get
+      ).isLeft
+    )
+
+    // Git Bash and MSYS2 export a POSIX-style HOME beside a valid USERPROFILE; the bad
+    // secondary is dropped with a warning, never the reason a launch fails.
+    val secondaryBase = Files.createTempDirectory("windows-secondary").toRealPath()
+    val secondaryProfile = Files.createDirectories(secondaryBase.resolve("Users").resolve("me"))
+    val result = protectedHomes(
+      Os.Windows,
+      Map("USERPROFILE" -> secondaryProfile.toString, "HOME" -> "relative/home")
+    )
+    assert(result.paths.contains(secondaryProfile))
+    assert(result.warnings.exists(_.contains("HOME")))
+    assert(!result.paths.exists(_.toString.contains("relative")))
+
+  test("Windows homes, their ancestors and the profiles root are refused, from any runner"):
+    val base = Files.createTempDirectory("windows-boundary").toRealPath()
+    val userProfile = Files.createDirectories(base.resolve("Profiles").resolve("me"))
+    val homes = protectedHomes(
+      Os.Windows,
+      Map("USERPROFILE" -> userProfile.toString, "SystemDrive" -> base.toString)
+    )
+    assert(isForbiddenProjectDir(userProfile, homes))
+    assert(isForbiddenProjectDir(userProfile.getParent, homes))
+    // SystemDrive\Users stays protected although the current profile lives elsewhere, and so do
+    // the profiles it holds.
+    assert(isForbiddenProjectDir(base.resolve("Users"), homes))
+    assert(isForbiddenProjectDir(base.resolve("Users").resolve("someone"), homes))
+    assert(!isForbiddenProjectDir(userProfile.resolve("src"), homes))
+
+  test("Windows selects USERPROFILE, HOME and PUBLIC"):
+    val base = Files.createTempDirectory("windows-protected-homes")
+    val userProfile = base.resolve("profiles").resolve("user")
+    val home = base.resolve("alternate").resolve("user")
+    val public = base.resolve("shared").resolve("Public")
+    val homes = protectedHomes(
+      Os.Windows,
+      Map("USERPROFILE" -> userProfile.toString, "HOME" -> home.toString, "PUBLIC" -> public.toString)
+    )
+
+    Seq(userProfile, home, public).foreach: protectedHome =>
+      assert(homes.paths.contains(protectedHome), protectedHome.toString)
+
+  test("canonical home aliases protect the same boundary"):
+    assume(!isWindows)
+    val base = Files.createTempDirectory("canonical-home").toRealPath()
+    val realHome = Files.createDirectories(base.resolve("real/users/user"))
+    val linkedHome = Files.createSymbolicLink(base.resolve("home"), realHome)
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> linkedHome.toString))
+
+    // The real spelling of the home, and its ancestors, are refused even though HOME names the
+    // symlink; a project inside the home stays valid.
+    assert(isForbiddenProjectDir(realHome, homes))
+    assert(isForbiddenProjectDir(realHome.getParent, homes))
+    assert(!isForbiddenProjectDir(realHome.resolve("project"), homes))
+
+  test("drive and UNC roots are refused on Windows"):
+    assume(isWindows)
+    val homes = protectedHomes(Os.Windows, Map("USERPROFILE" -> "C:\\Users\\me"))
+
+    assert(isForbiddenProjectDir(Paths.get("C:\\"), homes))
+    assert(isForbiddenProjectDir(Paths.get("\\\\server\\share\\"), homes))
+    assert(!isForbiddenProjectDir(Paths.get("C:\\src\\app"), homes))
 
   test("the git guard pins config and hooks of a real repository"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")

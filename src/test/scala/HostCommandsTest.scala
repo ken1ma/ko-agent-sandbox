@@ -4,6 +4,7 @@
 package agentsandbox.launcher
 
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 
 import HostCommands.*
 import KoAgentFs.*
@@ -11,8 +12,11 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
-  test("trusted executables resolve only through absolute PATH entries"):
-    val dir = Files.createTempDirectory("path-resolve")
+  private def modeOf(path: java.nio.file.Path): String =
+    PosixFilePermissions.toString(Files.getPosixFilePermissions(path))
+
+  test("executables resolve only through absolute PATH entries"):
+    val dir = Files.createTempDirectory("path-resolve").toRealPath()
     val tool = dir.resolve("mytool")
     Files.createFile(tool)
     tool.toFile.setExecutable(true)
@@ -22,8 +26,60 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("absent", dir.toString, Os.Linux), None)
     assertEquals(findOnPath("mytool", "", Os.Linux), None)
 
+  test("an absolute PATH entry inside the checkout is skipped, not preferred"):
+    // The shape absoluteness alone does not catch, and the reason this rule is not about relative
+    // entries: `npm run` puts `$PWD/node_modules/.bin` on PATH as an *absolute* entry, and a
+    // transitive dependency can ship a `bin` named `podman` without running a line of its own code.
+    // The launcher would then be the first thing to execute it — on the host, before any
+    // confinement exists.
+    val checkout = Files.createTempDirectory("untrusted-checkout").toRealPath()
+    val shipped = Files.createDirectories(checkout.resolve("node_modules/.bin"))
+    val planted = shipped.resolve("podman")
+    Files.createFile(planted)
+    planted.toFile.setExecutable(true)
+
+    val system = Files.createTempDirectory("system-bin").toRealPath()
+    val real = system.resolve("podman")
+    Files.createFile(real)
+    real.toFile.setExecutable(true)
+
+    // Ahead of the system directory, which is exactly where it would otherwise win.
+    assertEquals(findOnPath("podman", s"$shipped:$system", Os.Linux, checkout), Some(real))
+    // Skipped rather than merely deprioritized: with nothing else on PATH there is no fallback.
+    assertEquals(findOnPath("podman", shipped.toString, Os.Linux, checkout), None)
+    // A directory that merely shares a prefix with the checkout is not inside it.
+    val sibling = Files.createDirectories(checkout.resolveSibling(s"${checkout.getFileName}x"))
+    val neighbour = sibling.resolve("podman")
+    Files.createFile(neighbour)
+    neighbour.toFile.setExecutable(true)
+    assertEquals(findOnPath("podman", sibling.toString, Os.Linux, checkout), Some(neighbour))
+
+  test("an executable symlinked out of the checkout is skipped, and the real path is returned"):
+    // The *candidate* is what must be canonicalized, not the directory holding it. An ordinary
+    // directory containing `podman -> <checkout>/bin/podman` passes any check made on the directory
+    // alone, because `isRegularFile` and `isExecutable` follow the leaf.
+    val checkout = Files.createTempDirectory("untrusted-checkout").toRealPath()
+    val shipped = Files.createDirectories(checkout.resolve("bin"))
+    val planted = shipped.resolve("podman")
+    Files.createFile(planted)
+    planted.toFile.setExecutable(true)
+
+    val outside = Files.createTempDirectory("outside-bin").toRealPath()
+    Files.createSymbolicLink(outside.resolve("podman"), planted)
+    assertEquals(findOnPath("podman", outside.toString, Os.Linux, checkout), None)
+
+    // And the resolution is what is returned, so the path handed to podman and the reaper is the
+    // real file rather than a link that could be re-pointed after it was vetted.
+    val elsewhere = Files.createTempDirectory("real-bin").toRealPath()
+    val real = elsewhere.resolve("podman")
+    Files.createFile(real)
+    real.toFile.setExecutable(true)
+    val shim = Files.createTempDirectory("shim-bin").toRealPath()
+    Files.createSymbolicLink(shim.resolve("podman"), real)
+    assertEquals(findOnPath("podman", shim.toString, Os.Linux, checkout), Some(real))
+
   test("Windows resolution appends executable extensions and splits on ;"):
-    val dir = Files.createTempDirectory("path-resolve-win")
+    val dir = Files.createTempDirectory("path-resolve-win").toRealPath()
     val tool = dir.resolve("mytool.exe")
     Files.createFile(tool)
     tool.toFile.setExecutable(true)
@@ -52,3 +108,26 @@ class HostCommandsTest extends munit.FunSuite:
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),
       ScriptPath
     )
+
+  test("a private file is never briefly readable, and never inherits a mode it replaced"):
+    assume(posixPermissions(Files.createTempDirectory("perm-probe")), "POSIX permissions only")
+    val dir = Files.createTempDirectory("private-write").toRealPath()
+
+    // The end state, and the reason the mode is also requested at creation: `Files.writeString`
+    // alone would leave the key at the umask's mode for the length of the write.
+    val key = dir.resolve("ca.key")
+    writePrivate(key, "PRIVATE KEY")
+    assertEquals(modeOf(key), "rw-------")
+
+    val readable = dir.resolve("bundle.crt")
+    writeReadable(readable, "CERT")
+    assertEquals(modeOf(readable), "rw-r--r--")
+
+    // Replacing a file does not inherit its mode: a world-writable one planted at the path is
+    // unlinked, not opened, so nothing carries the old permissions into the new content.
+    val planted = dir.resolve("leaf.key")
+    Files.createFile(planted)
+    Files.setPosixFilePermissions(planted, PosixFilePermissions.fromString("rw-rw-rw-"))
+    writePrivate(planted, "PRIVATE KEY")
+    assertEquals(modeOf(planted), "rw-------")
+    assertEquals(Files.readString(planted), "PRIVATE KEY")

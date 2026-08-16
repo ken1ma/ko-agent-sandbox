@@ -22,7 +22,8 @@ object SandboxLifecycle:
    * are exactly direct podman's — the fullscreen TUIs depend on it, which is
    * why cleanup is a detached reaper rather than code after a wait here.
    * Windows (no execve) and a failed reaper spawn stay resident instead:
-   * wait, forward the exit code, run afterWait.
+   * wait, forward the exit code, and let the run's own hook remove what it
+   * made once podman has exited (armRunCleanup).
    *
    * Cleanup lives in a shutdown hook because a terminal SIGINT reaches this
    * JVM as well as podman; the hook waits for podman first.
@@ -33,26 +34,29 @@ object SandboxLifecycle:
    * reset; execvp failing after the reaper spawned cleans up twice, the
    * second rm failing harmlessly.
    */
-  def handOver(command: Vector[String], viaExec: Boolean, afterWait: () => Unit): Nothing =
+  def handOver(command: Vector[String], viaExec: Boolean, cleanup: RunCleanup): Nothing =
     System.out.flush()
     System.err.flush()
+    // Claimed before either way of starting podman, and before the `start()` that can throw: from
+    // here the cleanup removes nothing until it has a process to follow, because the sandbox may
+    // already be running by the time a shutdown reaches it.
+    if !cleanup.handingOver() then
+      // A shutdown got there first and this run's resources are already gone. Starting podman now
+      // would leave a sandbox with no proxy to reach and no reaper to remove it, which is the one
+      // outcome this file refuses — so decline to be what starts it. The JVM is mid-halt, and a
+      // non-zero exit during shutdown halts rather than re-running the sequence.
+      sys.exit(1)
     if viaExec && currentOs != Os.Windows then
       try FFMHelper.libc.execvp(command)
       catch case _: Throwable => () // fall through to the wait model
-    val process = ProcessBuilder(command*).inheritIO().start()
-    // Reached by normal exit too (sys.exit below), so the cleanup is stated once and runs exactly once per process
-    // either way.
-    Runtime.getRuntime.addShutdownHook(
-      Thread(() =>
-        try
-          process.waitFor()
-          afterWait()
-        catch
-          // Give up rather than block the JVM's exit any further; the proxy and the run's networks linger until --reset
-          // removes them.
-          case _: Exception => ()
-      )
-    )
+    val process =
+      try ProcessBuilder(command*).inheritIO().start()
+      catch
+        case ex: IOException =>
+          // No child exists after all, so what this run made is this process's to remove again.
+          cleanup.startFailed()
+          throw ex
+    cleanup.watching(process)
     sys.exit(process.waitFor())
 
   // -------------------------------------------------------------------------
@@ -62,24 +66,103 @@ object SandboxLifecycle:
   // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's policy and
   // certificate are current; nothing worth keeping dies with any of it (the audit log is a host file).
   //
-  // Removal: exec path (POSIX) — a detached sh reaper spawned just before the exec; resident path (Windows, or
-  // exec/spawn failure) — the shutdown hook in handOver.
+  // Removal: one shutdown hook covering this JVM from before the first resource to the end of the session
+  // (armRunCleanup), plus — on the exec path (POSIX) — a detached sh reaper spawned just before the exec, which is what
+  // removes anything at all once execvp has replaced this process and taken its hooks with it.
   //
   // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never toward
   // a removed proxy under a live sandbox:
   //
   //   - a reaper that dies after a successful spawn removes nothing;
-  //   - a launcher killed between proxy start and sandbox create leaves a
-  //     running proxy with no reaper. Not swept at the next launch: that is
+  //   - a launcher SIGKILLed mid-start leaves a running proxy with no reaper,
+  //     because no hook runs either. Not swept at the next launch: that is
   //     also what a concurrent launcher mid-start looks like. If it ever
   //     matters, age-gate the sweep on container creation time;
   //   - a failed `podman rm` is not retried.
 
   /**
+   * The one cleanup a run ever has: armed before the first resource that would need removing, and
+   * never replaced.
+   *
+   * A shutdown hook rather than a `try`/`catch`, because `fail` ends the JVM instead of throwing,
+   * so a `catch` would catch none of the refusals a launch can make — a proxy that will not create,
+   * will not start, or whose address cannot be read, and the sandbox container itself. The hook
+   * covers a Ctrl-C among them, which no error handling would have.
+   *
+   * What it saves is not tidiness. A podman network holds a subnet out of a finite pool — the
+   * rootless default is 256 — and a launch that refuses halfway leaks two, so enough failed
+   * launches make every later launch fail for want of one, until a reset.
+   *
+   * One hook and not two, because swapping one for another leaves a window between the swap's
+   * halves: a JVM shutting down there would run the half that removes at once, against a sandbox
+   * podman had already started. Behaviour follows the run's own state instead, and the three
+   * answers are the whole design:
+   *
+   *   - before the handover, nothing outside this process knows what was made — remove it;
+   *   - during the handover, podman is being started and there is no process to wait on yet —
+   *     remove *nothing*. A lingering proxy is the direction every edge in this file fails toward;
+   *     removing under a sandbox that may already be running is the one it never takes;
+   *   - once there is a process, wait for it and then remove, which is a session's ordinary end.
+   */
+  def armRunCleanup(remove: () => Unit): RunCleanup =
+    val cleanup = RunCleanup(remove)
+    Runtime.getRuntime.addShutdownHook(cleanup.hook)
+    cleanup
+
+  final class RunCleanup private[launcher] (remove: () => Unit):
+    /** The registered thread, kept because a test cannot otherwise see that arming happened. */
+    private[launcher] val hook: Thread = Thread(() => perform())
+    private var handedOver = false
+    private var child: Option[Process] = None
+    private var claimed = false
+
+    /**
+     * Claim the run for the handover: `false` once the cleanup has taken what this run made, which
+     * is the caller's signal not to start podman at all.
+     *
+     * Synchronized against [[perform]], and that is the whole point rather than housekeeping. A
+     * snapshot taken and then released would let a hook read "nothing has started yet", the main
+     * thread hand over and start podman, and the hook remove the proxy underneath it. Reading the
+     * state and acting on it are one critical section on both sides, so whichever arrives first
+     * settles it.
+     */
+    def handingOver(): Boolean = synchronized {
+      if claimed then false
+      else
+        handedOver = true
+        true
+    }
+
+    /** The start threw, so no process exists and what this run made is the caller's again. */
+    def startFailed(): Unit = synchronized { handedOver = false }
+
+    /** There is now a process whose exit the removal must follow. */
+    def watching(process: Process): Unit = synchronized { child = Some(process) }
+
+    private[launcher] def perform(): Unit = synchronized {
+      // The handover in progress: podman is being started and there is no process to wait on.
+      val handingOver = child.isEmpty && handedOver
+      if !claimed && !handingOver then
+        // Claimed before the removal runs rather than after it succeeds. A `remove` that throws
+        // part-way has already taken something away, so allowing a handover after it would start a
+        // sandbox whose proxy or networks are half gone: a failed cleanup refuses the handover as
+        // permanently as a successful one.
+        claimed = true
+        try
+          child.foreach(_.waitFor())
+          remove()
+        catch
+          // Give up rather than block the JVM's exit any further; what this run made lingers until
+          // --reset removes it.
+          case _: Exception => ()
+    }
+
+  /**
    * sh, because it must outlive the launcher's exec and /bin/sh is the one
    * interpreter Linux and macOS both guarantee. $1 this run's sandbox, $2
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
-   * its networks.
+   * its networks, $6 $7 the workspace filter's teardown mode and script
+   * (documented at the step that reads them).
    *
    * The trap is load-bearing: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
@@ -135,7 +218,7 @@ object SandboxLifecycle:
 
   /**
    * The argument after the script is $0, naming the reaper for ps; the rest
-   * travel as $1-$5 rather than interpolated, keeping the script a constant
+   * travel as $1-$7 rather than interpolated, keeping the script a constant
    * and the rest data.
    */
   def reaperCommand(

@@ -3,7 +3,7 @@
 //! serve FUSE — the `/dev/fuse` device, the mount privilege, and fuser's libfuse-free mount path
 //! all working — before the real filesystem is built on top.
 //!
-//! Run it in the privileged dev rig (`docs/testing.md` has the container), e.g.:
+//! Run it in the privileged dev rig (`doc/testing.md` has the container), e.g.:
 //!   cargo run --example mount_probe -- /tmp/ko-agent-fs-probe
 
 use std::ffi::OsStr;

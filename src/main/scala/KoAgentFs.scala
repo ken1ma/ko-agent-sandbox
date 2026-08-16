@@ -1,6 +1,6 @@
 // Everything the launcher does about ko-agent-fs, the workspace FUSE filter: digesting the source it
 // bundles, building and installing the binary, proving the installed one is that source's build, and
-// the per-project mount lifecycle every session now runs through.
+// the per-project mount lifecycle every session runs through.
 //
 // It is a separate program with its own source tree, docs, tests and version contract
 // (fuse/ko-agent-fs/), and it reaches the launch through exactly two calls — workspaceGuard and
@@ -18,30 +18,13 @@ import HostCommands.*
 object KoAgentFs:
 
   /**
-   * The identity of the bundled ko-agent-fs source: SHA-256 over every file
-   * under the build context's ko-agent-fs/, hashed sorted by path, each as
-   * path + NUL + big-endian length + content — the sort makes bundling order
-   * irrelevant, the length keeps file boundaries unambiguous, and the path
-   * makes a rename a new identity. Passed to the image build as
-   * KO_AGENT_FS_SOURCE_ID and reported back by the installed binary's
-   * --version, so a binary that is not the one this launcher would build is
-   * detected rather than trusted (fuse/ko-agent-fs/docs/architecture.md,
-   * "Build and install"). The algorithm lives only here, deliberately: the
-   * build is told the answer and repeats it, so there is no second
-   * implementation to drift from this one.
-   *
-   * Every bundled file counts, tests included: `cargo deny` and `cargo test`
-   * run before `cargo build`, so they decide whether a binary exists at all,
-   * and picking out which of the remaining files "really" affect it is a
-   * judgement that can rot. The exclusions are drawn where they cannot rot
-   * into a second opinion: ko-agent-fs/docs and ko-agent-fs/probes are not
-   * bundled at all (build.sbt), so they are neither distributed nor digested,
-   * and editing a design document or a platform probe does not invalidate
-   * every installed binary.
+   * The one source-identity digest, for the filter binary and the image bundle labels alike:
+   * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
+   * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
+   * unambiguous, and the path makes a rename a new identity. The algorithm lives only here,
+   * deliberately: a build is told the answer and repeats it, so there is no second implementation
+   * to drift from this one.
    */
-  /** The one source-identity digest, for the filter binary and the image bundle labels alike:
-    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and
-    * its length so no rename or byte shuffle across file boundaries can collide. */
   def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
     val digest = MessageDigest.getInstance("SHA-256")
     entries.sortBy(_._1).foreach: (path, content) =>
@@ -66,6 +49,19 @@ object KoAgentFs:
       .toVector
     bundleSourceId(entries)
 
+  /**
+   * The bundled filter source's identity, passed to the image build as KO_AGENT_FS_SOURCE_ID and
+   * reported back by the installed binary's `--version`, so a binary that is not the one this
+   * launcher would build is detected rather than trusted (fuse/ko-agent-fs/doc/architecture.md,
+   * "Build and install").
+   *
+   * Every bundled file counts, tests included: `cargo deny` and `cargo test` run before
+   * `cargo build`, so they decide whether a binary exists at all, and picking out which of the
+   * remaining files "really" affect it is a judgement that can rot. The exclusions are drawn where
+   * they cannot rot into a second opinion: ko-agent-fs/doc and ko-agent-fs/probe are not bundled at
+   * all (build.sbt), so they are neither distributed nor digested, and editing a design document or
+   * a platform probe does not invalidate every installed binary.
+   */
   def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs")
 
   /**
@@ -79,7 +75,7 @@ object KoAgentFs:
   val KoAgentFsBinary = s"$KoAgentFsInstallDir/ko-agent-fs"
 
   /**
-   * Steps 3–4 of the filter pipeline (fuse/ko-agent-fs/docs/architecture.md,
+   * Steps 3–4 of the filter pipeline (fuse/ko-agent-fs/doc/architecture.md,
    * "Build and install"): take /ko-agent-fs out of the image's scratch stage
    * and put it where the daemon must run. On podman machine both the image
    * storage and the daemon live inside the VM, so the whole extraction runs
@@ -245,12 +241,13 @@ object KoAgentFs:
   // source builds, and unmounted when the project's last session ends. The
   // reference count is the session markers under <mountdir>/sessions/, written
   // by the mount script *before* it touches the mount and collected by the
-  // reaper (or the resident path) after `podman wait` — the write-marker-first
-  // ordering is what closes the race with a concurrent reap
-  // (koAgentFsReapScript). The resets remain the sweep for whatever a crashed
-  // launcher leaves. A daemon dying mid-session leaves the container's bind on
-  // a dead FUSE superblock — every access fails ENOTCONN, never a fallthrough
-  // to the unfiltered tree.
+  // reaper (or the resident path) after `podman wait`. Three rules together
+  // keep a concurrent reap off a live session — that ordering, the age below
+  // which no marker is pruned, and the project lock the two scripts share;
+  // koAgentFsReapScript has what each one covers. The resets remain the sweep
+  // for whatever a crashed launcher leaves. A daemon dying mid-session leaves
+  // the container's bind on a dead FUSE superblock — every access fails
+  // ENOTCONN, never a fallthrough to the unfiltered tree.
   // ---------------------------------------------------------------------------
 
   /**
@@ -309,12 +306,13 @@ object KoAgentFs:
    * path — which is user-controlled and therefore travels base64-encoded,
    * never spliced into shell text.
    *
-   * The steps, each fail-closed: reuse an existing healthy mount of the
-   * same source id; lazily unmount a stale or version-skewed one; refuse a
-   * non-empty mountpoint (a vanished mount must expose nothing); start the
-   * daemon detached with its log beside the mount; wait until statfs
-   * reports FUSE (fuse/fuseblk naming varies by stat version, hence the
-   * prefix match).
+   * The steps, each fail-closed: write this session's marker; take the
+   * project lock, under which a concurrent reap cannot unmount (`lock` in
+   * koAgentFsReapScript); reuse an existing healthy mount of the same source
+   * id; lazily unmount a stale or version-skewed one; refuse a non-empty
+   * mountpoint (a vanished mount must expose nothing); start the daemon
+   * detached with its log beside the mount; wait until statfs reports FUSE
+   * (fuse/fuseblk naming varies by stat version, hence the prefix match).
    */
   def koAgentFsMountScript(
     backing: String,
@@ -331,6 +329,8 @@ object KoAgentFs:
        |mnt="$$dir/workspace"
        |mkdir -p "$$mnt" "$$dir/sessions"
        |: > "$$dir/sessions/$sandboxContainer"
+       |exec 9>"$$dir/lock"
+       |flock 9 2>/dev/null || true
        |if mountpoint -q "$$mnt"; then
        |  if [ "$$(cat "$$dir/source-id" 2>/dev/null || true)" = "$sourceId" ] \\
        |      && ls "$$mnt" >/dev/null 2>&1; then
@@ -346,8 +346,10 @@ object KoAgentFs:
        |fi
        |printf %s "$sourceId" > "$$dir/source-id"
        |mv -f "$$dir/daemon.log" "$$dir/daemon.log.1" 2>/dev/null || true
+       |# 9>&- so the daemon does not inherit the project lock and hold it for the session's
+       |# whole life, which would block every later reap forever.
        |nohup "$$HOME/$KoAgentFsBinary" --source "$$backing" --mount "$$mnt" --foreground \\
-       |  >>"$$dir/daemon.log" 2>&1 &
+       |  9>&- >>"$$dir/daemon.log" 2>&1 &
        |i=0
        |while [ $$i -lt 100 ]; do
        |  case "$$(stat -f -c %T "$$mnt" 2>/dev/null || true)" in
@@ -364,20 +366,45 @@ object KoAgentFs:
   /**
    * The last-session teardown, run where the daemon lives after a sandbox
    * container exits. The session markers are the reference count: remove
-   * this run's, prune any whose container no longer exists (a crashed
-   * launcher leaks its marker; pruning self-heals it), and unmount only
-   * when none remain. The ordering closes the race with a concurrent
-   * launch: a new session writes its marker *before* touching the mount,
-   * so either this script sees the marker and leaves the daemon alone, or
-   * the newcomer finds the mount gone and starts a fresh one. Which podman
-   * the script calls is the caller's to decide: koAgentFsReapPodman.
+   * this run's, prune the dead ones (a crashed launcher leaks its marker;
+   * pruning self-heals it), and unmount only when none remain.
+   *
+   * Dead is container-gone *and* past the launch bound, never container-gone
+   * alone: a session writes its marker at the mount and creates its container
+   * only once its proxy is up, so inside that window a live launch has no
+   * container to find and pruning its marker would unmount under it. A
+   * crashed launcher's marker still self-heals, one bound later.
+   *
+   * Three rules together keep a reap off a live session, and none of them is
+   * sufficient alone. The bound above covers a launch with no container yet.
+   * The marker is written before the mount, so a reap that starts later must
+   * see it. And `lock` — held here across counting the markers and
+   * unmounting, and by the mount script across its reuse decision — covers
+   * what the ordering alone does not: a reap that counted zero markers, then
+   * a launch that writes its marker and reuses the still-live mount, then the
+   * unmount landing under it. Serialized, that launch either takes the lock
+   * first and is counted, or finds the mount gone and starts a fresh daemon.
+   * A machine without flock degrades to the ordering and the bound, which is
+   * why the marker is written outside the lock and first.
+   *
+   * Which podman the script calls is the caller's to decide:
+   * koAgentFsReapPodman.
    */
   def koAgentFsReapScript(podman: String, projectId: String, sandboxContainer: String): String =
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |rm -f "$$dir/sessions/$sandboxContainer"
+       |# The project lock (see above). A shell that cannot even open it exits here, which leaves
+       |# the mount up — the same direction every other open edge in this script fails toward.
+       |mkdir -p "$$dir" 2>/dev/null || true
+       |exec 9>"$$dir/lock"
+       |flock 9 2>/dev/null || true
        |for marker in "$$dir/sessions"/*; do
        |  [ -e "$$marker" ] || continue
+       |  # Younger than the launch bound — the same ten minutes the reaper waits on a container
+       |  # that was created and never started (SandboxLifecycle.ReaperScript). A find that cannot
+       |  # answer leaves the marker, which leaks a mount rather than pulling a live one.
+       |  [ -z "$$(find "$$marker" -mmin +10 2>/dev/null)" ] && continue
        |  "$podman" container exists "$$(basename "$$marker")" 2>/dev/null || rm -f "$$marker"
        |done
        |if [ -z "$$(ls -A "$$dir/sessions" 2>/dev/null)" ]; then

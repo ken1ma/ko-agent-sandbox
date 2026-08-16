@@ -12,8 +12,8 @@ mod common;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ use common::TestMount;
 
 const CORRECT: &str = "the correct payload\n";
 const DECOY: &str = "the decoy payload\n";
+const HOOK: &str = "#!/bin/sh\n# host\n";
 
 fn two_trees(backing: &Path) {
     fs::create_dir_all(backing.join("deep/nested")).unwrap();
@@ -86,18 +87,14 @@ fn a_concurrent_host_rename_never_yields_another_file() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
-    // The adversarial version: the sandbox hammers a write at a path while the host swaps an
-    // ordinary directory and a gitdir underneath it. No interleaving may land a byte in the hooks
-    // tree — the classifier and the resolution must agree about which object is being written.
+    // The adversarial version: the sandbox hammers a write at a hook while the host renames the
+    // gitdir out from under that very path and back. No interleaving may land a byte in the hooks
+    // tree — the classifier and the resolution must agree about which object is being written. The
+    // churn moves the gitdir itself rather than a sibling, because a sibling's name is not on the
+    // path being written and would leave the agreement untested.
     let mount = TestMount::new(|backing| {
         fs::create_dir_all(backing.join(".git/hooks")).unwrap();
-        fs::write(
-            backing.join(".git/hooks/pre-commit"),
-            b"#!/bin/sh\n# host\n",
-        )
-        .unwrap();
-        fs::create_dir_all(backing.join("ordinary")).unwrap();
-        fs::write(backing.join("ordinary/pre-commit"), b"ordinary file\n").unwrap();
+        fs::write(backing.join(".git/hooks/pre-commit"), HOOK).unwrap();
     });
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -105,35 +102,41 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
         let stop = Arc::clone(&stop);
         let backing = mount.backing.clone();
         thread::spawn(move || {
-            let ordinary = backing.join("ordinary");
-            let swapped = backing.join("swapped");
+            let gitdir = backing.join(".git");
+            let parked = backing.join("gitswap");
             while !stop.load(Ordering::Relaxed) {
-                let _ = fs::rename(&ordinary, &swapped);
-                let _ = fs::rename(&swapped, &ordinary);
+                let _ = fs::rename(&gitdir, &parked);
+                let _ = fs::rename(&parked, &gitdir);
             }
         })
     };
 
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut frozen = 0usize;
     while Instant::now() < deadline {
-        // Writing the hook must always be refused, whatever the host is doing to sibling names.
         match fs::write(mount.at(".git/hooks/pre-commit"), b"evil") {
             Ok(()) => panic!("SECURITY: a hook write landed during a concurrent rename"),
-            Err(err) => assert_eq!(
-                err.raw_os_error(),
-                Some(libc::EPERM),
-                "the hook write failed for the wrong reason: {err}"
-            ),
+            // The policy refusing is the answer that matters; the other two are the gitdir simply
+            // not being there at that instant, which is the honest answer to a name that moved.
+            Err(err) if err.raw_os_error() == Some(libc::EPERM) => frozen += 1,
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) if err.raw_os_error() == Some(libc::ESTALE) => {}
+            Err(err) => panic!("the hook write failed for the wrong reason: {err}"),
         }
-        let _ = fs::write(mount.at("ordinary/pre-commit"), b"ordinary write\n");
     }
 
     stop.store(true, Ordering::Relaxed);
     churn.join().expect("the churn thread panicked");
+    // The churn may have stopped with the gitdir parked under its other name.
+    let _ = fs::rename(mount.backing_at("gitswap"), mount.backing_at(".git"));
 
+    assert!(
+        frozen > 0,
+        "the gitdir was never present when a write arrived; the classifier was not exercised"
+    );
     assert_eq!(
         fs::read_to_string(mount.backing_at(".git/hooks/pre-commit")).unwrap(),
-        "#!/bin/sh\n# host\n",
+        HOOK,
         "the host's hook was modified under concurrency"
     );
 }

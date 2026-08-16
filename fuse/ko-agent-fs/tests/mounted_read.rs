@@ -136,10 +136,12 @@ fn symlinks_read_back_as_links() {
         std::path::Path::new("greeting.txt")
     );
     // The filter reports the link itself, and following it still reaches the target.
-    assert!(fs::symlink_metadata(mount.at("link.txt"))
-        .unwrap()
-        .file_type()
-        .is_symlink());
+    assert!(
+        fs::symlink_metadata(mount.at("link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(
         fs::read_to_string(mount.at("link.txt")).unwrap(),
         "hello from the backing store\n"
@@ -195,5 +197,159 @@ fn a_sandbox_write_is_visible_to_the_host_immediately() {
     assert_eq!(
         fs::read_to_string(mount.backing_at("src/new.rs")).unwrap(),
         "// written by the sandbox\n"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_positional_write_lands_at_its_offset_not_at_the_descriptor() {
+    // One arm of the write branch. `write` on a positional handle would follow the backing fd's own
+    // position instead of the offset the caller gave, so the second write below would land on the
+    // first — which is what this catches if the arms are ever swapped.
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::FileExt;
+
+    let mount = TestMount::new(tree);
+    let positional = OpenOptions::new()
+        .write(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for writing through the mount");
+    positional.write_at(b"HELLO", 0).unwrap();
+    positional.write_at(b"XX", 23).unwrap();
+    drop(positional);
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("greeting.txt")).unwrap(),
+        "HELLO from the backing XXore\n",
+        "a positional write followed the descriptor rather than its offset"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
+    // The other arm, and the reason `O_APPEND` is carried to the backing fd at all. The kernel
+    // computes an appending write's offset from the size it has cached, and refreshes that size
+    // beforehand only under writeback caching — which this filesystem turns off (`fs.rs`,
+    // `passthrough_flags`). So a host that grows the file behind the mount leaves that offset
+    // stale, and a `pwrite` there overwrites the host's bytes instead of following them. git
+    // appends its reflogs, so this is an ordinary path rather than a corner.
+    //
+    // A control for this has to drop `O_APPEND` from `passthrough_flags` *as well as* forcing the
+    // `pwrite` arm: with the flag still on the backing fd, Linux appends whatever offset `pwrite`
+    // is given, and the old behaviour is not reproduced.
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let mount = TestMount::new(tree);
+
+    let mut appending = OpenOptions::new()
+        .append(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for append through the mount");
+
+    // The host grows the file after that handle exists, bypassing the filter as it always does.
+    let mut direct = OpenOptions::new()
+        .append(true)
+        .open(mount.backing_at("greeting.txt"))
+        .unwrap();
+    direct.write_all(b"the host's line\n").unwrap();
+    drop(direct);
+
+    appending.write_all(b"the sandbox's line\n").unwrap();
+    drop(appending);
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("greeting.txt")).unwrap(),
+        "hello from the backing store\nthe host's line\nthe sandbox's line\n",
+        "the appending write did not land at the end the file actually had"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
+    // `O_APPEND` belongs to the file description, not to the open: `fcntl(F_SETFL)` toggles it
+    // afterwards, and the kernel sends the current flags with every write. A filter that decided at
+    // open time gets both directions wrong — a description switched *to* appending would write at a
+    // stale offset, and one switched *away* would keep appending, because the backing descriptor
+    // still carried the flag and `pwrite` on such a descriptor ignores its offset.
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::FileExt;
+
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+
+    let mount = TestMount::new(tree);
+
+    // Opened positionally, switched to appending, with the host growing the file in between.
+    let mut switched = OpenOptions::new()
+        .write(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for writing through the mount");
+    let mut direct = OpenOptions::new()
+        .append(true)
+        .open(mount.backing_at("greeting.txt"))
+        .unwrap();
+    direct.write_all(b"the host's line\n").unwrap();
+    drop(direct);
+
+    fcntl(&switched, FcntlArg::F_SETFL(OFlag::O_APPEND)).expect("enable O_APPEND");
+    switched.write_all(b"appended after fcntl\n").unwrap();
+    drop(switched);
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("greeting.txt")).unwrap(),
+        "hello from the backing store\nthe host's line\nappended after fcntl\n",
+        "a description switched to appending did not append"
+    );
+
+    // And the other way: opened appending, switched off, then written positionally.
+    let reverted = OpenOptions::new()
+        .append(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for append through the mount");
+    fcntl(&reverted, FcntlArg::F_SETFL(OFlag::empty())).expect("clear O_APPEND");
+    reverted.write_at(b"HELLO", 0).unwrap();
+    drop(reverted);
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("greeting.txt")).unwrap(),
+        "HELLO from the backing store\nthe host's line\nappended after fcntl\n",
+        "a description switched away from appending kept appending"
+    );
+}
+
+/// What this can and cannot show: durability itself needs a machine that loses power, so what is
+/// pinned here is that both calls reach the daemon and succeed on the backing fd. Their failure
+/// mode is the one worth guarding against anyway — an `fh` the handle table does not know is
+/// `EBADF`, and an unimplemented op is `ENOSYS`, which the kernel converts to success and stops
+/// sending, so a regression would be silent at the syscall and visible only after a crash.
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn fsync_and_fsyncdir_are_performed_rather_than_answered() {
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+
+    let mount = TestMount::new(tree);
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(mount.at("src/main.rs"))
+        .unwrap();
+    file.write_all(b"fn main() { /* synced */ }\n").unwrap();
+    file.sync_all().unwrap();
+    file.sync_data().unwrap();
+
+    // A read-only handle syncs too: git opens a ref for reading and syncs the directory that holds
+    // it, so the write gate must not be what decides whether a sync is answered.
+    File::open(mount.at("src/main.rs"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+
+    File::open(mount.at("src")).unwrap().sync_all().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("src/main.rs")).unwrap(),
+        "fn main() { /* synced */ }\n"
     );
 }

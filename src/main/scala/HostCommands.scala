@@ -58,13 +58,46 @@ object HostCommands:
     catch case _: IOException => false
 
   /**
-   * Trusted host executables resolve through absolute PATH entries only;
-   * relative entries are skipped, and invoking the returned absolute path
-   * forecloses CreateProcess's implicit current-directory search on Windows.
-   * The launcher's working directory is the repository being sandboxed —
-   * untrusted by definition. (Prior art: Docker Sandboxes #392.)
+   * The launcher's working directory, canonical where it can be. It is the
+   * repository being sandboxed — untrusted by definition — and so the one
+   * directory a host executable must never be resolved out of.
+   */
+  def workingDirectory(): Path =
+    val here = Paths.get("").toAbsolutePath
+    try here.toRealPath()
+    catch case _: IOException => here.normalize()
+
+  /**
+   * Host executables resolve through PATH entries that are absolute *and*
+   * outside the repository being sandboxed. Two different things are being
+   * kept out, and neither subsumes the other:
+   *
+   *   - a relative entry (`.`, `bin`, `../tools`) resolves against the working
+   *     directory, so a checkout supplies the host's podman with nobody having
+   *     chosen it — and invoking the returned absolute path forecloses
+   *     CreateProcess's implicit current-directory search on Windows for the
+   *     same reason (prior art: Docker Sandboxes #392);
+   *   - an *absolute* entry that names a directory inside the checkout does
+   *     the same thing while looking deliberate. `npm run` puts an absolute
+   *     `$PWD/node_modules/.bin` on PATH, and a transitive dependency can ship
+   *     a `bin` entry named `podman` without running a line of its own code.
+   *     Nothing about absoluteness makes the checkout's copy the user's
+   *     choice, so both are skipped.
+   *
+   * The *candidate* is what gets canonicalized, not the directory holding it,
+   * and that distinction is the rule rather than a detail: `isRegularFile` and
+   * `isExecutable` follow a symlink, so an innocent directory holding
+   * `podman -> <checkout>/bin/podman` would pass a check made on the directory
+   * alone and run the checkout's binary anyway. Resolving here also fixes
+   * *what* runs — the absolute path handed to podman and to the reaper is the
+   * real file, so a link swapped afterwards cannot redirect it.
    */
   def findOnPath(name: String, pathValue: String, os: Os): Option[Path] =
+    findOnPath(name, pathValue, os, workingDirectory())
+
+  /** `here` is a parameter so a test can place an entry inside a checkout
+    * without depending on where the suite happens to run. */
+  def findOnPath(name: String, pathValue: String, os: Os, here: Path): Option[Path] =
     val separator = if os == Os.Windows then ';' else ':'
     val extensions =
       if os == Os.Windows then Vector(".exe", ".com", ".bat", ".cmd")
@@ -79,6 +112,13 @@ object HostCommands:
         catch case _: java.nio.file.InvalidPathException => None
       .filter(_.isAbsolute)
       .flatMap(dir => extensions.iterator.map(ext => dir.resolve(name + ext)))
+      .flatMap: candidate =>
+        // A candidate that cannot be resolved does not exist, so it could not have been executed
+        // either; dropping it here and testing the real path below keeps both decisions on one
+        // object.
+        try Some(candidate.toRealPath())
+        catch case _: IOException => None
+      .filterNot(_.startsWith(here))
       .find(p => Files.isRegularFile(p) && Files.isExecutable(p))
 
   /**
@@ -122,6 +162,9 @@ object HostCommands:
         fail(
           """error: podman is not installed or not on PATH
             |
+            |PATH entries inside the current directory are not searched: it is the
+            |repository being sandboxed (DESIGN.md, "No PATH-resolved host executables").
+            |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127
         )
@@ -144,17 +187,27 @@ object HostCommands:
   def posixPermissions(path: Path): Boolean =
     Files.getFileStore(path).supportsFileAttributeView("posix")
 
-  def writePrivate(path: Path, content: String): Unit =
-    Files.deleteIfExists(path)
-    Files.writeString(path, content)
-    if posixPermissions(path) then
-      Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
+  def writePrivate(path: Path, content: String): Unit = writeWithMode(path, content, "rw-------")
 
-  def writeReadable(path: Path, content: String): Unit =
+  def writeReadable(path: Path, content: String): Unit = writeWithMode(path, content, "rw-r--r--")
+
+  /**
+   * The mode is requested at creation and set again after the write, and both halves earn their
+   * place. Creating with it is what leaves no window: a file created under the umask and chmodded
+   * afterwards holds its content at 0644 for as long as the write takes, and what `writePrivate`
+   * writes is the CA private key. Setting it again is what makes the mode exact: umask can only
+   * clear bits, so a strict one would otherwise leave `writeReadable` narrower than the container
+   * reading that file needs. Windows has no POSIX modes and needs none — `%LOCALAPPDATA%` inherits
+   * an ACL that already excludes other users — so the attribute is refused there and the file is
+   * created plainly.
+   */
+  private def writeWithMode(path: Path, content: String, mode: String): Unit =
+    val permissions = PosixFilePermissions.fromString(mode)
     Files.deleteIfExists(path)
+    try Files.createFile(path, PosixFilePermissions.asFileAttribute(permissions))
+    catch case _: UnsupportedOperationException => Files.createFile(path)
     Files.writeString(path, content)
-    if posixPermissions(path) then
-      Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-r--r--"))
+    if posixPermissions(path) then Files.setPosixFilePermissions(path, permissions)
 
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
@@ -166,10 +219,10 @@ object HostCommands:
         .foreach(Files.delete)
 
   /**
-   * A boundary-weakening variable takes exactly one of a closed value set, case-sensitive —
-   * never a bare presence test, and no alternate spellings (`1`, `true`, `yes`, …): such a
-   * variable can weaken the boundary, so an unclear value must refuse the launch rather than be
-   * read as either side of it (DESIGN.md, "Security configuration must fail closed"), and each
+   * A variable governing the boundary — or whether its reader sees it — takes exactly one of a
+   * closed value set, case-sensitive: never a bare presence test, and no alternate spellings
+   * (`1`, `true`, `yes`, …). An unclear value must refuse the launch rather than be read as
+   * either side of the choice (DESIGN.md, "Security configuration must fail closed"), and each
    * accepted spelling is surface that has to stay correct everywhere it is parsed. Unset and
    * empty mean the default, which is always the choice that weakens nothing.
    */
@@ -187,6 +240,6 @@ object HostCommands:
         Left(
           s"""error: $variable is set to '$text'; the only values are ${choices.mkString(" and ")}, exactly
              |
-             |This variable can weaken the boundary, so an unrecognized value is refused rather
+             |This variable governs the boundary, so an unrecognized value is refused rather
              |than guessed at. $advice""".stripMargin
         )

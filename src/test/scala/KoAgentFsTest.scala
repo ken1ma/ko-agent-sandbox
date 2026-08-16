@@ -4,11 +4,15 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
+import java.nio.file.attribute.{FileTime, PosixFilePermissions}
+import java.time.Instant
 
 import HostCommands.{deleteRecursively, Os}
 import KoAgentFs.*
 
 class KoAgentFsTest extends munit.FunSuite:
+
+  private val isWindows = System.getProperty("os.name").toLowerCase.contains("win")
 
   /** A bundled build-context entry, as the resourceGenerators task in build.sbt wrote it into the
     * jar. Duplicated from AgentSandboxLauncherTest, where the bundle-shape tests keep the other
@@ -109,6 +113,15 @@ class KoAgentFsTest extends munit.FunSuite:
     val marker = script.indexOf(": > \"$dir/sessions/run-container-1\"")
     assert(marker >= 0, script)
     assert(marker < script.indexOf("if mountpoint -q"), "marker written after the adopt check")
+    // Then the project lock, so the reuse decision cannot straddle a concurrent reap's unmount —
+    // and the marker stays outside it, which is what keeps the ordering meaningful where the
+    // machine has no flock.
+    val lock = script.indexOf("flock 9")
+    assert(script.contains("exec 9>\"$dir/lock\""), script)
+    assert(marker < lock && lock < script.indexOf("if mountpoint -q"), script)
+    // The daemon outlives this shell, so it must not inherit the lock and hold it for the
+    // session's whole life.
+    assert(script.contains("9>&- >>\"$dir/daemon.log\""), script)
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
@@ -130,9 +143,61 @@ class KoAgentFsTest extends munit.FunSuite:
     // A crashed launcher leaks its marker; pruning by container existence self-heals it.
     assert(script.contains("\"/usr/bin/podman\" container exists \"$(basename \"$marker\")\""))
     assert(script.contains("mounts/app-abc123def456"))
+    // The age gate comes first, so a marker whose container does not exist *yet* — a launch
+    // between its mount and its `podman create` — is never reached by the prune.
+    val age = script.indexOf("[ -z \"$(find \"$marker\" -mmin +10 2>/dev/null)\" ] && continue")
+    assert(age >= 0, script)
+    assert(age < script.indexOf("container exists"), "the prune runs before the age gate")
     // Unmount only when no markers remain, and lazily: a straggler bind keeps a working mount.
     assert(script.contains("if [ -z \"$(ls -A \"$dir/sessions\" 2>/dev/null)\" ]"))
     assert(script.contains("fusermount3 -uz \"$dir/workspace\""))
+    // Counting and unmounting happen under the same lock the mount script takes, so a launch
+    // cannot decide to reuse a mount this script is about to remove.
+    val lock = script.indexOf("flock 9")
+    assert(script.contains("exec 9>\"$dir/lock\""), script)
+    assert(lock >= 0 && lock < script.indexOf("if [ -z \"$(ls -A"), script)
+
+  /**
+   * Runs the reap script the way the reaper does — /bin/sh, `HOME` pointing at a scratch tree —
+   * and answers which markers survived. Nothing here needs podman, a container or a mount: the
+   * script takes its podman as an argument, so a stub exiting with `podmanExit` decides what
+   * `container exists` reports for every marker. Markers arrive as (name, age in seconds).
+   */
+  private def survivingMarkers(podmanExit: Int, markers: Seq[(String, Long)]): Set[String] =
+    val home = Files.createTempDirectory("ko-agent-fs-reap")
+    try
+      val sessions = home.resolve(koAgentFsMountDir("app-abc123def456")).resolve("sessions")
+      Files.createDirectories(sessions)
+      markers.foreach: (name, age) =>
+        val marker = Files.writeString(sessions.resolve(name), "")
+        Files.setLastModifiedTime(marker, FileTime.from(Instant.now.minusSeconds(age)))
+      val stub = Files.writeString(home.resolve("podman-stub"), s"#!/bin/sh\nexit $podmanExit\n")
+      Files.setPosixFilePermissions(stub, PosixFilePermissions.fromString("rwx------"))
+
+      val builder =
+        ProcessBuilder("/bin/sh", "-c", koAgentFsReapScript(stub.toString, "app-abc123def456", "run-1"))
+      builder.environment().put("HOME", home.toString)
+      builder.redirectErrorStream(true)
+      assertEquals(builder.start().waitFor(), 0, "the reap script failed")
+
+      Option(sessions.toFile.list()).map(_.toSet).getOrElse(Set.empty)
+    finally deleteRecursively(home)
+
+  test("a reap leaves a launch that has mounted but has no container yet"):
+    // The defect this closes: a marker is written at the mount, its container exists only once
+    // the proxy is up, and a concurrent session's reap in between would prune the marker, find
+    // none left and unmount under the launch. Deterministic because the stub podman answers "no
+    // such container" for every marker — the state a launch in flight is indistinguishable from.
+    assume(!isWindows)
+    assertEquals(
+      survivingMarkers(podmanExit = 1, Seq("launching" -> 5L, "crashed" -> 3600L)),
+      Set("launching")
+    )
+    // Its own marker goes by name whatever its age, and a live container's is never touched.
+    assertEquals(
+      survivingMarkers(podmanExit = 0, Seq("run-1" -> 5L, "live" -> 3600L)),
+      Set("live")
+    )
 
   test("the reap script runs in the VM on podman machine and on this host on Linux"):
     assertEquals(koAgentFsTeardownMode(Os.Mac), "machine")
@@ -252,13 +317,11 @@ class KoAgentFsTest extends munit.FunSuite:
       )
     finally deleteRecursively(context)
 
-  /** A bundled build-context entry, as the resourceGenerators task in build.sbt wrote it into the jar. */
-
   test("the workspace guard fails closed on anything it does not recognize"):
     // A variable that can weaken the boundary (NESTING is the other), so an unclear value
     // must not be read as the weaker option (DESIGN.md, "Security configuration must fail closed").
     // Exactly fuse and none, case-sensitive: every accepted spelling is surface that must stay
-    // correct everywhere it is parsed — and the old on/off values are refused, not remapped.
+    // correct everywhere it is parsed.
     assertEquals(workspaceGuard(None), Right("fuse"))
     assertEquals(workspaceGuard(Some("")), Right("fuse"))
     assertEquals(workspaceGuard(Some("fuse")), Right("fuse"))
@@ -270,17 +333,20 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(refused.contains("the only values are fuse and none, exactly"), refused)
     assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
 
-  test("the ko-agent-fs dev rig runs the Rust its image build pins"):
-    // docs/testing.md's privileged-rig container and the image build have to be the same toolchain,
-    // or the rig is exercising a different compiler than the one that ships. Nothing else would
-    // notice a bump to one of them. testing.md is not bundled into the jar, so both are read from
-    // the checkout — as the README test does, and for the same reason.
+  test("the ko-agent-fs dev rig derives its toolchain instead of repeating it"):
+    // The privileged rig and the image build have to be the same compiler, or the rig is exercising
+    // one that does not ship — and nothing else would notice a bump to only one of them. probe/rig.sh
+    // reads the pin out of the Containerfile; this is what keeps it reading rather than copying.
+    // Both are read from the checkout, since neither is bundled into the jar (as the README test
+    // does, and for the same reason).
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
       .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/Containerfile")))
       .map(_.group(1))
       .getOrElse(fail("ko-agent-fs's Containerfile pins no RUST_VERSION"))
-    val rig = Files.readString(Paths.get("fuse/ko-agent-fs/docs/testing.md"))
+    val rig = Files.readString(Paths.get("fuse/ko-agent-fs/probe/rig.sh"))
+    assert(rig.contains("ARG RUST_VERSION="), "probe/rig.sh does not read the Containerfile's pin")
+    assert(rig.contains("docker.io/library/rust:"), "probe/rig.sh names no rust image")
     assert(
-      rig.contains(s"docker.io/library/rust:$pinned-slim-trixie"),
-      s"docs/testing.md does not run the rig on rust:$pinned-slim-trixie"
+      !rig.contains(pinned),
+      s"probe/rig.sh hardcodes rust $pinned rather than reading the pin"
     )

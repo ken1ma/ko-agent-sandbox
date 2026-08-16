@@ -1,9 +1,14 @@
 # `ko-agent-fs` architecture
 
 How the filter is built, and the alternatives weighed on the way. The *what* it must enforce is
-`git-metadata.md`; this is the *how*. Decisions here were taken with the workload in mind: a sandbox
-that compiles large Scala projects — hundreds of thousands of files, `sbt`/`bloop`/`metals`
-stat-storming the tree — over a workspace the host edits concurrently.
+`git-metadata.md` — plus one rule that is not about git: since the host reads this directory too,
+`symlink` refuses to *create* a link whose target is absolute or climbs above the workspace root.
+That is a conservative shape rather than a judgement about meaning, and it binds at creation rather
+than over links in the tree — `rename` and `link` do not re-judge one already created (`fs.rs`,
+`target_has_portable_shape`, which states both limits and measures the cost on sbt 2). This is the
+*how*. Decisions here were taken with the workload in mind: a sandbox compiling large Scala
+projects — hundreds of thousands of files, `sbt`/`bloop`/`metals` stat-storming the tree — over a
+workspace the host edits concurrently.
 
 
 ## Mediation mechanism: a FUSE view
@@ -51,17 +56,21 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
   name. The final component is never resolved by the kernel walk, so a final symlink is not followed
   and the `.git` name rule sees the exact name.
 - **Why this is TOCTOU-safe, not a naive path join.** `RESOLVE_IN_ROOT` makes the kernel resolve the
-  intermediate walk atomically with escape-proof containment — `..` and symlinks are clamped to the
-  backing root, no `backing_root.join(user_path)` string is ever handed to an ordinary syscall. It
+  intermediate walk atomically with escape-proof containment — `..` is clamped to the backing root,
+  no `backing_root.join(user_path)` string is ever handed to an ordinary syscall. It
   is the sanctioned primitive for this (`security-research.md`, "FUSE correctness & openat2
-  semantics"). The two resolve flags this still leaves to choose, and the bounded `EAGAIN` retry a
+  semantics"). The remaining resolve flags, and the bounded `EAGAIN` retry a
   concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
 - **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
-  stale view of what the host wrote — matching "correctness over caching". Its one cost,
-  a stored path going stale when the host renames a parent between our lookup and use, resolves on
-  the next lookup; the fd-per-inode alternative trades that for its own mirror quirk (an fd to a
-  renamed-away subtree keeps operating on the moved inode) plus one open fd per live inode, which at
-  100k files is real fd pressure. Model B holds one fd for the root and transient fds per op.
+  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored
+  path that stops naming its inode once the tree moves, which either side may do and no later
+  lookup repairs: the kernel goes on addressing a renamed directory by the inode it holds rather
+  than looking the new name up. `RESOLVE_NO_SYMLINKS` is what makes that merely stale instead of
+  wrong — the chain then resolves to whatever now bears those names, which those same names
+  classify, or it fails (`fs.rs`, `open_ino`). The fd-per-inode alternative trades the staleness for
+  its own mirror quirk (an fd to a renamed-away subtree keeps operating on the moved inode) plus one
+  open fd per live inode, which at 100k files is real fd pressure. Model B holds one fd for the root
+  and transient fds per op.
 
 ### Bounded memory and the O(1) policy fast-path (the scale constraints)
 
@@ -84,12 +93,13 @@ Reads and writes are served from userspace in the first correct version. Once me
 `ReplyOpen::opened_passthrough`, pure Rust, no libfuse) registers an *allowed* file's backing fd
 with the kernel at `open`, after which bulk read/write bypass the daemon at native speed.
 
-- **It does not weaken the boundary.** The security decision is made at `open`/`create`/`rename`
-  time, all still mediated; a passthrough fd is handed back only for an open the policy authorized,
-  in the mode it authorized. A hooks or config target is denied at open, so it never gets one.
-- **It is an accelerator, not a correctness requirement.** The mount capability-checks passthrough
-  and falls back to userspace I/O where the kernel lacks it. Mediation is unaffected either way, and
-  fails closed regardless.
+- **It would not weaken the boundary.** The security decision is made at `open`/`create`/`rename`
+  time, all of which stay mediated; a passthrough fd would be handed back only for an open the
+  policy authorized, in the mode it authorized. A hooks or config target is denied at open, so it
+  would never get one.
+- **It is an accelerator, not a correctness requirement.** The mount would capability-check
+  passthrough and fall back to userspace I/O where the kernel lacks it, so mediation is unaffected
+  either way and fails closed regardless.
 - **It does not address the dominant cost.** At Scala-compile scale the bottleneck is metadata
   op-rate (`lookup`/`getattr`), which passthrough does not touch — see caching below.
 
@@ -104,20 +114,18 @@ correctness failure, not a slow path. Therefore, as invariants and not tunables:
 
 - entry, attribute, and negative-entry TTLs are **0**, always;
 - writeback caching is **off** (it would let the kernel hold writes the host cannot see);
-- **`AUTO_INVAL_DATA`** is negotiated at `init`. Zero metadata TTL keeps *attributes* fresh, but a
-  file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
+- **`AUTO_INVAL_DATA`** is negotiated at `init`, and a kernel that cannot offer it gets no mount:
+  `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
+  log rather than serving a view that can go stale. Zero metadata TTL keeps *attributes* fresh, but
+  a file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
   host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when it sees mtime change — which
-  the zero-TTL getattrs surface — so data stays coherent while shared `mmap` keeps working. The
-  blunt alternative, `FOPEN_DIRECT_IO`, is also coherent but disables `mmap`, and git `mmap`s
-  `.git/index` and packfiles, so it is the wrong tool here.
+  the zero-TTL getattrs surface — so data stays coherent while shared `mmap` keeps working.
+  Negotiating it is not the same as it working: `--self-test` measures the invalidation itself, and
+  `probe/coherency-probe.py` measures it across the real host share.
 
 The invariant has a measured price: with entry TTL 0, every path component of every syscall is a
-fresh LOOKUP round trip, and a round trip through container → FUSE → daemon → virtiofs costs
-~0.7–1.4 ms on a macOS Podman machine. The control run on a plain bind mount put the filter's
-margin at **~4–13×** (walk+stat 760 µs vs 57 µs per entry): the raw bind is fast because the VM
-kernel caches virtiofs metadata across processes — precisely the caching this invariant forbids.
-With that cache warm underneath the daemon, most of the ~700 µs is not accounted for by the
-backing either; profiling it is the top item in `TODO.md`, "Performance", with the table.
+fresh LOOKUP round trip. `TODO.md`, "Performance", carries the measurements and what is left to
+profile.
 
 Performance at 100k-file scale is recovered only by means that keep every answer fresh:
 
@@ -174,10 +182,10 @@ silent: `SECURITY.md`, "Silent changes to what you own", carries the rule, and
 
 The trust rationale — what an auditor relies on, and how the identity check closes each link — is
 the repository's `SECURITY.md` ("The workspace filter"); what a machine admin sees `--build` do,
-and how to undo it, is its `README.md` ("Build container images"). This section is the mechanics:
+and how to undo it, is its `README.md` ("`--build`"). This section is the mechanics:
 
 1. **`sbt dist`** bundles `fuse/ko-agent-fs/**` into the jar next to the container build contexts,
-   minus this `docs/` directory and `probes/`, neither of which is a build input or distribution
+   minus this `doc/` directory and `probe/`, neither of which is a build input or distribution
    (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot be
    enumerated at runtime, so an `INDEX` lists what is there.
 2. **`--build`** unpacks that bundle to a temporary directory and runs `podman build` from it
@@ -214,7 +222,7 @@ The digest's construction, and why the algorithm exists only on the launcher sid
 code: `KoAgentFs.koAgentFsSourceId`.
 
 **Wired up through step 5** (`AgentSandboxLauncher`: `koAgentFsSourceId`, `buildCommands`,
-`installKoAgentFs` — all run by `--build`), **plus the mount lifecycle every session now runs**
+`installKoAgentFs` — all run by `--build`), **plus the mount lifecycle every session runs**
 (unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD` says otherwise — exactly `fuse` or `none`, so an
 unclear value is a refused launch, never a silently weaker boundary): each launch gates on the
 installed binary's identity and self-test, then mounts the project through a per-project daemon
@@ -235,3 +243,11 @@ machinery — the inode table, the resolver, the fuser glue, passthrough, cache 
 untrusted plumbing around it. The plumbing decides *where* an op is; `policy.rs` alone decides
 *whether* it is allowed. Keeping that line sharp is what makes the security surface auditable at
 100k-file scale, where the plumbing is necessarily busy.
+
+The line is worth reading precisely, because *where* is not always a function of the names. Under
+`<gitdir>/modules` it is not: a submodule's name defaults to its path, so the same path can be a
+gitdir root or a namespace above one, and only the tree can say (`git-metadata.md`, "Positional,
+not string-based"). The plumbing answers that one question — `fs.rs`, `is_gitdir_root`, a single
+`fstatat` for a `HEAD` — and hands the answer over; every rule that consumes it stays in
+`policy.rs` and stays exhaustively unit-testable. An error, or no answer, leaves the strict
+reading, so the plumbing can only ever narrow what the core would otherwise permit.

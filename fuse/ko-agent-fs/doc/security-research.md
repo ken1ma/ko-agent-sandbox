@@ -6,25 +6,10 @@ correctness depends on. The git *conclusions* live in `git-metadata.md` ("Prior 
 the *process* — what was reviewed, when, what to watch for, how to redo it — plus the FUSE/openat2
 findings. Refresh periodically (a git or kernel upgrade is a good trigger) and update the dates.
 
-**Last reviewed:** 2026-08-13, against git 2.47.3.
-
-
-## How to refresh
-
-1. Re-read git's security advisories: <https://github.com/git/git/security/advisories> and the
-   round-up posts at <https://github.blog/tag/git/>. Skim the `oss-security` list for "git".
-2. For each new advisory, ask the question that matters here: *does it let repository state cause
-   host-side code execution?* If yes, put it on the watch-list below and give it a verdict
-   (validated / backstopped / residual / new-test-vector — see the snapshot).
-3. Re-run the searches (any engine); the ones that surfaced the current set:
-   - `git CVE repository malicious hooks config code execution clone checkout symlink hardlink`
-   - `git security advisory .git/hooks case-insensitive symlink RCE`
-   - `git submodule .gitmodules RCE CVE`
-4. Fold conclusions into `git-metadata.md`; add per-backing name spellings to the name-rule test
-   corpus; record git-behaviour premises in `git-observations.md`. Bump "last reviewed".
-5. Re-read the findings below against the current code, not only against new advisories: one that
-   has since been acted on is no longer a finding. Where it settled into a decision, move it to
-   `TODO.md`'s Non-TODOs — this file records what was learned, that one what was decided.
+**Last reviewed:** 2026-08-13, against git 2.47.3. To refresh, re-read the advisories linked at the
+foot of this file, ask of each new one *does it let repository state cause host-side code
+execution?*, and give any that qualifies a verdict below. Re-read the existing findings against the
+current code too: one that has since been acted on is no longer a finding.
 
 
 ## Watch-list — the classes that matter to this filter
@@ -32,7 +17,7 @@ findings. Refresh periodically (a git or kernel upgrade is a good trigger) and u
 A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 
 - **Hooks / `core.hooksPath` / a new config→command mechanism.** A brand-new config *source*, or a
-  new worktree-data→command path, would undermine P0 (`git-observations.md`). The sharpest one.
+  new worktree-data→command path, would undermine P0 (`git-metadata.md`). The sharpest one.
 - **"Trick git into writing into `.git`"** (symlink + case-insensitivity + submodules). We backstop
   this on the sandbox side because we classify the *resolved* destination; still worth tracking.
 - **Hardlink handling.** Inode aliasing is the class the `link` source-side rule closes.
@@ -66,16 +51,6 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
   `!command` from `.gitmodules`).
 
 
-## Follow-ups this research generated
-
-- The per-backing name-rule test corpus must include Unicode-ignorable codepoints and a Windows 8.3
-  short name. The ignorables are handled in code as well (see the APFS/NTFS section); the 8.3
-  spelling stays in the corpus to be confirmed. The corpus and procedure live in `TODO.md`
-  ("Platform verification"); its results belong back in this file, with OS and filesystem versions.
-- On a Linux backing the only immediately-exploitable gap this pass found is inode aliasing, which
-  the `link` source-side rule closes.
-
-
 ## Real-filesystem case-folding: APFS and NTFS (reviewed 2026-08-13)
 
 What the backing filesystem treats as "the same name" decides how wide the `.git` name rule must be.
@@ -98,7 +73,7 @@ Findings the rule rests on:
 
 The empirical run the posture calls for, on the default macOS volume (File System Personality:
 APFS, the case-insensitive variant), through the full production stack — filtered sandbox session →
-FUSE filter → virtiofs → APFS — using `probes/apfs-name-rule-probe.py`:
+FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
 
 - All 14 denied spellings (`.git` itself, the four ASCII case variants, the Turkish i-family, the
   four ignorable-code-point forms, the three trailing-punctuation forms) failed with exactly
@@ -116,7 +91,7 @@ control), and NTFS — the release ships with Windows marked experimental (`TODO
 
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1; 2026-08-14)
 
-`probes/coherency-probe.py` on the same machine and stack as the name-rule run: a host-side write
+`probe/coherency-probe.py` on the same machine and stack as the name-rule run: a host-side write
 became visible to a fresh `read()` inside the filtered session within the 10 ms polling window, and
 a page **mapped before the write** showed the new bytes 0 ms after `read()` did — `AUTO_INVAL_DATA`
 invalidating the cached page as designed. The sandbox→host direction holds on the same stack, and
@@ -149,9 +124,8 @@ rests on:
   (returned when it cannot prove `..` stayed within the root), so the resolver retries, bounded.
   Without it, an attacker renaming a parent could turn a legitimate op into a spurious failure.
 - **Metadata TTL 0 is not data-cache coherency.** The FUSE I/O model shows cached/mmap'd
-  *pages* can lag a host write even at attr TTL 0. We negotiate `AUTO_INVAL_DATA` at `init` so the
-  kernel drops cached pages on mtime change; `FOPEN_DIRECT_IO` would also work but disables shared
-  mmap, which git needs for `.git/index` and packfiles.
+  *pages* can lag a host write even at attr TTL 0, which is why `AUTO_INVAL_DATA` is negotiated at
+  `init`.
 - **A readdir that re-reads and paginates by index skips or duplicates entries** when the directory
   changes mid-scan — a known FUSE issue, which libfuse's `passthrough_hp` avoids by keeping the
   directory stream in the handle. `opendir` snapshots the entry names into the handle instead.

@@ -59,7 +59,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // Every one of these would otherwise be silently ignored or misread config.
     val parent = Files.createTempDirectory("policy-shapes")
 
-    // The retired single-file form: a policy that must never be skipped unseen.
+    // egress-hosts itself as a file, not a directory: a policy that must never be skipped unseen.
     val asFile = parent.resolve("egress-hosts")
     Files.writeString(asFile, "+ghcr.io\n")
     assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
@@ -70,6 +70,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     Files.writeString(dir.resolve("read-onyl"), "+ghcr.io\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
     Files.delete(dir.resolve("read-onyl"))
+
+    // A tier's own name on something the read would skip — the one stray shape the name check
+    // cannot see, and the only one that would leave a tier at its built-in list with nothing said.
+    Files.createDirectory(dir.resolve("read-only"))
+    assert(readPolicyFiles(dir).swap.exists(_.contains("not a regular file")))
+    Files.delete(dir.resolve("read-only"))
 
     // A symlinked tier file: the read must see the bytes the sandbox's mount will show.
     Files.createSymbolicLink(dir.resolve("blocked"), parent.resolve("elsewhere"))
@@ -95,9 +101,23 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     )
     // retain 2: the new file plus the newest existing one survive.
     assertEquals(
-      logsToPrune(names, 2),
+      logsToPrune(names, 2, Set.empty),
       Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log")
     )
     // Enough room already: nothing is pruned.
-    assertEquals(logsToPrune(names, 4), Seq())
-    assertEquals(logsToPrune(Vector(), 20), Seq())
+    assertEquals(logsToPrune(names, 4, Set.empty), Seq())
+    assertEquals(logsToPrune(Vector(), 20, Set.empty), Seq())
+
+    // A live run keeps its log whatever the count says: its proxy still holds that file open, so
+    // pruning it would lose the running session's whole record rather than an old one.
+    assertEquals(
+      logsToPrune(names, 2, Set("aaaaaaaa")),
+      Seq("proxy-20260811-100000-bbbbbbbb.log")
+    )
+    assertEquals(logsToPrune(names, 1, Set("aaaaaaaa", "bbbbbbbb", "cccccccc")), Seq())
+
+    // The suffix has to be the whole one: a run whose name is another's tail keeps nothing alive.
+    assertEquals(
+      logsToPrune(names, 2, Set("aaaaaaa")),
+      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log")
+    )

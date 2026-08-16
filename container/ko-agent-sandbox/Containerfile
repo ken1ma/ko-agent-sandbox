@@ -157,7 +157,7 @@ RUN set -euxo pipefail; \
         --profile minimal --default-toolchain stable \
         --component rustfmt --component clippy; \
     # The triple ko-agent-fs ships as, so a session can run its tests against the
-    # libc that ships (fuse/ko-agent-fs/docs/testing.md). It has to be added here:
+    # libc that ships (fuse/ko-agent-fs/doc/testing.md). It has to be added here:
     # RUSTUP_HOME is read-only at runtime, so a session cannot add it later.
     CARGO_HOME=/opt/rust/cargo /opt/rust/cargo/bin/rustup target add \
         "$(uname -m)-unknown-linux-musl"; \
@@ -254,18 +254,18 @@ RUN set -euxo pipefail; \
 # it: the volume stays trusted input (SECURITY.md), and per-project volumes
 # bound whatever survives to the one project.
 #
-# Probed again on 2.1.232, from inside: a project `.claude/settings.json`
-# carrying SessionStart and PreToolUse hooks produced no hook, and no hook
-# lifecycle event under --include-hook-events, while tool calls ran. That is
-# consistent with the setting biting but does not establish it, because the
-# run cannot be controlled from in here — removing `disableAllHooks` needs
-# the managed file displaced, and it will not displace: /etc is read-only,
-# and CLAUDE_CODE_MANAGED_SETTINGS_PATH, which the binary carries, had no
-# effect (a managed file denying Bash left Bash working). Both halves are
-# worth keeping: the claim above stays unverified, and the paragraph's own
-# premise — that a mounted project cannot weaken this scope — now has two
-# refused attempts behind it rather than one. Verifying the claim means a
-# host-side run where the managed file is yours to vary.
+# What a session can observe of it, on 2.1.232 from inside: a project
+# `.claude/settings.json` carrying SessionStart and PreToolUse hooks yields
+# no hook and no hook lifecycle event under --include-hook-events, while
+# tool calls run. That is consistent with the setting biting without
+# establishing it, because the negative control is out of reach from in
+# here — displacing the managed file needs a writable /etc, and
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH, which the binary carries, does not
+# displace it either (a managed file denying Bash leaves Bash working). So
+# the setting's own effect is unverified, while those two refusals are
+# evidence for the premise above: a mounted project cannot weaken this
+# scope. Verifying the rest needs a host-side run where the managed file is
+# yours to vary.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/claude-code; \
     printf '%s\n' \
@@ -374,13 +374,16 @@ RUN set -euxo pipefail; \
 # must change with the image. Absolute, because a relative link would have
 # to climb out of the volume. `test -r` resolves all three at build time, so
 # a renamed target fails the build rather than leaving an agent uninformed.
-# The launcher merges this session's inspection CA into the image JDK's cacerts and mounts the
-# result, but it can only reach the JDK it shipped. This teaches an agent-installed JVM (`cs java`)
-# the same CA, from the certificate the launcher mounts beside these instructions.
+# The launcher gives the image's JDK this session's CA and proxy by mounting over its own cacerts
+# and net.properties, but it can only reach the JDK it shipped. sandbox-prepare-jdk does both for a
+# JVM the agent installs itself (`cs java`), from the certificate mounted beside these instructions.
 #
 # sandbox-apt-get is the SANDBOX.md-documented package unpacker: real apt-get install can never
 # work on a read-only rootfs as uid 65532, and shipping the workaround beats retyping it.
-COPY --chmod=0755 sandbox-trust-ca sandbox-apt-get /usr/local/bin/
+# sandbox-install-podman is the same bargain for the nesting opt-in: a fetch plus four config
+# files an agent would otherwise transcribe from the instructions, and a refusal when the session
+# was not launched with KO_AGENT_SANDBOX_NESTING=same-uid.
+COPY --chmod=0755 sandbox-prepare-jdk sandbox-apt-get sandbox-install-podman /usr/local/bin/
 
 COPY SANDBOX.md STYLE.md /etc/ko-agent-sandbox/
 

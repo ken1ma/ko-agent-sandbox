@@ -1,7 +1,7 @@
 [package]
 name = "ko-agent-fs"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "FUSE filter that keeps a sandbox from planting host-executable Git metadata in a shared workspace"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -10,7 +10,7 @@ publish = false
 # dependencies below serve only the plumbing (src/fs.rs, src/main.rs): fuser for the FUSE protocol,
 # nix/libc for the fd-relative syscalls. fuser without its libfuse feature has no C linkage: it
 # attempts mount(2) itself and falls back to executing the setuid fusermount3 when that is denied,
-# which is what lets an ordinary VM user mount (`docs/architecture.md`, "Build and install").
+# which is what lets an ordinary VM user mount (`doc/architecture.md`, "Build and install").
 [dependencies]
 fuser = { version = "0.18", default-features = false }
 libc = "0.2"

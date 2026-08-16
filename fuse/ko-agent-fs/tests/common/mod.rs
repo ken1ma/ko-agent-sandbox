@@ -2,7 +2,7 @@
 //!
 //! These mount a real filter over a throwaway backing tree, so they need `/dev/fuse` and
 //! `CAP_SYS_ADMIN`. Every test that uses this is `#[ignore]`d and runs only in the privileged dev
-//! rig — `cargo test -- --ignored`, in the container `docs/testing.md` gives — never in the
+//! rig — `cargo test -- --ignored`, in the container `doc/testing.md` gives — never in the
 //! hardened sandbox, where mounting is refused by design. `cargo test` alone still runs the pure
 //! unit and corpus tests.
 
@@ -16,10 +16,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use fuser::BackgroundSession;
-use ko_agent_fs::fs::{mount_config, KoAgentFs};
-use nix::fcntl::{open, OFlag};
+use ko_agent_fs::fs::{KoAgentFs, mount_config};
+use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
-use nix::sys::statfs::{statfs, FUSE_SUPER_MAGIC};
+use nix::sys::statfs::{FUSE_SUPER_MAGIC, statfs};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -74,10 +74,10 @@ impl TestMount {
     fn await_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Ok(stat) = statfs(&self.mount) {
-                if stat.filesystem_type() == FUSE_SUPER_MAGIC {
-                    return;
-                }
+            if let Ok(stat) = statfs(&self.mount)
+                && stat.filesystem_type() == FUSE_SUPER_MAGIC
+            {
+                return;
             }
             sleep(Duration::from_millis(20));
         }

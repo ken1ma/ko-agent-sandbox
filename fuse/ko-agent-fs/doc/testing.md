@@ -1,0 +1,65 @@
+# Running the `ko-agent-fs` tests
+
+Two suites, split by whether a test has to mount. Both build for the musl triple, and so does the
+image build's own gate (`Containerfile`) — one triple everywhere, because that is the one that ships
+and the difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename`
+is invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the
+artifact's real shape rather than a differently-linked build of it.
+
+
+## Unprivileged — no mount needed
+
+    cargo test --locked --target "$(uname -m)-unknown-linux-musl"
+
+The policy core, the inode table, the startup guard, the static git corpus, and the parts of
+`tests/binary.rs` that drive the real binary without mounting — argument handling and the startup
+refusal, which the in-process suites bypass. None of it mounts, so it runs in CI and inside a
+`ko-agent-sandbox` session, whose image carries the musl target for exactly this — it has to, since
+its rustup home is read-only and a session cannot add a target to it.
+
+
+## Mounted — the privileged dev rig
+
+Everything in `tests/mounted_*.rs`, and the two `#[ignore]`d cases in `tests/binary.rs`, mounts a
+real filter over a throwaway backing tree. That needs `/dev/fuse` and `CAP_SYS_ADMIN` — which the
+sandbox deliberately does not have (`SECURITY.md`, "No containers inside the sandbox by default") —
+so they are `#[ignore]`d by default and run in a privileged container instead:
+
+    probe/rig.sh                        # the whole ignored suite, venue probe first
+    probe/rig.sh a_handle_held          # one filter, for a single test or a family
+    GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
+
+Each flag the rig needs is justified beside itself in that script rather than here, because that is
+where a reader changing one is standing. What is worth knowing before reading it:
+
+- **The venue probe runs first.** `mount_probe` mounts a trivial read-only filesystem and reads one
+  file back, so a `PROBE FAIL` says the venue is wrong — `/dev/fuse`, the mount privilege, or
+  fuser's libfuse-free path — rather than leaving you to read that off thirty test failures.
+- **The toolchain is read from `Containerfile`, never repeated.** The rig has to compile with the
+  compiler that ships, and a second copy of the version is a rig that quietly stops doing so; a
+  test holds the script to deriving it (`KoAgentFsTest`).
+- **`GLIBC=1` answers one question** — whether a failure is libc-specific — and is not a faster
+  alternative: the two compile within a few percent of each other, and all musl costs on top is one
+  `rust-std` download per container.
+- **The target directory is a named volume, outside the source mount.** `tests/binary.rs` resolves
+  the binary relative to the running test executable rather than through `CARGO_BIN_EXE_`, precisely
+  so the crate can be compiled at one path and tested at another; keeping `CARGO_TARGET_DIR` off the
+  host share also keeps the rig's build out of the one a sandbox session makes in `target/`. The
+  volume does not cover the `rust-std` download, which lands in the image's rustup home — if the rig
+  ever becomes routine, bake the apt packages and the target into a small image instead.
+- **The exit status is cargo's**, so a control run — patch the source, expect a failure, restore —
+  reads the way it should from a shell.
+
+
+## What the mounted suites cover
+
+`tests/common/mod.rs` is their harness: a filter over a temporary backing tree, mounted with
+`fs::mount_config` — the product's options, not a convenient subset — and every refusal asserted as
+`EPERM` specifically rather than merely as an error. Over it run the read path; the adversarial set
+(`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hardlink
+aliasing in both directions, the full name-rule corpus, an existing `.git` pointer file, a symlinked
+`hooks/`, nested `modules/` and `worktrees/` control state, a directory handle held across the
+rename that vacates its name); real git, where the everyday commands
+must pass, `rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist
+cannot quietly reopen them, and the host's own hook must still run; and the concurrency/TOCTOU pair,
+which is also the only thing that reaches `openat2`'s `EAGAIN` path.

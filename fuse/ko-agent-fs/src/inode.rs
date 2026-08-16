@@ -1,4 +1,4 @@
-//! The inode table for model B (`docs/architecture.md`). FUSE addresses objects by inode number
+//! The inode table for model B (`doc/architecture.md`). FUSE addresses objects by inode number
 //! and `(parent, name)`, so this maps those to a position in the backing tree: each entry keeps its
 //! parent, basename, kernel lookup count, and cached [`GitContext`]. A path is reconstructed by
 //! walking parents to the root only when an operation needs one; nothing here caches attributes or
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
-use crate::policy::{child_context, GitContext};
+use crate::policy::{GitContext, child_context, gitdir_root};
 
 /// The FUSE root inode number is fixed by the protocol.
 pub const ROOT_INO: u64 = 1;
@@ -75,7 +75,13 @@ impl InodeTable {
     /// Record a successful `lookup(parent, name)`: reuse or allocate an inode number, bump its
     /// kernel reference count, and return it. The Git context is computed once, here, from the
     /// parent's — the O(1) step that every later operation on this inode reads instead of recomputing.
-    pub fn lookup(&mut self, parent: u64, name: &OsStr) -> u64 {
+    ///
+    /// `is_gitdir_root` answers the one question names cannot ([`GitContext::ModuleNamespace`]),
+    /// and only matters where the context would otherwise be a namespace. It is read on the
+    /// allocating path alone: a reused entry keeps the context it was created with, so a directory
+    /// that *becomes* a gitdir root after its first lookup stays a namespace — control — until the
+    /// kernel forgets it. Both drift directions land on the stricter answer.
+    pub fn lookup(&mut self, parent: u64, name: &OsStr, is_gitdir_root: bool) -> u64 {
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key) {
             if let Some(node) = self.by_ino.get_mut(&ino) {
@@ -88,7 +94,10 @@ impl InodeTable {
             .by_ino
             .get(&parent)
             .map_or(GitContext::NotGit, |node| node.git.clone());
-        let git = child_context(&parent_git, name.as_bytes());
+        let git = match child_context(&parent_git, name.as_bytes()) {
+            GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
+            other => other,
+        };
 
         let ino = self.next_ino;
         self.next_ino += 1;
@@ -152,10 +161,16 @@ impl Default for InodeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{classify, GitPathClass};
+    use crate::policy::{GitPathClass, classify};
 
     fn os(s: &str) -> &OsStr {
         OsStr::new(s)
+    }
+
+    /// An ordinary lookup: nothing outside a `modules/` namespace is ever a gitdir root, so the
+    /// hint is `false` everywhere but the one test that exercises it.
+    fn look(table: &mut InodeTable, parent: u64, name: &str) -> u64 {
+        table.lookup(parent, os(name), false)
     }
 
     #[test]
@@ -171,19 +186,19 @@ mod tests {
     #[test]
     fn lookup_allocates_then_reuses_the_same_inode() {
         let mut table = InodeTable::new();
-        let a = table.lookup(ROOT_INO, os("src"));
-        let b = table.lookup(ROOT_INO, os("src"));
+        let a = look(&mut table, ROOT_INO, "src");
+        let b = look(&mut table, ROOT_INO, "src");
         assert_eq!(a, b, "same (parent,name) must reuse the inode");
         assert_eq!(table.get(a).unwrap().nlookup, 2);
-        let other = table.lookup(ROOT_INO, os("docs"));
+        let other = look(&mut table, ROOT_INO, "docs");
         assert_ne!(a, other);
     }
 
     #[test]
     fn components_reconstruct_a_nested_path() {
         let mut table = InodeTable::new();
-        let src = table.lookup(ROOT_INO, os("src"));
-        let main = table.lookup(src, os("main.rs"));
+        let src = look(&mut table, ROOT_INO, "src");
+        let main = look(&mut table, src, "main.rs");
         assert_eq!(
             table.components(main),
             Some(vec![b"src".to_vec(), b"main.rs".to_vec()])
@@ -193,8 +208,8 @@ mod tests {
     #[test]
     fn forget_is_reference_counted_and_bounds_the_table() {
         let mut table = InodeTable::new();
-        let ino = table.lookup(ROOT_INO, os("a"));
-        table.lookup(ROOT_INO, os("a")); // nlookup = 2
+        let ino = look(&mut table, ROOT_INO, "a");
+        look(&mut table, ROOT_INO, "a"); // nlookup = 2
         assert_eq!(table.len(), 2); // root + a
 
         table.forget(ino, 1);
@@ -204,7 +219,7 @@ mod tests {
         assert_eq!(table.len(), 1); // just the root
 
         // The name is free to be allocated a fresh inode afterwards.
-        let reallocated = table.lookup(ROOT_INO, os("a"));
+        let reallocated = look(&mut table, ROOT_INO, "a");
         assert_ne!(reallocated, ino);
     }
 
@@ -218,22 +233,22 @@ mod tests {
     #[test]
     fn git_context_is_computed_and_cached_down_a_gitdir() {
         let mut table = InodeTable::new();
-        let dotgit = table.lookup(ROOT_INO, os(".git"));
+        let dotgit = look(&mut table, ROOT_INO, ".git");
         assert_eq!(
             classify(&table.get(dotgit).unwrap().git),
             GitPathClass::Control
         );
 
-        let hooks = table.lookup(dotgit, os("hooks"));
-        let hook = table.lookup(hooks, os("pre-commit"));
+        let hooks = look(&mut table, dotgit, "hooks");
+        let hook = look(&mut table, hooks, "pre-commit");
         assert_eq!(
             classify(&table.get(hook).unwrap().git),
             GitPathClass::Control
         );
 
-        let refs = table.lookup(dotgit, os("refs"));
-        let head = table.lookup(refs, os("heads"));
-        let main = table.lookup(head, os("main"));
+        let refs = look(&mut table, dotgit, "refs");
+        let head = look(&mut table, refs, "heads");
+        let main = look(&mut table, head, "main");
         assert_eq!(
             classify(&table.get(main).unwrap().git),
             GitPathClass::Operational
@@ -242,20 +257,45 @@ mod tests {
 
     #[test]
     fn a_nested_submodule_gitdir_keeps_its_objects_writable() {
+        // The hint is what the plumbing answers for a directory under `modules/` that holds a
+        // `HEAD` (`fs.rs`, `is_gitdir_root`); `libs/foo` is the ordinary two-component name a
+        // submodule in a subdirectory gets, and it must behave as any other gitdir does.
         let mut table = InodeTable::new();
-        let dotgit = table.lookup(ROOT_INO, os(".git"));
-        let modules = table.lookup(dotgit, os("modules"));
-        let foo = table.lookup(modules, os("foo"));
-        let objects = table.lookup(foo, os("objects"));
-        let pack = table.lookup(objects, os("pack"));
+        let dotgit = look(&mut table, ROOT_INO, ".git");
+        let modules = look(&mut table, dotgit, "modules");
+        let libs = look(&mut table, modules, "libs");
+        let foo = table.lookup(libs, os("foo"), true);
+
+        let objects = look(&mut table, foo, "objects");
+        let pack = look(&mut table, objects, "pack");
         assert_eq!(
             classify(&table.get(pack).unwrap().git),
             GitPathClass::Operational
         );
-        // But the submodule's own hooks are still control.
-        let hooks = table.lookup(foo, os("hooks"));
+        // But the submodule's own hooks are still control, and so is the namespace above it.
+        let hooks = look(&mut table, foo, "hooks");
         assert_eq!(
             classify(&table.get(hooks).unwrap().git),
+            GitPathClass::Control
+        );
+        assert_eq!(
+            classify(&table.get(libs).unwrap().git),
+            GitPathClass::Control
+        );
+    }
+
+    #[test]
+    fn a_directory_under_modules_without_the_hint_stays_frozen() {
+        // The fail-closed half: with no `HEAD` to find, the plumbing answers `false` and everything
+        // below reads as namespace. A tree the daemon cannot identify is never widened.
+        let mut table = InodeTable::new();
+        let dotgit = look(&mut table, ROOT_INO, ".git");
+        let modules = look(&mut table, dotgit, "modules");
+        let libs = look(&mut table, modules, "libs");
+        let foo = look(&mut table, libs, "foo");
+        let objects = look(&mut table, foo, "objects");
+        assert_eq!(
+            classify(&table.get(objects).unwrap().git),
             GitPathClass::Control
         );
     }

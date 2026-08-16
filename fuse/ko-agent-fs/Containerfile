@@ -2,7 +2,7 @@
 # Build ko-agent-fs
 # ---------------------------------------------------------------------------
 #
-# Who runs this, and what happens to the result, is `docs/architecture.md`
+# Who runs this, and what happens to the result, is `doc/architecture.md`
 # ("Build and install"). In short: the launcher unpacks this directory out of
 # its own jar and builds it, passing the digest of that bundled source as
 # KO_AGENT_FS_SOURCE_ID; it then extracts the binary from the image and
