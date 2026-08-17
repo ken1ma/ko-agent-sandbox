@@ -199,16 +199,30 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("live")
     )
 
+  test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
+    // `container exists` answers 1 for a gone container and 125 when podman itself fails; the
+    // resolved-path fix closed the 127 miss, and this is the rest of the class — any non-1
+    // failure is unknown liveness, and pruning on unknown unmounts under a live session.
+    assume(!isWindows)
+    assertEquals(
+      survivingMarkers(podmanExit = 125, Seq("crashed" -> 3600L, "fresh" -> 5L)),
+      Set("crashed", "fresh")
+    )
+    assertEquals(
+      survivingMarkers(podmanExit = 127, Seq("crashed" -> 3600L)),
+      Set("crashed")
+    )
+
   test("the reap script runs in the VM on podman machine and on this host on Linux"):
     assertEquals(koAgentFsTeardownMode(Os.Mac), "machine")
     assertEquals(koAgentFsTeardownMode(Os.Linux), "local")
 
   test("the reap script's podman is resolved on the host and bare only inside the VM"):
     // ScriptPath closed the PATH-substitution hole this first answered; what remains is that a
-    // host's podman need not be in ScriptPath at all. A bare-name miss returns 127, which the reap
-    // script reads as "the container is gone" and prunes every session marker — unmounting a live
-    // concurrent session. Inside the VM the bare name is the only one that reaches the machine's
-    // own podman, which owns those containers.
+    // host's podman need not be in ScriptPath at all, and only the resolved path is the podman
+    // that created these containers and can answer for them (the exit-code gate above is the
+    // backstop for one that fails rather than answers). Inside the VM the bare name is the only
+    // one that reaches the machine's own podman, which owns those containers.
     assertEquals(koAgentFsReapPodman("/usr/bin/podman", Os.Linux), "/usr/bin/podman")
     assertEquals(koAgentFsReapPodman("/usr/bin/podman", Os.Mac), "podman")
     assertEquals(koAgentFsReapPodman("C:\\podman.exe", Os.Windows), "podman")
@@ -216,9 +230,11 @@ class KoAgentFsTest extends munit.FunSuite:
     val onHost = koAgentFsReapScript(
       koAgentFsReapPodman("/usr/bin/podman", Os.Linux), "app-abc123def456", "run-container-1"
     )
-    // With the resolved path struck out, no mention of podman may remain.
+    // With the resolved path struck out, no executable line may mention podman; comments may.
     assert(
-      !onHost.replace("/usr/bin/podman", "").contains("podman"),
+      onHost.replace("/usr/bin/podman", "").linesIterator.forall: line =>
+        line.trim.startsWith("#") || !line.contains("podman")
+      ,
       s"a bare podman invocation crept in:\n$onHost"
     )
 

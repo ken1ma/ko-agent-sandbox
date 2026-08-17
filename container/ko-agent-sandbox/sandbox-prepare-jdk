@@ -51,7 +51,35 @@ set_proxy() {
         echo "${0##*/}: no $net; this JDK gets no proxy" >&2
         return
     fi
-    if grep -qx "https.proxyHost=$PROXY_HOST" "$net"; then
+    # "Already set" means the file's *effective* values are this proxy's, judged by the parser
+    # that will consume the file — the target JDK's own Properties.load. A shell reading only
+    # approximates that format (`key : value` and `key value` are legal spellings a grep for
+    # `key=` misses, a regex dot in the key matches characters it should not, and the last
+    # assignment is the one that counts), and an approximation errs in both directions. A JDK
+    # whose java cannot run the probe answers nothing, which reads as unprepared: the block is
+    # appended again, and the appended block is the last word either way.
+    probe_dir=$(mktemp -d)
+    cat > "$probe_dir/EffectiveProperties.java" <<'EOF'
+import java.io.FileInputStream;
+import java.util.Properties;
+
+public class EffectiveProperties {
+    public static void main(String[] args) throws Exception {
+        Properties loaded = new Properties();
+        try (FileInputStream in = new FileInputStream(args[0])) {
+            loaded.load(in);
+        }
+        for (int i = 1; i < args.length; i++) {
+            System.out.println(loaded.getProperty(args[i], ""));
+        }
+    }
+}
+EOF
+    effective=$("$JAVA_HOME/bin/java" "$probe_dir/EffectiveProperties.java" "$net" \
+        http.proxyHost http.proxyPort https.proxyHost https.proxyPort 2>/dev/null || true)
+    rm -rf "$probe_dir"
+    wanted=$(printf '%s\n%s\n%s\n%s' "$PROXY_HOST" "$PROXY_PORT" "$PROXY_HOST" "$PROXY_PORT")
+    if [ "$effective" = "$wanted" ]; then
         echo "egress proxy already set: $net"
         return
     fi

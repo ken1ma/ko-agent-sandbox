@@ -50,10 +50,11 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   thing to the host (`SECURITY.md`, "A symlink is the sharpest case"; the rule and its limits are
   `fs.rs`, `target_has_portable_shape`). Give the tool a relative target landing inside the
   workspace, or let it cache inside the project. Tools that link into a store of their own generally
-  fall back to copying: sbt 2 turns off linking for the session on the first refusal and copies out
-  of its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an absolute
-  link to the interpreter — `--copies` builds the same environment, and a virtualenv under `~` is the
-  better answer anyway, since one under `/workspace` names container paths in its `pyvenv.cfg` and
+  fall back to copying: sbt turns off linking for the session on the first refusal and copies out
+  of its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an
+  absolute link to the interpreter — `--copies` builds the same environment, and a virtualenv under
+  `~` is the better answer anyway, since one under `/workspace` names container paths in its
+  `pyvenv.cfg` and
   shebangs and is unusable on the host regardless.
 
 No DENY line for the failure? Then the `EPERM` did not come from the filter — check the backing
@@ -90,9 +91,10 @@ Every gate prints its reason; the message is the diagnosis.
   names the usual two: no `fusermount3`, or `/etc/fuse.conf` lost `user_allow_other` (a recreated
   machine arrives without it; `--build` re-asks consent). Reproduce by hand:
   `podman machine ssh .local/share/ko-agent-sandbox/ko-agent-fs --self-test`.
-- `refusing to serve ... hooks ... inside the workspace` — the startup guard (`guard.rs`): the
-  repository's hook directory resolves inside the workspace, which the filter cannot protect. The
-  remedy is in the message.
+- `refusing to serve ...` naming a path `inside the workspace`, or a `bare repository` — the
+  startup guard (`guard.rs`): a control path — the gitdir, its config, a hook — resolves through
+  the writable workspace, or the workspace root is itself laid out as a gitdir; the filter cannot
+  protect either. The remedy is in the message.
 - `mountpoint ... is not empty; refusing` — something landed in the mountpoint directory while no
   filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 

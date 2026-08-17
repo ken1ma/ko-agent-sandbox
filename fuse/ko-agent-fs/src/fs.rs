@@ -14,7 +14,7 @@
 //! Deferred: xattrs — unimplemented, so the daemon answers `ENOSYS`, which the kernel converts to
 //! `ENOTSUP` for the caller and then latches, never asking again. Tools therefore read the mount as
 //! a filesystem that simply has no extended attributes, which is an ordinary answer rather than a
-//! failure (measured: `doc/TODO.md`, "Correctness"). Also deferred: the performance mechanisms
+//! failure (measured: `doc/TODO.md`, "Non-TODOs"). Also deferred: the performance mechanisms
 //! (READDIRPLUS, multithreading, passthrough).
 
 use std::collections::HashMap;

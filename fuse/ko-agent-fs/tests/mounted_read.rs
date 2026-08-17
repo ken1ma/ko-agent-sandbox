@@ -91,7 +91,7 @@ fn a_directory_scan_is_stable_while_the_host_changes_the_directory() {
     let originals = seen.iter().filter(|name| name.starts_with("file-")).count();
     assert_eq!(
         originals, 200,
-        "the scan skipped entries that existed throughout"
+        "the scan skipped entries present when it began"
     );
 
     // And a fresh scan sees the new state — the snapshot is per-handle, not a cache.

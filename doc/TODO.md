@@ -15,35 +15,15 @@ network restrictions:
   https://github.com/anthropic-experimental/sandbox-runtime/issues/225
 - Anthropic Sandbox Runtime #88: https://github.com/anthropic-experimental/sandbox-runtime/issues/88
 
-Six suites settle most of it, each gated on the venue its evidence lives in.
-`SessionBoundaryTest` runs **inside** a session: uid, capabilities, mounts, routes and cgroup
-limits; that unsetting the proxy variables restores nothing; the CONNECT gate's refusals; which
-tier a host is in, told apart by the certificate it presents; what an inspected tunnel permits; and
-that the filter freezes git control state at any depth. On the **host**, under
-`KO_AGENT_SANDBOX_INTEGRATION=1` so an ordinary run never starts a container:
-`MountLifecycleTest` drives the workspace filter's mount lifecycle, `ProxyContainerTest` inspects
-the proxy's own container, `RunTopologyTest` covers a run's networks, the isolation between
-concurrent sessions and projects, and `--reset` sweeping a run that outlived its reaper,
-`WorkspaceGuardOffTest` drives the opted-out mode's `.git` pins against host-side mutation, and
-`EgressPolicyTest` launches one session per project-supplied policy — including the proxy's
-upstream certificate check, which no session can demonstrate about itself.
-
-What is left needs a fixture nobody here owns. The five host suites share `IntegrationSession`,
-which makes its own scratch project and launches through the launcher's own name builders, so the
-remaining rows extend a shape that exists rather than one still to be built.
+The suites settle most of it; README ("Tests") names each and what it covers. The host suites
+share `IntegrationSession` — its own scratch project, launched through the launcher's own name
+builders — so a remaining row extends a shape that exists rather than one still to be built, and
+what each needs is a venue or a fixture only the operator can supply.
 
 - [ ] **The resident teardown path**, which removes a run's resources from the launcher process
   instead of the reaper. Native Windows always takes it; a POSIX launch falls back to it only when
   the reaper's spawn fails, and nothing outside the process can make that happen — DESIGN.md
   declines the test hook that would. So: verified on a Windows host, or not at all.
-- [ ] **An absent or pointer-file `.git` in the opted-out mode**: `WorkspaceGuardOffTest` drives an
-  ordinary repository, and the whole-directory pin the other two shapes get is a different mount.
-- [ ] **The bundle version lock** end to end: a default-named image whose label mismatches this
-  jar's digest refuses the launch with the rebuild hint, while an explicitly overridden image only
-  warns. Needs a deliberately mislabelled image.
-- [ ] **`storage.googleapis.com` with a signed upload URL** — the case the read-only tier exists
-  for. The session probe refuses a plain `PUT` there; the signed form needs a URL only the bucket's
-  owner can mint.
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (a 104-archive install's 104 handshakes cost seconds today). Both legs' framing
   is parsed and enforced, so the shape is a request loop per client connection with a fresh

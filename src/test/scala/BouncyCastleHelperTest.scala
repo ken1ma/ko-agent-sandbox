@@ -101,6 +101,25 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     val fingerprint = certificateFingerprint(pemBody(mintCa("proj").certificatePem))
     assert(fingerprint.matches("([0-9A-F]{2}:){31}[0-9A-F]{2}"), fingerprint)
 
+  test("a key answers its own certificate and nothing else — mixed generations are incoherent"):
+    // The state a launch that died between writing the key and the certificate leaves behind:
+    // both files current and non-empty, every handshake failing. Currency cannot see it; this can.
+    val one = mintCa("proj")
+    val other = mintCa("proj")
+    assert(keyMatchesCertificate(one.certificatePem, one.privateKeyPem))
+    assert(!keyMatchesCertificate(one.certificatePem, other.privateKeyPem))
+    assert(!keyMatchesCertificate("", one.privateKeyPem))
+    assert(!keyMatchesCertificate(one.certificatePem, ""))
+    assert(!keyMatchesCertificate("garbage", "garbage"))
+
+    val leaf = mintLeaf(one.certificatePem, one.privateKeyPem, Vector("github.com"))
+    assert(keyMatchesCertificate(leaf.certificatePem, leaf.privateKeyPem))
+    // And the chain: a leaf minted under a CA since replaced is internally coherent and still
+    // fails every handshake, so issuance is checked apart from correspondence.
+    assert(signedBy(leaf.certificatePem, one.certificatePem))
+    assert(!signedBy(leaf.certificatePem, other.certificatePem))
+    assert(!signedBy(leaf.certificatePem, ""))
+
   test("expiring, absent and unparsable certificates all require reissue"):
     val now = Instant.now()
     val deadline = now.plusSeconds(2592000)

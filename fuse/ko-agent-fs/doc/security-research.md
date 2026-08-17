@@ -86,8 +86,18 @@ FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
   resolves anywhere near `.git`.
 
 Fold tables are OS-version-specific, so this verifies **this** release against macOS 26.4.1;
-re-run the probe when either side moves. Still unverified: case-sensitive APFS, ext4 (the
-control), and NTFS — the release ships with Windows marked experimental (`TODO.md`).
+re-run the probe when either side moves. Still unverified: ext4 (the control) and NTFS — the
+release ships with Windows marked experimental (`TODO.md`).
+
+### Verified: APFS case-sensitive (macOS 26.4.1, build 25E253; 2026-08-18)
+
+The same corpus on the case-sensitive variant, through the same production stack, against a
+case-sensitive sparse-image volume mounted under `$HOME` — `probe/name-rule-cs-apfs.sh` drives
+the whole run, host-side checks included:
+
+- All 14 denied spellings failed with exactly `EPERM`, and all six allowed names were created.
+- Afterwards the host-side `lstat(".git")` found nothing and git discovered no repository at the
+  project — the property itself, on this variant's fold table.
 
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1; 2026-08-14)
 

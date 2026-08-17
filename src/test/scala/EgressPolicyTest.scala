@@ -16,7 +16,9 @@
 // `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
 // a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address
 // embedded in the name), and `github.com/octocat/Hello-World.git` (a clone small enough to be a
-// fixture).
+// fixture). One test takes its fixture from the environment instead — INTEGRATION_SIGNED_PUT_URL,
+// a presigned upload URL only a bucket owner can mint — and skips when it is unset; its own header
+// has the minting one-liner.
 
 package agentsandbox.launcher
 
@@ -149,6 +151,63 @@ class EgressPolicyTest extends munit.FunSuite:
     // the built-in policy, which the project did not touch.
     withSession(): session =>
       assert(exec(session, clone*).ok, "the clone fails under the built-in policy too; this fixture proves nothing")
+
+  test("an owner-signed upload URL is refused inside the inspected tunnel"):
+    // The read-only tier's reason to exist (SECURITY.md, "Reading without being able to write"):
+    // on an object store, a signed URL accepts a PUT from anyone holding it, so the method rule
+    // inside the tunnel is all that stands between the workspace and the bucket. The rule is
+    // host-independent, which is what lets any owner-minted bucket serve as the fixture —
+    // storage.googleapis.com is the built-in member with that surface. For an S3 bucket:
+    //
+    // ('boto3[crt]', because the credential provider behind `aws login` needs the CRT extra;
+    // s3v4, because in older regions boto3 still mints deprecated SigV2 URLs; `--server`, because
+    // a resident sbt server would keep the environment it started with and skip this test as if
+    // the variable were never set):
+    //
+    //     INTEGRATION_SIGNED_PUT_URL="$(uv run --with 'boto3[crt]' python3 -c 'import boto3, botocore.config
+    //     print(boto3.client("s3", config=botocore.config.Config(signature_version="s3v4"))
+    //         .generate_presigned_url("put_object",
+    //         Params={"Bucket": "YOUR-BUCKET", "Key": "ko-agent-sandbox-probe"}, ExpiresIn=1800))')" \
+    //         KO_AGENT_SANDBOX_INTEGRATION=1 sbt --server "testOnly *EgressPolicyTest"
+    //
+    // The URL's query string is a capability, and it lands whole in this run's owner-only audit
+    // log; it expires on its own, and the probe object is the owner's to delete.
+    assume(enabled, requirement)
+    val signed = env("INTEGRATION_SIGNED_PUT_URL")
+    assume(signed.isDefined, "set INTEGRATION_SIGNED_PUT_URL to a presigned PUT URL (test header)")
+    val url = signed.get
+    val bucketHost = java.net.URI(url).getHost
+
+    // The control, from the unconfined host: the URL genuinely accepts the write. Without it, the
+    // refusal below could be the origin's own answer to a stale or malformed URL. The body rides
+    // along because it is the diagnosis when this fails — S3 names AccessDenied, ExpiredToken or
+    // SignatureDoesNotMatch there, and nowhere else.
+    // The emptied Content-Type strips the header curl invents for a body: a SigV2-signed URL
+    // (boto3's default in older regions) covers Content-Type, and the invented one breaks its
+    // signature; SigV4 does not care either way.
+    val control = run(
+      "curl", "-sS", "--max-time", "25", "-w", "\n%{http_code}",
+      "-H", "Content-Type:", "-X", "PUT", "--data-binary", "minted-and-accepted", url
+    )
+    val controlLines = control.text.linesIterator.toVector
+    assertEquals(
+      controlLines.lastOption.getOrElse("").trim, "200",
+      s"the signed URL does not accept a PUT from the host: " +
+        s"${controlLines.dropRight(1).mkString(" ")} ${control.err}"
+    )
+
+    withSession("read-only" -> s"+$bucketHost\n"): session =>
+      val attempt = curl(session, "-X", "PUT", "--data-binary", "from-the-sandbox", url)
+      assert(
+        attempt.text.contains("read-only host"),
+        s"SECURITY: the signed PUT was not refused by the proxy: ${attempt.text} ${attempt.err}"
+      )
+      val audit = run(podman, "logs", session.proxy)
+      assert(
+        (audit.text + "\n" + audit.err).linesIterator
+          .exists(line => line.startsWith("deny ") && line.contains(s"$bucketHost PUT")),
+        "no deny line records the refused PUT"
+      )
 
   test("a .defaults lockdown removes the built-in policy and still signs in"):
     assume(enabled, requirement)

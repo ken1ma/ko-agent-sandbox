@@ -55,8 +55,15 @@ def build(root: str) -> int:
 
 
 def timed(label: str, entries: int, *command: str) -> None:
+    """A failed command aborts the probe rather than being timed: its wall time measures nothing,
+    and a number that can come from a failure is not evidence."""
     start = time.monotonic()
-    subprocess.run(command, capture_output=True)
+    done = subprocess.run(command, capture_output=True)
+    if done.returncode != 0:
+        sys.exit(
+            "abort: %s failed: %s"
+            % (" ".join(command), done.stderr.decode(errors="replace").strip())
+        )
     print("  %-32s %8d us/entry" % (label, (time.monotonic() - start) * 1e6 / entries))
 
 

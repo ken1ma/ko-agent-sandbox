@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
-"Correctness")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
+"Non-TODOs")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
 an execution vector — but the raw bind mount underneath *does* support `user.*` xattrs, so the
 question is not whether ENOSYS is safe. It is whether ENOSYS is a regression the tools notice.
 

@@ -15,8 +15,12 @@ Only `/workspace`, `/home/nonroot`, `/tmp`, `/var/tmp` are writable.
 and holds agent state, not project output.
 
 A symlink in `/workspace` needs a relative target staying inside it; anything else, an absolute
-`/workspace/...` included, fails. A tool that caches outside the workspace copies instead of
-linking, which is expected.
+`/workspace/...` included, fails. A tool that caches outside the workspace, such as `sbt`,
+falls back to copying instead of linking.
+
+The host's own symlinks are served as they are, so one with an absolute target dangles in here.
+sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
+`find target -xtype l -delete` removes just the dead links.
 
 
 ## Use what is already installed
@@ -36,7 +40,8 @@ Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` 
 These fail, by policy. Report them; do not work around them.
 
 - Writing `config`, `hooks/` or rebase state in any repository under `/workspace`.
-- `git init` and `git clone` under `/workspace`. Clone under `~` instead.
+- `git init` and `git clone` under `/workspace`. Clone under `~` instead — the bare forms
+  (`--bare`, `--mirror`) are not blocked, but belong under `~` all the same.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
   clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `~`.
 - `git worktree add` under `/workspace`.

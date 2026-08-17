@@ -1,10 +1,13 @@
 // How the launcher runs host executables and what its scripts may resolve: trusted-path lookup,
-// and the fixed PATH every generated script declares before anything else.
+// and the fixed PATH every generated script declares before anything else. Then how it writes the
+// state files those runs mount: the mode they are never briefly without, and the name they are
+// never briefly missing.
 
 package agentsandbox.launcher
 
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
+import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 import KoAgentFs.*
@@ -109,6 +112,38 @@ class HostCommandsTest extends munit.FunSuite:
       ScriptPath
     )
 
+  test("a future path canonicalizes through its nearest existing ancestor"):
+    val base = Files.createTempDirectory("future-path").toRealPath()
+    // Exists already: plain canonicalization.
+    assertEquals(canonicalizedFuturePath(base), Right(base))
+    // Does not exist yet: the missing tail rides on the canonicalized ancestor.
+    assertEquals(canonicalizedFuturePath(base.resolve("a/b/c")), Right(base.resolve("a/b/c")))
+    // A symlinked ancestor resolves, so a comparison against the answer sees the real location.
+    val real = Files.createDirectories(base.resolve("real"))
+    val linked = Files.createSymbolicLink(base.resolve("linked"), real)
+    assertEquals(
+      canonicalizedFuturePath(linked.resolve("missing/tail")),
+      Right(real.resolve("missing/tail"))
+    )
+    // `..` in the spelling is normalized before the walk, not left for the filesystem.
+    assertEquals(canonicalizedFuturePath(base.resolve("a/../b")), Right(base.resolve("b")))
+    // A dangling symlink is presence, not absence: `exists` would follow it, call it missing, and
+    // hand it back as an unchecked "future" component for a concurrent writer to materialize
+    // after validation. NOFOLLOW discovery finds the link itself, and toRealPath then refuses it.
+    val dangling = Files.createSymbolicLink(base.resolve("dangling"), base.resolve("nowhere"))
+    assert(canonicalizedFuturePath(dangling).isLeft)
+    assert(canonicalizedFuturePath(dangling.resolve("tail")).isLeft)
+
+  test("the file lock serializes bodies across processes and runs its body inline"):
+    val dir = Files.createTempDirectory("file-lock").toRealPath()
+    val lock = dir.resolve(".lock")
+    // The body runs and its value comes back; the lock file is created for the next taker.
+    assertEquals(withFileLock(lock)(41 + 1), 42)
+    assert(Files.exists(lock))
+    // Cross-process exclusion is what FileChannel.lock means; what a unit test can hold is that a
+    // second acquisition after release succeeds — a leaked lock would block it forever.
+    assertEquals(withFileLock(lock)("again"), "again")
+
   test("a private file is never briefly readable, and never inherits a mode it replaced"):
     assume(posixPermissions(Files.createTempDirectory("perm-probe")), "POSIX permissions only")
     val dir = Files.createTempDirectory("private-write").toRealPath()
@@ -124,10 +159,63 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(modeOf(readable), "rw-r--r--")
 
     // Replacing a file does not inherit its mode: a world-writable one planted at the path is
-    // unlinked, not opened, so nothing carries the old permissions into the new content.
+    // replaced, not opened, so nothing carries the old permissions into the new content.
     val planted = dir.resolve("leaf.key")
     Files.createFile(planted)
     Files.setPosixFilePermissions(planted, PosixFilePermissions.fromString("rw-rw-rw-"))
     writePrivate(planted, "PRIVATE KEY")
     assertEquals(modeOf(planted), "rw-------")
     assertEquals(Files.readString(planted), "PRIVATE KEY")
+
+    // What the writes are made of stays inside them: a leftover temporary is a bind source's
+    // directory growing a file no launch mounts, and a sign the rename never happened.
+    assertEquals(
+      Files.list(dir).iterator().asScala.map(_.getFileName.toString).toVector.sorted,
+      Vector("bundle.crt", "ca.key", "leaf.key")
+    )
+
+  test("a mount source's name survives every rewrite"):
+    val dir = Files.createTempDirectory("replace-write").toRealPath()
+    val mounted = dir.resolve("agents.md")
+    writeReadable(mounted, "FIRST")
+
+    // The failure this rules out: a rewrite that unlinks first leaves the name missing for as long
+    // as it takes to produce the new content, and a launch of the same project assembling its
+    // containers in that window dies on `statfs <path>: no such file or directory`.
+    val seenMissing = java.util.concurrent.atomic.AtomicBoolean(false)
+    val watcher = Thread: () =>
+      while !Thread.currentThread().isInterrupted do
+        if !Files.exists(mounted) then seenMissing.set(true)
+    watcher.start()
+    try (1 to 200).foreach(round => writeReadable(mounted, s"ROUND $round"))
+    finally
+      watcher.interrupt()
+      watcher.join()
+
+    assert(!seenMissing.get(), "the mount source vanished mid-rewrite")
+    assertEquals(Files.readString(mounted), "ROUND 200")
+
+  test("a rewrite that changes nothing leaves the mount source's inode alone"):
+    val dir = Files.createTempDirectory("unchanged-write").toRealPath()
+    val mounted = dir.resolve("agents.md")
+
+    def inode(): AnyRef =
+      Files.readAttributes(mounted, classOf[java.nio.file.attribute.BasicFileAttributes]).fileKey
+
+    writeReadable(mounted, "POLICY")
+    val first = inode()
+
+    // What a running session pays for: the replacement is what its bind mount does not survive
+    // through a podman machine, so identical content must not reach the rename at all.
+    writeReadable(mounted, "POLICY")
+    assertEquals(inode(), first, "an unchanged write replaced the file a live session had mounted")
+
+    // A mode planted on it is a change like any other: identical content does not exempt it.
+    Files.setPosixFilePermissions(mounted, PosixFilePermissions.fromString("rw-rw-rw-"))
+    writeReadable(mounted, "POLICY")
+    assertEquals(modeOf(mounted), "rw-r--r--")
+
+    val corrected = inode()
+    writeReadable(mounted, "POLICY 2")
+    assertNotEquals(inode(), corrected)
+    assertEquals(Files.readString(mounted), "POLICY 2")

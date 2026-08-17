@@ -1,7 +1,9 @@
 // The session that opted out of the workspace filter: `/workspace` bound directly, with
 // `.git/config` and `.git/hooks` pinned read-only. Every default session runs the filter instead,
 // so nothing else here can reach this path — the in-session probe skips its git rows whenever the
-// filter is on, which is always.
+// filter is on, which is always. The first two tests drive an ordinary repository's pins; the
+// last two drive the other shapes gitGuardVolumes mounts — a pointer-file `.git` pinned whole,
+// and the empty whole-directory pin a repository-less project gets.
 //
 // The pins are nested read-only mounts inside a writable bind, the shape Docker Sandboxes #388
 // reported losing under host-side mutation: the nested mount disappears and access falls through to
@@ -178,6 +180,93 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       assert(
         eventually(120)(hookWritable(session))(identity),
         "the .git/hooks pin now survives its inode being replaced — SECURITY.md says it does not"
+      )
+    finally
+      live.foreach(stop)
+      discard(project)
+
+  test("a pointer-file .git is pinned whole, so its redirection cannot be re-aimed"):
+    assume(enabled, requirement)
+
+    // The second of gitGuardVolumes' shapes: a linked worktree's `.git` is a file naming the real
+    // gitdir, and rewriting it re-aims a repository's control state
+    // (fuse/ko-agent-fs/doc/git-metadata.md, group 3). Fabricated rather than a real worktree:
+    // the guard reads only the shape, never the target.
+    val project = scratchProject()
+    val pointer = "gitdir: /elsewhere/real/.git"
+    Files.writeString(project.resolve(".git"), pointer + "\n")
+    var live: Option[Session] = None
+    try
+      val session = guardedSession(project)
+      live = Some(session)
+
+      assertEquals(exec(session, "cat", "/workspace/.git").text, pointer)
+      assert(!writable(session, "/workspace/.git"), "SECURITY: the pointer file accepts a write")
+      assert(
+        !exec(session, "sh", "-c", "rm -f /workspace/.git").ok,
+        "SECURITY: the pointer file can be removed"
+      )
+      assert(
+        !exec(session, "sh", "-c", "mv /workspace/.git /workspace/.git-moved").ok,
+        "SECURITY: the pointer file can be renamed away"
+      )
+      // The control, as in the first test: the rest of the workspace stays ordinary and writable.
+      assert(
+        writable(session, "/workspace/ordinary"),
+        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount"
+      )
+
+      // An in-place host edit keeps the inode, so the pin holds; replacing the inode is the
+      // second test's measurement, and this shape shares it.
+      Files.writeString(project.resolve(".git"), "gitdir: /elsewhere/other/.git\n")
+      assert(!writable(session, "/workspace/.git"), "after an in-place host edit the pin fell")
+    finally
+      live.foreach(stop)
+      discard(project)
+
+  test("a project with no repository gets an empty read-only .git the host cannot seed mid-session"):
+    assume(enabled, requirement)
+
+    // The third shape: no `.git` at all, so the name is pinned over the launcher's own empty
+    // directory and a sandbox cannot fabricate a repository for host git to discover. The mount
+    // target podman creates in the project is one of SECURITY.md's two enumerated writes
+    // ("Silent changes to what you own"); what the session sees behind the name is the launcher's
+    // empty directory, whatever the host later puts in the project's own.
+    val project = scratchProject()
+    var live: Option[Session] = None
+    try
+      val session = guardedSession(project)
+      live = Some(session)
+
+      assert(exec(session, "sh", "-c", "test -d /workspace/.git").ok, "no .git directory is pinned")
+      assertEquals(exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "")
+      assert(
+        !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
+        "SECURITY: the sandbox can write into the pinned .git"
+      )
+      assert(
+        !exec(session, "sh", "-c", "rmdir /workspace/.git").ok,
+        "SECURITY: the sandbox can remove the pinned .git"
+      )
+      assert(
+        writable(session, "/workspace/ordinary"),
+        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount"
+      )
+
+      // A repository the host creates mid-session lands in the project's own .git; the pin's
+      // source is the launcher's empty directory, so the session must keep seeing nothing. The
+      // wait matches the second test's observation that a bypass arrives seconds late, never
+      // with its mutation.
+      assert(run("git", "init", "--quiet", project.toString).ok, "host git init failed")
+      Files.writeString(project.resolve(".git").resolve("probe"), "host\n")
+      Thread.sleep(5000)
+      assertEquals(
+        exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "",
+        "a host-created repository became visible behind the empty pin"
+      )
+      assert(
+        !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
+        "SECURITY: the pinned .git became writable after a host-side git init"
       )
     finally
       live.foreach(stop)

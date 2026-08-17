@@ -42,10 +42,10 @@ rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. 
 `security-research.md` with its OS and filesystem versions: fold tables are version-specific, so a
 bare pass with no version recorded is not evidence for the next release.
 
-APFS case-insensitive, the default macOS variant, passes on macOS 26.4.1. What is left is one run
+APFS passes on macOS 26.4.1, both variants — `security-research.md` has the runs, and
+`probe/name-rule-cs-apfs.sh` drives the case-sensitive one end to end. What is left is one run
 per remaining backing:
 
-- [ ] APFS case-sensitive.
 - [ ] ext4, the control.
 - [ ] NTFS, the only backing where the 8.3 row means anything.
 
@@ -89,37 +89,6 @@ when the directory changes under it, and a large directory costs one read rather
 The mount shape is `allow_other` + `default_permissions` (`architecture.md`, "Who may reach the
 mount"). The tests run as a single uid, so they cannot tell that choice from the alternative; only
 the launcher mounting for a real container can.
-
-- [ ] **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
-  rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
-  therefore reads to tools as a filesystem that simply has no extended attributes, and that is an
-  answer every xattr-aware tool already knows how to take.
-
-  Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probe/xattr-probe.py`, the
-  filtered session against the raw bind as control:
-
-  | operation   | raw bind (control)   | filtered              |
-  | ----------- | -------------------- | --------------------- |
-  | `setxattr`  | OK                   | `ENOTSUP`             |
-  | `listxattr` | OK                   | `ENOTSUP`             |
-  | `cp -a`     | exit 0, xattr kept   | exit 0, xattr dropped |
-
-  The cost is cosmetic: `cp -a` carries no attribute across and says nothing about it, because
-  coreutils reads `ENOTSUP` as "the destination does not do xattrs" rather than as a failure.
-  `ENOSYS` stays; implementing xattrs is a compatibility feature to schedule, not a regression to
-  repair. Re-run the probe if a tool ever does complain.
-
-  Two things to know before picking it up. `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
-  `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
-  *daemon's* kernel — not on this project's Debian 13 or podman 6.0.2 bar, which govern the
-  container userspace the filter does not run in. On a podman machine that kernel is Fedora CoreOS's
-  (7.1 as measured on 2026-08-14, so present); on native Linux it is the user's own and is not
-  bounded by anything here — Debian 13 as a *host* is 6.12, just under. One path that works on both
-  is `/proc/self/fd/<fd>` with the `l*xattr` calls, which is what libfuse's `passthrough_hp` does;
-  that is a magiclink path in the one file that sets `RESOLVE_NO_MAGICLINKS` deliberately — safe,
-  because the fd is the daemon's own and never attacker-supplied, but it has to be justified at the
-  call site rather than left to look like an oversight. And `policy::Mutation` gains its xattr
-  variants that day, which its doc comment already reserves.
 
 
 ## P1 — Performance (the measurements say the target workload would hurt)
@@ -172,7 +141,7 @@ downstream can amortize.
 - [ ] The control puts the gap in the invariant rather than the backing, so research
   push-invalidation coherency: nonzero kernel TTLs kept *correct* by the daemon watching the backing
   (inotify inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode` — the control
-  numbers show what caching buys (57 µs stats). Only sound if watches see host-side virtiofs
+  column above is what caching buys. Only sound if watches see host-side virtiofs
   writes — verify that premise first; if they do not, this path is closed and the invariant's cost
   is the price of correctness.
 
@@ -200,13 +169,22 @@ The filter is the **default** enforcement on every platform, ahead of that verif
 - [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
   unverified — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows that
   entry has nothing left to say and goes; the claim it qualifies already sits under **Defended**.
-- [ ] The guard refuses to serve a repository whose hooks resolve inside the workspace, and refuses
-  the configs whose `hooksPath` it cannot read faithfully with them — a `~`, a backslash, an
-  unterminated quote, a bare `path` key — plus any `hooksPath` inside the workspace even where git
-  would read a different one (`git-metadata.md`, "Relocated hook directories"). As the default
+- [ ] The guard refuses to serve a repository whose control bytes resolve through the writable
+  workspace under the binding rule — a redirected gitdir or commondir, an aliased config, hooks or
+  an individual hook entry resolving back in, a bare layout at the root — and refuses the configs
+  it cannot read faithfully: a `~`, a backslash, an unterminated quote, a bare `path` key, a
+  non-UTF-8 or unreadable file (`git-metadata.md`, "Relocated hook directories"). As the default
   enforcement that means a project which launched yesterday does not launch today, and the remedy
   is to edit one's own `.git/config`. Decide whether that is acceptable, or whether the undecidable
   cases should fall back to the pin rather than refuse.
+- [ ] The guard checks only the workspace root — the repository standing there, or the root
+  itself as a bare layout — and only at mount. Two residues remain (SECURITY.md names both): a
+  repository the host nested deeper keeps its `.git`-rooted control state frozen, but control
+  bytes its owner had already routed into the worktree — relocated hooks, a redirected gitdir —
+  are served as ordinary writable data, a shape the sandbox cannot create; and a bare layout the
+  sandbox *can* create from ordinary names — below the root, or at the root itself after the
+  mount-time check. Decide whether to extend the checks to the repositories and bare layouts a
+  pre-mount walk finds, or to keep recording the residue.
 
 
 ## Deferred research
@@ -223,6 +201,37 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 
 ## Non-TODOs — settled, do not reopen without new evidence
 
+- **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
+  rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
+  therefore reads to tools as a filesystem that simply has no extended attributes, and that is an
+  answer every xattr-aware tool already knows how to take.
+
+  Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probe/xattr-probe.py`, the
+  filtered session against the raw bind as control:
+
+  | operation   | raw bind (control)   | filtered              |
+  | ----------- | -------------------- | --------------------- |
+  | `setxattr`  | OK                   | `ENOTSUP`             |
+  | `listxattr` | OK                   | `ENOTSUP`             |
+  | `cp -a`     | exit 0, xattr kept   | exit 0, xattr dropped |
+
+  The cost is cosmetic: `cp -a` carries no attribute across and says nothing about it, because
+  coreutils reads `ENOTSUP` as "the destination does not do xattrs" rather than as a failure.
+  Implementing xattrs is a compatibility feature to schedule, not a regression to repair; the new
+  evidence that reopens this is a tool that complains, and the probe is what re-measures then.
+
+  Two things to know before picking it up. `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
+  `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
+  *daemon's* kernel — not on this project's Debian 13 or podman 6.0.2 bar, which govern the
+  container userspace the filter does not run in. On a podman machine that kernel is Fedora
+  CoreOS's (7.1 as measured on 2026-08-14, so present); on native Linux it is the user's own and is
+  not bounded by anything here — Debian 13 as a *host* is 6.12, just under. One path that works on
+  both is `/proc/self/fd/<fd>` with the `l*xattr` calls, which is what libfuse's `passthrough_hp`
+  does; that is a magiclink path in the one file that sets `RESOLVE_NO_MAGICLINKS` deliberately —
+  safe, because the fd is the daemon's own and never attacker-supplied, but it has to be justified
+  at the call site rather than left to look like an oversight. And `policy::Mutation` gains its
+  xattr variants that day, which its doc comment already reserves; the adversarial tests follow
+  ("Test infrastructure").
 - **A supervisor watching the daemon.** A daemon that dies mid-session makes every access
   fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
   directory or the raw one — scoped to `/workspace` alone, and even shells die at spawn

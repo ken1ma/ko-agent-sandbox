@@ -405,7 +405,12 @@ object KoAgentFs:
        |  # that was created and never started (SandboxLifecycle.ReaperScript). A find that cannot
        |  # answer leaves the marker, which leaks a mount rather than pulling a live one.
        |  [ -z "$$(find "$$marker" -mmin +10 2>/dev/null)" ] && continue
-       |  "$podman" container exists "$$(basename "$$marker")" 2>/dev/null || rm -f "$$marker"
+       |  gone=0
+       |  "$podman" container exists "$$(basename "$$marker")" >/dev/null 2>&1 || gone=$$?
+       |  # Only podman's own "no such container" answer (exit 1) prunes. Anything else — a broken
+       |  # podman is exit 125 — is unknown liveness, and pruning on unknown is how the last-session
+       |  # unmount below lands under a live session; the marker leaks toward a later reap instead.
+       |  [ "$$gone" -eq 1 ] && rm -f "$$marker"
        |done
        |if [ -z "$$(ls -A "$$dir/sessions" 2>/dev/null)" ]; then
        |  fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
@@ -420,12 +425,10 @@ object KoAgentFs:
    *
    * On native Linux the script runs on this host, and a host's podman need not
    * be in ScriptPath's system directories at all (/opt/podman/bin is a real
-   * layout). A miss there does not fail cleanly: `container exists` returning
-   * 127 takes the `|| rm -f` branch below, so every session marker is pruned
-   * as though its container had gone, and the last-session unmount then pulls
-   * the mount out from under a live concurrent session. The path findOnPath
-   * resolved is the one this run created those containers with, so it is the
-   * one that can answer for them.
+   * layout). The path findOnPath resolved is the one this run created those
+   * containers with, so it is the one that can answer for them; the reap's
+   * own exit-code gate (only podman's not-exists answer prunes) is the
+   * backstop for a podman that fails rather than answers.
    */
   def koAgentFsReapPodman(podman: String, os: Os): String =
     os match

@@ -44,16 +44,16 @@ but the restricted one (read-write for model traffic, read-only for curated site
    containers (`/home`, `/Users`, the Windows profiles root), and any path
    containing a dot-prefixed directory.
 1. To work with private repositories, `git clone`/`pull`/`fetch` on the host first:
-   the launcher passes none of your host credentials in — no `~/.aws`, no `~/.ssh`,
-   no forge token. Review the sandbox's changes and `commit`/`push` on the host.
+   the launcher passes none of your host credentials in.
+   Review the sandbox's changes and `commit`/`push` on the host.
 
-The following tools will be preinstalled:
+The sandbox image preinstalls:
 
 1. Claude Code (Anthropic)
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
 
-The tools will be configured to
+and configures them to
 
 1. not ask for permissions
     1. `agy` needs a one-time step; see [Running `<command>`](#running-command)
@@ -81,9 +81,6 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
 ### Reference
 
-The launcher's `--help` displays
-
-    $ java -jar ko-agent-sandbox.jar --help
     Run an AI agent inside the sandbox container.
 
     Usage, from a project directory (which becomes /workspace):
@@ -95,7 +92,7 @@ The launcher's `--help` displays
 
       --build            build the container images for the sandbox
       --update           rebuild only the sandbox container without cache,
-                         for new claude/codex/agy releases
+                         for agent updates
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
@@ -127,19 +124,18 @@ The launcher's `--help` displays
                                           screen until you press Enter, because the agent TUIs
                                           clear the screen; "immediate" starts the agent at once
 
-    Files in .ko-agent-sandbox/egress-hosts/ modify the egress policy: a +/- delta file per
-    tier ("read-write", "read-only"), and "blocked" applied with highest precedence.
+    Files in .ko-agent-sandbox/egress-hosts/ of the project directory modify the egress policy:
+    a +/- delta file per tier ("read-write", "read-only"), and "blocked" applied with highest
+    precedence.
 
 
 ### `--build`
 
-    java -jar ko-agent-sandbox.jar --build
-
 1. Runs `podman build` for the containers in the diagram.
     1. The images' build context is bundled in the jar, so it runs standalone.
-    1. Run it again after upgrading the jar: a launch refuses images an older jar built, and the
-       refusal says so. `--update` is for new claude/codex/agy releases, not for that.
-1. Also compiles `ko-agent-fs`, the workspace filter (SECURITY.md, "The workspace filter"),
+    1. Run it again after upgrading the jar: a launch refuses images an older jar built.
+        1. `--update` is for new agent releases, not for that.
+1. Also compiles `ko-agent-fs`, the workspace filter,
    from bundled source and installs the binary at `~/.local/share/ko-agent-sandbox/ko-agent-fs` —
    inside the Podman machine on macOS and Windows, in your home on native Linux.
     1. Ends with the filter's self-test: an unprivileged mount over a scratch tree, with the
@@ -163,8 +159,6 @@ The launcher's `--help` displays
 
 ### Running `<command>`
 
-    java -jar ko-agent-sandbox.jar claude
-
 1. Each launch prints which guard the session runs under, its egress policy and any warning, then
    waits for Enter: claude's fullscreen TUI and codex clear the screen as they start, so the lines
    would otherwise never be read. `KO_AGENT_SANDBOX_SESSION_START=immediate` skips the wait.
@@ -187,10 +181,9 @@ The launcher's `--help` displays
        them is a Containerfile edit and a rebuild.
 1. More than one session can run at once from the same project directory. Each launch gets its own
    containers, networks and proxy; what they share is the project's workspace-filter mount and its
-   agent-state volume, and they race on both like any two processes on one directory
-   ([SECURITY.md]).
+   agent-state volume, and they race on both like any two processes on one directory.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
-   in SANDBOX.md, price in SECURITY.md): `distroless` and `alpine` images work — one uid, so
+   in SANDBOX.md): `distroless` and `alpine` images work — one uid, so
    stock `postgres` and `nginx` cannot.
 
 
@@ -244,8 +237,6 @@ block everything built in, then `+` back what the project needs:
    or blocked entry matching nothing, a host both tiers claim, an unknown tag, two entries
    tagging one host differently, a tag anywhere outside a `read-only` addition, a filename that
    is none of the three (in `.ko-agent-sandbox/` itself too), a policy allowing nothing.
-   [SECURITY.md] ("Adding hosts, not patterns") has why additions are exact while taking-away may
-   wildcard.
 1. Run `--proxy-effective` to resolve the policy to the concrete tier lists without starting a
    session. Every start prints your delta files as written — a repository-shipped policy never
    takes effect unseen — but the resolved lists only as counts: dozens of hostnames would be a
@@ -261,15 +252,13 @@ block everything built in, then `+` back what the project needs:
 
 ### Audit what has been allowed or denied
 
-    java -jar ko-agent-sandbox.jar --proxy-log
-
-Run from the project directory. Every request from the sandbox is logged,
+Run with `--proxy-log` from the project directory. Every request from the sandbox is logged,
 and the proxy appends the log to a per-run file on the host, under
 
     ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
 
-so the record outlives the proxy container. With no arguments, `--proxy-log` prints the
+With no arguments, `--proxy-log` prints the
 retained files oldest first — the newest 20 runs, and any older one whose session is still running,
 since a live proxy is still appending to its file; with trailing arguments (`-f` to follow, `--tail
 50` to limit) it runs `podman logs` on the currently running proxies instead, which is the live view
@@ -292,7 +281,6 @@ The per-project CA lives on the host, under
     ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
 
-1. Only the leaf certificate and its key reach the proxy, never the CA key.
 1. The CA is created on first launch and reissued a month before it expires. The leaf is reissued
    with it, and whenever the inspected host list changes.
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
@@ -337,9 +325,10 @@ The per-project CA lives on the host, under
    opt-in rather than detected: `MountLifecycleTest` drives the workspace filter's mount lifecycle,
    `ProxyContainerTest` inspects the proxy's own container, `RunTopologyTest` covers a run's
    networks, the isolation between concurrent sessions and projects, and `--reset` after a crash,
-   `WorkspaceGuardOffTest` drives the opted-out mode's `.git` pins against host-side mutation, and
-   `EgressPolicyTest` launches a session per project-supplied policy, the proxy's check of the
-   origin's own certificate included.
+   `WorkspaceGuardOffTest` drives the opted-out mode's `.git` pins against host-side mutation,
+   `BundleLockTest` drives the launcher-image version lock against a mislabelled image it builds
+   itself, and `EgressPolicyTest` launches a session per project-supplied policy, the proxy's
+   check of the origin's own certificate included.
 
        KO_AGENT_SANDBOX_INTEGRATION=1 sbt testFull
 

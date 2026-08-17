@@ -1,7 +1,7 @@
 // What remains launcher-owned after the per-file suites split off: the run/reset naming that
 // keeps projects apart, the configuration surface, the build verbs, and the documents the code
-// must stay in step with (README's --help copy, SECURITY.md's forge list against the proxy's
-// source, the bundled context).
+// must stay in step with (the --help text's Environment section, SECURITY.md's forge list against
+// the proxy's source, the bundled context).
 
 package agentsandbox.launcher
 
@@ -20,8 +20,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       unknownSandboxVariables(Seq("KO_AGENT_SANDBOX_MEMROY", "PATH", "KO_AGENT_SANDBOX_MEMORY")),
       Vector("KO_AGENT_SANDBOX_MEMROY")
     )
-    // Every documented variable is known — including EGRESS_POLICY, which the launcher sets inside
-    // the sandbox rather than reads, so a launcher nested in a session is not warned about it.
+    // Every documented variable is known — KO_AGENT_SANDBOX_EGRESS_POLICY included, which the
+    // launcher sets inside the sandbox rather than reads, so a launcher nested in a session is not
+    // warned about it.
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
 
@@ -35,7 +36,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(nestingMode(Some(value)).isLeft, s"'$value' was not refused")
     val refused = nestingMode(Some("on")).swap.getOrElse("")
     assert(refused.contains("the only values are none and same-uid, exactly"), refused)
-    assert(refused.contains("Unset it (or set it to none) to keep /proc masked"), refused)
+    assert(refused.contains("Unset it (or set it to none) to allow no runtime"), refused)
     // What a nesting-enabled session loosens is these three flags and nothing else; SECURITY.md
     // prices exactly this set, so a fourth entry here is a doc change too.
     assertEquals(
@@ -63,25 +64,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
     // Everything known is documented, except the one the launcher sets rather than reads.
     assertEquals(KnownSandboxVariables -- documented, Set("KO_AGENT_SANDBOX_EGRESS_POLICY"))
-
-  test("README reproduces the --help text"):
-    // README's Reference section is a copy of UsageText, and a copy that can drift is one that
-    // will — the --reset wording had to be changed in both. This is what makes the duplication
-    // safe to keep. Compared as one block rather than line by line: asking whether each --help
-    // line appears *somewhere* in README says nothing about a line README kept after --help
-    // dropped it, or about the order, which is most of what a reader relies on. The path is
-    // relative because sbt runs tests from the repository root.
-    val readme = Files.readString(Paths.get("README.md")).linesIterator.toVector
-    val start = readme.indexWhere(_.trim == "$ java -jar ko-agent-sandbox.jar --help")
-    assert(start >= 0, "README no longer opens the Reference block with the --help invocation")
-
-    def trimmedTail(lines: Vector[String]) = lines.reverse.dropWhile(_.trim.isEmpty).reverse
-    val quoted = readme
-      .drop(start + 1)
-      .takeWhile(line => line.trim.isEmpty || line.startsWith("    "))
-      .map(_.stripPrefix("    "))
-
-    assertEquals(trimmedTail(quoted), trimmedTail(UsageText.linesIterator.toVector))
 
   test("the proxy address is read for the right network only"):
     val output =
@@ -293,6 +275,58 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(inspectedHostsOf("garbage").isLeft)
 
+  test("the state root must be absolute, resolves canonically, and stays outside the project"):
+    // A relative value resolves against the current directory — the repository being sandboxed —
+    // which would hand the sandbox the CA signing key and aim the resets' recursive deletions
+    // into the checkout; refused rather than resolved, on every platform spelling.
+    assert(stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> "relative/state").get).isLeft)
+    assert(stateRootOf(HostCommands.Os.Linux, Map("HOME" -> "relative/home").get).isLeft)
+    assert(stateRootOf(HostCommands.Os.Windows, Map("LOCALAPPDATA" -> "relative").get).isLeft)
+    assert(stateRootOf(HostCommands.Os.Linux, Map.empty[String, String].get).isLeft)
+
+    val base = Files.createTempDirectory("state-root").toRealPath()
+    assertEquals(
+      stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> base.toString).get),
+      Right(base.resolve("ko-agent-sandbox"))
+    )
+    // A symlinked spelling resolves to the real location, so the outside-the-project comparison
+    // sees the directory that will actually hold the key — even before it exists.
+    val real = Files.createDirectories(base.resolve("real"))
+    val linked = Files.createSymbolicLink(base.resolve("linked"), real)
+    assertEquals(
+      stateRootOf(
+        HostCommands.Os.Linux,
+        Map("XDG_STATE_HOME" -> linked.resolve("not-yet/state").toString).get
+      ),
+      Right(real.resolve("not-yet/state/ko-agent-sandbox"))
+    )
+
+    val project = Files.createTempDirectory("state-root-project").toRealPath()
+    val linux = HostCommands.Os.Linux
+    assert(
+      forbiddenStateRootReason(linux, project.resolve("state/ko-agent-sandbox"), project).isDefined
+    )
+    assertEquals(forbiddenStateRootReason(linux, base.resolve("ko-agent-sandbox"), project), None)
+    // The macOS data volume is a firmlink, which toRealPath leaves uncollapsed: the two spellings
+    // are one directory, so containment must hold across them — and only on macOS.
+    val mac = HostCommands.Os.Mac
+    val aliasedProject = Paths.get("/System/Volumes/Data/Users/me/proj")
+    val plainProject = Paths.get("/Users/me/proj")
+    assert(forbiddenStateRootReason(mac, plainProject.resolve("state"), aliasedProject).isDefined)
+    assert(forbiddenStateRootReason(mac, aliasedProject.resolve("state"), plainProject).isDefined)
+    assertEquals(forbiddenStateRootReason(linux, plainProject.resolve("state"), aliasedProject), None)
+
+  test("a run's TLS mount copies are pruned only when provably dead and past the launch bound"):
+    val names = Seq("run-1a2b3c4d", "run-ffffffff", "run-short", "ca.crt", ".lock", "run-1A2B3C4D")
+    // Only the run-<8 hex> shape is the launcher's to sweep; a live run's copies are its proxy's
+    // mount sources, and a fresh dir may belong to a launch that has no container yet.
+    assertEquals(
+      tlsRunDirsToPrune(names, Set("1a2b3c4d"), _ => true),
+      Seq("run-ffffffff")
+    )
+    assertEquals(tlsRunDirsToPrune(names, Set.empty, _ != "run-ffffffff"), Seq("run-1a2b3c4d"))
+    assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d", "ffffffff"), _ => true), Seq())
+
   test("reset removes exactly this project's per-run networks"):
     val names = Seq(
       "ko-agent-sandbox-app-abc123-1a2b3c4d",
@@ -325,45 +359,74 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // And the minted suffix is what the anchor assumes: exactly eight hex characters.
     assert(newRunSuffix().matches("[0-9a-f]{8}"))
 
-  test("reset filters keep only launcher-created podman objects"):
+  test("reset filters match exactly the launcher's reserved name shapes"):
+    // The `--reset-all` sweeps force-remove what they match, so a bare prefix match would take a
+    // user's own ko-agent-sandbox-persistent-backup with it. What separates launcher-owned from
+    // user-owned is the reserved shape — slug, twelve-hex hash, and for per-run resources the
+    // eight-hex suffix — a namespace contract rather than provenance: SECURITY.md ("Silent
+    // changes to what you own") states it, and the sharedVolumeNameError test below keeps the
+    // one launcher-adopted name out of it.
+    val id = "app-0123456789ab"
     assertEquals(
-      proxyContainers(Seq("ko-agent-egress-proxy-app-abc", "some-other-container")),
-      Seq("ko-agent-egress-proxy-app-abc")
+      proxyContainers(
+        Seq(s"ko-agent-egress-proxy-$id-1a2b3c4d", "ko-agent-egress-proxy-manual", "other")
+      ),
+      Seq(s"ko-agent-egress-proxy-$id-1a2b3c4d")
     )
     assertEquals(
       sandboxRunContainers(
-        Seq("ko-agent-sandbox-run-app-abc-1a2b3c4d", "ko-agent-egress-proxy-app-abc", "other")
+        Seq(
+          s"ko-agent-sandbox-run-$id-1a2b3c4d",
+          s"ko-agent-egress-proxy-$id-1a2b3c4d",
+          "ko-agent-sandbox-run-mine"
+        )
       ),
-      Seq("ko-agent-sandbox-run-app-abc-1a2b3c4d")
+      Seq(s"ko-agent-sandbox-run-$id-1a2b3c4d")
     )
     assertEquals(
-      persistentVolumes(Seq("ko-agent-sandbox-persistent-app-abc", "my-shared-volume")),
-      Seq("ko-agent-sandbox-persistent-app-abc")
+      persistentVolumes(
+        Seq(
+          s"ko-agent-sandbox-persistent-$id",
+          "ko-agent-sandbox-persistent-backup",
+          "my-shared-volume"
+        )
+      ),
+      Seq(s"ko-agent-sandbox-persistent-$id")
     )
     assertEquals(
       launcherNetworks(
         Seq(
-          "ko-agent-sandbox-app-abc-1a2b3c4d",
-          "ko-agent-egress-app-abc-1a2b3c4d",
+          s"ko-agent-sandbox-$id-1a2b3c4d",
+          s"ko-agent-egress-$id-1a2b3c4d",
+          "ko-agent-sandbox-mynet",
           "podman",
           "bridge"
         )
       ),
-      Seq("ko-agent-sandbox-app-abc-1a2b3c4d", "ko-agent-egress-app-abc-1a2b3c4d")
+      Seq(s"ko-agent-sandbox-$id-1a2b3c4d", s"ko-agent-egress-$id-1a2b3c4d")
     )
 
+  test("a shared volume name inside the reserved shape is refused, ordinary names are not"):
+    // Without this, KO_AGENT_SANDBOX_PERSISTENT_VOLUME could adopt a name --reset-all removes —
+    // another project's real volume included, which would also alias its sign-ins.
+    assertEquals(sharedVolumeNameError("my-shared-volume"), None)
+    assertEquals(sharedVolumeNameError("ko-agent-sandbox-persistent-backup"), None)
+    val reserved = sharedVolumeNameError("ko-agent-sandbox-persistent-app-0123456789ab")
+    assert(reserved.exists(_.contains("--reset-all")), reserved.toString)
+    assert(reserved.exists(_.contains("Choose a name")), reserved.toString)
+
   test("per-run resources are named apart from every other resource"):
-    val sandbox = sandboxRunContainer("app-abc123", "1a2b3c4d")
-    val proxy = proxyRunContainer("app-abc123", "1a2b3c4d")
-    assertEquals(sandbox, "ko-agent-sandbox-run-app-abc123-1a2b3c4d")
-    assertEquals(proxy, "ko-agent-egress-proxy-app-abc123-1a2b3c4d")
+    val sandbox = sandboxRunContainer("app-0123456789ab", "1a2b3c4d")
+    val proxy = proxyRunContainer("app-0123456789ab", "1a2b3c4d")
+    assertEquals(sandbox, "ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d")
+    assertEquals(proxy, "ko-agent-egress-proxy-app-0123456789ab-1a2b3c4d")
     assertEquals(
-      sandboxRunNetwork("app-abc123", "1a2b3c4d"),
-      "ko-agent-sandbox-app-abc123-1a2b3c4d"
+      sandboxRunNetwork("app-0123456789ab", "1a2b3c4d"),
+      "ko-agent-sandbox-app-0123456789ab-1a2b3c4d"
     )
     assertEquals(
-      egressRunNetwork("app-abc123", "1a2b3c4d"),
-      "ko-agent-egress-app-abc123-1a2b3c4d"
+      egressRunNetwork("app-0123456789ab", "1a2b3c4d"),
+      "ko-agent-egress-app-0123456789ab-1a2b3c4d"
     )
     // The reset filters must sweep each through its own filter and never through the other's.
     assertEquals(proxyContainers(Seq(sandbox, proxy)), Seq(proxy))

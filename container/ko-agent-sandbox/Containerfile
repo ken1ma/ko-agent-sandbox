@@ -80,8 +80,8 @@ ENV PATH="/home/nonroot/.local/bin:$PATH"
 # signature (the .sig would need gnupg plus the release keyring).
 #
 # Dropped: include/ (63 MB, only for native addons — node-gyp fetches its
-# own headers, and the image has no C toolchain anyway) and share/ + docs
-# (no man reader). Bump NODE_VERSION and rebuild to move LTS.
+# own headers, and the image has no make or g++ to build one anyway) and
+# share/ + docs (no man reader). Bump NODE_VERSION and rebuild to move LTS.
 RUN set -euxo pipefail; \
     case "$(uname -m)" in \
         aarch64) NODE_ARCH=arm64 ;; \
@@ -121,10 +121,10 @@ ENV npm_config_prefix=/home/nonroot/.local
 #
 # Tracks stable and moves on rebuild, like the agents.
 #
-# gcc + libc6-dev are a linker, not a C compiler: rustc's own LLVM emits the
-# objects and only shells out to cc to drive ld against glibc's crt*.o. Kept
-# out of SANDBOX.md's tool table for that reason — nothing here invites C
-# development.
+# gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
+# rustc's own LLVM emits the objects and only shells out to cc to drive ld
+# against glibc's crt*.o. Kept out of SANDBOX.md's tool table for that
+# reason — nothing here invites C development, though gcc compiles C if asked.
 #
 # Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
 # dylibs always build for the host whatever the final target, so a working host

@@ -60,11 +60,18 @@ existing one can be written. A session that opted out of the filter has the moun
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
 By default the workspace FUSE filter is what stops a session turning the user's next `git status`
 on the host into code execution: it refuses a new entry named `.git` at any depth, under any
-spelling a case-insensitive backing folds to that name, and freezes every repository's control
-state — `config`, `hooks/`, the redirection files, the rebase todo — while operational state stays
-writable, so the agent's own git keeps working. It serves the tree live: a repository created on the
-host mid-session appears at once, with the same control files frozen. What stays writable in `.git`
-is data.
+spelling a case-insensitive backing folds to that name, and freezes the control state of every
+repository rooted at a `.git` entry — `config`, `hooks/`, the redirection files, the rebase todo —
+while operational state stays writable, so the agent's own git keeps working. It serves the tree
+live: a repository created on the host mid-session appears at once, with the same control files
+frozen. What stays writable in `.git` is data.
+
+Control bytes must also *resolve* that way, and the mount-time guard is what holds it for the
+repository host git discovers from the project directory: it refuses a workspace-root repository
+whose gitdir, config or hooks reach host git through a writable workspace path — a redirected
+gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktree, a `commondir`
+pointing back in — and a bare layout standing at the workspace root. A gitdir-shaped directory
+*without* a `.git` name elsewhere in the tree is the residue "The project checkout" describes.
 
 This is the default, and two things qualify it, both under Not defended: a session opted out with
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, which do not carry the claim
@@ -93,7 +100,12 @@ a shortcut would be tempting:
   `.ko-agent-sandbox` is every session's.
 
 What the launcher does write, it owns: its images, containers, networks and named volumes, its
-per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`.
+per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
+objects, ownership is a name contract: `--reset-all` force-removes every container, network and
+volume matching the generated shapes — `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in the
+twelve-hex path hash and, for per-run resources, the eight-hex run suffix. Those shapes are
+reserved: an object created by hand inside one is removed like the launcher's own, and a
+`KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
 
 **Accidentally exposing an over-broad project directory.** Before creating any resource, the
 launcher refuses:
@@ -160,9 +172,15 @@ already defines). Treat a sandboxed repository as hostile data, not hostile conf
 Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. In an opted-out session that includes a repository the agent
-created deeper in the tree — its config and hooks are unpinned there, so running host git *inside*
-it is running the agent's output. (A default session's filter refuses creating one at all.)
+for a contribution from a stranger. That includes a repository the agent created deeper in the
+tree, in both guard modes: an opted-out session leaves any shape unpinned, and the default
+session's filter — which refuses creating a `.git` entry — cannot refuse a *bare layout*, built
+from ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and
+hooks are served as writable data anywhere in the writable workspace — the mount-time check
+catches only a layout already standing at the root, not one assembled there afterwards in a
+repository-less workspace — and git's ascending discovery adopts it for a host command run at or
+beneath it. Running host git *inside* a directory the agent
+created is running the agent's output.
 
 A symlink is the sharpest case of that, because its meaning can change with the namespace reading
 it. `/workspace/x -> /etc/passwd` written inside resolves to the *container's* `/etc/passwd`, and a
@@ -196,12 +214,19 @@ cannot: repositories planted or nested below the workspace root. A FUSE layer ra
 kernel-side mechanism because it works wherever the VM does; `fuse/ko-agent-fs/doc/architecture.md`
 ("Mediation mechanism") weighs the alternatives.
 
-One residue stays yours to know about. A repository whose hooks *you* have relocated into the
-worktree — a `.git/hooks` symlink, or a `core.hooksPath` naming a worktree directory — is refused at
-mount, because those files sit at an ordinary path the filter must keep writable. That check is a
-snapshot: relocate them mid-session and this session will not notice, and the sandbox may write them
-from then on. It cannot cause the relocation (`.git/config` is frozen and the `.git/hooks` node is
-immutable), so the window only opens if you open it.
+Two residues stay yours to know about. The mount-time guard refuses a workspace-root repository
+whose control bytes resolve through the writable workspace — hooks relocated into the worktree, a
+redirected gitdir or `commondir`, an aliased config, an individual hook symlinked back in — and a
+bare layout standing at the root; `fuse/ko-agent-fs/doc/git-metadata.md` ("Relocated hook
+directories") states the binding rule it enforces. What it does not cover: a repository *you*
+nested deeper keeps its control state frozen like any other, but control bytes you had already
+routed into its worktree — relocated hooks, a redirected gitdir — are served as ordinary writable
+data (`fuse/ko-agent-fs/doc/TODO.md` records the gap); and a bare layout is served writable
+anywhere — below the root, or assembled at the root after the mount-time check — the one shape
+the *sandbox* can create itself ("The project checkout", above). The
+check is also a snapshot: reshape control state mid-session and this session will not notice. The
+snapshot admits only resolution chains made of components the sandbox cannot write or rename, so
+the sandbox cannot invalidate it — the windows only open if you open them.
 
 What an auditor trusts, and how each link is checked:
 
@@ -498,8 +523,8 @@ Two kinds of program stay outside all of it, neither reachable from the launcher
 installs itself (`cs java --jvm ...`) brings its own untouched store — the image ships
 `sandbox-prepare-jdk`, which gives one such JDK both the CA and the proxy from inside, so the gap
 is one command rather than a dead end; the certificate it reads is mounted beside the agent
-instructions, and is the same public one already inside the bundle. And a statically linked binary keeps its
-compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
+instructions, and is the same public one already inside the bundle. And a statically linked binary
+keeps its compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
 
 ### Why the policy is per project, in the project, and read-only
 

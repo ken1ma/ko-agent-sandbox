@@ -90,7 +90,7 @@ fn a_workspace_whose_hooks_live_inside_it_is_refused_before_mounting() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("refusing to serve") && stderr.contains("symlink into the workspace"),
+        stderr.contains("refusing to serve") && stderr.contains("inside the workspace"),
         "the refusal did not explain itself: {stderr}"
     );
     // The remedy matters as much as the refusal: the operator has to know what to change.

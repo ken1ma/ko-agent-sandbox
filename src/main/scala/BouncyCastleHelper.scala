@@ -61,6 +61,34 @@ object BouncyCastleHelper:
       try parseCertificate(text).getNotAfter.toInstant.isAfter(deadline)
       catch case _: Exception => false
 
+  /**
+   * Whether the private key is the one this certificate's public key answers, proven by a
+   * sign-and-verify round trip; false on anything unparsable or empty. Currency alone cannot see a
+   * key beside a certificate it does not match — the state a launch that died between writing the
+   * two leaves behind — and such a pair fails every TLS handshake while looking current.
+   */
+  def keyMatchesCertificate(certificatePem: String, privateKeyPem: String): Boolean =
+    try
+      val certificate = parseCertificate(certificatePem)
+      val key = parseEcPrivateKey(privateKeyPem)
+      val probe = Array.tabulate[Byte](32)(_.toByte)
+      val signer = java.security.Signature.getInstance("SHA256withECDSA")
+      signer.initSign(key)
+      signer.update(probe)
+      val signature = signer.sign()
+      val verifier = java.security.Signature.getInstance("SHA256withECDSA")
+      verifier.initVerify(certificate.getPublicKey)
+      verifier.update(probe)
+      verifier.verify(signature)
+    catch case _: Exception => false
+
+  /** Whether `certificatePem` verifies under `issuerPem`'s public key; false on any doubt. */
+  def signedBy(certificatePem: String, issuerPem: String): Boolean =
+    try
+      parseCertificate(certificatePem).verify(parseCertificate(issuerPem).getPublicKey)
+      true
+    catch case _: Exception => false
+
   case class Minted(certificatePem: String, privateKeyPem: String)
 
   def newEcKeyPair() =

@@ -15,7 +15,6 @@ package agentsandbox.launcher
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
-import java.nio.file.attribute.PosixFilePermissions
 import java.security.KeyStore
 
 import BouncyCastleHelper.parseCertificate
@@ -75,43 +74,41 @@ object JdkTrust:
    * two inputs as the bundle, so it shares the bundle's stamp; where the store lives is the
    * image's to say — the caller hands in the image's environment, since the inspect that answers
    * the bundle's image id answers this too (javaHomeOf) — and no JDK yields no mount at all.
+   * Returned as (host file, container path) rather than a --volume argument, because what podman
+   * mounts is the launch's per-run copy of the file, not this shared cache.
    */
-  def jdkTrustArgs(
+  def jdkTrustMount(
     podman: String,
     image: String,
     imageEnv: String,
     tlsDir: Path,
     bundleStamp: String,
     caCertFile: Path
-  ): Vector[String] =
-    javaHomeOf(imageEnv) match
-      case None => Vector.empty
-      case Some(javaHome) =>
-        val cacertsPath = s"$javaHome/lib/security/cacerts"
-        val cacertsFile = tlsDir.resolve("cacerts")
-        val cacertsStampFile = tlsDir.resolve("cacerts.stamp")
+  ): Option[(Path, String)] =
+    javaHomeOf(imageEnv).map: javaHome =>
+      val cacertsPath = s"$javaHome/lib/security/cacerts"
+      val cacertsFile = tlsDir.resolve("cacerts")
+      val cacertsStampFile = tlsDir.resolve("cacerts.stamp")
 
-        if !Files.isRegularFile(cacertsFile) || Files.size(cacertsFile) == 0L
-          || firstLine(cacertsStampFile) != bundleStamp
-        then
-          val imageCacerts = run(
-            podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", cacertsPath
+      if !Files.isRegularFile(cacertsFile) || Files.size(cacertsFile) == 0L
+        || firstLine(cacertsStampFile) != bundleStamp
+      then
+        val imageCacerts = run(
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", cacertsPath
+        )
+        if !imageCacerts.ok || imageCacerts.out.isEmpty then
+          fail(s"error: could not read $cacertsPath out of $image\n${imageCacerts.err}")
+        try
+          writeReadable(
+            cacertsFile,
+            mergeCacerts(imageCacerts.out, Files.readString(caCertFile), "ko-agent-sandbox-egress")
           )
-          if !imageCacerts.ok || imageCacerts.out.isEmpty then
-            fail(s"error: could not read $cacertsPath out of $image\n${imageCacerts.err}")
-          try
-            Files.write(
-              cacertsFile,
-              mergeCacerts(imageCacerts.out, Files.readString(caCertFile), "ko-agent-sandbox-egress")
-            )
-            if posixPermissions(cacertsFile) then
-              Files.setPosixFilePermissions(cacertsFile, PosixFilePermissions.fromString("rw-r--r--"))
-            writeReadable(cacertsStampFile, bundleStamp + "\n")
-          catch
-            case ex: Exception =>
-              fail(s"error: could not add this project's CA to the image's $cacertsPath\n$ex")
+          writeReadable(cacertsStampFile, bundleStamp + "\n")
+        catch
+          case ex: Exception =>
+            fail(s"error: could not add this project's CA to the image's $cacertsPath\n$ex")
 
-        Vector(s"--volume=$cacertsFile:$cacertsPath:ro")
+      (cacertsFile, cacertsPath)
 
   /**
    * The mount that makes the image's JDK reach the egress proxy. A JVM ignores `HTTPS_PROXY` and
@@ -127,9 +124,10 @@ object JdkTrust:
    * the loopback exemptions NO_PROXY carries.
    *
    * Keyed on the image and the address alone: unlike the trust store this has nothing per-project
-   * in it, so the CA rotating does not rebuild it.
+   * in it, so the CA rotating does not rebuild it. (host file, container path), like
+   * jdkTrustMount and for the same reason.
    */
-  def jdkProxyArgs(
+  def jdkProxyMount(
     podman: String,
     image: String,
     imageEnv: String,
@@ -137,31 +135,29 @@ object JdkTrust:
     imageId: String,
     proxyHost: String,
     proxyPort: Int
-  ): Vector[String] =
-    javaHomeOf(imageEnv) match
-      case None => Vector.empty
-      case Some(javaHome) =>
-        val netPropertiesPath = s"$javaHome/conf/net.properties"
-        val netPropertiesFile = tlsDir.resolve("net.properties")
-        val stampFile = tlsDir.resolve("net.properties.stamp")
-        val stamp = s"$imageId $proxyHost:$proxyPort"
+  ): Option[(Path, String)] =
+    javaHomeOf(imageEnv).map: javaHome =>
+      val netPropertiesPath = s"$javaHome/conf/net.properties"
+      val netPropertiesFile = tlsDir.resolve("net.properties")
+      val stampFile = tlsDir.resolve("net.properties.stamp")
+      val stamp = s"$imageId $proxyHost:$proxyPort"
 
-        if !Files.isRegularFile(netPropertiesFile) || Files.size(netPropertiesFile) == 0L
-          || firstLine(stampFile) != stamp
-        then
-          val shipped = run(
-            podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", netPropertiesPath
-          )
-          if !shipped.ok || shipped.out.isEmpty then
-            fail(s"error: could not read $netPropertiesPath out of $image\n${shipped.err}")
-          writeReadable(
-            netPropertiesFile,
-            String(shipped.out, StandardCharsets.UTF_8).stripLineEnd + "\n"
-              + netProxyProperties(proxyHost, proxyPort)
-          )
-          writeReadable(stampFile, stamp + "\n")
+      if !Files.isRegularFile(netPropertiesFile) || Files.size(netPropertiesFile) == 0L
+        || firstLine(stampFile) != stamp
+      then
+        val shipped = run(
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", netPropertiesPath
+        )
+        if !shipped.ok || shipped.out.isEmpty then
+          fail(s"error: could not read $netPropertiesPath out of $image\n${shipped.err}")
+        writeReadable(
+          netPropertiesFile,
+          String(shipped.out, StandardCharsets.UTF_8).stripLineEnd + "\n"
+            + netProxyProperties(proxyHost, proxyPort)
+        )
+        writeReadable(stampFile, stamp + "\n")
 
-        Vector(s"--volume=$netPropertiesFile:$netPropertiesPath:ro")
+      (netPropertiesFile, netPropertiesPath)
 
   /** The lines appended to the JDK's `net.properties`; separated so a test can read them without a
     * podman image. */

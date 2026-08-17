@@ -77,10 +77,13 @@ def main() -> int:
             print("FAIL: the host write never became visible to read()")
             return 1
         # The host write happened at an unknown moment before this; poll from here to see how far
-        # the mapped view lags the read() view — that lag is the AUTO_INVAL_DATA measurement.
+        # the mapped view lags the read() view — that lag is the AUTO_INVAL_DATA measurement. Its
+        # own 120 s window from that moment: sharing the read() phase's deadline would hand a
+        # late host write only the leftover, while the failure text below claims the full wait.
         start = read_seen
+        mmap_deadline = read_seen + 120
         mmap_seen = None
-        while time.monotonic() < deadline:
+        while time.monotonic() < mmap_deadline:
             if bytes(mapped) == NEW:
                 mmap_seen = time.monotonic()
                 break

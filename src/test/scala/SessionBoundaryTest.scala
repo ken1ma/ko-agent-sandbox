@@ -206,7 +206,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
     // A JVM reads none of the HTTPS_PROXY family, so the image's JDK is pointed at the proxy
-    // through its own net.properties instead (JdkTrust.jdkProxyArgs). Driven as a program rather
+    // through its own net.properties instead (JdkTrust.jdkProxyMount). Driven as a program rather
     // than asserted against the mounted file, because what matters is that the default
     // ProxySelector acts on it — and that it does so without setting a system property, which is
     // the whole reason this is not JAVA_TOOL_OPTIONS.
@@ -321,7 +321,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // /etc/ssl/certs/adoptium/cacerts and podman resolves a bind target before mounting it.
     val alsoExpected =
       raw"^/etc/(hosts|hostname|resolv\.conf)$$|^/etc/(ko-agent-sandbox|ssl/certs)($$|/)".r.unanchored
-    // The JDK's proxy configuration, the other half of jdkTrustArgs' technique. Unlike `cacerts`
+    // The JDK's proxy configuration, the other half of jdkTrustMount's technique. Unlike `cacerts`
     // this one is a real file, so its mount stays where the launcher put it and is named from
     // JAVA_HOME rather than matched by a fixed prefix.
     val netProperties = env("JAVA_HOME").map(_ + "/conf/net.properties")

@@ -28,6 +28,29 @@ Test / parallelExecution := false
 Compile / run / javaOptions += "--enable-native-access=ALL-UNNAMED"
 Compile / run / fork := true
 
+// The --help text has one home: README.md's Reference block, the copy a reader browses before any
+// jar exists. This task extracts it into the resource AgentSandboxLauncher.UsageText prints, so
+// what --help shows cannot drift from what README shows. Anchored on the heading rather than on an
+// invocation line, which would spell a launch channel (java -jar today, a cs-installed command
+// later). Extraction fails the build rather than truncate: the block must follow the heading and
+// run unbroken to the next one.
+Compile / resourceGenerators += Def.task {
+  val readme = IO.readLines(baseDirectory.value / "README.md")
+  val start = readme.indexWhere(_.trim == "### Reference")
+  if start < 0 then
+    sys.error("README.md no longer has the '### Reference' heading the --help text is read from")
+  val rest = readme.drop(start + 1)
+  val block = rest.takeWhile(line => line.trim.isEmpty || line.startsWith("    "))
+  if !rest.drop(block.size).headOption.exists(_.matches("#{1,6}(\\s.*)?")) then
+    sys.error("README.md's Reference block no longer runs unbroken to the next heading")
+  val text = block.map(_.stripPrefix("    "))
+    .dropWhile(_.trim.isEmpty).reverse.dropWhile(_.trim.isEmpty).reverse
+  if text.isEmpty then sys.error("README.md's Reference block is empty")
+  val target = (Compile / resourceManaged).value / "agentsandbox" / "usage.txt"
+  IO.write(target, text.mkString("\n"))
+  Seq(target)
+}.taskValue
+
 // Bundle the build contexts into the jar so --build works with no checkout present
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
@@ -46,7 +69,7 @@ Compile / resourceGenerators += Def.task {
   )
 
   // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
-  // exclude the same set from the podman build context. Two known divergences, neither reachable today:
+  // exclude the same set from the podman build context. Two known divergences, neither reachable:
   // "project/project" is a substring test here but segment-anchored (**/) there, so a path like myproject/project
   // would be dropped only here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only
   // target, doc and probe, since a Rust crate grows none of the sbt and editor directories below — a stray .DS_Store

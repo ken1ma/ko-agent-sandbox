@@ -17,6 +17,10 @@ replay_pid*
 # npm
 node_modules/
 
+# Python
+# AI agents would use python frequently
+__pycache__/
+
 # macOS
 .DS_Store
 

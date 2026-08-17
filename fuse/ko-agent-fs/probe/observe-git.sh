@@ -33,19 +33,22 @@ echo more >>f; git add f; git commit -qm second
 mark="$work/mark"; touch "$mark"; sleep 1.2   # writes after here are the normal-operation set
 branch=$(git symbolic-ref --short HEAD)
 
+# No failure in the battery is suppressed: under `set -eu` a git command that fails aborts the
+# run, because one that silently did nothing would leave its write-set out of the classification
+# and read as the premises confirmed. Only stdout is quieted.
 git switch -qc feature2; echo x >g; git add g; git commit -qm feat
-git switch -q "$branch"; git merge -q --no-edit feature2 >/dev/null 2>&1 || true
+git switch -q "$branch"; git merge -q --no-edit feature2 >/dev/null
 git tag v1
 echo y >>f; git add f; git commit -qm third
-git switch -q feature; git rebase -q "$branch" >/dev/null 2>&1 || true
+git switch -q feature; git rebase -q "$branch" >/dev/null
 git switch -q "$branch"
-echo z >>f; git stash -q >/dev/null 2>&1 || true; git stash pop -q >/dev/null 2>&1 || true
+echo z >>f; git stash -q; git stash pop -q >/dev/null
 git remote add donor ../donor
-git -c protocol.file.allow=always fetch -q donor >/dev/null 2>&1 || true
-git gc -q >/dev/null 2>&1 || true
-git worktree add -q ../wt >/dev/null 2>&1 || true
-git -c protocol.file.allow=always submodule add -q ../donor sub >/dev/null 2>&1 || true
-git commit -qm "add sub" >/dev/null 2>&1 || true
+git -c protocol.file.allow=always fetch -q donor
+git gc -q
+git worktree add -q ../wt >/dev/null
+git -c protocol.file.allow=always submodule add -q ../donor sub
+git commit -qm "add sub"
 
 echo "git $(git --version | awk '{print $3}')"
 echo

@@ -106,7 +106,9 @@ object SandboxProject:
    * home the guard refuses as /Users/me.
    */
   private val MacDataVolumePrefix = "/System/Volumes/Data"
-  private def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
+  /** Not private: the state-root containment check compares the same firmlink spellings
+    * (AgentSandboxLauncher.forbiddenStateRootReason). */
+  def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
     paths.flatMap: path =>
       val text = path.toString
       val alias =
@@ -312,9 +314,10 @@ object SandboxProject:
 
   /**
    * The launcher-owned empty bind sources gitGuardVolumes pins from. Kept
-   * outside the project and re-emptied at every launch *in place* —
-   * truncate and clear, never delete-and-recreate — so a concurrent
-   * session's running bind keeps its inode and its emptiness.
+   * outside the project and re-emptied at every launch *in place*: never
+   * delete-and-recreate, for the reason in HostCommands.writeWithMode, and
+   * not rename-and-replace either — a concurrent session's running bind
+   * keeps this very inode, and its emptiness with it.
    */
   def emptyMountSources(launcherStateRoot: Path): (Path, Path) =
     val root = launcherStateRoot.resolve("empty")

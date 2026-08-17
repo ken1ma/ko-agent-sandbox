@@ -675,7 +675,7 @@ fn relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them()
     let refusal = ko_agent_fs::guard::check_hook_location(&mount.backing)
         .expect_err("the guard must refuse a workspace whose hooks live inside it");
     assert!(
-        refusal.reason.contains("symlink into the workspace"),
+        refusal.reason.contains("inside the workspace"),
         "unexpected refusal: {refusal}"
     );
 

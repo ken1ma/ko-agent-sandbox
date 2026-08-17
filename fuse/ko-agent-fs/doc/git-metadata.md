@@ -220,7 +220,7 @@ The last two are the exception, and listed anyway because this is the requiremen
 implementation: `setxattr`/`removexattr` are unimplemented, so nothing reaches the backing store
 through them and no policy has to run. The sandbox sees `ENOTSUP` — the kernel's rendering of the
 daemon's `ENOSYS` — which reads as a filesystem without extended attributes. `policy::Mutation`
-deliberately carries no xattr variant until that changes (`TODO.md`, "Correctness"), and the gate
+deliberately carries no xattr variant until that changes (`TODO.md`, "Non-TODOs"), and the gate
 arrives with the implementation.
 
 Rename and exchange are the double-sided cases: `rename evil → <gitdir>/hooks/pre-commit` is a
@@ -272,6 +272,34 @@ can invalidate mid-session. Refusing is the same answer the launcher already giv
 `.git/hooks` (`SandboxProject.gitGuardVolumes`), and it is honest: the filter declines to
 imply cover it cannot deliver.
 
+**The binding rule.** Relocated hooks are one instance of a class the guard closes whole: bytes
+host `git` consumes as control must not depend on any workspace path the policy classifies
+operational. The guard resolves every control source — the gitdir a `.git` pointer names, its
+`commondir` and the common config behind it, `config` and `config.worktree`, each `hooksPath`
+value from every directory git runs hooks in (the worktree for most hooks, `$GIT_DIR` for the
+receive side, the common gitdir conservatively — a relative value means a different directory to
+each), the hook directory and every entry in it — component by component, and every
+workspace-resident component traversed must classify `Control`, or the resolution has permanently
+left the workspace. Components, not only symlink nodes: an operational *directory* on a chain is a
+future symlink slot the sandbox can rename away and replant, and a chain that leaves the workspace
+re-enters the rule if a link points back in. `canonicalize` cannot express this — it returns the
+endpoint and erases the chain — so the walk is explicit and depth-bounded, and it classifies
+against the same submodule gitdir roots the runtime discovers by their `HEAD`, so guard-`Control`
+means runtime-`Control` (`.git/modules/<sub>/objects` is writable at runtime and no exemption
+here). Existence cannot weaken the answer — a missing operational name is one the sandbox can
+create — and only NotFound means absent: an unreadable step, or a config that is not UTF-8,
+refuses the mount.
+
+The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths
+its subject cannot mutate, and every admitted chain is made of Control components the sandbox can
+neither write nor rename. Only the host can invalidate it, which is the window recorded below.
+
+The same recognition covers the shape with no `.git` name at all: a workspace root that is itself
+laid out as a gitdir — a valid `HEAD` plus `objects/` and `refs/`, git's own `is_git_directory`
+triple, which reftable repositories keep precisely so old gits recognize them — is refused, since
+ascending discovery would adopt it and its config and hooks sit at ordinary writable names.
+Re-check the triple against git's discovery rules on upgrade (P6).
+
 The refusal is deliberately narrow — it fires only when the hook directory resolves **inside** the
 workspace. Hooks kept outside it are unreachable through the mount (`RESOLVE_IN_ROOT` clamps the
 resolution), so there is nothing to refuse and those repositories are served normally.
@@ -291,18 +319,24 @@ unterminated quote, and a bare `path` key, which under `include` or `includeIf` 
 scanner never opens. All are rare in a *repository-local* config, and the message tells the operator
 what to change.
 
-Scope: the repository at the workspace root, matching the launcher's own root-only pin. A repository
-the **host** nested deeper in the tree is not scanned — the sandbox cannot create one, so this is
-residue, recorded in `TODO.md`.
+Scope: the repository at the workspace root, matching the launcher's own root-only pin, plus the
+bare-root check above. Below the root, two shapes stay residue, recorded in `TODO.md` and named in
+`SECURITY.md`: a repository the **host** nested deeper — its control state under `.git` names is
+frozen like any other's, but control bytes the host routed into the worktree (relocated hooks, a
+redirected gitdir) are served writable; the sandbox cannot create this shape. And a **bare
+layout**, which the sandbox *can* create — `git init --bare` and `git clone --bare|--mirror`
+write only ordinary names, and no per-name rule can refuse `HEAD`, `objects` and `refs`
+individually without swallowing legitimate projects ("Consequences", below) — anywhere below the
+root, or at the root itself once the mount-time check has passed: a session starting in a
+repository-less workspace can lay the triple at the root mid-session.
 
 The check is also a snapshot, taken before the mount and not repeated. A host that relocates its
 hooks into the worktree *after* a session is serving gets no second refusal. Polling for it would
 buy a guarantee only as fresh as its last poll while putting a config read and an `lstat` on the hot
 path, so the answer is to record the window rather than chase it — and the window is the host's own
-to open: the sandbox cannot cause the relocation, because `.git/config` is frozen and the
-`.git/hooks` node is control state. What it costs is that hooks relocated mid-session are writable
-for the rest of that session, exactly as if they had been relocated before it and the guard had not
-existed.
+to open: the binding rule admits only chains the sandbox cannot mutate. What it costs is that
+control state the host reshapes mid-session is writable for the rest of that session, exactly as
+if it had been reshaped before it and the guard had not existed.
 
 
 ## What this intentionally does *not* protect, and why that is safe
@@ -321,6 +355,12 @@ These follow from the name rule and must be documented, not silently broken (the
 security reason for each):
 
 - `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `~`.
+  The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror`
+  write only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name
+  rule can refuse without swallowing legitimate projects that carry them. The guard refuses a bare
+  layout standing at the workspace root at mount; one the sandbox creates — below the root, or at
+  the root after that check — is the residue SECURITY.md records ("The project checkout"): running
+  host git inside an agent-created directory is running the agent's output.
 - `git worktree add <path>` with `<path>` in `/workspace` — writes a `.git` **file** at the new
   worktree. Blocked.
 - Submodule checkout that would materialize a submodule's worktree `.git` file in `/workspace` —
@@ -374,9 +414,10 @@ into, `renameat2` `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git
 fail against it.
 
 **Hooks (group 1):** `write`, `pwrite`, `truncate`, `ftruncate`, `open O_TRUNC`, `chmod`, `chown`,
-`unlink`, `rmdir`, `rename` from/to, `link`, `symlink`, `mknod`, `setxattr`, `removexattr` against
-`<gitdir>/hooks/**` — each fails. Same suite against `modules/<n>/hooks/**` and
-`worktrees/<n>/hooks/**` to prove the recursion.
+`unlink`, `rmdir`, `rename` from/to, `link`, `symlink`, `mknod` against `<gitdir>/hooks/**` — each
+fails. Same suite against `modules/<n>/hooks/**` and `worktrees/<n>/hooks/**` to prove the
+recursion. Not `setxattr`/`removexattr`: xattrs are `ENOSYS` everywhere, so there is no policy to
+test until they are implemented (`TODO.md`, "Test infrastructure").
 
 **Config (group 2):** direct mutation of `config`, `config.worktree`, `commondir` fails; real
 `git config --local core.hooksPath …` and `git config --local core.fsmonitor …` fail. An
@@ -449,9 +490,13 @@ written does not make it safe to allow. Only real git against a real mount exerc
 - **P5 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
   data (group 2). Re-check on upgrade that git still refuses a `submodule.<name>.update = !command`
   sourced from it; if that ever changed, `.gitmodules` would need protecting.
-- **P6 — repository discovery keys on an entry named exactly `.git`**, a directory or a `gitdir:`
-  pointer file. That is the basis of the name rule and of freezing the pointer entry. Re-check on
-  upgrade that git introduces no second discovery name.
+- **P6 — repository discovery keys on an entry named exactly `.git`** — a directory or a `gitdir:`
+  pointer file — **or on a directory that is itself a gitdir** (the bare layout: valid `HEAD`,
+  `objects/`, `refs/`, git's `is_git_directory` triple, which reftable repositories keep so old
+  gits recognize them). The first form is the basis of the name rule and of freezing the pointer
+  entry; the second is what the guard's bare-root check mirrors, and what the bare-layout residue
+  exists for. Re-check on upgrade that git introduces no third discovery form and no change to the
+  triple.
 
 Most drift shows up as a broken git command rather than a silent hole — P2 especially. **P0 and P5
 are the two that could weaken the boundary if they regressed**, and neither is caught by a script:

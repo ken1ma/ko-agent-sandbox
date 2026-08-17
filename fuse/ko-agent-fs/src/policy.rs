@@ -17,7 +17,7 @@
 /// [`authorize_create`] instead, because the `.git` name rule has to see the new name. A truncate
 /// arrives as `open(O_TRUNC)` or a `setattr` carrying a size, so it is `Write` or `SetAttr` by the
 /// time it reaches here. Xattr variants belong here the day `setxattr`/`removexattr` are
-/// implemented at all (`doc/TODO.md`, "Correctness") and not before.
+/// implemented at all (`doc/TODO.md`, "Non-TODOs") and not before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutation {
     Write,
@@ -350,8 +350,8 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
     }
     // Named separately from the control-state refusal below, which would also catch it: the deny
-    // log's reason is what a user reads when a legitimate name is swallowed, and "control state"
-    // would send them looking through git's.
+    // log's reason is what a user reads when a legitimate name is swallowed, and a "control state"
+    // reason would send them looking in `.git` rather than at this rule.
     if is_sandbox_config_name(new_name) {
         return Decision::Deny(
             "protected-sandbox-config: refusing to create a .ko-agent-sandbox entry",
@@ -368,8 +368,9 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
     Decision::Allow
 }
 
-/// Authorize a mutation of an existing inode with context `ctx` (write/truncate/unlink/rename-to/
-/// etc.). Creation goes through [`authorize_create`] so the name rule fires.
+/// Authorize a mutation of an existing inode with context `ctx` (write/truncate/unlink/
+/// rename-from/etc.). Creation — a rename's destination included — goes through
+/// [`authorize_create`] so the name rule fires.
 pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
     if classify(ctx) != GitPathClass::Control {
         return Decision::Allow;

@@ -8,8 +8,8 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths}
-import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
+import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
 import scala.jdk.CollectionConverters.*
 
 object HostCommands:
@@ -173,6 +173,65 @@ object HostCommands:
   def readIfPresent(path: Path): Option[String] =
     if Files.isRegularFile(path) then Some(Files.readString(path)) else None
 
+  /**
+   * The real path a possibly-not-yet-created `path` will occupy: the deepest existing ancestor is
+   * canonicalized and the missing tail re-appended. A plain `toRealPath` fails on a path that does
+   * not exist yet — which the state root is on every first launch — and comparing the symbolic
+   * spelling instead would let a symlinked ancestor place it somewhere the comparison never sees.
+   * Left when the existing ancestor cannot be resolved: an unverified spelling handed back
+   * instead would bypass whatever containment comparison the caller makes with the answer.
+   */
+  def canonicalizedFuturePath(path: Path): Either[String, Path] =
+    val absolute = path.toAbsolutePath.normalize()
+    // NOFOLLOW attributes, not Files.exists: exists follows links, so a dangling symlink would
+    // read as absent and ride into the "future" tail unchecked — a concurrent writer could
+    // materialize its target after validation — and it folds every other I/O failure into false.
+    // Only NotFound means missing; anything else refuses.
+    def presence(candidate: Path): Either[String, Boolean] =
+      try
+        Files.readAttributes(
+          candidate,
+          classOf[java.nio.file.attribute.BasicFileAttributes],
+          java.nio.file.LinkOption.NOFOLLOW_LINKS
+        )
+        Right(true)
+      catch
+        case _: java.nio.file.NoSuchFileException => Right(false)
+        case ex: IOException                      => Left(s"cannot inspect $candidate: $ex")
+    @scala.annotation.tailrec
+    def firstPresent(candidate: Path, tail: List[Path]): Either[String, (Path, List[Path])] =
+      presence(candidate) match
+        case Left(reason) => Left(reason)
+        case Right(true)  => Right((candidate, tail))
+        case Right(false) =>
+          Option(candidate.getParent) match
+            case Some(parent) => firstPresent(parent, candidate.getFileName :: tail)
+            case None         => Right((candidate, tail))
+    firstPresent(absolute, Nil).flatMap: (existing, tail) =>
+      // toRealPath follows, so a dangling symlink found present above is rejected right here
+      // rather than adopted as a base.
+      try Right(tail.foldLeft(existing.toRealPath())(_.resolve(_)))
+      catch case ex: IOException => Left(s"cannot resolve $existing to a real path: $ex")
+
+  /**
+   * Run `body` holding an exclusive inter-process lock on `lockFile`, blocking until it is free.
+   * What it serializes is check-then-act over shared files: two launches that both find state
+   * missing or stale otherwise interleave their writes, and the survivors need not belong
+   * together — a CA key from one launch beside the other's certificate.
+   */
+  def withFileLock[A](lockFile: Path)(body: => A): A =
+    Files.createDirectories(lockFile.toAbsolutePath.getParent)
+    val channel = java.nio.channels.FileChannel.open(
+      lockFile,
+      java.nio.file.StandardOpenOption.CREATE,
+      java.nio.file.StandardOpenOption.WRITE
+    )
+    try
+      val lock = channel.lock()
+      try body
+      finally lock.release()
+    finally channel.close()
+
   def firstLine(path: Path): String =
     readIfPresent(path).map(_.linesIterator.nextOption().getOrElse("")).getOrElse("")
 
@@ -187,11 +246,32 @@ object HostCommands:
   def posixPermissions(path: Path): Boolean =
     Files.getFileStore(path).supportsFileAttributeView("posix")
 
-  def writePrivate(path: Path, content: String): Unit = writeWithMode(path, content, "rw-------")
+  def writePrivate(path: Path, content: String): Unit =
+    writeWithMode(path, content.getBytes(StandardCharsets.UTF_8), "rw-------")
 
-  def writeReadable(path: Path, content: String): Unit = writeWithMode(path, content, "rw-r--r--")
+  def writeReadable(path: Path, content: String): Unit =
+    writeWithMode(path, content.getBytes(StandardCharsets.UTF_8), "rw-r--r--")
+
+  /** For the one state file that is not text: the JDK keystore JdkTrust merges. */
+  def writeReadable(path: Path, content: Array[Byte]): Unit =
+    writeWithMode(path, content, "rw-r--r--")
 
   /**
+   * Written beside the target and renamed onto it, never written at the target itself. Nearly
+   * every file written through here feeds a container mount — as the shared source the per-run
+   * copies are taken from (AgentSandboxLauncher, the locked TLS derivation), or per-run itself,
+   * like the audit log — and a launch of the same project may be copying or assembling at this
+   * moment: a name that disappears even briefly fails that launch, and a name that exists holding
+   * half a file is worse. Rename is what leaves neither state visible. The temporary carries a
+   * generated name, so two launches racing here cannot collide on it.
+   *
+   * A write that would change neither the content nor the mode is skipped: a cache stamp that
+   * misses on identical output must not churn the shared source's inode under a concurrent
+   * launch's copy. A real change replaces the inode and reaches only the runs that copy after it —
+   * a mount cannot follow a file out from under it (SECURITY.md, "The opted-out mode's `.git`
+   * pins", has the measurement), which is why containers mount per-run copies rather than these
+   * files.
+   *
    * The mode is requested at creation and set again after the write, and both halves earn their
    * place. Creating with it is what leaves no window: a file created under the umask and chmodded
    * afterwards holds its content at 0644 for as long as the write takes, and what `writePrivate`
@@ -201,13 +281,47 @@ object HostCommands:
    * an ACL that already excludes other users — so the attribute is refused there and the file is
    * created plainly.
    */
-  private def writeWithMode(path: Path, content: String, mode: String): Unit =
+  private def writeWithMode(path: Path, content: Array[Byte], mode: String): Unit =
     val permissions = PosixFilePermissions.fromString(mode)
-    Files.deleteIfExists(path)
-    try Files.createFile(path, PosixFilePermissions.asFileAttribute(permissions))
-    catch case _: UnsupportedOperationException => Files.createFile(path)
-    Files.writeString(path, content)
-    if posixPermissions(path) then Files.setPosixFilePermissions(path, permissions)
+    if !alreadyWritten(path, content, permissions) then replaceWithMode(path, content, permissions)
+
+  /**
+   * Whether the file at `path` already is what the write would leave — content and mode both, so a
+   * mode planted on a bind source is still corrected. An unreadable or vanishing file is not it:
+   * another launch may be replacing this very path, and the write is the answer to that.
+   */
+  private def alreadyWritten(
+    path: Path,
+    content: Array[Byte],
+    permissions: java.util.Set[PosixFilePermission]
+  ): Boolean =
+    try
+      Files.isRegularFile(path)
+        && java.util.Arrays.equals(Files.readAllBytes(path), content)
+        && (!posixPermissions(path) || Files.getPosixFilePermissions(path) == permissions)
+    catch case _: IOException => false
+
+  private def replaceWithMode(
+    path: Path,
+    content: Array[Byte],
+    permissions: java.util.Set[PosixFilePermission]
+  ): Unit =
+    val directory = path.toAbsolutePath.getParent
+    val prefix = path.getFileName.toString + "."
+    val temp =
+      try
+        Files.createTempFile(directory, prefix, ".tmp", PosixFilePermissions.asFileAttribute(permissions))
+      catch case _: UnsupportedOperationException => Files.createTempFile(directory, prefix, ".tmp")
+    try
+      Files.write(temp, content)
+      if posixPermissions(temp) then Files.setPosixFilePermissions(temp, permissions)
+      // ATOMIC_MOVE alone: it replaces an existing target on both POSIX and Windows, and pairing it
+      // with REPLACE_EXISTING is what some implementations refuse.
+      Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE)
+    catch
+      case ex: Throwable =>
+        Files.deleteIfExists(temp)
+        throw ex
 
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then

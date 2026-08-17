@@ -26,7 +26,7 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   Its permission model gates *access to existing content*; it does not cleanly express the invariant
   we most need, *refusing creation of an entry named `.git`*. Partial fit.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in-kernel.
-  Elegant and native-speed, and the alternative to revisit if constraints change. Rejected now for
+  Elegant and native-speed, and the alternative to revisit if constraints change. Rejected for the
   three reasons below.
 
 The deciding requirement is the **host/container asymmetry**: the container's view is filtered, the
