@@ -158,7 +158,7 @@ object SandboxProject:
           Seq(s"$missing; only the well-known home directories are refused as projects")
         else Seq.empty
       val droppedWarnings = parsed.collect { case (_, _, Left(problem)) =>
-        s"$problem; dropped — the remaining home variables cover the boundary"
+        s"$problem; dropped, since the remaining home variables cover the boundary"
       }
 
       val public = os match
@@ -368,8 +368,8 @@ object SandboxProject:
           Left(
             s"""error: $policyDir contains ${stray.mkString(", ")}, which this launcher does not read
                |The directory is boundary configuration and holds only:
-               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name — a typo'd
-               |egress-hosts, notes, a backup — must fail the launch, never sit as ignored config.""".stripMargin
+               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name (a typo'd
+               |egress-hosts, notes, a backup) must fail the launch, never sit as ignored config.""".stripMargin
           )
 
   /**

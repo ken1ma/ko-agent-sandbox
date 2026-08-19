@@ -60,8 +60,9 @@ def main() -> int:
         assert bytes(mapped) == OLD
 
         print()
-        print("READY. In a HOST terminal, in this project directory, run:")
+        print("READY. In a HOST terminal, in this project directory, run one of:")
         print(f"    printf {NEW.decode()} > {DATA}")
+        print(f"    Set-Content -Path .\\{DATA} -Value '{NEW.decode()}' -NoNewline   # PowerShell")
         print("waiting up to 120s ...")
         sys.stdout.flush()
 
@@ -74,7 +75,12 @@ def main() -> int:
                     break
             time.sleep(0.01)
         if read_seen is None:
-            print("FAIL: the host write never became visible to read()")
+            print("FAIL: the host write never became visible to read().")
+            print(f"Before believing this, prove the write landed: on the HOST the file must now")
+            print(f"read {NEW.decode()} (`cat {DATA}` / `type {DATA}`). If it does not, this run")
+            print("measured nothing — fix the write and run again. A host write refused with a")
+            print("sharing violation is itself the result to record: this probe's own open handle")
+            print("blocks host writers on that stack (Windows 9p), and the mmap half cannot run.")
             return 1
         # The host write happened at an unknown moment before this; poll from here to see how far
         # the mapped view lags the read() view — that lag is the AUTO_INVAL_DATA measurement. Its

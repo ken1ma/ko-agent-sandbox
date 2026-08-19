@@ -81,8 +81,15 @@ Compile / resourceGenerators += Def.task {
   // leaving them out keeps them out of AgentSandboxLauncher.koAgentFsSourceId too, so editing a design document or a
   // probe does not invalidate every installed filter binary. Its .dockerignore drops the same paths, so a direct
   // `podman build` from a checkout sees what a jar-built one does.
+  // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the
+  // exclusion tests here, the jar's own entry names, and the INDEX the launcher resolves them by.
+  // Unnormalized, a Windows build bundles the excluded directories and writes an INDEX no jar
+  // lookup can serve.
+  def bundlePath(root: File, file: File): Option[String] =
+    IO.relativize(root, file).map(_.replace('\\', '/'))
+
   def included(root: File, file: File): Boolean =
-    val relative = IO.relativize(root, file).getOrElse("")
+    val relative = bundlePath(root, file).getOrElse("")
     val parts = relative.split("/").toSet
     file.isFile &&
       !relative.startsWith("ko-agent-fs/doc/") &&
@@ -104,7 +111,7 @@ Compile / resourceGenerators += Def.task {
       source <- (root / directory).allPaths.get()
       if included(root, source)
     yield
-      val relative = IO.relativize(root, source).get
+      val relative = bundlePath(root, source).get
       val target = outputRoot / relative
       IO.copyFile(source, target)
       relative -> target

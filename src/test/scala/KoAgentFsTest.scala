@@ -125,11 +125,32 @@ class KoAgentFsTest extends munit.FunSuite:
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
+  test("the backing path crosses into the machine in the daemon's own spelling"):
+    // The one host path podman does not translate for us. Windows drives live at /mnt/<drive>
+    // inside the WSL machine; POSIX paths pass as they are — the macOS machine mounts host
+    // shares at their host paths.
+    def backing(os: Os, path: String): Either[String, String] =
+      koAgentFsBackingPath(os, Paths.get(path))
+    assertEquals(backing(Os.Windows, """C:\work\ko-agent-sandbox"""), Right("/mnt/c/work/ko-agent-sandbox"))
+    assertEquals(backing(Os.Windows, """D:\a b\proj"""), Right("/mnt/d/a b/proj"))
+    // A UNC path has no /mnt spelling: refused with the reason, never guessed at.
+    assert(backing(Os.Windows, """\\server\share\proj""").isLeft)
+    // POSIX paths pass through as the runner's Path type spells them — a POSIX host is the only
+    // one that produces them for real, and a Windows runner respells them with its own separator.
+    assertEquals(backing(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
+    assertEquals(backing(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
+
   test("lifecycle scripts run in the VM on podman machine and locally on Linux"):
-    assertEquals(
-      koAgentFsScriptCommand("podman", Os.Mac, "script"),
-      Vector("podman", "machine", "ssh", "script")
-    )
+    // The VM path carries the script base64-encoded, so no argument holds a double quote —
+    // Windows argument encoding passes an embedded one through unescaped, mangling the command
+    // line the VM receives.
+    val script = "if mountpoint -q \"$mnt\"; then exit 0; fi"
+    val vm = koAgentFsScriptCommand("podman", Os.Mac, script)
+    assertEquals(vm.take(3), Vector("podman", "machine", "ssh"))
+    assert(!vm(3).contains('"'), vm(3))
+    val encoded = vm(3).stripPrefix("printf %s ").stripSuffix(" | base64 -d | sh")
+    assertEquals(String(java.util.Base64.getDecoder.decode(encoded), "UTF-8"), script)
+    assertEquals(koAgentFsScriptCommand("podman", Os.Windows, script), vm)
     // /bin/sh, never a PATH-resolved `sh`: the launcher's working directory is the repository being
     // sandboxed (findOnPath).
     assertEquals(

@@ -99,6 +99,20 @@ the whole run, host-side checks included:
 - Afterwards the host-side `lstat(".git")` found nothing and git discovered no repository at the
   project — the property itself, on this variant's fold table.
 
+### Verified: NTFS (Windows Server 24H2; 2026-08-19)
+
+The corpus through the full Windows production stack — filtered session → FUSE filter in the WSL2
+podman machine → the host's `C:` NTFS volume served at `/mnt/c`: every denied spelling failed with
+exactly `EPERM`, every allowed name was created, and the host-side `dir .git` and git discovery
+found nothing afterwards.
+
+- The 8.3 row answered on a live table: short-name generation is active on the volume — creating
+  `GIT~1` through the mount met `EEXIST`, an existing allowed name having already generated it as
+  its short name — and host git still discovered no repository, which is the aliasing question
+  confirmed rather than assumed.
+- NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
+  collapsed them — and neither resolves anywhere near `.git` on either backing.
+
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1; 2026-08-14)
 
 `probe/coherency-probe.py` on the same machine and stack as the name-rule run: a host-side write
@@ -117,9 +131,30 @@ Re-run `coherency-probe.py` after a podman or macOS upgrade — it, not the moun
 notices a changed default. (The `nfs_t` SELinux context is also why the launcher never applies
 `:Z` relabeling to machine-shared sources.)
 
+### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
+
+On a Windows host (podman 6.1.0, machine on WSL2, kernel 6.18.33.2-microsoft-standard-WSL2),
+measured with host-side ground truth at every step:
+
+- A host-created file, and a host rewrite of a file nothing held open, both reached an in-session
+  `read()` promptly — host→session visibility holds for unheld files, and session→host held
+  already (the NTFS name-rule run).
+- A host write to a file a live session held open failed with a sharing violation ("used by
+  another process") until the session released it: the daemon's backing fd reaches NTFS through
+  the machine's 9p server, whose handle carries Windows sharing semantics. Isolated below the
+  filter: a bare 9p hold (`tail -f` in the machine, no session involved) reproduces the refusal,
+  and the write succeeds the moment the hold ends.
+
+Together they close the mmap question by construction: a mapped file cannot go stale under a host
+write, because the write is refused while the mapping holds — `probe/coherency-probe.py`'s mmap
+half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
+("The project checkout") carries it: a host editor's save is refused while a session holds that
+file open.
+
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not
-git's, and an 8.3 short name should not be able to alias a dot-leading name like `.git`.
+git's, and an 8.3 short name should not be able to alias a dot-leading name like `.git` — which the
+NTFS run above confirmed on a volume with generation active.
 
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)

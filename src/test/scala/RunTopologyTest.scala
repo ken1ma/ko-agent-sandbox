@@ -114,6 +114,9 @@ class RunTopologyTest extends munit.FunSuite:
 
   test("a run whose reaper died strands its resources, and --reset sweeps them"):
     assume(enabled, requirement)
+    // No reaper exists on Windows by construction — the resident launcher is the teardown there,
+    // which the first test verifies — and pkill is not a Windows tool either way.
+    assume(currentOs != Os.Windows, "no reaper exists on Windows")
 
     val project = scratchProject()
     try

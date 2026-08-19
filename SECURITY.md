@@ -203,7 +203,11 @@ aliasing a symlink that carries the risk.
 
 The tree is also shared live with the host: your editor, builds and git run against the same files
 the agent is writing, host and sandbox writes race like any two processes on one directory, and
-git's own lock files are the only arbiter the writable parts of `.git` get. Concurrent sandbox
+git's own lock files are the only arbiter the writable parts of `.git` get. On Windows the
+sharing carries one extra rule: a file a live session holds open cannot be written from the host —
+the machine's 9p handle carries Windows sharing semantics, so a host editor's save meets "used by
+another process" until the session lets go
+(`fuse/ko-agent-fs/doc/security-research.md` has the measurement). Concurrent sandbox
 sessions of one project race each other the same way — under the workspace filter too, where they
 share the one filter mount: the same files, the same live view, the same races.
 
@@ -244,10 +248,12 @@ What an auditor trusts, and how each link is checked:
   step — `user_allow_other` in the machine's `/etc/fuse.conf`, required for a cross-uid FUSE
   mount — is consent-gated ("Silent changes to what you own", above).
 
-Its name rule and its coherency are verified on macOS, against APFS case-insensitive — the
-default volume format — through the whole production stack. On Linux and Windows they are not,
-and that is what the README's status line means: the filter is every session's enforcement on
-every platform, but on those backings its guarantees are reasoned rather than measured.
+Its name rule is verified on macOS against both APFS variants and on Windows against a real NTFS
+volume, its coherency on macOS and — with the share-lock cost "The project checkout" notes — on
+Windows, each through the whole production stack
+(`fuse/ko-agent-fs/doc/security-research.md` has the runs). The rest is what the README's status
+line means: on Linux the guarantees are reasoned rather than measured, while the filter is every
+session's enforcement on every platform.
 
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the mount pins, the next entry. The two
 are alternatives, never a stack: the filter's policy is a strict superset of the pins', and
@@ -269,7 +275,9 @@ mount cannot follow the file out from under it. On a macOS Podman machine, once 
 away and a fresh object at the path, which is how `git config` and most editors write — the sandbox
 is writing the host's current file within about two seconds, through the writable parent. It is
 stale in between, and the mount stays listed in the sandbox's mount table throughout, so neither
-that table nor a check made immediately after the write shows anything wrong. Mutations that keep
+that table nor a check made immediately after the write shows anything wrong. On the Windows
+machine the same replacement left the pin refusing writes for the whole two-minute observation —
+measured, not designed, so the macOS behavior stays the one to plan around. Mutations that keep
 the inode hold: an in-place edit, and files appearing or disappearing inside the pinned
 `.git/hooks`.
 

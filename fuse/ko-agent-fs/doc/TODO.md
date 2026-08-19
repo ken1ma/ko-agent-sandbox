@@ -42,32 +42,32 @@ rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. 
 `security-research.md` with its OS and filesystem versions: fold tables are version-specific, so a
 bare pass with no version recorded is not evidence for the next release.
 
-APFS passes on macOS 26.4.1, both variants — `security-research.md` has the runs, and
-`probe/name-rule-cs-apfs.sh` drives the case-sensitive one end to end. What is left is one run
-per remaining backing:
+APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
+`security-research.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
+one end to end. What is left:
 
 - [ ] ext4, the control.
-- [ ] NTFS, the only backing where the 8.3 row means anything.
 
 ### End-to-end coherency through the real host share
 
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
 writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
-travel, `read()` and an established `mmap`, across the whole stack. It passes on macOS 26.4.1, and
-`security-research.md` records the result and why the premise it rests on is behavioural rather than
-declarative — which is what makes re-running it the only thing that notices a changed default.
+travel, `read()` and an established `mmap`, across the whole stack. macOS 26.4.1 passes, and
+Windows measures fresh-when-unheld with host writes to session-held files refused by a share lock;
+`security-research.md` records both, and why the premise is behavioural rather than declarative —
+which is what makes re-running the only thing that notices a changed default.
 
-- [ ] Re-run it on each remaining backing, and after a podman or macOS upgrade.
+- [ ] Re-run it on Linux, and after a podman or macOS upgrade.
 
 ### The platform matrix itself
 
 - [ ] linux-x86_64 and linux-aarch64 (the two architectures every image here builds for).
 - [ ] macOS Podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
 
-Windows is **decided: experimental, NTFS unverified.** The name-rule candidates for NTFS (the
-per-volume `$UpCase` fold, the 8.3 row above) stay untested until someone runs them on a real
-volume; until then the release says plainly that the filter on Windows is experimental, rather than
-claiming a verification nobody ran.
+Windows stays **experimental**: the name rule and coherency rows are measured
+(`security-research.md` — fold tables are per-volume, so the name-rule run verifies the volume it
+ran on, and coherency comes with the share-lock cost recorded there), while the performance row is
+still unmeasured.
 
 
 ## Test infrastructure
@@ -137,7 +137,10 @@ downstream can amortize.
   traffic and not `ls -lR`-shaped: under TTL 0 the attributes it returns expire immediately, so
   follow-up per-file stats still round-trip. Measure before and after.
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
-- [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback.
+- [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
+  registered with the kernel cannot be rebound across the staged generation barrier in
+  `PLAN-NEXT.md`; restrict passthrough to live mode unless research first establishes a safe revoke
+  and re-register protocol. Do not make staged mode inherit a live-only optimization by accident.
 - [ ] The control puts the gap in the invariant rather than the backing, so research
   push-invalidation coherency: nonzero kernel TTLs kept *correct* by the daemon watching the backing
   (inotify inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode` — the control
@@ -197,6 +200,10 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 - [ ] Podman-machine virtiofs cache modes, alongside the coherency premise above.
 - [ ] Landlock to confine the daemon itself, so a bug in `ko-agent-fs` can reach only the backing
   directory. Defense in depth, not a boundary — the boundary is the policy.
+- [ ] An optional no-symlink profile, only if staged review proves insufficient or users need a
+  strict live view. A truthful profile has to define existing links and moves of directories that
+  contain them, then measure npm and pnpm bins, Python virtual environments, Bazel, Git-tracked
+  links and native-library layouts; sbt falling back to copies settles only one consumer.
 
 
 ## Non-TODOs — settled, do not reopen without new evidence
@@ -222,8 +229,8 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 
   Two things to know before picking it up. `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
   `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
-  *daemon's* kernel — not on this project's Debian 13 or podman 6.0.2 bar, which govern the
-  container userspace the filter does not run in. On a podman machine that kernel is Fedora
+  *daemon's* kernel — not on this project's Debian 13 or podman floor (README names it), which
+  govern the container userspace the filter does not run in. On a podman machine that kernel is Fedora
   CoreOS's (7.1 as measured on 2026-08-14, so present); on native Linux it is the user's own and is
   not bounded by anything here — Debian 13 as a *host* is 6.12, just under. One path that works on
   both is `/proc/self/fd/<fd>` with the `l*xattr` calls, which is what libfuse's `passthrough_hp`
@@ -257,5 +264,10 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **A cache TTL as a performance knob.** Real-time bidirectional visibility is the defining
   requirement; a nonzero TTL trades correctness for speed. Invariant, not a tunable.
+- **Blocking executable-bit changes.** This prevents only accidental direct POSIX execution;
+  explicit interpreters and Windows bypass the bit, so it adds little beside read-only-by-default
+  and staged review. The mutation journal and apply plan report new executable bits and other mode
+  changes. Reopen enforcement only if those reports show a recurring accident worth the
+  compatibility cost.
 - **Making `ko-agent-fs` a general sandbox filesystem.** The narrow boundary is what makes it
   auditable (`architecture.md`, "What stays out of the audited core").

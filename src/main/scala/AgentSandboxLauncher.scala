@@ -260,7 +260,14 @@ object AgentSandboxLauncher:
       name.startsWith(prefix) &&
       name.drop(prefix.length).forall(ch => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))
 
-  def requirePodman(): Unit =
+  /**
+   * The gate every podman-talking verb runs first: a client that runs, and a service that
+   * answers. On macOS and Windows the service is the podman machine, started here when stopped —
+   * never created or resized, the boundary SECURITY.md draws ("Silent changes to what you own") —
+   * so `machine init` stays the one manual step of a fresh install: the next verb, usually
+   * --build, brings the machine up itself.
+   */
+  def requirePodman(os: Os): Unit =
     if !runOk(podman, "--version") then
       fail(
         s"""error: $podman does not run
@@ -268,6 +275,23 @@ object AgentSandboxLauncher:
            |Reinstall it: https://podman.io/docs/installation""".stripMargin,
         127
       )
+    if !runOk(podman, "info") then
+      os match
+        case Os.Linux =>
+          fail(
+            "error: Podman is not usable.\nOn Linux, run rootless Podman as your normal user, without sudo."
+          )
+        case _ =>
+          System.err.println("the podman machine is not running; starting it")
+          val started = run(podman, "machine", "start")
+          if !started.ok then
+            fail(
+              s"""error: Podman Machine could not be started.
+                 |${started.err}
+                 |
+                 |Initialize it once, for example:
+                 |  podman machine init""".stripMargin
+            )
 
   /**
    * The Debian/Temurin base the two base images pin, passed to every image
@@ -313,6 +337,15 @@ object AgentSandboxLauncher:
     root
 
   val BundleLabel = "ko-agent-sandbox.bundle"
+
+  /**
+   * The label read back through Go's raw-string (backtick) quoting, because the argument must not
+   * carry a double quote: on Windows, Java's argument encoding passes an embedded quote through
+   * unescaped, and podman then parses a mangled template ("bad character U+002D"). Literal
+   * newlines are avoided in the multi-line templates below for the same reason — `{{println}}`
+   * emits them on the output side instead.
+   */
+  val BundleLabelTemplate = s"{{with .Config.Labels}}{{index . `$BundleLabel`}}{{end}}"
 
   /**
    * The version-lock verdict for one built image: None when its label
@@ -415,9 +448,7 @@ object AgentSandboxLauncher:
   def verifyBuiltBundleLabels(expected: Seq[(String, String)]): Unit =
     expected.foreach: (image, id) =>
       val inspected = run(
-        podman, "image", "inspect",
-        "--format", s"{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}",
-        image
+        podman, "image", "inspect", "--format", BundleLabelTemplate, image
       )
       if !inspected.ok then
         fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
@@ -576,7 +607,7 @@ object AgentSandboxLauncher:
       System.out.flush()
       sys.exit(0)
     else
-      requirePodman()
+      requirePodman(os)
       val running = run(podman, "ps", "--format", "{{.Names}}")
       if !running.ok then
         fail(s"error: could not list the running containers\n${running.err}")
@@ -791,8 +822,8 @@ object AgentSandboxLauncher:
             Left(
               s"""error: $variable is '$value', which is not an absolute path
                  |The launcher's state root holds the CA signing key and audit logs; a relative
-                 |value would resolve against the current directory — the repository being
-                 |sandboxed — so it is refused rather than resolved.""".stripMargin
+                 |value would resolve against the current directory, the repository being
+                 |sandboxed, so it is refused rather than resolved.""".stripMargin
             )
           case Some(path) =>
             canonicalizedFuturePath(path.resolve("ko-agent-sandbox"))
@@ -891,7 +922,7 @@ object AgentSandboxLauncher:
 
       case "--build" :: rest =>
         if rest.nonEmpty then fail("error: --build takes no further arguments")
-        requirePodman()
+        requirePodman(currentOs)
         val context = unpackBuildContext()
         val fsSourceId = koAgentFsSourceId(context)
         val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
@@ -909,7 +940,7 @@ object AgentSandboxLauncher:
 
       case "--update" :: rest =>
         if rest.nonEmpty then fail("error: --update takes no further arguments")
-        requirePodman()
+        requirePodman(currentOs)
         val context = unpackBuildContext()
         val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
         runBuilds(context, updateCommands(podman, ImgTagVersion, sandboxBundleId))
@@ -918,12 +949,12 @@ object AgentSandboxLauncher:
 
       case "--reset" :: rest =>
         if rest.nonEmpty then fail("error: --reset takes no further arguments")
-        requirePodman()
+        requirePodman(currentOs)
         resetProject(currentOs)
 
       case "--reset-all" :: rest =>
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
-        requirePodman()
+        requirePodman(currentOs)
         resetAll(currentOs)
 
       // No requirePodman() here: with no arguments this reads host files only, and the retained
@@ -934,7 +965,7 @@ object AgentSandboxLauncher:
 
       case "--proxy-effective" :: rest =>
         if rest.nonEmpty then fail("error: --proxy-effective takes no further arguments")
-        requirePodman()
+        requirePodman(currentOs)
         proxyEffective(currentOs)
 
       case first :: _ if first.startsWith("--") =>
@@ -988,30 +1019,7 @@ object AgentSandboxLauncher:
         shared
       case None => s"ko-agent-sandbox-persistent-$projectId"
 
-    requirePodman()
-
-    // -----------------------------------------------------------------------
-    // Podman Machine
-    // -----------------------------------------------------------------------
-    //
-    // macOS and native Windows need podman-machine. START an existing VM; never CREATE one — sizing is a
-    // workstation-provisioning decision.
-    if !runOk(podman, "info") then
-      os match
-        case Os.Linux =>
-          fail(
-            "error: Podman is not usable.\nOn Linux, run rootless Podman as your normal user, without sudo."
-          )
-        case _ =>
-          val started = run(podman, "machine", "start")
-          if !started.ok then
-            fail(
-              s"""error: Podman Machine could not be started.
-                 |${started.err}
-                 |
-                 |Initialize it once, for example:
-                 |  podman machine init""".stripMargin
-            )
+    requirePodman(os)
 
     // -----------------------------------------------------------------------
     // Sandbox image
@@ -1031,7 +1039,7 @@ object AgentSandboxLauncher:
     val imageInspect = run(
       podman, "image", "inspect",
       "--format",
-      s"{{.Id}}\n{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}\n" +
+      s"{{.Id}}{{println}}$BundleLabelTemplate{{println}}" +
         "{{range .Config.Env}}{{println .}}{{end}}",
       image
     ).text
@@ -1079,7 +1087,7 @@ object AgentSandboxLauncher:
     // as far as a cryptic parse failure.
     val proxyInspect = run(
       podman, "image", "inspect",
-      "--format", s"{{.Id}}\n{{with .Config.Labels}}{{index . \"$BundleLabel\"}}{{end}}",
+      "--format", s"{{.Id}}{{println}}$BundleLabelTemplate",
       proxyImage
     ).text
     val proxyImageId = proxyInspect.linesIterator.nextOption().getOrElse("")
@@ -1227,7 +1235,7 @@ object AgentSandboxLauncher:
         // Said every session it happens, because this is the weaker boundary and silence about it
         // is how a user forgets which one they are running under.
         System.err.println(
-          s"workspace guard: NONE by $WorkspaceGuardVariable — /workspace is bound directly, with " +
+          s"workspace guard: NONE by $WorkspaceGuardVariable; /workspace is bound directly, with " +
             "only .git/config and .git/hooks pinned read-only, and only until the host rewrites one"
         )
         None
@@ -1583,7 +1591,7 @@ object AgentSandboxLauncher:
       case "none" => Vector(nestingEnv)
       case mode =>
         System.err.println(
-          s"nested containers: $mode by $NestingVariable — /proc unmasked, SELinux label " +
+          s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
             "disabled and CAP_SYS_CHROOT added, for the whole session"
         )
         NestingLoosenings :+ nestingEnv

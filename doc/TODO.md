@@ -3,45 +3,13 @@
 Remaining work that buys real security or maintainability for the actual threat model. Ideas
 without a concrete gain live in DESIGN.md as Non-TODOs so they stop resurfacing.
 
-## P1 — Black-box security integration tests: what is still out of reach
+## Deferred — inspected-relay keep-alive
 
-The launcher and proxy unit tests cover many trust-critical pure functions. What they cannot show is
-that the **effective Podman topology, mounts, and runtime behavior** have the properties the source
-intends — and prior art has had real regressions where a network-sandbox option meant for one
-purpose reopened arbitrary outbound traffic, and where DNS stayed an exfiltration path despite
-network restrictions:
-
-- Anthropic Sandbox Runtime #225:
-  https://github.com/anthropic-experimental/sandbox-runtime/issues/225
-- Anthropic Sandbox Runtime #88: https://github.com/anthropic-experimental/sandbox-runtime/issues/88
-
-The suites settle most of it; README ("Tests") names each and what it covers. The host suites
-share `IntegrationSession` — its own scratch project, launched through the launcher's own name
-builders — so a remaining row extends a shape that exists rather than one still to be built, and
-what each needs is a venue or a fixture only the operator can supply.
-
-- [ ] **The resident teardown path**, which removes a run's resources from the launcher process
-  instead of the reaper. Native Windows always takes it; a POSIX launch falls back to it only when
-  the reaper's spawn fails, and nothing outside the process can make that happen — DESIGN.md
-  declines the test hook that would. So: verified on a Windows host, or not at all.
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (a 104-archive install's 104 handshakes cost seconds today). Both legs' framing
   is parsed and enforced, so the shape is a request loop per client connection with a fresh
   upstream connection per request; the price is a larger state machine at the enforcement point and
   the one-request stance's smuggling argument re-argued in SECURITY.md.
-
-### Nested read-only mount stability under host-side mutation
-
-Docker Sandboxes #388 (https://github.com/docker/sbx-releases/issues/388) reports a nested read-only
-mount disappearing after host-side mutation, access falling through to the writable parent. The
-opted-out mode's `.git` pins are that shape, and **Podman does the same within about two seconds of
-the host replacing either pinned path's inode** — which is how `git config` and most editors write.
-`WorkspaceGuardOffTest` measures it and SECURITY.md ("The opted-out mode's `.git` pins") states what
-it costs; there is no fix inside a mode whose enforcement is a mount over a path. The default
-session's filter is not affected — it has no nested mounts to lose.
-
-- [ ] Re-measure on the other host families: Linux rootless Podman, and Windows if it is supported
-  by then. The suite runs unchanged; only the row of results is missing.
 
 ## Deferred — Git LFS batch downloads
 
@@ -55,6 +23,47 @@ If `git lfs pull` becomes important:
 - add end-to-end tests before enabling it.
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
+
+## Deferred — staged-workspace extensions and hardening
+
+These are separate increments after the staged workspace in `../PLAN-NEXT.md`, not reasons to put
+all of its lifecycle into one change. The initial one-stage-per-project sharing unit and its failure
+semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
+
+- [ ] Detect project-directory replacement before attaching a persistent stage. Record a host-only
+  root identity, an optional resolved-gitdir identity and a small secondary fingerprint; ordinary
+  branch switches and host edits must remain live. An uncertain or different origin preserves the
+  stage and requires explicit reattachment. Reattachment must not rewrite the per-path baselines
+  that detect apply conflicts.
+- [ ] Create a host-only rollback bundle before applying a sealed generation. It records the
+  original contents and metadata, absence of new paths, and the sealed-plan identity, making a
+  partial multi-file apply recoverable. Preflight its storage cost and require an explicit override
+  when a bundle cannot be made.
+- [ ] Treat stage and apply disk exhaustion as a boundary condition: preflight upper-layer,
+  temporary-replacement, rollback and staged-control-journal space; fail writes or apply closed;
+  retain a precise partial result; and never spill into the host project directory, discard pending
+  state, or fall back to live write. The live mutation journal's bounded, fail-closed storage
+  behavior is defined in the initial increment and is not deferred here.
+- [ ] Add a tested host-side migration when a persistent stage representation first changes. The
+  staged-workspace increment versions upper layers and whiteouts, lower baselines, sealed
+  generations and apply plans and refuses an unknown version; extend the manifest to rollback
+  bundles when those are implemented. A migration never silently reinterprets or deletes an older
+  stage.
+- [ ] Attribute mutations in shared live and staged workspaces to attached sessions where the
+  request supplies reliable identity. Keep this diagnostic and best-effort: journal entries may
+  report an unknown session and status may report multiple or unknown sessions, while the
+  workspace-wide journal or trusted upper-layer delta remains authoritative.
+- [ ] Add non-interactive plan/apply only with a concrete automation use case. `--stage plan` seals
+  the current generation and returns a digest; `--stage apply --plan=<digest> --yes` applies the
+  whole conflict-free plan. The digest binds the project identity, representation version,
+  generation, complete operation groups, content and metadata hashes, lower baselines, and rename
+  and hardlink relationships. A mismatch changes nothing; path selection remains interactive and
+  rewrites the residual plan under a new digest.
+- [ ] Add `--stage-name=<name>` only when one project needs concurrent independent staged change
+  sets. Each name selects a separate upper layer, merged mount, cache and failure domain over the
+  same project directory; sessions sharing a name still share those resources. Define safe name
+  encoding, resource limits, management-command selection, project-wide apply serialization and
+  migration from the sole unnamed stage before exposing it.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
 

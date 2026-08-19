@@ -308,13 +308,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(forbiddenStateRootReason(linux, base.resolve("ko-agent-sandbox"), project), None)
     // The macOS data volume is a firmlink, which toRealPath leaves uncollapsed: the two spellings
-    // are one directory, so containment must hold across them — and only on macOS.
-    val mac = HostCommands.Os.Mac
-    val aliasedProject = Paths.get("/System/Volumes/Data/Users/me/proj")
-    val plainProject = Paths.get("/Users/me/proj")
-    assert(forbiddenStateRootReason(mac, plainProject.resolve("state"), aliasedProject).isDefined)
-    assert(forbiddenStateRootReason(mac, aliasedProject.resolve("state"), plainProject).isDefined)
-    assertEquals(forbiddenStateRootReason(linux, plainProject.resolve("state"), aliasedProject), None)
+    // are one directory, so containment must hold across them — and only on macOS. Not exercised
+    // from a Windows runner, whose Path type cannot spell a POSIX absolute path.
+    if !scala.util.Properties.isWin then
+      val mac = HostCommands.Os.Mac
+      val aliasedProject = Paths.get("/System/Volumes/Data/Users/me/proj")
+      val plainProject = Paths.get("/Users/me/proj")
+      assert(forbiddenStateRootReason(mac, plainProject.resolve("state"), aliasedProject).isDefined)
+      assert(forbiddenStateRootReason(mac, aliasedProject.resolve("state"), plainProject).isDefined)
+      assertEquals(forbiddenStateRootReason(linux, plainProject.resolve("state"), aliasedProject), None)
 
   test("a run's TLS mount copies are pruned only when provably dead and past the launch bound"):
     val names = Seq("run-1a2b3c4d", "run-ffffffff", "run-short", "ca.crt", ".lock", "run-1A2B3C4D")

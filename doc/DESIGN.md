@@ -50,9 +50,9 @@ not make the request an information-flow read") is unchanged by it.
 
 Keep protocol-specific inspection only where it buys a concrete property, as it does for git
 reads versus writes. The read-only tier is the one bounded exception taken: one rule, plus a
-closed set of tags (`=git-fetch`, `=npm-audit`) each naming a fixed extra allowance — not a per-host
-language: a tag names a rule-set the proxy defines, it never describes one. Its concrete property
-is refusing every allowed host's write surface outside the agent endpoints, the one
+closed set of tags (`=git-fetch`, `=npm-audit`) each naming a fixed extra allowance — not a
+per-host language. A tag names a rule-set the proxy defines; it never describes one. Its concrete
+property is refusing every allowed host's write surface outside the agent endpoints, the one
 unauthenticated one included (storage.googleapis.com). Do not go further: no per-host rules, no
 path patterns beyond git's, no open tag set, no general-purpose policy engine without concrete
 use cases that outgrow this.
@@ -123,9 +123,9 @@ is not deceived: it addressed the proxy by CONNECT.
 
 The workspace filter's reference count has one window worth attacking: a launch between its mount
 and its `podman create`, where the marker exists and the container does not (`KoAgentFs`, "The
-workspace FUSE filter's mount lifecycle"). Arranging that interleaving at an arbitrary instant would
-need the launcher pausable from outside — a variable read on the launch path, which would then have
-to be a known variable, documented in `--help`, and fail closed like every other one: boundary code
+workspace FUSE filter's mount lifecycle"). Arranging that interleaving at an arbitrary instant
+would need the launcher pausable from outside — a variable read on the launch path. It would need
+to be known, documented in `--help`, and fail closed like every other variable: boundary code
 carrying scaffolding for a test, on the path that decides whether the filter is mounted at all.
 
 `MountLifecycleTest` reaches the same evidence without it. The state a paused launch
@@ -138,8 +138,9 @@ can only stop where someone thought to put it.
 
 ### No PATH-resolved host executables
 
-Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries
-that are absolute **and** outside the repository being sandboxed — `HostCommands.findOnPath` — and
+Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) through `PATH`
+entries that are absolute **and** outside the repository being sandboxed —
+`HostCommands.findOnPath` — and
 the reaper receives the resolved path as an argument, so no host-side invocation consults `PATH` or,
 on Windows, CreateProcess's implicit current-directory search.
 
@@ -210,6 +211,9 @@ are linked inline where that decision is recorded; these are the broader sources
   https://github.com/stripe/smokescreen/security/advisories/GHSA-gcj7-j438-hjj2
 - Bazel sandboxing/hermeticity — minimizing ambient inputs/outputs, testing effective boundaries:
   https://bazel.build/versions/9.1.0/docs/sandboxing
+- Anthropic Sandbox Runtime — network-boundary regressions that motivate black-box runtime tests:
+  https://github.com/anthropic-experimental/sandbox-runtime/issues/225
+  https://github.com/anthropic-experimental/sandbox-runtime/issues/88
 - Agent sandbox/proxy comparisons, including credential brokering:
   https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
 

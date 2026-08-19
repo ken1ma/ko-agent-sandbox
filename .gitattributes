@@ -1,0 +1,4 @@
+# One line ending on every platform: checkout bytes ship — the jar bundles the shell scripts and
+# Containerfiles verbatim and digests them — so a CRLF working tree would put \r into /bin/sh
+# shebangs inside the images and give every text file a per-platform identity.
+* text=auto eol=lf

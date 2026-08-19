@@ -36,8 +36,11 @@ class SandboxLifecycleTest extends munit.FunSuite:
     cleanup.perform()
     assertEquals(removals, 0, "the cleanup removed while the sandbox may have been starting")
 
-    // With a process, the removal follows its exit rather than racing it.
-    val process = ProcessBuilder("/bin/sh", "-c", "exit 0").start()
+    // With a process, the removal follows its exit rather than racing it. Any short-lived process
+    // serves; each platform lends its own shell.
+    val process =
+      if scala.util.Properties.isWin then ProcessBuilder("cmd", "/c", "exit 0").start()
+      else ProcessBuilder("/bin/sh", "-c", "exit 0").start()
     cleanup.watching(process)
     cleanup.perform()
     assertEquals(removals, 1, "the cleanup did not run after the session ended")

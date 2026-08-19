@@ -24,7 +24,10 @@ object HostCommands:
     else Os.Linux
 
   /** Stderr and exit; a stack trace would read as a launcher bug, not
-    * operator guidance. */
+    * operator guidance. Console text stays ASCII: a Windows console decodes
+    * in its legacy codepage and renders anything else as `?`, and some of
+    * these lines are consent or refusal text a reader must be able to trust
+    * verbatim. */
   def fail(message: String, code: Int = 1): Nothing =
     System.err.println(message)
     sys.exit(code)
@@ -315,13 +318,30 @@ object HostCommands:
     try
       Files.write(temp, content)
       if posixPermissions(temp) then Files.setPosixFilePermissions(temp, permissions)
-      // ATOMIC_MOVE alone: it replaces an existing target on both POSIX and Windows, and pairing it
-      // with REPLACE_EXISTING is what some implementations refuse.
-      Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE)
+      moveReplacing(temp, path)
     catch
       case ex: Throwable =>
         Files.deleteIfExists(temp)
         throw ex
+
+  /**
+   * ATOMIC_MOVE alone: it replaces an existing target on both POSIX and Windows, and pairing it
+   * with REPLACE_EXISTING is what some implementations refuse. Retried briefly on Windows's
+   * transient sharing violations — replacing a file a concurrent reader holds open answers
+   * AccessDenied there, and every file written through here is read concurrently by design:
+   * another launch copying it, a container mounting it. POSIX never takes the retry.
+   */
+  @scala.annotation.tailrec
+  private def moveReplacing(temp: Path, path: Path, attempts: Int = 40): Unit =
+    val moved =
+      try
+        Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE)
+        true
+      catch
+        case _: java.nio.file.AccessDeniedException if attempts > 0 =>
+          Thread.sleep(25)
+          false
+    if !moved then moveReplacing(temp, path, attempts - 1)
 
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then

@@ -15,10 +15,17 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
+  // directories, which on a Windows runner carry their own ':' after the drive letter — the
+  // string cannot be built there, not merely the branch untested. The Windows branch has its own
+  // test, which runs everywhere.
+  private val isWindows = scala.util.Properties.isWin
+
   private def modeOf(path: java.nio.file.Path): String =
     PosixFilePermissions.toString(Files.getPosixFilePermissions(path))
 
   test("executables resolve only through absolute PATH entries"):
+    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
     val dir = Files.createTempDirectory("path-resolve").toRealPath()
     val tool = dir.resolve("mytool")
     Files.createFile(tool)
@@ -30,6 +37,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("mytool", "", Os.Linux), None)
 
   test("an absolute PATH entry inside the checkout is skipped, not preferred"):
+    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
     // The shape absoluteness alone does not catch, and the reason this rule is not about relative
     // entries: `npm run` puts `$PWD/node_modules/.bin` on PATH as an *absolute* entry, and a
     // transitive dependency can ship a `bin` named `podman` without running a line of its own code.
@@ -58,6 +66,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("podman", sibling.toString, Os.Linux, checkout), Some(neighbour))
 
   test("an executable symlinked out of the checkout is skipped, and the real path is returned"):
+    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
     // The *candidate* is what must be canonicalized, not the directory holding it. An ordinary
     // directory containing `podman -> <checkout>/bin/podman` passes any check made on the directory
     // alone, because `isRegularFile` and `isExecutable` follow the leaf.
@@ -196,6 +205,9 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(Files.readString(mounted), "ROUND 200")
 
   test("a rewrite that changes nothing leaves the mount source's inode alone"):
+    // POSIX only, like the private-file test: the mode-planting step needs POSIX permissions, and
+    // Windows answers no fileKey for the inode assertions to compare.
+    assume(posixPermissions(Files.createTempDirectory("perm-probe")), "POSIX permissions only")
     val dir = Files.createTempDirectory("unchanged-write").toRealPath()
     val mounted = dir.resolve("agents.md")
 

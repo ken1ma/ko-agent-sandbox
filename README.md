@@ -52,6 +52,7 @@ The sandbox image preinstalls:
 1. Claude Code (Anthropic)
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
+1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
 and configures them to
 
@@ -66,8 +67,14 @@ not.
 
 ### Runtime Environment
 
-1. [podman](https://github.com/containers/podman) 6.0.2 or later
+1. [podman](https://github.com/containers/podman) 6.1.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
+        1. Run `podman machine init` after a new installation
+    1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md): WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
+        1. `wsl --version` should show the version.
+        1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
+        1. AWS EC2: before `podman machine init`, shut down the instance then
+            1. Actions → Instance settings → Change CPU options: Enable Nested virtualization
 
 1. Java 25 LTS
 
@@ -298,13 +305,27 @@ The per-project CA lives on the host, under
 
     1. [Install Coursier](https://get-coursier.io/docs/cli-installation), then
 
-           eval $(cs java --jvm temurin:25 --env)
+        1. macOS / Linux / bash on Windows
+
+               eval $(cs java --jvm temurin:25 --env)
+
+        1. Windows PowerShell
+
+               $env:JAVA_HOME = cs java-home --jvm temurin:25
+               $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+
+        1. Windows Command Prompt
+
+               for /f "delims=" %i in ('cs java-home --jvm temurin:25') do set "JAVA_HOME=%i"
+               set "PATH=%JAVA_HOME%\bin;%PATH%"
+
 
 ### Build the launcher and images
 
     sbt --server dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
 1. This assembles one self-contained jar — a single file is the whole install.
+1. With Windows PowerShell version below 7, run the commands separated by `&&` individually.
 
 ### Tests
 

@@ -1,0 +1,6 @@
+# avoid the warning
+#     WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+#     WARNING: sun.misc.Unsafe::objectFieldOffset has been called by scala.runtime.LazyVals$ (.../sbt-launch.jar)
+#     WARNING: Please consider reporting this to the maintainers of class scala.runtime.LazyVals$
+#     WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+--sun-misc-unsafe-memory-access=allow

@@ -28,8 +28,11 @@ object IntegrationSession:
     * runs; a teardown waits on `podman wait` and retries the network removals. */
   val Patience = 180
 
-  /** One live session, and the names of everything its run created. */
-  case class Session(container: String, id: String, suffix: String, project: Path, log: Path):
+  /** One live session, the names of everything its run created, and the launcher process that
+    * owns its teardown. */
+  case class Session(
+    container: String, id: String, suffix: String, project: Path, log: Path, launcher: Process
+  ):
     def proxy: String = AgentSandboxLauncher.proxyRunContainer(id, suffix)
     def sandboxNetwork: String = AgentSandboxLauncher.sandboxRunNetwork(id, suffix)
     def egressNetwork: String = AgentSandboxLauncher.egressRunNetwork(id, suffix)
@@ -72,17 +75,21 @@ object IntegrationSession:
     builder.directory(project.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
-    builder.start()
+    val launcher = builder.start()
 
     val appeared =
       eventually(Patience)(running().diff(before).filter(_.startsWith(prefix)))(_.nonEmpty)
     if appeared.isEmpty then
       throw AssertionError(s"a session never started; its output:\n${Files.readString(log)}")
 
-    Session(appeared.head, id, appeared.head.stripPrefix(prefix), project, log)
+    Session(appeared.head, id, appeared.head.stripPrefix(prefix), project, log, launcher)
 
   def stop(session: Session): Unit =
     run(podman, "stop", "--time", "2", session.container)
+    // The launcher outlives its container by the teardown it stays resident for on Windows — and
+    // it holds session.log open, which on Windows makes the discard's delete a sharing violation.
+    // On POSIX the exec'd podman exits with the container and the wait is instant.
+    session.launcher.waitFor(Patience, java.util.concurrent.TimeUnit.SECONDS): Unit
 
   /** `--reset` in a project, as the user runs it after a crash: whether it succeeded, and its own
     * output, which is the only useful thing to print when it did not. */

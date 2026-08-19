@@ -15,10 +15,11 @@
 // the second test pins along with the delay before the bypass shows; SECURITY.md ("The opted-out
 // mode's `.git` pins") has what that costs.
 //
-// That second measurement is a macOS Podman machine's, which is where SECURITY.md scopes the claim
-// and the only host family it has been taken on (doc/TODO.md, "Nested read-only mount stability
-// under host-side mutation"). Elsewhere it is the row that is missing rather than a regression: a
-// failure there is the result worth recording, not a red suite to silence.
+// That second measurement is per host family, and the test expects each family's own answer: the
+// macOS machine's share follows the replacement within seconds, the Windows machine's held against
+// it for the whole window (SECURITY.md carries both). Linux rootless is the row still missing
+// (doc/TODO.md, "Nested read-only mount stability under host-side mutation"); a failure there is
+// the result worth recording, not a red suite to silence.
 //
 // Opt-in like the other container-launching suites (IntegrationSession has the gate):
 //
@@ -162,25 +163,32 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         println(f"[guard-off] t=$at%3ds  mount=$isMounted%-5s read=$readable%-5s write=$fellThrough")
         if !fellThrough then Thread.sleep(2000)
 
-      assert(fellThrough, "the pin now survives a host-side inode replacement — SECURITY.md says it does not")
-      assert(
-        exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
-        "the pin refuses a second write; the first one reached something else"
-      )
-      assert(
-        Files.readString(config).contains(marker),
-        "the sandbox's write went somewhere other than the host's current .git/config"
-      )
+      // Which way it goes is the host family's answer, and SECURITY.md carries both: the macOS
+      // machine's share follows the replacement within seconds, while on Windows (Server 24H2,
+      // WSL2; 2026-08-19) the pin refused writes for this whole two-minute window. Linux rootless
+      // is the row still missing (doc/TODO.md) and expects the macOS answer until measured.
+      if currentOs == Os.Windows then
+        assert(!fellThrough, "the pin fell through on Windows; record the new result (SECURITY.md)")
+      else
+        assert(fellThrough, "the pin now survives a host-side inode replacement; SECURITY.md says it does not")
+        assert(
+          exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
+          "the pin refuses a second write; the first one reached something else"
+        )
+        assert(
+          Files.readString(config).contains(marker),
+          "the sandbox's write went somewhere other than the host's current .git/config"
+        )
 
-      // The hooks pin goes the same way once its own inode is replaced. Only its entries changing
-      // leaves it alone, which is what the first test exercises.
-      val hooks = project.resolve(".git").resolve("hooks")
-      Files.move(hooks, hooks.resolveSibling("hooks.renamed"))
-      Files.createDirectories(hooks)
-      assert(
-        eventually(120)(hookWritable(session))(identity),
-        "the .git/hooks pin now survives its inode being replaced — SECURITY.md says it does not"
-      )
+        // The hooks pin goes the same way once its own inode is replaced. Only its entries
+        // changing leaves it alone, which is what the first test exercises.
+        val hooks = project.resolve(".git").resolve("hooks")
+        Files.move(hooks, hooks.resolveSibling("hooks.renamed"))
+        Files.createDirectories(hooks)
+        assert(
+          eventually(120)(hookWritable(session))(identity),
+          "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not"
+        )
     finally
       live.foreach(stop)
       discard(project)

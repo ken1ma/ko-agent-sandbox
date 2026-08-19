@@ -149,7 +149,7 @@ object KoAgentFs:
     val current = run(podman, "machine", "ssh", "cat /etc/fuse.conf 2>/dev/null || true").text
     System.err.println(
       s"""The workspace FUSE filter mounts with allow_other, so the sandbox (a different uid) can use
-         |it — and fusermount3 refuses that until user_allow_other is set in the Podman machine's
+         |it, and fusermount3 refuses that until user_allow_other is set in the Podman machine's
          |/etc/fuse.conf. Your machine's configuration is not changed without asking. The change:
          |
          |${fuseConfDiff(current)}
@@ -463,7 +463,40 @@ object KoAgentFs:
       // /bin/sh, not a PATH-resolved `sh`, for the reason findOnPath states; ReaperScript spells it
       // the same way.
       case Os.Linux => Vector("/bin/sh", "-c", script)
-      case Os.Mac | Os.Windows => Vector(podman, "machine", "ssh", script)
+      // The script crosses base64-encoded. Windows needs it: the script is full of double quotes,
+      // which Windows argument encoding passes through unescaped, handing the VM a mangled
+      // command line (AgentSandboxLauncher.BundleLabelTemplate is the same wall). macOS does not
+      // need it and gets it anyway: macOS is the platform running daily, so sharing the path is
+      // what keeps a broken wrapper from surviving unnoticed until someone sits at a Windows
+      // machine.
+      case Os.Mac | Os.Windows =>
+        val encoded =
+          java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
+        Vector(podman, "machine", "ssh", s"printf %s $encoded | base64 -d | sh")
+
+  /**
+   * The backing path as the daemon resolves it, in the filesystem the daemon runs in. This is the
+   * one host path that bypasses podman: every `--volume` source is translated by podman's own
+   * client, but the backing travels to the daemon in the mount script. On Linux the daemon is on
+   * this host, and the macOS machine mounts the host shares at their host paths — the Windows
+   * machine is a WSL distro, which serves host drives at `/mnt/<drive>`, the same translation
+   * podman's client applies to volume sources. A path with no drive letter (UNC) has no `/mnt`
+   * spelling and refuses the launch.
+   */
+  def koAgentFsBackingPath(os: Os, projectDir: Path): Either[String, String] =
+    val text = projectDir.toString
+    os match
+      case Os.Linux | Os.Mac => Right(text)
+      case Os.Windows =>
+        if text.length >= 3 && text(0).isLetter && text(1) == ':'
+          && (text(2) == '\\' || text(2) == '/')
+        then Right(s"/mnt/${text(0).toLower}/${text.drop(3).replace('\\', '/')}")
+        else
+          Left(
+            s"error: cannot map $text into the podman machine\n" +
+              "The workspace filter serves the project from inside the machine, which reaches " +
+              "host drives at /mnt/<drive>; only drive-letter paths (C:\\...) have that spelling."
+          )
 
   /** The daemon user's home — the base every relative lifecycle path resolves against, and the
     * prefix that turns the mountpoint into an absolute `--volume` source. */
@@ -501,7 +534,8 @@ object KoAgentFs:
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
       fail(s"error: ko-agent-fs self-test failed; not launching:\n${selfTest.err}", selfTest.exit)
-    val script = koAgentFsMountScript(projectDir.toString, projectId, expected, sandboxContainer)
+    val backing = koAgentFsBackingPath(os, projectDir).fold(fail(_), identity)
+    val script = koAgentFsMountScript(backing, projectId, expected, sandboxContainer)
     val mount = run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
       fail(s"error: mounting the workspace FUSE filter failed:\n${mount.err}", mount.exit)
