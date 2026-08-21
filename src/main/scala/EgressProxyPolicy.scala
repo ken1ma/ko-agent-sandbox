@@ -3,8 +3,9 @@
 // is not here — it is a dozen flags in AgentSandboxLauncher.launch, and moving it would drag the
 // launch with it.
 //
-// The proxy owns the built-in list and the +/- arithmetic; nothing here re-implements either, so
-// there is no second opinion about what is allowed. See container/ko-agent-egress-proxy.
+// The proxy owns the baseline, the profile equations and the delta arithmetic; nothing here
+// re-implements any of them, so there is no second opinion about what is allowed. See
+// container/ko-agent-egress-proxy.
 
 package agentsandbox.launcher
 
@@ -16,34 +17,63 @@ import HostCommands.*
 object EgressProxyPolicy:
 
   /**
-   * One space-separated line: the shape the environment variable carries
-   * and the launch banner prints back. What is in force is the proxy's to
-   * say — for a delta file its resolved list is not this text.
+   * Comment-stripped, whitespace-collapsed policy text, one entry per line — the shape the
+   * environment variables carry. Entries are multi-token lines (`+host x restricted`), so line
+   * structure is what separates them and must be preserved. What is in force is the proxy's to
+   * say — a delta file's resolved policy is not this text.
    */
-  def flattenPolicy(text: String): String =
+  def normalizePolicyText(text: String): String =
     text.linesIterator
       .map(_.takeWhile(_ != '#'))
-      .flatMap(_.split("\\s+"))
+      .map(_.trim.split("\\s+").filter(_.nonEmpty).mkString(" "))
       .filter(_.nonEmpty)
-      .mkString(" ")
+      .mkString("\n")
+
+  /** One line for the launch banner: a normalized file's entries joined by `; `. */
+  def entriesSummary(normalized: String): String =
+    normalized.linesIterator.mkString("; ")
 
   /**
-   * The dry run's answer with the host names dropped — `allowed hosts (N)`
-   * rather than the N names. The launch banner is read every session, so
-   * a thousand characters of hostnames there is a line people learn to skip,
-   * and skipping it is how a policy nobody expected goes unnoticed. The names
-   * are one `--proxy-effective` away, and the proxy writes them into this
-   * session's own log as its second and third lines.
-   *
-   * A line with no count to keep is printed whole rather than guessed at.
+   * The launch banner's one-line summary of the resolved policy: the profile in caps, then the
+   * counts that say how wide it is. The full host lists are one `--egress-effective` away, and
+   * the proxy writes them into this session's own log; a thousand characters of hostnames in the
+   * banner is a line people learn to skip, and skipping it is how a policy nobody expected goes
+   * unnoticed. An unparseable resolution is printed whole rather than guessed at.
    */
-  def policyCounts(resolved: String): String =
-    resolved.linesIterator
-      .map: line =>
-        line.indexOf("):") match
-          case -1 => line
-          case at => line.take(at + 1)
-      .mkString("; ")
+  def egressBanner(resolved: String): String =
+    val lines = resolved.linesIterator.toVector
+
+    def countOf(prefix: String): Option[Int] =
+      lines.find(_.startsWith(prefix)).flatMap: line =>
+        val open = line.indexOf('(')
+        val close = line.indexOf(')')
+        Option.when(open >= 0 && close > open)(line.substring(open + 1, close).toIntOption).flatten
+
+    val parsed =
+      for
+        head <- lines.headOption.filter(_.startsWith("egress profile: "))
+        restricted <- countOf("restricted hosts (")
+        denied <- countOf("denied rules (")
+      yield
+        val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
+        val effective = restricted + countOf("unrestricted hosts (").getOrElse(0)
+        profile match
+          case "allow-unless-denied" =>
+            s"Egress: ALLOW-UNLESS-DENIED; public HTTPS; $restricted restricted, $denied denied"
+          case "deny-unless-model" =>
+            val provider = head
+              .split("model provider: ", 2)
+              .lift(1)
+              .map(_.trim)
+              .filter(_.nonEmpty)
+              .getOrElse("none")
+            val selected =
+              if provider == "none" then "no provider selected" else s"model provider $provider"
+            s"Egress: ${profile.toUpperCase}; $selected; $effective effective hosts"
+          case _ =>
+            s"Egress: ${profile.toUpperCase}; $effective effective hosts"
+
+    parsed.getOrElse(s"Egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names
@@ -64,44 +94,42 @@ object EgressProxyPolicy:
   val RetainedProxyLogs = 20
 
   /**
-   * The files .ko-agent-sandbox/egress-hosts/ may hold, each paired with
-   * the proxy variable that carries it. The order is the proxy's tier order,
-   * which the launch banner reuses.
+   * The files .ko-agent-sandbox/egress/ may hold, each paired with the proxy
+   * variable that carries it.
    */
-  val PolicyTierFiles: Vector[(String, String)] = Vector(
-    "read-write" -> "EGRESS_READ_WRITE_HOSTS",
-    "read-only" -> "EGRESS_READ_ONLY_HOSTS",
-    "blocked" -> "EGRESS_BLOCKED_HOSTS",
+  val PolicyFiles: Vector[(String, String)] = Vector(
+    "allowed" -> "EGRESS_ALLOWED",
+    "denied" -> "EGRESS_DENIED",
   )
 
   /**
-   * The policy directory's files as (name, flattened text), present files
+   * The policy directory's files as (name, normalized text), present files
    * only. Refused shapes, each of which would otherwise be silently ignored
-   * or misread config: egress-hosts as a regular file rather than a
-   * directory, fatal so a policy written that way is never skipped unseen; a
-   * filename that is no tier file (a typo'd tier configures nothing); a
-   * symlinked tier file (podman resolves mount sources on the host, and
-   * this read must see the bytes the sandbox's mount will show); a tier name
-   * that is not a regular file, which would leave its tier silently at the
-   * built-in list; a present-but-empty file, more likely a forgotten edit
-   * than a deliberate no-op.
+   * or misread config: egress as a regular file rather than a directory,
+   * fatal so a policy written that way is never skipped unseen; a filename
+   * that is no policy file (a typo'd name configures nothing); a symlinked
+   * policy file (podman resolves mount sources on the host, and this read
+   * must see the bytes a mounted-back directory would show); a policy name
+   * that is not a regular file, which would leave its file silently unread;
+   * a present-but-empty file, more likely a forgotten edit than a
+   * deliberate no-op — an intentionally empty policy is an absent file.
    */
-  def readPolicyFiles(hostsDir: Path): Either[String, Vector[(String, String)]] =
+  def readPolicyFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
     def symlinkRefusal(path: Path): String =
       s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
 
-    if Files.isSymbolicLink(hostsDir) then Left(symlinkRefusal(hostsDir))
-    else if !Files.exists(hostsDir) then Right(Vector.empty)
-    else if !Files.isDirectory(hostsDir) then
+    if Files.isSymbolicLink(egressDir) then Left(symlinkRefusal(egressDir))
+    else if !Files.exists(egressDir) then Right(Vector.empty)
+    else if !Files.isDirectory(egressDir) then
       Left(
-        s"""error: $hostsDir is a file
-           |egress-hosts is a directory of per-tier delta files:
-           |${PolicyTierFiles.map(_(0)).mkString(", ")}. Split the entries by tier and remove the
+        s"""error: $egressDir is a file
+           |egress is a directory of policy files:
+           |${PolicyFiles.map(_(0)).mkString(", ")}. Split the entries and remove the
            |file; README ("Modifying the egress policy") has the grammar.""".stripMargin
       )
     else
       val entries = Files
-        .list(hostsDir)
+        .list(egressDir)
         .iterator()
         .asScala
         .toVector
@@ -109,47 +137,95 @@ object EgressProxyPolicy:
 
       val refusal = entries
         .collectFirst:
-          case entry if !PolicyTierFiles.exists(_(0) == entry.getFileName.toString) =>
-            s"error: $entry is not a policy file\negress-hosts/ holds only " +
-              s"${PolicyTierFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
+          case entry if !PolicyFiles.exists(_(0) == entry.getFileName.toString) =>
+            s"error: $entry is not a policy file\negress/ holds only " +
+              s"${PolicyFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          // The one stray shape the name check cannot see: a tier's own name on something the read
-          // below skips, which would leave that tier at its built-in list with nothing said.
+          // The one stray shape the name check cannot see: a policy file's own name on something
+          // the read below skips, which would leave that file silently unread.
           case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\negress-hosts/ holds a text file per tier; " +
-              "anything else would leave this tier silently at its built-in list."
+            s"error: $entry is not a regular file\negress/ holds a text file per policy; " +
+              "anything else would leave this file silently unread."
         .orElse:
-          PolicyTierFiles
+          PolicyFiles
             .map(_(0))
             .collectFirst:
-              case name if readIfPresent(hostsDir.resolve(name)).map(flattenPolicy).contains("") =>
-                s"error: ${hostsDir.resolve(name)} lists no entries\n" +
-                  "Delete the file to leave this tier at its built-in list."
+              case name if readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).contains("") =>
+                s"error: ${egressDir.resolve(name)} lists no entries\n" +
+                  "Delete the file; an intentionally empty policy is an absent file."
 
       refusal.toLeft(
-        PolicyTierFiles.flatMap: (name, _) =>
-          readIfPresent(hostsDir.resolve(name)).map(flattenPolicy).map(name -> _)
+        PolicyFiles.flatMap: (name, _) =>
+          readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).map(name -> _)
       )
 
   /**
-   * A --print-policy dry run of the proxy image (--rm, --network=none,
-   * nothing mounted): the effective tier lists, or the reason the policy is
-   * invalid. The proxy owns the built-in lists and the delta/blocked
-   * arithmetic; this one dry run is the authority both --proxy-effective and
-   * every launch consult — for the banner and for the leaf certificate's
-   * names alike.
+   * The refusal for the pre-release `.ko-agent-sandbox/egress-hosts/` layout, with the exact
+   * replacement to use: stale authority configuration is never silently ignored or translated
+   * into broader access. The caller says where the directory was found.
    */
-  def resolvedPolicy(podman: String, proxyImage: String, policyFiles: Vector[(String, String)]): Run =
+  def legacyLayoutRefusal(hostsDir: Path): String =
+    s"""error: $hostsDir is the pre-release egress layout, which this launcher no longer reads
+       |
+       |The policy now lives in .ko-agent-sandbox/egress/ as two files:
+       |  egress/allowed — the delta over the launcher-owned baseline
+       |  egress/denied  — always-applied removals
+       |Rewrite each old entry:
+       |  read-only  +h[=tag]   ->  allowed: +host h[=tag] restricted
+       |  read-write +h         ->  allowed: +host h unrestricted
+       |  either     -h, -**.d  ->  allowed: -host h / -host **.d
+       |  blocked    h, **.d    ->  denied:  host h / host **.d
+       |  blocked    .defaults  ->  allowed: .defaults
+       |then remove egress-hosts/. The rewritten files feed the default deny-unless-allowed
+       |profile, the closest to the old behavior.""".stripMargin
+
+  /**
+   * codex→openai, claude→anthropic, agy→google. Only the basename of the directly launched
+   * command is classified; the launcher does not inspect a wrapper's arguments or guess what it
+   * may later execute — a wrapper script selects no provider and, under deny-unless-model, gets
+   * the startup warning instead of a guessed grant.
+   */
+  val AgentProviders: Map[String, String] =
+    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google")
+
+  def commandProvider(command: Option[String]): Option[String] =
+    command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)
+
+  /**
+   * A --print-policy dry run of the proxy image (--rm, --network=none,
+   * nothing mounted): the resolved policy, or the reason it is invalid. The
+   * proxy owns the baseline and the profile arithmetic; this one dry run is
+   * the authority both --egress-effective and every launch consult — for
+   * the banner and for the leaf certificate's names alike. `provenance`
+   * additionally reports every entry's source (--egress-effective's view).
+   */
+  def resolvedPolicy(
+    podman: String,
+    proxyImage: String,
+    profile: String,
+    provider: Option[String],
+    policyFiles: Vector[(String, String)],
+    provenance: Boolean = false
+  ): Run =
     run(
       (Vector(podman, "run", "--rm", "--pull=never", "--network=none")
-        ++ policyEnvArgs(policyFiles) ++ Vector(proxyImage, "--print-policy"))*
+        ++ policyEnvArgs(profile, provider, policyFiles)
+        ++ Vector(proxyImage, "--print-policy")
+        ++ Option.when(provenance)("--provenance"))*
     )
 
-  /** The --env arguments carrying the policy files to the proxy — the dry run and the real
-    * container get identical ones, so what was vetted is what is enforced. */
-  def policyEnvArgs(policyFiles: Vector[(String, String)]): Vector[String] =
-    policyFiles.map: (name, text) =>
-      val variable = PolicyTierFiles.find(_(0) == name).fold(fail(s"error: no policy tier $name"))(_(1))
+  /** The --env arguments carrying the authority selection and policy files to the proxy — the
+    * dry run and the real container get identical ones, so what was vetted is what is enforced. */
+  def policyEnvArgs(
+    profile: String,
+    provider: Option[String],
+    policyFiles: Vector[(String, String)]
+  ): Vector[String] =
+    Vector(
+      s"--env=EGRESS_PROFILE=$profile",
+      s"--env=EGRESS_MODEL_PROVIDER=${provider.getOrElse("none")}"
+    ) ++ policyFiles.map: (name, text) =>
+      val variable = PolicyFiles.find(_(0) == name).fold(fail(s"error: no policy file $name"))(_(1))
       s"--env=$variable=$text"
 
   /** This project's retained proxy log files, in chronological (name) order. */
@@ -166,27 +242,27 @@ object EgressProxyPolicy:
         .sortBy(_.getFileName.toString)
 
   /**
-   * The inspected hosts out of a --print-policy answer: its `read-only hosts
-   * (N): ...` line, `=tag`s stripped — the leaf names hosts; which treatment
-   * each gets is the proxy's business. This is how the launcher learns which
-   * names the leaf certificate must carry — the proxy image's own answer
-   * under this project's policy, so no second copy of any list exists to
-   * drift, and a proxy image or policy of the user's choosing gets a
-   * matching leaf too. Empty means the policy inspects nothing; the launcher
-   * then mints no leaf and hands the proxy no inspection material.
+   * The inspected hosts out of a --print-policy answer: its `restricted
+   * hosts (N): ...` line, `=tag`s stripped — the leaf names hosts; which
+   * treatment each gets is the proxy's business. This is how the launcher
+   * learns which names the leaf certificate must carry — the proxy image's
+   * own answer under this project's policy, so no second copy of any list
+   * exists to drift, and a proxy image or policy of the user's choosing gets
+   * a matching leaf too. Empty means the policy inspects nothing; the
+   * launcher then mints no leaf and hands the proxy no inspection material.
    */
   def inspectedHostsOf(printPolicyOutput: String): Either[String, Vector[String]] =
-    printPolicyOutput.linesIterator.find(_.startsWith("read-only hosts (")) match
+    printPolicyOutput.linesIterator.find(_.startsWith("restricted hosts (")) match
       case None =>
         Left(
-          "error: the proxy image's --print-policy has no 'read-only hosts' line\n" +
+          "error: the proxy image's --print-policy has no 'restricted hosts' line\n" +
             "An image built by another launcher version prints another shape; rebuild with --build."
         )
       case Some(line) =>
         line.indexOf("):") match
           case -1 =>
             Left(
-              s"error: unparseable tier line: $line\n" +
+              s"error: unparseable policy line: $line\n" +
                 "An image built by another launcher version prints another shape; rebuild with --build."
             )
           case at =>

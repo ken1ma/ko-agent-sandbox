@@ -8,7 +8,6 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Paths}
 
 import AgentSandboxLauncher.*
-import EgressProxyPolicy.*
 import KoAgentFs.bundledSourceId
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
@@ -229,7 +228,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val proxySource = Files.readString(
       Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala")
     )
-    val block = proxySource.substring(proxySource.indexOf("val DefaultReadOnlyHosts"))
+    val block = proxySource.substring(proxySource.indexOf("val CuratedRestrictedHosts"))
     val gitHosts = "\"([^\"]+)=git-fetch\"".r
       .findAllMatchIn(block.substring(0, block.indexOf(").map(")))
       .map(_.group(1))
@@ -250,30 +249,74 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val known = """"([^"]+)"""".r.findAllMatchIn(declared.group(1)).map(_.group(1)).toSet
     assert(known.nonEmpty, "scraped no tags at all")
 
-    // A resolved policy with no tags of its own, so every `=tag` found is the prose's own.
-    val named = "=([a-z-]+)".r
-      .findAllMatchIn(egressPolicySection("read-write hosts (0):\nread-only hosts (0):"))
+    // A resolved policy with no tags of its own, so every `=tag` found is the prose's own. The
+    // lookbehind keeps an option spelling (--egress=profile) out of the tag hunt: a tag mention
+    // is `=name` with nothing word-like before the `=`.
+    val emptyResolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
+    val named = "(?<![a-z-])=([a-z-]+)".r
+      .findAllMatchIn(authoritySection("live", emptyResolution))
       .map(_.group(1))
       .toSet
     assert(named.nonEmpty, "the section names no tag, so it teaches an agent nothing about them")
     assertEquals(named -- known, Set.empty[String], s"the proxy defines only $known")
 
-  test("the read-only line of --print-policy parses to the leaf's names, tags stripped"):
-    // What launch feeds mintLeaf: the image's own read-only line — the leaf names hosts; which
-    // treatment each gets is the proxy's business. A zero-count line is a real answer, not a
-    // parse error: it means no leaf at all.
+  test("the authority section directs the agent by write mode, never leaves it to probing"):
+    val resolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
+    val readOnly = authoritySection("reject", resolution)
+    assert(readOnly.contains("read-only"), readOnly)
+    assert(readOnly.contains("--write=live"), readOnly)
+    val writable = authoritySection("live", resolution)
+    assert(writable.contains("writable"), writable)
+    // Both name the relaunch path for a host the policy does not admit.
+    Vector(readOnly, writable).foreach: section =>
+      assert(section.contains(".ko-agent-sandbox/egress/allowed"), section)
+      assert(section.contains("deny-unless-allowed"), section)
+
+  test("option parsing: the first non-option ends launcher parsing, -- is an optional escape"):
     assertEquals(
-      inspectedHostsOf(
-        "read-write hosts (1): api.example\n" +
-          "read-only hosts (3): docs.example github.com=git-fetch gitlab.com=git-fetch"
-      ),
-      Right(Vector("docs.example", "github.com", "gitlab.com"))
+      parseCommandLine(List("--write=reject", "--egress=deny-all", "claude", "--write=live")),
+      Right(
+        ParsedCommandLine(
+          Some("reject"), Some("deny-all"), None, List("claude", "--write=live")
+        )
+      )
+    )
+    // After `--` everything is the command, launcher-option lookalikes included.
+    assertEquals(
+      parseCommandLine(List("--", "--write=live", "claude")),
+      Right(ParsedCommandLine(None, None, None, List("--write=live", "claude")))
+    )
+    // No arguments launches the image's default command.
+    assertEquals(parseCommandLine(Nil), Right(ParsedCommandLine(None, None, None, Nil)))
+    assertEquals(parseCommandLine(Nil).map(_.writeMode), Right("live"))
+    assertEquals(parseCommandLine(Nil).map(_.egressProfile), Right("deny-unless-allowed"))
+
+  test("option parsing: authority values are a closed set and are selected once"):
+    assert(parseCommandLine(List("--write=maybe")).swap.exists(_.contains("reject, staged, live")))
+    assert(parseCommandLine(List("--egress=allow-all")).isLeft)
+    assert(parseCommandLine(List("--write=live", "--write=reject")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
+    assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
+
+  test("option parsing: management verbs take the rest as operands, renamed spellings refuse"):
+    assertEquals(
+      parseCommandLine(List("--proxy-log", "-f")),
+      Right(ParsedCommandLine(None, None, Some(("--proxy-log", List("-f"))), Nil))
     )
     assertEquals(
-      inspectedHostsOf("read-write hosts (1): api.example\nread-only hosts (0):"),
-      Right(Vector.empty[String])
+      parseCommandLine(List("--egress=deny-unless-allowed", "--egress-effective", "--", "claude")),
+      Right(
+        ParsedCommandLine(
+          None, Some("deny-unless-allowed"),
+          Some(("--egress-effective", List("--", "claude"))), Nil
+        )
+      )
     )
-    assert(inspectedHostsOf("garbage").isLeft)
+    assertEquals(
+      parseCommandLine(List("--egress-check=pypi.org", "claude")),
+      Right(ParsedCommandLine(None, None, Some(("--egress-check", List("pypi.org", "claude"))), Nil))
+    )
+    assert(parseCommandLine(List("--proxy-effective")).swap.exists(_.contains("--egress-effective")))
 
   test("the state root must be absolute, resolves canonically, and stays outside the project"):
     // A relative value resolves against the current directory — the repository being sandboxed —

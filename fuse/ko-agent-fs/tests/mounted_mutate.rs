@@ -219,36 +219,36 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
     // directory, so it exists in the backing while its read-only mount does not.
     let mount = TestMount::new(|backing| {
         repository(backing);
-        fs::create_dir_all(backing.join(".ko-agent-sandbox/egress-hosts")).unwrap();
+        fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();
         fs::write(
-            backing.join(".ko-agent-sandbox/egress-hosts/read-only"),
-            b"+docs.python.org\n",
+            backing.join(".ko-agent-sandbox/egress/allowed"),
+            b"+host docs.python.org restricted\n",
         )
         .unwrap();
     });
 
     allowed(
         "read the policy the host wrote",
-        fs::read_to_string(mount.at(".ko-agent-sandbox/egress-hosts/read-only")).map(|_| ()),
+        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/allowed")).map(|_| ()),
     );
     denied(
-        "rewrite a tier file",
+        "rewrite a policy file",
         fs::write(
-            mount.at(".ko-agent-sandbox/egress-hosts/read-only"),
-            b"+evil.example\n",
+            mount.at(".ko-agent-sandbox/egress/allowed"),
+            b"+host evil.example unrestricted\n",
         ),
     );
     denied(
-        "add a tier file",
-        File::create(mount.at(".ko-agent-sandbox/egress-hosts/read-write")),
+        "add a policy file",
+        File::create(mount.at(".ko-agent-sandbox/egress/denied")),
     );
     denied(
-        "remove a tier file",
-        fs::remove_file(mount.at(".ko-agent-sandbox/egress-hosts/read-only")),
+        "remove a policy file",
+        fs::remove_file(mount.at(".ko-agent-sandbox/egress/allowed")),
     );
     denied(
         "remove the directory",
-        fs::remove_dir_all(mount.at(".ko-agent-sandbox/egress-hosts")),
+        fs::remove_dir_all(mount.at(".ko-agent-sandbox/egress")),
     );
     denied(
         "rename the policy directory away",

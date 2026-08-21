@@ -174,10 +174,10 @@ sessions at once, fail-closed for each of them.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no
-FUSE mount. The staged view is not implemented yet; `PLAN-NEXT.md` defines its increment and the
-root `doc/TODO.md` keeps the deferred work. This topology is nevertheless fixed before that work
-starts: per-session mounts would make a cheap restart expensive and give collaborating sessions
-incoherent locks and caches.
+FUSE mount. The staged view is not implemented yet; the root `doc/PLAN-STAGED.md` defines its
+increment and the root `doc/TODO.md` keeps the deferred work. This topology is nevertheless
+fixed before that work starts: per-session mounts would make a cheap restart expensive and give
+collaborating sessions incoherent locks and caches.
 
 `allow_other` from an unprivileged user additionally requires `user_allow_other` in
 `/etc/fuse.conf`, which stock images do not set. Getting it there is consent-gated and never

@@ -27,16 +27,20 @@ directory themselves is in the sandbox like any other file — tolerated rather 
 and reaching whatever this project's egress policy admits.
 
 **Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
-which admits an exact list of hostnames and logs every attempt ("Egress proxy" below).
+which admits what the launch's `--egress` profile resolves to and logs every attempt ("Egress
+proxy" below). The default profile admits the launcher-owned baseline — the model-provider
+groups unrestricted, the curated catalog restricted — and nothing else.
 
 **Writing to remote hosts**, except the agents' model traffic and `git clone`/`fetch`. Every
-allowed destination is declared in one of two tiers: `read-write`, opaque tunnels for the model
-traffic that has to write, and `read-only`, TLS-inspected, where `git push` and every other write
+admitted destination carries one of two treatments: `unrestricted`, opaque tunnels for the model
+traffic that has to write, and `restricted`, TLS-inspected, where `git push` and every other write
 is refused. "Reading without being able to write" below has the rules, the costs, and what they
 do not cover.
 
-**Being used to attack someone else.** The same allowlist. The agent cannot reach an arbitrary host,
-an arbitrary port, or a private address — cloud metadata services such as 169.254.169.254 included.
+**Being used to attack someone else.** The same policy. Whatever the profile — the widest admits
+any public hostname on port 443 — the agent cannot reach an arbitrary port or a private address,
+cloud metadata services such as 169.254.169.254 included: the proxy validates every resolved
+address at connection time.
 
 **One session affecting the next, or another project.** Agent state is a per-project volume, the
 rest of the sandbox home is discarded on exit, and Claude Code's hooks are disabled (the sandbox
@@ -45,16 +49,13 @@ sandbox run, created by the launch and removed with it — so concurrent session
 another either, and nothing network-shaped is ever reused from an earlier run.
 
 **A project loosening its own confinement.** Managed settings sit in the read-only image at the
-highest precedence, so a repository's own settings cannot weaken them.
-`/workspace/.ko-agent-sandbox` is mounted read-only, and the egress policy in it is read on the host
-before the container starts.
-
-That mount is the first line and the workspace filter is the second, because a mount cannot follow
-its source: a host that removes or replaces the directory mid-session takes the mount with it and
-would otherwise leave the name free inside a writable workspace, where a session could write the
-policy governing the next launch. So the filter treats `.ko-agent-sandbox` as control state — the
-name cannot be created at any depth, under the same fold rule `.git` gets, and nothing under an
-existing one can be written. A session that opted out of the filter has the mount alone.
+highest precedence, so a repository's own settings cannot weaken them. The egress policy in
+`.ko-agent-sandbox` is read on the host before the container starts, and the session's write mode
+is what keeps a session from writing the policy governing the next launch: under `--write=reject`
+the whole tree is read-only, and under the filter `.ko-agent-sandbox` is control state — the name
+cannot be created at any depth, under the same fold rule `.git` gets, and nothing under an
+existing one can be written. Only the pin fallback (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`),
+whose raw tree is writable, still needs the directory mounted back over itself read-only.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
@@ -90,14 +91,22 @@ a shortcut would be tempting:
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
 - the **project tree** is never written by the launcher, with two enumerated exceptions, both
-  empty directories that read-only guard mounts require. An empty `.ko-agent-sandbox`, created
-  when absent because its read-only mount must exist on every launch — without it a session could
-  write the egress policy governing the next one. And in a project with no repository, an empty
-  `.git`: the launcher binds its own empty directory read-only over that name (so a sandbox cannot
-  fabricate a repository for host git to discover), and the container runtime creates the mount
-  target it needs in the project. The filter needs no such mount target, denying `.git` creation
-  itself, so the empty `.git` appears only for a session that opted out of it;
-  `.ko-agent-sandbox` is every session's.
+  empty directories the pin fallback's read-only guard mounts require and both confined to it. An
+  empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
+  exist — without it its writable raw tree would let a session write the egress policy governing
+  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own
+  empty directory read-only over that name (so a sandbox cannot fabricate a repository for host
+  git to discover), and the container runtime creates the mount target it needs in the project.
+  The filter denies creating either name itself and needs no mount target, and reject's tree is
+  read-only whole, so those two modes write nothing;
+- the **project tree's SELinux labels**: on an enforcing host, the pin fallback's raw bind is
+  readable to the container only under `:Z`, which relabels the checkout recursively — a
+  host-metadata write, said in that mode's banner line every session it happens. The filter's
+  mountpoint needs no relabel, a permissive or disabled host reads unrelabeled and is never
+  relabeled, and `--write=reject` refuses on an enforcing host rather than relabeling, unless
+  the tree already carries a shared container-accessible context — a container type with no MCS
+  categories, since categories from a previous `:Z` are private to the container they were
+  minted for;
 
 What the launcher does write, it owns: its images, containers, networks and named volumes, its
 per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
@@ -145,16 +154,16 @@ host reachable for reading is reachable for writing if it has a write API; `api.
 receives the conversation by design. At every other host the proxy terminates TLS and names the
 permitted operations — reading, plus git fetch at the forges — but that bounds the method and the
 path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a URL is a
-message. A project whose checkout holds a forge token should still block that forge's hosts in
-its own `egress-hosts/blocked`.
+message. A project whose checkout holds a forge token should still deny that forge's hosts in
+its own `egress/denied`.
 
-`storage.googleapis.com` is the widest such recipient, and read-only for that reason ("Reading
+`storage.googleapis.com` is the widest such recipient, and restricted for that reason ("Reading
 without being able to write", below).
 
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
 on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
 the provider's infrastructure does the searching. The proxy sees one connection to
-`api.anthropic.com` or `chatgpt.com`, so neither the allowlist nor the audit log (`--proxy-log`)
+`api.anthropic.com` or `chatgpt.com`, so neither the policy nor the audit log (`--proxy-log`)
 applies to the domains searched — a query is outbound information the provider relays onward.
 Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
 proxy, answered only by an allowed host and logged like any other connection.
@@ -285,13 +294,13 @@ So this mode holds those two paths against the sandbox for as long as nothing on
 them, which is not a property to rely on in a repository being worked in, and no mount over a path
 closes it. `WorkspaceGuardOffTest` carries the measurements.
 
-**What is inside TLS, for the hosts that stay opaque.** The read-write tier is deliberately not
-inspected, so for those hosts the proxy sees only the handshake and cannot tell a `GET` from a
-`POST`. By default the tier is the agent endpoints alone, because terminating their TLS means
-reading the conversation in clear inside the proxy. Every other host is inspected —
-read-only, the bulk package registries included at a knowing per-request
-handshake cost: security is not traded for performance (DESIGN.md's principles; the tier
-comment in the proxy source prices it).
+**What is inside TLS, for the hosts that stay opaque.** An unrestricted host is deliberately not
+inspected, so there the proxy sees only the handshake and cannot tell a `GET` from a
+`POST`. In the baseline that is the model-provider endpoints alone, because terminating their TLS
+means reading the conversation in clear inside the proxy. Every other baseline host is inspected —
+restricted, the bulk package registries included at a knowing per-request
+handshake cost: security is not traded for performance (DESIGN.md's principles; the
+catalog comment in the proxy source prices it).
 
 **What the persistent volume carries.** It is read back every time the project opens, and some of
 what it holds — MCP server definitions especially — names commands to run. Treat it as trusted
@@ -304,9 +313,9 @@ same repository, same trust domain, so a data-integrity caveat, not a new trust 
 from another terminal ends live sessions by design; one racing a launch mid-start fails that launch
 loudly rather than weakening it.
 
-**A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress-hosts/` before
+**A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress/` before
 running an unfamiliar project is the user's job, exactly like reading its build scripts — its
-`read-write` file most of all, since every host there is an opaque tunnel.
+`unrestricted` additions most of all, since every such host is an opaque tunnel.
 
 **The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the
 agent's request are trusted as they arrive. npm's install-time audit does work (the `=npm-audit`
@@ -338,7 +347,9 @@ lifetime. Every connection has to pass all of this, in order:
 1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`,
    `0177.0.0.1` and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone
    is a known bypass class
-1. the hostname matches the allowlist exactly — no wildcards, no suffixes
+1. the hostname is admitted by the resolved profile: no denied rule matches, and — under every
+   profile but `allow-unless-denied`, whose default is any public hostname — the name is in the
+   finite host map, matched exactly, no wildcards, no suffixes
 1. DNS is resolved once, and the connection is made to that resolved address, so no second lookup
    can return a different answer
 1. every address the name resolved to must be a public one — a name that answers with a loopback or
@@ -348,7 +359,7 @@ lifetime. Every connection has to pass all of this, in order:
 1. the client's TLS ClientHello is parsed within a fixed byte budget
 1. Encrypted ClientHello is refused: it would hide the name that actually selects a backend
 1. SNI must be present, and must equal the hostname in the `CONNECT`
-1. only then does it become a tunnel — inspected for most hosts, opaque for the rest
+1. only then does it become a tunnel — inspected for a restricted host, opaque for the rest
 
 Steps 8-11 are what stops `CONNECT allowed.example:443` from being used to speak TLS to something
 else behind the same address. They happen after the `200`, so a failure there closes the connection
@@ -382,6 +393,7 @@ representative reasons:
     deny example.com CONNECT port 8080
     deny 169.254.169.254 CONNECT IP-literal target
     deny tracker.example CONNECT host not allowed
+    deny telemetry.example CONNECT host denied (**.example)
     deny internal.corp CONNECT resolved to non-public address 10.0.0.5
 
     # the TLS gate — steps 8 to 10, after the 200, before any tunnel
@@ -391,10 +403,10 @@ representative reasons:
     # tunnels and inspected requests — step 11 onward
     allow api.anthropic.com CONNECT -> 160.79.104.10
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
-    deny github.com POST /owner/repo.git/git-receive-pack read-only path
+    deny github.com POST /owner/repo.git/git-receive-pack restricted path
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /owner/repo request body
-    deny registry.npmjs.org PUT /lodash read-only host
+    deny registry.npmjs.org PUT /lodash restricted host
     deny github.com GET /owner/repo Host header evil.example
 
     # infrastructure — error, never deny
@@ -412,9 +424,11 @@ line is routine, not an incident: pooled clients open spare connections and disc
 nothing was asked, so nothing was refused — an `error`, never a `deny`. A connection dying inside
 a half-sent header is a `deny`: a half request is an anomaly, not weather.
 
-The startup lines precede these and sit outside the grammar: the listening port, the two tier
-lines (the `--print-policy` shapes), and the inspection summary. There is no peer-address field
-anywhere: the per-run internal network has exactly one client, so it would be a constant.
+The startup lines precede these and sit outside the grammar: the listening port, the resolved
+policy (the `--print-policy` shapes), its digest — one stable line naming which policy this run
+enforced, comparable across runs — any warnings, and the inspection summary. There is no
+peer-address field anywhere: the per-run internal network has exactly one client, so it would be
+a constant.
 
 ### Reading without being able to write
 
@@ -426,22 +440,22 @@ anywhere: the per-run internal network has exactly one client, so it would be a 
 1. `codeberg.org`
 1. `gitlab.com`
 
-are the built-in `=git-fetch`-tagged read-only entries, on the allowlist because agents genuinely
-need to read them: issues, release notes, upstream sources, `git clone`. An opaque tunnel to those
-hosts is also the shortest path out for the contents of `/workspace`, since the same tunnel
-carries `git push`.
+are the `=git-fetch`-tagged entries of the curated restricted catalog, in the baseline because
+agents genuinely need to read them: issues, release notes, upstream sources, `git clone`. An
+opaque tunnel to those hosts is also the shortest path out for the contents of `/workspace`,
+since the same tunnel carries `git push`.
 
-The rest of the read-only tier carries no tag — `GET` and `HEAD` with no body, and no POST at
+The rest of the catalog carries no tag — `GET` and `HEAD` with no body, and no POST at
 all: the documentation and reference sites, the content CDNs, and the container-image pull hosts.
 One member needs that rather than merely wearing it: `storage.googleapis.com` is all of Google
 Cloud Storage, where a signed URL an attacker minted accepts a `PUT` — the one unauthenticated
 write surface the built-in list ever had, admitted because `gcr.io` (distroless) serves its blobs
 from there. A tag's POST exception must not reach an untagged host: a GCS object name is
 anyone's to choose, so a path that mimics `git-upload-pack` would ride the git rule through. The
-proxy's `DefaultReadOnlyHosts` is the canonical built-in membership, tags included; what stays
+proxy's `CuratedRestrictedHosts` is the canonical built-in membership, tags included; what stays
 opaque, and why, is "What is inside TLS" below.
 
-So for every read-only host the proxy terminates TLS and applies a second, narrower policy to the
+So for every restricted host the proxy terminates TLS and applies a second, narrower policy to the
 request inside it:
 
 - `GET` and `HEAD` to any path — the whole of the read surface
@@ -456,7 +470,7 @@ request inside it:
   accepted price: the dependency graph — package names and versions — including names the
   registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
   dependency. A project whose dependency names are themselves secrets restates the entry
-  untagged (`+registry.npmjs.org` in `egress-hosts/read-only`) and gives up the warnings
+  untagged (`+host registry.npmjs.org restricted` in `egress/allowed`) and gives up the warnings
 - Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery — a
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`
@@ -480,9 +494,9 @@ Two consequences:
   release-assets.githubusercontent.com, and it then fails here. What it costs is bulk transfer (`git
   lfs pull`), not the content: media.githubusercontent.com is on the allowlist, and GitHub serves
   LFS file contents there read-only, one URL per file — the API's `download_url` for an LFS-tracked
-  file points at it. (That escape hatch is GitHub's; GitLab has no equivalent read-only host, so LFS
-  content hosted there stays out of reach.) TODO.md records the download-only inspection that would
-  reopen bulk transfer.
+  file points at it. (That escape hatch is GitHub's; GitLab has no equivalent read-only content
+  host, so LFS content hosted there stays out of reach.) TODO.md records the download-only
+  inspection that would reopen bulk transfer.
 
 The session is one request and its response, then the connection closes. That is what lets the proxy
 avoid agreeing with the origin server about where a message ends, which is precisely what request
@@ -502,9 +516,9 @@ signs what it is shown nor replace it for the next session. A CA minted for one 
 used to read another's traffic.
 
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
-read-only. The leaf names exactly this project's resolved inspected set — the read-only tier
-after its `egress-hosts/` files apply — which the launcher does not keep a copy
-of: it reads the tier line out of the proxy image's own `--print-policy` under the same policy
+read-only. The leaf names exactly this project's resolved inspected set — the restricted hosts
+after its profile and `egress/` files apply — which the launcher does not keep a copy
+of: it reads the restricted line out of the proxy image's own `--print-policy` under the same policy
 at launch, so a custom proxy image, or a project adding an inspected host, gets a matching leaf
 and there is no second list to drift. The proxy still refuses to start unless the certificate
 names exactly the inspected set of the policy it resolved, in either direction: a leaf missing a
@@ -541,68 +555,74 @@ applied everywhere, permanently. Per project, a repository that reads public doc
 holding credentials get different answers, and the answer is reviewed in a pull request like any
 other file.
 
-`/workspace` is writable, so the policy files would be the agent's to rewrite for the next session.
-The launcher therefore mounts `.ko-agent-sandbox` back over itself read-only — creating the
-directory on the host first when the project ships none, so the mount point exists on every launch —
-which also makes it a mount point: it cannot be written, deleted or replaced from inside the
-container. A symlinked policy directory, or anything other than a directory in its place, is refused
-rather than mounted, so what is mounted is what was reviewed. The directory is also a closed
+Where `/workspace` is writable, the policy files would be the agent's to rewrite for the next
+session; what refuses that is the write mode itself — "A project loosening its own confinement",
+above. A symlinked policy directory, or anything other than a directory in its place, is refused
+rather than read, so what is read is what was reviewed. The directory is also a closed
 namespace, decided before it has a second tenant: an entry the launcher does not read — a typo'd
-`egres-hosts/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
-same rule `egress-hosts/` applies inside itself (dot-named editor and OS metadata excepted; no
-configuration will ever be named that way). What remains is "A repository that
-ships a wide egress policy", above.
+`egres/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
+same rule `egress/` applies inside itself (dot-named editor and OS metadata excepted; no
+configuration will ever be named that way), and the pre-release `egress-hosts/` layout refuses
+with the exact replacement rather than sitting as stale authority configuration. What remains is
+"A repository that ships a wide egress policy", above.
 
 ### Adding hosts, not patterns
 
-The policy files are `+host` / `-host` deltas against the built-in tier lists, with `blocked`
-applied last. Additions name exact hostnames; the one wildcard is `**.domain` on the taking-away
-side — `-**.domain` in a tier file, bare `**.domain` in `blocked`. That asymmetry is the security
-choice.
+The `allowed` file is a delta over the launcher-owned baseline, and `denied` is applied last,
+under every profile. Additions name exact hostnames; the one wildcard is `**.domain` on the
+taking-away side — `-host **.domain` in `allowed`, `host **.domain` in `denied`. That asymmetry
+is the security choice.
 
-A wildcard *grant* is an unenumerable reach, the opposite of what the allowlist is for: every entry
-is meant to be a destination someone reviewed and chose. `+*.example.com` would not mean "the site"
-— it means every name under it, including ones added later, and for a shared apex like a cloud
-provider's, names an attacker can register or take over. The breadth is in the grant, not the
-matcher, so no careful pattern syntax removes it. In the inspected tier it is also unmintable:
-the leaf certificate must enumerate its names at launch, and a subtree has no enumeration. So
-additions stay exact.
+A wildcard *grant* is an unenumerable reach, the opposite of what an admitted entry is for: every
+entry is meant to be a destination someone reviewed and chose. `+host *.example.com` would not
+mean "the site" — it means every name under it, including ones added later, and for a shared apex
+like a cloud provider's, names an attacker can register or take over. The breadth is in the
+grant, not the matcher, so no careful pattern syntax removes it. For a restricted host it is also
+unmintable: the leaf certificate must enumerate its names at launch, and a subtree has no
+enumeration. So additions stay exact. (`allow-unless-denied` is not this rule's exception but the
+user's own profile decision: it grants the public-HTTPS universe by name of the *profile*, on the
+launch command line, never through a pattern a repository ships.)
 
-A `read-only` addition may carry one of the tags "Reading without being able to write" defines. The
-addition states its host's complete tagging and overrides the built-in entry for that host —
-explicit, and printed as written at every launch — never a merge, which would widen a host to a
-treatment no single line says and leave no way to take one tag away. Two project entries tagging one
-host differently are refused, and so is a tag on anything that takes away: a removal or a blocked
-entry removes the host whole.
+An addition states its host's complete treatment and tagging ("Reading without being able to
+write" defines the tags) and overrides the baseline entry for that host — explicit, and printed
+as written at every launch — never a merge, which would widen a host to a treatment no single
+line says and leave no way to take one tag away. Two entries treating one host differently are
+refused, and so is a tag on anything that takes away: a removal or a denied entry removes the
+host whole. Widening deliberately has no delta spelling — re-adding a restricted baseline host as
+`unrestricted` is refused; a project that needs it writes `.defaults` and states its complete
+replacement policy. And under `allow-unless-denied`, nothing in `allowed` can widen an ambient
+host: removals and `.defaults` cannot subtract from the restricted narrowing set.
 
-A wildcard *removal* is the mirror image: it only ever shrinks the allowlist, so its worst case is
-over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com` drops
-`foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`), which is
-the concise way to drop a provider that ships several subdomains in the built-in lists without
-re-listing the whole thing. The failure a removal *can* have is the opposite of a grant's: a typo
-that matches nothing would leave a default in place while reading as though it were dropped. That is
-closed by refusing any removal — exact or `**` — that matches nothing in its tier's built-in list,
-and any `blocked` entry matching nothing the policy would otherwise allow, so a misspelling is a
-failed launch, not a silent non-narrowing.
+A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
+case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
+drops `foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`),
+which is the concise way to drop a provider that ships several subdomains without re-listing the
+whole thing; `denied`'s `model-provider` form goes one further and stays attached to the group as
+its concrete endpoints change. The failure a removal *can* have is the opposite of a grant's: a
+typo that matches nothing would leave a default in place while reading as though it were dropped.
+For `allowed` removals that is closed by refusing any removal — exact or `**` — matching neither
+the baseline nor an addition, so a misspelling is a failed launch, not a silent non-narrowing.
+A `denied` entry matching nothing the selected profile admits is a startup warning instead, and
+preflight marks it idle: it can still apply under another profile or a future provider
+expansion, and against the ambient host universe a typo cannot be told from a proactive denial.
 
-The files fail closed on every other ambiguity too: an entry missing its `+`/`-` prefix is refused
-(whole-list replacement is `blocked`'s `.defaults`); a host cannot be both
-added and removed in one tier — including a `+host` that falls under a `-**.domain`, a
-contradiction rather than a precedence to resolve; a host both effective tiers claim is refused
-outright; and a filename in `egress-hosts/` that is none of the three — or a stray entry in
-`.ko-agent-sandbox/` itself — is a failed launch, never ignored config. The allow-versus-deny
-ordering that egress proxies get wrong is a bug family kept out by having one rule — taking away
-always wins — and one fixed order, `blocked` last.
-(`.defaults` creates no exception: it is not a host matcher but the name of the built-in lists, so
-what it removes is the built-in contribution — a host a tier file explicitly `+`adds is the
-project's own entry, not a default.) The one no-op that is allowed is deliberate: an identical
-restatement of a built-in entry, so a policy that names a host defensively keeps working when a
-later image adopts it. The cost is that a delta file is not self-contained; the README's
-`--proxy-effective` bullet is the mitigation.
+The files fail closed on every other ambiguity too: an entry outside the two files' grammar; a
+host both added and removed — including a `+host` that falls under a `-host **.domain`, a
+contradiction rather than a precedence to resolve; duplicate additions with different
+treatments; and a filename in `egress/` that is neither `allowed` nor `denied` — or a stray
+entry in `.ko-agent-sandbox/` itself — is a failed launch, never ignored config. The
+allow-versus-deny ordering that egress proxies get wrong is a bug family kept out by having one
+rule — denial wins over either treatment — and one fixed order, `denied` last.
+(`.defaults` creates no exception: it is not a host matcher but the name of the baseline itself,
+which is why it lives in `allowed`, the delta over that baseline — what it removes is the
+baseline contribution before the file's own additions apply.) The one no-op that is allowed is
+deliberate: an identical restatement of a baseline entry, so a policy that names a host
+defensively keeps working when a later image adopts it. The cost is that a delta file is not
+self-contained; the README's `--egress-effective` bullet is the mitigation.
 
 ### Why the policy is not a capability system
 
-The allowlist names destinations, and the tiers name operations — reading, plus git fetch at
+The policy names destinations, and the treatments name operations — reading, plus git fetch at
 the `=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate:
 public reading is meant to be broad —
 discovering and reading arbitrary public repositories is much of what the agents are for — and the
@@ -683,7 +703,7 @@ switches `USER` or chowns to a second uid fails by design — this repository's 
 them, so the sandbox still cannot build itself. The egress topology is inherited, not escaped:
 inner containers share the sandbox's network namespace, their only route out is still the proxy,
 and an image pull is an ordinary logged CONNECT to a registry on the allowlist — Docker Hub,
-`gcr.io` and ECR Public are built in, any other registry is the project's `egress-hosts/read-only`
+`gcr.io` and ECR Public are built in, any other registry is the project's `egress/allowed`
 to add.
 No runtime is preinstalled; podman arrives through the image's `sandbox-install-podman` — which
 refuses outside this mode, and unpacks under `$HOME` as ordinary unprivileged code granted nothing

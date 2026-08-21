@@ -278,50 +278,60 @@ class SandboxProjectTest extends munit.FunSuite:
 
     val linkedPolicy =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(policyGuardVolume(linkedPolicy).isLeft)
+    assert(policyDirError(linkedPolicy).isDefined)
     assert(Files.list(target).count() == 0, "wrote through the policy link")
 
-  test("an absent policy directory is created here, never left for podman"):
+  test("an absent policy directory is empty policy input, never a directory to materialize"):
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
-    assertEquals(
-      policyGuardVolume(dir),
-      Right(s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
-    )
+    assertEquals(policyDirError(dir), None)
+    assert(!Files.exists(dir))
+    // The pin fallback's mount-back alone creates it, because that mount must exist to guard a
+    // writable raw tree.
+    assertEquals(policyGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
     assert(Files.isDirectory(dir))
     // The directory it just created passes the next launch unchanged.
-    assert(policyGuardVolume(dir).isRight)
+    assertEquals(policyDirError(dir), None)
 
   test("a file where the policy directory belongs refuses the launch"):
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
-    assert(policyGuardVolume(dir).isLeft)
+    assert(policyDirError(dir).isDefined)
     // Refused, not replaced: whatever sits there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
   test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
-    // A typo'd egress-hosts one level up would otherwise be silently ignored config — the exact
-    // failure class the unknown-filename rule inside egress-hosts/ exists to kill. Dot-named
+    // A typo'd egress one level up would otherwise be silently ignored config — the exact
+    // failure class the unknown-filename rule inside egress/ exists to kill. Dot-named
     // editor and OS metadata is exempt: no configuration will ever be named that way.
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
-    Files.createDirectory(dir.resolve("egress-hosts"))
+    Files.createDirectory(dir.resolve("egress"))
     Files.createFile(dir.resolve(".DS_Store"))
-    assert(policyGuardVolume(dir).isRight)
+    assertEquals(policyDirError(dir), None)
 
-    Files.createDirectory(dir.resolve("egres-hosts"))
-    val refused = policyGuardVolume(dir)
-    assert(refused.swap.exists(_.contains("egres-hosts")), refused.toString)
+    Files.createDirectory(dir.resolve("egres"))
+    val refused = policyDirError(dir)
+    assert(refused.exists(_.contains("egres")), refused.toString)
 
-  test("a symlinked policy directory or egress-hosts refuses the launch"):
+  test("the pre-release egress-hosts layout refuses with its migration message"):
+    // Stale authority configuration is never silently ignored or translated into broader access.
+    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+    Files.createDirectory(dir)
+    Files.createDirectory(dir.resolve("egress-hosts"))
+    val refused = policyDirError(dir)
+    assert(refused.exists(_.contains("pre-release egress layout")), refused.toString)
+    assert(refused.exists(_.contains("egress/allowed")), refused.toString)
+
+  test("a symlinked policy directory or egress refuses the launch"):
     val project = Files.createTempDirectory("policy-guard")
     val target = Files.createDirectory(project.resolve("target"))
 
     val linked = Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(policyGuardVolume(linked).isLeft)
+    assert(policyDirError(linked).isDefined)
 
     val dir = Files.createDirectory(project.resolve("real.ko-agent-sandbox"))
-    Files.createSymbolicLink(dir.resolve("egress-hosts"), project.resolve("secret"))
-    val refused = policyGuardVolume(dir)
-    assert(refused.isLeft)
+    Files.createSymbolicLink(dir.resolve("egress"), project.resolve("secret"))
+    val refused = policyDirError(dir)
+    assert(refused.isDefined)
     // The refusal names the symlink itself, not merely the policy directory around it.
-    assert(refused.swap.exists(_.contains("egress-hosts")), refused.toString)
+    assert(refused.exists(_.contains("egress")), refused.toString)

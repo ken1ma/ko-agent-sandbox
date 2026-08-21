@@ -531,15 +531,15 @@ mod tests {
             GitPathClass::Control
         );
         assert_eq!(
-            classify_relative_path(b".ko-agent-sandbox/egress-hosts", &[]),
+            classify_relative_path(b".ko-agent-sandbox/egress", &[]),
             GitPathClass::Control
         );
         assert_eq!(
-            classify_relative_path(b".ko-agent-sandbox/egress-hosts/read-only", &[]),
+            classify_relative_path(b".ko-agent-sandbox/egress/allowed", &[]),
             GitPathClass::Control
         );
         assert_eq!(
-            classify_relative_path(b"apps/web/.ko-agent-sandbox/egress-hosts/read-write", &[]),
+            classify_relative_path(b"apps/web/.ko-agent-sandbox/egress/denied", &[]),
             GitPathClass::Control
         );
         // A repository below it is the launcher's own business, not something to re-root into a
@@ -565,7 +565,7 @@ mod tests {
             )
         );
         assert_eq!(
-            authorize_create(&GitContext::SandboxConfig, b"egress-hosts"),
+            authorize_create(&GitContext::SandboxConfig, b"egress"),
             Decision::Deny("protected-sandbox-config: refusing to create inside .ko-agent-sandbox")
         );
         assert_eq!(

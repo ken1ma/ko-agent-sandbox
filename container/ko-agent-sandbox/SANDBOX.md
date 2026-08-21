@@ -7,7 +7,8 @@ You are running inside a container that is the security boundary.
 You are `nonroot` with `no-new-privileges` set and every Linux capability dropped.
 `root` cannot be obtained.
 `apt-get install`, `systemctl` fail.
-Only `/workspace`, `/home/nonroot`, `/tmp`, `/var/tmp` are writable.
+`/home/nonroot`, `/tmp` and `/var/tmp` are writable; whether `/workspace` is, is this session's
+write mode — the appended "Authority in force for this session" section says which.
 
 `/workspace` is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
@@ -92,11 +93,12 @@ so — only they can add it to the image.
 
 ## Network
 
-The only egress is an HTTPS tunnel through `HTTPS_PROXY`, to the hosts in
-`KO_AGENT_SANDBOX_EGRESS_POLICY`.
+The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this session reaches, and
+with what treatment, is the appended "Authority in force for this session" section;
+`KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
 
-Every host but the agent endpoints is read-only. A `git push`, an API `POST`, a `PUT` are refused
-by the proxy, with the reason in the body. GraphQL is a `POST`; read through REST.
+On a restricted host, a `git push`, an API `POST`, a `PUT` are refused by the proxy, with the
+reason in the body. GraphQL is a `POST`; read through REST.
 
 If a host will not connect, name it to the user and stop. Do not look for another route, and do
 not spend the session diagnosing it — they can add a host in seconds.
@@ -125,9 +127,9 @@ At `same-uid` a runtime runs, within four limits:
   nonroot-by-default images with `--user 0`. For databases, run them as processes as above.
 - **Host network only.** `-p` does not exist; services bind 127.0.0.1 directly, and egress is
   still the proxy's.
-- **Most registries need the allowlist.** Docker Hub, `gcr.io` and `public.ecr.aws` work; for any
-  other, ask the user to add it to `.ko-agent-sandbox/egress-hosts/read-only`. A stalled pull is
-  a refused host.
+- **Most registries need the allowlist.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
+  baseline; for any other, ask the user to add `+host <registry> restricted` to
+  `.ko-agent-sandbox/egress/allowed`. A stalled pull is a refused host.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
 podman is not preinstalled. `sandbox-install-podman` fetches and configures it:

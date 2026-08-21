@@ -329,48 +329,56 @@ object SandboxProject:
     (file, dir)
 
   /**
-   * The mount at /workspace/.ko-agent-sandbox must exist on every launch —
-   * even with no policy shipped — so a session cannot fabricate the policy
-   * governing the next one (SECURITY.md). Created here, not by podman,
-   * whose machine path refuses a missing bind source. This creation is the
-   * one enumerated exception to "the project tree is never written by the
-   * launcher" (SECURITY.md, "Silent changes to what you own"). Refused
-   * shapes: a symlink of the directory or of egress-hosts (podman resolves
-   * mount sources on the host, and the policy read follows this check),
-   * anything that is not a directory, or an entry that is no configuration
-   * of this launcher's — the directory is a closed namespace, decided
-   * before it has a second tenant, so a typo'd `egres-hosts/` is a refused
-   * launch and not ignored config, the same rule egress-hosts/ applies
-   * inside itself. The tier files inside egress-hosts/ are vetted where
-   * they are read (EgressProxyPolicy.readPolicyFiles).
+   * Why .ko-agent-sandbox cannot serve as this project's policy directory, or None. Checked in
+   * every write mode before the policy is read — the read is a host-side read either way.
+   * Refused shapes: a symlink of the directory or of egress (podman resolves mount sources on
+   * the host, and the policy read must see the bytes a mounted-back directory would show);
+   * anything that is not a directory; the pre-release egress-hosts layout, refused with the
+   * exact replacement rather than sitting as ignored, stale authority configuration; or an
+   * entry that is no configuration of this launcher's — the directory is a closed namespace,
+   * decided before it has a second tenant, so a typo'd `egres/` is a refused launch and not
+   * ignored config, the same rule egress/ applies inside itself. The policy files inside
+   * egress/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles). An absent
+   * directory is empty policy input, never a directory to materialize.
    */
-  def policyGuardVolume(policyDir: Path): Either[String, String] =
-    def refuse(path: Path): Either[String, String] =
-      Left(
-        s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
-      )
+  def policyDirError(policyDir: Path): Option[String] =
+    def symlinkRefusal(path: Path): String =
+      s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
 
-    val hostsDir = policyDir.resolve("egress-hosts")
-    if Files.isSymbolicLink(policyDir) then refuse(policyDir)
-    else if Files.isSymbolicLink(hostsDir) then refuse(hostsDir)
+    if Files.isSymbolicLink(policyDir) then Some(symlinkRefusal(policyDir))
+    else if Files.isSymbolicLink(policyDir.resolve("egress")) then
+      Some(symlinkRefusal(policyDir.resolve("egress")))
     else if Files.exists(policyDir) && !Files.isDirectory(policyDir) then
-      Left(
+      Some(
         s"error: $policyDir must be a directory\n" +
-          "Remove what is in its place; the launcher recreates the policy directory itself."
+          "Remove what is in its place; the directory holds this project's boundary configuration."
       )
-    else if !Files.exists(policyDir) then
-      Files.createDirectory(policyDir)
-      Right(s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro")
+    else if !Files.exists(policyDir) then None
+    else if Files.exists(policyDir.resolve("egress-hosts")) then
+      Some(EgressProxyPolicy.legacyLayoutRefusal(policyDir.resolve("egress-hosts")))
     else
       strayPolicyEntries(policyDir) match
-        case Vector() => Right(s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro")
+        case Vector() => None
         case stray =>
-          Left(
+          Some(
             s"""error: $policyDir contains ${stray.mkString(", ")}, which this launcher does not read
                |The directory is boundary configuration and holds only:
                |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name (a typo'd
-               |egress-hosts, notes, a backup) must fail the launch, never sit as ignored config.""".stripMargin
+               |egress, notes, a backup) must fail the launch, never sit as ignored config.""".stripMargin
           )
+
+  /**
+   * The pin fallback's mount at /workspace/.ko-agent-sandbox, which must exist even with no
+   * policy shipped so that session cannot fabricate the policy governing the next one
+   * (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only thing
+   * standing between the session and the policy files. Created here when absent, not by podman,
+   * whose machine path refuses a missing bind source — a residue of the pin mode alone: the
+   * FUSE filter enforces the same rule by name (protected-sandbox-config) with no mount and no
+   * created path, and reject mode's read-only tree needs neither. Call after policyDirError.
+   */
+  def policyGuardVolume(policyDir: Path): String =
+    if !Files.exists(policyDir) then Files.createDirectory(policyDir)
+    s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
 
   /**
    * The entries .ko-agent-sandbox may contain. Names beginning with `.` are
@@ -378,7 +386,7 @@ object SandboxProject:
    * configuration will ever be named that way, so the typo protection loses
    * nothing to the exemption.
    */
-  val PolicyDirEntries: Set[String] = Set("egress-hosts")
+  val PolicyDirEntries: Set[String] = Set("egress")
 
   private def strayPolicyEntries(policyDir: Path): Vector[String] =
     Files

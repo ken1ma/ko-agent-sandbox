@@ -31,11 +31,11 @@ class EgressPolicyTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(20, "min")
 
-  /** Write this project's policy delta files, as a repository would ship them. */
-  private def policy(project: Path, tiers: (String, String)*): Unit =
-    val hosts = project.resolve(".ko-agent-sandbox").resolve("egress-hosts")
-    Files.createDirectories(hosts)
-    tiers.foreach((tier, text) => Files.writeString(hosts.resolve(tier), text))
+  /** Write this project's policy files, as a repository would ship them. */
+  private def policy(project: Path, files: (String, String)*): Unit =
+    val egress = project.resolve(".ko-agent-sandbox").resolve("egress")
+    Files.createDirectories(egress)
+    files.foreach((name, text) => Files.writeString(egress.resolve(name), text))
 
   private def curl(session: Session, args: String*): Run =
     exec(session, (Vector("curl", "-sS", "--max-time", "25") ++ args)*)
@@ -79,11 +79,11 @@ class EgressPolicyTest extends munit.FunSuite:
       s"$host failed upstream, but not over its certificate — the origin may simply be down:\n$line"
     )
 
-  private def withSession(tiers: (String, String)*)(body: Session => Unit): Unit =
+  private def withSession(files: (String, String)*)(body: Session => Unit): Unit =
     val project = scratchProject()
     var live: Option[Session] = None
     try
-      policy(project, tiers*)
+      policy(project, files*)
       val session = launch(project, project.resolve("session.log"))
       live = Some(session)
       body(session)
@@ -91,21 +91,21 @@ class EgressPolicyTest extends munit.FunSuite:
       live.foreach(stop)
       discard(project)
 
-  test("a read-only addition is inspected, verified upstream, and opens nothing else"):
+  test("a restricted addition is inspected, verified upstream, and opens nothing else"):
     assume(enabled, requirement)
 
     withSession(
-      "read-only" ->
-        """|+example.com
-           |+expired.badssl.com
-           |+wrong.host.badssl.com
-           |+127.0.0.1.nip.io
+      "allowed" ->
+        """|+host example.com restricted
+           |+host expired.badssl.com restricted
+           |+host wrong.host.badssl.com restricted
+           |+host 127.0.0.1.nip.io restricted
            |""".stripMargin
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
-      // Inspected on the project's own CA, like a built-in read-only host: one leaf, minted at
-      // launch from the resolved policy, or the addition would be a tier the proxy does not police.
+      // Inspected on the project's own CA, like a catalog host: one leaf, minted at launch
+      // from the resolved policy, or the addition would be a treatment the proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
         "the added host is not inspected by this project's CA"
@@ -135,14 +135,14 @@ class EgressPolicyTest extends munit.FunSuite:
   test("an addition states a host's complete tagging, dropping the built-in tag"):
     assume(enabled, requirement)
 
-    // github.com is `=git-fetch` in the built-in policy: read-only, plus the POST a clone's transfer
+    // github.com is `=git-fetch` in the baseline: restricted, plus the POST a clone's transfer
     // leg needs. Re-adding it plain is documented to replace that entry outright.
     val clone = Vector(
       "git", "clone", "--depth", "1", "--quiet",
       "https://github.com/octocat/Hello-World.git", "/tmp/hello"
     )
 
-    withSession("read-only" -> "+github.com\n"): session =>
+    withSession("allowed" -> "+host github.com restricted\n"): session =>
       assertEquals(status(session, "https://github.com/"), "200", "the re-added host lost its read access")
       val attempt = exec(session, clone*)
       assert(!attempt.ok, "SECURITY: the clone succeeded; the built-in git-fetch tag outlived the addition")
@@ -153,7 +153,7 @@ class EgressPolicyTest extends munit.FunSuite:
       assert(exec(session, clone*).ok, "the clone fails under the built-in policy too; this fixture proves nothing")
 
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
-    // The read-only tier's reason to exist (SECURITY.md, "Reading without being able to write"):
+    // The restricted treatment's reason to exist (SECURITY.md, "Reading without being able to write"):
     // on an object store, a signed URL accepts a PUT from anyone holding it, so the method rule
     // inside the tunnel is all that stands between the workspace and the bucket. The rule is
     // host-independent, which is what lets any owner-minted bucket serve as the fixture —
@@ -196,10 +196,10 @@ class EgressPolicyTest extends munit.FunSuite:
         s"${controlLines.dropRight(1).mkString(" ")} ${control.err}"
     )
 
-    withSession("read-only" -> s"+$bucketHost\n"): session =>
+    withSession("allowed" -> s"+host $bucketHost restricted\n"): session =>
       val attempt = curl(session, "-X", "PUT", "--data-binary", "from-the-sandbox", url)
       assert(
-        attempt.text.contains("read-only host"),
+        attempt.text.contains("restricted host"),
         s"SECURITY: the signed PUT was not refused by the proxy: ${attempt.text} ${attempt.err}"
       )
       val audit = run(podman, "logs", session.proxy)
@@ -213,15 +213,14 @@ class EgressPolicyTest extends munit.FunSuite:
     assume(enabled, requirement)
 
     withSession(
-      "blocked" -> ".defaults\n",
-      "read-write" -> "+api.anthropic.com\n"
+      "allowed" -> ".defaults\n+host api.anthropic.com unrestricted\n"
     ): session =>
-      // A read-write host is an opaque tunnel: any status means the CONNECT was granted, and the
-      // agent endpoint answering at all is what "still signs in" means.
+      // An unrestricted host is an opaque tunnel: any status means the CONNECT was granted, and
+      // the agent endpoint answering at all is what "still signs in" means.
       assert(
         curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
         "the re-added agent endpoint is unreachable under the lockdown"
       )
-      // No read-only tier survives, so this session inspects nothing — and the built-ins are gone.
+      // Nothing restricted survives, so this session inspects nothing — and the baseline is gone.
       refusedAtConnect(session, "https://pypi.org/", "a built-in host survived `.defaults`")
       refusedAtConnect(session, "https://github.com/", "a built-in host survived `.defaults`")

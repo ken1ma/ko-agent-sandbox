@@ -58,7 +58,21 @@ object IntegrationSession:
       seen = what
     seen
 
+  /**
+   * The shared sessions state --egress=deny-unless-allowed rather than inheriting it as the
+   * default: the suites' assertions are written against the baseline policy and must not drift
+   * with the default. A suite asserting a profile's own behavior launches through launchWith
+   * and passes its own options.
+   */
   def launch(project: Path, log: Path, extra: (String, String)*): Session =
+    launchWith(project, log, Vector("--egress=deny-unless-allowed"), extra*)
+
+  def launchWith(
+    project: Path,
+    log: Path,
+    options: Vector[String],
+    extra: (String, String)*
+  ): Session =
     // The id the launcher will compute for this directory, derived through its own function rather
     // than parsed back out of whatever container turns up. Waiting for *any* new session instead
     // would adopt one another suite started concurrently — which is exactly what happened when
@@ -69,7 +83,9 @@ object IntegrationSession:
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
     val before = running()
-    val builder = ProcessBuilder("java", "-jar", jar.toString, "sleep", Linger)
+    val builder = ProcessBuilder(
+      (Vector("java", "-jar", jar.toString) ++ options ++ Vector("sleep", Linger))*
+    )
     builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
     extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(project.toFile)

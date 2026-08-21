@@ -29,8 +29,12 @@ class HostileInputTest extends munit.FunSuite:
   private def connect(authority: Array[Byte]): Array[Byte] =
     ascii("CONNECT ") ++ authority ++ ascii(" HTTP/1.1\r\n\r\n")
 
+  /** The baseline as a policy: deny-unless-allowed with no project files. */
+  private lazy val baselinePolicy: ResolvedEgress =
+    resolvePolicy(Some("deny-unless-allowed"), None, None, None)
+
   private def authorize(authority: Array[Byte]): String =
-    authorizeRequest(ConnectRequest.parse(connect(authority)), DefaultAllowedHosts)
+    authorizeRequest(ConnectRequest.parse(connect(authority)), baselinePolicy)
 
   /** "refused" for either typed refusal, the reached host otherwise. An untyped exception escapes
     * and fails the test: a parser that throws something else has read hostile bytes badly, which is
@@ -145,7 +149,7 @@ class HostileInputTest extends munit.FunSuite:
     // the name later resolved and bound to SNI.
     assertEquals(normalizeHost("github.com.."), "github.com.")
     assertNotEquals(normalizeHost(normalizeHost("github.com..")), normalizeHost("github.com.."))
-    DefaultAllowedHosts.foreach: host =>
+    BaselineHosts.keySet.foreach: host =>
       assertEquals(normalizeHost(host), host, host)
       assert(!isIpLiteral(host), host)
 
@@ -194,7 +198,7 @@ class HostileInputTest extends munit.FunSuite:
         .foldLeft(seeds(random.nextInt(seeds.size)))((value, _) => mutate(value))
       try
         val host = authorize(ascii(authority))
-        assert(DefaultAllowedHosts.contains(host), s"reached '$host' from '${printable(authority)}'")
+        assert(BaselineHosts.contains(host), s"reached '$host' from '${printable(authority)}'")
         assert(!isIpLiteral(host), s"authorized the IP literal '$host'")
         assertEquals(normalizeHost(host), host, s"'$host' is not a fixed point")
         reached += 1
@@ -269,31 +273,36 @@ class HostileInputTest extends munit.FunSuite:
     )
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
-  test("no policy delta, however malformed, puts a host in a tier nobody named"):
+  test("no allowed delta, however malformed, admits a host nobody named"):
     // The fail-open direction for policy parsing: a delta that resolves at all must resolve to
-    // built-in hosts plus the ones its own text spells, never to something the arithmetic invented.
-    val tokens = Vector(
-      "+github.com", "-github.com", "-**.github.com", "+pypi.org", "-pypi.org", "+mirror.example",
-      "+mirror.example=git-fetch", "+mirror.example=lfs", "**.pypi.org", ".defaults", "+", "-",
-      "+a..b", "+10.0.0.1", "+[github.com]", "+github.com.", "=git-fetch", "pypi.org",
+    // baseline hosts plus the ones its own text spells, never to something the arithmetic
+    // invented — and never to a treatment wider than a single line says.
+    val lines = Vector(
+      "+host github.com=git-fetch restricted", "-host github.com", "-host **.github.com",
+      "+host pypi.org restricted", "-host pypi.org", "+host mirror.example unrestricted",
+      "+host mirror.example=git-fetch restricted", "+host mirror.example=lfs restricted",
+      "+host mirror.example writable", ".defaults", "+model-provider anthropic",
+      "-model-provider google", "+host", "-host", "+host a..b restricted",
+      "+host 10.0.0.1 unrestricted", "+host [github.com] restricted", "+host github.com. restricted",
+      "+github.com", "pypi.org", "host pypi.org", "=git-fetch",
     )
     var resolved = 0
     var refused = 0
     (1 to 1000).foreach: _ =>
-      val value = (0 to random.nextInt(4)).map(_ => tokens(random.nextInt(tokens.size))).mkString(" ")
+      val value = (0 to random.nextInt(4)).map(_ => lines(random.nextInt(lines.size))).mkString("\n")
       try
-        val tiers = resolveTiers(None, Some(value), None)
+        val policy = resolvePolicy(Some("deny-unless-allowed"), None, Some(value), None)
         val named = value.toLowerCase
-        tiers.readOnly.keySet.foreach: host =>
+        policy.hosts.keySet.foreach: host =>
           assert(
-            DefaultReadOnlyHosts.contains(host) || named.contains(host),
-            s"'$value' produced the unnamed read-only host '$host'"
+            BaselineHosts.contains(host) || named.contains(host),
+            s"'$value' admitted the unnamed host '$host'"
           )
-        tiers.readOnly.foreach: (host, tags) =>
+        policy.restricted.foreach: (host, tags) =>
           assert(tags.subsetOf(KnownTags), s"'$value' tagged '$host' with $tags")
         resolved += 1
       catch case _: IllegalArgumentException => refused += 1
     // The same guard as the authority draws: a delta set that only ever refused would assert
-    // nothing about what a resolved tier may contain.
-    assert(resolved > 0, "no delta ever resolved; the token set stopped producing valid policies")
-    assert(refused > 0, "no delta was ever refused; the token set stopped producing invalid ones")
+    // nothing about what a resolved policy may contain.
+    assert(resolved > 0, "no delta ever resolved; the line set stopped producing valid policies")
+    assert(refused > 0, "no delta was ever refused; the line set stopped producing invalid ones")

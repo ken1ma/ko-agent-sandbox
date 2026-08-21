@@ -26,7 +26,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 ## Deferred — staged-workspace extensions and hardening
 
-These are separate increments after the staged workspace in `../PLAN-NEXT.md`, not reasons to put
+These are separate increments after the staged workspace in `PLAN-STAGED.md`, not reasons to put
 all of its lifecycle into one change. The initial one-stage-per-project sharing unit and its failure
 semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 

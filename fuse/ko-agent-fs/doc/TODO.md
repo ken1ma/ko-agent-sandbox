@@ -139,7 +139,7 @@ downstream can amortize.
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
-  `PLAN-NEXT.md`; restrict passthrough to live mode unless research first establishes a safe revoke
+  `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe revoke
   and re-register protocol. Do not make staged mode inherit a live-only optimization by accident.
 - [ ] The control puts the gap in the invariant rather than the backing, so research
   push-invalidation coherency: nonzero kernel TTLs kept *correct* by the daemon watching the backing

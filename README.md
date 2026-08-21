@@ -2,9 +2,11 @@
 
 Status: Beta on macOS, alpha on Linux and Windows
 
-The sandbox reaches no user files but the project directory (current directory), and no network
-but the restricted one (read-write for model traffic, read-only for curated sites, and
-`git clone`/`pull` for curated remotes).
+The sandbox reaches no user files but the project directory (current directory), and by default
+no network but a launcher-owned baseline: the agents' model providers, plus a curated catalog of
+inspected read-only sites with `git clone`/`pull`, shaped per project by
+`.ko-agent-sandbox/egress/`. Narrower egress — one model provider, or none — and wider — public
+HTTPS — are each an explicit `--egress` profile.
 
     ┌─ Linux / macOS / Windows (WSL, native) ──────────────────────────────────────┐
     │                                                                              │
@@ -18,18 +20,18 @@ but the restricted one (read-write for model traffic, read-only for curated site
     │  │                               │     │  ~/.claude, ~/.codex and      │     │
     │  │                               │     │  ~/.gemini point into it      │     │
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
-    │        │ bind-mounted at /workspace, RW —      │ at ~/persistent-volume, RW  │
-    │        │ git control state (including hooks)   │                             │
-    │        │ at any depth is frozen and            │                             │
-    │        │ no new .git entry can be created      │                             │
+    │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
+    │        │ live, the default) with git control   │                             │
+    │        │ state (including hooks) frozen at any │                             │
+    │        │ depth, or read-only (--write=reject)  │                             │
     │        │                                       │                             │
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
     │  ┌─ sandbox container ────┴──────┐     ┌─ egress proxy container ──────┐     │
-    │  │  runs claude / codex / agy    │     │  https only, exact allowlist, │     │
-    │  │  nonroot user, caps dropped,  │ (a) │  stateless, TLS-inspects      │ (b) │
-    │  │  read-only rootfs             ├────>│  most hosts: read-only        ├─────┼─> Internet
-    │  │                               │     │  with git fetch               │     │
+    │  │  runs claude / codex / agy    │     │  https only, profile-selected │     │
+    │  │  nonroot user, caps dropped,  │ (a) │  hosts, stateless;            │ (b) │
+    │  │  read-only rootfs             ├────>│  TLS-inspects restricted      ├─────┼─> Internet
+    │  │                               │     │  hosts: read-only + git fetch │     │
     │  └───────────────────────────────┘     └────┬──────────────────────────┘     │
     │  (a) internal network, no gateway           │                                │
     │  (b) only egress network                    │                                │
@@ -91,11 +93,32 @@ which is undecided. Until then the jar is built from a checkout — [Development
     Run an AI agent inside the sandbox container.
 
     Usage, from a project directory (which becomes /workspace):
-      java -jar ko-agent-sandbox.jar [<command> [args...]]
+      java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
     <command> runs inside the sandbox: claude, codex, agy, bash, ...
-    Everything is forwarded verbatim except the verbs below, each recognized
-    only as the first argument; whatever follows belongs to the verb:
+    The first non-option ends launcher parsing and everything after it is
+    forwarded verbatim; -- is an optional escape for a command that could
+    look like a launcher option.
+
+    Authority options, selected on every launch and never persisted:
+      --write=reject|staged|live
+                         reject mounts /workspace read-only; live (the
+                         default until the staged workflow ships) is the
+                         shared writable mount; staged is not implemented
+                         yet and refuses
+      --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
+                         deny-unless-allowed (default) admits the
+                         launcher-owned baseline shaped by
+                         .ko-agent-sandbox/egress/; deny-unless-model
+                         admits only the launched agent's model provider
+                         (claude -> anthropic, codex -> openai, agy ->
+                         google; anything else, bash included, admits no
+                         host); allow-unless-denied admits every public
+                         host on port 443, the restricted catalog staying
+                         inspected; deny-all admits none
+
+    Management verbs, each recognized before the command; whatever follows
+    belongs to the verb:
 
       --build            build the container images for the sandbox
       --update           rebuild only the sandbox container without cache,
@@ -108,7 +131,15 @@ which is undecided. Until then the jar is built from a checkout — [Development
                          volume are left untouched
       --reset-all        the same, for every project
 
-      --proxy-effective  print this project's effective egress policy
+      --egress-effective [--] [<command> [args...]]
+                         print the policy the accompanying --egress=<profile>
+                         resolves to for this project, with per-entry
+                         provenance; the command selects the model provider
+                         without being launched
+      --egress-check=<host> [--] [<command> [args...]]
+                         one host's policy decision plus its current DNS
+                         resolution, through a one-shot proxy container on
+                         enforcement's own resolver path
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
@@ -122,7 +153,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
       KO_AGENT_SANDBOX_MEMORY             container memory ceiling, e.g. 8g
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) mounts /workspace through the ko-agent-fs
                                           filter; "none" binds it directly — a weaker boundary,
-                                          pinning only .git/config and .git/hooks (SECURITY.md)
+                                          pinning only .git/config and .git/hooks (SECURITY.md).
+                                          Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows one: unmasks /proc, disables SELinux
                                           labeling and adds SYS_CHROOT for the whole
@@ -131,9 +163,9 @@ which is undecided. Until then the jar is built from a checkout — [Development
                                           screen until you press Enter, because the agent TUIs
                                           clear the screen; "immediate" starts the agent at once
 
-    Files in .ko-agent-sandbox/egress-hosts/ of the project directory modify the egress policy:
-    a +/- delta file per tier ("read-write", "read-only"), and "blocked" applied with highest
-    precedence.
+    Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
+    "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and
+    provider groups under every profile.
 
 
 ### `--build`
@@ -166,9 +198,10 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
 ### Running `<command>`
 
-1. Each launch prints which guard the session runs under, its egress policy and any warning, then
-   waits for Enter: claude's fullscreen TUI and codex clear the screen as they start, so the lines
-   would otherwise never be read. `KO_AGENT_SANDBOX_SESSION_START=immediate` skips the wait.
+1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
+   plus its policy files and any warning, then waits for Enter: claude's fullscreen TUI and codex
+   clear the screen as they start, so the lines would otherwise never be read.
+   `KO_AGENT_SANDBOX_SESSION_START=immediate` skips the wait.
 1. Agent state persists in a per-project named volume.
     1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
        resulting code back.
@@ -196,65 +229,85 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
 ## Egress proxy
 
+### Choosing an egress profile
+
+Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
+A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` —
+TLS-inspected, GET and HEAD only, except that an entry tagged `=git-fetch` also serves
+`git clone`/`fetch` (whose transfer leg is a `POST`) and one tagged `=npm-audit` serves npm's
+install-time audit.
+
+The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google` — each
+expanding to that provider's model, authentication and control-plane endpoints, unrestricted)
+plus a curated catalog of restricted documentation, package-registry and forge hosts.
+
+1. `deny-unless-allowed` (the default) — the baseline, shaped by the project's `allowed` delta.
+1. `deny-unless-model` — only the launched agent's own provider group: `claude` selects
+   `anthropic`, `codex` selects `openai`, `agy` selects `google`. Only the basename of the
+   directly launched command is classified; anything else — `bash`, a wrapper script — selects no
+   provider, admits no host, and says so at startup.
+1. `allow-unless-denied` — every public hostname on port 443, unrestricted, except that the
+   restricted catalog (plus restricted `allowed` additions) stays inspected and `denied` still
+   applies.
+1. `deny-all` — nothing.
+
 ### Modifying the egress policy
 
-The policy is two tiers of destination hosts, and every entry names its tier:
+Create `.ko-agent-sandbox/egress/` in the project directory, holding up to two files. Entries
+are one per line; `#` comments and blank lines ignored.
 
-1. `read-write` — opaque tunnels; only the agent endpoints by default.
-1. `read-only` — TLS-inspected. An entry tagged `=git-fetch` also serves `git clone`/`fetch`,
-   whose transfer leg is a `POST`; one tagged `=npm-audit` serves npm's install-time audit.
+`allowed` is a delta over the baseline, consulted by `deny-unless-allowed` (and, for its
+restricted additions, by `allow-unless-denied`'s narrowing set):
 
-Create `.ko-agent-sandbox/egress-hosts/` in the project directory, holding up to three files: one
-per tier, plus `blocked`. Entries are one per line; `#` comments and blank lines ignored.
+    # egress/allowed
+    +host html.spec.whatwg.org restricted     # a spec site this project reads
+    +host mirror.example=git-fetch restricted # a git mirror: clonable, never pushable
+    -host github.com                          # a baseline host this project drops
+    -host **.example.com                      # a subtree removal: the apex and everything under it
+    -model-provider google                    # a provider group this project never uses
 
-Each tier file is a delta against that tier's built-in list — every entry `+host`, `-host`, or
-`-**.domain` (the domain and everything under it). A `read-only` addition may carry a tag:
+An addition states its host's complete treatment and tagging, and overrides the baseline entry
+for the same host — `+host gitlab.com restricted` makes gitlab.com plain restricted, its baseline
+`=git-fetch` gone. The tags are a closed set the proxy defines: `git-fetch` and `npm-audit`,
+each named for the one operation it opens. Widening has no delta spelling: re-adding a
+restricted baseline host as `unrestricted` is refused; a project that needs it writes
+`.defaults` — which removes the whole baseline before additions apply — and states its complete
+replacement policy:
 
-    # egress-hosts/read-only
-    +html.spec.whatwg.org  # a spec site this project reads
-    +mirror.example=git-fetch  # a git mirror: readable and clonable, never pushable
+    # egress/allowed
+    .defaults                                # nothing built-in survives
+    +model-provider anthropic                # re-added Claude Code's endpoints
 
-An addition states its host's complete tagging and overrides the built-in entry for the same host
-— `+gitlab.com` makes gitlab.com plain read-only, its built-in `=git-fetch` gone. The tags are a
-closed set the proxy defines: `git-fetch` and `npm-audit`, each named for the one operation it
-opens.
+`denied` applies under every profile and only ever takes away — no `+`/`-` prefixes, no tags:
 
-`blocked` takes precedence over all the others, and only ever takes away — bare `host`,
-`**.domain`, or `.defaults`, the entire built-in policy:
+    # egress/denied
+    host telemetry.example.com    # an exact host
+    host **.googleapis.com        # the apex and every subdomain, whatever their treatment
+    model-provider google         # the group, whatever its concrete endpoints become
 
-    # egress-hosts/blocked
-    gitlab.com             # a git host this project never reads from
-    **.googleapis.com      # every googleapis.com host, whatever its tier
-
-`.defaults` names the built-in lists themselves, which turns the other files into a replacement —
-block everything built in, then `+` back what the project needs:
-
-    # egress-hosts/blocked
-    .defaults              # nothing built-in survives
-
-    # egress-hosts/read-write
-    +api.anthropic.com     # re-added Claude Code's endpoints
-    +claude.ai
-    +platform.claude.com
-
-1. When the directory does not exist, the proxy applies the built-in lists baked into its image —
-   conservative and tuned to the author's needs for now, so expect to adjust them.
+1. An absent directory or file is empty policy input; the launcher never creates the directory.
+   An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
+   design, as does `deny-unless-model` under `bash`.
 1. Every ambiguity is a failed launch with the reason printed, checked before a session's
-   resources exist and again as the proxy starts: an entry without its `+`/`-` prefix, a removal
-   or blocked entry matching nothing, a host both tiers claim, an unknown tag, two entries
-   tagging one host differently, a tag anywhere outside a `read-only` addition, a filename that
-   is none of the three (in `.ko-agent-sandbox/` itself too), a policy allowing nothing.
-1. Run `--proxy-effective` to resolve the policy to the concrete tier lists without starting a
-   session. Every start prints your delta files as written — a repository-shipped policy never
-   takes effect unseen — but the resolved lists only as counts: dozens of hostnames would be a
-   line people learn to skip.
+   resources exist and again as the proxy starts: an entry outside the grammar, duplicate
+   additions with different treatments, a host both added and removed, a removal matching
+   neither the baseline nor an addition, an unknown profile, provider, treatment or tag, a
+   filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself too). A
+   `denied` entry matching nothing the profile admits is a startup warning, not an error: it can
+   still apply under another profile, and a typo cannot be told from a proactive denial.
+1. Run `--egress-effective [--] [command]` to resolve the policy — with per-entry provenance —
+   without starting a session, and `--egress-check=<host>` for one host's decision plus its
+   current DNS resolution through the proxy's own resolver path. Every start prints your policy
+   files as written — a repository-shipped policy never takes effect unseen — but the resolved
+   hosts only as counts: dozens of hostnames would be a line people learn to skip.
 1. Editing the files takes effect on the next launch, which starts its own proxy; a session
    already running keeps the policy it started with.
-1. The sandbox cannot edit them: `.ko-agent-sandbox` is mounted back over itself read-only, so a
-   session cannot write the policy governing the next one.
-1. The directory is meant to be committed. Review it in an unfamiliar repository before launching,
-   exactly as you would its build scripts — the `read-write` file most of all.
-1. A host a project adds to `read-only` is TLS-inspected like the built-in ones: the leaf
+1. The sandbox cannot edit them: the write mode itself refuses — reject's read-only tree, or the
+   workspace filter's reserved-name rule for `.ko-agent-sandbox` at any depth — so a session
+   cannot write the policy governing the next one.
+1. The directory is meant to be committed. Review it in an unfamiliar repository before
+   launching, exactly as you would its build scripts — `unrestricted` additions most of all.
+1. A host a project adds as `restricted` is TLS-inspected like the catalog ones: the leaf
    certificate is minted from this project's resolved policy at launch.
 
 ### Audit what has been allowed or denied
@@ -269,19 +322,20 @@ With no arguments, `--proxy-log` prints the
 retained files oldest first — the newest 20 runs, and any older one whose session is still running,
 since a live proxy is still appending to its file; with trailing arguments (`-f` to follow, `--tail
 50` to limit) it runs `podman logs` on the currently running proxies instead, which is the live view
-of the same lines. The startup lines are the effective tier lists and whether inspection is
+of the same lines. The startup lines are the resolved policy and whether inspection is
 active; every connection event after them is one line — `allow`, `deny` or `error`, then the host
 and the method, then for an inspected request the full target, query string included, which is
 what makes an exfiltrating `GET` visible. Those fields are stable for greps and tooling; the
 trailing text is not ([SECURITY.md], "The audit line grammar", has the full inventory). A refusal
 reads as
 
-    deny github.com POST /owner/repo.git/git-receive-pack read-only path
+    deny github.com POST /owner/repo.git/git-receive-pack restricted path
 
 ### TLS inspection
 
-Most of the policy is inspected: the proxy terminates the TLS of every `read-only` host so that
-reading can be allowed and writing refused. Only the `read-write` hosts stay opaque.
+The proxy terminates the TLS of every `restricted` host so that reading can be allowed and
+writing refused. Only `unrestricted` hosts — the model providers, unless a project adds more —
+stay opaque.
 
 The per-project CA lives on the host, under
 
@@ -340,9 +394,11 @@ The per-project CA lives on the host, under
    commands, the shipping musl target included, are in `fuse/ko-agent-fs/doc/testing.md`.
 1. Some suites test a running session rather than a function, and each gates itself on its venue.
    `SessionBoundaryTest` runs **inside** a session — capabilities, mounts, routes, the CONNECT
-   gate, which tier a host is in as told by the certificate it presents, and the filter's refusals
-   — so `sbt testFull` from a session runs it and skips it everywhere else, with no separate
-   command to remember. The rest run on the **host** and launch real containers, so they are
+   gate, a host's treatment as told by the certificate it presents, and the filter's refusals —
+   so `sbt testFull` from a session runs it and skips it everywhere else, with no separate
+   command to remember; its network checks assume the baseline, so run it from an
+   `--egress=deny-unless-allowed` session. The rest run on the **host** and launch real
+   containers, so they are
    opt-in rather than detected: `MountLifecycleTest` drives the workspace filter's mount lifecycle,
    `ProxyContainerTest` inspects the proxy's own container, `RunTopologyTest` covers a run's
    networks, the isolation between concurrent sessions and projects, and `--reset` after a crash,
