@@ -1,0 +1,10 @@
+# Loaded through BASH_ENV, set in /etc/codex/config.toml.
+
+# Restore the PATH captured at image build time.
+if [ -n "${SANDBOX_TOOLCHAIN_PATH-}" ]; then
+    case ":${PATH}:" in
+        *":${SANDBOX_TOOLCHAIN_PATH}:"*) ;;
+        *) PATH="${SANDBOX_TOOLCHAIN_PATH}:${PATH}" ;;
+    esac
+    export PATH
+fi

@@ -175,7 +175,7 @@ which is undecided. Until then the jar is built from a checkout — [Development
         1. Ctrl-C twice in quick succession to quit.
         1. claude 2.1.227: macOS terminal + `/tui fullscreen`:
            selecting text fails to copy to the clipboard even with Shift/Alt.
-    1. `codex`: "Enable device code authorization for Codex" in ChatGPT settings,
+    1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and login,
        then choose "Sign in with Device Code" in the login UI.
     1. `agy`: sign-in works like `claude`: open the printed URL in an external browser and paste
        the code back. Unlike `claude` and `codex`, permission prompts are not pre-disabled (agy has
