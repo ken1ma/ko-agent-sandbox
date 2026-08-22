@@ -300,6 +300,35 @@ object AgentSandboxLauncher:
    * and the "ImgTagVersion mirrors" test fails when they disagree.
    */
   val ImgTagVersion = "13.6-25.0.4-0"
+  val ProxyBuildImage = "ko-agent-egress-proxy-build:cache"
+  val KoAgentFsBuildImage = "ko-agent-fs-build:cache"
+  val SelfTestBuildImage = "ko-agent-self-test-build:cache"
+
+  /** Every image tag whose lifecycle belongs to --build, in dependency order. */
+  def buildImageTags(version: String): Vector[String] =
+    Vector(
+      s"debian-temurin:$version",
+      s"debian-coursier:$version",
+      "ko-agent-sandbox:latest",
+      ProxyBuildImage,
+      "ko-agent-egress-proxy:latest",
+      KoAgentFsBuildImage,
+      "ko-agent-fs:latest"
+    )
+
+  /** The two image tags whose lifecycle belongs to --self-test, in dependency order. */
+  val SelfTestImageTags = Vector(SelfTestBuildImage, "ko-agent-self-test:latest")
+
+  /** Every tag an image build must protect while replaying an interrupted cleanup. */
+  def managedImageTags(version: String): Vector[String] = buildImageTags(version) ++ SelfTestImageTags
+
+  /** Identity of the self-test sources and the sandbox image they actually inherit. */
+  def selfTestBundleId(fsSourceId: String, selfTestSourceId: String, sandboxImageId: String): String =
+    bundleSourceId(Vector(
+      "ko-agent-fs" -> fsSourceId.getBytes(StandardCharsets.UTF_8),
+      "ko-agent-self-test" -> selfTestSourceId.getBytes(StandardCharsets.UTF_8),
+      "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8)
+    ))
 
   /**
    * The build context is bundled into the jar (build.sbt) so --build works
@@ -375,15 +404,16 @@ object AgentSandboxLauncher:
     )
 
   /**
-   * The five images in dependency order. Leaf images stay on `latest`: a
+   * The five product images and both named build caches, in dependency order. Leaf images stay on
+   * `latest`: a
    * rebuild there picks up new agent releases, which the base version says
    * nothing about; the base is an image label instead. debian-temurin does
    * not consume IMG_TAG_VER, and neither does ko-agent-fs — it builds on
    * rust:slim with its own pins, and its identity is the source digest.
    *
-   * `--save-stages` keeps the proxy's compile-and-test stage as ordinary
-   * layer cache; podman otherwise deletes non-final stages, re-running the
-   * expensive sbt step on every --build.
+   * Each multi-stage compile stage is built first under a stable cache tag. The final build reuses
+   * its ordinary local layer cache; naming the stage keeps one current cache image and lets the
+   * successful build remove the previous one by the same exact-id rule as every final image.
    *
    * The bundle id travels twice: as BUNDLE_ID for the Containerfile's LABEL
    * (what a hand-run `podman build` from a checkout uses) and as `--label`
@@ -413,10 +443,19 @@ object AgentSandboxLauncher:
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
       ),
       Vector(
-        podman, "build", "--save-stages", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
+        "-t", ProxyBuildImage, "ko-agent-egress-proxy"
+      ),
+      Vector(
+        podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$proxyBundleId",
         "--label", s"$BundleLabel=$proxyBundleId",
         "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy"
+      ),
+      Vector(
+        podman, "build", "--target", "build",
+        "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
+        "-t", KoAgentFsBuildImage, "ko-agent-fs"
       ),
       Vector(
         podman, "build", "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
@@ -457,6 +496,14 @@ object AgentSandboxLauncher:
   ): Vector[Vector[String]] =
     Vector(
       Vector(
+        podman, "build", "--target", "build",
+        "--build-arg", s"RUST_VERSION=$rustVersion",
+        "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
+        "--label", s"$BundleLabel=$selfTestBundleId",
+        "-f", "ko-agent-self-test/Containerfile",
+        "-t", SelfTestBuildImage, "."
+      ),
+      Vector(
         podman, "build",
         "--build-arg", s"RUST_VERSION=$rustVersion",
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
@@ -467,9 +514,9 @@ object AgentSandboxLauncher:
     )
 
   /**
-   * The verification container. Nothing is bound in and nothing is written out: the suites build
-   * their own trees under the container's /tmp, so a run leaves the host, the project and the
-   * Podman machine untouched, and `--rm` takes the container with it.
+   * The verification container. Nothing is bound in or written out: the suites build their own
+   * trees under the container's /tmp, and `--rm` takes the container with it. Image building and
+   * replacement cleanup belong to selfTest, not this command.
    *
    * `--cap-add SYS_ADMIN` is the one place this project runs a container with more than a session
    * gets, and it is never a session's container. It is not redundant with the setuid fusermount3
@@ -510,7 +557,7 @@ object AgentSandboxLauncher:
     )
 
   /**
-   * --build's check of what it just stamped, immediately after the builds:
+   * A build's check of what it just stamped, immediately after committing the images:
    * the layer-cache staleness above is exactly the kind of silent drift the
    * version lock exists for, so the freshly committed labels are read back
    * rather than assumed. A failure here is podman misbehaving, not a wrong
@@ -525,7 +572,7 @@ object AgentSandboxLauncher:
         fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
       if inspected.text.trim != id then
         fail(
-          s"""error: --build committed $image with a stale bundle label
+          s"""error: the image build committed $image with a stale bundle label
              |  launcher bundle digest: $id
              |  image label $BundleLabel: ${
                 if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
@@ -533,9 +580,7 @@ object AgentSandboxLauncher:
              |podman's layer cache can serve a LABEL derived from a changed
              |build arg stale (buildah #5501); this launcher passes --label to
              |bypass that cache, so this failing means podman dropped --label
-             |too. Clear the cache and rebuild:
-             |  podman image rm $image && podman image prune -f
-             |then run --build again.""".stripMargin
+             |too. Remove $image, then rerun the same launcher verb.""".stripMargin
         )
 
   def runBuilds(context: Path, commands: Vector[Vector[String]]): Unit =
@@ -552,6 +597,222 @@ object AgentSandboxLauncher:
           exit
         )
     deleteRecursively(context)
+
+  /** The output tags committed by build commands, in their dependency order. */
+  def buildOutputImages(commands: Vector[Vector[String]]): Vector[String] =
+    commands.flatMap: command =>
+      command.sliding(2).collectFirst:
+        case Seq("-t", image) => image
+
+  private def localImageTag(tag: String): String = tag.stripPrefix("localhost/")
+
+  private def imageRepository(tag: String): String =
+    val normalized = localImageTag(tag)
+    val separator = normalized.lastIndexOf(':')
+    if separator < 0 then normalized else normalized.take(separator)
+
+  case class TaggedImage(tag: String, id: String)
+
+  // Podman distinguishes these by case: `.Id` is the full SHA, while `.ID` is truncated.
+  def imageListCommand(podman: String): Vector[String] =
+    Vector(podman, "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}\t{{.Id}}")
+
+  /** All named images, including tags from older launcher versions. */
+  def existingImageTags(podman: String, failure: String = "build did not start"): Vector[TaggedImage] =
+    val listed = run(imageListCommand(podman)*)
+    if !listed.ok then fail(s"error: $failure; could not list images\n${listed.err}")
+    listed.text.linesIterator.flatMap: line =>
+      line.split('\t') match
+        case Array(tag, id) if tag.nonEmpty && id.nonEmpty => Some(TaggedImage(tag, id))
+        case _ => fail(s"error: $failure; podman returned an unrecognized image listing line: $line")
+    .toVector
+
+  def imageIdsForTags(existing: Vector[TaggedImage], images: Vector[String]): Vector[String] =
+    val byTag = existing.map(image => localImageTag(image.tag) -> image.id).toMap
+    images.flatMap(image => byTag.get(localImageTag(image)))
+
+  def requiredImageId(existing: Vector[TaggedImage], image: String, failure: String): String =
+    imageIdsForTags(existing, Vector(image)).headOption.getOrElse:
+      fail(s"error: $failure; could not find the image id for $image")
+
+  /**
+   * Old launcher versions varied only the two base repositories' tags. The fixed leaf and cache
+   * tags are deliberately excluded: a supported custom sandbox or proxy image may use another tag
+   * in the same repository. Leaves precede bases. `localhost/` is Podman's display form for the
+   * unqualified names the launcher passes to `build -t`.
+   */
+  def staleVersionedBaseImageTags(
+    existing: Vector[TaggedImage],
+    current: Vector[String]
+  ): Vector[TaggedImage] =
+    val versionedRepositories = Set("debian-temurin", "debian-coursier")
+    val currentTags = current.map(localImageTag).toSet
+    val repositoryOrder = current.map(imageRepository).zipWithIndex.toMap
+    existing.distinctBy(_.tag)
+      .filter: image =>
+        val normalized = localImageTag(image.tag)
+        versionedRepositories.contains(imageRepository(normalized)) && !currentTags.contains(normalized)
+      .sortBy(image => -repositoryOrder(imageRepository(image.tag)))
+
+  /** On-demand self-test outputs whose current-looking tags belong to another bundle. */
+  def staleSelfTestImages(
+    podman: String,
+    existing: Vector[TaggedImage],
+    expectedBundleId: String
+  ): Vector[TaggedImage] =
+    val selfTestTags = SelfTestImageTags.toSet
+    existing.filter(image => selfTestTags.contains(localImageTag(image.tag))).filter: image =>
+        val inspected = run(podman, "image", "inspect", "--format", BundleLabelTemplate, image.id)
+        if !inspected.ok then fail(s"error: could not inspect ${image.tag} before the build\n${inspected.err}")
+        inspected.text.trim != expectedBundleId
+
+  private val FullImageId = "(?:sha256:)?[0-9a-f]{64}".r
+
+  private def imageCleanupJournalEntries(path: Path): Vector[String] =
+    readIfPresent(path).toVector.flatMap(_.linesIterator.map(_.trim).filter(_.nonEmpty))
+
+  def validateImageCleanupIds(path: Path, ids: Vector[String]): Either[String, Vector[String]] =
+    ids.find(id => !FullImageId.matches(id)) match
+      case Some(id) =>
+        Left(
+          s"error: invalid image id in cleanup journal $path: $id\n" +
+            "Run --reset-all to discard malformed entries while retaining valid pending cleanup."
+        )
+      case None     => Right(ids.distinct)
+
+  def readImageCleanupJournal(path: Path): Either[String, Vector[String]] =
+    validateImageCleanupIds(path, imageCleanupJournalEntries(path))
+
+  def writeImageCleanupJournal(path: Path, ids: Vector[String]): Unit =
+    val validated = validateImageCleanupIds(path, ids).fold(fail(_), identity)
+    if validated.isEmpty then Files.deleteIfExists(path)
+    else writePrivate(path, validated.mkString("", "\n", "\n"))
+
+  /** Drop only malformed entries; valid ids remain the ownership record for the next build. */
+  def repairImageCleanupJournal(path: Path): Vector[String] =
+    val entries = imageCleanupJournalEntries(path)
+    val (valid, invalid) = entries.partition(FullImageId.matches)
+    if invalid.nonEmpty then
+      System.err.println(s"discarding ${invalid.size} malformed entry(s) from image cleanup journal: $path")
+      writeImageCleanupJournal(path, valid)
+    invalid
+
+  /**
+   * The cleanup order recorded before a build mutates any tag: an interrupted run's unfinished
+   * ids first, then this run's leaves before bases, then stale named bases in that same order.
+   */
+  def imageCleanupCandidates(
+    pending: Vector[String],
+    before: Vector[String],
+    staleTags: Vector[TaggedImage]
+  ): Vector[String] = (pending ++ before.reverse ++ staleTags.map(_.id)).distinct
+
+  /** Newly discovered child images must precede the parent candidates they keep alive. */
+  def prependImageCleanupDependents(
+    candidates: Vector[String],
+    dependents: Vector[TaggedImage]
+  ): Vector[String] = (dependents.map(_.id) ++ candidates).distinct
+
+  def prepareImageCleanupJournal(
+    path: Path,
+    before: Vector[String],
+    staleTags: Vector[TaggedImage]
+  ): Vector[String] =
+    val pending = readImageCleanupJournal(path).fold(fail(_), identity)
+    val candidates = imageCleanupCandidates(pending, before, staleTags)
+    writeImageCleanupJournal(path, candidates)
+    candidates
+
+  /**
+   * Classify self-test tags only after a build has committed the sandbox tag they should inherit.
+   * Extend the journal before returning them to the caller for untagging or removal.
+   */
+  def includeStaleSelfTestCleanup(
+    podman: String,
+    journal: Path,
+    initialCandidates: Vector[String],
+    staleBaseTags: Vector[TaggedImage],
+    fsSourceId: String,
+    selfTestSourceId: String
+  ): (Vector[String], Vector[TaggedImage]) =
+    val currentTags = existingImageTags(podman, "cleanup did not start")
+    val sandboxImageId = requiredImageId(
+      currentTags,
+      "ko-agent-sandbox:latest",
+      "cleanup did not start"
+    )
+    val selfTestId = selfTestBundleId(fsSourceId, selfTestSourceId, sandboxImageId)
+    val staleSelfTestTags = staleSelfTestImages(podman, currentTags, selfTestId)
+    val candidates = prependImageCleanupDependents(initialCandidates, staleSelfTestTags)
+    writeImageCleanupJournal(journal, candidates)
+    candidates -> (staleSelfTestTags ++ staleBaseTags)
+
+  def supersededImageRemoveCommands(
+    podman: String,
+    candidates: Vector[String],
+    current: Vector[String]
+  ): Vector[Vector[String]] =
+    val currentIds = current.toSet
+    candidates.distinct.filterNot(currentIds).map: id =>
+      Vector(podman, "image", "rm", "--ignore", id)
+
+  def protectedImageNames(
+    imageNames: Vector[String],
+    staleTags: Vector[TaggedImage]
+  ): Vector[String] =
+    val staleNames = staleTags.map(image => localImageTag(image.tag)).toSet
+    imageNames.filterNot(image => staleNames.contains(localImageTag(image)))
+
+  private val ImageUsingContainer =
+    "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
+
+  def supersededImageRetentionNote(imageId: String, error: String): String =
+    ImageUsingContainer.findFirstMatchIn(error) match
+      case Some(matched) =>
+        s"note: keeping superseded image $imageId while container ${matched.group(1)} still uses it;\n" +
+          "a later --build, --update, or --self-test will retry after that container is removed"
+      case None =>
+        s"note: keeping superseded image $imageId; Podman did not remove it\n${error.trim}"
+
+  def removeSupersededImages(
+    podman: String,
+    candidates: Vector[String],
+    imageNames: Vector[String],
+    staleTags: Vector[TaggedImage]
+  ): Vector[String] =
+    val current = imageIdsForTags(
+      existingImageTags(podman, "cleanup did not start"),
+      protectedImageNames(imageNames, staleTags)
+    )
+    val currentIds = current.toSet
+    staleTags.filterNot(image => currentIds.contains(image.id)).foreach: image =>
+      val command = Vector(podman, "image", "untag", image.id, image.tag)
+      System.err.println(s"removing launcher tag from an older build: ${image.tag}")
+      System.err.println(command.mkString(" "))
+      val untagged = run(command*)
+      if !untagged.ok then
+        System.err.println(s"note: keeping stale launcher tag ${image.tag}\n${untagged.err}")
+    val remaining = Vector.newBuilder[String]
+    supersededImageRemoveCommands(podman, candidates, current).foreach: command =>
+      System.err.println(s"removing launcher image from an older build: ${command.last}")
+      System.err.println(command.mkString(" "))
+      val removed = run(command*)
+      if !removed.ok then
+        remaining += command.last
+        System.err.println(supersededImageRetentionNote(command.last, removed.err))
+    remaining.result()
+
+  /**
+   * Image tags are workstation-wide, so every image-producing verb shares one lock and journal.
+   * The journal is written before the first build: if the process dies after a tag moves, the next
+   * invocation still knows the exact old id. A global lock keeps two launcher versions from
+   * retagging `latest` around each other's snapshots.
+   */
+  def withImageBuildLock[A](os: Os)(body: Path => A): A =
+    requireStateRootOutside(os, workingDirectory())
+    val imageState = stateRoot(os).resolve("image-build")
+    withFileLock(imageState.resolve("lock")):
+      body(imageState.resolve("cleanup.ids"))
 
   /**
    * The generated tail every launcher-made name carries: the folded directory slug, the
@@ -678,18 +939,39 @@ object AgentSandboxLauncher:
         """error: the sandbox image is not built, and --self-test does not build it
           |
           |Run --build first; --self-test then layers its suites on top of it.""".stripMargin
-      )
+    )
 
-    val context = unpackBuildContext()
-    runBuilds(
-      context,
-      selfTestBuildCommands(
+    withImageBuildLock(os): journal =>
+      val context = unpackBuildContext()
+      val existingTags = existingImageTags(podman)
+      val sandboxImageId = requiredImageId(existingTags, "ko-agent-sandbox:latest", "self-test did not start")
+      val fsSourceId = koAgentFsSourceId(context)
+      val bundleId = selfTestBundleId(
+        fsSourceId,
+        contextSourceId(context, "ko-agent-self-test"),
+        sandboxImageId
+      )
+      val commands = selfTestBuildCommands(
         podman,
         pinnedRustVersion(context),
-        koAgentFsSourceId(context),
-        contextSourceId(context, "ko-agent-self-test")
+        fsSourceId,
+        bundleId
       )
-    )
+      val images = buildOutputImages(commands)
+      val candidates = prepareImageCleanupJournal(
+        journal,
+        imageIdsForTags(existingTags, images),
+        Vector.empty
+      )
+      runBuilds(context, commands)
+      verifyBuiltBundleLabels(SelfTestImageTags.map(_ -> bundleId))
+      val remaining = removeSupersededImages(
+        podman,
+        candidates,
+        managedImageTags(ImgTagVersion),
+        Vector.empty
+      )
+      writeImageCleanupJournal(journal, remaining)
 
     System.err.println(s"venue: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
     val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
@@ -922,15 +1204,21 @@ object AgentSandboxLauncher:
    * (stray or live), the persisted agent-state
    * volumes (signing every agent out), the Podman networks, all the TLS
    * inspection CAs, every cached policy resolution, every retained proxy
-   * audit log, and every workspace-filter mount. It deliberately does NOT remove the built images; those
-   * are `--build` and `--update`'s to manage and are costly to rebuild
-   * (`podman image rm` removes them by hand). Every command is printed before
-   * it runs. Networks and CAs are recreated on the next launch.
+   * audit log, and every workspace-filter mount. It deliberately does NOT remove built images or
+   * their valid pending-cleanup journal: image-producing verbs own both, and the images are costly
+   * to rebuild (`podman image rm` removes them by hand). A malformed journal is repaired because
+   * it names no image the launcher can safely remove. Every command is printed before it runs.
+   * Networks and CAs are recreated on the next launch.
    */
   def resetAll(os: Os): Nothing =
     // The workstation-wide deletions below run wherever the state root points; checked against
     // the current directory before any of them, like every other verb that touches it.
     requireStateRootOutside(os, resolveProjectDir())
+    val imageState = stateRoot(os).resolve("image-build")
+    val cleanupJournal = imageState.resolve("cleanup.ids")
+    if Files.exists(cleanupJournal) then
+      withFileLock(imageState.resolve("lock")):
+        repairImageCleanupJournal(cleanupJournal)
     var failures = 0
 
     def listed(command: String*): Vector[String] =
@@ -1231,29 +1519,80 @@ object AgentSandboxLauncher:
         noAuthorityOptions("--build")
         if rest.nonEmpty then fail("error: --build takes no further arguments")
         requirePodman(currentOs)
-        val context = unpackBuildContext()
-        val fsSourceId = koAgentFsSourceId(context)
-        val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
-        val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
-        runBuilds(
-          context,
-          buildCommands(podman, ImgTagVersion, fsSourceId, sandboxBundleId, proxyBundleId)
-        )
-        verifyBuiltBundleLabels(Seq(
-          "ko-agent-sandbox:latest" -> sandboxBundleId,
-          "ko-agent-egress-proxy:latest" -> proxyBundleId
-        ))
-        installKoAgentFs(podman, currentOs, fsSourceId)
+        withImageBuildLock(currentOs): journal =>
+          val context = unpackBuildContext()
+          val fsSourceId = koAgentFsSourceId(context)
+          val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
+          val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
+          val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
+          val commands =
+            buildCommands(podman, ImgTagVersion, fsSourceId, sandboxBundleId, proxyBundleId)
+          val images = buildOutputImages(commands)
+          val existingTags = existingImageTags(podman)
+          val staleBaseTags = staleVersionedBaseImageTags(existingTags, buildImageTags(ImgTagVersion))
+          val initialCandidates = prepareImageCleanupJournal(
+            journal,
+            imageIdsForTags(existingTags, images),
+            staleBaseTags
+          )
+          runBuilds(context, commands)
+          verifyBuiltBundleLabels(Seq(
+            "ko-agent-sandbox:latest" -> sandboxBundleId,
+            "ko-agent-egress-proxy:latest" -> proxyBundleId
+          ))
+          installKoAgentFs(podman, currentOs, fsSourceId)
+          val (candidates, staleTags) = includeStaleSelfTestCleanup(
+            podman,
+            journal,
+            initialCandidates,
+            staleBaseTags,
+            fsSourceId,
+            selfTestSourceId
+          )
+          val remaining = removeSupersededImages(
+            podman,
+            candidates,
+            managedImageTags(ImgTagVersion),
+            staleTags
+          )
+          writeImageCleanupJournal(journal, remaining)
         sys.exit(0)
 
       case Some(("--update", rest)) =>
         noAuthorityOptions("--update")
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman(currentOs)
-        val context = unpackBuildContext()
-        val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
-        runBuilds(context, updateCommands(podman, ImgTagVersion, sandboxBundleId))
-        verifyBuiltBundleLabels(Seq("ko-agent-sandbox:latest" -> sandboxBundleId))
+        withImageBuildLock(currentOs): journal =>
+          val context = unpackBuildContext()
+          val fsSourceId = koAgentFsSourceId(context)
+          val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
+          val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
+          val commands = updateCommands(podman, ImgTagVersion, sandboxBundleId)
+          val images = buildOutputImages(commands)
+          val existingTags = existingImageTags(podman)
+          val staleBaseTags = staleVersionedBaseImageTags(existingTags, buildImageTags(ImgTagVersion))
+          val initialCandidates = prepareImageCleanupJournal(
+            journal,
+            imageIdsForTags(existingTags, images),
+            staleBaseTags
+          )
+          runBuilds(context, commands)
+          verifyBuiltBundleLabels(Seq("ko-agent-sandbox:latest" -> sandboxBundleId))
+          val (candidates, staleTags) = includeStaleSelfTestCleanup(
+            podman,
+            journal,
+            initialCandidates,
+            staleBaseTags,
+            fsSourceId,
+            selfTestSourceId
+          )
+          val remaining = removeSupersededImages(
+            podman,
+            candidates,
+            managedImageTags(ImgTagVersion),
+            staleTags
+          )
+          writeImageCleanupJournal(journal, remaining)
         sys.exit(0)
 
       case Some(("--reset", rest)) =>

@@ -9,8 +9,10 @@
 # installs it where the filter must run — on macOS and Windows that is inside
 # the Podman machine, not the host.
 #
+#     podman build --target build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+#         -t ko-agent-fs-build:cache ko-agent-fs
 #     podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
-#         -t ko-agent-fs:<tag> ko-agent-fs
+#         -t ko-agent-fs:latest ko-agent-fs
 #
 # Compiled from source on the user's own machine rather than shipped as a
 # binary, so what runs is what the user can read. The output is a *static*

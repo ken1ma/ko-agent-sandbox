@@ -127,9 +127,9 @@ which is undecided. Until then the jar is built from a checkout — [Development
                          build the self-test image on top of the sandbox
                          one and run the workspace filter's own suites in
                          it, mounted cases included; <filter> selects one
-                         case or family. Leaves nothing behind: no bind
-                         mount, no volume, and the Podman machine is not
-                         touched
+                         case or family. Removes self-test images it replaces;
+                         leaves no bind mount or volume and does not change
+                         Podman machine configuration
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
@@ -181,6 +181,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
     1. The images' build context is bundled in the jar, so it runs standalone.
     1. Run it again after upgrading the jar: a launch refuses images an older jar built.
         1. `--update` is for new agent releases, not for that.
+    1. Its last step removes launcher images belonging to older versions. `--update` performs the
+       same cleanup.
 1. Also compiles `ko-agent-fs`, the workspace filter,
    from bundled source and installs the binary at `~/.local/share/ko-agent-sandbox/ko-agent-fs` —
    inside the Podman machine on macOS and Windows, in your home on native Linux.

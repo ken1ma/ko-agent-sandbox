@@ -200,10 +200,13 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
    `KoAgentFs.scala`). For this image the launcher first
    digests the bundled source and passes the digest in:
 
-       podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> -t ko-agent-fs:<tag> ko-agent-fs
+       podman build --target build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+           -t ko-agent-fs-build:cache ko-agent-fs
+       podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+           -t ko-agent-fs:latest ko-agent-fs
 
-   The build gates on licences (`deny.toml`) and runs the test suite before it produces a binary, so
-   a licence or test failure stops the image rather than shipping.
+   The build gates on licences (`deny.toml`) before it produces a binary. The test suite runs in
+   the separately built `ko-agent-self-test` image (`testing.md`).
 3. **Extract the binary.** The image's final stage is `scratch` holding only `/ko-agent-fs`, so
    there is exactly one thing to take:
 

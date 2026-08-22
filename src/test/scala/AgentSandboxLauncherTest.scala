@@ -6,6 +6,7 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
+import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.*
 import KoAgentFs.bundledSourceId
@@ -79,6 +80,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "debian-coursier",
       "ko-agent-sandbox",
       "ko-agent-egress-proxy",
+      "ko-agent-egress-proxy",
+      "ko-agent-fs",
       "ko-agent-fs"
     ))
     assert(commands(0).contains("debian-temurin:1.2-3"))
@@ -86,36 +89,179 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!commands(0).contains("--build-arg"))
     assert(commands(1).contains("debian-coursier:1.2-3"))
     assert(commands(2).contains("ko-agent-sandbox:latest"))
-    assert(commands(3).contains("ko-agent-egress-proxy:latest"))
-    // Keeps the proxy's compile stage cached across builds; see the buildCommands doc comment.
-    assert(commands(3).contains("--save-stages"))
-    // The single-stage builds have no stages to save.
-    (commands.take(3) :+ commands(4)).foreach(command => assert(!command.contains("--save-stages")))
-    commands.slice(1, 4).foreach: command =>
+    assert(commands(3).contains(ProxyBuildImage))
+    assert(commands(3).containsSlice(Seq("--target", "build")))
+    assert(commands(4).contains("ko-agent-egress-proxy:latest"))
+    commands.foreach(command => assert(!command.contains("--save-stages")))
+    commands.slice(1, 5).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "IMG_TAG_VER=1.2-3")))
     // ko-agent-fs builds on rust:slim with its own pins; its identity is the source digest instead.
-    assert(commands(4).contains("ko-agent-fs:latest"))
-    assert(commands(4).containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=sourceid")))
-    assert(!commands(4).exists(_.startsWith("IMG_TAG_VER=")))
+    assert(commands(5).contains(KoAgentFsBuildImage))
+    assert(commands(5).containsSlice(Seq("--target", "build")))
+    assert(commands(6).contains("ko-agent-fs:latest"))
+    commands.slice(5, 7).foreach: command =>
+      assert(command.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=sourceid")))
+      assert(!command.exists(_.startsWith("IMG_TAG_VER=")))
     // The two launcher-facing images carry their bundle digest (the version lock); the base
     // images and the filter do not — the filter's identity is its own source id above. The
     // digest travels both as the Containerfile's build arg and as a commit-time --label,
     // because podman's layer cache serves ARG-derived LABEL steps stale (buildCommands doc).
     assert(commands(2).containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
-    assert(commands(3).containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
+    assert(commands(4).containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
     assert(commands(2).containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
-    assert(commands(3).containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
-    (commands.take(2) :+ commands(4)).foreach: command =>
+    assert(commands(4).containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
+    (commands.take(2) ++ Vector(commands(3), commands(5), commands(6))).foreach: command =>
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.contains("--label"))
 
   test("update rebuilds only the sandbox image, without cache"):
     val commands = updateCommands("podman", "1.2-3", "sandboxid")
     assertEquals(commands.map(_.last), Vector("ko-agent-sandbox"))
+    assertEquals(buildOutputImages(commands), Vector("ko-agent-sandbox:latest"))
     assert(commands.head.contains("--no-cache"))
     assert(commands.head.contains("ko-agent-sandbox:latest"))
     assert(commands.head.containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
     assert(commands.head.containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
+
+  test("build cleanup removes replaced ids and launcher tags from older versions"):
+    val builds = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid")
+    assertEquals(
+      buildOutputImages(builds),
+      buildImageTags("1.2-3")
+    )
+    assertEquals(
+      staleVersionedBaseImageTags(
+        Vector(
+          TaggedImage("localhost/debian-temurin:1.1-2", "temurin-old"),
+          TaggedImage("debian-coursier:1.1-2", "coursier-old"),
+          TaggedImage("localhost/debian-temurin:1.2-3", "temurin-current"),
+          TaggedImage("localhost/ko-agent-sandbox:latest", "sandbox-current"),
+          TaggedImage("ko-agent-sandbox:mine", "custom-sandbox"),
+          TaggedImage("ko-agent-egress-proxy:mine", "custom-proxy"),
+          TaggedImage("ko-agent-self-test:latest", "self-test"),
+          TaggedImage("example.invalid/ko-agent-sandbox:old", "other-project")
+        ),
+        buildImageTags("1.2-3")
+      ),
+      Vector(
+        TaggedImage("debian-coursier:1.1-2", "coursier-old"),
+        TaggedImage("localhost/debian-temurin:1.1-2", "temurin-old")
+      )
+    )
+    assertEquals(
+      supersededImageRemoveCommands(
+        "podman",
+        Vector("fs-old", "proxy-old", "base-old", "coursier-old", "temurin-old"),
+        Vector("base-current", "proxy-current", "fs-current")
+      ),
+      Vector(
+        Vector("podman", "image", "rm", "--ignore", "fs-old"),
+        Vector("podman", "image", "rm", "--ignore", "proxy-old"),
+        Vector("podman", "image", "rm", "--ignore", "base-old"),
+        Vector("podman", "image", "rm", "--ignore", "coursier-old"),
+        Vector("podman", "image", "rm", "--ignore", "temurin-old")
+      )
+    )
+    assertEquals(
+      protectedImageNames(
+        managedImageTags("1.2-3"),
+        Vector(TaggedImage("localhost/ko-agent-self-test:latest", "self-test-old"))
+      ),
+      managedImageTags("1.2-3").filterNot(_ == "ko-agent-self-test:latest")
+    )
+
+  test("an interrupted image cleanup is journalled in removal order"):
+    def id(digit: Char): String = s"sha256:${digit.toString * 64}"
+
+    assertEquals(
+      imageListCommand("podman"),
+      Vector(
+        "podman",
+        "image",
+        "ls",
+        "--no-trunc",
+        "--format",
+        "{{.Repository}}:{{.Tag}}\t{{.Id}}"
+      )
+    )
+    val journalDir = Files.createTempDirectory("image-cleanup-journal")
+    val journal = journalDir.resolve("cleanup.ids")
+    val interrupted = Vector(id('1'), id('2'))
+    writeImageCleanupJournal(journal, interrupted)
+    assertEquals(readImageCleanupJournal(journal), Right(interrupted))
+
+    val listedBefore = imageIdsForTags(
+      Vector(TaggedImage("localhost/ko-agent-fs:latest", "3" * 64)),
+      Vector("ko-agent-fs:latest")
+    )
+    val candidates = prepareImageCleanupJournal(
+      journal,
+      listedBefore :+ id('4'),
+      Vector(TaggedImage("debian-temurin:old", id('5')))
+    )
+    assertEquals(candidates, Vector(id('1'), id('2'), id('4'), "3" * 64, id('5')))
+    assertEquals(readImageCleanupJournal(journal), Right(candidates))
+    assertEquals(
+      prependImageCleanupDependents(
+        candidates,
+        Vector(
+          TaggedImage("ko-agent-self-test:latest", id('6')),
+          TaggedImage("ko-agent-self-test-build:cache", id('2'))
+        )
+      ),
+      Vector(id('6'), id('2'), id('1'), id('4'), "3" * 64, id('5'))
+    )
+
+    Files.writeString(journal, s"${id('1')}\nshort-id\n")
+    assert(validateImageCleanupIds(journal, Vector("short-id")).isLeft)
+    assertEquals(repairImageCleanupJournal(journal), Vector("short-id"))
+    assertEquals(readImageCleanupJournal(journal), Right(Vector(id('1'))))
+    writeImageCleanupJournal(journal, Vector.empty)
+    assert(!Files.exists(journal))
+
+  test("an image retained by a container is reported as a later cleanup retry"):
+    val imageId = "1" * 64
+    val containerId = "2" * 64
+    val error = s"Error: image used by $containerId: image is in use by a container"
+    val note = supersededImageRetentionNote(imageId, error)
+    assert(note.contains(s"container $containerId still uses it"), note)
+    assert(note.contains("a later --build, --update, or --self-test will retry"), note)
+    assert(!note.contains("Error:"), note)
+
+    val unexpected = supersededImageRetentionNote(imageId, "Error: storage is unavailable")
+    assert(unexpected.contains("Podman did not remove it"), unexpected)
+    assert(unexpected.contains("Error: storage is unavailable"), unexpected)
+
+  test("every internal multi-stage build has one named compile-cache target"):
+    val containerRoot = Paths.get("container")
+    val listed = Files.list(containerRoot)
+    val containerfiles =
+      try listed.iterator().asScala.map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)).toVector
+      finally listed.close()
+    val allContainerfiles = containerfiles :+ Paths.get("fuse/ko-agent-fs/Containerfile")
+    val multiStage = allContainerfiles.filter: path =>
+      Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
+
+    val commands =
+      buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid") ++
+        selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
+    val tracked = commands.filter(_.containsSlice(Seq("--target", "build"))).map: command =>
+      val fileIndex = command.indexOf("-f")
+      if fileIndex >= 0 then containerRoot.resolve(command(fileIndex + 1))
+      else
+        val context = command.last
+        val containerPath = containerRoot.resolve(context).resolve("Containerfile")
+        if Files.isRegularFile(containerPath) then containerPath
+        else Paths.get("fuse").resolve(context).resolve("Containerfile")
+    assertEquals(tracked.toSet, multiStage.toSet)
+    commands.filter(_.containsSlice(Seq("--target", "build"))).foreach: command =>
+      assert(buildOutputImages(Vector(command)).head.endsWith(":cache"), command.mkString(" "))
+
+  test("the self-test identity covers its source, filter, and actual inherited sandbox image"):
+    val original = selfTestBundleId("fs-source-1", "self-test-source-1", "sandbox-image-1")
+    assert(selfTestBundleId("fs-source-2", "self-test-source-1", "sandbox-image-1") != original)
+    assert(selfTestBundleId("fs-source-1", "self-test-source-2", "sandbox-image-1") != original)
+    assert(selfTestBundleId("fs-source-1", "self-test-source-1", "sandbox-image-2") != original)
 
   test("the bundle version lock refuses a mismatch and knows an unlabeled image"):
     // The digests compared come from the jar's own bundle, one per image directory — real,
@@ -328,12 +474,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // `-f` with `.`: the crate the image compiles lives beside its Containerfile in the unpacked
     // bundle, not under it, so the directory cannot be the context.
     val commands = selfTestBuildCommands("podman", "1.2.3", "fsdigest", "selftestdigest")
-    assertEquals(commands.size, 1)
-    val build = commands.head
-    assert(build.containsSlice(Seq("--build-arg", "RUST_VERSION=1.2.3")), build.mkString(" "))
-    assert(build.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=fsdigest")), build.mkString(" "))
-    assert(build.containsSlice(Seq("-f", "ko-agent-self-test/Containerfile")), build.mkString(" "))
-    assert(build.endsWith(Seq("-t", "ko-agent-self-test:latest", ".")), build.mkString(" "))
+    assertEquals(commands.size, 2)
+    assertEquals(buildOutputImages(commands), SelfTestImageTags)
+    commands.foreach: build =>
+      assert(build.containsSlice(Seq("--build-arg", "RUST_VERSION=1.2.3")), build.mkString(" "))
+      assert(build.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=fsdigest")), build.mkString(" "))
+      assert(build.containsSlice(Seq("--label", s"$BundleLabel=selftestdigest")), build.mkString(" "))
+      assert(build.containsSlice(Seq("-f", "ko-agent-self-test/Containerfile")), build.mkString(" "))
+    assert(commands.head.containsSlice(Seq("--target", "build")), commands.head.mkString(" "))
+    assert(commands.head.endsWith(Seq("-t", SelfTestBuildImage, ".")), commands.head.mkString(" "))
+    assert(commands.last.endsWith(Seq("-t", "ko-agent-self-test:latest", ".")), commands.last.mkString(" "))
 
   test("the pinned toolchain is read from the context the launcher unpacks"):
     val context = Files.createTempDirectory("pinned-rust")

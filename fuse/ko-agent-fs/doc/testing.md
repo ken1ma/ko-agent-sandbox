@@ -17,8 +17,8 @@ compiles the dependency tree once, in the release profile (`Containerfile` has w
 The policy core, the inode table, the startup guard, the static git corpus, and the parts of
 `tests/binary.rs` that drive the real binary without mounting — argument handling and the startup
 refusal, which the in-process suites bypass. None of it mounts, so it runs in CI and inside a
-`ko-agent-sandbox` session, whose image carries the musl target for exactly this — it has to, since
-its rustup home is read-only and a session cannot add a target to it.
+`ko-agent-sandbox` session, whose image carries the musl target for exactly this — it has to,
+since its rustup home is read-only and a session cannot add a target to it.
 
 
 ## Both suites, anywhere podman runs — `--self-test`
@@ -26,11 +26,13 @@ its rustup home is read-only and a session cannot add a target to it.
     java -jar ko-agent-sandbox.jar --self-test
     java -jar ko-agent-sandbox.jar --self-test a_handle_held
 
-The launcher builds `ko-agent-self-test` — the crate's suites compiled against the pinned toolchain,
-on top of the sandbox image — and runs them in a container with `/dev/fuse` and `CAP_SYS_ADMIN`.
-Nothing is bound in and nothing is written out, so a run leaves the host, the project and the Podman
-machine untouched. `--include-ignored`, so this is the venue where *both* halves run, on macOS and
-Windows as readily as on Linux. It needs `--build` to have happened; it does not run one.
+The launcher builds `ko-agent-self-test` — the crate's suites compiled against the pinned
+toolchain, on top of the sandbox image — and runs them in a container with `/dev/fuse` and
+`CAP_SYS_ADMIN`.
+The container binds and writes nothing, and `--rm` removes it. The launcher retains the current
+self-test output and compile-cache tags and removes images they replace. `--include-ignored`, so
+this is the venue where *both* halves run, on macOS and Windows as readily as on Linux. It needs
+`--build` to have happened; it does not run one.
 
 This is the venue for proving the filter on a machine. The rig below is the loop for changing it.
 
@@ -38,10 +40,10 @@ This is the venue for proving the filter on a machine. The rig below is the loop
 ## Mounted — the privileged dev rig
 
 Everything in `tests/mounted_*.rs`, and the two `#[ignore]`d cases in `tests/binary.rs`, mounts a
-real filter over a throwaway backing tree. That needs `/dev/fuse` and `CAP_SYS_ADMIN` — which the
-sandbox deliberately does not have (`SECURITY.md`, "No containers inside the sandbox by default") —
-so they are `#[ignore]`d by default. `--self-test` above runs them on an arbitrary machine; this rig
-runs them against source you are still editing, with no jar rebuild in between:
+real filter over a throwaway backing tree. That needs `/dev/fuse` and `CAP_SYS_ADMIN` — which
+the sandbox deliberately does not have (`SECURITY.md`, "No containers inside the sandbox by
+default") — so they are `#[ignore]`d by default. `--self-test` above runs them on an arbitrary
+machine; this rig runs them against source you are still editing, with no jar rebuild in between:
 
     probe/rig.sh                        # the whole ignored suite, venue probe first
     probe/rig.sh a_handle_held          # one filter, for a single test or a family

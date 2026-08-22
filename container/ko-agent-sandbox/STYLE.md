@@ -3,11 +3,13 @@
 Be concise, go straight to the point, and keep everything easy to reason about.
 The human reader's attention is the most valuable budget while AI review is cheap.
 
-Anything pointed out is one instance of a class, not the extent of it — a review finding, a remark,
-a failing test, a mistake you catch yourself. Before answering, name the class and look wherever it
-could occur: the code, its tests' names and prose, every document that describes it. Searching for
-the words finds only that wording; the same error said differently is what survives a per-site fix
-and comes back. Fix the class, and report what else it caught.
+Anything pointed out is evidence of a class, never its extent. Before answering, define the class as
+a violated invariant and mechanism — not the syntax, flag, wording, or file that exposed it.
+Inventory every producer, consumer, entry point, lifecycle variant, test, and document that could
+violate it; account for each as fixed, conforming, or deliberately excluded with a concrete
+reason. Search structure and trace behavior — wording search is not an inventory. If only the
+reported instance appears, assume the class is too narrow. Fix the canonical enforcement point,
+add a population-level test, and do not report completion until every member is accounted for.
 
 
 # Writing style
