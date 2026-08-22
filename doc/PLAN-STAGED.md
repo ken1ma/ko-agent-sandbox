@@ -37,14 +37,46 @@ volume may hold upper data, but raw upper layers, whiteouts, baselines, manifest
 control sockets are never mounted into the sandbox. Only the merged FUSE view is reachable.
 
 Before exposing staged mode, prove the engine on native Linux and in the macOS and Windows Podman
-machines. The contract covers resume, live lower changes, copy-up, whiteouts, symlinks, hardlink
-identity, advisory and POSIX locks, rename and exchange, open-unlinked files, writable handles and
-shared mmap across a generation switch. Failure aborts staged launch; there is no detached-copy or
-live-write fallback.
+machines ("Proving the engine per platform" below carries the contract and where each item is
+settled). Failure aborts staged launch; there is no detached-copy or live-write fallback.
 
 Every stage starts with a host-only manifest carrying a representation version. A launcher that
 does not understand that version preserves the stage and refuses attachment with recovery
 instructions. Future migrations are separate work.
+
+## Proving the engine per platform
+
+The axes a venue varies on are `DESIGN.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the venues
+themselves. What follows is only which one settles which part of the staged contract.
+
+| contract item                                      | settled by                  |
+| -------------------------------------------------- | --------------------------- |
+| resume, representation refusal, whiteouts, copy-up | dev rig, any host           |
+| advisory and POSIX locks                           | in situ, in each machine    |
+| shared mmap across a generation switch             | in situ, in each machine    |
+| open-unlinked files and writable handles           | in situ, in each machine    |
+| live lower changes, and copy-up from the share     | in situ, on each share      |
+| baseline revalidation and apply write-back         | in situ, on each share      |
+| hardlink identity                                  | the filter's inode model    |
+| rename and exchange on the lower                   | in situ, on each share      |
+| symlinks: creation, and refusal of an escape       | in situ, on each share      |
+| upper and lower names differing only by case       | in situ, APFS and NTFS      |
+| upper durability and reflink behaviour             | in situ, each Linux backing |
+
+A successful `--self-test` stamps the filter's source id and the venue it proved — podman version,
+machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
+non-matching stamp, which is what makes "failure aborts staged launch" above a mechanism rather than
+an intention, and what turns "re-run after a podman or macOS upgrade" from a row someone remembers
+into a refused launch until `--self-test` runs again. The stamp records that a venue was proved
+once; that the filter can still mount here now is the filter's own `--self-test`'s job, before every
+session.
+
+Windows carries one measured hazard to settle before the apply state machine is built rather than
+during it: a host write to a file a live session holds open is refused with a sharing violation,
+because the daemon's backing descriptor reaches NTFS through the machine's 9p server
+(`../fuse/ko-agent-fs/doc/security-research.md`). Apply writes to the host while sessions are
+attached, and sealing rebinds write authority without necessarily closing the lower descriptor, so
+apply's atomic replacement can be refused on exactly the paths it is applying.
 
 ## Stage management and visibility
 
@@ -98,7 +130,11 @@ command reports the project directory and number of attached sessions it will qu
 
 Apply holds the stage's control lock for its whole state transition. The sealed plan is a durable
 ordered set of operation groups: a rename, hardlink relationship or other indivisible change is
-selected and applied as one group. For each group, trusted code:
+selected and applied as one group. A link relationship cannot be recovered from what a session
+observed — the filter mints an inode per `(parent, name)`, so two names for one object are two
+inodes there (`../fuse/ko-agent-fs/doc/security-research.md`) — so the stage records it at copy-up,
+from the backing object's identity, and the plan carries it. The lower keeps the relationship;
+only the view through the filter does not. For each group, trusted code:
 
 1. Revalidates its lower baseline and every host path through open directory descriptors.
 2. Persists and fsyncs an intent containing the baseline and desired result hashes.
@@ -191,13 +227,18 @@ applied.
 
 ## Delivery order
 
-1. Close nested Git and bare-layout residues and add the live mutation journal.
-2. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
-   lifecycle and visibility.
-3. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
+1. Characterize the three lowers, before the stage representation is fixed. Hardlink identity,
+   rename and exchange, symlink creation, case folding between upper and lower and the reach of an
+   open-file hold each decide a representation choice, and none can be reasoned to a conclusion
+   (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Their answers are cheapest to act on now.
+2. Close nested Git and bare-layout residues and add the live mutation journal.
+3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
+   lifecycle and visibility, with the in-situ suite, the launcher verb and the stamp that gates
+   staged launch.
+4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-4. Make `reject` the default only after step 3. Remove the workspace pin mode and make any present
+5. Make `reject` the default only after step 4. Remove the workspace pin mode and make any present
    `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration message: `fuse` needs
    no replacement — the filter is `--write=live`'s only mechanism then — and the weaker `none`
    mode has no equivalent. Remove the pin mode's launcher branch, Git pin construction,
@@ -229,7 +270,8 @@ applied.
   expose raw stage storage inside the sandbox.
 - Exercise 32 concurrent sessions and smoke-test 64, including Git locks, append, rename, mmap,
   host-side writes, daemon failure and journal ordering.
-- Run the complete behavior on native Linux and in macOS and Windows Podman machines.
+- Run every row of the table above on native Linux and in the macOS and Windows Podman machines,
+  and record each run with its venue.
 
 ## Deliberate exclusions
 

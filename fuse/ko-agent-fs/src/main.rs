@@ -70,37 +70,60 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
 /// log. Beyond the policy, this is the probe for the two environmental assumptions an unprivileged
 /// mount rests on: a `fusermount3` on PATH, and `user_allow_other` enabled in /etc/fuse.conf (the
 /// mount asks for `allow_other`).
+/// Which stage a self-test failure came from, because only this code knows. Everything up to and
+/// including the mount is the environment's — the scratch tree it needs, and the mount itself — and
+/// a caller can answer it by changing the venue; everything after the mount is this filter's own
+/// behaviour, which no venue change repairs. The stage reached is the whole of the classification,
+/// and it is not a claim about the cause: the accompanying message carries what detail there is —
+/// sometimes the exact failure, sometimes an error and the usual suspects — so a caller passes it
+/// on rather than narrowing it into a diagnosis nothing here made. A caller that cannot tell the
+/// two apart either retries a defect with more privilege or reports a venue as a bug.
+enum SelfTestFailure {
+    Venue(String),
+    Defect(String),
+}
+
+/// The exit code for [`SelfTestFailure::Venue`]. Also spelled in the launcher, which reads it to
+/// decide whether to retry; a test holds the two together (`KoAgentFsTest`).
+const SELF_TEST_VENUE_EXIT: u8 = 3;
+
 fn self_test() -> ExitCode {
     match self_test_run() {
         Ok(()) => {
             println!("ko-agent-fs self-test ok");
             ExitCode::SUCCESS
         }
-        Err(why) => {
+        Err(SelfTestFailure::Venue(why)) => {
+            eprintln!("ko-agent-fs self-test FAILED, and the venue is why: {why}");
+            ExitCode::from(SELF_TEST_VENUE_EXIT)
+        }
+        Err(SelfTestFailure::Defect(why)) => {
             eprintln!("ko-agent-fs self-test FAILED: {why}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn self_test_run() -> Result<(), String> {
+fn self_test_run() -> Result<(), SelfTestFailure> {
     let base = std::env::temp_dir().join(format!("ko-agent-fs-selftest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let backing = base.join("backing");
     let mountpoint = base.join("mnt");
     for directory in [&backing, &mountpoint] {
-        std::fs::create_dir_all(directory)
-            .map_err(|err| format!("cannot create scratch directory {directory:?}: {err}"))?;
+        std::fs::create_dir_all(directory).map_err(|err| {
+            SelfTestFailure::Venue(format!("cannot create scratch directory {directory:?}: {err}"))
+        })?;
     }
-    std::fs::write(backing.join("seed"), b"seed\n")
-        .map_err(|err| format!("cannot write to the scratch backing: {err}"))?;
+    std::fs::write(backing.join("seed"), b"seed\n").map_err(|err| {
+        SelfTestFailure::Venue(format!("cannot write to the scratch backing: {err}"))
+    })?;
 
     let result = self_test_mounted(&backing, &mountpoint);
     let _ = std::fs::remove_dir_all(&base);
     result
 }
 
-fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), String> {
+fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), SelfTestFailure> {
     use std::time::{Duration, Instant};
 
     let root: OwnedFd = open(
@@ -108,16 +131,16 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Stri
         OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|err| format!("cannot open the scratch backing: {err}"))?;
+    .map_err(|err| SelfTestFailure::Venue(format!("cannot open the scratch backing: {err}")))?;
 
     let session =
         fuser::spawn_mount(KoAgentFs::new(root), mountpoint, &mount_config()).map_err(|err| {
-            format!(
+            SelfTestFailure::Venue(format!(
                 "mount failed: {err}\n\
                  Usual causes: no fusermount3 on PATH, or allow_other refused because\n\
                  /etc/fuse.conf lacks user_allow_other\n\
                  (fix: sudo sh -c 'echo user_allow_other >> /etc/fuse.conf')"
-            )
+            ))
         })?;
 
     // The mount is asynchronous; nothing below means anything until the mountpoint really is FUSE.
@@ -128,12 +151,16 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Stri
             Ok(stat) if stat.filesystem_type() == FUSE_SUPER_MAGIC => break,
             _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(stat) => {
-                return Err(format!(
+                return Err(SelfTestFailure::Venue(format!(
                     "the mountpoint never became a FUSE mount (type {:?})",
                     stat.filesystem_type()
-                ));
+                )));
             }
-            Err(err) => return Err(format!("statfs on the mountpoint kept failing: {err}")),
+            Err(err) => {
+                return Err(SelfTestFailure::Venue(format!(
+                    "statfs on the mountpoint kept failing: {err}"
+                )));
+            }
         }
     }
 
@@ -167,11 +194,11 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Stri
         coherency_check(backing, mountpoint)
     };
 
-    let outcome = checks();
+    let outcome = checks().map_err(SelfTestFailure::Defect);
     match session.umount_and_join() {
         Ok(()) => outcome,
         // A check failure is the more interesting report; an unmount failure alone still fails.
-        Err(err) => outcome.and(Err(format!("unmount failed: {err}"))),
+        Err(err) => outcome.and(Err(SelfTestFailure::Defect(format!("unmount failed: {err}")))),
     }
 }
 

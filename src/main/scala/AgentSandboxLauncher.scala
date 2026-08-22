@@ -425,6 +425,77 @@ object AgentSandboxLauncher:
     )
 
   /**
+   * The toolchain the filter ships, read from the image build that pins it rather than repeated
+   * here. A second copy of the version is a self-test image that quietly stops exercising the
+   * compiler that ships, and nothing else would notice — the same rule `probe/rig.sh` follows.
+   */
+  def pinnedRustVersion(context: Path): String =
+    val containerfile = context.resolve("ko-agent-fs").resolve("Containerfile")
+    val pinned = Files
+      .readAllLines(containerfile)
+      .asScala
+      .collectFirst:
+        case line if line.startsWith("ARG RUST_VERSION=") => line.stripPrefix("ARG RUST_VERSION=").trim
+    pinned.filter(_.nonEmpty).getOrElse(
+      fail(s"error: no 'ARG RUST_VERSION=' in $containerfile; there is no toolchain to build with")
+    )
+
+  /**
+   * `--self-test`'s image: the crate's suites compiled against the pinned toolchain, on top of the
+   * sandbox image. Built on demand rather than by --build, so a user who only wants to run agents
+   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources are
+   * unchanged (`fuse/ko-agent-fs/doc/testing.md`).
+   *
+   * `-f` with `.` as the context, not the directory: the crate this compiles lives beside the
+   * Containerfile in the unpacked bundle, not under it.
+   */
+  def selfTestBuildCommands(
+    podman: String,
+    rustVersion: String,
+    fsSourceId: String,
+    selfTestBundleId: String
+  ): Vector[Vector[String]] =
+    Vector(
+      Vector(
+        podman, "build",
+        "--build-arg", s"RUST_VERSION=$rustVersion",
+        "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
+        "--label", s"$BundleLabel=$selfTestBundleId",
+        "-f", "ko-agent-self-test/Containerfile",
+        "-t", "ko-agent-self-test:latest", "."
+      )
+    )
+
+  /**
+   * The verification container. Nothing is bound in and nothing is written out: the suites build
+   * their own trees under the container's /tmp, so a run leaves the host, the project and the
+   * Podman machine untouched, and `--rm` takes the container with it.
+   *
+   * `--cap-add SYS_ADMIN` is the one place this project runs a container with more than a session
+   * gets, and it is never a session's container. It is not redundant with the setuid fusermount3
+   * the image installs: a setuid binary does not escape the container's capability bounding set,
+   * measured rather than assumed (`fuse/ko-agent-fs/doc/security-research.md`).
+   *
+   * `--network=none` because no case reaches a host, and nothing is fetched at this point.
+   */
+  def selfTestRunCommand(podman: String, filter: Option[String], asRoot: Boolean): Vector[String] =
+    Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--device", "/dev/fuse",
+      "--cap-add", "SYS_ADMIN")
+      ++ (if asRoot then Vector("--user", "0") else Vector.empty)
+      ++ Vector("ko-agent-self-test:latest")
+      ++ filter.toVector
+
+  /**
+   * The exit code for a self-test that failed before its behavioural checks began, as against one
+   * of those checks failing. The filter's own `--self-test` decides which, being the only party
+   * that knows the stage it reached, and run-suite passes the verdict up; its message says what it
+   * can about the cause, which this launcher repeats and does not sharpen
+   * (fuse/ko-agent-fs/src/main.rs, SelfTestFailure). Spelled there as SELF_TEST_VENUE_EXIT, and a
+   * test holds the two together.
+   */
+  val SelfTestVenueExit = 3
+
+  /**
    * `--no-cache`: new agent releases arrive through RUN steps whose inputs
    * look unchanged to the cache. Base images and the proxy are --build's.
    */
@@ -581,6 +652,66 @@ object AgentSandboxLauncher:
       else run(podman, "network", "create", network)
     if !created.ok then
       fail(s"error: could not create the network $network\n${created.err}")
+
+  /**
+   * `--self-test`: build the self-test image if it is not already current, then run the crate's
+   * suites in it (`fuse/ko-agent-fs/doc/testing.md`). Two runs in a row give the same verdict and
+   * leave the
+   * same state — the image build is a cache hit, the container is `--rm`, and nothing is bound in.
+   *
+   * The sandbox image is a precondition rather than something to build here: verifying is not the
+   * command that decides which agent image a user runs.
+   *
+   * An unprivileged uid mounting through the setuid `fusermount3` is the route a session takes,
+   * and the image runs as its `nonroot` user for exactly that reason. A venue where that cannot
+   * work is retried once as root, so the run reports which of the two served rather than guessing.
+   * What made the venue unusable is the filter's to report and this launcher's to pass on
+   * unchanged; only a venue failure reaches here, because a failed check exits with its own status.
+   */
+  def selfTest(os: Os, operands: List[String]): Nothing =
+    if operands.sizeIs > 1 then
+      fail("error: --self-test takes at most one operand, a test-name filter")
+    val filter = operands.headOption.filter(_.nonEmpty)
+
+    if !runOk(podman, "image", "exists", "ko-agent-sandbox:latest") then
+      fail(
+        """error: the sandbox image is not built, and --self-test does not build it
+          |
+          |Run --build first; --self-test then layers its suites on top of it.""".stripMargin
+      )
+
+    val context = unpackBuildContext()
+    runBuilds(
+      context,
+      selfTestBuildCommands(
+        podman,
+        pinnedRustVersion(context),
+        koAgentFsSourceId(context),
+        contextSourceId(context, "ko-agent-self-test")
+      )
+    )
+
+    System.err.println(s"venue: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
+    val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
+    System.err.println(unprivileged.mkString(" "))
+    val exit = ProcessBuilder(unprivileged*).inheritIO().start().waitFor()
+    if exit != SelfTestVenueExit then sys.exit(exit)
+
+    System.err.println(
+      "note: the filter's self-test failed at the venue rather than at a check; retrying as\n" +
+        "root. Its own message above is the report of what failed, and this launcher does not\n" +
+        "narrow it further. If root serves, this venue never exercises the setuid fusermount3\n" +
+        "route a session takes, which is worth recording with its venue\n" +
+        "(fuse/ko-agent-fs/doc/security-research.md)."
+    )
+    val privileged = selfTestRunCommand(podman, filter, asRoot = true)
+    System.err.println(privileged.mkString(" "))
+    sys.exit(ProcessBuilder(privileged*).inheritIO().start().waitFor())
+
+  /** The podman build the venue record names, so a run is evidence rather than an outcome. */
+  def podmanVersion(): String =
+    val reported = run(podman, "--version")
+    if reported.ok then reported.text.trim else "podman version unknown"
 
   /** A command that is printed before it runs; returns false on failure. */
   def stepOk(command: String*): Boolean =
@@ -957,7 +1088,10 @@ object AgentSandboxLauncher:
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
 
   val ManagementVerbs: Set[String] =
-    Set("--help", "--build", "--update", "--reset", "--reset-all", "--proxy-log", "--egress-effective")
+    Set(
+      "--help", "--build", "--update", "--reset", "--reset-all", "--proxy-log",
+      "--egress-effective", "--self-test"
+    )
 
   /**
    * Outside a management verb's documented operands, the first non-option is the command and
@@ -1140,6 +1274,11 @@ object AgentSandboxLauncher:
       case Some(("--proxy-log", rest)) =>
         noAuthorityOptions("--proxy-log")
         proxyLog(currentOs, rest)
+
+      case Some(("--self-test", rest)) =>
+        noAuthorityOptions("--self-test")
+        requirePodman(currentOs)
+        selfTest(currentOs, rest)
 
       case Some(("--egress-effective", rest)) =>
         noWriteOption("--egress-effective")
@@ -1372,36 +1511,35 @@ object AgentSandboxLauncher:
 
     val resolvedHostsFile = policyCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = policyCacheDir.resolve("resolved.warnings")
-    val resolvedStampFile = policyCacheDir.resolve("resolved.stamp")
     // The stamp covers everything the dry run reads: the image, the authority selection — the
     // profile and the command-classified provider both shape the resolution — and the files,
-    // hashed into its one line because they are multi-part.
+    // hashed into its one line because they are multi-part. It is the first line of each cached
+    // file rather than a file of its own, and a hit needs both to carry it: concurrent launches of
+    // one project under different authority selections write here without a lock, and a stamp
+    // beside the content can end up describing the other launch's (HostCommands.stampedEntry).
     val policyStamp =
       s"$proxyImageId $egressProfile ${provider.getOrElse("none")} " +
         sha256Hex(policyFiles.map((name, text) => s"$name: $text").mkString("\n"))
 
     // The dry run's warnings are cached beside the hosts, so an idle denial or an unreachable
     // provider is said at every launch, not only the one that missed the cache.
+    // stampedEntry gives back exactly what was cached, trailing newline and all removed, so a hit
+    // and a miss are one string. This one is hashed into the agent instructions' stamp: two
+    // spellings of the same policy would make every launch after a re-resolve rewrite the shared
+    // agents.md for nothing (HostCommands, writeWithMode).
+    val cachedPolicy =
+      (stampedEntry(resolvedHostsFile, policyStamp).filter(_.nonEmpty),
+        stampedEntry(resolvedWarningsFile, policyStamp))
     val (policyResolvedText, policyWarnings) =
-      readIfPresent(resolvedHostsFile)
-        // The cache write below adds the trailing newline `text` strips, so a hit and a miss must be
-        // brought back to one string. This one is hashed into the agent instructions' stamp: two
-        // spellings of the same policy would make every launch after a re-resolve rewrite the
-        // shared agents.md for nothing (HostCommands, writeWithMode).
-        .map(_.stripLineEnd)
-        .filter(_.nonEmpty)
-        .filter(_ => firstLine(resolvedStampFile) == policyStamp) match
-        case Some(cached) =>
-          (cached, readIfPresent(resolvedWarningsFile).map(_.stripLineEnd).getOrElse(""))
-        case None =>
+      cachedPolicy match
+        case (Some(hosts), Some(warnings)) => (hosts, warnings)
+        case _ =>
           val resolved = resolvedPolicy(podman, proxyImage, egressProfile, provider, policyFiles)
           if !resolved.ok then
             fail(s"error: this project's egress policy is not valid\n${resolved.err}")
           val warnings = resolved.err.linesIterator.filter(_.startsWith("warning:")).mkString("\n")
-          // content before stamp: a cut-short write mismatches and re-runs
-          writeReadable(resolvedHostsFile, resolved.text + "\n")
-          writeReadable(resolvedWarningsFile, warnings + "\n")
-          writeReadable(resolvedStampFile, policyStamp + "\n")
+          writeStamped(resolvedHostsFile, policyStamp, resolved.text)
+          writeStamped(resolvedWarningsFile, policyStamp, warnings)
           (resolved.text, warnings)
 
     // The leaf certificate's names: the restricted line of the dry run above, tags stripped — the

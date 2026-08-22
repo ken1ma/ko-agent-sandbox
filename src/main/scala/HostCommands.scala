@@ -238,6 +238,24 @@ object HostCommands:
   def firstLine(path: Path): String =
     readIfPresent(path).map(_.linesIterator.nextOption().getOrElse("")).getOrElse("")
 
+  /**
+   * A stamped cache entry: its content when the file's own first line is `stamp`, None otherwise.
+   * The stamp travels inside the file rather than in one beside it because separate files are
+   * atomic individually and race as a set — a launch interleaved between writing its content and
+   * writing its stamp leaves a pairing neither launch computed, and that pairing is sticky, held
+   * until something happens to rewrite it. A caller reading several of these requires every one to
+   * match, so an interleaving is a miss that re-derives rather than a mixture that persists.
+   */
+  def stampedEntry(path: Path, stamp: String): Option[String] =
+    readIfPresent(path).map(_.stripLineEnd).flatMap: text =>
+      val newline = text.indexOf('\n')
+      val (first, rest) =
+        if newline < 0 then (text, "") else (text.take(newline), text.drop(newline + 1))
+      Option.when(first == stamp)(rest)
+
+  def writeStamped(path: Path, stamp: String, content: String): Unit =
+    writeReadable(path, s"$stamp\n$content\n")
+
   // -------------------------------------------------------------------------
   // Private files
   //

@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Build ko-agent-self-test
+# ---------------------------------------------------------------------------
+#
+# The venue the launcher's `--self-test` runs the crate's suites in
+# (`fuse/ko-agent-fs/doc/testing.md`). Their mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no
+# image build has, so they compile here and run later:
+# `--no-run` in the builder means nothing is compiled, and nothing fetched, at verification time.
+#
+#     podman build --build-arg RUST_VERSION=<pinned> --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+#         -f ko-agent-self-test/Containerfile -t ko-agent-self-test:latest .
+#
+# The context is the unpacked bundle root rather than this directory, because the crate to compile
+# lives beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
+# pins, passed in by whoever builds, so this cannot drift into exercising a second compiler.
+
+ARG RUST_VERSION
+FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
+
+# musl-tools supplies musl-gcc, which the musl target needs to link.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; rustup target add "$(uname -m)-unknown-linux-musl"
+
+WORKDIR /build
+COPY ko-agent-fs .
+
+# The identity the installed filter reports. The suites run against the same source the launcher
+# bundles, so the digest travels here too rather than being left unstamped.
+ARG KO_AGENT_FS_SOURCE_ID=unstamped
+ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
+
+# The shipping triple, for the reason ko-agent-fs/Containerfile builds with it: the static-musl link
+# constraint src/fs.rs records at its rename is invisible to a glibc build.
+#
+# The artifacts land in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
+# <dir>/ko-agent-fs — reproduced rather than flattened. `--message-format=json` names each
+# executable; guessing at hash-suffixed filenames would silently miss a test target added later.
+# A cache mount is not a layer, hence lifting them out inside this RUN.
+RUN --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    set -eux; \
+    triple="$(uname -m)-unknown-linux-musl"; \
+    mkdir -p /suite/deps; \
+    cargo test --locked --no-run --target "${triple}" --message-format=json > /tmp/artifacts.json; \
+    grep -o '"executable":"[^"]*"' /tmp/artifacts.json \
+        | sed 's/^"executable":"//; s/"$//' \
+        | while read -r artifact; do \
+            case "${artifact}" in \
+                */deps/*) install -m 0755 "${artifact}" /suite/deps/ ;; \
+                *) install -m 0755 "${artifact}" /suite/ ;; \
+            esac; \
+        done; \
+    # The pipeline above runs its loop in a subshell, so these are what actually fail the build.
+    test -x /suite/ko-agent-fs; \
+    test -n "$(ls /suite/deps)"
+
+
+# The base is the sandbox image for two reasons beyond convenience: it is already on the user's
+# machine, so verifying pulls nothing, and it carries `git`, which tests/mounted_git.rs needs and a
+# Podman machine has not got. Its `nonroot` user is the third — see the fuse3 step below.
+FROM ko-agent-sandbox:latest
+
+USER root
+
+# fuse3 supplies fusermount3. An unprivileged uid holds no effective CAP_SYS_ADMIN and so cannot
+# mount(2); the mount takes the setuid helper instead, which is the route a real session takes and
+# one the dev rig running as root never reaches. Podman keeps SYS_ADMIN in the bounding set for a
+# non-root USER, so the helper can reach it (fuse/ko-agent-fs/doc/security-research.md); the
+# launcher retries as root if some venue ever does not.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends fuse3; \
+    rm -rf /var/lib/apt/lists/*; \
+    # The suites mount with the product's options, allow_other among them, which fusermount3
+    # refuses without this line. Written into the image rather than at runtime, so that verifying
+    # never touches the Podman machine's own /etc/fuse.conf.
+    echo user_allow_other >> /etc/fuse.conf
+
+COPY --from=build /suite /opt/ko-agent-fs-suite
+COPY ko-agent-self-test/run-suite /usr/local/bin/ko-agent-fs-suite
+RUN chmod 0755 /usr/local/bin/ko-agent-fs-suite
+
+USER nonroot
+ENTRYPOINT ["/usr/local/bin/ko-agent-fs-suite"]

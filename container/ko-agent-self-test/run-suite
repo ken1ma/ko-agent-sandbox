@@ -1,0 +1,49 @@
+#!/bin/sh
+# What the launcher's `--self-test` runs inside the self-test image
+# (fuse/ko-agent-fs/doc/testing.md). One optional argument, a test-name filter handed to every suite.
+set -eu
+
+suite=/opt/ko-agent-fs-suite
+filter=${1:-}
+
+echo "venue: $(uname -srm), uid $(id -u)"
+
+# The venue check first, and the filter's own: --self-test mounts with the product's options,
+# allow_other among them, so it is the only thing here that exercises what user_allow_other gates.
+# It grades its own failure by the stage it reached — exit 3 for anything before its behavioural
+# checks begin, the scratch tree and the mount alike, which the launcher answers by retrying with
+# more privilege; 1 for anything past that, which no venue change repairs.
+# mount_probe cannot serve as this gate: it mounts with fuser's defaults, so an allow_other refusal
+# passes it and surfaces later as an apparent defect.
+selftest=0
+"$suite/ko-agent-fs" --self-test || selftest=$?
+[ "$selftest" -ne 3 ] || exit 3
+
+# A filter naming nothing would otherwise report success having run no test at all: a rust harness
+# exits 0 when its filter matches none, saying only "N filtered out". `--list` counts what would
+# run — it lists ignored tests too, so it needs no --include-ignored of its own.
+if [ -n "$filter" ]; then
+    matched=0
+    for binary in "$suite"/deps/*; do
+        found=$("$binary" --list "$filter" | grep -c ': test$') || found=0
+        matched=$((matched + found))
+    done
+    if [ "$matched" -eq 0 ]; then
+        echo "no test matches '$filter'; nothing would run" >&2
+        exit 4
+    fi
+    echo "filter '$filter' selects $matched tests"
+fi
+
+# Past the mount it is a check like any other: the policy refusing a .git entry, a host write
+# reaching both a cached read and an established mapping.
+status=0
+[ "$selftest" -eq 0 ] || status=1
+
+# --include-ignored, not --ignored: the image build runs neither half
+# (ko-agent-fs/Containerfile), so this venue is where all of it runs.
+for binary in "$suite"/deps/*; do
+    echo "== ${binary##*/}"
+    "$binary" --include-ignored ${filter:+"$filter"} || status=1
+done
+exit $status

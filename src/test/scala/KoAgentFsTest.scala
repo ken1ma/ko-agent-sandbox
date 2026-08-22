@@ -370,12 +370,23 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(refused.contains("the only values are fuse and none, exactly"), refused)
     assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
 
-  test("the ko-agent-fs dev rig derives its toolchain instead of repeating it"):
-    // The privileged rig and the image build have to be the same compiler, or the rig is exercising
-    // one that does not ship — and nothing else would notice a bump to only one of them. probe/rig.sh
-    // reads the pin out of the Containerfile; this is what keeps it reading rather than copying.
-    // Both are read from the checkout, since neither is bundled into the jar (as the README test
-    // does, and for the same reason).
+  test("the venue exit code means the same thing in the filter and in the launcher"):
+    // Only the code that performed the mount can say whether a self-test failure was the venue's,
+    // so the filter grades its own exit and the launcher reads the verdict. Two spellings of one
+    // number: drift makes the launcher retry a defect as root, or report a bad venue as a bug.
+    val declared = """(?m)^const SELF_TEST_VENUE_EXIT: u8 = (\d+);$""".r
+      .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/src/main.rs")))
+      .map(_.group(1).toInt)
+      .getOrElse(fail("src/main.rs declares no SELF_TEST_VENUE_EXIT"))
+    assertEquals(declared, AgentSandboxLauncher.SelfTestVenueExit)
+
+  test("everything that compiles the filter derives its toolchain instead of repeating it"):
+    // The privileged rig, the self-test image and the image build have to be the same compiler, or
+    // one of them is exercising a compiler that does not ship — and nothing else would notice a bump
+    // to only one of them. probe/rig.sh reads the pin out of the Containerfile and the self-test
+    // image takes it as an ARG with no default (AgentSandboxLauncher.pinnedRustVersion supplies it);
+    // this is what keeps both reading rather than copying. rig.sh is read from the checkout, since
+    // it is not bundled into the jar (as the README test does, and for the same reason).
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
       .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/Containerfile")))
       .map(_.group(1))
@@ -386,4 +397,14 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(
       !rig.contains(pinned),
       s"probe/rig.sh hardcodes rust $pinned rather than reading the pin"
+    )
+
+    val selfTest = Files.readString(Paths.get("container/ko-agent-self-test/Containerfile"))
+    assert(
+      selfTest.contains("ARG RUST_VERSION\n") || selfTest.contains("ARG RUST_VERSION\r\n"),
+      "the self-test image declares no bare ARG RUST_VERSION for the launcher to supply"
+    )
+    assert(
+      !selfTest.contains(pinned),
+      s"container/ko-agent-self-test/Containerfile hardcodes rust $pinned rather than taking the pin"
     )

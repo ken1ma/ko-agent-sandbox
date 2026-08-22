@@ -65,6 +65,26 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
   encoding, resource limits, management-command selection, project-wide apply serialization and
   migration from the sole unnamed stage before exposing it.
 
+## Deferred — `--self-test`'s share rows
+
+`--self-test` today builds the self-test image and runs the crate's suites in it
+(`../fuse/ko-agent-fs/doc/testing.md`). Those settle the code's own logic and the kernel; the share
+is the axis they cannot reach, because their backing tree is the container's own storage
+(`DESIGN.md`). The rows that do reach it are hand-run probes with a host terminal beside them, and
+they are the same host-writer/session-reader shape the verb would have to take.
+
+- [ ] Fold `probe/coherency-probe.py` and `probe/lower-probe.py` into `--self-test`: a scratch lower
+  in the host project directory so the share is in the path, the host side driven by the launcher
+  rather than by a person, and the full venue record — OS, podman version, machine provider, kernel,
+  the lower's filesystem type and case behaviour, the upper volume's filesystem. A run with no venue
+  recorded is not evidence for the next release (`../fuse/ko-agent-fs/doc/TODO.md`, "P1").
+- [ ] Keep those rows non-destructive, which the container run gets for free and a share row does
+  not: the work directory goes away on success and survives a failure, since its files are how a row
+  that measured a refusal is told apart from a row where the probe broke; `.git` and
+  `.ko-agent-sandbox` stay untouched at any depth; the Podman machine is never written to. Test that
+  a second run rebuilds no image, creates no second container or volume, and leaves the project
+  directory byte-identical, and that a killed run leaves nothing the reset sweep does not match.
+
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
 
 The design is recorded here so it can be adopted or rejected deliberately rather than redesigned

@@ -51,24 +51,24 @@ COPY . .
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 
-# Gate, then test, then build — in that order, so a licence or test failure
-# stops the image before a binary exists to install. The mounted tests are
-# `#[ignore]`d and do not run here: they need /dev/fuse and CAP_SYS_ADMIN,
-# which an image build has not got. What runs is the policy core, the guard,
-# the git corpus and the binary's own argument and refusal handling.
+# Gate, then build. `cargo deny` is here because a licence and sourcing gate has
+# to bind where the artifact is produced, and it is cheap.
 #
-# The tests build for the musl triple too, not the host's glibc, so that the
-# gate is testing the thing this step is about to install. The raw
-# `SYS_renameat2` in src/fs.rs, and the reason recorded there, is what that
-# difference looks like when it bites.
+# The tests are deliberately not. They would compile the dependency tree in the
+# test profile as well as the release one below, on every user's --build, to
+# establish a property of the source rather than of their machine: the toolchain
+# is pinned above, `--locked` fixes the dependencies, and the source id proves
+# the binary is the one this launcher's bundle builds. They run in
+# ko-agent-self-test, which the launcher's `--self-test` builds
+# (`doc/testing.md`). What is per-machine has its own gate: the
+# filter's `--self-test` runs at install and before every session.
 #
 # The cache mounts carry cargo's target directory and registry between builds.
 # The source id is compiled in (`option_env!`), so every change to it busts the
-# ENV layer and re-runs this step; without the mounts that means recompiling
-# the whole dependency tree twice each time — once for `test`, once for
-# `--release` — rather than the one crate that changed. A mount is not a layer,
-# hence the `install` below lifting the binary out of it while still inside
-# this RUN.
+# ENV layer and re-runs this step; without the mounts that means recompiling the
+# whole dependency tree rather than the one crate that changed. A mount is not a
+# layer, hence the `install` below lifting the binary out of it while still
+# inside this RUN.
 #
 # A warm cache cannot leave a stale source id compiled into the binary, and the
 # reason is not cargo's env-var tracking. The launcher unpacks this context to a
@@ -86,7 +86,6 @@ RUN --mount=type=cache,target=/build/target \
     set -eux; \
     triple="$(uname -m)-unknown-linux-musl"; \
     cargo deny --locked check licenses bans sources; \
-    cargo test --locked --target "${triple}"; \
     cargo build --locked --release --target "${triple}"; \
     install -m 0755 "target/${triple}/release/ko-agent-fs" /ko-agent-fs; \
     # A dynamically linked binary here would fail in the VM rather than in the

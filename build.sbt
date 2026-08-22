@@ -64,7 +64,11 @@ Compile / resourceGenerators += Def.task {
   // Podman machine, not in a container.
   val contexts = Seq(
     baseDirectory.value / "container" ->
-      Seq("debian-temurin", "debian-coursier", "ko-agent-sandbox", "ko-agent-egress-proxy"),
+      Seq(
+        "debian-temurin", "debian-coursier",          // base images
+        "ko-agent-sandbox", "ko-agent-egress-proxy",  // runtime images
+        "ko-agent-self-test",                         // test image
+      ),
     baseDirectory.value / "fuse" -> Seq("ko-agent-fs")
   )
 

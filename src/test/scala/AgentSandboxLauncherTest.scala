@@ -298,6 +298,52 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
 
+  test("--self-test's container leaves nothing behind and carries what the mount needs"):
+    // A measurement that changes its subject is worth nothing, so the run binds no host path and
+    // keeps no container. The capability is not
+    // redundant with the image's setuid fusermount3 — a setuid binary does not escape a container's
+    // bounding set, measured in fuse/ko-agent-fs/doc/security-research.md — so its absence here
+    // would be a venue that cannot mount at all.
+    val command = selfTestRunCommand("podman", Some("a_handle_held"), asRoot = false)
+    assert(command.contains("--rm"), command.mkString(" "))
+    assert(command.containsSlice(Seq("--device", "/dev/fuse")), command.mkString(" "))
+    assert(command.containsSlice(Seq("--cap-add", "SYS_ADMIN")), command.mkString(" "))
+    assert(command.contains("--network=none"), command.mkString(" "))
+    assert(command.contains("--pull=never"), command.mkString(" "))
+    assert(command.endsWith(Seq("ko-agent-self-test:latest", "a_handle_held")), command.mkString(" "))
+    assert(
+      !command.exists(argument => argument == "-v" || argument.startsWith("--volume")),
+      s"--self-test binds a host path into the container: ${command.mkString(" ")}"
+    )
+    assert(
+      !command.exists(_.startsWith("--mount")),
+      s"--self-test mounts something into the container: ${command.mkString(" ")}"
+    )
+    // The root retry exists to measure the bounding-set question, not to be the default.
+    assert(!command.containsSlice(Seq("--user", "0")), command.mkString(" "))
+    assert(selfTestRunCommand("podman", None, asRoot = true).containsSlice(Seq("--user", "0")))
+    assertEquals(selfTestRunCommand("podman", None, asRoot = false).last, "ko-agent-self-test:latest")
+
+  test("--self-test builds its image from the bundle root against the pinned toolchain"):
+    // `-f` with `.`: the crate the image compiles lives beside its Containerfile in the unpacked
+    // bundle, not under it, so the directory cannot be the context.
+    val commands = selfTestBuildCommands("podman", "1.2.3", "fsdigest", "selftestdigest")
+    assertEquals(commands.size, 1)
+    val build = commands.head
+    assert(build.containsSlice(Seq("--build-arg", "RUST_VERSION=1.2.3")), build.mkString(" "))
+    assert(build.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=fsdigest")), build.mkString(" "))
+    assert(build.containsSlice(Seq("-f", "ko-agent-self-test/Containerfile")), build.mkString(" "))
+    assert(build.endsWith(Seq("-t", "ko-agent-self-test:latest", ".")), build.mkString(" "))
+
+  test("the pinned toolchain is read from the context the launcher unpacks"):
+    val context = Files.createTempDirectory("pinned-rust")
+    val crate = Files.createDirectories(context.resolve("ko-agent-fs"))
+    Files.writeString(
+      crate.resolve("Containerfile"),
+      "# a comment\nARG RUST_VERSION=9.9.9\nFROM docker.io/library/rust:${RUST_VERSION}-slim\n"
+    )
+    assertEquals(pinnedRustVersion(context), "9.9.9")
+
   test("option parsing: management verbs take the rest as operands, renamed spellings refuse"):
     assertEquals(
       parseCommandLine(List("--proxy-log", "-f")),
@@ -315,6 +361,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       parseCommandLine(List("--egress-check=pypi.org", "claude")),
       Right(ParsedCommandLine(None, None, Some(("--egress-check", List("pypi.org", "claude"))), Nil))
+    )
+    assertEquals(
+      parseCommandLine(List("--self-test", "a_handle_held")),
+      Right(ParsedCommandLine(None, None, Some(("--self-test", List("a_handle_held"))), Nil))
     )
     assert(parseCommandLine(List("--proxy-effective")).swap.exists(_.contains("--egress-effective")))
 

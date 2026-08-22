@@ -12,6 +12,10 @@ Decisions that research has already closed are in **Non-TODOs** so they stop res
 
 ## P1 — Platform verification (needs real filesystems)
 
+Every run belongs in `security-research.md` with the venue that produced it: OS, podman, kernel and
+filesystem versions. A pass with no venue recorded is not evidence for the next release, and
+re-running is the only thing that notices a platform default changing underneath a row.
+
 ### The `.git` name rule per backing filesystem
 
 The decisive question is not "what does our fold rule cover" but the property itself:
@@ -38,9 +42,8 @@ cleanup). The corpus:
 
 Pass criterion: for every denied spelling the create fails with `EPERM`; for every allowed spelling
 it succeeds *and* host `lstat` of `.git` still finds nothing. A failure on any row means the fold
-rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Every run belongs in
-`security-research.md` with its OS and filesystem versions: fold tables are version-specific, so a
-bare pass with no version recorded is not evidence for the next release.
+rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Fold tables are
+version-specific, which is what makes the recorded versions load-bearing here.
 
 APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
 `security-research.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
@@ -54,10 +57,45 @@ TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to
 writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
 travel, `read()` and an established `mmap`, across the whole stack. macOS 26.4.1 passes, and
 Windows measures fresh-when-unheld with host writes to session-held files refused by a share lock;
-`security-research.md` records both, and why the premise is behavioural rather than declarative —
-which is what makes re-running the only thing that notices a changed default.
+`security-research.md` records both, and why the premise is behavioural rather than declarative.
 
 - [ ] Re-run it on Linux, and after a podman or macOS upgrade.
+
+### What the staged lower can do, per share
+
+A stage's lower is the host project directory as it arrives inside the machine, and it is where the
+stage reads its baseline, revalidates it and applies back onto it. Each row below decides a
+representation choice, so they run before the stage format is fixed rather than after — the root
+`doc/PLAN-STAGED.md` has which venue settles which part of the contract. Every row is two-party:
+`probe/lower-probe.py` runs in a session and `probe/lower-probe-host.py` on the host beside it, and
+the pair reports all five in one run.
+
+The rows:
+
+- Hardlink identity: two names for one file, created host-side and through the mount. Does the lower
+  keep the relationship, and can a session see it?
+- `RENAME_EXCHANGE` and `RENAME_NOREPLACE` on the lower, and on the host path apply replaces. An
+  absent exchange is an apply that cannot be atomic by that route.
+- Symlinks: can the daemon create one on the lower, and does the host then resolve it as a symlink?
+  Windows makes symlink creation privileged, so this may be a refusal to plan around rather than a
+  behaviour to test.
+- Case folding between the layers: an upper name and a lower name differing only by case. Whether
+  they collide decides how whiteouts and upper entries may be named.
+- The reach of an open-file hold: host write, rename and unlink against a path a session holds open,
+  read-held and write-held, and whether releasing restores what was refused. Apply write-back stands
+  or falls on this.
+
+APFS answers all five (`security-research.md` has the run): the lower keeps hardlink relationships,
+exchange is available on both sides, symlinks round-trip, two names differing only by case are one
+name, and a session-held descriptor blocks no host mutation. One answer was never the share's to
+give — a session cannot see a hardlink relationship at all, because the filter mints an inode per
+`(parent, name)` — and what that costs a stage is the root `doc/PLAN-STAGED.md`'s to settle.
+
+What is left:
+
+- [ ] ext4 and NTFS, the same five rows. NTFS is where symlink creation is privileged and where a
+  session-held descriptor already refuses host writes (the coherency row above); rename and unlink
+  of a held path are the unmeasured half.
 
 ### The platform matrix itself
 
@@ -72,7 +110,8 @@ still unmeasured.
 
 ## Test infrastructure
 
-What the suites cover and how to run them, the privileged rig included, is `testing.md`.
+What the suites cover and how to run them, the self-test image and the privileged rig included, is
+`testing.md`.
 
 - [ ] Add xattr attempts to the adversarial set when xattrs are implemented (they are `ENOSYS`
   today, so there is nothing to bypass yet).

@@ -1,8 +1,8 @@
 # Design decisions
 
 What was decided and must not silently drift: rejected ideas (Non-TODOs), recorded so they stop
-resurfacing; the prior art they were reviewed against; and the principles to preserve. The work
-that remains is TODO.md; the security model is SECURITY.md.
+resurfacing; the axes verification has to separate; the prior art they were reviewed against; and
+the principles to preserve. The work that remains is TODO.md; the security model is SECURITY.md.
 
 ## Non-TODOs / deliberate design choices
 
@@ -139,6 +139,12 @@ and that the project lock serializes a reap against a launch is a blocked `FLOCK
 is an interleaving at some other instant — which a pause hook would not enumerate either, since it
 can only stop where someone thought to put it.
 
+### No scheduled or self-triggering verification
+
+`--self-test` runs when a person runs it. It does not run on a schedule, report anywhere, or start
+itself after detecting an upgrade. A stale stamp refusing a staged launch is the whole of the
+enforcement, and it acts at the moment the answer matters rather than at some earlier one.
+
 ### No PATH-resolved host executables
 
 Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) through `PATH`
@@ -196,6 +202,27 @@ design; it means the additional boundary should be purchased only when the threa
 
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
+
+## The three axes verification has to separate
+
+Conflating them is what makes verification look larger than it is.
+
+- **The code's own logic** depends on neither of the others. The privileged dev rig settles it once,
+  on whichever host a developer has (`../fuse/ko-agent-fs/doc/testing.md`).
+- **The kernel** is not one kernel: every Podman machine carries its own — Fedora CoreOS on macOS, a
+  Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on what
+  a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
+  (`../fuse/ko-agent-fs/doc/architecture.md`).
+- **The share**, and the backing under it: the host project directory as it arrives inside the
+  machine, over virtiofs on macOS and the WSL share on Windows. On native Linux the upper varies
+  instead, a named volume landing in the host's container storage — btrfs, ZFS, XFS or overlay —
+  against the machine's own ext4 everywhere else.
+
+Every case asserts a premise behaviourally, at the layer the product uses it — never a version, a
+mount option or a declared feature. That is the rule the virtiofs premise is already recorded under
+(`../fuse/ko-agent-fs/doc/security-research.md`), and it keeps the suite indifferent to *why* an
+environment moved: a podman upgrade, a recreated machine, a host OS update and a changed storage
+driver all reach it by the same door, and no case has to anticipate which.
 
 ## Prior-art references worth retaining
 

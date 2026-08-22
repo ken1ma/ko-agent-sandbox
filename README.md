@@ -123,6 +123,13 @@ which is undecided. Until then the jar is built from a checkout — [Development
       --build            build the container images for the sandbox
       --update           rebuild only the sandbox container without cache,
                          for agent updates
+      --self-test [<filter>]
+                         build the self-test image on top of the sandbox
+                         one and run the workspace filter's own suites in
+                         it, mounted cases included; <filter> selects one
+                         case or family. Leaves nothing behind: no bind
+                         mount, no volume, and the Podman machine is not
+                         touched
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,

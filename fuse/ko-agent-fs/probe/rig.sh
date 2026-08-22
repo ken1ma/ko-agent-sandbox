@@ -72,6 +72,12 @@ cargo test --locked $target -- --ignored $RIG_FILTER
 # `label=disable`, and no `:Z`: on a podman machine the source arrives over virtiofs as `nfs_t`,
 # and relabelling a machine-shared source is what the launcher itself never does
 # (`doc/security-research.md` records why) — so turn labelling off rather than relabel.
+#
+# `SYS_ADMIN` is not redundant with the setuid fusermount3, which is the reasonable expectation and
+# is measured wrong: dropped, the probe fails with `fusermount3: mount failed: Operation not
+# permitted` (`doc/security-research.md`). A setuid binary does not escape the container's
+# capability bounding set. A Podman machine grants what a container does not, which is why the
+# daemon mounts there unprivileged.
 exec podman run --rm -it \
     --device /dev/fuse \
     --cap-add SYS_ADMIN \

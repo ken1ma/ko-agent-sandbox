@@ -15,6 +15,30 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
+    // Concurrent launches of one project under different authority selections write the policy
+    // cache without a lock. With the stamp in a file of its own, one launch's content could end up
+    // under the other's stamp and stay there; with it inside each file, the pairing a caller
+    // requires simply does not match and the cache re-derives.
+    val dir = Files.createTempDirectory("stamped")
+    val hosts = dir.resolve("resolved.hosts")
+    val warnings = dir.resolve("resolved.warnings")
+
+    writeStamped(hosts, "stamp-a", "one\ntwo")
+    writeStamped(warnings, "stamp-a", "")
+    assertEquals(stampedEntry(hosts, "stamp-a"), Some("one\ntwo"))
+    assertEquals(stampedEntry(warnings, "stamp-a"), Some(""))
+
+    // The interleaving: another selection replaced the content of one file and not the other.
+    writeStamped(hosts, "stamp-b", "three")
+    assertEquals(stampedEntry(hosts, "stamp-a"), None)
+    assertEquals(stampedEntry(warnings, "stamp-b"), None)
+
+    assertEquals(stampedEntry(dir.resolve("absent"), "stamp-a"), None)
+    // A file holding a stamp and nothing else is an entry with empty content, not a miss.
+    writeReadable(hosts, "stamp-c\n")
+    assertEquals(stampedEntry(hosts, "stamp-c"), Some(""))
+
   // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
   // directories, which on a Windows runner carry their own ':' after the drive letter — the
   // string cannot be built there, not merely the branch untested. The Windows branch has its own

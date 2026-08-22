@@ -1,10 +1,13 @@
 # Running the `ko-agent-fs` tests
 
-Two suites, split by whether a test has to mount. Both build for the musl triple, and so does the
-image build's own gate (`Containerfile`) — one triple everywhere, because that is the one that ships
-and the difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename`
-is invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the
+Two suites, split by whether a test has to mount, and three venues to run them in. Everything
+builds for the musl triple — one triple everywhere, because that is the one that ships and the
+difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename` is
+invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the
 artifact's real shape rather than a differently-linked build of it.
+
+The image build runs neither suite: it gates on `cargo deny` and builds, so a user's `--build`
+compiles the dependency tree once, in the release profile (`Containerfile` has why).
 
 
 ## Unprivileged — no mount needed
@@ -18,12 +21,27 @@ refusal, which the in-process suites bypass. None of it mounts, so it runs in CI
 its rustup home is read-only and a session cannot add a target to it.
 
 
+## Both suites, anywhere podman runs — `--self-test`
+
+    java -jar ko-agent-sandbox.jar --self-test
+    java -jar ko-agent-sandbox.jar --self-test a_handle_held
+
+The launcher builds `ko-agent-self-test` — the crate's suites compiled against the pinned toolchain,
+on top of the sandbox image — and runs them in a container with `/dev/fuse` and `CAP_SYS_ADMIN`.
+Nothing is bound in and nothing is written out, so a run leaves the host, the project and the Podman
+machine untouched. `--include-ignored`, so this is the venue where *both* halves run, on macOS and
+Windows as readily as on Linux. It needs `--build` to have happened; it does not run one.
+
+This is the venue for proving the filter on a machine. The rig below is the loop for changing it.
+
+
 ## Mounted — the privileged dev rig
 
 Everything in `tests/mounted_*.rs`, and the two `#[ignore]`d cases in `tests/binary.rs`, mounts a
 real filter over a throwaway backing tree. That needs `/dev/fuse` and `CAP_SYS_ADMIN` — which the
 sandbox deliberately does not have (`SECURITY.md`, "No containers inside the sandbox by default") —
-so they are `#[ignore]`d by default and run in a privileged container instead:
+so they are `#[ignore]`d by default. `--self-test` above runs them on an arbitrary machine; this rig
+runs them against source you are still editing, with no jar rebuild in between:
 
     probe/rig.sh                        # the whole ignored suite, venue probe first
     probe/rig.sh a_handle_held          # one filter, for a single test or a family

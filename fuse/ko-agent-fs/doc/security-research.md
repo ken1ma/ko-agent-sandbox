@@ -113,7 +113,7 @@ found nothing afterwards.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
   collapsed them — and neither resolves anywhere near `.git` on either backing.
 
-### Verified: end-to-end coherency, filtered stack (macOS 26.4.1; 2026-08-14)
+### Verified: end-to-end coherency, filtered stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)
 
 `probe/coherency-probe.py` on the same machine and stack as the name-rule run: a host-side write
 became visible to a fresh `read()` inside the filtered session within the 10 ms polling window, and
@@ -156,6 +156,65 @@ not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was *
 git's, and an 8.3 short name should not be able to alias a dot-leading name like `.git` — which the
 NTFS run above confirmed on a volume with generation active.
 
+
+## What a staged lower can represent
+
+### Measured: the staged lower on APFS (macOS 26.4.1, podman 6.0.2; 2026-08-22)
+
+`probe/lower-probe.py` and its host half, in a filtered session over a case-insensitive APFS project
+directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
+
+- **Hardlink identity does not survive the filter, and the filter is the whole of why.** A
+  host-made pair reads back through the mount as two inode numbers with `st_nlink` 2, while a
+  session-made pair reads on the host as one inode with `st_nlink` 2. `to_file_attr` replies with
+  the number `InodeTable` allocated per `(parent, name)` (`src/fs.rs`, `src/inode.rs`), so two names
+  for one object are two inodes by construction of model B — under any share, not this one. The
+  unfiltered control settles the attribution rather than leaving it to the code: with the filter out
+  of the path the same host-made pair reads back as one inode, so virtiofs carries identity end to
+  end. The lower keeps the relationship, which is the half apply depends on.
+- **Atomic exchange exists on both sides.** `RENAME_EXCHANGE` through the mount and
+  `renamex_np(RENAME_SWAP)` on APFS both succeed, and `RENAME_NOREPLACE` and `RENAME_EXCL` both
+  refuse a taken name.
+- **Symlinks round-trip in both directions**, created through the mount and resolved on the host,
+  and the reverse.
+- **Two names differing only by case are one name**, through the mount and on the host alike: the
+  default APFS volume folds, so an upper entry and a lower entry cannot differ by case alone.
+- **A descriptor held in the session blocks nothing on the host.** Write, rename and unlink all
+  succeed against a held path, read-held and write-held alike. Windows is where this bites.
+
+Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
+nothing in exchange support, symlink round-tripping, case behaviour or the reach of a hold.
+
+## Mount privilege: what a venue grants
+
+### Measured: a container needs `CAP_SYS_ADMIN`, setuid notwithstanding (podman 6.0.2; 2026-08-22)
+
+In a Podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
+`--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the venue probe, before a test runs:
+
+    Error: Custom { kind: Other, error: "fusermount3: mount failed: Operation not permitted\n" }
+
+The message names the helper, so the fallback was reached and refused rather than never tried. A
+setuid-root binary does not escape the container's capability bounding set: `fusermount3` becomes
+uid 0 in the container's user namespace and still cannot `mount(2)` without `CAP_SYS_ADMIN` in that
+namespace. The bounding set is the variable, not the setuid bit.
+
+The rig's container ran inside the very machine the daemon mounts in, which holds the kernel
+constant and leaves the namespace as the only difference between the two results. In the machine the
+daemon is an ordinary user in the initial namespace, where that same setuid `fusermount3` reaches
+real root with a full bounding set — what `--self-test` exercises at every install, on every
+platform.
+
+### Measured: a non-root container user keeps the bounding set (podman 6.0.2; 2026-08-22)
+
+`--self-test` mounts and passes every suite as the sandbox image's `nonroot` (uid 65532), in a
+container given `--cap-add SYS_ADMIN`, in a Podman machine on macOS. So podman keeps the capability
+in the *bounding* set for a container whose `USER` is not root, and the setuid `fusermount3` reaches
+it: an unprivileged uid holds no effective `CAP_SYS_ADMIN` and cannot `mount(2)`, and the mount
+succeeds anyway.
+
+This venue is therefore the only one that exercises the route a real session takes. The dev rig runs
+as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)
 
