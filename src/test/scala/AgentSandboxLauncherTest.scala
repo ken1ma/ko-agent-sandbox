@@ -9,9 +9,15 @@ import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.*
+import ContainerfileSources.*
+import LauncherImages.*
 import KoAgentFs.bundledSourceId
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
+
+  /** What the parser fixtures below treat as launcher-built rather than an external image. */
+  private val LocalImages = Set("local-base:1")
+
 
   test("a misspelled launcher variable is reported, a foreign or known one is not"):
     // A typo'd KO_AGENT_SANDBOX_MEMORY silently configures nothing; the warning in main is what
@@ -113,6 +119,425 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     (commands.take(2) ++ Vector(commands(3), commands(5), commands(6))).foreach: command =>
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.contains("--label"))
+
+  test("image-producing verbs refresh exactly the remote sources their Containerfiles use"):
+    val readContainerfile: String => String = buildContextResource
+    val localImages = managedImageTags("1.2-3").toSet
+    val buildCommands = AgentSandboxLauncher.buildCommands(
+      "podman", "1.2-3", "sourceid", "sandboxid", "proxyid"
+    )
+    val buildImages = remoteImagesForBuildCommands(buildCommands, readContainerfile, localImages)
+    def repository(image: String): String = image.take(image.lastIndexOf(':'))
+    assertEquals(
+      buildImages.map(repository),
+      Vector(
+        "docker.io/library/debian",
+        "ghcr.io/astral-sh/uv",
+        "gcr.io/distroless/java25-debian13",
+        "docker.io/library/rust"
+      )
+    )
+    assertEquals(
+      remoteImagesForBuildCommands(
+        updateCommands("podman", "1.2-3", "sandboxid"), readContainerfile, localImages
+      ),
+      buildImages.filter(_.startsWith("ghcr.io/astral-sh/uv:"))
+    )
+    assertEquals(
+      remoteImagesForBuildCommands(
+        selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid"),
+        readContainerfile,
+        localImages
+      ),
+      Vector("docker.io/library/rust:test-rust-slim-trixie")
+    )
+    assertEquals(
+      remoteImagePullCommands("podman", buildImages),
+      buildImages.map(image => Vector("podman", "pull", image))
+    )
+    buildCommands.foreach: command =>
+      assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
+
+  test("remote image parsing reads every shape the bundled Containerfiles use"):
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """# a comment
+          |ARG REGISTRY=example.invalid
+          |ARG NAME=first
+          |ARG NAME=second
+          |ARG SUPPLIED
+          |from ${REGISTRY}/one/${NAME}:current as build
+          |FROM local-base:${SUPPLIED}
+          |FROM scratch
+          |ARG REGISTRY
+          |RUN --mount=type=cache,target=/build/target \
+          |    --mount=type=cache,target=/usr/local/cargo/registry \
+          |    cargo build
+          |COPY --chown=nonroot:nonroot app /build/app
+          |COPY --from=${REGISTRY}/two/tool:latest /tool /tool
+          |COPY --from=build /a /b
+          |""".stripMargin,
+        Map("SUPPLIED" -> "1"),
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/one/second:current", "example.invalid/two/tool:latest"))
+    )
+
+  test("an image reaches the build through a mount or a continued COPY, and is refreshed too"):
+    // Podman takes an image from a --mount's own from=, not only from COPY --from. Reading COPY
+    // alone would leave --build silently skipping a source the build then pulls itself.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """FROM example.invalid/base:1 AS build
+          |RUN --mount=type=bind,from=example.invalid/mounted:2,target=/m true
+          |COPY \
+          |  --from=example.invalid/tool:3 /a /b
+          |RUN --mount=type=cache,target=/build/target \
+          |    --mount=type=bind,from=example.invalid/continued:4,target=/m \
+          |    cargo build
+          |FROM scratch
+          |RUN --mount=type=bind,from=build,target=/m true
+          |RUN --mount=type=bind,from=0,target=/m true
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector(
+        "example.invalid/base:1",
+        "example.invalid/mounted:2",
+        "example.invalid/tool:3",
+        "example.invalid/continued:4"
+      ))
+    )
+
+  test("from= in an instruction's own words is not an image source"):
+    // Scanning every line for from= would have --build reach a registry for a string a RUN merely
+    // prints. Only the option words of a COPY or RUN name an image.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """FROM example.invalid/base:1
+          |RUN echo from=example.invalid/tool:1
+          |LABEL note="see" from=example.invalid/tool:2
+          |RUN cargo build --mount=type=bind,from=example.invalid/tool:3
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/base:1"))
+    )
+
+  test("a FROM reads the global arguments, not a later stage's"):
+    // Podman gives a FROM only the arguments declared before the first one. Sharing one scope
+    // would have --build refresh two.invalid while the build itself pulls one.invalid.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """ARG REGISTRY=one.invalid
+          |FROM scratch
+          |ARG REGISTRY=two.invalid
+          |FROM ${REGISTRY}/tool:1
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("one.invalid/tool:1"))
+    )
+    // A stage's own arguments reach its COPY, and a global reaches the stage only where the stage
+    // redeclares it — which is why ko-agent-sandbox declares ARG IMG_TAG_VER twice.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """ARG REGISTRY=one.invalid
+          |FROM ${REGISTRY}/base:1
+          |ARG REGISTRY
+          |ARG VERSION=2.0
+          |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("one.invalid/base:1", "one.invalid/tool:2.0"))
+    )
+    val unshared = remoteImagesInContainerfile(
+      "Containerfile",
+      "ARG REGISTRY=one.invalid\nFROM scratch\nCOPY --from=${REGISTRY}/tool:1 /t /t\n",
+      Map.empty,
+      LocalImages,
+      None
+    )
+    assert(unshared.swap.exists(_.contains("no value for build-image variable")), unshared.toString)
+
+  test("a stage built on an earlier one keeps the arguments that stage declared"):
+    // imagebuilder seeds a stage's arguments from the stage its FROM names, so dropping the scope
+    // at every FROM would resolve a descendant's image differently from the build itself.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """FROM scratch AS base
+          |ARG REGISTRY=example.invalid
+          |FROM base
+          |COPY --from=${REGISTRY}/tool:1 /t /t
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/tool:1"))
+    )
+    // An unrelated stage inherits nothing, and still says so rather than guessing.
+    val unrelated = remoteImagesInContainerfile(
+      "Containerfile",
+      """FROM scratch AS base
+        |ARG REGISTRY=example.invalid
+        |FROM scratch
+        |COPY --from=${REGISTRY}/tool:1 /t /t
+        |""".stripMargin,
+      Map.empty,
+      LocalImages,
+      None
+    )
+    assert(unrelated.swap.exists(_.contains("no value for build-image variable")), unrelated.toString)
+
+  test("a short image name is identified, not discarded"):
+    // Podman resolves a bare name through the host's registries.conf, so one this cannot place is
+    // an external image --build would never refresh. Stages, scratch and the launcher's own images
+    // are the names it can place; anything else has to stop the verb.
+    Vector("FROM alpine:3.20\n", "FROM scratch\nCOPY --from=busybox:1.36 /b /b\n",
+      "FROM scratch\nRUN --mount=type=bind,from=busybox:1.36,target=/m true\n"
+    ).foreach: text =>
+      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LocalImages, None)
+      assert(refused.swap.exists(_.contains("unqualified image source")), s"$text -> $refused")
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        "FROM scratch AS one\nFROM local-base:1\nCOPY --from=one /a /b\nCOPY --from=0 /c /d\n",
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector.empty)
+    )
+
+  test("a reference naming its registry is refreshed, one naming a launcher image is not"):
+    // Podman reads the component before the first slash as a host when it is localhost, carries a
+    // dot or colon, or holds uppercase. Testing that before the launcher's own images would have
+    // --build schedule a pull for an image it is about to build.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """FROM localhost/registry-held:1
+          |FROM MyRegistry/uppercase-host:1
+          |FROM registry.example:5000/ported:1
+          |FROM localhost/local-base:1
+          |FROM local-base:1
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector(
+        "localhost/registry-held:1",
+        "MyRegistry/uppercase-host:1",
+        "registry.example:5000/ported:1"
+      ))
+    )
+    // A declared local image is not pulled even when it is spelled with its registry.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        "FROM registry.example/base:1\n",
+        Map.empty,
+        Set("registry.example/base:1"),
+        None
+      ),
+      Right(Vector.empty)
+    )
+    // Either spelling names the image whichever spelling the caller declared, so both sides of
+    // the comparison carry the same normalization.
+    Vector(Set("localhost/base:1"), Set("base:1")).foreach: local =>
+      assertEquals(
+        remoteImagesInContainerfile(
+          "Containerfile",
+          "FROM localhost/base:1\nFROM base:1\n",
+          Map.empty,
+          local,
+          None
+        ),
+        Right(Vector.empty),
+        local.toString
+      )
+
+  test("an unnamed stage keeps its arguments for a descendant that names its position"):
+    // imagebuilder records every stage under its position as well as its name, so a chain through
+    // an unnamed one still resolves; dropping it would refuse a Containerfile Podman builds.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        """FROM scratch
+          |ARG REGISTRY=example.invalid
+          |FROM 0
+          |ARG VERSION=2
+          |FROM 1
+          |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
+          |""".stripMargin,
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/tool:2"))
+    )
+
+  test("a targeted build reads only the stages it reaches"):
+    // --target stops the build there. A later stage is never evaluated, so its images are not
+    // this command's to refresh, and the arguments it needs are not the ones this command passes
+    // — reading it would refuse, or pull for, a build Podman completes without either.
+    val twoStages =
+      """ARG REACHED=example.invalid
+        |FROM ${REACHED}/base:1 AS build
+        |FROM ${UNPASSED}/later:2
+        |COPY --from=${UNPASSED}/tool:3 /t /t
+        |""".stripMargin
+    val targeted = Vector(
+      Vector("podman", "build", "--target", "build", "-t", "out:1", "ctx")
+    )
+    assertEquals(
+      remoteImagesForBuildCommands(targeted, _ => twoStages, Set.empty),
+      Vector("example.invalid/base:1")
+    )
+    // Without the target the same Containerfile reaches the stage whose argument is unpassed.
+    val whole = remoteImagesInContainerfile("Containerfile", twoStages, Map.empty, Set.empty, None)
+    assert(whole.swap.exists(_.contains("${UNPASSED}")), whole.toString)
+
+    // Buildah builds a target and the stages it depends on, not every stage before it, so only a
+    // first-stage target is read. A later one would need the stage graph; a target that names no
+    // stage would have Podman reject the command after this had already pulled for it.
+    val threeStages =
+      """FROM example.invalid/zero:1 AS zero
+        |FROM example.invalid/one:2 AS one
+        |FROM example.invalid/two:3
+        |""".stripMargin
+    Vector("one", "2", "absent").foreach: stop =>
+      val refused =
+        remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some(stop))
+      assert(refused.swap.exists(_.contains(s"unsupported build target $stop")), refused.toString)
+    Vector("zero", "0").foreach: stop =>
+      assertEquals(
+        remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some(stop)),
+        Right(Vector("example.invalid/zero:1")),
+        stop
+      )
+    // A Containerfile of one stage closes it at end of input rather than at a later FROM.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        "FROM example.invalid/only:1 AS only\n",
+        Map.empty,
+        Set.empty,
+        Some("only")
+      ),
+      Right(Vector("example.invalid/only:1"))
+    )
+
+  test("a stage alias is matched exactly, as Buildah matches it"):
+    // Instructions are case-insensitive but stage names are not: Buildah compares them exactly,
+    // so `AS Build` leaves `build` an ordinary short image name — which nothing here can place.
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        "FROM scratch AS Build\nARG R=example.invalid\nFROM Build\nCOPY --from=${R}/t:1 /t /t\n",
+        Map.empty,
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/t:1"))
+    )
+    val mismatched = remoteImagesInContainerfile(
+      "Containerfile",
+      "FROM scratch AS Build\nARG R=example.invalid\nFROM build\nCOPY --from=${R}/t:1 /t /t\n",
+      Map.empty,
+      LocalImages,
+      None
+    )
+    assert(mismatched.swap.exists(_.contains("unqualified image source build")), mismatched.toString)
+    val expanded = remoteImagesInContainerfile(
+      "Containerfile",
+      "ARG N=one\nFROM scratch AS ${N}\n",
+      Map.empty,
+      LocalImages,
+      None
+    )
+    assert(expanded.swap.exists(_.contains("unsupported stage alias")), expanded.toString)
+
+  test("remote image parsing refuses a shape it does not resolve"):
+    // Every one of these is a Containerfile Podman accepts. Approximating them is what would let a
+    // refresh be skipped without a word, so each has to stop the verb instead.
+    Vector(
+      "FROM example.invalid/base:${UNSET}\n" -> "no value for build-image variable ${UNSET}",
+      "ARG V=1.0\nFROM example.invalid/base:$V\n" -> "unsupported build-image variable",
+      "ARG V=1.0 # pin\nFROM example.invalid/base:${V}\n" -> "unsupported ARG instruction",
+      "ARG A=1.0 B=2.0\nFROM example.invalid/base:${A}\n" -> "unsupported ARG instruction",
+      "ARG V=\"1.0\"\nFROM example.invalid/base:${V}\n" -> "unsupported ARG instruction",
+      "FROM --platform=linux/arm64 example.invalid/base:1\n" -> "unsupported FROM instruction",
+      "ARG V=1.0 \\\n  W=2.0\n" -> "continued instruction",
+      "FROM \\\n  example.invalid/base:1\n" -> "continued instruction",
+      // `# escape=` is not a comment: it rewrites what a continuation looks like, so a COPY
+      // continued with a backtick would hide its --from= on the next line.
+      "# escape=`\nCOPY `\n  --from=example.invalid/tool:1 /a /b\n" -> "unsupported parser directive",
+      "# syntax=docker/dockerfile:1\nFROM example.invalid/base:1\n" -> "unsupported parser directive",
+      // A here-document's body is shell input; the COPY below is text a shell reads, not an
+      // instruction, and pulling what it names would reach a registry the build never asks for.
+      "FROM scratch\nRUN <<EOF\nCOPY --from=example.invalid/not-an-image:1 /a /b\nEOF\n" ->
+        "unsupported here-document"
+    ).foreach: (text, expected) =>
+      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LocalImages, None)
+      assert(refused.swap.exists(_.contains(expected)), s"$text -> $refused")
+
+  test("every generated build command uses only flags the remote-source scan reads"):
+    // imageBuildSpecification reads `--build-arg VALUE` and `-f FILE`; a spelling outside the set
+    // — --build-arg=NAME=value, --file, a --build-context naming an image — would resolve sources
+    // from a different Containerfile than the one Podman builds.
+    val generated = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid") ++
+      updateCommands("podman", "1.2-3", "sandboxid") ++
+      selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid")
+    generated.foreach: command =>
+      val operands = command.drop(2).init
+      operands.filter(_.startsWith("-")).foreach: flag =>
+        assert(BuildCommandFlags.contains(flag), s"$flag in ${command.mkString(" ")}")
+      operands.sliding(2).foreach:
+        // Podman takes a valueless --build-arg from the environment, which this cannot resolve.
+        case Vector("--build-arg", value) =>
+          assert(value.contains('='), s"--build-arg $value in ${command.mkString(" ")}")
+        case _ => ()
+
+  test("a build argument reaches only the references declared before it"):
+    // Podman expands an ARG that no earlier declaration named to the empty string; refusing is the
+    // half of that trade that cannot build a broken reference.
+    val early = remoteImagesInContainerfile(
+      "Containerfile",
+      "FROM example.invalid/base:${LATER}\nARG LATER=default\n",
+      Map("LATER" -> "override"),
+      LocalImages,
+      None
+    )
+    assert(early.isLeft, early.toString)
+    assertEquals(
+      remoteImagesInContainerfile(
+        "Containerfile",
+        "ARG LATER=default\nFROM example.invalid/base:${LATER}\n",
+        Map("LATER" -> "override"),
+        LocalImages,
+        None
+      ),
+      Right(Vector("example.invalid/base:override"))
+    )
 
   test("update rebuilds only the sandbox image, without cache"):
     val commands = updateCommands("podman", "1.2-3", "sandboxid")

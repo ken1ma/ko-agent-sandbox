@@ -465,7 +465,7 @@ object KoAgentFs:
       case Os.Linux => Vector("/bin/sh", "-c", script)
       // The script crosses base64-encoded. Windows needs it: the script is full of double quotes,
       // which Windows argument encoding passes through unescaped, handing the VM a mangled
-      // command line (AgentSandboxLauncher.BundleLabelTemplate is the same wall). macOS does not
+      // command line (LauncherImages.BundleLabelTemplate is the same wall). macOS does not
       // need it and gets it anyway: macOS is the platform running daily, so sharing the path is
       // what keeps a broken wrapper from surviving unnoticed until someone sits at a Windows
       // machine.

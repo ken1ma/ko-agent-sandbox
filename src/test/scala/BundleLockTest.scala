@@ -18,7 +18,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
-import AgentSandboxLauncher.BundleLabel
+import LauncherImages.BundleLabel
 import HostCommands.*
 import IntegrationSession.*
 

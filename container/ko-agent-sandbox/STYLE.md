@@ -46,7 +46,10 @@ README section — says what to do, not how the thing works. Test each sentence 
 does differently. Quoting an error they will cause and then read teaches nothing in advance,
 while quoting a benign message they must recognise and ignore is the instruction itself.
 Reference for a reader trying to *understand* — the security model, the design documents — is the
-opposite, and the same knife takes substance there.
+opposite, and the same knife takes substance there. Which mode a passage is in follows the reader's
+state, not the file it sits in, and one document holds both. A message read while blocked — an
+error, a refusal, a prompt — is act mode and names what to do next. A code comment is reference: it
+says why the code is as it is, and earns its place by that alone.
 
 Until the first release, persisted text states the end, never the journey: no reader has a
 before-state, so change markers ("used to", "now", "became") and correction stories are

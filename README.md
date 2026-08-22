@@ -120,16 +120,16 @@ which is undecided. Until then the jar is built from a checkout — [Development
     Management verbs, each recognized before the command; whatever follows
     belongs to the verb:
 
-      --build            build the container images for the sandbox
-      --update           rebuild only the sandbox container without cache,
-                         for agent updates
+      --build            build the sandbox container image, always pulling remote updates
+      --update           update the agents: rebuild only the sandbox container
+                         image, without cache
       --self-test [<filter>]
-                         build the self-test image on top of the sandbox
-                         one and run the workspace filter's own suites in
-                         it, mounted cases included; <filter> selects one
-                         case or family. Removes self-test images it replaces;
-                         leaves no bind mount or volume and does not change
-                         Podman machine configuration
+                         run the workspace filter's own suites, always pulling
+                         remote updates; builds the self-test image on top of the
+                         sandbox image, mounted cases included; <filter> selects
+                         one case or family. Removes self-test images it replaces;
+                         leaves no bind mount or volume and does not change Podman
+                         machine configuration
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
@@ -177,12 +177,16 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
 ### `--build`
 
-1. Runs `podman build` for the containers in the diagram.
+1. Builds the containers in the diagram with `podman build`, after refreshing every remote image
+   source with a fail-closed pull.
+    1. Image-producing verbs require their source registries on every run: `--build` reaches
+       Docker Hub, `ghcr.io` and `gcr.io`; `--update` reaches `ghcr.io`; `--self-test` reaches
+       Docker Hub. A warm cache does not provide an offline mode.
     1. The images' build context is bundled in the jar, so it runs standalone.
     1. Run it again after upgrading the jar: a launch refuses images an older jar built.
         1. `--update` is for new agent releases, not for that.
-    1. Its last step removes launcher images belonging to older versions. `--update` performs the
-       same cleanup.
+    1. Its last step removes superseded launcher images. It never removes pulled images; other
+       local workloads may use them. `--update` performs the same launcher-image cleanup.
 1. Also compiles `ko-agent-fs`, the workspace filter,
    from bundled source and installs the binary at `~/.local/share/ko-agent-sandbox/ko-agent-fs` —
    inside the Podman machine on macOS and Windows, in your home on native Linux.
@@ -217,8 +221,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
         1. Ctrl-C twice in quick succession to quit.
         1. claude 2.1.227: macOS terminal + `/tui fullscreen`:
            selecting text fails to copy to the clipboard even with Shift/Alt.
-    1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and login,
-       then choose "Sign in with Device Code" in the login UI.
+    1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
+       login, then choose "Sign in with Device Code" in the login UI.
     1. `agy`: sign-in works like `claude`: open the printed URL in an external browser and paste
        the code back. Unlike `claude` and `codex`, permission prompts are not pre-disabled (agy has
        no documented settings key for it); run `agy --dangerously-skip-permissions`, or set it once
