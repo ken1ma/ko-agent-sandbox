@@ -105,8 +105,7 @@ impl Workspace {
             // NotADirectory is an absence too: a pointer-file `.git` has no modules tree of its
             // own — the real gitdir's lives wherever locate_gitdir vetted.
             Err(err)
-                if err.kind() == ErrorKind::NotFound
-                    || err.kind() == ErrorKind::NotADirectory =>
+                if err.kind() == ErrorKind::NotFound || err.kind() == ErrorKind::NotADirectory =>
             {
                 return Ok(());
             }
@@ -227,7 +226,9 @@ impl Workspace {
                     }
                     Err(err) => {
                         return Err(Refusal {
-                            reason: format!("cannot resolve {next:?} while locating {origin}: {err}"),
+                            reason: format!(
+                                "cannot resolve {next:?} while locating {origin}: {err}"
+                            ),
                             remedy: "The filter will not serve control state it cannot resolve."
                                 .to_string(),
                         });
@@ -356,7 +357,9 @@ impl Workspace {
         let origin = format!("the common gitdir {commondir_path:?} names");
         match self.resolve_checked(&named, &origin)? {
             None => Err(Refusal {
-                reason: format!("{commondir_path:?} names a directory that does not exist: {named:?}"),
+                reason: format!(
+                    "{commondir_path:?} names a directory that does not exist: {named:?}"
+                ),
                 remedy: "The filter will not serve a repository whose common gitdir it cannot \
                          locate."
                     .to_string(),
@@ -364,7 +367,9 @@ impl Workspace {
             Some(common) => match fs::symlink_metadata(&common) {
                 Ok(metadata) if metadata.is_dir() => Ok(common),
                 Ok(_) => Err(Refusal {
-                    reason: format!("{commondir_path:?} names {common:?}, which is not a directory"),
+                    reason: format!(
+                        "{commondir_path:?} names {common:?}, which is not a directory"
+                    ),
                     remedy: "The filter will not serve a repository whose common gitdir it \
                              cannot locate."
                         .to_string(),
@@ -416,7 +421,9 @@ impl Workspace {
             // doubt every Undecidable resolves to: refusal.
             let Ok(text) = String::from_utf8(bytes) else {
                 return Err(Refusal {
-                    reason: format!("{config_path:?} is not valid UTF-8, so its values cannot be read"),
+                    reason: format!(
+                        "{config_path:?} is not valid UTF-8, so its values cannot be read"
+                    ),
                     remedy: "The filter cannot tell where hooks would run from, so it will not \
                              serve this repository. Re-encode the file, or remove the setting."
                         .to_string(),
@@ -810,8 +817,9 @@ mod tests {
 
     #[track_caller]
     fn refused_with(root: &Path, token: &str) -> Refusal {
-        let refusal = check_hook_location(root)
-            .expect_err(&format!("{root:?} was served; expected a refusal naming {token:?}"));
+        let refusal = check_hook_location(root).expect_err(&format!(
+            "{root:?} was served; expected a refusal naming {token:?}"
+        ));
         assert!(
             refusal.reason.contains(token),
             "the refusal does not name {token:?}: {refusal}"
@@ -844,10 +852,7 @@ mod tests {
         fs::create_dir_all(root.join("shared-hooks")).unwrap();
         std::os::unix::fs::symlink("../shared-hooks", root.join(".git/hooks")).unwrap();
         let refusal = refused_with(&root, "shared-hooks");
-        assert!(
-            refusal.reason.contains("inside the workspace"),
-            "{refusal}"
-        );
+        assert!(refusal.reason.contains("inside the workspace"), "{refusal}");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -935,10 +940,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(root.join("shared-hooks"), gitdir.join("hooks")).unwrap();
         let refusal = refused_with(&root, "shared-hooks");
-        assert!(
-            refusal.reason.contains("inside the workspace"),
-            "{refusal}"
-        );
+        assert!(refusal.reason.contains("inside the workspace"), "{refusal}");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&gitdir);
     }
@@ -974,11 +976,7 @@ mod tests {
         let gitdir = scratch("worktree-gitdir");
         let main = scratch("worktree-common");
         fs::create_dir_all(root.join("githooks")).unwrap();
-        fs::write(
-            main.join("config"),
-            b"[core]\n\thooksPath = ./githooks\n",
-        )
-        .unwrap();
+        fs::write(main.join("config"), b"[core]\n\thooksPath = ./githooks\n").unwrap();
         fs::write(
             gitdir.join("commondir"),
             format!("{}\n", main.display()).as_bytes(),
@@ -1052,7 +1050,11 @@ mod tests {
         // control state alone to a file that does not exist: an absent config, served.
         let root = scratch("modules-roots");
         fs::create_dir_all(root.join(".git/modules/sub")).unwrap();
-        fs::write(root.join(".git/modules/sub/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        fs::write(
+            root.join(".git/modules/sub/HEAD"),
+            b"ref: refs/heads/main\n",
+        )
+        .unwrap();
         std::os::unix::fs::symlink("modules/sub/objects/pack", root.join(".git/config")).unwrap();
         refused_with(&root, "objects");
         let _ = fs::remove_dir_all(&root);

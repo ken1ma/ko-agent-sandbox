@@ -111,7 +111,9 @@ fn self_test_run() -> Result<(), SelfTestFailure> {
     let mountpoint = base.join("mnt");
     for directory in [&backing, &mountpoint] {
         std::fs::create_dir_all(directory).map_err(|err| {
-            SelfTestFailure::Venue(format!("cannot create scratch directory {directory:?}: {err}"))
+            SelfTestFailure::Venue(format!(
+                "cannot create scratch directory {directory:?}: {err}"
+            ))
         })?;
     }
     std::fs::write(backing.join("seed"), b"seed\n").map_err(|err| {
@@ -198,7 +200,9 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
     match session.umount_and_join() {
         Ok(()) => outcome,
         // A check failure is the more interesting report; an unmount failure alone still fails.
-        Err(err) => outcome.and(Err(SelfTestFailure::Defect(format!("unmount failed: {err}")))),
+        Err(err) => outcome.and(Err(SelfTestFailure::Defect(format!(
+            "unmount failed: {err}"
+        )))),
     }
 }
 

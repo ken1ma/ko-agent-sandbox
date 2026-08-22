@@ -23,7 +23,7 @@
 # Debian 13 (trixie), matching the rest of this project's images. If this tag
 # ever stops existing the build fails immediately and loudly, which is the
 # right failure for a base image.
-ARG RUST_VERSION=1.97.1
+ARG RUST_VERSION=1.98.0
 FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
 
 # musl-tools supplies musl-gcc, which the musl target needs to link.
