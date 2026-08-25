@@ -238,10 +238,16 @@ RUN set -euxo pipefail; \
 # Skip permission prompts: this container is the boundary, and an
 # in-container prompt only trains the operator to approve without reading.
 #
-# Managed settings is the highest-precedence scope, in the read-only image:
-# a mounted project cannot weaken it (the trust dialog above is pre-accepted,
-# so project settings take effect unreviewed), removing the volume cannot
-# drop it, and it does not depend on launcher flags.
+# Managed settings is the highest-precedence scope a project can reach, in
+# the read-only image: a mounted project cannot weaken it (the trust dialog
+# above is pre-accepted, so project settings take effect unreviewed),
+# removing the volume cannot drop it, and it does not depend on launcher
+# flags. One source outranks it: an organization's server-managed settings,
+# fetched when the session signs in to Anthropic directly. Claude Code
+# reads a single admin source, so under one this file is ignored whole —
+# prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
+# the source in force. A policy there that requires the sandbox refuses to
+# start here, since the packages below are not carried for it.
 #
 # `bypassPermissions` refuses to start as root; USER below is nonroot.
 # `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time

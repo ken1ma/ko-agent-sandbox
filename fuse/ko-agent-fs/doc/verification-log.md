@@ -24,8 +24,7 @@ FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
   resolves anywhere near `.git`.
 
 Fold tables are OS-version-specific, so this verifies **this** release against macOS 26.4.1;
-re-run the probe when either side moves. Still unverified: ext4 (the control) and NTFS — the
-release ships with Windows marked experimental (`TODO.md`).
+re-run the probe when either side moves. Still unverified: ext4, the control (`TODO.md`).
 
 ### Verified: APFS case-sensitive (macOS 26.4.1, build 25E253; 2026-08-18)
 

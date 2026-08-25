@@ -48,8 +48,10 @@ Containerfile's `disableAllHooks` note has the reasoning). The networks and the 
 sandbox run, created by the launch and removed with it — so concurrent sessions cannot reach one
 another either, and nothing network-shaped is ever reused from an earlier run.
 
-**A project loosening its own confinement.** Managed settings sit in the read-only image at the
-highest precedence, so a repository's own settings cannot weaken them. The egress policy in
+**A project loosening its own confinement.** Managed settings sit in the read-only image above
+every scope a repository can write, so a repository's own settings cannot weaken them; only an
+organization's server-managed settings outrank the file, and they replace it whole (the sandbox
+Containerfile's managed-settings note has what that costs). The egress policy in
 `.ko-agent-sandbox` is read on the host before the container starts, and the session's write mode
 is what keeps a session from writing the policy governing the next launch: under `--write=reject`
 the whole tree is read-only, and under the filter `.ko-agent-sandbox` is control state — the name

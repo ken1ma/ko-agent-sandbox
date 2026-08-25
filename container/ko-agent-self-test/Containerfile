@@ -73,7 +73,7 @@ USER root
 # fuse3 supplies fusermount3. An unprivileged uid holds no effective CAP_SYS_ADMIN and so cannot
 # mount(2); the mount takes the setuid helper instead, which is the route a real session takes and
 # one the dev rig running as root never reaches. Podman keeps SYS_ADMIN in the bounding set for a
-# non-root USER, so the helper can reach it (fuse/ko-agent-fs/doc/security-research.md); the
+# non-root USER, so the helper can reach it (fuse/ko-agent-fs/doc/verification-log.md); the
 # launcher retries as root if some venue ever does not.
 RUN set -eux; \
     apt-get update; \
