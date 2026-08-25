@@ -1,7 +1,8 @@
-// Which remote images the bundled Containerfiles pull from, so the image-producing verbs can
-// refresh them before a build. Reading is deliberately narrow: these Containerfiles are this
-// repository's own, so a shape this does not resolve is a deliberate edit, and refusing it beats
-// approximating it — an approximation would skip a refresh in silence.
+// Which images the bundled Containerfiles start from: the remote ones, so the image-producing
+// verbs can refresh them before a build, and the launcher-built ones, which order every cleanup
+// list. Reading is deliberately narrow: these Containerfiles are this repository's own, so a shape
+// this does not resolve is a deliberate edit, and refusing it beats approximating it — an
+// approximation would skip a refresh in silence.
 
 package agentsandbox.launcher
 
@@ -44,7 +45,15 @@ object ContainerfileSources:
       first == "localhost" || first.exists(character => character == '.' || character == ':') ||
         first != first.toLowerCase(java.util.Locale.ROOT)
 
-  /** Every registry-held image the Containerfile names, with its ARG values resolved. */
+  /**
+   * What one Containerfile builds on, with its ARG values resolved: the registry-held images it
+   * names anywhere, and the launcher-built images its stages start `FROM` — its parents, without
+   * `localhost/`, so they compare with the tags the launcher builds. A `COPY --from` or mount of a
+   * launcher-built image is not a parent: the copied bytes outlive the source, and Podman removes
+   * it freely.
+   */
+  case class ImageSources(remote: Vector[String], parents: Vector[String])
+
   def remoteImagesInContainerfile(
     name: String,
     text: String,
@@ -52,6 +61,15 @@ object ContainerfileSources:
     localImages: Set[String],
     target: Option[String]
   ): Either[String, Vector[String]] =
+    imageSourcesInContainerfile(name, text, buildArgs, localImages, target).map(_.remote)
+
+  def imageSourcesInContainerfile(
+    name: String,
+    text: String,
+    buildArgs: Map[String, String],
+    localImages: Set[String],
+    target: Option[String]
+  ): Either[String, ImageSources] =
     // A FROM reads only the arguments declared before the first one; every other instruction reads
     // its own stage, which inherits a global only where the stage redeclares it (Dockerfile ARG
     // scope). One map for both would let a later stage's value pick a different image than Podman.
@@ -64,6 +82,7 @@ object ContainerfileSources:
     var stageName: Option[String] = None
     var stageIndex = -1
     val images = Vector.newBuilder[String]
+    val parents = Vector.newBuilder[String]
     var refusal: Option[String] = None
     var complete = false
     var carried = ""
@@ -78,7 +97,7 @@ object ContainerfileSources:
       def refuse(reason: String): Unit =
         if refusal.isEmpty then refusal = Some(s"error: $reason in $name:${index + 1}: $line")
 
-      def collect(reference: String, values: Map[String, String]): Unit =
+      def collect(reference: String, values: Map[String, String], parent: Boolean = false): Unit =
         val expanded = ContainerfileVariable.replaceAllIn(reference, matched =>
           values.get(matched.group(1)) match
             case Some(value) => Regex.quoteReplacement(value)
@@ -93,7 +112,8 @@ object ContainerfileSources:
           // the launcher's own images would schedule a pull for one it is about to build.
           if expanded.contains('$') then refuse("unsupported build-image variable")
           else if expanded == "scratch" || stages.contains(expanded) then ()
-          else if declared.contains(expanded.stripPrefix("localhost/")) then ()
+          else if declared.contains(expanded.stripPrefix("localhost/")) then
+            if parent then parents += expanded.stripPrefix("localhost/")
           else if isQualifiedImage(expanded) then images += expanded
           else refuse(s"unqualified image source $expanded")
 
@@ -148,7 +168,7 @@ object ContainerfileSources:
                 if stageIndex == 0 && namesStage(target.get) then complete = true
                 else refuse(s"unsupported build target ${target.get}: only the first stage is read")
               if !complete && refusal.isEmpty then
-                collect(reference, global)
+                collect(reference, global, parent = true)
                 stageIndex += 1
                 // Buildah compares a stage name exactly (executor.go's stageIndexUnlocked), so
                 // `AS Build` is not reachable as `build`: matching case-insensitively would
@@ -174,7 +194,7 @@ object ContainerfileSources:
     if refusal.isEmpty && !complete then
       target.filterNot(stop => stageIndex == 0 && namesStage(stop)).foreach: stop =>
         refusal = Some(s"error: unsupported build target $stop in $name: only the first stage is read")
-    refusal.toLeft(images.result().distinct)
+    refusal.toLeft(ImageSources(images.result().distinct, parents.result().distinct))
 
   /**
    * Every flag the launcher's own build commands pass, and whether it takes a following value.
@@ -226,23 +246,29 @@ object ContainerfileSources:
       target
     )
 
-  /** Sources derived from the same contexts and arguments Podman receives. */
-  def remoteImagesForBuildCommands(
+  /** Sources derived from the same contexts and arguments Podman receives, one per command. */
+  def imageSourcesForBuildCommands(
     commands: Vector[Vector[String]],
     readContainerfile: String => String,
     localImages: Set[String]
-  ): Vector[String] =
-    commands.flatMap: command =>
+  ): Vector[ImageSources] =
+    commands.map: command =>
       val specification = imageBuildSpecification(command)
       val name = specification.containerfile
-      remoteImagesInContainerfile(
+      imageSourcesInContainerfile(
         name,
         readContainerfile(name),
         specification.buildArgs,
         localImages,
         specification.target
       ).fold(message => fail(message), identity)
-    .distinct
+
+  def remoteImagesForBuildCommands(
+    commands: Vector[Vector[String]],
+    readContainerfile: String => String,
+    localImages: Set[String]
+  ): Vector[String] =
+    imageSourcesForBuildCommands(commands, readContainerfile, localImages).flatMap(_.remote).distinct
 
   /**
    * Pull separately: downstream Containerfiles mix remote sources with launcher-owned local bases,

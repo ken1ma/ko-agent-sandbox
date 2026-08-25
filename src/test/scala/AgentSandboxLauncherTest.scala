@@ -644,6 +644,45 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     writeImageCleanupJournal(journal, Vector.empty)
     assert(!Files.exists(journal))
 
+  test("every cleanup order is a reverse topological order of the Containerfiles' FROM graph"):
+    val version = "1.2-3"
+    val verbs =
+      buildCommands("podman", version, "sourceid", "sandboxid", "proxyid") ++
+        updateCommands("podman", version, "sandboxid") ++
+        selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
+    val declared = managedImageTags(version)
+    // child -> parent, read from the bundled Containerfiles rather than restated here.
+    val edges = buildOutputImages(verbs)
+      .zip(imageSourcesForBuildCommands(verbs, buildContextResource, declared.toSet))
+      .flatMap((child, sources) => sources.parents.map(child -> _))
+      .distinct
+    // Not empty by an accident of parsing: the sandbox image builds on the coursier base.
+    assert(edges.contains("ko-agent-sandbox:latest" -> s"debian-coursier:$version"), edges.toString)
+
+    def precedes(order: Vector[String], first: String, second: String): Boolean =
+      order.indexOf(first) >= 0 && order.indexOf(second) > order.indexOf(first)
+
+    // The declared dependency orders build a parent before its child.
+    edges.foreach: (child, parent) =>
+      assert(precedes(declared, parent, child), s"$parent must be declared before $child")
+
+    // Every cleanup list removes the child first, whatever order Podman lists the images in.
+    def id(index: Int): String = f"sha256:$index%064x"
+    val listing = declared.zipWithIndex.map((tag, index) => TaggedImage(s"localhost/$tag", id(index))).reverse
+    val ids = listing.map(image => image.tag.stripPrefix("localhost/") -> image.id).toMap
+    val journal = prependImageCleanupDependents(
+      imageCleanupCandidates(Vector.empty, imageIdsForTags(listing, buildImageTags(version)), Vector.empty),
+      selfTestCleanupOrder(listing)
+    )
+    edges.foreach: (child, parent) =>
+      assert(precedes(journal, ids(child), ids(parent)), s"$child must be removed before $parent")
+    // The self-test order is constructed, not inherited: a listing in the wrong order, with a
+    // duplicate, still comes out leaves first and once.
+    assertEquals(
+      selfTestCleanupOrder(listing ++ listing.take(1)).map(_.tag),
+      SelfTestImageTags.reverse.map(tag => s"localhost/$tag")
+    )
+
   test("an image retained by a container is reported as a later cleanup retry"):
     val imageId = "1" * 64
     val containerId = "2" * 64

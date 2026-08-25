@@ -109,17 +109,27 @@ object LauncherImages:
         versionedRepositories.contains(imageRepository(normalized)) && !currentTags.contains(normalized)
       .sortBy(image => -repositoryOrder(imageRepository(image.tag)))
 
+  /**
+   * The self-test images a listing holds, in removal order: SelfTestImageTags reversed, leaves
+   * before bases like every other cleanup list. Podman's listing order is not a dependency order,
+   * so it is never inherited.
+   */
+  def selfTestCleanupOrder(existing: Vector[TaggedImage]): Vector[TaggedImage] =
+    val removalOrder = SelfTestImageTags.reverse.zipWithIndex.toMap
+    existing.distinctBy(_.tag)
+      .filter(image => removalOrder.contains(localImageTag(image.tag)))
+      .sortBy(image => removalOrder(localImageTag(image.tag)))
+
   /** On-demand self-test outputs whose current-looking tags belong to another bundle. */
   def staleSelfTestImages(
     podman: String,
     existing: Vector[TaggedImage],
     expectedBundleId: String
   ): Vector[TaggedImage] =
-    val selfTestTags = SelfTestImageTags.toSet
-    existing.filter(image => selfTestTags.contains(localImageTag(image.tag))).filter: image =>
-        val inspected = run(podman, "image", "inspect", "--format", BundleLabelTemplate, image.id)
-        if !inspected.ok then fail(s"error: could not inspect ${image.tag} before the build\n${inspected.err}")
-        inspected.text.trim != expectedBundleId
+    selfTestCleanupOrder(existing).filter: image =>
+      val inspected = run(podman, "image", "inspect", "--format", BundleLabelTemplate, image.id)
+      if !inspected.ok then fail(s"error: could not inspect ${image.tag} before the build\n${inspected.err}")
+      inspected.text.trim != expectedBundleId
 
   private val FullImageId = "(?:sha256:)?[0-9a-f]{64}".r
 
