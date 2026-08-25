@@ -200,24 +200,6 @@ RUN set -euxo pipefail; \
 # `latest` rather than `stable`: the update check compares against `latest`,
 # and `stable` lags it into a permanent "Update available!" banner. Updates
 # arrive by rebuilding. Signed-By pins Anthropic's documented fingerprint.
-#
-# The version is held back, not tracked: with the sandbox dependencies below
-# present, 2.1.243 loses every Bash tool call — a write and a fetch die alike,
-# before the command runs — where 2.1.229 runs them. anthropics/claude-code#88059
-# (open) reports that same boundary from 2.1.232 and names the cause: on a
-# merged-usr distro bwrap mounts a tmpfs onto a path absent from the new root.
-# Debian is merged-usr. Raise this once that issue closes. Meanwhile the
-# update check compares against `latest` as the paragraph above describes, so a
-# held-back image reports a newer release on every start: that banner is the cost
-# of the hold, not a misconfiguration.
-#
-# The repository keeps its history, and the version carries a Debian revision the
-# release notes do not show. What is installable:
-#
-#     podman run --rm --user 0 ko-agent-sandbox:latest \
-#       bash -lc 'apt-get update -qq >/dev/null 2>&1 && apt-cache madison claude-code'
-
-ARG CLAUDE_CODE_VERSION=2.1.229-1
 
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
@@ -232,19 +214,7 @@ RUN set -euxo pipefail; \
         'Signed-By: /etc/apt/keyrings/claude-code.asc 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE' \
         > /etc/apt/sources.list.d/claude-code.sources; \
     apt-get update; \
-    apt-get install -y --no-install-recommends \
-        "claude-code=$CLAUDE_CODE_VERSION" \
-        # Claude Code's own sandbox, needed while an account policy requires it: nothing
-        # in this image sets `sandbox.failIfUnavailable`, and Claude Code refuses to start
-        # without these once it is set. The requirement is account-side, so no version
-        # escapes it. bwrap isolates Bash commands; socat brokers the network half,
-        # relaying a unix socket to Claude Code's own HTTP proxy. The refusal reaches
-        # stderr, which the TUI discards, so an interactive session exits saying nothing
-        # and only `-p` names the cause. bwrap mounts a fresh /proc even unprivileged
-        # here, so enableWeakerNestedSandbox, which bind-mounts this container's instead,
-        # is not needed and is not set.
-        bubblewrap \
-        socat; \
+    apt-get install -y --no-install-recommends claude-code; \
     rm -rf /var/lib/apt/lists/*
 
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
@@ -283,6 +253,16 @@ RUN set -euxo pipefail; \
 # every later session of that project. This narrows the class, not closes
 # it: the volume stays trusted input (SECURITY.md), and per-project volumes
 # bound whatever survives to the one project.
+#
+# `sandbox` off: this container is the boundary, and Claude Code's own
+# bubblewrap sandbox would be a second one inside it that a project can
+# demand — `sandbox.failIfUnavailable` in a repository's `.claude/settings.json`
+# makes every version refuse to start unless bubblewrap and socat are
+# installed, and the refusal goes to stderr, which the TUI discards, so the
+# session just exits. Managed outranks that scope, so no project can require
+# what the image does not carry. Not carrying it also keeps
+# anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
+# distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
 #
 # What a session can observe of it, on 2.1.232 from inside: a project
 # `.claude/settings.json` carrying SessionStart and PreToolUse hooks yields
