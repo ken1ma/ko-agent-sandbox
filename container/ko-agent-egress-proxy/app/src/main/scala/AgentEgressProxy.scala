@@ -155,6 +155,11 @@ object AgentEgressProxy:
       "codeberg.org=git-fetch",
       "gitlab.com=git-fetch",
 
+      // the agent docs
+      "code.claude.com",        // claude
+      "developers.openai.com",  // codex
+      "antigravity.google",     // agy
+
       // public documents / repositories
       "www.rfc-editor.org",
       "www.w3.org",
