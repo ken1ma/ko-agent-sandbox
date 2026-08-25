@@ -108,6 +108,26 @@ git's, and an 8.3 short name should not be able to alias a dot-leading name like
 NTFS run above confirmed on a volume with generation active.
 
 
+## The cost of a path walk
+
+### Measured: per-operation and per-component cost through the filter (same machine; 2026-08-25)
+
+From inside a session over this repository's tree (3,856 entries), warm, 200 iterations per point.
+`lstat` of a file by absolute path, by the file's depth under the mount:
+
+    depth   1     2     3     4     5     6     7     8
+    ms      0.44  0.74  1.16  1.67  2.36  3.10  3.82  5.05
+
+One file at depth 9, three ways: absolute path 8.07 ms; the same name relative to a `chdir` into
+its directory 1.74 ms; through a directory fd 1.67 ms. The kernel walks one component in the
+latter two, so the difference is the kernel re-asking the daemon per component, and the ~1.7 ms
+left is one FUSE operation including the daemon's own full-path resolution.
+
+`find . -type f` over the same tree at each layer: macOS 0.14 s (0.036 ms per entry), the guest
+over virtiofs 0.98 s (0.25 ms), the container through the filter 8.1 s (2.1 ms) — the filter is
+88 % of the total. The 8,858-entry tree of `TODO.md`'s real-tree table gives 0.24 s / 1.63 s /
+12.2 s, 87 %.
+
 ## What a staged lower can represent
 
 ### Measured: the staged lower on APFS (macOS 26.4.1, podman 6.0.2; 2026-08-22)

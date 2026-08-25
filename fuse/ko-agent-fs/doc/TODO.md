@@ -174,7 +174,8 @@ among 8,858 entries), warm:
 | `find . -type f`                       | 1.4 ms/entry | 12 s                                |
 
 A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
-component adds ~0.6 ms, one more LOOKUP round trip. git stats every tracked file by its full path
+component adds ~0.6 ms, one more LOOKUP round trip (`verification-log.md`, "The cost of a path
+walk"). git stats every tracked file by its full path
 from the root and pays the depth; `find` and the other `fts` walkers hold directory fds and pay
 depth 1 — the two `lstat` rows are those two shapes, and the 2.2× between them is the whole
 path-walk term. Claude Code runs `git status` at startup: in that project it answers `pwd` in 51 s
@@ -189,6 +190,8 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
   work per op — still unattributed between the two: model B's full-path `openat2` per op, per-op fd
   open/close, the inode-table lock, and the single-threaded session serializing round trips.
   Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
+  This is the only lever for `find`-shaped tools, which hold directory fds and never pay the walk;
+  it composes with the cache-TTL knob below, which reaches only path-walking ones.
   A directory-fd cache *across* operations is excluded: it pins the directory, so one the host
   replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
   through the stale fd, unbounded in time, which is worse than any TTL.
@@ -200,20 +203,63 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
   registered with the kernel cannot be rebound across the staged generation barrier in
   `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe revoke
   and re-register protocol. Do not make staged mode inherit a live-only optimization by accident.
-- [ ] The control puts the gap in this layer rather than the backing, and a nonzero *entry* TTL is
-  the only lever on the path-walk term (the 2.2× above), so research push-invalidation coherency:
-  nonzero kernel TTLs kept *correct* by the daemon watching the backing (inotify inside the VM) and
-  issuing `notify_inval_entry`/`notify_inval_inode`. Only sound if watches see host-side virtiofs
-  writes — verify that premise first; if they do not, this path is closed and the invariant's cost
-  is the price of correctness. What a TTL exposes, for sizing that research: every `open` drops the
-  file's cached pages (no `FOPEN_KEEP_CACHE` is granted), so an *attribute* TTL can serve stale
-  data only to an fd or `mmap` held across a host write, within the window, and stale `stat`s to
-  anyone; an entry-only TTL with attribute TTL 0 keeps `AUTO_INVAL_DATA` whole and exposes only
-  name resolution. The protocol carries the two separately; fuser 0.18's `reply.entry` sets both
-  from one value, so the split needs its low-level reply.
+- [ ] Push-invalidation: the knob below kept *correct* by the daemon watching the backing (inotify
+  inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode`, so its window closes at the
+  host write rather than at T. Only sound if a watch in the guest sees a host-side virtiofs write,
+  which nothing has shown — verify that premise first; if it fails, this row is closed.
 
-Every one of these must keep the coherency invariant intact: performance is bought with parallelism,
-batching, push-invalidation and a shorter per-op path, never with an unrevalidated cache TTL.
+Every one of these keeps the default coherency guarantee intact: performance is bought with
+parallelism, batching, push-invalidation and a shorter per-op path. The one exception is explicit,
+opt-in and off by default:
+
+### The cache-TTL knob (decided 2026-08-25, not started)
+
+A per-project TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen
+over an always-on value because the knee moves with the host: a component costs ~0.6 ms over
+virtiofs and far less on native Linux, so the right T is measured per venue, not designed.
+
+What it caches, and why exactly that. The path-walk term is the kernel re-asking per component,
+and an entry-only TTL does not remove it: under `DefaultPermissions` the kernel's `fuse_permission`
+refreshes a directory's attributes before each permission check on the walk, so with attribute TTL
+0 every component still costs a GETATTR in place of the LOOKUP. The cacheable unit is therefore a
+directory's name *and* attributes, together. A file's attribute TTL stays 0, so `AUTO_INVAL_DATA`
+stays whole and file `stat` and data are as fresh as today (every `open` also drops the file's
+cached pages: no `FOPEN_KEEP_CACHE` is granted). fuser 0.18's `ReplyEntry::entry_with_ttls`
+carries the two TTLs separately, so the per-reply choice needs no patch.
+
+What it exposes, exactly: a directory's mode, owner and mtime, and a name, may be up to T old. The
+sharpest consequence found: git's untracked cache keys on directory mtime, so a file the host
+created within the last T can be missing from one `git status`. Policy is untouched — an inode's
+git context is computed once at creation (`inode.rs`, `lookup`), so it already outlives any kernel
+cache, and every mutation reaches the daemon whatever is cached.
+
+Expected gain: the 2.2× measured above on git's stat pass, so roughly half of Claude Code's startup
+on the real tree; nothing for `find`-shaped tools (the profiling row is their lever). The bursts
+that pay set the knee: a cached component is re-asked once per T while a walk stays under it, so
+from the measured component cost T = 100 ms keeps ~96 % of the gain at a tenth of the window and
+T = 10 ms loses a third of it. Those are derived, not measured; the sweep below decides.
+
+- [ ] Daemon: `--cache-ttl <ms>`; in `lookup`/`getattr` a directory replies `(T, T)`, anything
+      else `(0, T)`. A pure `ttls(mode, knob)` with a population test: every non-directory mode
+      yields attribute TTL 0 for every knob value.
+- [ ] Rig: the coherency suite at T = 0 and T = 5 s — host append, delete and create visible at
+      once under both. `--self-test` stays at 0, which is what "every mount is the same mount"
+      (`fs.rs`, `mount_config`) is there to prove.
+- [ ] Launcher: `--fuse-ttl=<ms>`, printed at every start beside the workspace line. The mount is
+      per project and shared by its live sessions, reused on matching source-id; T joins that key,
+      recorded beside `source-id`, and a launch asking a different value while sessions are live
+      *refuses*, naming the live value and the sessions — never a looser or stricter mount than
+      asked, silently.
+- [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
+      `verification-log.md`. Only then a persisted value.
+- [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, admitted
+      by the unknown-filename rule (README, "Modifying the egress policy"). A project sets its own
+      coherency window, and a session cannot edit the file. Deferred until the sweep has a value
+      worth persisting.
+- [ ] Docs: `architecture.md` "Coherency" states the guarantee with the knob in it — file
+      attributes and data always fresh, directory names and attributes ≤ T, default 0;
+      `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
+      README's reference block carries the flag.
 
 
 ## P2 — Diagnostics
