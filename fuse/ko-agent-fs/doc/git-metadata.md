@@ -184,8 +184,8 @@ being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the r
 each supported backing, create every candidate name through the mount and assert host
 `lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") carries the corpus, the
 procedure and the pass criterion; `verification-log.md` carries each run with its OS and filesystem
-versions, since a fold table is specific to both. Both APFS variants and NTFS pass; on ext4 this
-rule's coverage is an assumption until its row runs.
+versions, since a fold table is specific to both; a backing without a run there has this rule's
+coverage as an assumption, and `TODO.md` lists which those are.
 
 
 ## Positional, not string-based
