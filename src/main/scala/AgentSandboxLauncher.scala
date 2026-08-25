@@ -157,6 +157,24 @@ object AgentSandboxLauncher:
    */
   val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
 
+  /**
+   * Whether the host clipboard is offered to the sandbox (ClipboardBroker). Off by default, and
+   * `paste` before `bidirectional`, because each step hands the agent more of the host: reading
+   * what the user last copied, then writing what the user will next paste.
+   */
+  val ClipboardVariable = "KO_AGENT_SANDBOX_CLIPBOARD"
+
+  def clipboardMode(value: Option[String]): Either[String, String] =
+    closedChoice(
+      ClipboardVariable,
+      value,
+      Vector("off", "paste", "bidirectional"),
+      "off",
+      "Unset it (or set it to off) to keep the clipboard out; set it to paste to let the\nagent " +
+        "read an image you copied, or to bidirectional to also let it set your clipboard\n" +
+        "(SECURITY.md)."
+    )
+
   def sessionStart(value: Option[String]): Either[String, String] =
     closedChoice(
       SessionStartVariable,
@@ -191,6 +209,7 @@ object AgentSandboxLauncher:
     WorkspaceGuardVariable,
     NestingVariable,
     SessionStartVariable,
+    ClipboardVariable,
     "KO_AGENT_SANDBOX_EGRESS_POLICY"
   )
 
@@ -1450,6 +1469,7 @@ object AgentSandboxLauncher:
     val guard = workspaceGuard(env(WorkspaceGuardVariable)).fold(fail(_), identity)
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
+    val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
@@ -2121,6 +2141,19 @@ object AgentSandboxLauncher:
         )
         NestingLoosenings :+ nestingEnv
 
+    // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code copies through wl-copy only
+    // when it sees a display, and otherwise through OSC 52, which Terminal.app ignores; the value
+    // names the shim so nothing mistakes it for a compositor.
+    val clipboardArgs = clipboard match
+      case "off" => Vector.empty
+      case mode =>
+        System.err.println(
+          s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
+            (if mode == "bidirectional" then " and set your clipboard" else "")
+        )
+        Vector(s"--env=$ClipboardVariable=$mode") ++
+          (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-agent-clipboard") else Vector.empty)
+
     // -----------------------------------------------------------------------
     // Project bind mount
     // -----------------------------------------------------------------------
@@ -2190,7 +2223,7 @@ object AgentSandboxLauncher:
 
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
       "--http-proxy=false"
-    ) ++ nestedArgs ++ egressArgs ++ Vector(
+    ) ++ nestedArgs ++ clipboardArgs ++ egressArgs ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
       // project checkout").
@@ -2235,12 +2268,16 @@ object AgentSandboxLauncher:
         spawnReaper(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
           filterReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
-          filterReap.getOrElse("")
+          filterReap.getOrElse(""),
+          clipboard
         )
     if os != Os.Windows && !reaperArmed then
       System.err.println(
-        "note: could not spawn the proxy reaper; staying resident to remove the proxy on exit"
+        "note: could not spawn the proxy reaper; staying resident to remove the proxy on exit" +
+          (if clipboard == "off" then "" else ", without the clipboard broker")
       )
+    // The resident twin; it waits for the container the start below brings up.
+    if os == Os.Windows then ClipboardBroker.startResident(podman, sandboxContainer, clipboard)
 
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),

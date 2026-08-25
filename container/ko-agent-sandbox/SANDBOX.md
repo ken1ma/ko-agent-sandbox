@@ -15,6 +15,11 @@ write mode — the appended "Authority in force for this session" section says w
 `~/persistent-volume` — where `~/.claude`, `~/.codex` and `~/.gemini` point — survives,
 and holds agent state, not project output.
 
+The host clipboard is reachable only when `KO_AGENT_SANDBOX_CLIPBOARD` is set: `paste` serves an
+image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image/png -o`), and
+`bidirectional` also accepts text on `wl-copy`'s stdin. Unset, a paste reports no image; tell the
+user to save the image under the project and pass its path instead.
+
 A symlink in `/workspace` needs a relative target staying inside it; anything else, an absolute
 `/workspace/...` included, fails. A tool that caches outside the workspace, such as `sbt`,
 falls back to copying instead of linking.

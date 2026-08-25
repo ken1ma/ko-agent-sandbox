@@ -62,6 +62,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector("none", "off", "0", "false", "no", "PAUSE", " pause ", "now", "skip").foreach: value =>
       assert(sessionStart(Some(value)).isLeft, s"'$value' was not refused")
 
+  test("the clipboard defaults to off and fails closed on anything else"):
+    assertEquals(clipboardMode(None), Right("off"))
+    assertEquals(clipboardMode(Some("")), Right("off"))
+    assertEquals(clipboardMode(Some("off")), Right("off"))
+    assertEquals(clipboardMode(Some("paste")), Right("paste"))
+    assertEquals(clipboardMode(Some("bidirectional")), Right("bidirectional"))
+    Vector("on", "true", "1", "read", "copy", "both", "PASTE", " paste ").foreach: value =>
+      assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
+
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
     // is also why the pair lives beside UsageText rather than in HostCommands, whose contract is

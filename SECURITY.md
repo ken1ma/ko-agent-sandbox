@@ -658,6 +658,27 @@ That is the same structure the proxy variables rest on — remove them and there
 and `SessionBoundaryTest` asserts both, along with the absent default route that is
 their common cause.
 
+## Clipboard
+
+Off by default: the host clipboard is the user's, and what they last copied is as often a password
+as a screenshot. `KO_AGENT_SANDBOX_CLIPBOARD` (exactly `off`, `paste` or `bidirectional`; anything
+else refuses the launch, like the workspace guard) opens a channel with these properties:
+
+- **The sandbox asks; the host answers.** The sandbox opens nothing outward. The broker — a job of
+  the reaper on POSIX, a thread of the resident launcher on Windows — holds one `podman exec`
+  reading a FIFO under the sandbox's `/tmp`, and answers each request through another. No host
+  listener, no port, no proxy rule, no file in the project, and nothing moves until the agent's own
+  clipboard call (`ClipboardBroker`, the image's `ko-agent-clipboard` shim).
+- **`paste` grants one read of the current image.** The agent gets a PNG when it asks and the
+  clipboard holds one; text is never served, and the answer is what is on the clipboard at that
+  moment, which the user controls. A `set` request is read and dropped.
+- **`bidirectional` adds writes.** The agent can replace the clipboard with text of its choosing —
+  what the user will next paste, into a terminal included. Granted only where the user asks for
+  it, and priced here rather than hidden in the mode's name.
+- **Nothing outlives the session.** The FIFOs are on the container's tmpfs; the broker ends with
+  the sandbox, and a broker that dies leaves the shim failing within its own bound, never the TUI
+  blocked.
+
 ## No containers inside the sandbox by default
 
 Deliberate, both directions:

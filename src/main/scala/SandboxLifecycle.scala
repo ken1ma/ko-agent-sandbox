@@ -162,16 +162,24 @@ object SandboxLifecycle:
    * interpreter Linux and macOS both guarantee. $1 this run's sandbox, $2
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
-   * (documented at the step that reads them).
+   * (documented at the step that reads them), $8 the clipboard mode.
    *
    * The trap is load-bearing: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
+   *
+   * The clipboard broker is a job of this script rather than a process of
+   * its own because its lifetime is exactly the wait below: from the
+   * sandbox running to the sandbox stopped. A background job, so `podman
+   * wait` stays the authority for removal and a broker blocked in a host
+   * clipboard command delays nothing; killed after the wait, so it never
+   * outlives the container it serves. ClipboardBroker has the protocol it
+   * speaks and the Windows twin; the sandbox side is the image's
+   * ko-agent-clipboard shim.
    */
   val ReaperScript: String =
     withScriptPath(
-      """trap '' INT HUP TERM
-      |
-      |# Wait for the sandbox to be running before waiting for it to stop:
+      "trap '' INT HUP TERM\n\n" + ClipboardBroker.HostShellFunctions +
+      """# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten
       |# minutes of that, remove the stray and fall through. A container
@@ -185,7 +193,10 @@ object SandboxLifecycle:
       |  sleep 1
       |done
       |
+      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" &
+      |
       |"$3" wait "$1"
+      |kill $! 2>/dev/null
       |
       |# Unconditional: the proxy is this run's own. --time 2, because it
       |# holds no state worth draining; its audit log is a host file.
@@ -218,7 +229,7 @@ object SandboxLifecycle:
 
   /**
    * The argument after the script is $0, naming the reaper for ps; the rest
-   * travel as $1-$7 rather than interpolated, keeping the script a constant
+   * travel as $1-$8 rather than interpolated, keeping the script a constant
    * and the rest data.
    */
   def reaperCommand(
@@ -228,12 +239,13 @@ object SandboxLifecycle:
     sandboxNetwork: String,
     egressNetwork: String,
     teardownMode: String,
-    teardownScript: String
+    teardownScript: String,
+    clipboardMode: String
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
-      sandboxNetwork, egressNetwork, teardownMode, teardownScript
+      sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode
     )
 
   /**
@@ -250,13 +262,14 @@ object SandboxLifecycle:
     sandboxNetwork: String,
     egressNetwork: String,
     teardownMode: String,
-    teardownScript: String
+    teardownScript: String,
+    clipboardMode: String
   ): Boolean =
     try
       val builder = ProcessBuilder(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          teardownMode, teardownScript
+          teardownMode, teardownScript, clipboardMode
         )*
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))

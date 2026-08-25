@@ -400,7 +400,11 @@ RUN set -euxo pipefail; \
 # sandbox-install-podman is the same bargain for the nesting opt-in: a fetch plus four config
 # files an agent would otherwise transcribe from the instructions, and a refusal when the session
 # was not launched with KO_AGENT_SANDBOX_NESTING=same-uid.
-COPY --chmod=0755 sandbox-prepare-jdk sandbox-apt-get sandbox-install-podman /usr/local/bin/
+# ko-agent-clipboard answers under the four names Claude Code shells out to for the clipboard on
+# Linux; it speaks to the launcher's broker (SECURITY.md "Clipboard"), and fails at once when the
+# session has none.
+COPY --chmod=0755 sandbox-prepare-jdk sandbox-apt-get sandbox-install-podman ko-agent-clipboard /usr/local/bin/
+RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
 
 COPY SANDBOX.md STYLE.md /etc/ko-agent-sandbox/
 

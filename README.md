@@ -169,6 +169,10 @@ which is undecided. Until then the jar is built from a checkout — [Development
       KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
                                           screen until you press Enter, because the agent TUIs
                                           clear the screen; "immediate" starts the agent at once
+      KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
+                                          lets the agent read an image you copied (Ctrl-V in
+                                          claude); "bidirectional" also lets it set your
+                                          clipboard (SECURITY.md)
 
     Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
     "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and
@@ -219,8 +223,10 @@ which is undecided. Until then the jar is built from a checkout — [Development
     1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
        resulting code back.
         1. Ctrl-C twice in quick succession to quit.
-        1. claude 2.1.227: macOS terminal + `/tui fullscreen`:
-           selecting text fails to copy to the clipboard even with Shift/Alt.
+        1. Without `KO_AGENT_SANDBOX_CLIPBOARD` (above; SECURITY.md "Clipboard") the clipboard
+           does not cross into the container: Ctrl-V answers "No image found in clipboard", and
+           claude 2.1.227's `/tui fullscreen` on macOS Terminal copies nothing out even with
+           Shift/Alt.
     1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
        login, then choose "Sign in with Device Code" in the login UI.
     1. `agy`: sign-in works like `claude`: open the printed URL in an external browser and paste
