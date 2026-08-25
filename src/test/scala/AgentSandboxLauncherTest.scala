@@ -9,6 +9,7 @@ import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.*
+import HostCommands.Os
 import ContainerfileSources.*
 import LauncherImages.*
 import KoAgentFs.bundledSourceId
@@ -70,6 +71,26 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(clipboardMode(Some("bidirectional")), Right("bidirectional"))
     Vector("on", "true", "1", "read", "copy", "both", "PASTE", " paste ").foreach: value =>
       assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
+
+  test("a clipboard mode is refused where the host cannot serve it"):
+    // Windows needs PowerShell by absolute path; Linux one of the two tools the broker calls; off
+    // needs nothing anywhere. `here` is a checkout: an entry in it must never satisfy the search.
+    val bin = java.nio.file.Files.createTempDirectory("clipboard-host")
+    def tool(name: String): Unit =
+      val path = bin.resolve(name)
+      java.nio.file.Files.writeString(path, "")
+      path.toFile.setExecutable(true)
+    assertEquals(ClipboardBroker.hostBackend("off", Os.Linux, ""), Right(None))
+    assert(ClipboardBroker.hostBackend("paste", Os.Linux, bin.toString).isLeft)
+    assert(ClipboardBroker.hostBackend("paste", Os.Windows, bin.toString).isLeft)
+    assertEquals(ClipboardBroker.hostBackend("paste", Os.Mac, ""), Right(None))
+    tool("wl-paste")
+    assertEquals(ClipboardBroker.hostBackend("bidirectional", Os.Linux, bin.toString), Right(None))
+    tool("powershell.exe")
+    assertEquals(
+      ClipboardBroker.hostBackend("paste", Os.Windows, bin.toString),
+      Right(Some(bin.resolve("powershell.exe")))
+    )
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This

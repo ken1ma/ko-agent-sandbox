@@ -4,12 +4,17 @@
 # wl-copy), answering only the argument shapes it uses; anything else is a usage error.
 #
 # One transaction: take the lock, write a request line (plus body for `set`) to the request FIFO,
-# read the whole response FIFO. The broker's absence is a missing FIFO (a session launched without
-# KO_AGENT_SANDBOX_CLIPBOARD), which is an immediate failure rather than a blocked TUI; a broker
-# that has died leaves the FIFO, which is the bounded wait below.
+# read the whole response FIFO. The broker's absence is a missing FIFO: an immediate failure in a
+# session launched without KO_AGENT_SANDBOX_CLIPBOARD, a short wait in one launched with it, since
+# the broker makes the FIFO only once the container runs. A broker that has died leaves the FIFO,
+# which is the bounded wait further down.
 set -eu
 
 dir=/tmp/ko-agent-sandbox/clipboard
+if [ -n "${KO_AGENT_SANDBOX_CLIPBOARD:-}" ]; then
+  i=0
+  while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
+fi
 [ -p "$dir/req" ] || exit 1
 
 case "$(basename "$0")${*:+ $*}" in

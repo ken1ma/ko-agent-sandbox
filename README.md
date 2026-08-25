@@ -172,7 +172,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
       KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
                                           lets the agent read an image you copied (Ctrl-V in
                                           claude); "bidirectional" also lets it set your
-                                          clipboard (SECURITY.md)
+                                          clipboard (SECURITY.md). A Linux host needs xclip
+                                          or wl-clipboard
 
     Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
     "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and

@@ -1470,6 +1470,8 @@ object AgentSandboxLauncher:
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
     val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
+    val clipboardHost =
+      ClipboardBroker.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
@@ -2277,7 +2279,7 @@ object AgentSandboxLauncher:
           (if clipboard == "off" then "" else ", without the clipboard broker")
       )
     // The resident twin; it waits for the container the start below brings up.
-    if os == Os.Windows then ClipboardBroker.startResident(podman, sandboxContainer, clipboard)
+    clipboardHost.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
 
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),

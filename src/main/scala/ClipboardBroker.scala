@@ -6,8 +6,9 @@ package agentsandbox.launcher
 
 import java.io.{ByteArrayOutputStream, IOException, InputStream}
 import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Path
 
-import HostCommands.run
+import HostCommands.{Os, findOnPath, run}
 
 object ClipboardBroker:
 
@@ -79,7 +80,27 @@ object ClipboardBroker:
   // ending with the exec it reads, which ends with the sandbox. Windows PowerShell rather than
   // pwsh: it is always present, and its default STA apartment is what the clipboard API demands.
 
-  private val PowerShell = Vector("powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-Command")
+  private val PowerShellArgs = Vector("-NoProfile", "-NonInteractive", "-Sta", "-Command")
+
+  /**
+   * What the host must have for the mode, resolved before the launch makes anything: Windows
+   * PowerShell by absolute path (a bare name would be searched for in the checkout, DESIGN.md "No
+   * PATH-resolved host executables"); on Linux one of the tools the shell twin calls, because
+   * without one a paste reads as an empty clipboard and a copy as success. macOS always has
+   * osascript and pbcopy. The path is `Some` only where the twin here needs it.
+   */
+  def hostBackend(mode: String, os: Os, pathValue: String): Either[String, Option[Path]] =
+    if mode == "off" then Right(None)
+    else os match
+      case Os.Windows =>
+        findOnPath("powershell", pathValue, os).map(Some(_))
+          .toRight(s"error: $ClipboardVariable=$mode needs powershell.exe on PATH")
+      case Os.Linux =>
+        if Vector("xclip", "wl-paste").exists(findOnPath(_, pathValue, os).isDefined) then Right(None)
+        else Left(s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host")
+      case _ => Right(None)
+
+  private def ClipboardVariable = AgentSandboxLauncher.ClipboardVariable
 
   private val HasImage =
     "Add-Type -AssemblyName System.Windows.Forms; " +
@@ -96,9 +117,9 @@ object ClipboardBroker:
       "Set-Clipboard -Value ([System.Console]::In.ReadToEnd())"
 
   /** Started once the sandbox runs; returns at once. Nothing to start when the mode is off. */
-  def startResident(podman: String, sandboxContainer: String, mode: String): Unit =
+  def startResident(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     if mode != "off" then
-      val thread = Thread(() => serve(podman, sandboxContainer, mode), "ko-agent-sandbox-clipboard")
+      val thread = Thread(() => serve(powershell, podman, sandboxContainer, mode), "ko-agent-sandbox-clipboard")
       thread.setDaemon(true)
       thread.start()
 
@@ -107,7 +128,7 @@ object ClipboardBroker:
    * while the sandbox still runs. The first wait is bounded like the reaper's, for a launcher that
    * never reaches the start.
    */
-  private def serve(podman: String, sandboxContainer: String, mode: String): Unit =
+  private def serve(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     def running(): Boolean =
       try run(podman, "container", "inspect", "--format", "{{.State.Running}}", sandboxContainer).text == "true"
       catch case _: IOException => false
@@ -116,11 +137,11 @@ object ClipboardBroker:
       Thread.sleep(1000)
       waited += 1
     while running() do
-      try serveOnce(podman, sandboxContainer, mode)
+      try serveOnce(powershell, podman, sandboxContainer, mode)
       catch case _: IOException | _: NumberFormatException => ()
       Thread.sleep(1000)
 
-  private def serveOnce(podman: String, sandboxContainer: String, mode: String): Unit =
+  private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     val reader = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", SandboxRequestReader)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
@@ -130,13 +151,15 @@ object ClipboardBroker:
       line.split(" ", 2) match
         case Array("set", size) =>
           val body = readExactly(in, size.trim.toInt)
-          if mode == "bidirectional" then host(Copy, body)
-        case Array("types") => respond(podman, sandboxContainer, host(HasImage, Array.empty))
-        case Array("get", "image/png") => respond(podman, sandboxContainer, host(Png, Array.empty))
+          if mode == "bidirectional" then host(powershell, Copy, body)
+        case Array("types") => respond(podman, sandboxContainer, host(powershell, HasImage, Array.empty))
+        case Array("get", "image/png") => respond(podman, sandboxContainer, host(powershell, Png, Array.empty))
         case _ => respond(podman, sandboxContainer, Array.empty)
 
-  private def host(command: String, stdin: Array[Byte]): Array[Byte] =
-    val process = ProcessBuilder((PowerShell :+ command)*).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+  private def host(powershell: Path, command: String, stdin: Array[Byte]): Array[Byte] =
+    val process = ProcessBuilder((powershell.toString +: PowerShellArgs :+ command)*)
+      .redirectError(ProcessBuilder.Redirect.DISCARD)
+      .start()
     val feeder = Thread(() =>
       try
         process.getOutputStream.write(stdin)
