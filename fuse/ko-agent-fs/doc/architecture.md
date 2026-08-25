@@ -110,7 +110,9 @@ Real-time bidirectional visibility is the project's defining requirement — a c
 rejected at the outset. A FUSE attribute/entry cache with a nonzero TTL lets the kernel answer from
 a stale attribute without re-asking the daemon, so a host edit stays invisible until the TTL
 expires. A build tool keying on mtime would then miss the change and compile stale content — a
-correctness failure, not a slow path. Therefore, as invariants and not tunables:
+correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
+*backing's* state at the moment of the call — never older, and never fresher than the backing
+itself. Therefore, as invariants and not tunables:
 
 - entry, attribute, and negative-entry TTLs are **0**, always;
 - writeback caching is **off** (it would let the kernel hold writes the host cannot see);
@@ -147,8 +149,10 @@ Performance at 100k-file scale is recovered only by means that keep every answer
 
 The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
 TTL 0 makes *our* view re-read the backing on every access, but end-to-end coherency also needs that
-backing to reflect host writes promptly — the virtiofs mount's own cache mode. TTL 0 is necessary;
-the backing's coherency is a dependency to verify, not assume.
+backing to reflect host writes promptly — the virtiofs mount's own cache mode. TTL 0 is necessary,
+and on macOS it is the only cache policy in the path: the guest kernel caches nothing over virtiofs
+(`security-research.md`, "the virtiofs layer itself"). That is a measurement of one hypervisor, to
+repeat after a podman or macOS upgrade, not a property of the design.
 
 
 ## Who may reach the mount

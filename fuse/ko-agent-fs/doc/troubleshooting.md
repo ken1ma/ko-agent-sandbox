@@ -112,6 +112,18 @@ Expected, quantified, and being worked: metadata through the filter costs ~5–1
 (`TODO.md`, "Performance", has the table). If it is much worse than that, suspect the layer below —
 see the next section.
 
+`git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
+appears as a long silence before its first word. git stats every tracked file by its full path and
+each path component is a round trip, so the cost is tracked files × depth: ~4.7 ms per file at
+depth 6–7, 18 s for 3,200 files. What shortens it, set on the host (a session cannot write
+`.git/config`):
+
+- `git config core.untrackedCache true` — drops the untracked walk, about a sixth of the total.
+- Ignore whole directories (`target/`, `node_modules/`), not file patterns (`*.class`): git prunes
+  an ignored directory without entering it, and walks every entry of one it must enter.
+- The tracked-file pass itself shortens only with fewer or shallower tracked files; the rest is
+  the filter's per-operation cost, and `TODO.md`, "Performance", is where that is being worked.
+
 ## The whole machine degrades (every podman command slow or erroring)
 
 The filter shares the VM with podman itself; when the *machine* is sick the filter is a casualty,

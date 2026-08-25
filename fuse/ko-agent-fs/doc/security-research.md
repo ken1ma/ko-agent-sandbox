@@ -126,10 +126,21 @@ The virtiofs premise, as observed on the same machine: the host shares (`/Users`
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
-plus the perf control's observation that the VM does cache virtiofs *metadata* across processes.
-Re-run `coherency-probe.py` after a podman or macOS upgrade — it, not the mount table, is what
-notices a changed default. (The `nfs_t` SELinux context is also why the launcher never applies
-`:Z` relabeling to machine-shared sources.)
+and the guest-layer measurement below. Re-run `coherency-probe.py` after a podman or macOS upgrade
+— it, not the mount table, is what notices a changed default. (The `nfs_t` SELinux context is also
+why the launcher never applies `:Z` relabeling to machine-shared sources.)
+
+### Measured: the virtiofs layer itself (same machine; 2026-08-25)
+
+Polled from inside the machine (`podman machine ssh`), below the filter, while the host wrote to
+the share: a file's creation, its deletion, and — with its size polled continuously, so the guest's
+attributes were hot — an append each became visible within 30 ms, the resolution of the host-side
+timestamp. Resolving one further path component in the guest costs ~56 µs (2,000 `[ -e ]` of a
+depth-8 path against a depth-2 one): a hypervisor round trip, not a dentry-cache hit, which would be
+microseconds. The guest kernel therefore caches neither virtiofs names nor attributes at any window
+that matters, and the raw-bind speed the perf control measures is the hypervisor answering fast.
+Host→session coherency rests on the hypervisor's behavior alone; the filter's TTL 0 is the only
+cache policy in the path.
 
 ### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
 

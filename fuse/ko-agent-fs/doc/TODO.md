@@ -152,9 +152,10 @@ virtiofs, against the same corpus over a plain bind mount:
 |                                 |          |          |       | *path-based* syscall re-resolves |
 |                                 |          |          |       | every component                  |
 
-The margin over that honest baseline is **~5–12×**. The raw bind is fast because the VM kernel
-caches virtiofs metadata across processes, so virtiofs is not the ceiling — what the ratio prices is
-the invariant, which forbids exactly the caching the control enjoys.
+The margin over that honest baseline is **~5–12×**. The raw bind is fast because the hypervisor
+answers a guest lookup in ~56 µs and the guest caches nothing (`security-research.md`, "the
+virtiofs layer itself"), so what the ratio prices is this layer alone: one FUSE round trip through
+the daemon per path component, which TTL 0 makes unavoidable.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
 (tolerable); walk+stat ~1.8 min; `ls -lR`-shaped traffic ~13 min — the `sbt`/`metals` stat-storm
@@ -162,16 +163,35 @@ shape, on this project's own stated target workload. The dominant term is per-sy
 TTL 0 means every path component of every syscall is a fresh round trip, which no batching
 downstream can amortize.
 
+Measured on a real tree (2026-08-25, the same macOS machine; 3,190 tracked files at mean depth 6.6
+among 8,858 entries), warm:
+
+| operation                              | per file     | total                               |
+| -------------------------------------- | ------------ | ----------------------------------- |
+| `git status`                           | 4.7 ms       | 18 s (15 s, `--untracked-files=no`) |
+| `lstat` of each tracked file, by path  | 3.6 ms       | 11.6 s                              |
+| the same files through a directory fd  | 1.7 ms       | 5.4 s                               |
+| `find . -type f`                       | 1.4 ms/entry | 12 s                                |
+
+A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
+component adds ~0.6 ms, one more LOOKUP round trip. git stats every tracked file by its full path
+from the root and pays the depth; `find` and the other `fts` walkers hold directory fds and pay
+depth 1 — the two `lstat` rows are those two shapes, and the 2.2× between them is the whole
+path-walk term. Claude Code runs `git status` at startup: in that project it answers `pwd` in 51 s
+from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the host.
+
 - [ ] **Run it on Linux**, where there is no virtiofs under the filter and the ratio should differ
   in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
   mandatory on.
 - [ ] **Run it on Windows/WSL**, same reason, lowest priority.
-- [ ] **Profile where the millisecond goes.** With the VM's virtiofs cache warm underneath the
-  daemon, the backing answers a walk+stat in 147 µs, yet the filtered one costs 1052 µs. Suspects:
-  the
-  container→daemon FUSE hop itself, model B's full-path `openat2` re-resolution per op, per-op fd
-  open/close, and the single-threaded session serializing round trips. Candidate fix if resolution
-  dominates: parent-directory fd reuse *within one operation*, never a cache across operations.
+- [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so
+  ~0.4 ms of a depth-1 `lstat`'s 0.44 ms is the container→daemon FUSE hop plus the daemon's own
+  work per op — still unattributed between the two: model B's full-path `openat2` per op, per-op fd
+  open/close, the inode-table lock, and the single-threaded session serializing round trips.
+  Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
+  A directory-fd cache *across* operations is excluded: it pins the directory, so one the host
+  replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
+  through the stale fd, unbounded in time, which is worse than any TTL.
 - [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help getdents-shaped
   traffic and not `ls -lR`-shaped: under TTL 0 the attributes it returns expire immediately, so
   follow-up per-file stats still round-trip. Measure before and after.
@@ -180,12 +200,17 @@ downstream can amortize.
   registered with the kernel cannot be rebound across the staged generation barrier in
   `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe revoke
   and re-register protocol. Do not make staged mode inherit a live-only optimization by accident.
-- [ ] The control puts the gap in the invariant rather than the backing, so research
-  push-invalidation coherency: nonzero kernel TTLs kept *correct* by the daemon watching the backing
-  (inotify inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode` — the control
-  column above is what caching buys. Only sound if watches see host-side virtiofs
+- [ ] The control puts the gap in this layer rather than the backing, and a nonzero *entry* TTL is
+  the only lever on the path-walk term (the 2.2× above), so research push-invalidation coherency:
+  nonzero kernel TTLs kept *correct* by the daemon watching the backing (inotify inside the VM) and
+  issuing `notify_inval_entry`/`notify_inval_inode`. Only sound if watches see host-side virtiofs
   writes — verify that premise first; if they do not, this path is closed and the invariant's cost
-  is the price of correctness.
+  is the price of correctness. What a TTL exposes, for sizing that research: every `open` drops the
+  file's cached pages (no `FOPEN_KEEP_CACHE` is granted), so an *attribute* TTL can serve stale
+  data only to an fd or `mmap` held across a host write, within the window, and stale `stat`s to
+  anyone; an entry-only TTL with attribute TTL 0 keeps `AUTO_INVAL_DATA` whole and exposes only
+  name resolution. The protocol carries the two separately; fuser 0.18's `reply.entry` sets both
+  from one value, so the split needs its low-level reply.
 
 Every one of these must keep the coherency invariant intact: performance is bought with parallelism,
 batching, push-invalidation and a shorter per-op path, never with an unrevalidated cache TTL.
