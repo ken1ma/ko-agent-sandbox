@@ -183,7 +183,7 @@ being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the r
 **The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it. On
 each supported backing, create every candidate name through the mount and assert host
 `lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") carries the corpus, the
-procedure and the pass criterion; `security-research.md` carries each run with its OS and filesystem
+procedure and the pass criterion; `verification-log.md` carries each run with its OS and filesystem
 versions, since a fold table is specific to both. APFS case-insensitive — the default macOS volume —
 passes. On case-sensitive APFS, ext4 and NTFS this rule's coverage is an assumption, not a result.
 

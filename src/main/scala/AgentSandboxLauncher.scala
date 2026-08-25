@@ -476,7 +476,7 @@ object AgentSandboxLauncher:
    * `--cap-add SYS_ADMIN` is the one place this project runs a container with more than a session
    * gets, and it is never a session's container. It is not redundant with the setuid fusermount3
    * the image installs: a setuid binary does not escape the container's capability bounding set,
-   * measured rather than assumed (`fuse/ko-agent-fs/doc/security-research.md`).
+   * measured rather than assumed (`fuse/ko-agent-fs/doc/verification-log.md`).
    *
    * `--network=none` because no case reaches a host, and nothing is fetched at this point.
    */
@@ -753,7 +753,7 @@ object AgentSandboxLauncher:
         "root. Its own message above is the report of what failed, and this launcher does not\n" +
         "narrow it further. If root serves, this venue never exercises the setuid fusermount3\n" +
         "route a session takes, which is worth recording with its venue\n" +
-        "(fuse/ko-agent-fs/doc/security-research.md)."
+        "(fuse/ko-agent-fs/doc/verification-log.md)."
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
     System.err.println(privileged.mkString(" "))

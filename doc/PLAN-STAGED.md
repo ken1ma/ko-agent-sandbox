@@ -74,7 +74,7 @@ session.
 Windows carries one measured hazard to settle before the apply state machine is built rather than
 during it: a host write to a file a live session holds open is refused with a sharing violation,
 because the daemon's backing descriptor reaches NTFS through the machine's 9p server
-(`../fuse/ko-agent-fs/doc/security-research.md`). Apply writes to the host while sessions are
+(`../fuse/ko-agent-fs/doc/verification-log.md`). Apply writes to the host while sessions are
 attached, and sealing rebinds write authority without necessarily closing the lower descriptor, so
 apply's atomic replacement can be refused on exactly the paths it is applying.
 
@@ -132,7 +132,7 @@ Apply holds the stage's control lock for its whole state transition. The sealed 
 ordered set of operation groups: a rename, hardlink relationship or other indivisible change is
 selected and applied as one group. A link relationship cannot be recovered from what a session
 observed — the filter mints an inode per `(parent, name)`, so two names for one object are two
-inodes there (`../fuse/ko-agent-fs/doc/security-research.md`) — so the stage records it at copy-up,
+inodes there (`../fuse/ko-agent-fs/doc/verification-log.md`) — so the stage records it at copy-up,
 from the backing object's identity, and the plan carries it. The lower keeps the relationship;
 only the view through the filter does not. For each group, trusted code:
 

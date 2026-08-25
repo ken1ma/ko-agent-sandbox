@@ -216,7 +216,7 @@ git's own lock files are the only arbiter the writable parts of `.git` get. On W
 sharing carries one extra rule: a file a live session holds open cannot be written from the host —
 the machine's 9p handle carries Windows sharing semantics, so a host editor's save meets "used by
 another process" until the session lets go
-(`fuse/ko-agent-fs/doc/security-research.md` has the measurement). Concurrent sandbox
+(`fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Concurrent sandbox
 sessions of one project race each other the same way — under the workspace filter too, where they
 share the one filter mount: the same files, the same live view, the same races.
 
@@ -260,7 +260,7 @@ What an auditor trusts, and how each link is checked:
 Its name rule is verified on macOS against both APFS variants and on Windows against a real NTFS
 volume, its coherency on macOS and — with the share-lock cost "The project checkout" notes — on
 Windows, each through the whole production stack
-(`fuse/ko-agent-fs/doc/security-research.md` has the runs). The rest is what the README's status
+(`fuse/ko-agent-fs/doc/verification-log.md` has the runs). The rest is what the README's status
 line means: on Linux the guarantees are reasoned rather than measured, while the filter is every
 session's enforcement on every platform.
 

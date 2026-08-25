@@ -9,7 +9,7 @@
 #
 #     fuse/ko-agent-fs/probe/name-rule-cs-apfs.sh [path/to/ko-agent-sandbox.jar]
 #
-# On a pass, record the printed versions in doc/security-research.md and tick the TODO row: fold
+# On a pass, record the printed versions in doc/verification-log.md and tick the TODO row: fold
 # tables are OS-version-specific, so the versions are part of the result.
 set -eu
 
@@ -69,6 +69,6 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 echo
-echo "PASS. Record in doc/security-research.md (\"Real-filesystem case-folding\"):"
+echo "PASS. Record in doc/verification-log.md (\"The .git name rule on real filesystems\"):"
 sw_vers
 echo "File System Personality: $personality"

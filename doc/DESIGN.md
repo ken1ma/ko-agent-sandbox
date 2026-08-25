@@ -220,7 +220,7 @@ Conflating them is what makes verification look larger than it is.
 
 Every case asserts a premise behaviourally, at the layer the product uses it — never a version, a
 mount option or a declared feature. That is the rule the virtiofs premise is already recorded under
-(`../fuse/ko-agent-fs/doc/security-research.md`), and it keeps the suite indifferent to *why* an
+(`../fuse/ko-agent-fs/doc/verification-log.md`), and it keeps the suite indifferent to *why* an
 environment moved: a podman upgrade, a recreated machine, a host OS update and a changed storage
 driver all reach it by the same door, and no case has to anticipate which.
 

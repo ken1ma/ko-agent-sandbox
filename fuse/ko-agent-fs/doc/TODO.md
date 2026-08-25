@@ -12,7 +12,7 @@ Decisions that research has already closed are in **Non-TODOs** so they stop res
 
 ## P1 — Platform verification (needs real filesystems)
 
-Every run belongs in `security-research.md` with the venue that produced it: OS, podman, kernel and
+Every run belongs in `verification-log.md` with the venue that produced it: OS, podman, kernel and
 filesystem versions. A pass with no venue recorded is not evidence for the next release, and
 re-running is the only thing that notices a platform default changing underneath a row.
 
@@ -46,7 +46,7 @@ rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. 
 version-specific, which is what makes the recorded versions load-bearing here.
 
 APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
-`security-research.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
+`verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
 one end to end. What is left:
 
 - [ ] ext4, the control.
@@ -57,7 +57,7 @@ TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to
 writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
 travel, `read()` and an established `mmap`, across the whole stack. macOS 26.4.1 passes, and
 Windows measures fresh-when-unheld with host writes to session-held files refused by a share lock;
-`security-research.md` records both, and why the premise is behavioural rather than declarative.
+`verification-log.md` records both, and why the premise is behavioural rather than declarative.
 
 - [ ] Re-run it on Linux, and after a podman or macOS upgrade.
 
@@ -85,7 +85,7 @@ The rows:
   read-held and write-held, and whether releasing restores what was refused. Apply write-back stands
   or falls on this.
 
-APFS answers all five (`security-research.md` has the run): the lower keeps hardlink relationships,
+APFS answers all five (`verification-log.md` has the run): the lower keeps hardlink relationships,
 exchange is available on both sides, symlinks round-trip, two names differing only by case are one
 name, and a session-held descriptor blocks no host mutation. One answer was never the share's to
 give — a session cannot see a hardlink relationship at all, because the filter mints an inode per
@@ -103,7 +103,7 @@ What is left:
 - [ ] macOS Podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
 
 Windows stays **experimental**: the name rule and coherency rows are measured
-(`security-research.md` — fold tables are per-volume, so the name-rule run verifies the volume it
+(`verification-log.md` — fold tables are per-volume, so the name-rule run verifies the volume it
 ran on, and coherency comes with the share-lock cost recorded there), while the performance row is
 still unmeasured.
 
@@ -153,7 +153,7 @@ virtiofs, against the same corpus over a plain bind mount:
 |                                 |          |          |       | every component                  |
 
 The margin over that honest baseline is **~5–12×**. The raw bind is fast because the hypervisor
-answers a guest lookup in ~56 µs and the guest caches nothing (`security-research.md`, "the
+answers a guest lookup in ~56 µs and the guest caches nothing (`verification-log.md`, "the
 virtiofs layer itself"), so what the ratio prices is this layer alone: one FUSE round trip through
 the daemon per path component, which TTL 0 makes unavoidable.
 

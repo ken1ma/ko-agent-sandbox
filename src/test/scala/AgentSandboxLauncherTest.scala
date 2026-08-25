@@ -873,7 +873,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // A measurement that changes its subject is worth nothing, so the run binds no host path and
     // keeps no container. The capability is not
     // redundant with the image's setuid fusermount3 — a setuid binary does not escape a container's
-    // bounding set, measured in fuse/ko-agent-fs/doc/security-research.md — so its absence here
+    // bounding set, measured in fuse/ko-agent-fs/doc/verification-log.md — so its absence here
     // would be a venue that cannot mount at all.
     val command = selfTestRunCommand("podman", Some("a_handle_held"), asRoot = false)
     assert(command.contains("--rm"), command.mkString(" "))

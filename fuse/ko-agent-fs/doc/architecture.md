@@ -151,7 +151,7 @@ The layer beneath matters: the backing tree is itself the host share (virtiofs o
 TTL 0 makes *our* view re-read the backing on every access, but end-to-end coherency also needs that
 backing to reflect host writes promptly — the virtiofs mount's own cache mode. TTL 0 is necessary,
 and on macOS it is the only cache policy in the path: the guest kernel caches nothing over virtiofs
-(`security-research.md`, "the virtiofs layer itself"). That is a measurement of one hypervisor, to
+(`verification-log.md`, "the virtiofs layer itself"). That is a measurement of one hypervisor, to
 repeat after a podman or macOS upgrade, not a property of the design.
 
 
