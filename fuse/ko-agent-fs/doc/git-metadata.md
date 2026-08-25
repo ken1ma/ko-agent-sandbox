@@ -184,8 +184,8 @@ being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the r
 each supported backing, create every candidate name through the mount and assert host
 `lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") carries the corpus, the
 procedure and the pass criterion; `verification-log.md` carries each run with its OS and filesystem
-versions, since a fold table is specific to both. APFS case-insensitive — the default macOS volume —
-passes. On case-sensitive APFS, ext4 and NTFS this rule's coverage is an assumption, not a result.
+versions, since a fold table is specific to both. Both APFS variants and NTFS pass; on ext4 this
+rule's coverage is an assumption until its row runs.
 
 
 ## Positional, not string-based
@@ -218,10 +218,9 @@ protected path or a protected destination:
 
 The last two are the exception, and listed anyway because this is the requirement rather than the
 implementation: `setxattr`/`removexattr` are unimplemented, so nothing reaches the backing store
-through them and no policy has to run. The sandbox sees `ENOTSUP` — the kernel's rendering of the
-daemon's `ENOSYS` — which reads as a filesystem without extended attributes. `policy::Mutation`
-deliberately carries no xattr variant until that changes (`TODO.md`, "Non-TODOs"), and the gate
-arrives with the implementation.
+through them and no policy has to run (`fs.rs`'s deny-surface note has what a caller sees).
+`policy::Mutation` deliberately carries no xattr variant until that changes (`TODO.md`,
+"Non-TODOs"), and the gate arrives with the implementation.
 
 Rename and exchange are the double-sided cases: `rename evil → <gitdir>/hooks/pre-commit` is a
 destination-side violation even though `evil` is unprotected, and `RENAME_EXCHANGE` mutates both
@@ -416,8 +415,7 @@ fail against it.
 **Hooks (group 1):** `write`, `pwrite`, `truncate`, `ftruncate`, `open O_TRUNC`, `chmod`, `chown`,
 `unlink`, `rmdir`, `rename` from/to, `link`, `symlink`, `mknod` against `<gitdir>/hooks/**` — each
 fails. Same suite against `modules/<n>/hooks/**` and `worktrees/<n>/hooks/**` to prove the
-recursion. Not `setxattr`/`removexattr`: xattrs are `ENOSYS` everywhere, so there is no policy to
-test until they are implemented (`TODO.md`, "Test infrastructure").
+recursion. Not `setxattr`/`removexattr` ("Operations that carry these mutations" has why).
 
 **Config (group 2):** direct mutation of `config`, `config.worktree`, `commondir` fails; real
 `git config --local core.hooksPath …` and `git config --local core.fsmonitor …` fail. An

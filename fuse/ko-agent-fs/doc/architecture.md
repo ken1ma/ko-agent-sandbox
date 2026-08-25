@@ -129,23 +129,17 @@ The invariant has a measured price: with entry TTL 0, every path component of ev
 fresh LOOKUP round trip. `TODO.md`, "Performance", carries the measurements and what is left to
 profile.
 
-Performance at 100k-file scale is recovered only by means that keep every answer fresh:
+Performance is recovered only by means that keep every answer fresh — batching, parallelism and a
+shorter per-op path, never a cache; `TODO.md`, "Performance", has the open rows. In place:
 
-- **READDIRPLUS** — a directory scan returns each entry's attributes in one round-trip, collapsing
-  the walk's lookup+getattr storm into one op per directory, each attribute freshly `fstatat`'d at
-  scan time. Under TTL 0 its attributes expire as they arrive, so it accelerates the walk itself,
-  not the per-file stats a tool issues afterwards — those still round-trip by design.
 - **A directory snapshot per `opendir`** — the entry *names* are read once into the handle rather
   than the directory being re-read on every `readdir` call. This is a correctness fix first (a scan
   can no longer skip or duplicate entries when the tree moves under it, and POSIX leaves the
   visibility of concurrent additions unspecified for exactly this reason), and it removes an O(n²)
   re-read besides. It is not a cache: the next `opendir` sees the new state, and attributes stay
   live at TTL 0.
-- **A multi-threaded daemon** (fuser `Config::n_threads` / `clone_fd`) — concurrent ops run in
-  parallel; parallelism, never caching.
 - **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
   git-context fast-path keeps non-`.git` ops free of policy work.
-- **FUSE_PASSTHROUGH** for bulk read/write *data* (not metadata), later.
 
 The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
 TTL 0 makes *our* view re-read the backing on every access, but end-to-end coherency also needs that
@@ -235,8 +229,8 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
 The digest's construction, and why the algorithm exists only on the launcher side, live with the
 code: `KoAgentFs.koAgentFsSourceId`.
 
-**Wired up through step 5** (`AgentSandboxLauncher`: `koAgentFsSourceId`, `buildCommands`,
-`installKoAgentFs` — all run by `--build`), **plus the mount lifecycle every session runs**
+**Wired up through step 5** (`AgentSandboxLauncher.buildCommands`, `KoAgentFs.koAgentFsSourceId`
+and `installKoAgentFs` — all run by `--build`), **plus the mount lifecycle every session runs**
 (unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD` says otherwise — exactly `fuse` or `none`, so an
 unclear value is a refused launch, never a silently weaker boundary): each launch gates on the
 installed binary's identity and self-test, then mounts the project through a per-project daemon

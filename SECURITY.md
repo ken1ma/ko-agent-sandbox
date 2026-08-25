@@ -583,15 +583,14 @@ enumeration. So additions stay exact. (`allow-unless-denied` is not this rule's 
 user's own profile decision: it grants the public-HTTPS universe by name of the *profile*, on the
 launch command line, never through a pattern a repository ships.)
 
-An addition states its host's complete treatment and tagging ("Reading without being able to
-write" defines the tags) and overrides the baseline entry for that host — explicit, and printed
-as written at every launch — never a merge, which would widen a host to a treatment no single
-line says and leave no way to take one tag away. Two entries treating one host differently are
-refused, and so is a tag on anything that takes away: a removal or a denied entry removes the
-host whole. Widening deliberately has no delta spelling — re-adding a restricted baseline host as
-`unrestricted` is refused; a project that needs it writes `.defaults` and states its complete
-replacement policy. And under `allow-unless-denied`, nothing in `allowed` can widen an ambient
-host: removals and `.defaults` cannot subtract from the restricted narrowing set.
+An addition overrides the baseline entry for its host rather than merging with it (the README's
+"Modifying the egress policy" has the grammar): a merge would widen a host to a treatment no
+single line says and leave no way to take one tag away. For the same reason a tag on anything
+that takes away is refused — a removal or a denied entry removes the host whole — and widening
+has no delta spelling at all: the only way past a baseline host's restricted treatment is
+`.defaults`, which discards the baseline and makes the file state its complete replacement
+policy. And under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals
+and `.defaults` cannot subtract from the restricted narrowing set.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
@@ -606,13 +605,11 @@ A `denied` entry matching nothing the selected profile admits is a startup warni
 preflight marks it idle: it can still apply under another profile or a future provider
 expansion, and against the ambient host universe a typo cannot be told from a proactive denial.
 
-The files fail closed on every other ambiguity too: an entry outside the two files' grammar; a
-host both added and removed — including a `+host` that falls under a `-host **.domain`, a
-contradiction rather than a precedence to resolve; duplicate additions with different
-treatments; and a filename in `egress/` that is neither `allowed` nor `denied` — or a stray
-entry in `.ko-agent-sandbox/` itself — is a failed launch, never ignored config. The
-allow-versus-deny ordering that egress proxies get wrong is a bug family kept out by having one
-rule — denial wins over either treatment — and one fixed order, `denied` last.
+Every other ambiguity — the README lists them — is a failed launch, never ignored config. One of
+them is a decision rather than a syntax check: a `+host` that falls under a `-host **.domain` is
+a contradiction, not a precedence to resolve. The allow-versus-deny ordering that egress proxies
+get wrong is a bug family kept out by having one rule — denial wins over either treatment — and
+one fixed order, `denied` last.
 (`.defaults` creates no exception: it is not a host matcher but the name of the baseline itself,
 which is why it lives in `allowed`, the delta over that baseline — what it removes is the
 baseline contribution before the file's own additions apply.) The one no-op that is allowed is

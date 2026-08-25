@@ -8,14 +8,11 @@
 //! `openat2(root, relpath, RESOLVE_IN_ROOT)` — kernel-contained, TOCTOU-safe, never a path join fed
 //! to a plain syscall. A mutation acts on a fresh parent-dir fd plus the final name, so the `.git`
 //! name rule sees the exact name and no final symlink is followed. Attribute/entry TTLs are
-//! **zero**: the backing tree is shared live with the host, and real-time coherency is a correctness
-//! invariant, not a tunable.
+//! **zero** (`TTL`).
 //!
-//! Deferred: xattrs — unimplemented, so the daemon answers `ENOSYS`, which the kernel converts to
-//! `ENOTSUP` for the caller and then latches, never asking again. Tools therefore read the mount as
-//! a filesystem that simply has no extended attributes, which is an ordinary answer rather than a
-//! failure (measured: `doc/TODO.md`, "Non-TODOs"). Also deferred: the performance mechanisms
-//! (READDIRPLUS, multithreading, passthrough).
+//! Deferred: xattrs, unimplemented so that nothing reaches the backing store through them (the
+//! deny-surface note above `impl Filesystem` has what a caller sees; `doc/TODO.md`, "Non-TODOs",
+//! has the measurement), and the performance rows `doc/TODO.md` carries.
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
@@ -372,9 +369,9 @@ impl KoAgentFs {
 ///
 ///   - the access mode, so the handle is no wider than what was asked and a newly created
 ///     write-only file does not fail the daemon's own read permission;
-///   - `O_EXCL`, which is what makes `open(O_CREAT | O_EXCL)` a lock at all. Dropping it let every
+///   - `O_EXCL`, which is what makes `open(O_CREAT | O_EXCL)` a lock at all. Dropping it lets every
 ///     contender succeed, and `<gitdir>/index.lock` is exactly that pattern — two of a project's
-///     concurrent sessions could each believe they held the index;
+///     concurrent sessions would each believe they held the index;
 ///   - `O_TRUNC`, the caller's own request to start from an empty file;
 ///   - `O_APPEND`, without which an append is not one. The kernel computes an appending write's
 ///     offset from the size it has cached, and refreshes that size first *only* when writeback
@@ -1363,8 +1360,9 @@ mod tests {
     #[test]
     fn a_pre_epoch_time_round_trips_rather_than_clamping() {
         // Extracting an archive of pre-1970 files is the ordinary way to meet one, and the claim
-        // this pins is `doc/TODO.md`'s: times round-trip. Clamping rewrote the timestamp the
-        // extraction was restoring, and reading a negative one back dropped its nanoseconds.
+        // this pins is `doc/TODO.md`'s: times round-trip. Clamping would rewrite the timestamp the
+        // extraction restores, and a negative time read back without its nanoseconds loses the
+        // fractional second.
         for when in [
             UNIX_EPOCH,
             UNIX_EPOCH + Duration::new(1, 500_000_000),

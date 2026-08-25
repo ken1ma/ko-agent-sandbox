@@ -237,7 +237,7 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
     //
     // A control for this has to drop `O_APPEND` from `passthrough_flags` *as well as* forcing the
     // `pwrite` arm: with the flag still on the backing fd, Linux appends whatever offset `pwrite`
-    // is given, and the old behaviour is not reproduced.
+    // is given, and the fault this pins is not reproduced.
     use std::fs::OpenOptions;
     use std::io::Write;
 

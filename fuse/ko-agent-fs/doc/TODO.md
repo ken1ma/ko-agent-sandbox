@@ -264,11 +264,9 @@ T = 10 ms loses a third of it. Those are derived, not measured; the sweep below 
 
 ## P2 — Diagnostics
 
-What exists: the symptom-keyed guide (`troubleshooting.md`); a startup banner and `t=<unix-secs>`
-on every `DENY` line in `daemon.log`; the previous daemon's log kept as `daemon.log.1`; reasoned
-messages on every launch gate; and a bounded deny log — full lines up to 10,000, then a cap notice,
-then a counted summary every thousandth denial, so a hostile agent's refusal spam costs a few MB and
-the trail loses detail past the cap, never magnitude (`fs.rs`, `deny_log_action`). The gap:
+What exists is what `troubleshooting.md` reads from: the banner, the `DENY` line, the previous
+daemon's log, the bounded deny log (`fs.rs`, `deny_log_action`), and a reasoned message on every
+launch gate. The gap:
 
 - [ ] Op-level tracing behind a flag (`--trace`?), for the performance profiling above and for
   diagnosing hangs — off by default, never in the launcher's normal invocation.
