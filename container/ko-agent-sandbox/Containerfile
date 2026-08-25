@@ -274,7 +274,12 @@ RUN set -euxo pipefail; \
         '    "defaultMode": "bypassPermissions"' \
         '  },' \
         '  "skipDangerousModePermissionPrompt": true,' \
-        '  "disableAllHooks": true' \
+        '  "disableAllHooks": true,' \
+        '  "sandbox": {' \
+        '    "enabled": false,' \
+        '    "failIfUnavailable": false,' \
+        '    "allowUnsandboxedCommands": true' \
+        '  }' \
         '}' \
         > /etc/claude-code/managed-settings.json
 
