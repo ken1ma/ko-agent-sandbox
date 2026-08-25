@@ -73,23 +73,33 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
 
   test("a clipboard mode is refused where the host cannot serve it"):
-    // Windows needs PowerShell by absolute path; Linux one of the two tools the broker calls; off
-    // needs nothing anywhere. `here` is a checkout: an entry in it must never satisfy the search.
+    // Windows needs PowerShell by absolute path; Linux the tools each direction calls, absolute
+    // because the reaper's PATH is not the one they were found on; off needs nothing anywhere.
+    import ClipboardBroker.{hostBackend, HostBackend}
     val bin = java.nio.file.Files.createTempDirectory("clipboard-host")
-    def tool(name: String): Unit =
+    def tool(name: String): String =
       val path = bin.resolve(name)
       java.nio.file.Files.writeString(path, "")
       path.toFile.setExecutable(true)
-    assertEquals(ClipboardBroker.hostBackend("off", Os.Linux, ""), Right(None))
-    assert(ClipboardBroker.hostBackend("paste", Os.Linux, bin.toString).isLeft)
-    assert(ClipboardBroker.hostBackend("paste", Os.Windows, bin.toString).isLeft)
-    assertEquals(ClipboardBroker.hostBackend("paste", Os.Mac, ""), Right(None))
-    tool("wl-paste")
-    assertEquals(ClipboardBroker.hostBackend("bidirectional", Os.Linux, bin.toString), Right(None))
-    tool("powershell.exe")
+      path.toString
+    assertEquals(hostBackend("off", Os.Linux, ""), Right(HostBackend()))
+    assert(hostBackend("paste", Os.Linux, bin.toString).isLeft)
+    assert(hostBackend("paste", Os.Windows, bin.toString).isLeft)
+    assertEquals(hostBackend("paste", Os.Mac, ""), Right(HostBackend()))
+    val wlPaste = tool("wl-paste")
+    assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(read = wlPaste)))
+    assert(hostBackend("bidirectional", Os.Linux, bin.toString).isLeft, "a write mode without wl-copy")
+    val wlCopy = tool("wl-copy")
     assertEquals(
-      ClipboardBroker.hostBackend("paste", Os.Windows, bin.toString),
-      Right(Some(bin.resolve("powershell.exe")))
+      hostBackend("bidirectional", Os.Linux, bin.toString),
+      Right(HostBackend(read = wlPaste, copy = wlCopy))
+    )
+    val xclip = tool("xclip")
+    assertEquals(hostBackend("bidirectional", Os.Linux, bin.toString), Right(HostBackend(read = xclip, copy = xclip)))
+    val powershell = tool("powershell.exe")
+    assertEquals(
+      hostBackend("paste", Os.Windows, bin.toString),
+      Right(HostBackend(powershell = Some(java.nio.file.Paths.get(powershell))))
     )
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):

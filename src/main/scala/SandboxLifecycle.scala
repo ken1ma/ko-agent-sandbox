@@ -162,7 +162,8 @@ object SandboxLifecycle:
    * interpreter Linux and macOS both guarantee. $1 this run's sandbox, $2
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
-   * (documented at the step that reads them), $8 the clipboard mode.
+   * (documented at the step that reads them), $8 the clipboard mode, $9
+   * and ${10} its host tools.
    *
    * The trap is load-bearing: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
@@ -193,7 +194,7 @@ object SandboxLifecycle:
       |  sleep 1
       |done
       |
-      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" &
+      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" "$9" "${10}" &
       |
       |"$3" wait "$1"
       |kill $! 2>/dev/null
@@ -240,12 +241,13 @@ object SandboxLifecycle:
     egressNetwork: String,
     teardownMode: String,
     teardownScript: String,
-    clipboardMode: String
+    clipboardMode: String,
+    clipboard: ClipboardBroker.HostBackend
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
-      sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode
+      sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode, clipboard.read, clipboard.copy
     )
 
   /**
@@ -263,13 +265,14 @@ object SandboxLifecycle:
     egressNetwork: String,
     teardownMode: String,
     teardownScript: String,
-    clipboardMode: String
+    clipboardMode: String,
+    clipboard: ClipboardBroker.HostBackend
   ): Boolean =
     try
       val builder = ProcessBuilder(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          teardownMode, teardownScript, clipboardMode
+          teardownMode, teardownScript, clipboardMode, clipboard
         )*
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))

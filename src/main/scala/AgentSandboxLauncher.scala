@@ -2271,15 +2271,17 @@ object AgentSandboxLauncher:
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
           filterReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
           filterReap.getOrElse(""),
-          clipboard
+          clipboard,
+          clipboardHost
         )
     if os != Os.Windows && !reaperArmed then
-      System.err.println(
-        "note: could not spawn the proxy reaper; staying resident to remove the proxy on exit" +
-          (if clipboard == "off" then "" else ", without the clipboard broker")
-      )
+      // Not a downgrade when the clipboard was asked for: the sandbox would wait the shim's bound
+      // on every paste for a broker that never comes. The cleanup hook removes what was created.
+      if clipboard != "off" then
+        fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
+      System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
     // The resident twin; it waits for the container the start below brings up.
-    clipboardHost.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
+    clipboardHost.powershell.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
 
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),

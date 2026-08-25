@@ -52,7 +52,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
         |esac
         |""".stripMargin
     )
-    // The host's real clipboard tool, answering the three calls the broker makes.
+    // The host's real clipboard tool, answering the three calls the broker makes, by absolute path
+    // as the launcher resolves it; the host's PATH is deliberately not offered.
     executable(
       host.resolve("xclip"),
       s"""#!/bin/sh
@@ -66,10 +67,10 @@ class ClipboardBrokerTest extends munit.FunSuite:
     Vector("xclip", "xsel", "wl-paste", "wl-copy").foreach: name =>
       Files.createSymbolicLink(sandboxBin.resolve(name), Shim)
     deleteRecursively(FifoDir)
+    val xclip = host.resolve("xclip")
     val broker = ProcessBuilder(
-      "setsid", "sh", "-c", s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker podman C $mode"
+      "setsid", "sh", "-c", s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $xclip $xclip"
     )
-    broker.environment().put("PATH", s"$host:${sys.env("PATH")}")
     broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     val process = broker.start()
     try
