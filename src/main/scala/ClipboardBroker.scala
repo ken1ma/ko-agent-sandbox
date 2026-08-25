@@ -32,19 +32,22 @@ object ClipboardBroker:
   val SandboxResponseWriter: String = s"timeout 10 sh -c \"cat > $SandboxDir/rsp\""
 
   /**
-   * The POSIX twin: `clipboard_broker <podman> <sandbox> <mode> <read tool> <copy tool>`, for the
-   * reaper to run as a job. The tools are [[hostBackend]]'s, absolute — the reaper's PATH is
-   * [[HostCommands.ScriptPath]], not the one they were found on — and empty on macOS, whose
-   * osascript and pbcopy are in /usr/bin. One request at a time, which the shim's lock guarantees;
-   * a request the mode refuses (`set` under paste) is read and dropped. Restarted while the
-   * sandbox runs, because a signal the terminal sends the foreground group can end the exec.
+   * The POSIX twin: `clipboard_broker <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
+   * the reaper to run as a job. The tools are [[hostBackend]]'s, absolute — the reaper's PATH is
+   * [[HostCommands.ScriptPath]], not the one they were found on — and empty where absent, or
+   * everywhere on macOS, whose osascript and pbcopy are in /usr/bin. xclip is tried first and the
+   * Wayland tool answers when it fails, as on a Wayland session without XWayland. One request at a
+   * time, which the shim's lock guarantees; a request the mode refuses (`set` under paste) is read
+   * and dropped. Restarted while the sandbox runs, because a signal the terminal sends the
+   * foreground group can end the exec.
    */
   val HostShellFunctions: String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
       |# from stdin. macOS prints the PNG as AppleScript hex («data PNGf…»).
       |clipboard_broker() {
-      |  clipboard_read=$4
-      |  clipboard_copy=$5
+      |  clipboard_xclip=$4
+      |  clipboard_wl_paste=$5
+      |  clipboard_wl_copy=$6
       |  case "$(uname -s)" in
       |    Darwin)
       |      has_image() { osascript -e 'clipboard info' 2>/dev/null | grep -q PNGf; }
@@ -54,20 +57,18 @@ object ClipboardBroker:
       |      copy() { pbcopy; }
       |      ;;
       |    *)
-      |      case "$clipboard_read" in
-      |        */xclip)
-      |          has_image() { "$clipboard_read" -selection clipboard -t TARGETS -o 2>/dev/null | grep -qx image/png; }
-      |          png() { "$clipboard_read" -selection clipboard -t image/png -o 2>/dev/null; }
-      |          ;;
-      |        *)
-      |          has_image() { "$clipboard_read" -l 2>/dev/null | grep -qx image/png; }
-      |          png() { "$clipboard_read" --type image/png 2>/dev/null; }
-      |          ;;
-      |      esac
-      |      case "$clipboard_copy" in
-      |        */xclip) copy() { "$clipboard_copy" -selection clipboard -i; } ;;
-      |        *) copy() { "$clipboard_copy"; } ;;
-      |      esac
+      |      has_image() {
+      |        { { [ -n "$clipboard_xclip" ] && "$clipboard_xclip" -selection clipboard -t TARGETS -o 2>/dev/null; } ||
+      |          { [ -n "$clipboard_wl_paste" ] && "$clipboard_wl_paste" -l 2>/dev/null; }; } | grep -qx image/png
+      |      }
+      |      png() {
+      |        { [ -n "$clipboard_xclip" ] && "$clipboard_xclip" -selection clipboard -t image/png -o 2>/dev/null; } ||
+      |          { [ -n "$clipboard_wl_paste" ] && "$clipboard_wl_paste" --type image/png; }
+      |      }
+      |      copy() {
+      |        { [ -n "$clipboard_xclip" ] && "$clipboard_xclip" -selection clipboard -i 2>/dev/null; } ||
+      |          { [ -n "$clipboard_wl_copy" ] && "$clipboard_wl_copy"; }
+      |      }
       |      ;;
       |  esac
       |  reply() { "$1" exec -i "$2" sh -c '""".stripMargin + SandboxResponseWriter + """'; }
@@ -99,32 +100,35 @@ object ClipboardBroker:
   /**
    * What the host runs for the mode: PowerShell for the resident twin, or the tools the shell twin
    * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the checkout,
-   * DESIGN.md "No PATH-resolved host executables"). `read` and `copy` are empty where the twin
-   * needs nothing, macOS.
+   * DESIGN.md "No PATH-resolved host executables"). Each tool is its own field rather than a name
+   * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
+   * Empty where absent, and everywhere on macOS.
    */
-  final case class HostBackend(powershell: Option[Path] = None, read: String = "", copy: String = "")
+  final case class HostBackend(
+    powershell: Option[Path] = None,
+    xclip: String = "",
+    wlPaste: String = "",
+    wlCopy: String = ""
+  )
 
   /**
    * Resolved before the launch makes anything, because a tool missing at request time would read
-   * as an empty clipboard or a successful copy. On Linux xclip serves both directions, and failing
-   * that wl-paste, with wl-copy only when the mode writes. macOS always has osascript and pbcopy.
+   * as an empty clipboard or a successful copy. On Linux, xclip serves both directions; without it
+   * wl-paste, and wl-copy when the mode writes. macOS always has osascript and pbcopy.
    */
   def hostBackend(mode: String, os: Os, pathValue: String): Either[String, HostBackend] =
-    def tool(name: String): Option[Path] = findOnPath(name, pathValue, os)
+    def tool(name: String): String = findOnPath(name, pathValue, os).map(_.toString).getOrElse("")
     if mode == "off" then Right(HostBackend())
     else os match
       case Os.Windows =>
-        tool("powershell").map(path => HostBackend(powershell = Some(path)))
+        findOnPath("powershell", pathValue, os).map(path => HostBackend(powershell = Some(path)))
           .toRight(s"error: $ClipboardVariable=$mode needs powershell.exe on PATH")
       case Os.Linux =>
-        val needs = s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host"
-        tool("xclip") match
-          case Some(xclip) => Right(HostBackend(read = xclip.toString, copy = xclip.toString))
-          case None =>
-            (tool("wl-paste"), tool("wl-copy")) match
-              case (Some(read), Some(copy)) => Right(HostBackend(read = read.toString, copy = copy.toString))
-              case (Some(read), None) if mode == "paste" => Right(HostBackend(read = read.toString))
-              case _ => Left(needs)
+        val found = HostBackend(xclip = tool("xclip"), wlPaste = tool("wl-paste"), wlCopy = tool("wl-copy"))
+        val reads = found.xclip.nonEmpty || found.wlPaste.nonEmpty
+        val writes = found.xclip.nonEmpty || (found.wlPaste.nonEmpty && found.wlCopy.nonEmpty)
+        if reads && (mode == "paste" || writes) then Right(found)
+        else Left(s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host")
       case _ => Right(HostBackend())
 
   private def ClipboardVariable = AgentSandboxLauncher.ClipboardVariable

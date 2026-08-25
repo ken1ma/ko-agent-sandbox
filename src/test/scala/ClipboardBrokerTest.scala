@@ -36,7 +36,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
     val out = process.getInputStream.readAllBytes()
     (process.waitFor(), out)
 
-  private def exchange(mode: String)(check: (Path, Path) => Unit): Unit =
+  // `wayland`: the host has only wl-clipboard, so the broker's xclip-first chain must fall through.
+  private def exchange(mode: String, wayland: Boolean = false)(check: (Path, Path) => Unit): Unit =
     assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("clipboard")
     val host = Files.createDirectory(dir.resolve("host"))
@@ -52,8 +53,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
         |esac
         |""".stripMargin
     )
-    // The host's real clipboard tool, answering the three calls the broker makes, by absolute path
-    // as the launcher resolves it; the host's PATH is deliberately not offered.
+    // The host's real clipboard tools, answering the three calls the broker makes, by absolute
+    // path as the launcher resolves them; the host's PATH is deliberately not offered.
     executable(
       host.resolve("xclip"),
       s"""#!/bin/sh
@@ -64,12 +65,24 @@ class ClipboardBrokerTest extends munit.FunSuite:
          |esac
          |""".stripMargin
     )
+    executable(
+      host.resolve("wl-paste"),
+      s"""#!/bin/sh
+         |case "$$*" in
+         |  "-l") printf 'text/plain\\nimage/png\\n' ;;
+         |  "--type image/png") cat "$host/image.bin" ;;
+         |esac
+         |""".stripMargin
+    )
+    executable(host.resolve("wl-copy"), s"#!/bin/sh\ncat > \"$host/copied.txt\"\n")
     Vector("xclip", "xsel", "wl-paste", "wl-copy").foreach: name =>
       Files.createSymbolicLink(sandboxBin.resolve(name), Shim)
     deleteRecursively(FifoDir)
-    val xclip = host.resolve("xclip")
+    val hostTools =
+      if wayland then s"'' $host/wl-paste $host/wl-copy" else s"$host/xclip '' ''"
     val broker = ProcessBuilder(
-      "setsid", "sh", "-c", s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $xclip $xclip"
+      "setsid", "sh", "-c",
+      s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $hostTools"
     )
     broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     val process = broker.start()
@@ -113,6 +126,14 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(copied(), "via xsel")
       sandboxCall(sandboxBin, "via xclip\n".getBytes(UTF_8), "xclip", "-selection", "clipboard")
       assertEquals(copied(), "via xclip\n")
+
+  test("a Wayland-only host serves both directions"):
+    exchange("bidirectional", wayland = true): (sandboxBin, host) =>
+      val (_, png) = sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
+      assertEquals(png.toVector, Image.toVector)
+      assertEquals(sandboxCall(sandboxBin, "via wl-copy".getBytes(UTF_8), "wl-copy")._1, 0)
+      Thread.sleep(300)
+      assertEquals(Files.readString(host.resolve("copied.txt")), "via wl-copy")
 
   test("without a broker the shim fails at once, and an unknown shape is a usage error"):
     assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")

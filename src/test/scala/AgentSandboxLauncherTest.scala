@@ -87,15 +87,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(hostBackend("paste", Os.Windows, bin.toString).isLeft)
     assertEquals(hostBackend("paste", Os.Mac, ""), Right(HostBackend()))
     val wlPaste = tool("wl-paste")
-    assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(read = wlPaste)))
+    assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(wlPaste = wlPaste)))
     assert(hostBackend("bidirectional", Os.Linux, bin.toString).isLeft, "a write mode without wl-copy")
     val wlCopy = tool("wl-copy")
     assertEquals(
       hostBackend("bidirectional", Os.Linux, bin.toString),
-      Right(HostBackend(read = wlPaste, copy = wlCopy))
+      Right(HostBackend(wlPaste = wlPaste, wlCopy = wlCopy))
     )
+    // Every tool found travels: xclip answers first, the Wayland pair when it cannot.
     val xclip = tool("xclip")
-    assertEquals(hostBackend("bidirectional", Os.Linux, bin.toString), Right(HostBackend(read = xclip, copy = xclip)))
+    assertEquals(
+      hostBackend("bidirectional", Os.Linux, bin.toString),
+      Right(HostBackend(xclip = xclip, wlPaste = wlPaste, wlCopy = wlCopy))
+    )
     val powershell = tool("powershell.exe")
     assertEquals(
       hostBackend("paste", Os.Windows, bin.toString),

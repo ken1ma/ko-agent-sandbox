@@ -1747,7 +1747,7 @@ object AgentSandboxLauncher:
       // resident model's ordinary end — the terminal is the user's again, so a silent second reads
       // as a hang.
       System.err.println("\nremoving this run's proxy and networks")  // newline after Ctrl-C
-      removeRunResources(podman, proxyContainer, Seq(sandboxNetwork, egressNetwork))
+      removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them (its
       // argument surface stays fixed); a run it cleans up leaves its copies to the next launch's
       // age-and-liveness sweep, or a reset's.
@@ -2276,7 +2276,8 @@ object AgentSandboxLauncher:
         )
     if os != Os.Windows && !reaperArmed then
       // Not a downgrade when the clipboard was asked for: the sandbox would wait the shim's bound
-      // on every paste for a broker that never comes. The cleanup hook removes what was created.
+      // on every paste for a broker that never comes. The cleanup hook removes what was created,
+      // the never-started sandbox included (removeRunResources).
       if clipboard != "off" then
         fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")

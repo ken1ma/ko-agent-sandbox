@@ -68,16 +68,17 @@ class SandboxLifecycleTest extends munit.FunSuite:
   test("the reaper receives its names and podman path as data, after $0"):
     val command = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
-      "machine", "reap-script", "paste", ClipboardBroker.HostBackend(read = "/usr/bin/xclip", copy = "/usr/bin/xclip")
+      "machine", "reap-script", "paste",
+      ClipboardBroker.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste")
     )
     assertEquals(command.take(3), Vector("/bin/sh", "-c", ReaperScript))
-    // sh -c: the argument after the script becomes $0; $1 through $10 follow.
+    // sh -c: the argument after the script becomes $0; $1 through ${11} follow.
     assertEquals(command(3), "ko-agent-sandbox-reaper")
     assertEquals(
       command.drop(4),
       Vector(
         "run-container", "proxy-container", "/usr/bin/podman",
-        "net-sandbox", "net-egress", "machine", "reap-script", "paste", "/usr/bin/xclip", "/usr/bin/xclip"
+        "net-sandbox", "net-egress", "machine", "reap-script", "paste", "/usr/bin/xclip", "/usr/bin/wl-paste", ""
       )
     )
     // The names travel as arguments, never interpolated into the script.
@@ -103,7 +104,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
     // The clipboard broker is a job, never the wait: `podman wait` decides removal, and the job is
     // killed after it so nothing outlives the sandbox it serves. Off means the job never starts.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
-    val broker = ReaperScript.indexOf("[ \"$8\" = off ] || clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" &")
+    val broker =
+      ReaperScript.indexOf("[ \"$8\" = off ] || clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\" &")
     assert(broker >= 0 && broker < wait, "the broker must be backgrounded before the wait")
     assert(ReaperScript.indexOf("kill $! 2>/dev/null") > wait, "the broker must be killed after the wait")
     // Both ends bound their own waits: the host may have no `timeout`, so the response writer's

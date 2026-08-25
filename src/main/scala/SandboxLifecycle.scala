@@ -163,7 +163,7 @@ object SandboxLifecycle:
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
    * (documented at the step that reads them), $8 the clipboard mode, $9
-   * and ${10} its host tools.
+   * to ${11} its host tools.
    *
    * The trap is load-bearing: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
@@ -194,7 +194,7 @@ object SandboxLifecycle:
       |  sleep 1
       |done
       |
-      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" "$9" "${10}" &
+      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" "$9" "${10}" "${11}" &
       |
       |"$3" wait "$1"
       |kill $! 2>/dev/null
@@ -230,7 +230,7 @@ object SandboxLifecycle:
 
   /**
    * The argument after the script is $0, naming the reaper for ps; the rest
-   * travel as $1-$8 rather than interpolated, keeping the script a constant
+   * travel as $1-${11} rather than interpolated, keeping the script a constant
    * and the rest data.
    */
   def reaperCommand(
@@ -247,7 +247,8 @@ object SandboxLifecycle:
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
-      sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode, clipboard.read, clipboard.copy
+      sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode,
+      clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy
     )
 
   /**
@@ -285,9 +286,15 @@ object SandboxLifecycle:
   /**
    * The resident-path twin of the reaper's final lines, same brief retry:
    * the --rm sandbox can still be mid-removal, making podman refuse a
-   * network rm.
+   * network rm. The sandbox's own removal is for the launch that ends
+   * between its create and its start — a refusal, a Ctrl-C — where --rm
+   * never fires and the container would hold its network; after a run it
+   * is already gone, and the rm is a no-op.
    */
-  def removeRunResources(podman: String, proxyContainer: String, networks: Seq[String]): Unit =
+  def removeRunResources(
+    podman: String, sandboxContainer: String, proxyContainer: String, networks: Seq[String]
+  ): Unit =
+    run(podman, "rm", "--force", sandboxContainer)
     run(podman, "rm", "--force", "--time", "2", proxyContainer)
     networks.foreach: network =>
       @tailrec
