@@ -205,7 +205,7 @@ class EgressPolicyTest extends munit.FunSuite:
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator
-          .exists(line => line.startsWith("deny ") && line.contains(s"$bucketHost PUT")),
+          .exists(line => line.contains(s" deny $bucketHost PUT ")),
         "no deny line records the refused PUT"
       )
 

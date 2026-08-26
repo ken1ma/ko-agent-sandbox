@@ -8,6 +8,8 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters.*
 
+import java.time.ZoneId
+
 import AgentSandboxLauncher.*
 import HostCommands.Os
 import ContainerfileSources.*
@@ -1184,3 +1186,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The reset filters must sweep each through its own filter and never through the other's.
     assertEquals(proxyContainers(Seq(sandbox, proxy)), Seq(proxy))
     assertEquals(sandboxRunContainers(Seq(sandbox, proxy)), Seq(sandbox))
+
+  test("TZ is a tzdata name or a POSIX offset, whose sign is the reverse of ISO's"):
+    assertEquals(posixTz(ZoneId.of("Asia/Tokyo")), "Asia/Tokyo")
+    assertEquals(posixTz(ZoneId.of("America/St_Johns")), "America/St_Johns")
+    assertEquals(posixTz(ZoneId.of("UTC")), "UTC")
+    assertEquals(posixTz(ZoneId.of("Z")), "UTC")
+    assertEquals(posixTz(ZoneId.of("GMT+09:00")), "UTC-9")
+    assertEquals(posixTz(ZoneId.of("UTC-03:30")), "UTC+3:30")
+    assertEquals(posixTz(ZoneId.of("+05:45")), "UTC-5:45")
+    assertEquals(posixTz(ZoneId.of("+05:45:30")), "UTC-5:45")
+    assertEquals(posixTz(ZoneId.of("-00:00:30")), "UTC")

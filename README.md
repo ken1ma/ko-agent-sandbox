@@ -239,9 +239,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
        `~/.codex/config.toml` over the image's defaults, so it is one setting in the volume;
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
        them is a Containerfile edit and a rebuild.
-1. More than one session can run at once from the same project directory. Each launch gets its own
-   containers, networks and proxy; what they share is the project's workspace-filter mount and its
-   agent-state volume, and they race on both like any two processes on one directory.
+1. More than one session can run at once from the same project directory; they share the
+   workspace mount and the agent-state volume, and race on both.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
    in SANDBOX.md): `distroless` and `alpine` images work — one uid, so
    stock `postgres` and `nginx` cannot.
@@ -308,27 +307,22 @@ replacement policy:
 1. An absent directory or file is empty policy input; the launcher never creates the directory.
    An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
    design, as does `deny-unless-model` under `bash`.
-1. Every ambiguity is a failed launch with the reason printed, checked before a session's
-   resources exist and again as the proxy starts: an entry outside the grammar, duplicate
-   additions with different treatments, a host both added and removed, a removal matching
-   neither the baseline nor an addition, an unknown profile, provider, treatment or tag, a
-   filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself too). A
+1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
+   duplicate additions with different treatments, a host both added and removed, a removal
+   matching neither the baseline nor an addition, an unknown profile, provider, treatment or tag,
+   a filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself too). A
    `denied` entry matching nothing the profile admits is a startup warning, not an error: it can
-   still apply under another profile, and a typo cannot be told from a proactive denial.
+   still apply under another profile.
 1. Run `--egress-effective [--] [command]` to resolve the policy — with per-entry provenance —
    without starting a session, and `--egress-check=<host>` for one host's decision plus its
    current DNS resolution through the proxy's own resolver path. Every start prints your policy
-   files as written — a repository-shipped policy never takes effect unseen — but the resolved
-   hosts only as counts: dozens of hostnames would be a line people learn to skip.
+   files as written, and the resolved hosts as counts.
 1. Editing the files takes effect on the next launch, which starts its own proxy; a session
    already running keeps the policy it started with.
-1. The sandbox cannot edit them: the write mode itself refuses — reject's read-only tree, or the
-   workspace filter's reserved-name rule for `.ko-agent-sandbox` at any depth — so a session
-   cannot write the policy governing the next one.
+1. The sandbox cannot edit them, under either write mode ([SECURITY.md], "Why the policy is per
+   project, in the project, and read-only").
 1. The directory is meant to be committed. Review it in an unfamiliar repository before
    launching, exactly as you would its build scripts — `unrestricted` additions most of all.
-1. A host a project adds as `restricted` is TLS-inspected like the catalog ones: the leaf
-   certificate is minted from this project's resolved policy at launch.
 
 ### Audit what has been allowed or denied
 
@@ -342,14 +336,13 @@ With no arguments, `--proxy-log` prints the
 retained files oldest first — the newest 20 runs, and any older one whose session is still running,
 since a live proxy is still appending to its file; with trailing arguments (`-f` to follow, `--tail
 50` to limit) it runs `podman logs` on the currently running proxies instead, which is the live view
-of the same lines. The startup lines are the resolved policy and whether inspection is
-active; every connection event after them is one line — `allow`, `deny` or `error`, then the host
-and the method, then for an inspected request the full target, query string included, which is
-what makes an exfiltrating `GET` visible. Those fields are stable for greps and tooling; the
-trailing text is not ([SECURITY.md], "The audit line grammar", has the full inventory). A refusal
-reads as
+of the same lines. The startup lines are the resolved policy and whether inspection is active;
+every connection event after them is one line, with an inspected request's full target — query
+string included, which is what makes an exfiltrating `GET` visible. A refusal reads as
 
-    deny github.com POST /owner/repo.git/git-receive-pack restricted path
+    2026-08-26T11:59:38Z deny github.com POST /owner/repo.git/git-receive-pack restricted path
+
+[SECURITY.md], "The audit line grammar", has every field and reason.
 
 ### TLS inspection
 

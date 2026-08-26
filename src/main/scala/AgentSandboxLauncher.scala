@@ -1447,6 +1447,28 @@ object AgentSandboxLauncher:
       val parts = if context.ok then context.text.trim.split(":") else Array.empty[String]
       parts.length == 4 && parts.lift(2).exists(Set("container_file_t", "container_share_t"))
 
+  /**
+   * The zone as a POSIX `TZ` value. A tzdata name passes through; a fixed offset — what the JVM
+   * falls back to on a host it cannot map to one, as `GMT+09:00` — is spelled `UTC-9`, because
+   * POSIX reads the sign the other way round from ISO: `TZ=GMT+09:00` is nine hours *behind*
+   * UTC to every native tool, while the JVM would read it as ahead. Seconds are dropped: glibc
+   * honours `UTC-5:45:30`, but a JVM reads it as `+05:45` (measured on Java 25), so carrying them
+   * would split the sandbox's own tools two ways; no zone has had one for over fifty years.
+   */
+  def posixTz(zone: ZoneId): String =
+    val offset = zone.normalized() match
+      case fixed: ZoneOffset => Some(fixed.getTotalSeconds)
+      case _                 => None
+    offset match
+      case None | Some(0) if ZoneId.getAvailableZoneIds.contains(zone.getId) => zone.getId
+      case None                                                              => "UTC"
+      case Some(0)                                                           => "UTC"
+      case Some(total) =>
+        val magnitude = math.abs(total) / 60
+        val sign = if total > 0 then "-" else "+"
+        if magnitude == 0 then "UTC"
+        else s"UTC$sign${magnitude / 60}" + (if magnitude % 60 == 0 then "" else f":${magnitude % 60}%02d")
+
   def launch(parsed: ParsedCommandLine): Unit =
     val os = currentOs
     val command = parsed.command
@@ -2230,7 +2252,7 @@ object AgentSandboxLauncher:
       // The host's zone, for the JVM resolves it on every platform the launcher runs on. The image
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
       // carries +0000 and the agent's "today" turns over at the wrong hour.
-      s"--env=TZ=${ZoneId.systemDefault().getId}",
+      s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
       // project checkout").
