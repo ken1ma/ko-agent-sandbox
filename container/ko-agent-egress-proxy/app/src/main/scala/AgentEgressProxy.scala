@@ -7,6 +7,8 @@ package agentsandbox.egress
 import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintStream}
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
 import java.nio.file.Path
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import java.security.GeneralSecurityException
 import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
 import scala.annotation.tailrec
@@ -452,8 +454,10 @@ object AgentEgressProxy:
      * failing loudly: an enforcement point whose audit trail cannot be
      * written should not start.
      */
-    Option(System.getenv(LogFileVariable)).filter(_.nonEmpty).foreach: path =>
-      System.setErr(PrintStream(teeOutput(System.err, FileOutputStream(path, true)), true))
+    val sinks = Option(System.getenv(LogFileVariable)).filter(_.nonEmpty) match
+      case Some(path) => teeOutput(System.err, FileOutputStream(path, true))
+      case None       => System.err
+    System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
      * Resolved before binding the port: a malformed policy is a container
@@ -1438,6 +1442,35 @@ object AgentEgressProxy:
    */
   def auditLine(verb: String, host: String, method: String, target: String, tail: String): String =
     (Vector(verb, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
+
+  /**
+   * Every line the proxy reports, prefixed with the instant it was written, as
+   * `2026-08-26T11:59:38Z `. UTC with the zone spelled out: a run's file spans
+   * days and is read on machines in other zones, and the container has no
+   * zone of its own to be local to. Prefixing at the byte level, on the first
+   * byte after a newline, so a line printed in pieces is stamped once.
+   */
+  def stampLines(out: OutputStream, now: () => Instant): OutputStream = new OutputStream:
+    private var lineStart = true
+    private def stamp(): Unit =
+      out.write(DateTimeFormatter.ISO_INSTANT.format(now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS)).getBytes)
+      out.write(' ')
+      lineStart = false
+    override def write(byte: Int): Unit =
+      if lineStart then stamp()
+      out.write(byte)
+      lineStart = byte == '\n'
+    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
+      var from = offset
+      val end = offset + length
+      while from < end do
+        if lineStart then stamp()
+        val newline = bytes.indexOf('\n'.toByte, from)
+        val to = if newline < 0 || newline >= end then end else newline + 1
+        out.write(bytes, from, to - from)
+        lineStart = bytes(to - 1) == '\n'
+        from = to
+    override def flush(): Unit = out.flush()
 
   /**
    * Both sinks, flushes included; line-currency matters because the reaper

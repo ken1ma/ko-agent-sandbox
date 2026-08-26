@@ -65,7 +65,7 @@ package agentsandbox.launcher
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.nio.file.attribute.PosixFilePermissions
-import java.time.{Instant, ZoneOffset}
+import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
 
@@ -2226,6 +2226,11 @@ object AgentSandboxLauncher:
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
       "--http-proxy=false"
     ) ++ nestedArgs ++ clipboardArgs ++ egressArgs ++ Vector(
+
+      // The host's zone, for the JVM resolves it on every platform the launcher runs on. The image
+      // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
+      // carries +0000 and the agent's "today" turns over at the wrong hour.
+      s"--env=TZ=${ZoneId.systemDefault().getId}",
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
       // project checkout").

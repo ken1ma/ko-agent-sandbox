@@ -1249,6 +1249,31 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny github.com POST /r.git/git-receive-pack restricted path"
     )
 
+  test("every reported line is stamped once with the UTC instant, however it is written"):
+    val sink = java.io.ByteArrayOutputStream()
+    val ticks = Iterator.from(0)
+    val stamped = java.io.PrintStream(
+      stampLines(sink, () => java.time.Instant.parse("2026-08-26T11:59:38.250Z").plusSeconds(ticks.next())),
+      true
+    )
+
+    stamped.println("allow github.com CONNECT -> 140.82.112.3")
+    stamped.print("deny ")
+    stamped.print("x.example")
+    stamped.println(" CONNECT host not allowed")
+    stamped.write("a\nb\n".getBytes)
+    stamped.print("tail without newline")
+    stamped.flush()
+
+    assertEquals(
+      String(sink.toByteArray, StandardCharsets.US_ASCII),
+      """2026-08-26T11:59:38Z allow github.com CONNECT -> 140.82.112.3
+        |2026-08-26T11:59:39Z deny x.example CONNECT host not allowed
+        |2026-08-26T11:59:40Z a
+        |2026-08-26T11:59:41Z b
+        |2026-08-26T11:59:42Z tail without newline""".stripMargin
+    )
+
   test("the audit tee writes and flushes every byte to both sinks"):
     val a = java.io.ByteArrayOutputStream()
     val b = java.io.ByteArrayOutputStream()

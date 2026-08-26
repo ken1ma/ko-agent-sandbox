@@ -372,9 +372,14 @@ rather than answering with a status the client would no longer accept.
 Every connection event is one log line, and the line's head is stable — tooling may rely on it;
 the trailing text is for humans and may change:
 
-    allow <host> <method> [<target>] -> <ip>
-    deny  <host> <method> [<target>] <why>
-    error <host> <method> [<target>] <why>
+    <instant> allow <host> <method> [<target>] -> <ip>
+    <instant> deny  <host> <method> [<target>] <why>
+    <instant> error <host> <method> [<target>] <why>
+
+The instant is UTC to the second with the zone spelled out, `2026-08-26T11:59:38Z`: a run's file
+spans days and is read on machines in other zones, and the proxy container has no zone of its
+own to be local to. Every line the proxy writes carries it, the startup lines included; the
+samples below omit it.
 
 The host is the `CONNECT` target as the sandbox requested it — what was asked for, not a name the
 policy vouches for. The method is `CONNECT` for tunnel-level events and the inspected method
