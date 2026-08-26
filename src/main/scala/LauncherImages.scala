@@ -31,7 +31,7 @@ object LauncherImages:
       ProxyBuildImage,
       "ko-agent-egress-proxy:latest",
       KoAgentFsBuildImage,
-      "ko-agent-fs:latest"
+      "ko-agent-fs:latest",
     )
 
   /** The two image tags whose lifecycle belongs to --self-test, in dependency order. */
@@ -45,7 +45,7 @@ object LauncherImages:
     bundleSourceId(Vector(
       "ko-agent-fs" -> fsSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-self-test" -> selfTestSourceId.getBytes(StandardCharsets.UTF_8),
-      "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8)
+      "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8),
     ))
 
   val BundleLabel = "ko-agent-sandbox.bundle"
@@ -98,7 +98,7 @@ object LauncherImages:
    */
   def staleVersionedBaseImageTags(
     existing: Vector[TaggedImage],
-    current: Vector[String]
+    current: Vector[String],
   ): Vector[TaggedImage] =
     val versionedRepositories = Set("debian-temurin", "debian-coursier")
     val currentTags = current.map(localImageTag).toSet
@@ -124,7 +124,7 @@ object LauncherImages:
   def staleSelfTestImages(
     podman: String,
     existing: Vector[TaggedImage],
-    expectedBundleId: String
+    expectedBundleId: String,
   ): Vector[TaggedImage] =
     selfTestCleanupOrder(existing).filter: image =>
       val inspected = run(podman, "image", "inspect", "--format", BundleLabelTemplate, image.id)
@@ -141,7 +141,7 @@ object LauncherImages:
       case Some(id) =>
         Left(
           s"error: invalid image id in cleanup journal $path: $id\n" +
-            "Run --reset-all to discard malformed entries while retaining valid pending cleanup."
+            "Run --reset-all to discard malformed entries while retaining valid pending cleanup.",
         )
       case None     => Right(ids.distinct)
 
@@ -172,20 +172,20 @@ object LauncherImages:
   def imageCleanupCandidates(
     pending: Vector[String],
     before: Vector[String],
-    staleTags: Vector[TaggedImage]
+    staleTags: Vector[TaggedImage],
   ): Vector[String] =
     (pending ++ before.reverse ++ staleTags.map(_.id)).distinct
 
   /** Newly discovered child images must precede the parent candidates they keep alive. */
   def prependImageCleanupDependents(
     candidates: Vector[String],
-    dependents: Vector[TaggedImage]
+    dependents: Vector[TaggedImage],
   ): Vector[String] = (dependents.map(_.id) ++ candidates).distinct
 
   def prepareImageCleanupJournal(
     path: Path,
     before: Vector[String],
-    staleTags: Vector[TaggedImage]
+    staleTags: Vector[TaggedImage],
   ): Vector[String] =
     val pending = readImageCleanupJournal(path).fold(fail(_), identity)
     val candidates = imageCleanupCandidates(pending, before, staleTags)
@@ -202,13 +202,13 @@ object LauncherImages:
     initialCandidates: Vector[String],
     staleBaseTags: Vector[TaggedImage],
     fsSourceId: String,
-    selfTestSourceId: String
+    selfTestSourceId: String,
   ): (Vector[String], Vector[TaggedImage]) =
     val currentTags = existingImageTags(podman, "cleanup did not start")
     val sandboxImageId = requiredImageId(
       currentTags,
       "ko-agent-sandbox:latest",
-      "cleanup did not start"
+      "cleanup did not start",
     )
     val selfTestId = selfTestBundleId(fsSourceId, selfTestSourceId, sandboxImageId)
     val staleSelfTestTags = staleSelfTestImages(podman, currentTags, selfTestId)
@@ -219,7 +219,7 @@ object LauncherImages:
   def supersededImageRemoveCommands(
     podman: String,
     candidates: Vector[String],
-    current: Vector[String]
+    current: Vector[String],
   ): Vector[Vector[String]] =
     val currentIds = current.toSet
     candidates.distinct.filterNot(currentIds).map: id =>
@@ -227,7 +227,7 @@ object LauncherImages:
 
   def protectedImageNames(
     imageNames: Vector[String],
-    staleTags: Vector[TaggedImage]
+    staleTags: Vector[TaggedImage],
   ): Vector[String] =
     val staleNames = staleTags.map(image => localImageTag(image.tag)).toSet
     imageNames.filterNot(image => staleNames.contains(localImageTag(image)))
@@ -247,11 +247,11 @@ object LauncherImages:
     podman: String,
     candidates: Vector[String],
     imageNames: Vector[String],
-    staleTags: Vector[TaggedImage]
+    staleTags: Vector[TaggedImage],
   ): Vector[String] =
     val current = imageIdsForTags(
       existingImageTags(podman, "cleanup did not start"),
-      protectedImageNames(imageNames, staleTags)
+      protectedImageNames(imageNames, staleTags),
     )
     val currentIds = current.toSet
     staleTags.filterNot(image => currentIds.contains(image.id)).foreach: image =>

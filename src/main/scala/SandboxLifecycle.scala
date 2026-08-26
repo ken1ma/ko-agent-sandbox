@@ -242,13 +242,13 @@ object SandboxLifecycle:
     teardownMode: String,
     teardownScript: String,
     clipboardMode: String,
-    clipboard: ClipboardBroker.HostBackend
+    clipboard: ClipboardBroker.HostBackend,
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
       sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode,
-      clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy
+      clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy,
     )
 
   /**
@@ -267,13 +267,13 @@ object SandboxLifecycle:
     teardownMode: String,
     teardownScript: String,
     clipboardMode: String,
-    clipboard: ClipboardBroker.HostBackend
+    clipboard: ClipboardBroker.HostBackend,
   ): Boolean =
     try
       val builder = ProcessBuilder(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          teardownMode, teardownScript, clipboardMode, clipboard
+          teardownMode, teardownScript, clipboardMode, clipboard,
         )*
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
@@ -292,7 +292,7 @@ object SandboxLifecycle:
    * is already gone, and the rm is a no-op.
    */
   def removeRunResources(
-    podman: String, sandboxContainer: String, proxyContainer: String, networks: Seq[String]
+    podman: String, sandboxContainer: String, proxyContainer: String, networks: Seq[String],
   ): Unit =
     run(podman, "rm", "--force", sandboxContainer)
     run(podman, "rm", "--force", "--time", "2", proxyContainer)

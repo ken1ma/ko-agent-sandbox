@@ -169,8 +169,8 @@ object HostCommands:
             |repository being sandboxed (DESIGN.md, "No PATH-resolved host executables").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
-          127
-        )
+          127,
+        ),
       )
 
   def readIfPresent(path: Path): Option[String] =
@@ -195,7 +195,7 @@ object HostCommands:
         Files.readAttributes(
           candidate,
           classOf[java.nio.file.attribute.BasicFileAttributes],
-          java.nio.file.LinkOption.NOFOLLOW_LINKS
+          java.nio.file.LinkOption.NOFOLLOW_LINKS,
         )
         Right(true)
       catch
@@ -227,7 +227,7 @@ object HostCommands:
     val channel = java.nio.channels.FileChannel.open(
       lockFile,
       java.nio.file.StandardOpenOption.CREATE,
-      java.nio.file.StandardOpenOption.WRITE
+      java.nio.file.StandardOpenOption.WRITE,
     )
     try
       val lock = channel.lock()
@@ -314,7 +314,7 @@ object HostCommands:
   private def alreadyWritten(
     path: Path,
     content: Array[Byte],
-    permissions: java.util.Set[PosixFilePermission]
+    permissions: java.util.Set[PosixFilePermission],
   ): Boolean =
     try
       Files.isRegularFile(path)
@@ -325,7 +325,7 @@ object HostCommands:
   private def replaceWithMode(
     path: Path,
     content: Array[Byte],
-    permissions: java.util.Set[PosixFilePermission]
+    permissions: java.util.Set[PosixFilePermission],
   ): Unit =
     val directory = path.toAbsolutePath.getParent
     val prefix = path.getFileName.toString + "."
@@ -383,7 +383,7 @@ object HostCommands:
       value: Option[String],
       choices: Vector[String],
       default: String,
-      advice: String
+      advice: String,
   ): Either[String, String] =
     value match
       case None | Some("")                      => Right(default)

@@ -14,13 +14,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("normalizeHost lowercases and removes one trailing dot"):
     assertEquals(
       normalizeHost("API.Anthropic.COM."),
-      "api.anthropic.com"
+      "api.anthropic.com",
     )
 
   test("normalizeHost converts IDN to ASCII"):
     assertEquals(
       normalizeHost("bücher.example"),
-      "xn--bcher-kva.example"
+      "xn--bcher-kva.example",
     )
 
   test("CONNECT parser accepts a normal HTTP/1.1 CONNECT"):
@@ -28,12 +28,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "CONNECT api.anthropic.com:443 HTTP/1.1\r\n" +
         "Host: api.anthropic.com:443\r\n" +
         "Proxy-Connection: keep-alive\r\n" +
-        "\r\n"
+        "\r\n",
     )
 
     assertEquals(
       request,
-      ConnectRequest("api.anthropic.com", 443)
+      ConnectRequest("api.anthropic.com", 443),
     )
 
   test("CONNECT parser rejects a request body framing header"):
@@ -41,7 +41,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       parseConnect(
         "CONNECT api.anthropic.com:443 HTTP/1.1\r\n" +
           "Content-Length: 0\r\n" +
-          "\r\n"
+          "\r\n",
       )
 
   test("CONNECT parser rejects a non-CONNECT method"):
@@ -56,7 +56,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "registry-1.docker.io", "auth.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com",
       "gcr.io", "storage.googleapis.com", "public.ecr.aws",
-      "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net"
+      "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net",
     ).foreach: host =>
       assertEquals(authorize(host, 443), host)
       assert(CuratedRestrictedHosts.contains(host), host)
@@ -89,12 +89,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "[example.com]:443",
       "example.com.:443",
       "EXAMPLE.COM:443",
-      "ExAmPlE.CoM.:443"
+      "ExAmPlE.CoM.:443",
     ).foreach: authority =>
       intercept[PolicyViolation]:
         authorizeRequest(
           ConnectRequest.parse(ascii(s"CONNECT $authority HTTP/1.1\r\n\r\n")),
-          baselinePolicy
+          baselinePolicy,
         )
 
   test("an allowed host authorizes to one canonical form however it is spelled"):
@@ -104,14 +104,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "github.com:443",
       "GitHub.COM:443",
       "github.com.:443",
-      "[github.com]:443"
+      "[github.com]:443",
     ).foreach: authority =>
       assertEquals(
         authorizeRequest(
           ConnectRequest.parse(ascii(s"CONNECT $authority HTTP/1.1\r\n\r\n")),
-          baselinePolicy
+          baselinePolicy,
         ),
-        "github.com"
+        "github.com",
       )
 
   test("isIpLiteral leaves ordinary hostnames alone"):
@@ -119,7 +119,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "api.anthropic.com",
       "files.pythonhosted.org",
       "xn--bcher-kva.example",
-      "host123.example.com"
+      "host123.example.com",
     ).foreach(host => assert(!isIpLiteral(host), host))
 
   // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     profile: String = "deny-unless-allowed",
     provider: String = "",
     allowed: String = "",
-    denied: String = ""
+    denied: String = "",
   ): ResolvedEgress =
     def opt(value: String) = Option(value).filter(_.nonEmpty)
     resolvePolicy(Some(profile), opt(provider), opt(allowed), opt(denied))
@@ -157,7 +157,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation](authorize("github.com", 443, resolved))
     val withExtras = policyOf(
       profile = "deny-unless-model", provider = "anthropic",
-      allowed = "+host docs.example restricted"
+      allowed = "+host docs.example restricted",
     )
     assertEquals(withExtras.hosts.keySet, ModelProviderHosts("anthropic"))
 
@@ -166,7 +166,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(resolved.hosts, Map.empty[String, Treatment])
     assertEquals(
       policyLines(resolved)(0),
-      "egress profile: deny-unless-model; model provider: none"
+      "egress profile: deny-unless-model; model provider: none",
     )
 
   test("an unknown profile or provider is refused, never defaulted"):
@@ -187,7 +187,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("an allowed removal narrows the curated profile but can never widen an ambient host"):
     // Under deny-unless-allowed the removal takes github.com away entirely...
     intercept[PolicyViolation](
-      authorize("github.com", 443, policyOf(allowed = "-host github.com"))
+      authorize("github.com", 443, policyOf(allowed = "-host github.com")),
     )
     // ...while under allow-unless-denied the same delta subtracts nothing from the narrowing
     // set: only denied removes ambient access, so github.com stays restricted rather than
@@ -201,7 +201,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("a restricted addition extends the narrowing set; an unrestricted one adds nothing to it"):
     val resolved = policyOf(
       profile = "allow-unless-denied",
-      allowed = "+host mirror.example=git-fetch restricted\n+host opaque.example unrestricted"
+      allowed = "+host mirror.example=git-fetch restricted\n+host opaque.example unrestricted",
     )
     assertEquals(resolved.restricted.get("mirror.example"), Some(Set("git-fetch")))
     assert(!resolved.hosts.contains("opaque.example"))
@@ -211,7 +211,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val resolved = policyOf(allowed = "+host html.spec.whatwg.org restricted\n-host pypi.org")
     assertEquals(
       resolved.restricted,
-      CuratedRestrictedHosts - "pypi.org" + ("html.spec.whatwg.org" -> Set.empty[String])
+      CuratedRestrictedHosts - "pypi.org" + ("html.spec.whatwg.org" -> Set.empty[String]),
     )
     assertEquals(resolved.unrestrictedHosts, ModelProviderHosts.values.flatten.toSet)
 
@@ -239,7 +239,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(policyOf(allowed = "+host pypi.org restricted").restricted, CuratedRestrictedHosts)
     assertEquals(
       policyOf(allowed = "+host github.com=git-fetch restricted").restricted,
-      CuratedRestrictedHosts
+      CuratedRestrictedHosts,
     )
     assertEquals(policyOf(allowed = "+model-provider anthropic").hosts, policyOf().hosts)
 
@@ -252,9 +252,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "mirror.example",
       head(
         "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\n" +
-          "Host: mirror.example\r\nContent-Length: 0\r\n\r\n"
+          "Host: mirror.example\r\nContent-Length: 0\r\n\r\n",
       ),
-      Set("git-fetch")
+      Set("git-fetch"),
     )
     // Revoking: a bare restatement strips the built-in =git-fetch; the host stays restricted.
     val demoted = policyOf(allowed = "+host gitlab.com restricted")
@@ -263,28 +263,28 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Granting is just as explicit — legal, and the entry says exactly what it opens.
     assert(
       policyOf(allowed = "+host pypi.org=git-fetch restricted")
-        .tagged("git-fetch").contains("pypi.org")
+        .tagged("git-fetch").contains("pypi.org"),
     )
 
   test("one host, one treatment: entries that disagree are refused"):
     val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example restricted\n+host docs.example=git-fetch restricted")
+      policyOf(allowed = "+host docs.example restricted\n+host docs.example=git-fetch restricted"),
     )
     assert(ex.getMessage.contains("two different treatments"), ex.getMessage)
     intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example restricted\n+host docs.example unrestricted")
+      policyOf(allowed = "+host docs.example restricted\n+host docs.example unrestricted"),
     )
 
   test("an unknown tag or treatment is refused with the closed set in hand"):
     // A tag names a fixed treatment, never describes one — and the port habit (host=8443) fails
     // closed here too.
     val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host mirror.example=lfs restricted")
+      policyOf(allowed = "+host mirror.example=lfs restricted"),
     )
     assert(ex.getMessage.contains("the tags are: git-fetch, npm-audit"), ex.getMessage)
     intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example=8443 restricted"))
     val treatment = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host mirror.example writable")
+      policyOf(allowed = "+host mirror.example writable"),
     )
     assert(treatment.getMessage.contains("restricted and unrestricted"), treatment.getMessage)
 
@@ -324,7 +324,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a +host under a -host **.domain is a contradiction, not a precedence"):
     intercept[IllegalArgumentException](
-      policyOf(allowed = "-host **.github.com\n+host api.github.com=git-fetch restricted")
+      policyOf(allowed = "-host **.github.com\n+host api.github.com=git-fetch restricted"),
     )
 
   test("a bare -host * and the undotted **domain spelling are refused, never suffix-matched"):
@@ -341,12 +341,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       intercept[PolicyViolation](authorize(host, 443, resolved))
     assert(
       !policyOf(allowed = "+host docs.example restricted", denied = "host docs.example")
-        .hosts.contains("docs.example")
+        .hosts.contains("docs.example"),
     )
 
   test("denied applies under every profile, a selected provider's endpoints included"):
     val resolved = policyOf(
-      profile = "deny-unless-model", provider = "openai", denied = "host chatgpt.com"
+      profile = "deny-unless-model", provider = "openai", denied = "host chatgpt.com",
     )
     assert(!resolved.hosts.contains("chatgpt.com"))
     assert(resolved.hosts.contains("api.openai.com"))
@@ -371,23 +371,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A typo cannot be distinguished from a proactive denial against the ambient host universe,
     // so exact no-match refusal would make legitimate cross-profile denials unwritable.
     val resolved = policyOf(
-      profile = "deny-unless-model", provider = "anthropic", denied = "host telemetry.example.com"
+      profile = "deny-unless-model", provider = "anthropic", denied = "host telemetry.example.com",
     )
     assertEquals(resolved.idleDenied.map(_.spelled), Vector("telemetry.example.com"))
     assert(resolved.warnings.exists(_.contains("telemetry.example.com")), resolved.warnings.toString)
     assert(
       policyLines(resolved).contains("idle denied rules (1): telemetry.example.com"),
-      policyLines(resolved).toString
+      policyLines(resolved).toString,
     )
     // Under allow-unless-denied every syntactically valid rule matches the ambient universe.
     assertEquals(
       policyOf(profile = "allow-unless-denied", denied = "host telemetry.example.com").idleDenied,
-      Vector.empty
+      Vector.empty,
     )
 
   test(".defaults removes the whole baseline before additions apply"):
     val resolved = policyOf(
-      allowed = ".defaults\n+model-provider anthropic\n+host docs.python.org restricted"
+      allowed = ".defaults\n+model-provider anthropic\n+host docs.python.org restricted",
     )
     assertEquals(resolved.unrestrictedHosts, ModelProviderHosts("anthropic"))
     assertEquals(resolved.restricted, Map("docs.python.org" -> Set.empty[String]))
@@ -398,7 +398,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Under a .defaults replacement the same entry is the stated policy, not a widening.
     assertEquals(
       policyOf(allowed = ".defaults\n+host github.com unrestricted").unrestrictedHosts,
-      Set("github.com")
+      Set("github.com"),
     )
 
   test("a model-provider removal takes exactly that provider's endpoints"):
@@ -407,7 +407,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(resolved.hosts.contains("api.anthropic.com"))
     intercept[IllegalArgumentException](policyOf(allowed = "-model-provider meta"))
     intercept[IllegalArgumentException](
-      policyOf(allowed = "+model-provider google\n-model-provider google")
+      policyOf(allowed = "+model-provider google\n-model-provider google"),
     )
 
   test("a provider the profile does not fully admit warns but never fails the start"):
@@ -438,7 +438,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("provenance names each entry's source, and an overriding removal or denial is shown"):
     val lines = provenanceLines(
-      policyOf(allowed = "+host docs.example restricted\n-host pypi.org", denied = "host gitlab.com")
+      policyOf(allowed = "+host docs.example restricted\n-host pypi.org", denied = "host gitlab.com"),
     )
     assert(lines.contains("  docs.example: restricted; allowed +host"), lines.toString)
     assert(lines.contains("  api.anthropic.com: unrestricted; model-provider anthropic"), lines.toString)
@@ -452,8 +452,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val model = provenanceLines(
       policyOf(
         profile = "deny-unless-model", provider = "openai",
-        allowed = "-host api.openai.com\n+host docs.example restricted"
-      )
+        allowed = "-host api.openai.com\n+host docs.example restricted",
+      ),
     )
     assert(model.contains("  api.openai.com: unrestricted; model-provider openai"), model.toString)
     assert(!model.exists(_.contains("allowed")), model.toString)
@@ -463,8 +463,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       policyOf(
         profile = "allow-unless-denied",
         allowed =
-          "-host github.com\n+host opaque.example unrestricted\n+host mirror.example restricted"
-      )
+          "-host github.com\n+host opaque.example unrestricted\n+host mirror.example restricted",
+      ),
     )
     assert(ambient.contains("  mirror.example: restricted; allowed +host"), ambient.toString)
     assert(ambient.contains("  github.com: restricted =git-fetch; curated baseline"), ambient.toString)
@@ -481,11 +481,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Re-adding a baseline host with its baseline treatment changes nothing, so the standing
     // source holds — the provider group's and the curated catalog's alike.
     val restated = provenanceLines(
-      policyOf(allowed = "+host api.openai.com unrestricted\n+host crates.io restricted")
+      policyOf(allowed = "+host api.openai.com unrestricted\n+host crates.io restricted"),
     )
     assert(
       restated.contains("  api.openai.com: unrestricted; model-provider openai"),
-      restated.toString
+      restated.toString,
     )
     assert(restated.contains("  crates.io: restricted; curated baseline"), restated.toString)
     // A provider group the allowed delta restored after .defaults is the delta's doing; naming
@@ -493,7 +493,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val restored = provenanceLines(policyOf(allowed = ".defaults\n+model-provider openai"))
     assert(
       restored.contains("  api.openai.com: unrestricted; allowed +model-provider openai"),
-      restored.toString
+      restored.toString,
     )
 
   test("IPv4 public-destination policy"):
@@ -509,8 +509,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("IPv6 public-destination policy"):
     assert(
       isPublicDestination(
-        InetAddress.getByName("2606:4700:4700::1111")
-      )
+        InetAddress.getByName("2606:4700:4700::1111"),
+      ),
     )
     assert(!isPublicDestination(InetAddress.getByName("::1")))
     assert(!isPublicDestination(InetAddress.getByName("fc00::1")))
@@ -528,14 +528,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val remaining = Array[Byte](1, 2, 3, 4)
     val input =
       ByteArrayInputStream(
-        ascii("CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n") ++ remaining
+        ascii("CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n") ++ remaining,
       )
 
     val header = readHttpHeader(input, 4096)
 
     assertEquals(
       String(header, StandardCharsets.ISO_8859_1),
-      "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n"
+      "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n",
     )
     assertEquals(input.readAllBytes().toVector, remaining.toVector)
 
@@ -543,7 +543,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       readHttpHeader(
         ByteArrayInputStream(ascii("0123456789\r\n\r\n")),
-        8
+        8,
       )
 
   test("readHttpHeader tells an unused connection from a half-sent header"):
@@ -554,7 +554,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a response head parses for status and framing, and malformations blame the origin"):
     val head = HttpResponseHead.parse(
-      ascii("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+      ascii("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"),
     )
     assertEquals(head.status, 200)
     assertEquals(head.bodyFraming("GET"), BodyFraming.Length(5))
@@ -570,7 +570,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(head("HTTP/1.1 204 No Content\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
     assertEquals(
       head("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").bodyFraming("GET"),
-      BodyFraming.Chunked
+      BodyFraming.Chunked,
     )
     // No framing header: the body runs to the connection's end — this proxy sends
     // Connection: close upstream, so EOF is the terminator there, not a truncation.
@@ -578,13 +578,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(head("HTTP/1.1 100 Continue\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
     // The request side's ambiguity refusals, as origin faults.
     intercept[IOException](
-      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n").bodyFraming("GET")
+      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n").bodyFraming("GET"),
     )
     intercept[IOException](
-      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n").bodyFraming("GET")
+      head("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n").bodyFraming("GET"),
     )
     intercept[IOException](
-      head("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n").bodyFraming("GET")
+      head("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n").bodyFraming("GET"),
     )
 
   test("the relayed response head speaks this hop's own Connection: close"):
@@ -594,8 +594,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val head = HttpResponseHead.parse(
       ascii(
         "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n" +
-          "Content-Length: 5\r\nETag: \"abc\"\r\n\r\n"
-      )
+          "Content-Length: 5\r\nETag: \"abc\"\r\n\r\n",
+      ),
     )
     val relayed = String(head.toClientBytes, StandardCharsets.ISO_8859_1)
     assert(relayed.startsWith("HTTP/1.1 200 OK\r\n"), relayed)
@@ -611,15 +611,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val request = HttpRequestHead.parse(
       ascii(
         "GET /x HTTP/1.1\r\nHost: docs.python.org\r\nConnection: x-tracing, close\r\n" +
-          "X-Tracing: abc\r\nAccept: */*\r\n\r\n"
-      )
+          "X-Tracing: abc\r\nAccept: */*\r\n\r\n",
+      ),
     )
     val upstream = String(request.toUpstreamBytes, StandardCharsets.ISO_8859_1)
     assert(!upstream.contains("X-Tracing"), upstream)
     assert(upstream.contains("Accept: */*\r\n"), upstream)
 
     val response = HttpResponseHead.parse(
-      ascii("HTTP/1.1 200 OK\r\nConnection: x-server-hint\r\nX-Server-Hint: h2\r\nVary: A\r\n\r\n")
+      ascii("HTTP/1.1 200 OK\r\nConnection: x-server-hint\r\nX-Server-Hint: h2\r\nVary: A\r\n\r\n"),
     )
     val relayed = String(response.toClientBytes, StandardCharsets.ISO_8859_1)
     assert(!relayed.contains("X-Server-Hint"), relayed)
@@ -629,11 +629,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // No such client exists here, and half-supporting one — it could not parse a relayed
     // chunked response — would be a silent gap instead of this log line.
     val connect = intercept[BadRequest](
-      ConnectRequest.parse(ascii("CONNECT github.com:443 HTTP/1.0\r\n\r\n"))
+      ConnectRequest.parse(ascii("CONNECT github.com:443 HTTP/1.0\r\n\r\n")),
     )
     assertEquals(connect.getMessage, "HTTP/1.0 is not supported")
     val inTunnel = intercept[BadRequest](
-      HttpRequestHead.parse(ascii("GET / HTTP/1.0\r\nHost: github.com\r\n\r\n"))
+      HttpRequestHead.parse(ascii("GET / HTTP/1.0\r\nHost: github.com\r\n\r\n")),
     )
     assertEquals(inTunnel.getMessage, "HTTP/1.0 is not supported")
 
@@ -644,8 +644,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val head = HttpRequestHead.parse(
       ascii(
         "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
-          "Content-Length: 4\r\n\r\n"
-      )
+          "Content-Length: 4\r\n\r\n",
+      ),
     )
     assert(head.expectsContinue)
     val upstream = String(head.toUpstreamBytes, StandardCharsets.ISO_8859_1)
@@ -665,7 +665,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(relay(ascii("to the end"), BodyFraming.UntilClose).toVector, ascii("to the end").toVector)
     assertEquals(
       relay(ascii("5\r\nhello\r\n0\r\n\r\n"), BodyFraming.Chunked).toVector,
-      ascii("5\r\nhello\r\n0\r\n\r\n").toVector
+      ascii("5\r\nhello\r\n0\r\n\r\n").toVector,
     )
 
     val short = intercept[TruncatedResponse](relay(ascii("hel"), BodyFraming.Length(5)))
@@ -699,7 +699,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val (upstream, upstreamPeer) = socketPair()
     val origin = playOrigin(
       upstreamPeer,
-      ascii("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhello")
+      ascii("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhello"),
     )
     // The client pipelines a second request past the close notice, then half-closes: the drain
     // must consume it so the proxy's close stays a clean FIN, never an RST eating the tail.
@@ -721,7 +721,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val (upstream, upstreamPeer) = socketPair()
     val origin = playOrigin(
       upstreamPeer,
-      ascii("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf")
+      ascii("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf"),
     )
     clientPeer.shutdownOutput()
 
@@ -749,8 +749,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val head = HttpRequestHead.parse(
       ascii(
         "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
-          "Content-Length: 4\r\n\r\n"
-      )
+          "Content-Length: 4\r\n\r\n",
+      ),
     )
     relayInspected(client, upstream, "github.com", head)
     client.close()
@@ -767,8 +767,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       upstreamPeer,
       ascii(
         "HTTP/1.1 100 Continue\r\n\r\n" +
-          "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata"
-      )
+          "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata",
+      ),
     )
     clientPeer.shutdownOutput()
 
@@ -786,7 +786,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val bytes = clientHello("api.anthropic.com")
     val hello = TlsClientHello.read(
       ByteArrayInputStream(bytes),
-      64 * 1024
+      64 * 1024,
     )
 
     assertEquals(hello.serverName, Some("api.anthropic.com"))
@@ -797,7 +797,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val bytes = clientHello("api.anthropic.com", splitAt = Some(17))
     val hello = TlsClientHello.read(
       ByteArrayInputStream(bytes),
-      64 * 1024
+      64 * 1024,
     )
 
     assertEquals(hello.serverName, Some("api.anthropic.com"))
@@ -807,17 +807,17 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadTls]:
       TlsClientHello.read(
         ByteArrayInputStream(
-          clientHello("api.anthropic.com", trailingInRecord = Array[Byte](0, 0))
+          clientHello("api.anthropic.com", trailingInRecord = Array[Byte](0, 0)),
         ),
-        64 * 1024
+        64 * 1024,
       )
 
   test("TLS ClientHello detects ECH"):
     val hello = TlsClientHello.read(
       ByteArrayInputStream(
-        clientHello("api.anthropic.com", ech = true)
+        clientHello("api.anthropic.com", ech = true),
       ),
-      64 * 1024
+      64 * 1024,
     )
 
     assert(hello.echPresent)
@@ -825,7 +825,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("TLS identity validation accepts CONNECT host == SNI"):
     val hello = TlsClientHello.read(
       ByteArrayInputStream(clientHello("api.anthropic.com")),
-      64 * 1024
+      64 * 1024,
     )
 
     validateTlsIdentity("api.anthropic.com", hello)
@@ -833,7 +833,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("TLS identity validation rejects SNI mismatch"):
     val hello = TlsClientHello.read(
       ByteArrayInputStream(clientHello("example.com")),
-      64 * 1024
+      64 * 1024,
     )
 
     intercept[PolicyViolation]:
@@ -842,9 +842,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("TLS identity validation rejects ECH"):
     val hello = TlsClientHello.read(
       ByteArrayInputStream(
-        clientHello("api.anthropic.com", ech = true)
+        clientHello("api.anthropic.com", ech = true),
       ),
-      64 * 1024
+      64 * 1024,
     )
 
     intercept[PolicyViolation]:
@@ -857,7 +857,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation]:
       validateTlsIdentity(
         "api.anthropic.com",
-        TlsClientHello(Array.emptyByteArray, None, echPresent = false)
+        TlsClientHello(Array.emptyByteArray, None, echPresent = false),
       )
 
   test("TLS parser rejects a truncated ClientHello"):
@@ -866,7 +866,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[java.io.EOFException]:
       TlsClientHello.read(
         ByteArrayInputStream(bytes.dropRight(3)),
-        64 * 1024
+        64 * 1024,
       )
 
   test("providers and catalog are disjoint, the groups are the agent endpoints, tags pinned"):
@@ -876,22 +876,22 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // The tag pins bound each POST allowance to the hosts that genuinely serve the operation.
     assertEquals(
       ModelProviderHosts.values.flatten.toSet.intersect(CuratedRestrictedHosts.keySet),
-      Set.empty[String]
+      Set.empty[String],
     )
     assertEquals(
       ModelProviderHosts,
       Map(
         "anthropic" -> Set("api.anthropic.com", "claude.ai", "platform.claude.com"),
         "openai" -> Set("api.openai.com", "auth.openai.com", "chatgpt.com"),
-        "google" -> Set("accounts.google.com", "oauth2.googleapis.com", "cloudcode-pa.googleapis.com")
-      )
+        "google" -> Set("accounts.google.com", "oauth2.googleapis.com", "cloudcode-pa.googleapis.com"),
+      ),
     )
     assertEquals(
       builtinGitHosts,
       Set(
         "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
-        "codeload.github.com", "api.github.com", "codeberg.org", "gitlab.com"
-      )
+        "codeload.github.com", "api.github.com", "codeberg.org", "gitlab.com",
+      ),
     )
     assertEquals(baselinePolicy.tagged("npm-audit"), Set("registry.npmjs.org"))
 
@@ -927,12 +927,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     Vector("PUT", "POST", "PATCH", "DELETE").foreach: method =>
       intercept[PolicyViolation]:
         storage(
-          s"$method /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+          s"$method /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
         )
     intercept[PolicyViolation]:
       storage(
         "POST /bucket/x/git-upload-pack HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+          "Host: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
       )
     // The user-facing concern is not the method name but the channel: a GET carrying a body is
     // an upload wearing a read method, and is refused on every inspected host — the fact named,
@@ -940,14 +940,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val bodied = intercept[PolicyViolation]:
       storage(
         "GET /bucket/object HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\nContent-Length: 9\r\n\r\n"
+          "Host: storage.googleapis.com\r\nContent-Length: 9\r\n\r\n",
       )
     assert(bodied.getMessage.contains("request body"), bodied.getMessage)
 
     // The other refusal branches carry the tier in their wording too.
     val optioned = intercept[PolicyViolation]:
       storage(
-        "OPTIONS /bucket HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n"
+        "OPTIONS /bucket HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
       )
     assert(optioned.getMessage.contains("restricted host"), optioned.getMessage)
 
@@ -955,20 +955,20 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation]:
       storage(
         "GET /x/info/refs?service=git-receive-pack HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\n\r\n"
+          "Host: storage.googleapis.com\r\n\r\n",
       )
 
     // A documentation site wears the same tier: reads pass, anything else does not.
     authorizeInspectedRequest(
       "developer.mozilla.org",
       head("GET /en-US/docs/Web HTTP/1.1\r\nHost: developer.mozilla.org\r\n\r\n"),
-      Set.empty
+      Set.empty,
     )
     intercept[PolicyViolation]:
       authorizeInspectedRequest(
         "developer.mozilla.org",
         head("POST /api/x HTTP/1.1\r\nHost: developer.mozilla.org\r\nContent-Length: 0\r\n\r\n"),
-        Set.empty
+        Set.empty,
       )
 
     // A package registry wears the tier too — security is not traded for performance — so a
@@ -977,24 +977,24 @@ class AgentEgressProxyTest extends munit.FunSuite:
     authorizeInspectedRequest(
       "registry.npmjs.org",
       head("GET /lodash HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n"),
-      Set("npm-audit")
+      Set("npm-audit"),
     )
     authorizeInspectedRequest(
       "registry.npmjs.org",
       head(
         s"POST $NpmAuditPath HTTP/1.1\r\n" +
-          "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n"
+          "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
       ),
-      Set("npm-audit")
+      Set("npm-audit"),
     )
     val oldNpm = intercept[PolicyViolation]:
       authorizeInspectedRequest(
         "registry.npmjs.org",
         head(
           "POST /-/npm/v1/security/audits/quick HTTP/1.1\r\n" +
-            "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n"
+            "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
         ),
-        Set("npm-audit")
+        Set("npm-audit"),
       )
     assert(oldNpm.getMessage.contains("restricted path"), oldNpm.getMessage)
     // The =npm-audit allowance opens nothing on a =git-fetch host, and vice versa.
@@ -1002,9 +1002,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       authorizeInspectedRequest(
         "github.com",
         head(
-          s"POST $NpmAuditPath HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+          s"POST $NpmAuditPath HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         ),
-        Set("git-fetch")
+        Set("git-fetch"),
       )
 
   test("HTTP request head parses a request line and its headers"):
@@ -1012,7 +1012,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "GET /owner/repo HTTP/1.1\r\n" +
         "Host: github.com\r\n" +
         "User-Agent: git/2.51.0\r\n" +
-        "\r\n"
+        "\r\n",
     )
 
     assertEquals(request.method, "GET")
@@ -1023,7 +1023,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("HTTP request head splits a target into path and query"):
     val request = head(
       "GET /owner/repo.git/info/refs?service=git-upload-pack HTTP/1.1\r\n" +
-        "Host: github.com\r\n\r\n"
+        "Host: github.com\r\n\r\n",
     )
 
     assertEquals(request.path, "/owner/repo.git/info/refs")
@@ -1038,26 +1038,26 @@ class AgentEgressProxyTest extends munit.FunSuite:
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(
       "GET /owner/repo.git/info/refs?service=git-upload-pack HTTP/1.1\r\n" +
-        "Host: github.com\r\n\r\n"
+        "Host: github.com\r\n\r\n",
     )
 
   test("a read method may not carry a request body"):
     Vector("GET", "HEAD").foreach: method =>
       intercept[PolicyViolation]:
         inspected(
-          s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\nContent-Length: 5\r\n\r\n"
+          s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\nContent-Length: 5\r\n\r\n",
         )
 
   test("git fetch is allowed and git push is not"):
     inspected(
       "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\n" +
-        "Host: github.com\r\nContent-Length: 0\r\n\r\n"
+        "Host: github.com\r\nContent-Length: 0\r\n\r\n",
     )
 
     intercept[PolicyViolation]:
       inspected(
         "POST /owner/repo.git/git-receive-pack HTTP/1.1\r\n" +
-          "Host: github.com\r\nContent-Length: 0\r\n\r\n"
+          "Host: github.com\r\nContent-Length: 0\r\n\r\n",
       )
 
   test("git fetch from a nested GitLab subgroup is allowed, push is not"):
@@ -1067,9 +1067,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "gitlab.com",
       head(
         "POST /group/subgroup/project.git/git-upload-pack HTTP/1.1\r\n" +
-          "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n"
+          "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n",
       ),
-      Set("git-fetch")
+      Set("git-fetch"),
     )
 
     intercept[PolicyViolation]:
@@ -1077,16 +1077,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "gitlab.com",
         head(
           "POST /group/subgroup/project.git/git-receive-pack HTTP/1.1\r\n" +
-            "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n"
+            "Host: gitlab.com\r\nContent-Length: 0\r\n\r\n",
         ),
-        Set("git-fetch")
+        Set("git-fetch"),
       )
 
   test("git push ref discovery is refused even though it is a GET"):
     intercept[PolicyViolation]:
       inspected(
         "GET /owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\n" +
-          "Host: github.com\r\n\r\n"
+          "Host: github.com\r\n\r\n",
       )
 
   test("git push ref discovery is refused in percent-encoded spellings too"):
@@ -1095,7 +1095,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     Vector(
       "/owner/repo.git/info/refs?service=git%2Dreceive-pack",
       "/owner/repo.git/info/refs?%73ervice=git-receive-pack",
-      "/owner/repo.git/inf%6F/refs?service=git-receive-pack"
+      "/owner/repo.git/inf%6F/refs?service=git-receive-pack",
     ).foreach: target =>
       intercept[PolicyViolation]:
         inspected(s"GET $target HTTP/1.1\r\nHost: github.com\r\n\r\n")
@@ -1105,14 +1105,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // ordinary read.
     inspected(
       "GET /owner/repo.git/info/refs?service=git-receive%2xpack HTTP/1.1\r\n" +
-        "Host: github.com\r\n\r\n"
+        "Host: github.com\r\n\r\n",
     )
 
   test("no other method reaches an inspected host"):
     Vector("PUT", "PATCH", "DELETE", "OPTIONS", "TRACE").foreach: method =>
       intercept[PolicyViolation]:
         inspected(
-          s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+          s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         )
 
   test("no other path accepts a POST"):
@@ -1123,22 +1123,22 @@ class AgentEgressProxyTest extends munit.FunSuite:
       // At least owner/repo before the service segment: a single segment is no repository on any forge, and the bare
       // name is not a path.
       "/x/git-upload-pack",
-      "/git-upload-pack"
+      "/git-upload-pack",
     ).foreach: path =>
       intercept[PolicyViolation]:
         inspected(
-          s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+          s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         )
 
   test("a write path may not be spelled ambiguously"):
     Vector(
       "/owner/repo.git/%2e%2e/git-upload-pack",
       "/owner/repo.git/../git-upload-pack",
-      "/owner/repo.git/./git-upload-pack"
+      "/owner/repo.git/./git-upload-pack",
     ).foreach: path =>
       intercept[PolicyViolation]:
         inspected(
-          s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+          s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         )
 
   test("the Host header must name the host the connection was authorized for"):
@@ -1163,35 +1163,35 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       inspected(
         "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\n" +
-          "Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
+          "Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n",
       )
 
     intercept[BadRequest]:
       inspected(
         "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\n" +
-          "Content-Length: 5\r\nContent-Length: 6\r\n\r\n"
+          "Content-Length: 5\r\nContent-Length: 6\r\n\r\n",
       )
 
     intercept[BadRequest]:
       inspected(
         "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\n" +
-          "Transfer-Encoding: gzip\r\n\r\n"
+          "Transfer-Encoding: gzip\r\n\r\n",
       )
 
   test("message framing is read from the headers"):
     assertEquals(
       head("GET /x HTTP/1.1\r\nHost: github.com\r\n\r\n").bodyFraming,
-      BodyFraming.Empty
+      BodyFraming.Empty,
     )
     assertEquals(
       head("POST /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 12\r\n\r\n").bodyFraming,
-      BodyFraming.Length(12)
+      BodyFraming.Length(12),
     )
     assertEquals(
       head(
-        "POST /x HTTP/1.1\r\nHost: github.com\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "POST /x HTTP/1.1\r\nHost: github.com\r\nTransfer-Encoding: chunked\r\n\r\n",
       ).bodyFraming,
-      BodyFraming.Chunked
+      BodyFraming.Chunked,
     )
 
   test("the forwarded request is HTTP/1.1, closes, and drops hop-by-hop headers"):
@@ -1204,9 +1204,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
             "Proxy-Authorization: Basic x\r\n" +
             "Keep-Alive: timeout=5\r\n" +
             "Accept: */*\r\n" +
-            "\r\n"
+            "\r\n",
         ).toUpstreamBytes,
-        StandardCharsets.ISO_8859_1
+        StandardCharsets.ISO_8859_1,
       )
 
     assertEquals(
@@ -1214,7 +1214,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "GET /owner/repo HTTP/1.1\r\n" +
         "Host: github.com\r\n" +
         "Accept: */*\r\n" +
-        "Connection: close\r\n\r\n"
+        "Connection: close\r\n\r\n",
     )
 
   test("chunked lines are read up to CRLF and bounded"):
@@ -1230,23 +1230,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // present, the target exactly when a parsed inspected request exists, the rest human text.
     assertEquals(
       auditLine("allow", "github.com", "GET", "/r?tab=readme", "-> 140.82.112.3"),
-      "allow github.com GET /r?tab=readme -> 140.82.112.3"
+      "allow github.com GET /r?tab=readme -> 140.82.112.3",
     )
     assertEquals(
       auditLine("allow", "api.anthropic.com", "CONNECT", "", "-> 160.79.104.10"),
-      "allow api.anthropic.com CONNECT -> 160.79.104.10"
+      "allow api.anthropic.com CONNECT -> 160.79.104.10",
     )
     assertEquals(
       auditLine("deny", "tracker.example", "CONNECT", "", "host not allowed"),
-      "deny tracker.example CONNECT host not allowed"
+      "deny tracker.example CONNECT host not allowed",
     )
     assertEquals(
       auditLine("deny", "-", "-", "", "invalid CONNECT port"),
-      "deny - - invalid CONNECT port"
+      "deny - - invalid CONNECT port",
     )
     assertEquals(
       auditLine("deny", "github.com", "POST", "/r.git/git-receive-pack", "restricted path"),
-      "deny github.com POST /r.git/git-receive-pack restricted path"
+      "deny github.com POST /r.git/git-receive-pack restricted path",
     )
 
   test("every reported line is stamped once with the UTC instant, however it is written"):
@@ -1254,7 +1254,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val ticks = Iterator.from(0)
     val stamped = java.io.PrintStream(
       stampLines(sink, () => java.time.Instant.parse("2026-08-26T11:59:38.250Z").plusSeconds(ticks.next())),
-      true
+      true,
     )
 
     stamped.println("allow github.com CONNECT -> 140.82.112.3")
@@ -1309,7 +1309,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     serverName: String,
     ech: Boolean = false,
     splitAt: Option[Int] = None,
-    trailingInRecord: Array[Byte] = Array.emptyByteArray
+    trailingInRecord: Array[Byte] = Array.emptyByteArray,
   ): Array[Byte] =
     val sniBytes = ascii(serverName)
 
@@ -1358,12 +1358,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def u16(value: Int): Array[Byte] =
     Array(
       ((value >>> 8) & 0xff).toByte,
-      (value & 0xff).toByte
+      (value & 0xff).toByte,
     )
 
   private def u24(value: Int): Array[Byte] =
     Array(
       ((value >>> 16) & 0xff).toByte,
       ((value >>> 8) & 0xff).toByte,
-      (value & 0xff).toByte
+      (value & 0xff).toByte,
     )

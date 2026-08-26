@@ -135,14 +135,14 @@ class HostCommandsTest extends munit.FunSuite:
       "reap" -> koAgentFsReapScript("/usr/bin/podman", "app-abc123def456", "run-1"),
       "unmount" -> koAgentFsUnmountScript("app-abc123def456"),
       "unmount-all" -> koAgentFsUnmountAllScript,
-      "reaper" -> ReaperScript
+      "reaper" -> ReaperScript,
     )
     scripts.foreach: (name, script) =>
       assertEquals(script.linesIterator.next(), s"export PATH=$ScriptPath", name)
     // Absolute system directories only: a relative entry is the whole thing being kept out.
     assert(
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),
-      ScriptPath
+      ScriptPath,
     )
 
   test("a future path canonicalizes through its nearest existing ancestor"):
@@ -156,7 +156,7 @@ class HostCommandsTest extends munit.FunSuite:
     val linked = Files.createSymbolicLink(base.resolve("linked"), real)
     assertEquals(
       canonicalizedFuturePath(linked.resolve("missing/tail")),
-      Right(real.resolve("missing/tail"))
+      Right(real.resolve("missing/tail")),
     )
     // `..` in the spelling is normalized before the walk, not left for the filesystem.
     assertEquals(canonicalizedFuturePath(base.resolve("a/../b")), Right(base.resolve("b")))
@@ -204,7 +204,7 @@ class HostCommandsTest extends munit.FunSuite:
     // directory growing a file no launch mounts, and a sign the rename never happened.
     assertEquals(
       Files.list(dir).iterator().asScala.map(_.getFileName.toString).toVector.sorted,
-      Vector("bundle.crt", "ca.key", "leaf.key")
+      Vector("bundle.crt", "ca.key", "leaf.key"),
     )
 
   test("a mount source's name survives every rewrite"):

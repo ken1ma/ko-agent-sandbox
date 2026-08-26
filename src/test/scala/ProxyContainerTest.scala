@@ -31,7 +31,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assertEquals(inspect(proxy, "{{.EffectiveCaps}}"), "[]", "effective capabilities")
       assert(
         inspect(proxy, "{{.HostConfig.SecurityOpt}}").contains("no-new-privileges"),
-        s"no-new-privileges is not set: ${inspect(proxy, "{{.HostConfig.SecurityOpt}}")}"
+        s"no-new-privileges is not set: ${inspect(proxy, "{{.HostConfig.SecurityOpt}}")}",
       )
       assertEquals(inspect(proxy, "{{.HostConfig.ReadonlyRootfs}}"), "true", "read-only rootfs")
 
@@ -56,7 +56,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assertEquals(logs.size, 1, s"expected exactly this run's audit log, got $logs")
       assert(
         logs.head.contains(live.suffix),
-        s"the mounted log ${logs.head} belongs to another run, not ${live.suffix}"
+        s"the mounted log ${logs.head} belongs to another run, not ${live.suffix}",
       )
 
     finally

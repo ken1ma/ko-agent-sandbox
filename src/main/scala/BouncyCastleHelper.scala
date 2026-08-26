@@ -119,7 +119,7 @@ object BouncyCastleHelper:
       notBefore(now),
       Date.from(now.plus(days, ChronoUnit.DAYS)),
       name,
-      keyPair.getPublic
+      keyPair.getPublic,
     )
     builder.addExtension(Extension.basicConstraints, true, BasicConstraints(0))
     builder.addExtension(Extension.keyUsage, true, KeyUsage(KeyUsage.keyCertSign | KeyUsage.cRLSign))
@@ -127,13 +127,13 @@ object BouncyCastleHelper:
     builder.addExtension(
       Extension.subjectKeyIdentifier,
       false,
-      JcaX509ExtensionUtils().createSubjectKeyIdentifier(keyPair.getPublic)
+      JcaX509ExtensionUtils().createSubjectKeyIdentifier(keyPair.getPublic),
     )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.getPrivate)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
     Minted(
       toPem("CERTIFICATE", certificate.getEncoded),
-      toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded)
+      toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded),
     )
 
   def parseEcPrivateKey(pem: String): PrivateKey =
@@ -149,7 +149,7 @@ object BouncyCastleHelper:
     caPrivateKeyPem: String,
     hosts: Seq[String],
     now: Instant = Instant.now(),
-    days: Long = 825
+    days: Long = 825,
   ): Minted =
     val issuer = parseCertificate(caCertificatePem)
     val issuerKey = parseEcPrivateKey(caPrivateKeyPem)
@@ -163,7 +163,7 @@ object BouncyCastleHelper:
       notBefore(now),
       Date.from(notAfter),
       X500Name("CN=ko-agent-sandbox egress"),
-      keyPair.getPublic
+      keyPair.getPublic,
     )
     val sans = GeneralNames(hosts.map(h => GeneralName(GeneralName.dNSName, h)).toArray)
     builder.addExtension(Extension.subjectAlternativeName, false, sans)
@@ -171,12 +171,12 @@ object BouncyCastleHelper:
     builder.addExtension(
       Extension.keyUsage,
       true,
-      KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyAgreement)
+      KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyAgreement),
     )
     builder.addExtension(
       Extension.extendedKeyUsage,
       false,
-      ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth)
+      ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth),
     )
     // Strict verifiers refuse a chain without the key identifiers — OpenSSL's X509_STRICT, which
     // Python enables by default since 3.13, fails with "Missing Authority Key Identifier"
@@ -186,16 +186,16 @@ object BouncyCastleHelper:
     builder.addExtension(
       Extension.subjectKeyIdentifier,
       false,
-      extensionUtils.createSubjectKeyIdentifier(keyPair.getPublic)
+      extensionUtils.createSubjectKeyIdentifier(keyPair.getPublic),
     )
     builder.addExtension(
       Extension.authorityKeyIdentifier,
       false,
-      extensionUtils.createAuthorityKeyIdentifier(issuer)
+      extensionUtils.createAuthorityKeyIdentifier(issuer),
     )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(issuerKey)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
     Minted(
       toPem("CERTIFICATE", certificate.getEncoded),
-      toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded)
+      toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded),
     )

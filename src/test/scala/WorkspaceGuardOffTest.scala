@@ -59,7 +59,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     println(
       f"[guard-off] $what%-42s config mount=${mounted(session, Config)}%-5s " +
         f"read=${exec(session, "cat", Config).ok}%-5s  " +
-        f"hooks mount=${mounted(session, Hooks)}%-5s list=${exec(session, "ls", Hooks).ok}%-5s"
+        f"hooks mount=${mounted(session, Hooks)}%-5s list=${exec(session, "ls", Hooks).ok}%-5s",
     )
 
   /** The boundary, and so the only thing asserted. `what` names the host-side operation that ran. */
@@ -79,7 +79,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     val session = launch(project, project.resolve("session.log"), GuardOff)
     assert(
       session.output.contains("workspace guard: NONE"),
-      s"this session is not running with the guard off:\n${session.output}"
+      s"this session is not running with the guard off:\n${session.output}",
     )
     session
 
@@ -100,7 +100,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       // it a session that had lost /workspace entirely would satisfy every assertion here.
       assert(
         writable(session, "/workspace/.git/HEAD"),
-        "the whole of .git is read-only; these assertions can no longer tell a pin from a lost mount"
+        "the whole of .git is read-only; these assertions can no longer tell a pin from a lost mount",
       )
 
       // Edit in place: the inode the pin resolved at launch is the one being written. Anything that
@@ -173,11 +173,11 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         assert(fellThrough, "the pin now survives a host-side inode replacement; SECURITY.md says it does not")
         assert(
           exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
-          "the pin refuses a second write; the first one reached something else"
+          "the pin refuses a second write; the first one reached something else",
         )
         assert(
           Files.readString(config).contains(marker),
-          "the sandbox's write went somewhere other than the host's current .git/config"
+          "the sandbox's write went somewhere other than the host's current .git/config",
         )
 
         // The hooks pin goes the same way once its own inode is replaced. Only its entries
@@ -187,7 +187,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         Files.createDirectories(hooks)
         assert(
           eventually(120)(hookWritable(session))(identity),
-          "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not"
+          "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not",
         )
     finally
       live.foreach(stop)
@@ -212,16 +212,16 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       assert(!writable(session, "/workspace/.git"), "SECURITY: the pointer file accepts a write")
       assert(
         !exec(session, "sh", "-c", "rm -f /workspace/.git").ok,
-        "SECURITY: the pointer file can be removed"
+        "SECURITY: the pointer file can be removed",
       )
       assert(
         !exec(session, "sh", "-c", "mv /workspace/.git /workspace/.git-moved").ok,
-        "SECURITY: the pointer file can be renamed away"
+        "SECURITY: the pointer file can be renamed away",
       )
       // The control, as in the first test: the rest of the workspace stays ordinary and writable.
       assert(
         writable(session, "/workspace/ordinary"),
-        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount"
+        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount",
       )
 
       // An in-place host edit keeps the inode, so the pin holds; replacing the inode is the
@@ -250,15 +250,15 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       assertEquals(exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "")
       assert(
         !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
-        "SECURITY: the sandbox can write into the pinned .git"
+        "SECURITY: the sandbox can write into the pinned .git",
       )
       assert(
         !exec(session, "sh", "-c", "rmdir /workspace/.git").ok,
-        "SECURITY: the sandbox can remove the pinned .git"
+        "SECURITY: the sandbox can remove the pinned .git",
       )
       assert(
         writable(session, "/workspace/ordinary"),
-        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount"
+        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount",
       )
 
       // A repository the host creates mid-session lands in the project's own .git; the pin's
@@ -270,11 +270,11 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       Thread.sleep(5000)
       assertEquals(
         exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "",
-        "a host-created repository became visible behind the empty pin"
+        "a host-created repository became visible behind the empty pin",
       )
       assert(
         !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
-        "SECURITY: the pinned .git became writable after a host-side git init"
+        "SECURITY: the pinned .git became writable after a host-side git init",
       )
     finally
       live.foreach(stop)

@@ -24,7 +24,7 @@ object TLSHelper:
 
   def validateTlsIdentity(
     connectHost: String,
-    hello: TlsClientHello
+    hello: TlsClientHello,
   ): Unit =
     if hello.echPresent then
       throw PolicyViolation("encrypted ClientHello")
@@ -50,7 +50,7 @@ object TLSHelper:
    */
   class TlsInspection private (
     serverContext: SSLContext,
-    val hosts: Set[String]
+    val hosts: Set[String],
   ):
     def inspects(host: String): Boolean = hosts.contains(host)
 
@@ -89,7 +89,7 @@ object TLSHelper:
       parameters.setApplicationProtocols(Array("http/1.1"))
       parameters.setEndpointIdentificationAlgorithm("HTTPS")
       parameters.setServerNames(
-        java.util.List.of[SNIServerName](SNIHostName(host))
+        java.util.List.of[SNIServerName](SNIHostName(host)),
       )
       socket.setSSLParameters(parameters)
 
@@ -103,7 +103,7 @@ object TLSHelper:
     def load(
       certificate: Path,
       privateKey: Path,
-      hosts: Set[String]
+      hosts: Set[String],
     ): TlsInspection =
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
@@ -123,7 +123,7 @@ object TLSHelper:
       keyStore.setKeyEntry("egress", key, password, chain.toArray)
 
       val keyManagers = KeyManagerFactory.getInstance(
-        KeyManagerFactory.getDefaultAlgorithm
+        KeyManagerFactory.getDefaultAlgorithm,
       )
       keyManagers.init(keyStore, password)
 
@@ -142,7 +142,7 @@ object TLSHelper:
         val reasons =
           Option.when(missing.nonEmpty)(s"does not cover ${missing.mkString(" ")}") ++
             Option.when(extra.nonEmpty)(
-              s"names ${extra.mkString(" ")}, which this proxy does not inspect"
+              s"names ${extra.mkString(" ")}, which this proxy does not inspect",
             )
         Some(s"must name exactly the hosts this policy inspects; it ${reasons.mkString(", and ")}")
 
@@ -180,7 +180,7 @@ object TLSHelper:
 
       if start < 0 || stop < start then
         throw IllegalArgumentException(
-          s"$path is not an unencrypted PKCS#8 private key"
+          s"$path is not an unencrypted PKCS#8 private key",
         )
 
       val encoded =
@@ -194,7 +194,7 @@ object TLSHelper:
           catch case NonFatal(_) => None
         .headOption
         .getOrElse(
-          throw IllegalArgumentException(s"$path holds an unsupported key type")
+          throw IllegalArgumentException(s"$path holds an unsupported key type"),
         )
 
     def subjectAlternativeNames(certificate: X509Certificate): Set[String] =
@@ -212,7 +212,7 @@ object TLSHelper:
   case class TlsClientHello(
     wireBytes: Array[Byte],
     serverName: Option[String],
-    echPresent: Boolean
+    echPresent: Boolean,
   )
 
   object TlsClientHello:
@@ -285,7 +285,7 @@ object TLSHelper:
 
     def parsePayload(
       payload: Array[Byte],
-      wireBytes: Array[Byte]
+      wireBytes: Array[Byte],
     ): TlsClientHello =
       val initial = Cursor(payload)
 
@@ -315,7 +315,7 @@ object TLSHelper:
       val afterCompression =
         afterCompressionLength.skip(
           compressionMethodsLength,
-          "compression_methods"
+          "compression_methods",
         )
 
       if afterCompression.remaining == 0 then
@@ -340,7 +340,7 @@ object TLSHelper:
     def parseExtensions(
       cursor: Cursor,
       serverName: Option[String] = None,
-      echPresent: Boolean = false
+      echPresent: Boolean = false,
     ): (Option[String], Boolean) =
       if cursor.remaining == 0 then (serverName, echPresent)
       else
@@ -357,7 +357,7 @@ object TLSHelper:
             parseExtensions(
               rest,
               parseServerName(extensionData),
-              echPresent
+              echPresent,
             )
 
           case EncryptedClientHelloExtension =>
@@ -376,7 +376,7 @@ object TLSHelper:
       @tailrec
       def loop(
         cursor: Cursor,
-        found: Option[String]
+        found: Option[String],
       ): Option[String] =
         if cursor.remaining == 0 then found
         else
@@ -404,7 +404,7 @@ object TLSHelper:
   case class Cursor(
     bytes: Array[Byte],
     offset: Int = 0,
-    limit: Int = -1
+    limit: Int = -1,
   ):
     val actualLimit = if limit < 0 then bytes.length else limit
 
@@ -420,7 +420,7 @@ object TLSHelper:
       requireRemaining(2, label)
       (
         TLSHelper.u16(bytes, offset),
-        copy(offset = offset + 2, limit = actualLimit)
+        copy(offset = offset + 2, limit = actualLimit),
       )
 
     def skip(count: Int, label: String): Cursor =
@@ -431,14 +431,14 @@ object TLSHelper:
       requireRemaining(count, label)
       (
         bytes.slice(offset, offset + count),
-        copy(offset = offset + count, limit = actualLimit)
+        copy(offset = offset + count, limit = actualLimit),
       )
 
     def takeCursor(count: Int, label: String): (Cursor, Cursor) =
       requireRemaining(count, label)
       (
         Cursor(bytes, offset, offset + count),
-        copy(offset = offset + count, limit = actualLimit)
+        copy(offset = offset + count, limit = actualLimit),
       )
 
     def requireRemaining(count: Int, label: String): Unit =

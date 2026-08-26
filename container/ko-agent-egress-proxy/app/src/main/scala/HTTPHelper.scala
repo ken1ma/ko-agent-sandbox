@@ -27,7 +27,7 @@ object HTTPHelper:
 
   def readHttpHeader(
     in: InputStream,
-    maxBytes: Int
+    maxBytes: Int,
   ): Array[Byte] =
     require(maxBytes >= 4)
 
@@ -127,7 +127,7 @@ object HTTPHelper:
 
         ConnectRequest(
           authority.substring(0, colon),
-          parsePort(authority.substring(colon + 1))
+          parsePort(authority.substring(colon + 1)),
         )
 
     def parsePort(value: String): Int =
@@ -166,7 +166,7 @@ object HTTPHelper:
     method: String,
     target: String,
     version: String,
-    headers: Vector[(String, String)]
+    headers: Vector[(String, String)],
   ):
     def path: String = target.takeWhile(_ != '?')
 
@@ -242,7 +242,7 @@ object HTTPHelper:
       "proxy-connection",
       "te",
       "trailer",
-      "upgrade"
+      "upgrade",
     )
 
   /** The header names a message's own Connection header declares hop-by-hop (RFC 9110 §7.6.1):
@@ -316,7 +316,7 @@ object HTTPHelper:
     statusLine: String,
     status: Int,
     headers: Vector[(String, String)],
-    rawBytes: Array[Byte]
+    rawBytes: Array[Byte],
   ):
     def values(name: String): Vector[String] =
       val wanted = name.toLowerCase(Locale.ROOT)
@@ -450,7 +450,7 @@ object HTTPHelper:
   def forwardRequestBody(
     in: InputStream,
     out: OutputStream,
-    framing: BodyFraming
+    framing: BodyFraming,
   ): Unit =
     framing match
       case BodyFraming.Empty         => ()
@@ -469,7 +469,7 @@ object HTTPHelper:
   def forwardResponseBody(
     in: InputStream,
     out: OutputStream,
-    framing: BodyFraming
+    framing: BodyFraming,
   ): Unit =
     framing match
       case BodyFraming.Empty => ()
@@ -531,7 +531,7 @@ object HTTPHelper:
         out.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII))
       else
         out.write(
-          s"${java.lang.Long.toHexString(size)}\r\n".getBytes(StandardCharsets.US_ASCII)
+          s"${java.lang.Long.toHexString(size)}\r\n".getBytes(StandardCharsets.US_ASCII),
         )
         copyExactly(in, out, size)
 
@@ -568,7 +568,7 @@ object HTTPHelper:
     socket: SSLSocket,
     status: Int,
     reason: String,
-    detail: String
+    detail: String,
   ): Unit =
     try
       // encoded once: declared length == bytes sent, non-ASCII included
@@ -580,7 +580,7 @@ object HTTPHelper:
         s"HTTP/1.1 $status $reason\r\n" +
           "Content-Type: text/plain; charset=utf-8\r\n" +
           s"Content-Length: ${body.length}\r\n" +
-          "Connection: close\r\n\r\n"
+          "Connection: close\r\n\r\n",
       )
       out.write(body)
       out.flush()
@@ -593,7 +593,7 @@ object HTTPHelper:
   def respond(client: Socket, status: Int, reason: String): Unit =
     writeAscii(
       client.getOutputStream,
-      s"HTTP/1.1 $status $reason\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+      s"HTTP/1.1 $status $reason\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
     )
 
   def writeAscii(out: OutputStream, value: String): Unit =

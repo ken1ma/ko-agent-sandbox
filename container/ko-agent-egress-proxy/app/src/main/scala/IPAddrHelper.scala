@@ -68,7 +68,7 @@ object IPAddrHelper:
       case Vector() => addresses
       case rejected =>
         throw PolicyViolation(
-          s"resolved to non-public address ${rejected.head.getHostAddress}"
+          s"resolved to non-public address ${rejected.head.getHostAddress}",
         )
 
   /**
@@ -102,7 +102,7 @@ object IPAddrHelper:
     Cidr("198.51.100.0", 24),
     Cidr("203.0.113.0", 24),
     Cidr("224.0.0.0", 4),
-    Cidr("240.0.0.0", 4)
+    Cidr("240.0.0.0", 4),
   )
 
   val Ipv6GlobalUnicast = Cidr("2000::", 3)
@@ -112,12 +112,12 @@ object IPAddrHelper:
     Cidr("2001:db8::", 32),
     Cidr("2002::", 16),
     Cidr("3fff::", 20),
-    Cidr("5f00::", 16)
+    Cidr("5f00::", 16),
   )
 
   case class Cidr private (
     network: Array[Byte],
-    prefixLength: Int
+    prefixLength: Int,
   ):
     def contains(address: InetAddress): Boolean =
       val candidate = address.getAddress
@@ -132,7 +132,7 @@ object IPAddrHelper:
 
       require(
         prefixLength >= 0 && prefixLength <= maxBits,
-        s"invalid /$prefixLength for $address"
+        s"invalid /$prefixLength for $address",
       )
 
       new Cidr(bytes, prefixLength)
@@ -140,7 +140,7 @@ object IPAddrHelper:
   def prefixMatches(
     candidate: Array[Byte],
     network: Array[Byte],
-    prefixLength: Int
+    prefixLength: Int,
   ): Boolean =
     val fullBytes = prefixLength / 8
     val remainingBits = prefixLength % 8

@@ -62,7 +62,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     val armed = armRunCleanup(() => ())
     assert(
       Runtime.getRuntime.removeShutdownHook(armed.hook),
-      "arming registered no shutdown hook"
+      "arming registered no shutdown hook",
     )
 
   test("the resident cleanup removes the sandbox first, and tolerates one already gone"):
@@ -92,15 +92,15 @@ class SandboxLifecycleTest extends munit.FunSuite:
         "rm --force gone-sandbox",
         "rm --force --time 2 proxy-container",
         "network exists net-sandbox", "network rm net-sandbox",
-        "network exists net-egress", "network rm net-egress"
-      )
+        "network exists net-egress", "network rm net-egress",
+      ),
     )
 
   test("the reaper receives its names and podman path as data, after $0"):
     val command = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
       "machine", "reap-script", "paste",
-      ClipboardBroker.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste")
+      ClipboardBroker.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste"),
     )
     assertEquals(command.take(3), Vector("/bin/sh", "-c", ReaperScript))
     // sh -c: the argument after the script becomes $0; $1 through ${11} follow.
@@ -109,8 +109,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
       command.drop(4),
       Vector(
         "run-container", "proxy-container", "/usr/bin/podman",
-        "net-sandbox", "net-egress", "machine", "reap-script", "paste", "/usr/bin/xclip", "/usr/bin/wl-paste", ""
-      )
+        "net-sandbox", "net-egress", "machine", "reap-script", "paste", "/usr/bin/xclip", "/usr/bin/wl-paste", "",
+      ),
     )
     // The names travel as arguments, never interpolated into the script.
     assert(!ReaperScript.contains("run-container"))
@@ -130,7 +130,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(ReaperScript.contains("local) /bin/sh -c \"$7\""))
     assert(
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
-      "the teardown step must come after this run's own cleanup"
+      "the teardown step must come after this run's own cleanup",
     )
     // The clipboard broker is a job, never the wait: `podman wait` decides removal, and the job is
     // killed after it so nothing outlives the sandbox it serves. Off means the job never starts.
@@ -150,5 +150,5 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ReaperScript.linesIterator.forall: line =>
         line.trim.startsWith("#") || !line.contains("podman")
       ,
-      "a bare podman invocation crept in"
+      "a bare podman invocation crept in",
     )

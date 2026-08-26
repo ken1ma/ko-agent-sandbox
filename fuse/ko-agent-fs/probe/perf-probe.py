@@ -62,7 +62,7 @@ def timed(label: str, entries: int, *command: str) -> None:
     if done.returncode != 0:
         sys.exit(
             "abort: %s failed: %s"
-            % (" ".join(command), done.stderr.decode(errors="replace").strip())
+            % (" ".join(command), done.stderr.decode(errors="replace").strip()),
         )
     print("  %-32s %8d us/entry" % (label, (time.monotonic() - start) * 1e6 / entries))
 

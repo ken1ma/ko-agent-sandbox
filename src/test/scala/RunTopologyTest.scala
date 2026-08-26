@@ -26,7 +26,7 @@ class RunTopologyTest extends munit.FunSuite:
   private def proxyAddress(session: Session): String =
     val listing = inspect(
       session.proxy,
-      "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}"
+      "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}",
     )
     addressOn(listing, session.sandboxNetwork)
       .getOrElse(fail(s"${session.proxy} has no address on ${session.sandboxNetwork}"))
@@ -52,7 +52,7 @@ class RunTopologyTest extends munit.FunSuite:
     assert(run("pkill", "-KILL", "-f", pattern).ok, s"no reaper matched `$pattern`")
     assertEquals(
       eventually(30)(run("pgrep", "-f", pattern).ok)(_ == false), false,
-      s"still running after SIGKILL:\n${run("pgrep", "-fl", pattern).text}"
+      s"still running after SIGKILL:\n${run("pgrep", "-fl", pattern).text}",
     )
 
   private def exists(container: String): Boolean = run(podman, "container", "exists", container).ok
@@ -73,7 +73,7 @@ class RunTopologyTest extends munit.FunSuite:
       expected.foreach: network =>
         assertEquals(
           eventually(Patience)(networks().contains(network))(_ == false), false,
-          s"$network outlived the session that created it"
+          s"$network outlived the session that created it",
         )
     finally discard(project)
 
@@ -101,11 +101,11 @@ class RunTopologyTest extends munit.FunSuite:
       // The claim itself, in both directions — one internal network per run, and no route between.
       assertNotEquals(
         reachFrom(a, proxyAddress(b)), "200",
-        "A reached B's proxy; concurrent sessions are not isolated"
+        "A reached B's proxy; concurrent sessions are not isolated",
       )
       assertNotEquals(
         reachFrom(b, proxyAddress(a)), "200",
-        "B reached A's proxy; concurrent sessions are not isolated"
+        "B reached A's proxy; concurrent sessions are not isolated",
       )
     finally
       live.foreach(stop)

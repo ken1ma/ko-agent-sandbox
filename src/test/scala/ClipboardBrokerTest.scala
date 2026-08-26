@@ -82,7 +82,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       if wayland then s"'' $host/wl-paste $host/wl-copy" else s"$host/xclip '' ''"
     val broker = ProcessBuilder(
       "setsid", "sh", "-c",
-      s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $hostTools"
+      s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $hostTools",
     )
     broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     val process = broker.start()

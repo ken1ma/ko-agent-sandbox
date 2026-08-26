@@ -56,7 +56,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val refusal = intercept[java.nio.file.FileSystemException](thunk)
     assert(
       refusal.getMessage.contains("Operation not permitted"),
-      s"$what failed with '${refusal.getMessage}', but not as a policy denial (EPERM)"
+      s"$what failed with '${refusal.getMessage}', but not as a policy denial (EPERM)",
     )
 
   private def procLines(path: String): Vector[String] =
@@ -112,7 +112,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
     assert(
       Files.readString(Paths.get("/etc/hosts")).linesIterator.exists(_.endsWith("\tegress-proxy")),
-      "the proxy is not named in /etc/hosts, so it is being learned from a resolver"
+      "the proxy is not named in /etc/hosts, so it is being learned from a resolver",
     )
 
     // NO_PROXY names exemptions rather than a proxy; every variable that does name one must name
@@ -188,18 +188,18 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(status("-X", "POST", "https://github.com/"), "403")
     assertEquals(
       status("https://github.com/git/git.git/info/refs?service=git-upload-pack"), "200",
-      "fetch ref discovery"
+      "fetch ref discovery",
     )
     assertEquals(
       status("https://github.com/o/r.git/info/refs?service=git-receive-pack"), "403",
-      "push ref discovery"
+      "push ref discovery",
     )
     assertEquals(status("-X", "POST", "https://api.github.com/graphql"), "403")
     assertEquals(status("-X", "POST", "https://github.com/o/r.git/info/lfs/objects/batch"), "403")
     assertEquals(
       status("-X", "POST", "-H", "Content-Type: application/json", "-d", "{}",
              "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"), "200",
-      "npm's audit endpoint"
+      "npm's audit endpoint",
     )
     assertEquals(status("-X", "POST", "-d", "{}", "https://registry.npmjs.org/lodash"), "403")
 
@@ -232,7 +232,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(answer.text.contains("status=200"), s"a JVM could not reach the host: ${answer.text}")
       assert(
         answer.text.contains("property=null"),
-        s"the proxy arrived as a system property, which prints a banner on every JVM: ${answer.text}"
+        s"the proxy arrived as a system property, which prints a banner on every JVM: ${answer.text}",
       )
     finally deleteRecursively(probe)
 
@@ -289,7 +289,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(
       refused.getMessage.contains("Operation not permitted")
         || refused.getMessage.contains("Read-only file system"),
-      s"the policy write was refused with '${refused.getMessage}', not by a boundary mechanism"
+      s"the policy write was refused with '${refused.getMessage}', not by a boundary mechanism",
     )
 
     // The pin fallback's mount, where present, must be read-only; under the filter there is no
@@ -297,7 +297,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     mountOptions(policyDir.toString).foreach: options =>
       assert(
         options.split(",").contains("ro"),
-        s"the policy mount is not read-only: $options"
+        s"the policy mount is not read-only: $options",
       )
 
   test("no host path is mounted into the session beyond the launcher's set"):
@@ -338,7 +338,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val unresolvable = entries.filterNot(Files.exists(_))
     assertEquals(
       unresolvable, Vector.empty[Path],
-      "mounted but does not resolve: the host source was removed mid-session"
+      "mounted but does not resolve: the host source was removed mid-session",
     )
     val material = entries
       .filter(Files.isRegularFile(_))

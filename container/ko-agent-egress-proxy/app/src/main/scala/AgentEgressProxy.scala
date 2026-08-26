@@ -308,7 +308,7 @@ object AgentEgressProxy:
         System.err.println(
           "agent-egress-proxy takes no arguments, --print-policy [--provenance] to " +
             "resolve the policy, print it, and exit, or --check-host <host> to report " +
-            "one host's policy decision and current resolution"
+            "one host's policy decision and current resolution",
         )
         sys.exit(2)
 
@@ -401,7 +401,7 @@ object AgentEgressProxy:
       .sorted
     val unrestrictedLine = Option.when(!resolved.ambient)(
       s"unrestricted hosts (${resolved.unrestrictedHosts.size}):"
-        + resolved.unrestrictedHosts.toVector.sorted.map(" " + _).mkString
+        + resolved.unrestrictedHosts.toVector.sorted.map(" " + _).mkString,
     )
 
     Vector(
@@ -409,10 +409,10 @@ object AgentEgressProxy:
       s"restricted hosts (${restrictedEntries.size}):" + restrictedEntries.map(" " + _).mkString,
     ) ++ unrestrictedLine ++ Vector(
       s"denied rules (${resolved.denied.size}):"
-        + resolved.denied.map(" " + _.spelled).mkString
+        + resolved.denied.map(" " + _.spelled).mkString,
     ) ++ Option.when(resolved.idleDenied.nonEmpty)(
       s"idle denied rules (${resolved.idleDenied.size}):"
-        + resolved.idleDenied.map(" " + _.spelled).mkString
+        + resolved.idleDenied.map(" " + _.spelled).mkString,
     )
 
   /**
@@ -513,17 +513,17 @@ object AgentEgressProxy:
         if resolved.inspected.isEmpty then
           throw IllegalArgumentException(
             s"$CertificateVariable is set, but this policy restricts no host; " +
-              "with nothing to inspect the material can only be a mistake"
+              "with nothing to inspect the material can only be a mistake",
           )
         Some(
-          TlsInspection.load(Path.of(certificatePath), Path.of(privateKeyPath), resolved.inspected)
+          TlsInspection.load(Path.of(certificatePath), Path.of(privateKeyPath), resolved.inspected),
         )
 
       case (None, None) => None
 
       case _ =>
         throw IllegalArgumentException(
-          s"$CertificateVariable and $PrivateKeyVariable must be set together"
+          s"$CertificateVariable and $PrivateKeyVariable must be set together",
         )
 
   /**
@@ -580,7 +580,7 @@ object AgentEgressProxy:
 
   case class EgressPolicy(
     resolved: ResolvedEgress,
-    inspection: Option[TlsInspection]
+    inspection: Option[TlsInspection],
   ):
     def inspectionSummary: String =
       inspection match
@@ -628,7 +628,7 @@ object AgentEgressProxy:
     val profile = profileValue.getOrElse(DefaultProfile)
     if !Profiles.contains(profile) then
       throw IllegalArgumentException(
-        s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}"
+        s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}",
       )
     val provider =
       providerValue.filterNot(_ == "none").map(requireProvider(ModelProviderVariable, _))
@@ -646,21 +646,21 @@ object AgentEgressProxy:
         throw IllegalArgumentException(
           s"$AllowedVariable re-adds the restricted baseline host $host as unrestricted; " +
             "treatment widening has no delta spelling — use .defaults and state the complete " +
-            "replacement policy"
+            "replacement policy",
         )
 
     val contradicted =
       delta.addedHosts.keySet.filter(host => delta.removals.exists(_.matches(host)))
     if contradicted.nonEmpty then
       throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes ${contradicted.toVector.sorted.mkString(", ")}"
+        s"$AllowedVariable both adds and removes ${contradicted.toVector.sorted.mkString(", ")}",
       )
 
     delta.removals.foreach: removal =>
       if !(BaselineHosts.keySet ++ delta.addedHosts.keySet).exists(removal.matches) then
         throw IllegalArgumentException(
           s"$AllowedVariable removes ${removal.spelled}, which matches neither the baseline " +
-            "nor an addition; a '-' that removes nothing is refused"
+            "nor an addition; a '-' that removes nothing is refused",
         )
 
     // Provenance rides along with the transformation itself: each host carries the label of the
@@ -691,12 +691,12 @@ object AgentEgressProxy:
       if delta.defaults then Map.empty
       else BaselineHosts.map((host, treatment) => host -> (treatment, baselineSource(host)))
     val afterProviderRemovals = cleared.filterNot((host, _) =>
-      delta.removedProviders.exists(name => ModelProviderHosts(name).contains(host))
+      delta.removedProviders.exists(name => ModelProviderHosts(name).contains(host)),
     )
     val withAddedProviders =
       delta.addedProviders.toVector.sorted.foldLeft(afterProviderRemovals): (current, name) =>
         ModelProviderHosts(name).foldLeft(current)(
-          overlay(_, _, Treatment.Unrestricted, s"allowed +model-provider $name")
+          overlay(_, _, Treatment.Unrestricted, s"allowed +model-provider $name"),
         )
     // Sequentially, each rule judged against the map as the rules before it left it: of two
     // overlapping removals, only the first removes anything, and only it is reported.
@@ -722,8 +722,8 @@ object AgentEgressProxy:
         .filter((_, treatment) => treatment != Treatment.Unrestricted)
         .foldLeft(
           CuratedRestrictedHosts.map((host, tags) =>
-            host -> (Treatment.Restricted(tags), "curated baseline")
-          )
+            host -> (Treatment.Restricted(tags), "curated baseline"),
+          ),
         ):
           case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
 
@@ -734,9 +734,9 @@ object AgentEgressProxy:
           provider.fold(Map.empty[String, (Treatment, String)])(name =>
             ModelProviderHosts(name)
               .map(_ -> (Treatment.Unrestricted, s"model-provider $name"))
-              .toMap
+              .toMap,
           ),
-          false
+          false,
         )
       case "deny-unless-allowed" => (admitted, false)
       case "allow-unless-denied" => (narrowed, true)
@@ -761,11 +761,11 @@ object AgentEgressProxy:
           !denied.exists(_.matches(host)) && (hosts.contains(host) || ambient)
         Option.when(unreachable.nonEmpty)(
           s"the selected model provider '$selected' is not fully reachable under $profile: " +
-            unreachable.mkString(" ")
+            unreachable.mkString(" "),
         )
       ++ Option.when(idleDenied.nonEmpty)(
         "denied rules matching nothing this profile admits (kept: they can apply under " +
-          s"another profile or a future provider expansion): ${idleDenied.map(_.spelled).mkString(" ")}"
+          s"another profile or a future provider expansion): ${idleDenied.map(_.spelled).mkString(" ")}",
       )
 
     // Only deny-unless-allowed consults the removal side of the delta; under every other profile
@@ -782,7 +782,7 @@ object AgentEgressProxy:
     if !ModelProviderHosts.contains(name) then
       throw IllegalArgumentException(
         s"$variable names the model provider '$name', which this proxy does not define; " +
-          s"the providers are ${ModelProviderHosts.keys.toVector.sorted.mkString(", ")}"
+          s"the providers are ${ModelProviderHosts.keys.toVector.sorted.mkString(", ")}",
       )
     name
 
@@ -799,7 +799,7 @@ object AgentEgressProxy:
       if !KnownTags.contains(tag) then
         throw IllegalArgumentException(
           s"$variable tags '$host' with '$tag', which is no treatment this proxy defines; " +
-            s"the tags are: ${KnownTags.toVector.sorted.mkString(", ")}"
+            s"the tags are: ${KnownTags.toVector.sorted.mkString(", ")}",
         )
     (host, parts.tail.toSet)
 
@@ -848,20 +848,20 @@ object AgentEgressProxy:
             if tags.nonEmpty then
               throw IllegalArgumentException(
                 s"$AllowedVariable tags the unrestricted host $host; a =tag opens one " +
-                  "restricted operation, so it belongs on a restricted entry only"
+                  "restricted operation, so it belongs on a restricted entry only",
               )
             AddHost(host, Treatment.Unrestricted)
           case other =>
             throw IllegalArgumentException(
               s"$AllowedVariable gives $host the treatment '$other'; the treatments are " +
-                "restricted and unrestricted"
+                "restricted and unrestricted",
             )
       case Vector("-host", entry) => RemoveHost(parseHostRule(AllowedVariable, entry))
       case tokens =>
         throw IllegalArgumentException(
           s"$AllowedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
             "allowed grammar: +model-provider <name>, -model-provider <name>, " +
-            "+host <host[=tag]> <restricted|unrestricted>, -host <host | **.domain>, .defaults"
+            "+host <host[=tag]> <restricted|unrestricted>, -host <host | **.domain>, .defaults",
         )
 
     val added = entries.collect { case AddHost(host, treatment) => (host, treatment) }.distinct
@@ -869,7 +869,7 @@ object AgentEgressProxy:
     if conflicted.nonEmpty then
       throw IllegalArgumentException(
         s"$AllowedVariable adds ${conflicted.mkString(", ")} with two different treatments; " +
-          "an entry states its host's complete treatment, once"
+          "an entry states its host's complete treatment, once",
       )
 
     val addedProviders = entries.collect { case AddProvider(name) => name }.toSet
@@ -877,7 +877,7 @@ object AgentEgressProxy:
     val bothWays = (addedProviders intersect removedProviders).toVector.sorted
     if bothWays.nonEmpty then
       throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes model-provider ${bothWays.mkString(", ")}"
+        s"$AllowedVariable both adds and removes model-provider ${bothWays.mkString(", ")}",
       )
 
     AllowedDelta(
@@ -904,7 +904,7 @@ object AgentEgressProxy:
         case tokens =>
           throw IllegalArgumentException(
             s"$DeniedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
-              "denied grammar: model-provider <name>, host <host | **.domain>"
+              "denied grammar: model-provider <name>, host <host | **.domain>",
           )
       .distinct
 
@@ -930,12 +930,12 @@ object AgentEgressProxy:
       catch
         case ex: BadRequest =>
           throw IllegalArgumentException(
-            s"$variable contains an invalid hostname '$entry': ${ex.getMessage}"
+            s"$variable contains an invalid hostname '$entry': ${ex.getMessage}",
           )
 
     if isIpLiteral(host) then
       throw IllegalArgumentException(
-        s"$variable contains an IP literal '$entry'; only hostnames are allowed"
+        s"$variable contains an IP literal '$entry'; only hostnames are allowed",
       )
 
     host
@@ -967,7 +967,7 @@ object AgentEgressProxy:
       try
         executor.execute(() =>
           try handle(client, policy)
-          finally connectionSlots.release()
+          finally connectionSlots.release(),
         )
       catch
         case NonFatal(ex) =>
@@ -990,7 +990,7 @@ object AgentEgressProxy:
           client.setSoTimeout(HandshakeTimeoutMillis)
           client.setTcpNoDelay(true)
           ConnectRequest.parse(
-            readHttpHeader(client.getInputStream, MaxHttpHeaderBytes)
+            readHttpHeader(client.getInputStream, MaxHttpHeaderBytes),
           )
         catch
           case ex: IOException =>
@@ -1028,7 +1028,7 @@ object AgentEgressProxy:
 
       case NonFatal(ex) =>
         System.err.println(
-          auditLine("error", host, "CONNECT", "", s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+          auditLine("error", host, "CONNECT", "", s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}"),
         )
         respondQuietly(client, 500, "Internal Server Error")
 
@@ -1039,7 +1039,7 @@ object AgentEgressProxy:
     client: Socket,
     upstream: Socket,
     connectHost: String,
-    policy: EgressPolicy
+    policy: EgressPolicy,
   ): Unit =
     writeAscii(client.getOutputStream, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
@@ -1047,7 +1047,7 @@ object AgentEgressProxy:
       val hello =
         TlsClientHello.read(
           client.getInputStream,
-          MaxClientHelloBytes
+          MaxClientHelloBytes,
         )
 
       validateTlsIdentity(connectHost, hello)
@@ -1056,12 +1056,12 @@ object AgentEgressProxy:
         case Some(inspection) =>
           runInspectedSession(
             client, upstream, connectHost, hello, inspection,
-            policy.resolved.restricted.getOrElse(connectHost, Set.empty)
+            policy.resolved.restricted.getOrElse(connectHost, Set.empty),
           )
 
         case None =>
           System.err.println(
-            auditLine("allow", connectHost, "CONNECT", "", s"-> ${upstream.getInetAddress.getHostAddress}")
+            auditLine("allow", connectHost, "CONNECT", "", s"-> ${upstream.getInetAddress.getHostAddress}"),
           )
 
           /*
@@ -1098,8 +1098,8 @@ object AgentEgressProxy:
         System.err.println(
           auditLine(
             "error", connectHost, "CONNECT", "",
-            s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}"
-          )
+            s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}",
+          ),
         )
 
   /*
@@ -1117,7 +1117,7 @@ object AgentEgressProxy:
     host: String,
     hello: TlsClientHello,
     inspection: TlsInspection,
-    hostTags: Set[String]
+    hostTags: Set[String],
   ): Unit =
     /*
      * The client's ClientHello has already been read off the socket to check
@@ -1136,7 +1136,7 @@ object AgentEgressProxy:
       try
         val head =
           HttpRequestHead.parse(
-            readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes)
+            readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes),
           )
         method = head.method
         target = head.target
@@ -1147,7 +1147,7 @@ object AgentEgressProxy:
 
         try
           System.err.println(
-            auditLine("allow", host, method, target, s"-> ${upstream.getInetAddress.getHostAddress}")
+            auditLine("allow", host, method, target, s"-> ${upstream.getInetAddress.getHostAddress}"),
           )
 
           relayInspected(clientTls, upstreamTls, host, head)
@@ -1158,7 +1158,7 @@ object AgentEgressProxy:
           // Routine — pooled clients open spares and drop them unused (apt does) — but logged:
           // a TLS-handshaked connection must not vanish without a line. No response; peer gone.
           System.err.println(
-            auditLine("error", host, method, target, "client closed before sending a request")
+            auditLine("error", host, method, target, "client closed before sending a request"),
           )
 
         case ex: TruncatedResponse =>
@@ -1195,7 +1195,7 @@ object AgentEgressProxy:
     clientTls: Socket,
     upstreamTls: Socket,
     host: String,
-    head: HttpRequestHead
+    head: HttpRequestHead,
   ): Unit =
     val toUpstream = upstreamTls.getOutputStream
 
@@ -1239,7 +1239,7 @@ object AgentEgressProxy:
     catch
       case ex: IOException =>
         System.err.println(
-          auditLine("error", host, head.method, head.target, s"relay: ${ex.getMessage}")
+          auditLine("error", host, head.method, head.target, s"relay: ${ex.getMessage}"),
         )
 
   val DrainTimeoutMillis = 2_000
@@ -1290,11 +1290,11 @@ object AgentEgressProxy:
   def authorizeInspectedRequest(
     host: String,
     head: HttpRequestHead,
-    hostTags: Set[String]
+    hostTags: Set[String],
   ): Unit =
     if !head.target.startsWith("/") then
       throw PolicyViolation(
-        "only origin-form request targets are allowed"
+        "only origin-form request targets are allowed",
       )
 
     if head.values("Upgrade").nonEmpty then
@@ -1344,7 +1344,7 @@ object AgentEgressProxy:
    */
   def authorizeRequest(
     request: ConnectRequest,
-    resolved: ResolvedEgress
+    resolved: ResolvedEgress,
   ): String =
     if request.port != 443 then
       throw PolicyViolation(s"port ${request.port}")
@@ -1364,17 +1364,17 @@ object AgentEgressProxy:
 
   def connect(
     addresses: Vector[InetAddress],
-    port: Int
+    port: Int,
   ): Socket =
     @tailrec
     def loop(
       remaining: List[InetAddress],
-      lastFailure: Option[IOException]
+      lastFailure: Option[IOException],
     ): Socket =
       remaining match
         case Nil =>
           throw lastFailure.getOrElse(
-            IOException("no resolved address could be connected")
+            IOException("no resolved address could be connected"),
           )
 
         case address :: rest =>
@@ -1382,7 +1382,7 @@ object AgentEgressProxy:
           try
             socket.connect(
               InetSocketAddress(address, port),
-              ConnectTimeoutMillis
+              ConnectTimeoutMillis,
             )
             socket.setTcpNoDelay(true)
             socket
@@ -1399,7 +1399,7 @@ object AgentEgressProxy:
     def pump(
       in: InputStream,
       out: OutputStream,
-      halfClose: () => Unit
+      halfClose: () => Unit,
     ): Unit =
       try
         in.transferTo(out)
@@ -1416,16 +1416,16 @@ object AgentEgressProxy:
       pump(
         client.getInputStream,
         upstream.getOutputStream,
-        () => upstream.shutdownOutput()
-      )
+        () => upstream.shutdownOutput(),
+      ),
     )
 
     executor.execute(() =>
       pump(
         upstream.getInputStream,
         client.getOutputStream,
-        () => client.shutdownOutput()
-      )
+        () => client.shutdownOutput(),
+      ),
     )
 
     try done.await()

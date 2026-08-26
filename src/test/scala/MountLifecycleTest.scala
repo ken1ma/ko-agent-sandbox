@@ -75,7 +75,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val a = launch(project.resolve("a.log"))
       assert(
         Files.readString(project.resolve("a.log")).contains("workspace FUSE filter: mounted"),
-        s"session A did not create the mount — another session of $id already holds one"
+        s"session A did not create the mount — another session of $id already holds one",
       )
       assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")
       assertEquals(mounted(), 1, "A is running but its mountpoint is not mounted")
@@ -84,7 +84,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val b = launch(project.resolve("b.log"))
       assert(
         Files.readString(project.resolve("b.log")).contains("reusing the existing mount"),
-        s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}"
+        s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
       assertEquals(eventually(30)(markers())(_ == both), both, "markers with both up")
@@ -104,7 +104,7 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(
         windowMillis >= 100,
         s"B's marker and its container are ${windowMillis}ms apart; the window the age gate " +
-          "covers is not there, so either the launcher's ordering changed or the clocks differ"
+          "covers is not there, so either the launcher's ordering changed or the clocks differ",
       )
 
       run(podman, "stop", "--time", "2", a)
@@ -123,7 +123,7 @@ class MountLifecycleTest extends munit.FunSuite:
       started = started.filterNot(_.container == b)
       assertEquals(
         eventually(Patience)(markers())(_ == planted), planted,
-        "the planted marker did not survive the last real session's reap"
+        "the planted marker did not survive the last real session's reap",
       )
       assertEquals(mounted(), 1, "the mount was pulled out from under a launch in flight")
       assertEquals(daemonPids().size, 1, "the daemon exited under a launch in flight")
@@ -132,7 +132,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val c = launch(project.resolve("c.log"))
       assert(
         Files.readString(project.resolve("c.log")).contains("reusing the existing mount"),
-        "the surviving mount was not reusable"
+        "the surviving mount was not reusable",
       )
 
       // And while C's reap runs, the lock is held from outside: the reap must wait for it rather
@@ -151,7 +151,7 @@ class MountLifecycleTest extends munit.FunSuite:
       started = started.filterNot(_.container == c)
       assert(
         eventually(Patience)(lockWaiters())(_ >= 1) >= 1,
-        "no reap ever blocked on the project lock; it is not serializing"
+        "no reap ever blocked on the project lock; it is not serializing",
       )
       assertEquals(mounted(), 1, "the mount went down while the lock was held")
       assertEquals(markers(), planted, "expected only the aged marker while the reap is blocked")

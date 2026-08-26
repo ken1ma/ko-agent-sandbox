@@ -134,7 +134,7 @@ class HostileInputTest extends munit.FunSuite:
         assertEquals(
           outcomeOf(authority.getBytes(StandardCharsets.UTF_8)),
           "refused",
-          printable(authority)
+          printable(authority),
         )
     assertEquals(normalizeHost("\uff47ithub.com"), "github.com")
     assertEquals(normalizeHost("GITHUB\u3002com"), "github.com")
@@ -171,7 +171,7 @@ class HostileInputTest extends munit.FunSuite:
   private val random = Random(20260816)
 
   private val Noise = Vector(
-    '[', ']', '@', '%', ':', '.', ' ', '\t', '\r', '\n', '+', '-', '0', '\u0000', '\u007f'
+    '[', ']', '@', '%', ':', '.', ' ', '\t', '\r', '\n', '+', '-', '0', '\u0000', '\u007f',
   )
 
   /** Mutations of a real authority, never uniform noise: a uniform draw is refused at its first
@@ -257,7 +257,7 @@ class HostileInputTest extends munit.FunSuite:
 
     controls.foreach: ch =>
       intercept[BadRequest](
-        HttpRequestHead.parse(ascii(s"GET /a${ch}b HTTP/1.1\r\nHost: github.com\r\n\r\n"))
+        HttpRequestHead.parse(ascii(s"GET /a${ch}b HTTP/1.1\r\nHost: github.com\r\n\r\n")),
       )
 
     // HTAB is legal in a field value and nowhere else, so it is the one that must survive here and
@@ -265,11 +265,11 @@ class HostileInputTest extends munit.FunSuite:
     controls.filter(_ != '\t').foreach: ch =>
       intercept[BadRequest](
         HttpRequestHead.parse(
-          ascii(s"GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: a${ch}b\r\n\r\n")
-        )
+          ascii(s"GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: a${ch}b\r\n\r\n"),
+        ),
       )
     val tabbed = HttpRequestHead.parse(
-      ascii("GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: a\tb\r\n\r\n")
+      ascii("GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: a\tb\r\n\r\n"),
     )
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
@@ -296,7 +296,7 @@ class HostileInputTest extends munit.FunSuite:
         policy.hosts.keySet.foreach: host =>
           assert(
             BaselineHosts.contains(host) || named.contains(host),
-            s"'$value' admitted the unnamed host '$host'"
+            s"'$value' admitted the unnamed host '$host'",
           )
         policy.restricted.foreach: (host, tags) =>
           assert(tags.subsetOf(KnownTags), s"'$value' tagged '$host' with $tags")

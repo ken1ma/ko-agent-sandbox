@@ -214,7 +214,15 @@ RUN set -euxo pipefail; \
         'Signed-By: /etc/apt/keyrings/claude-code.asc 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE' \
         > /etc/apt/sources.list.d/claude-code.sources; \
     apt-get update; \
-    apt-get install -y --no-install-recommends claude-code; \
+    apt-get install -y --no-install-recommends \
+        claude-code \
+        # Claude Code's own sandbox for Bash commands; it refuses to start without both
+        # wherever managed settings enforce sandbox.failIfUnavailable, which an organization
+        # can set server-side. bwrap mounts a fresh /proc even unprivileged in here, so
+        # enableWeakerNestedSandbox — which bind-mounts this container's instead — is not
+        # needed and is not set.
+        bubblewrap \
+        socat; \
     rm -rf /var/lib/apt/lists/*
 
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.

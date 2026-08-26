@@ -88,7 +88,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     val now = Instant.now()
     val shortCa = mintCa("proj", now, days = 40)
     val leaf = parse(
-      mintLeaf(shortCa.certificatePem, shortCa.privateKeyPem, Vector("github.com"), now).certificatePem
+      mintLeaf(shortCa.certificatePem, shortCa.privateKeyPem, Vector("github.com"), now).certificatePem,
     )
     val caNotAfter = parse(shortCa.certificatePem).getNotAfter
     assert(!leaf.getNotAfter.after(caNotAfter))

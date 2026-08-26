@@ -7,7 +7,7 @@ Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 libraryDependencies ++= Seq(
   "org.bouncycastle" % "bcpkix-jdk18on" % "1.85",  // JCA cannot build X.509 certificates
 
-  "org.scalameta" %% "munit" % "1.3.5" % Test
+  "org.scalameta" %% "munit" % "1.3.5" % Test,
 )
 
 scalacOptions ++= Seq(
@@ -15,7 +15,7 @@ scalacOptions ++= Seq(
   "-feature",
   "-unchecked",
   "-Wunused:all",
-  "-Werror"
+  "-Werror",
 )
 
 // The container-launching suites share one podman, and each asserts on resources scoped to a
@@ -69,7 +69,7 @@ Compile / resourceGenerators += Def.task {
         "ko-agent-sandbox", "ko-agent-egress-proxy",  // runtime images
         "ko-agent-self-test",                         // test image
       ),
-    baseDirectory.value / "fuse" -> Seq("ko-agent-fs")
+    baseDirectory.value / "fuse" -> Seq("ko-agent-fs"),
   )
 
   // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
@@ -151,7 +151,7 @@ assembly / assemblyMergeStrategy := {
 // jar built from multi-release inputs is not itself multi-release.
 assembly / packageOptions += Package.ManifestAttributes(
   "Enable-Native-Access" -> "ALL-UNNAMED",
-  "Multi-Release" -> "true"
+  "Multi-Release" -> "true",
 )
 
 lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist")

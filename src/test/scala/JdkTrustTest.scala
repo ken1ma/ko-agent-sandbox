@@ -44,9 +44,9 @@ class JdkTrustTest extends munit.FunSuite:
     val merged = KeyStore.getInstance("PKCS12")
     merged.load(
       java.io.ByteArrayInputStream(
-        mergeCacerts(asShipped.toByteArray, ca.certificatePem, "ko-agent-sandbox-egress")
+        mergeCacerts(asShipped.toByteArray, ca.certificatePem, "ko-agent-sandbox-egress"),
       ),
-      CacertsPassword
+      CacertsPassword,
     )
 
     assert(merged.containsAlias("a-public-root"), "a shipped root was dropped")

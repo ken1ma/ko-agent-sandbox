@@ -59,7 +59,7 @@ object ContainerfileSources:
     text: String,
     buildArgs: Map[String, String],
     localImages: Set[String],
-    target: Option[String]
+    target: Option[String],
   ): Either[String, Vector[String]] =
     imageSourcesInContainerfile(name, text, buildArgs, localImages, target).map(_.remote)
 
@@ -68,7 +68,7 @@ object ContainerfileSources:
     text: String,
     buildArgs: Map[String, String],
     localImages: Set[String],
-    target: Option[String]
+    target: Option[String],
   ): Either[String, ImageSources] =
     // A FROM reads only the arguments declared before the first one; every other instruction reads
     // its own stage, which inherits a global only where the stage redeclares it (Dockerfile ARG
@@ -103,7 +103,7 @@ object ContainerfileSources:
             case Some(value) => Regex.quoteReplacement(value)
             case None =>
               refuse(s"no value for build-image variable ${matched.matched}")
-              ""
+              "",
         )
         if refusal.isEmpty then
           // A name is one of four things, and the order decides which: the empty base or an
@@ -214,7 +214,7 @@ object ContainerfileSources:
   private case class BuildSpecification(
     containerfile: String,
     buildArgs: Map[String, String],
-    target: Option[String]
+    target: Option[String],
   )
 
   private def imageBuildSpecification(command: Vector[String]): BuildSpecification =
@@ -243,14 +243,14 @@ object ContainerfileSources:
     BuildSpecification(
       containerfile.getOrElse(s"${command.last}/Containerfile"),
       buildArgs.result(),
-      target
+      target,
     )
 
   /** Sources derived from the same contexts and arguments Podman receives, one per command. */
   def imageSourcesForBuildCommands(
     commands: Vector[Vector[String]],
     readContainerfile: String => String,
-    localImages: Set[String]
+    localImages: Set[String],
   ): Vector[ImageSources] =
     commands.map: command =>
       val specification = imageBuildSpecification(command)
@@ -260,13 +260,13 @@ object ContainerfileSources:
         readContainerfile(name),
         specification.buildArgs,
         localImages,
-        specification.target
+        specification.target,
       ).fold(message => fail(message), identity)
 
   def remoteImagesForBuildCommands(
     commands: Vector[Vector[String]],
     readContainerfile: String => String,
-    localImages: Set[String]
+    localImages: Set[String],
   ): Vector[String] =
     imageSourcesForBuildCommands(commands, readContainerfile, localImages).flatMap(_.remote).distinct
 

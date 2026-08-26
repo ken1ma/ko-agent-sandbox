@@ -66,8 +66,8 @@ object SandboxProject:
             Right(
               (
                 Seq(normalized),
-                Seq(s"$name ($value) does not resolve to a real path; only this exact spelling is refused as a project")
-              )
+                Seq(s"$name ($value) does not resolve to a real path; only this exact spelling is refused as a project"),
+              ),
             )
     catch case _: InvalidPathException => Left(s"$name is not a valid path")
 
@@ -89,7 +89,7 @@ object SandboxProject:
       case Os.Linux | Os.Mac =>
         (
           Seq("/home", "/Users").map(Paths.get(_)).flatMap(normalizedAndCanonical),
-          Seq("/root", "/var/root").map(Paths.get(_)).flatMap(normalizedAndCanonical)
+          Seq("/root", "/var/root").map(Paths.get(_)).flatMap(normalizedAndCanonical),
         )
       case Os.Windows =>
         val drive = env("SystemDrive").filter(_.nonEmpty).getOrElse("C:")
@@ -132,7 +132,7 @@ object SandboxProject:
    */
   def protectedHomeDirectories(
     os: Os,
-    env: String => Option[String]
+    env: String => Option[String],
   ): Either[String, HomeProtection] =
     val homeVariables = os match
       case Os.Linux | Os.Mac => Seq("HOME")
@@ -179,8 +179,8 @@ object SandboxProject:
         HomeProtection(
           alias(paths).distinct,
           alias(containers).distinct,
-          unsetWarnings ++ droppedWarnings ++ resolved.flatMap(_._2) ++ publicWarnings
-        )
+          unsetWarnings ++ droppedWarnings ++ resolved.flatMap(_._2) ++ publicWarnings,
+        ),
       )
 
   /**
@@ -198,7 +198,7 @@ object SandboxProject:
     if candidate.getRoot == candidate || candidate.toString.isEmpty then
       Some(
         "It is a filesystem root: the whole system would be exposed to the agent.\n" +
-          "Change into a project directory and run this again."
+          "Change into a project directory and run this again.",
       )
     else
       dotDirectory match
@@ -208,7 +208,7 @@ object SandboxProject:
               "configuration and credentials (~/.ssh, ~/.aws, ~/.config), so nothing beneath one is\n" +
               "mounted; symlinks are resolved first, so the dot directory may come from where a link\n" +
               "leads rather than from the path as typed. Move the project outside dot-prefixed\n" +
-              "directories and run this again."
+              "directories and run this again.",
           )
         case None =>
           val insideAContainer = Option(candidate.getParent).exists(homes.containers.contains)
@@ -216,7 +216,7 @@ object SandboxProject:
             Some(
               "It is a home directory, or a directory containing one: anything like .aws, .ssh or\n" +
                 ".config beneath it would be exposed to the agent.\n" +
-                "Change into a project directory and run this again."
+                "Change into a project directory and run this again.",
             )
           else None
 
@@ -291,7 +291,7 @@ object SandboxProject:
   def gitGuardVolumes(gitDir: Path, emptyFile: Path, emptyDir: Path): Either[String, Vector[String]] =
     def refuse(path: Path): Either[String, Vector[String]] =
       Left(
-        s"error: $path must not be a symlink\nRefusing to mount the sandbox through one."
+        s"error: $path must not be a symlink\nRefusing to mount the sandbox through one.",
       )
 
     if Files.isSymbolicLink(gitDir) then refuse(gitDir)
@@ -306,8 +306,8 @@ object SandboxProject:
         Right(
           Vector(
             s"--volume=$configSource:/workspace/.git/config:ro",
-            s"--volume=$hooksSource:/workspace/.git/hooks:ro"
-          )
+            s"--volume=$hooksSource:/workspace/.git/hooks:ro",
+          ),
         )
     else if Files.exists(gitDir) then Right(Vector(s"--volume=$gitDir:/workspace/.git:ro"))
     else Right(Vector(s"--volume=$emptyDir:/workspace/.git:ro"))
@@ -351,7 +351,7 @@ object SandboxProject:
     else if Files.exists(policyDir) && !Files.isDirectory(policyDir) then
       Some(
         s"error: $policyDir must be a directory\n" +
-          "Remove what is in its place; the directory holds this project's boundary configuration."
+          "Remove what is in its place; the directory holds this project's boundary configuration.",
       )
     else if !Files.exists(policyDir) then None
     else if Files.exists(policyDir.resolve("egress-hosts")) then

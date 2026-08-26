@@ -51,7 +51,7 @@ class BundleLockTest extends munit.FunSuite:
       val built = run(
         podman, "build", "--pull=never",
         "--label", s"$BundleLabel=stale-for-the-bundle-lock-test",
-        "-t", Mislabelled, context.toString
+        "-t", Mislabelled, context.toString,
       )
       assert(built.ok, s"could not build the mislabelled fixture:\n${built.err}")
 
@@ -65,7 +65,7 @@ class BundleLockTest extends munit.FunSuite:
       assert(exit != 0, s"the launch was not refused:\n$output")
       assert(
         output.contains("was not built from the sources this launcher bundles"),
-        s"the refusal does not name the version lock:\n$output"
+        s"the refusal does not name the version lock:\n$output",
       )
       assert(output.contains("rebuild with --build"), s"no rebuild hint:\n$output")
 
@@ -75,13 +75,13 @@ class BundleLockTest extends munit.FunSuite:
 
       val session = launch(
         project, project.resolve("warned.log"),
-        "KO_AGENT_SANDBOX_IMAGE" -> Mislabelled
+        "KO_AGENT_SANDBOX_IMAGE" -> Mislabelled,
       )
       live = Some(session)
       assert(
         session.output.contains("warning:")
           && session.output.contains("was not built from the sources this launcher bundles"),
-        s"no warning for the explicitly overridden image:\n${session.output}"
+        s"no warning for the explicitly overridden image:\n${session.output}",
       )
     finally
       live.foreach(stop)

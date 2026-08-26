@@ -22,7 +22,7 @@ object FFMHelper:
       val handle = linker.downcallHandle(
         linker.defaultLookup().find("execvp").orElseThrow(),
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
-        Linker.Option.captureCallState("errno")
+        Linker.Option.captureCallState("errno"),
       )
       Using.resource(Arena.ofConfined()): arena =>
         val file = arena.allocateFrom(command.head)

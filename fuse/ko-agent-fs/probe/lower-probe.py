@@ -161,11 +161,11 @@ def rename_flags() -> None:
     seed("rn-y", b"y\n")
     exchange = renameat2(os.path.join(WORK, "rn-x"), os.path.join(WORK, "rn-y"), RENAME_EXCHANGE)
     noreplace_onto_existing = renameat2(
-        os.path.join(WORK, "rn-x"), os.path.join(WORK, "rn-y"), RENAME_NOREPLACE
+        os.path.join(WORK, "rn-x"), os.path.join(WORK, "rn-y"), RENAME_NOREPLACE,
     )
     seed("rn-z", b"z\n")
     noreplace_onto_free = renameat2(
-        os.path.join(WORK, "rn-z"), os.path.join(WORK, "rn-free"), RENAME_NOREPLACE
+        os.path.join(WORK, "rn-z"), os.path.join(WORK, "rn-free"), RENAME_NOREPLACE,
     )
     host = ask("rename-flags")
     record(

@@ -31,7 +31,7 @@ object IntegrationSession:
   /** One live session, the names of everything its run created, and the launcher process that
     * owns its teardown. */
   case class Session(
-    container: String, id: String, suffix: String, project: Path, log: Path, launcher: Process
+    container: String, id: String, suffix: String, project: Path, log: Path, launcher: Process,
   ):
     def proxy: String = AgentSandboxLauncher.proxyRunContainer(id, suffix)
     def sandboxNetwork: String = AgentSandboxLauncher.sandboxRunNetwork(id, suffix)

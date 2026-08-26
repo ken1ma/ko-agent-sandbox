@@ -136,7 +136,7 @@ object AgentSandboxLauncher:
       "none",
       "Unset it (or set it to none) to allow no runtime; set it to same-uid to unmask\n/proc, " +
         "disable SELinux labeling and add SYS_CHROOT so a container runtime installed\nin the " +
-        "session can run (SECURITY.md)."
+        "session can run (SECURITY.md).",
     )
 
   /**
@@ -172,7 +172,7 @@ object AgentSandboxLauncher:
       "off",
       "Unset it (or set it to off) to keep the clipboard out; set it to paste to let the\nagent " +
         "read an image you copied, or to bidirectional to also let it set your clipboard\n" +
-        "(SECURITY.md)."
+        "(SECURITY.md).",
     )
 
   def sessionStart(value: Option[String]): Either[String, String] =
@@ -182,7 +182,7 @@ object AgentSandboxLauncher:
       Vector("pause", "immediate"),
       "pause",
       "Unset it (or set it to pause) to keep the hold; set it to immediate to start the\nagent " +
-        "at once, leaving what the launch printed to be read from the scrollback afterwards."
+        "at once, leaving what the launch printed to be read from the scrollback afterwards.",
     )
 
   /**
@@ -210,7 +210,7 @@ object AgentSandboxLauncher:
     NestingVariable,
     SessionStartVariable,
     ClipboardVariable,
-    "KO_AGENT_SANDBOX_EGRESS_POLICY"
+    "KO_AGENT_SANDBOX_EGRESS_POLICY",
   )
 
   /**
@@ -295,13 +295,13 @@ object AgentSandboxLauncher:
         s"""error: $podman does not run
            |
            |Reinstall it: https://podman.io/docs/installation""".stripMargin,
-        127
+        127,
       )
     if !runOk(podman, "info") then
       os match
         case Os.Linux =>
           fail(
-            "error: Podman is not usable.\nOn Linux, run rootless Podman as your normal user, without sudo."
+            "error: Podman is not usable.\nOn Linux, run rootless Podman as your normal user, without sudo.",
           )
         case _ =>
           System.err.println("the podman machine is not running; starting it")
@@ -374,7 +374,7 @@ object AgentSandboxLauncher:
         "; rebuild with --build" +
         s"\n  launcher bundle digest: $expected" +
         s"\n  image label $BundleLabel: " +
-        (if label.trim.isEmpty then "(none)" else label.trim)
+        (if label.trim.isEmpty then "(none)" else label.trim),
     )
 
   /**
@@ -402,39 +402,39 @@ object AgentSandboxLauncher:
     version: String,
     fsSourceId: String,
     sandboxBundleId: String,
-    proxyBundleId: String
+    proxyBundleId: String,
   ): Vector[Vector[String]] =
     Vector(
       Vector(podman, "build", "-t", s"debian-temurin:$version", "debian-temurin"),
       Vector(
         podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
-        "-t", s"debian-coursier:$version", "debian-coursier"
+        "-t", s"debian-coursier:$version", "debian-coursier",
       ),
       Vector(
         podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
-        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
+        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
       ),
       Vector(
         podman, "build", "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
-        "-t", ProxyBuildImage, "ko-agent-egress-proxy"
+        "-t", ProxyBuildImage, "ko-agent-egress-proxy",
       ),
       Vector(
         podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$proxyBundleId",
         "--label", s"$BundleLabel=$proxyBundleId",
-        "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy"
+        "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy",
       ),
       Vector(
         podman, "build", "--target", "build",
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
-        "-t", KoAgentFsBuildImage, "ko-agent-fs"
+        "-t", KoAgentFsBuildImage, "ko-agent-fs",
       ),
       Vector(
         podman, "build", "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
-        "-t", "ko-agent-fs:latest", "ko-agent-fs"
-      )
+        "-t", "ko-agent-fs:latest", "ko-agent-fs",
+      ),
     )
 
   /**
@@ -450,7 +450,7 @@ object AgentSandboxLauncher:
       .collectFirst:
         case line if line.startsWith("ARG RUST_VERSION=") => line.stripPrefix("ARG RUST_VERSION=").trim
     pinned.filter(_.nonEmpty).getOrElse(
-      fail(s"error: no 'ARG RUST_VERSION=' in $containerfile; there is no toolchain to build with")
+      fail(s"error: no 'ARG RUST_VERSION=' in $containerfile; there is no toolchain to build with"),
     )
 
   /**
@@ -466,7 +466,7 @@ object AgentSandboxLauncher:
     podman: String,
     rustVersion: String,
     fsSourceId: String,
-    selfTestBundleId: String
+    selfTestBundleId: String,
   ): Vector[Vector[String]] =
     Vector(
       Vector(
@@ -475,7 +475,7 @@ object AgentSandboxLauncher:
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "--label", s"$BundleLabel=$selfTestBundleId",
         "-f", "ko-agent-self-test/Containerfile",
-        "-t", SelfTestBuildImage, "."
+        "-t", SelfTestBuildImage, ".",
       ),
       Vector(
         podman, "build",
@@ -483,8 +483,8 @@ object AgentSandboxLauncher:
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "--label", s"$BundleLabel=$selfTestBundleId",
         "-f", "ko-agent-self-test/Containerfile",
-        "-t", "ko-agent-self-test:latest", "."
-      )
+        "-t", "ko-agent-self-test:latest", ".",
+      ),
     )
 
   /**
@@ -526,8 +526,8 @@ object AgentSandboxLauncher:
         podman, "build", "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
-        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox"
-      )
+        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
+      ),
     )
 
   /**
@@ -540,7 +540,7 @@ object AgentSandboxLauncher:
   def verifyBuiltBundleLabels(expected: Seq[(String, String)]): Unit =
     expected.foreach: (image, id) =>
       val inspected = run(
-        podman, "image", "inspect", "--format", BundleLabelTemplate, image
+        podman, "image", "inspect", "--format", BundleLabelTemplate, image,
       )
       if !inspected.ok then
         fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
@@ -573,7 +573,7 @@ object AgentSandboxLauncher:
           fail(
             s"error: build failed: ${command.mkString(" ")}\n" +
               s"build context retained at $context",
-            exit
+            exit,
           )
     deleteRecursively(context)
 
@@ -623,7 +623,7 @@ object AgentSandboxLauncher:
     Option.when(name.matches(s"ko-agent-sandbox-persistent-$ProjectIdShape"))(
       s"KO_AGENT_SANDBOX_PERSISTENT_VOLUME is '$name', which has the launcher's generated " +
         "volume-name shape, and --reset-all removes every volume matching it\n\n" +
-        "Choose a name outside ko-agent-sandbox-persistent-<slug>-<12 hex>."
+        "Choose a name outside ko-agent-sandbox-persistent-<slug>-<12 hex>.",
     )
 
   def proxyContainers(names: Seq[String]): Seq[String] =
@@ -660,7 +660,7 @@ object AgentSandboxLauncher:
   def tlsRunDirsToPrune(
     names: Seq[String],
     liveRuns: Set[String],
-    oldEnough: String => Boolean
+    oldEnough: String => Boolean,
   ): Seq[String] =
     names
       .filter(_.matches("run-[0-9a-f]{8}"))
@@ -735,13 +735,13 @@ object AgentSandboxLauncher:
       val bundleId = selfTestBundleId(
         fsSourceId,
         contextSourceId(context, "ko-agent-self-test"),
-        sandboxImageId
+        sandboxImageId,
       )
       val commands = selfTestBuildCommands(
         podman,
         rustVersion,
         fsSourceId,
-        bundleId
+        bundleId,
       )
       val remoteImages =
         remoteImagesForBuildCommands(commands, readContainerfile, managedImageTags(ImgTagVersion).toSet)
@@ -749,7 +749,7 @@ object AgentSandboxLauncher:
       val candidates = prepareImageCleanupJournal(
         journal,
         imageIdsForTags(existingTags, images),
-        Vector.empty
+        Vector.empty,
       )
       runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
       verifyBuiltBundleLabels(SelfTestImageTags.map(_ -> bundleId))
@@ -757,7 +757,7 @@ object AgentSandboxLauncher:
         podman,
         candidates,
         managedImageTags(ImgTagVersion),
-        Vector.empty
+        Vector.empty,
       )
       writeImageCleanupJournal(journal, remaining)
 
@@ -772,7 +772,7 @@ object AgentSandboxLauncher:
         "root. Its own message above is the report of what failed, and this launcher does not\n" +
         "narrow it further. If root serves, this venue never exercises the setuid fusermount3\n" +
         "route a session takes, which is worth recording with its venue\n" +
-        "(fuse/ko-agent-fs/doc/verification-log.md)."
+        "(fuse/ko-agent-fs/doc/verification-log.md).",
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
     System.err.println(privileged.mkString(" "))
@@ -831,7 +831,7 @@ object AgentSandboxLauncher:
     * `[--] [command [arguments...]]`, accepted without launching anything. */
   private def egressPreflight(
     os: Os,
-    operands: List[String]
+    operands: List[String],
   ): (String, String, Vector[(String, String)], Option[String]) =
     val command = operands match
       case "--" :: rest => rest
@@ -1101,7 +1101,7 @@ object AgentSandboxLauncher:
     Option.when(spellings(stateRoot).exists(root => spellings(projectDir).exists(root.startsWith)))(
       s"error: the launcher's state root $stateRoot is inside the project directory\n" +
         "It holds the CA signing key, proxy audit logs and launch state, which the sandbox must\n" +
-        "not reach; point XDG_STATE_HOME (or LOCALAPPDATA) outside the project."
+        "not reach; point XDG_STATE_HOME (or LOCALAPPDATA) outside the project.",
     )
 
   /**
@@ -1166,7 +1166,7 @@ object AgentSandboxLauncher:
   val ManagementVerbs: Set[String] =
     Set(
       "--help", "--build", "--update", "--reset", "--reset-all", "--proxy-log",
-      "--egress-effective", "--self-test"
+      "--egress-effective", "--self-test",
     )
 
   /**
@@ -1184,7 +1184,7 @@ object AgentSandboxLauncher:
     def loop(
       rest: List[String],
       write: Option[String],
-      egress: Option[String]
+      egress: Option[String],
     ): Either[String, ParsedCommandLine] =
       rest match
         case Nil             => Right(ParsedCommandLine(write, egress, None, Nil))
@@ -1206,7 +1206,7 @@ object AgentSandboxLauncher:
         case "--proxy-effective" :: _ =>
           Left(
             "error: --proxy-effective was renamed\n" +
-              "Run --egress-effective [--] [command] instead; it uses the accompanying --egress=<profile>."
+              "Run --egress-effective [--] [command] instead; it uses the accompanying --egress=<profile>.",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -1214,8 +1214,8 @@ object AgentSandboxLauncher:
             ParsedCommandLine(
               write, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
-              Nil
-            )
+              Nil,
+            ),
           )
 
         case verb :: tail if ManagementVerbs(verb) =>
@@ -1324,12 +1324,12 @@ object AgentSandboxLauncher:
           val initialCandidates = prepareImageCleanupJournal(
             journal,
             imageIdsForTags(existingTags, images),
-            staleBaseTags
+            staleBaseTags,
           )
           runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
           verifyBuiltBundleLabels(Seq(
             "ko-agent-sandbox:latest" -> sandboxBundleId,
-            "ko-agent-egress-proxy:latest" -> proxyBundleId
+            "ko-agent-egress-proxy:latest" -> proxyBundleId,
           ))
           installKoAgentFs(podman, currentOs, fsSourceId)
           val (candidates, staleTags) = includeStaleSelfTestCleanup(
@@ -1338,13 +1338,13 @@ object AgentSandboxLauncher:
             initialCandidates,
             staleBaseTags,
             fsSourceId,
-            selfTestSourceId
+            selfTestSourceId,
           )
           val remaining = removeSupersededImages(
             podman,
             candidates,
             managedImageTags(ImgTagVersion),
-            staleTags
+            staleTags,
           )
           writeImageCleanupJournal(journal, remaining)
         sys.exit(0)
@@ -1368,7 +1368,7 @@ object AgentSandboxLauncher:
           val initialCandidates = prepareImageCleanupJournal(
             journal,
             imageIdsForTags(existingTags, images),
-            staleBaseTags
+            staleBaseTags,
           )
           runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
           verifyBuiltBundleLabels(Seq("ko-agent-sandbox:latest" -> sandboxBundleId))
@@ -1378,13 +1378,13 @@ object AgentSandboxLauncher:
             initialCandidates,
             staleBaseTags,
             fsSourceId,
-            selfTestSourceId
+            selfTestSourceId,
           )
           val remaining = removeSupersededImages(
             podman,
             candidates,
             managedImageTags(ImgTagVersion),
-            staleTags
+            staleTags,
           )
           writeImageCleanupJournal(journal, remaining)
         sys.exit(0)
@@ -1421,7 +1421,7 @@ object AgentSandboxLauncher:
       case Some(("--egress-check", operands)) =>
         noWriteOption("--egress-check")
         val host = operands.headOption.filter(_.nonEmpty).getOrElse(
-          fail("error: --egress-check=<host> names the host to check")
+          fail("error: --egress-check=<host> names the host to check"),
         )
         requirePodman(currentOs)
         egressCheck(currentOs, parsed.egressProfile, host, operands.tail)
@@ -1574,7 +1574,7 @@ object AgentSandboxLauncher:
       "--format",
       s"{{.Id}}{{println}}$BundleLabelTemplate{{println}}" +
         "{{range .Config.Env}}{{println .}}{{end}}",
-      image
+      image,
     ).text
     val imageId = imageInspect.linesIterator.nextOption().getOrElse("")
     val imageLabel = imageInspect.linesIterator.drop(1).nextOption().getOrElse("")
@@ -1620,7 +1620,7 @@ object AgentSandboxLauncher:
     val proxyInspect = run(
       podman, "image", "inspect",
       "--format", s"{{.Id}}{{println}}$BundleLabelTemplate",
-      proxyImage
+      proxyImage,
     ).text
     val proxyImageId = proxyInspect.linesIterator.nextOption().getOrElse("")
     val proxyImageLabel = proxyInspect.linesIterator.drop(1).nextOption().getOrElse("")
@@ -1653,7 +1653,7 @@ object AgentSandboxLauncher:
       System.err.println(
         s"warning: '${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
           "so deny-unless-model selects no model provider and admits no host; " +
-          "the default --egress=deny-unless-allowed admits the project's allowed policy instead"
+          "the default --egress=deny-unless-allowed admits the project's allowed policy instead",
       )
 
     // Validated before anything is created: an invalid policy would otherwise surface as "could not determine the
@@ -1719,7 +1719,7 @@ object AgentSandboxLauncher:
     // and a failure after that would otherwise leave the marker to age out of a later reap. Only
     // live sessions behind the filter have a mount to reap.
     val filterReap = Option.when(writeMode == "live" && guard != "none")(
-      koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer)
+      koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer),
     )
 
     // This project's TLS/trust state, and this run's own copies of the files podman will mount —
@@ -1745,7 +1745,7 @@ object AgentSandboxLauncher:
     val runningContainers = run(podman, "ps", "--format", "{{.Names}}")
     val runningNames: Option[Vector[String]] =
       Option.when(runningContainers.ok)(
-        runningContainers.text.linesIterator.map(_.trim).toVector
+        runningContainers.text.linesIterator.map(_.trim).toVector,
       )
     def liveSuffixes(prefix: String): Option[Set[String]] =
       runningNames.map(_.filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).toSet)
@@ -1758,7 +1758,7 @@ object AgentSandboxLauncher:
     if runningNames.isEmpty then
       System.err.println(
         "note: could not list the running containers; keeping every retained log and run file\n"
-          + runningContainers.err
+          + runningContainers.err,
       )
 
     // Everything this run creates, in one place: the shutdown hook and the resident teardown both
@@ -1795,7 +1795,7 @@ object AgentSandboxLauncher:
           s"workspace guard: NONE by $WorkspaceGuardVariable; /workspace is bound directly, with " +
             "only .git/config and .git/hooks pinned read-only, and only until the host rewrites one"
             + (if selinuxEnforcing then "; the checkout is relabeled for container access (:Z)"
-               else "")
+               else ""),
         )
         None
       case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
@@ -1905,7 +1905,7 @@ object AgentSandboxLauncher:
           val leaf = mintLeaf(
             Files.readString(caCertFile),
             Files.readString(caKeyFile),
-            inspectedHosts
+            inspectedHosts,
           )
           writePrivate(leafKeyFile, leaf.privateKeyPem)
           writePrivate(leafCertFile, leaf.certificatePem)
@@ -1923,7 +1923,7 @@ object AgentSandboxLauncher:
       if readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp then
         val imageBundle = run(
           podman, "run", "--rm", "--pull=never", "--network=none",
-          image, "cat", "/etc/ssl/certs/ca-certificates.crt"
+          image, "cat", "/etc/ssl/certs/ca-certificates.crt",
         )
         if !imageBundle.ok || imageBundle.out.isEmpty then
           fail(s"error: could not read the CA bundle out of $image\n${imageBundle.err}")
@@ -1944,14 +1944,14 @@ object AgentSandboxLauncher:
         || firstLine(agentDocStampFile) != agentDocStamp
       then
         val imageDoc = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", agentDocPath
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", agentDocPath,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
         writeReadable(
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
-            + authoritySection(writeMode, policyResolvedText)
+            + authoritySection(writeMode, policyResolvedText),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
@@ -1965,7 +1965,7 @@ object AgentSandboxLauncher:
         val target = runFiles.resolve(source.getFileName)
         Files.copy(
           source, target,
-          StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING
+          StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING,
         )
         target
 
@@ -1981,7 +1981,7 @@ object AgentSandboxLauncher:
             s"--volume=${carried(leafCertFile)}:/etc/agent-egress-proxy/leaf.crt:ro",
             s"--volume=${carried(leafKeyFile)}:/etc/agent-egress-proxy/leaf.key:ro",
             "--env=EGRESS_TLS_CERTIFICATE=/etc/agent-egress-proxy/leaf.crt",
-            "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key"
+            "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key",
           )
 
       // The bundle replaces the image's; the variables cover tools carrying their own trust store
@@ -1998,14 +1998,14 @@ object AgentSandboxLauncher:
         s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
         s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
         s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
-        s"--env=GIT_SSL_CAINFO=$sandboxCaBundle"
+        s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
       ) ++ cacertsMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector
 
       (
         proxyTls,
         sandboxTls,
         Vector(s"--volume=${carried(agentDocFile)}:$agentDocPath:ro"),
-        netPropertiesMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector
+        netPropertiesMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector,
       )
 
     // -----------------------------------------------------------------------
@@ -2053,7 +2053,7 @@ object AgentSandboxLauncher:
     val containerLogFile = "/var/log/agent-egress-proxy/proxy.log"
     val proxyLogArgs = Vector(
       s"--volume=$hostLogFile:$containerLogFile:rw${if selinuxEnforcing then ",Z" else ""}",
-      s"--env=EGRESS_LOG_FILE=$containerLogFile"
+      s"--env=EGRESS_LOG_FILE=$containerLogFile",
     )
 
     // -----------------------------------------------------------------------
@@ -2078,7 +2078,7 @@ object AgentSandboxLauncher:
         "--tmpfs=/tmp",
         "--pids-limit=512",
         "--http-proxy=false",
-        s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid"
+        s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
       ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
         ++ proxyTlsArgs ++ proxyLogArgs ++ Vector(proxyImage)*
     )
@@ -2093,7 +2093,7 @@ object AgentSandboxLauncher:
       "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}"
     val proxyIp = addressOn(
       run(podman, "container", "inspect", "--format", networksFormat, proxyContainer).text,
-      sandboxNetwork
+      sandboxNetwork,
     ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
     // Both authorities and their relevant state, said every launch — and a policy that arrived
@@ -2148,7 +2148,7 @@ object AgentSandboxLauncher:
       // string the banner above prints and there is no second derivation of the list to drift from
       // it. It grants nothing: an agent can already enumerate the policy by probing, slowly and
       // noisily, and reading a refusal as breakage is the usual outcome of not knowing.
-      s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=$policyResolvedText"
+      s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=$policyResolvedText",
     ) ++ sandboxTlsArgs ++ jdkProxy ++ agentDocArgs ++ policyGuardArgs ++ gitGuardArgs
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
@@ -2161,7 +2161,7 @@ object AgentSandboxLauncher:
       case mode =>
         System.err.println(
           s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
-            "disabled and CAP_SYS_CHROOT added, for the whole session"
+            "disabled and CAP_SYS_CHROOT added, for the whole session",
         )
         NestingLoosenings :+ nestingEnv
 
@@ -2173,7 +2173,7 @@ object AgentSandboxLauncher:
       case mode =>
         System.err.println(
           s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
-            (if mode == "bidirectional" then " and set your clipboard" else "")
+            (if mode == "bidirectional" then " and set your clipboard" else ""),
         )
         Vector(s"--env=$ClipboardVariable=$mode") ++
           (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-agent-clipboard") else Vector.empty)
@@ -2246,7 +2246,7 @@ object AgentSandboxLauncher:
       "--pids-limit=2048",
 
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
-      "--http-proxy=false"
+      "--http-proxy=false",
     ) ++ nestedArgs ++ clipboardArgs ++ egressArgs ++ Vector(
 
       // The host's zone, for the JVM resolves it on every platform the launcher runs on. The image
@@ -2267,12 +2267,12 @@ object AgentSandboxLauncher:
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM
       // reservation.
-      "--shm-size=512m"
+      "--shm-size=512m",
     ) ++ memoryArgs ++ Vector(
       "--workdir", "/workspace",
 
       // No ENTRYPOINT in the image: with no arguments the command is bash, inherited from debian:*-slim.
-      image
+      image,
     ) ++ command.toVector
 
     // Before the container exists, and so before the reaper that waits on it: a Ctrl-C at the hold
@@ -2299,7 +2299,7 @@ object AgentSandboxLauncher:
           filterReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
           filterReap.getOrElse(""),
           clipboard,
-          clipboardHost
+          clipboardHost,
         )
     if os != Os.Windows && !reaperArmed then
       // Not a downgrade when the clipboard was asked for: the sandbox would wait the shim's bound
@@ -2314,5 +2314,5 @@ object AgentSandboxLauncher:
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),
       viaExec = reaperArmed,
-      cleanup = cleanup
+      cleanup = cleanup,
     )

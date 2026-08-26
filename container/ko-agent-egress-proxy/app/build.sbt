@@ -12,7 +12,7 @@ scalacOptions ++= Seq(
   "-feature",
   "-unchecked",
   "-Wunused:all",
-  "-Werror"
+  "-Werror",
 )
 
 // The runtime image is distroless (`java -jar`, no shell), so the jar finds the Scala library through a manifest
@@ -24,7 +24,7 @@ Compile / packageBin / packageOptions += {
   Package.ManifestAttributes(
     "Class-Path" -> (Compile / dependencyClasspathAsJars).value
       .map(entry => converter.toPath(entry.data).getFileName.toString)
-      .mkString(" ")
+      .mkString(" "),
   )
 }
 
@@ -41,13 +41,13 @@ dist := {
 
   IO.copyFile(
     converter.toPath((Compile / packageBin).value).toFile,
-    directory / "agent-egress-proxy.jar"
+    directory / "agent-egress-proxy.jar",
   )
 
   IO.copy(
     (Compile / dependencyClasspathAsJars).value
       .map(entry => converter.toPath(entry.data).toFile)
-      .map(jar => jar -> directory / jar.getName)
+      .map(jar => jar -> directory / jar.getName),
   )
 
   streams.value.log.info(s"dist assembled in $directory")

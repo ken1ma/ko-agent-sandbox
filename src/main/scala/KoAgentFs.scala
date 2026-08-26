@@ -91,7 +91,7 @@ object KoAgentFs:
         Vector(
           Vector(podman, "create", "--replace", "--name", "ko-agent-fs-extract", "ko-agent-fs:latest"),
           Vector(podman, "cp", "ko-agent-fs-extract:/ko-agent-fs", s"$home/$KoAgentFsBinary"),
-          Vector(podman, "rm", "ko-agent-fs-extract")
+          Vector(podman, "rm", "ko-agent-fs-extract"),
         )
       case Os.Mac | Os.Windows =>
         val script =
@@ -165,7 +165,7 @@ object KoAgentFs:
     if console == null then
       fail(
         s"error: no console to ask on; run the script above via `podman machine ssh` yourself, " +
-          "then re-run --build"
+          "then re-run --build",
       )
     console.printf("Apply it now? [y/N] ")
     val answer = Option(console.readLine()).map(_.trim.toLowerCase(java.util.Locale.ROOT)).getOrElse("")
@@ -270,7 +270,7 @@ object KoAgentFs:
       Vector("fuse", "none"),
       "fuse",
       "Unset it (or set it to fuse) to keep the workspace filter; set it to none\nto bind " +
-        "/workspace directly, with only .git/config and .git/hooks pinned read-only."
+        "/workspace directly, with only .git/config and .git/hooks pinned read-only.",
     )
 
   /**
@@ -318,7 +318,7 @@ object KoAgentFs:
     backing: String,
     projectId: String,
     sourceId: String,
-    sandboxContainer: String
+    sandboxContainer: String,
   ): String =
     val encoded =
       java.util.Base64.getEncoder.encodeToString(backing.getBytes(StandardCharsets.UTF_8))
@@ -495,7 +495,7 @@ object KoAgentFs:
           Left(
             s"error: cannot map $text into the podman machine\n" +
               "The workspace filter serves the project from inside the machine, which reaches " +
-              "host drives at /mnt/<drive>; only drive-letter paths (C:\\...) have that spelling."
+              "host drives at /mnt/<drive>; only drive-letter paths (C:\\...) have that spelling.",
           )
 
   /** The daemon user's home — the base every relative lifecycle path resolves against, and the
@@ -519,7 +519,7 @@ object KoAgentFs:
     os: Os,
     projectId: String,
     projectDir: Path,
-    sandboxContainer: String
+    sandboxContainer: String,
   ): String =
     val home = koAgentFsHome(podman, os)
     val expected = bundledKoAgentFsSourceId()

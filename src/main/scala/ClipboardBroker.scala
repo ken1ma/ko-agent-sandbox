@@ -108,7 +108,7 @@ object ClipboardBroker:
     powershell: Option[Path] = None,
     xclip: String = "",
     wlPaste: String = "",
-    wlCopy: String = ""
+    wlCopy: String = "",
   )
 
   /**
@@ -195,7 +195,7 @@ object ClipboardBroker:
       try
         process.getOutputStream.write(stdin)
         process.getOutputStream.close()
-      catch case _: IOException => ()
+      catch case _: IOException => (),
     )
     feeder.start()
     val out = process.getInputStream.readAllBytes()

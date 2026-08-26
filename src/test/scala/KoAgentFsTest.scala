@@ -51,30 +51,30 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the installed ko-agent-fs is asked for its version and self-test where it runs"):
     assertEquals(
       koAgentFsVersionCommand("podman", Os.Linux, "/home/me"),
-      Vector(s"/home/me/$KoAgentFsBinary", "--version")
+      Vector(s"/home/me/$KoAgentFsBinary", "--version"),
     )
     assertEquals(
       koAgentFsVersionCommand("podman", Os.Mac, "/Users/me"),
-      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --version")
+      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --version"),
     )
     assertEquals(
       koAgentFsSelfTestCommand("podman", Os.Linux, "/home/me"),
-      Vector(s"/home/me/$KoAgentFsBinary", "--self-test")
+      Vector(s"/home/me/$KoAgentFsBinary", "--self-test"),
     )
     assertEquals(
       koAgentFsSelfTestCommand("podman", Os.Windows, "C:\\Users\\me"),
-      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test")
+      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test"),
     )
 
   test("the fuse.conf consent flow checks idempotently and enables exactly what it explained"):
     assertEquals(
       koAgentFsFuseConfCheckCommand("podman"),
-      Vector("podman", "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf")
+      Vector("podman", "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf"),
     )
     // The script run on consent is the same text shown to the user — no surprise delta.
     assertEquals(
       koAgentFsFuseConfEnableCommand("podman"),
-      Vector("podman", "machine", "ssh", KoAgentFsFuseConfEnable)
+      Vector("podman", "machine", "ssh", KoAgentFsFuseConfEnable),
     )
     assert(KoAgentFsFuseConfEnable.contains("user_allow_other >> /etc/fuse.conf"))
     // The original is saved first — and only if no backup exists yet, so a re-run after machine
@@ -106,7 +106,7 @@ class KoAgentFsTest extends munit.FunSuite:
       // The user must not have to infer "reused" from silence.
       "echo \"workspace FUSE filter: reusing the existing mount\"",
       // The previous daemon's log is the post-mortem after a crash: rotated, never deleted.
-      "mv -f \"$dir/daemon.log\" \"$dir/daemon.log.1\""
+      "mv -f \"$dir/daemon.log\" \"$dir/daemon.log.1\"",
     ).foreach(step => assert(script.contains(step), s"script missing '$step':\n$script"))
     // The session marker is the teardown's reference count, written *before* the adopt/mount
     // branches: that ordering is what closes the race with a concurrent last-session reap.
@@ -155,7 +155,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // sandboxed (findOnPath).
     assertEquals(
       koAgentFsScriptCommand("podman", Os.Linux, "script"),
-      Vector("/bin/sh", "-c", "script")
+      Vector("/bin/sh", "-c", "script"),
     )
 
   test("the reap script counts sessions by marker, prunes dead ones, and unmounts only at zero"):
@@ -212,12 +212,12 @@ class KoAgentFsTest extends munit.FunSuite:
     assume(!isWindows)
     assertEquals(
       survivingMarkers(podmanExit = 1, Seq("launching" -> 5L, "crashed" -> 3600L)),
-      Set("launching")
+      Set("launching"),
     )
     // Its own marker goes by name whatever its age, and a live container's is never touched.
     assertEquals(
       survivingMarkers(podmanExit = 0, Seq("run-1" -> 5L, "live" -> 3600L)),
-      Set("live")
+      Set("live"),
     )
 
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
@@ -227,11 +227,11 @@ class KoAgentFsTest extends munit.FunSuite:
     assume(!isWindows)
     assertEquals(
       survivingMarkers(podmanExit = 125, Seq("crashed" -> 3600L, "fresh" -> 5L)),
-      Set("crashed", "fresh")
+      Set("crashed", "fresh"),
     )
     assertEquals(
       survivingMarkers(podmanExit = 127, Seq("crashed" -> 3600L)),
-      Set("crashed")
+      Set("crashed"),
     )
 
   test("the reap script runs in the VM on podman machine and on this host on Linux"):
@@ -249,14 +249,14 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(koAgentFsReapPodman("C:\\podman.exe", Os.Windows), "podman")
 
     val onHost = koAgentFsReapScript(
-      koAgentFsReapPodman("/usr/bin/podman", Os.Linux), "app-abc123def456", "run-container-1"
+      koAgentFsReapPodman("/usr/bin/podman", Os.Linux), "app-abc123def456", "run-container-1",
     )
     // With the resolved path struck out, no executable line may mention podman; comments may.
     assert(
       onHost.replace("/usr/bin/podman", "").linesIterator.forall: line =>
         line.trim.startsWith("#") || !line.contains("podman")
       ,
-      s"a bare podman invocation crept in:\n$onHost"
+      s"a bare podman invocation crept in:\n$onHost",
     )
 
   test("the unmount scripts release the mount lazily and remove only launcher-owned state"):
@@ -329,7 +329,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // File boundaries cannot shift: a name eating into its content is a different identity.
     assertNotEquals(
       bundleSourceId(Seq("ab" -> bytes("c"))),
-      bundleSourceId(Seq("a" -> bytes("bc")))
+      bundleSourceId(Seq("a" -> bytes("bc"))),
     )
 
   test("the ko-agent-fs source id of a build context digests exactly its files"):
@@ -349,8 +349,8 @@ class KoAgentFsTest extends munit.FunSuite:
         koAgentFsSourceId(context),
         bundleSourceId(Seq(
           "src/lib.rs" -> "pub mod policy;".getBytes("UTF-8"),
-          "Cargo.toml" -> "[package]".getBytes("UTF-8")
-        ))
+          "Cargo.toml" -> "[package]".getBytes("UTF-8"),
+        )),
       )
     finally deleteRecursively(context)
 
@@ -396,15 +396,15 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(rig.contains("docker.io/library/rust:"), "probe/rig.sh names no rust image")
     assert(
       !rig.contains(pinned),
-      s"probe/rig.sh hardcodes rust $pinned rather than reading the pin"
+      s"probe/rig.sh hardcodes rust $pinned rather than reading the pin",
     )
 
     val selfTest = Files.readString(Paths.get("container/ko-agent-self-test/Containerfile"))
     assert(
       selfTest.contains("ARG RUST_VERSION\n") || selfTest.contains("ARG RUST_VERSION\r\n"),
-      "the self-test image declares no bare ARG RUST_VERSION for the launcher to supply"
+      "the self-test image declares no bare ARG RUST_VERSION for the launcher to supply",
     )
     assert(
       !selfTest.contains(pinned),
-      s"container/ko-agent-self-test/Containerfile hardcodes rust $pinned rather than taking the pin"
+      s"container/ko-agent-self-test/Containerfile hardcodes rust $pinned rather than taking the pin",
     )

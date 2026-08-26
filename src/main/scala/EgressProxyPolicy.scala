@@ -156,7 +156,7 @@ object EgressProxyPolicy:
 
       refusal.toLeft(
         PolicyFiles.flatMap: (name, _) =>
-          readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).map(name -> _)
+          readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).map(name -> _),
       )
 
   /**
@@ -205,7 +205,7 @@ object EgressProxyPolicy:
     profile: String,
     provider: Option[String],
     policyFiles: Vector[(String, String)],
-    provenance: Boolean = false
+    provenance: Boolean = false,
   ): Run =
     run(
       (Vector(podman, "run", "--rm", "--pull=never", "--network=none")
@@ -219,11 +219,11 @@ object EgressProxyPolicy:
   def policyEnvArgs(
     profile: String,
     provider: Option[String],
-    policyFiles: Vector[(String, String)]
+    policyFiles: Vector[(String, String)],
   ): Vector[String] =
     Vector(
       s"--env=EGRESS_PROFILE=$profile",
-      s"--env=EGRESS_MODEL_PROVIDER=${provider.getOrElse("none")}"
+      s"--env=EGRESS_MODEL_PROVIDER=${provider.getOrElse("none")}",
     ) ++ policyFiles.map: (name, text) =>
       val variable = PolicyFiles.find(_(0) == name).fold(fail(s"error: no policy file $name"))(_(1))
       s"--env=$variable=$text"
@@ -256,14 +256,14 @@ object EgressProxyPolicy:
       case None =>
         Left(
           "error: the proxy image's --print-policy has no 'restricted hosts' line\n" +
-            "An image built by another launcher version prints another shape; rebuild with --build."
+            "An image built by another launcher version prints another shape; rebuild with --build.",
         )
       case Some(line) =>
         line.indexOf("):") match
           case -1 =>
             Left(
               s"error: unparseable policy line: $line\n" +
-                "An image built by another launcher version prints another shape; rebuild with --build."
+                "An image built by another launcher version prints another shape; rebuild with --build.",
             )
           case at =>
             Right(
@@ -274,5 +274,5 @@ object EgressProxyPolicy:
                 .toVector
                 .filter(_.nonEmpty)
                 .map(_.takeWhile(_ != '='))
-                .sorted
+                .sorted,
             )

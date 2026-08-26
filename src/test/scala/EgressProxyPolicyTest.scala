@@ -21,7 +21,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
         |""".stripMargin
     assertEquals(
       normalizePolicyText(text),
-      "+host docs.python.org restricted\n-host pypi.org\n+model-provider anthropic"
+      "+host docs.python.org restricted\n-host pypi.org\n+model-provider anthropic",
     )
 
   test("a policy of only comments and blanks normalizes to empty"):
@@ -34,7 +34,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("the banner summary joins a file's entries on one line"):
     assertEquals(
       entriesSummary("+host a.example restricted\n-host b.example"),
-      "+host a.example restricted; -host b.example"
+      "+host a.example restricted; -host b.example",
     )
 
   test("the launch banner names the profile and the counts, never the host names"):
@@ -45,42 +45,42 @@ class EgressProxyPolicyTest extends munit.FunSuite:
         "egress profile: deny-unless-allowed\n" +
           "restricted hosts (2): github.com=git-fetch secret.example\n" +
           "unrestricted hosts (3): a.example b.example c.example\n" +
-          "denied rules (0):"
+          "denied rules (0):",
       ),
-      "Egress: DENY-UNLESS-ALLOWED; 5 effective hosts"
+      "Egress: DENY-UNLESS-ALLOWED; 5 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\n" +
-          "restricted hosts (0):\nunrestricted hosts (3): a b c\ndenied rules (0):"
+          "restricted hosts (0):\nunrestricted hosts (3): a b c\ndenied rules (0):",
       ),
-      "Egress: DENY-UNLESS-MODEL; model provider anthropic; 3 effective hosts"
+      "Egress: DENY-UNLESS-MODEL; model provider anthropic; 3 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: none\n" +
-          "restricted hosts (0):\nunrestricted hosts (0):\ndenied rules (0):"
+          "restricted hosts (0):\nunrestricted hosts (0):\ndenied rules (0):",
       ),
-      "Egress: DENY-UNLESS-MODEL; no provider selected; 0 effective hosts"
+      "Egress: DENY-UNLESS-MODEL; no provider selected; 0 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
-          "restricted hosts (2): a b\ndenied rules (4): w x y z"
+          "restricted hosts (2): a b\ndenied rules (4): w x y z",
       ),
-      "Egress: ALLOW-UNLESS-DENIED; public HTTPS; 2 restricted, 4 denied"
+      "Egress: ALLOW-UNLESS-DENIED; public HTTPS; 2 restricted, 4 denied",
     )
     assertEquals(
       egressBanner("egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x"),
-      "Egress: DENY-ALL; 0 effective hosts"
+      "Egress: DENY-ALL; 0 effective hosts",
     )
     // An unparseable resolution is printed whole rather than guessed at.
     assertEquals(egressBanner("some reason instead"), "Egress: some reason instead")
     // Whatever the proxy says, no hostname survives into the banner.
     assert(
       !egressBanner(
-        "egress profile: deny-all\nrestricted hosts (1): secret.example\ndenied rules (0):"
-      ).contains("secret.example")
+        "egress profile: deny-all\nrestricted hosts (1): secret.example\ndenied rules (0):",
+      ).contains("secret.example"),
     )
 
   test("only the basename of a recognized agent command selects a provider"):
@@ -101,9 +101,9 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       Right(
         Vector(
           "allowed" -> "+host ghcr.io restricted",
-          "denied" -> "host gitlab.com\nhost **.example.org"
-        )
-      )
+          "denied" -> "host gitlab.com\nhost **.example.org",
+        ),
+      ),
     )
 
   test("a missing policy directory is an empty policy"):
@@ -152,18 +152,18 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       policyEnvArgs(
         "deny-unless-allowed",
         Some("anthropic"),
-        Vector("allowed" -> "+host api.example unrestricted", "denied" -> "host x.example")
+        Vector("allowed" -> "+host api.example unrestricted", "denied" -> "host x.example"),
       ),
       Vector(
         "--env=EGRESS_PROFILE=deny-unless-allowed",
         "--env=EGRESS_MODEL_PROVIDER=anthropic",
         "--env=EGRESS_ALLOWED=+host api.example unrestricted",
-        "--env=EGRESS_DENIED=host x.example"
-      )
+        "--env=EGRESS_DENIED=host x.example",
+      ),
     )
     assertEquals(
       policyEnvArgs("deny-unless-model", None, Vector.empty),
-      Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none")
+      Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none"),
     )
 
   test("the inspected hosts are the restricted line's names, tags stripped"):
@@ -171,13 +171,13 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       inspectedHostsOf(
         "egress profile: deny-unless-allowed\n" +
           "restricted hosts (2): github.com=git-fetch pypi.org\n" +
-          "unrestricted hosts (0):\ndenied rules (0):"
+          "unrestricted hosts (0):\ndenied rules (0):",
       ),
-      Right(Vector("github.com", "pypi.org"))
+      Right(Vector("github.com", "pypi.org")),
     )
     assertEquals(
       inspectedHostsOf("egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"),
-      Right(Vector.empty)
+      Right(Vector.empty),
     )
     assert(inspectedHostsOf("another shape entirely").isLeft)
 
@@ -185,12 +185,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     val names = Vector(
       "proxy-20260810-090000-aaaaaaaa.log",
       "proxy-20260812-110000-cccccccc.log",
-      "proxy-20260811-100000-bbbbbbbb.log"
+      "proxy-20260811-100000-bbbbbbbb.log",
     )
     // retain 2: the new file plus the newest existing one survive.
     assertEquals(
       logsToPrune(names, 2, Set.empty),
-      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log")
+      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log"),
     )
     // Enough room already: nothing is pruned.
     assertEquals(logsToPrune(names, 4, Set.empty), Seq())
@@ -200,12 +200,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // pruning it would lose the running session's whole record rather than an old one.
     assertEquals(
       logsToPrune(names, 2, Set("aaaaaaaa")),
-      Seq("proxy-20260811-100000-bbbbbbbb.log")
+      Seq("proxy-20260811-100000-bbbbbbbb.log"),
     )
     assertEquals(logsToPrune(names, 1, Set("aaaaaaaa", "bbbbbbbb", "cccccccc")), Seq())
 
     // The suffix has to be the whole one: a run whose name is another's tail keeps nothing alive.
     assertEquals(
       logsToPrune(names, 2, Set("aaaaaaa")),
-      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log")
+      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log"),
     )

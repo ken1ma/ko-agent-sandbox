@@ -62,7 +62,7 @@ class EgressPolicyTest extends munit.FunSuite:
     assert(!attempt.ok, s"$url was reachable; $why")
     assert(
       attempt.err.contains("403"),
-      s"$url failed, but not with a refusal from the proxy: ${attempt.err}"
+      s"$url failed, but not with a refusal from the proxy: ${attempt.err}",
     )
 
   /** An admitted host whose *upstream* leg the proxy would not complete. Its CONNECT succeeded and
@@ -76,7 +76,7 @@ class EgressPolicyTest extends munit.FunSuite:
     val line = (audit.text + "\n" + audit.err).linesIterator.filter(_.contains(host)).mkString("\n")
     assert(
       markers.exists(line.contains),
-      s"$host failed upstream, but not over its certificate — the origin may simply be down:\n$line"
+      s"$host failed upstream, but not over its certificate — the origin may simply be down:\n$line",
     )
 
   private def withSession(files: (String, String)*)(body: Session => Unit): Unit =
@@ -108,7 +108,7 @@ class EgressPolicyTest extends munit.FunSuite:
       // from the resolved policy, or the addition would be a treatment the proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
-        "the added host is not inspected by this project's CA"
+        "the added host is not inspected by this project's CA",
       )
       assertEquals(status(session, "-X", "POST", "https://example.com/"), "403", "the addition allowed a write")
 
@@ -116,17 +116,17 @@ class EgressPolicyTest extends munit.FunSuite:
       // arrive under a leaf it trusts — so the refusal has to come from the proxy or not at all.
       refusedUpstream(
         session, "expired.badssl.com", Seq("PKIX", "validity", "expired"),
-        "SECURITY: the proxy accepted an expired origin certificate"
+        "SECURITY: the proxy accepted an expired origin certificate",
       )
       refusedUpstream(
         session, "wrong.host.badssl.com", Seq("subject alternative", "No name matching", "PKIX"),
-        "SECURITY: the proxy accepted an origin certificate issued for another name"
+        "SECURITY: the proxy accepted an origin certificate issued for another name",
       )
 
       // Refused before the dial rather than during it: resolution is where the address is vetted.
       refusedAtConnect(
         session, "https://127.0.0.1.nip.io/",
-        "SECURITY: a name resolving to loopback was not refused after resolution"
+        "SECURITY: a name resolving to loopback was not refused after resolution",
       )
 
       // The bound: adding four hosts adds four hosts.
@@ -187,39 +187,39 @@ class EgressPolicyTest extends munit.FunSuite:
     // signature; SigV4 does not care either way.
     val control = run(
       "curl", "-sS", "--max-time", "25", "-w", "\n%{http_code}",
-      "-H", "Content-Type:", "-X", "PUT", "--data-binary", "minted-and-accepted", url
+      "-H", "Content-Type:", "-X", "PUT", "--data-binary", "minted-and-accepted", url,
     )
     val controlLines = control.text.linesIterator.toVector
     assertEquals(
       controlLines.lastOption.getOrElse("").trim, "200",
       s"the signed URL does not accept a PUT from the host: " +
-        s"${controlLines.dropRight(1).mkString(" ")} ${control.err}"
+        s"${controlLines.dropRight(1).mkString(" ")} ${control.err}",
     )
 
     withSession("allowed" -> s"+host $bucketHost restricted\n"): session =>
       val attempt = curl(session, "-X", "PUT", "--data-binary", "from-the-sandbox", url)
       assert(
         attempt.text.contains("restricted host"),
-        s"SECURITY: the signed PUT was not refused by the proxy: ${attempt.text} ${attempt.err}"
+        s"SECURITY: the signed PUT was not refused by the proxy: ${attempt.text} ${attempt.err}",
       )
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator
           .exists(line => line.contains(s" deny $bucketHost PUT ")),
-        "no deny line records the refused PUT"
+        "no deny line records the refused PUT",
       )
 
   test("a .defaults lockdown removes the built-in policy and still signs in"):
     assume(enabled, requirement)
 
     withSession(
-      "allowed" -> ".defaults\n+host api.anthropic.com unrestricted\n"
+      "allowed" -> ".defaults\n+host api.anthropic.com unrestricted\n",
     ): session =>
       // An unrestricted host is an opaque tunnel: any status means the CONNECT was granted, and
       // the agent endpoint answering at all is what "still signs in" means.
       assert(
         curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
-        "the re-added agent endpoint is unreachable under the lockdown"
+        "the re-added agent endpoint is unreachable under the lockdown",
       )
       // Nothing restricted survives, so this session inspects nothing — and the baseline is gone.
       refusedAtConnect(session, "https://pypi.org/", "a built-in host survived `.defaults`")

@@ -44,11 +44,11 @@ class SandboxProjectTest extends munit.FunSuite:
   test("Windows hashes case-insensitively, POSIX as spelled"):
     assertEquals(
       projectHash("C:\\Src\\App", Os.Windows),
-      projectHash("c:\\src\\app", Os.Windows)
+      projectHash("c:\\src\\app", Os.Windows),
     )
     assertNotEquals(
       projectHash("/home/User/App", Os.Linux),
-      projectHash("/home/user/app", Os.Linux)
+      projectHash("/home/user/app", Os.Linux),
     )
 
   test("home boundary refuses homes and their ancestors, never the projects inside"):
@@ -63,7 +63,7 @@ class SandboxProjectTest extends munit.FunSuite:
       "/home/other" -> true,
       "/home/user/project" -> false,
       "/home/user/src/project" -> false,
-      "/work/project" -> false
+      "/work/project" -> false,
     ).foreach: (path, expected) =>
       assertEquals(isForbiddenProjectDir(Paths.get(path), homes), expected, path)
 
@@ -136,8 +136,8 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(
       protectedHomeDirectories(
         Os.Windows,
-        Map("USERPROFILE" -> "relative/profile", "HOME" -> "relative/home").get
-      ).isLeft
+        Map("USERPROFILE" -> "relative/profile", "HOME" -> "relative/home").get,
+      ).isLeft,
     )
 
     // Git Bash and MSYS2 export a POSIX-style HOME beside a valid USERPROFILE; the bad
@@ -146,7 +146,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val secondaryProfile = Files.createDirectories(secondaryBase.resolve("Users").resolve("me"))
     val result = protectedHomes(
       Os.Windows,
-      Map("USERPROFILE" -> secondaryProfile.toString, "HOME" -> "relative/home")
+      Map("USERPROFILE" -> secondaryProfile.toString, "HOME" -> "relative/home"),
     )
     assert(result.paths.contains(secondaryProfile))
     assert(result.warnings.exists(_.contains("HOME")))
@@ -157,7 +157,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val userProfile = Files.createDirectories(base.resolve("Profiles").resolve("me"))
     val homes = protectedHomes(
       Os.Windows,
-      Map("USERPROFILE" -> userProfile.toString, "SystemDrive" -> base.toString)
+      Map("USERPROFILE" -> userProfile.toString, "SystemDrive" -> base.toString),
     )
     assert(isForbiddenProjectDir(userProfile, homes))
     assert(isForbiddenProjectDir(userProfile.getParent, homes))
@@ -174,7 +174,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val public = base.resolve("shared").resolve("Public")
     val homes = protectedHomes(
       Os.Windows,
-      Map("USERPROFILE" -> userProfile.toString, "HOME" -> home.toString, "PUBLIC" -> public.toString)
+      Map("USERPROFILE" -> userProfile.toString, "HOME" -> home.toString, "PUBLIC" -> public.toString),
     )
 
     Seq(userProfile, home, public).foreach: protectedHome =>
@@ -211,9 +211,9 @@ class SandboxProjectTest extends munit.FunSuite:
       Right(
         Vector(
           s"--volume=${git.resolve("config")}:/workspace/.git/config:ro",
-          s"--volume=${git.resolve("hooks")}:/workspace/.git/hooks:ro"
-        )
-      )
+          s"--volume=${git.resolve("hooks")}:/workspace/.git/hooks:ro",
+        ),
+      ),
     )
 
   test("missing config and hooks are pinned from the launcher's empty sources, the project untouched"):
@@ -224,9 +224,9 @@ class SandboxProjectTest extends munit.FunSuite:
       Right(
         Vector(
           s"--volume=${emptyFixture.file}:/workspace/.git/config:ro",
-          s"--volume=${emptyFixture.dir}:/workspace/.git/hooks:ro"
-        )
-      )
+          s"--volume=${emptyFixture.dir}:/workspace/.git/hooks:ro",
+        ),
+      ),
     )
     // The guard must never write into the user's repository (SECURITY.md, "Silent changes to what
     // you own").
@@ -238,14 +238,14 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(git, "gitdir: ../elsewhere/.git/worktrees/x\n")
     assertEquals(
       gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=$git:/workspace/.git:ro"))
+      Right(Vector(s"--volume=$git:/workspace/.git:ro")),
     )
 
   test("an absent .git is pinned over the launcher's empty directory, none created in the project"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     assertEquals(
       gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=${emptyFixture.dir}:/workspace/.git:ro"))
+      Right(Vector(s"--volume=${emptyFixture.dir}:/workspace/.git:ro")),
     )
     assert(!Files.exists(git), "the guard fabricated a .git in the project")
 

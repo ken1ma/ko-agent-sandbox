@@ -83,7 +83,7 @@ object JdkTrust:
     imageEnv: String,
     tlsDir: Path,
     bundleStamp: String,
-    caCertFile: Path
+    caCertFile: Path,
   ): Option[(Path, String)] =
     javaHomeOf(imageEnv).map: javaHome =>
       val cacertsPath = s"$javaHome/lib/security/cacerts"
@@ -94,14 +94,14 @@ object JdkTrust:
         || firstLine(cacertsStampFile) != bundleStamp
       then
         val imageCacerts = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", cacertsPath
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", cacertsPath,
         )
         if !imageCacerts.ok || imageCacerts.out.isEmpty then
           fail(s"error: could not read $cacertsPath out of $image\n${imageCacerts.err}")
         try
           writeReadable(
             cacertsFile,
-            mergeCacerts(imageCacerts.out, Files.readString(caCertFile), "ko-agent-sandbox-egress")
+            mergeCacerts(imageCacerts.out, Files.readString(caCertFile), "ko-agent-sandbox-egress"),
           )
           writeReadable(cacertsStampFile, bundleStamp + "\n")
         catch
@@ -134,7 +134,7 @@ object JdkTrust:
     tlsDir: Path,
     imageId: String,
     proxyHost: String,
-    proxyPort: Int
+    proxyPort: Int,
   ): Option[(Path, String)] =
     javaHomeOf(imageEnv).map: javaHome =>
       val netPropertiesPath = s"$javaHome/conf/net.properties"
@@ -146,14 +146,14 @@ object JdkTrust:
         || firstLine(stampFile) != stamp
       then
         val shipped = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", netPropertiesPath
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", netPropertiesPath,
         )
         if !shipped.ok || shipped.out.isEmpty then
           fail(s"error: could not read $netPropertiesPath out of $image\n${shipped.err}")
         writeReadable(
           netPropertiesFile,
           String(shipped.out, StandardCharsets.UTF_8).stripLineEnd + "\n"
-            + netProxyProperties(proxyHost, proxyPort)
+            + netProxyProperties(proxyHost, proxyPort),
         )
         writeReadable(stampFile, stamp + "\n")
 
