@@ -65,6 +65,37 @@ class SandboxLifecycleTest extends munit.FunSuite:
       "arming registered no shutdown hook"
     )
 
+  test("the resident cleanup removes the sandbox first, and tolerates one already gone"):
+    // The sandbox may be created and never started (a refusal, a Ctrl-C before the handover), in
+    // which case only a forced rm frees its network; after an ordinary run --rm has already taken
+    // it, and a failing rm must not stop the rest. The fake podman logs each call and fails the rm
+    // of the absent sandbox, as the real one does.
+    assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
+    val dir = java.nio.file.Files.createTempDirectory("cleanup")
+    val log = dir.resolve("log")
+    val podman = dir.resolve("podman")
+    java.nio.file.Files.writeString(
+      podman,
+      s"""#!/bin/sh
+         |echo "$$*" >> "$log"
+         |case "$$*" in
+         |  "rm --force gone-sandbox") exit 125 ;;
+         |  "network exists "*) exit 0 ;;
+         |esac
+         |""".stripMargin
+    )
+    podman.toFile.setExecutable(true)
+    removeRunResources(podman.toString, "gone-sandbox", "proxy-container", Seq("net-sandbox", "net-egress"))
+    assertEquals(
+      java.nio.file.Files.readAllLines(log).toArray.toVector,
+      Vector(
+        "rm --force gone-sandbox",
+        "rm --force --time 2 proxy-container",
+        "network exists net-sandbox", "network rm net-sandbox",
+        "network exists net-egress", "network rm net-egress"
+      )
+    )
+
   test("the reaper receives its names and podman path as data, after $0"):
     val command = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",

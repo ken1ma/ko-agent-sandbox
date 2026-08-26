@@ -1746,7 +1746,7 @@ object AgentSandboxLauncher:
       // either way, and on every path that reaches this one — a Ctrl-C, a refused launch, the
       // resident model's ordinary end — the terminal is the user's again, so a silent second reads
       // as a hang.
-      System.err.println("\nremoving this run's proxy and networks")  // newline after Ctrl-C
+      System.err.println("\nremoving this run's containers and networks")  // newline after Ctrl-C
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them (its
       // argument surface stays fixed); a run it cleans up leaves its copies to the next launch's
