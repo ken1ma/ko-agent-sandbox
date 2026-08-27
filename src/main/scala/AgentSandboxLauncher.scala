@@ -206,22 +206,60 @@ object AgentSandboxLauncher:
   /**
    * The sandbox's default memory ceiling: 1 GiB under the total of the machine podman runs on —
    * the podman machine VM, or the host on native Linux — which is what podman, the workspace
-   * filter and the kernel need to keep answering while the sandbox is at its limit; and never
-   * below half the total, so a small machine still gets a sandbox that can build.
+   * filter and the kernel need to keep answering while the sandbox is at its limit; and no more
+   * than the machine had available at launch, where that is known (hostMemoryAvailable), since a
+   * native host is already running everything else and a VM that is short is short. What one
+   * ceiling cannot bound is the sum: two sessions on one machine, or a host that grows busier
+   * after the launch, still add up past it — KO_AGENT_SANDBOX_MEMORY is for that.
+   *
+   * The one exception to the available bound is MinimumCeiling (or the total, on a machine
+   * smaller than that), below which the ceiling never goes: podman reads `--memory=0` as no limit
+   * at all, which a host with nothing available would otherwise get at the moment it can least
+   * afford it, and a sandbox capped under what its agent needs dies before it says anything. So
+   * with under 1 GiB available the sandbox may still take 1 GiB; the entrypoint's warning is what
+   * tells the user the machine was that short. The same floor is what a machine under 2 GiB gets.
    */
-  def memoryCeiling(machineTotal: Long): Long =
-    Math.max(machineTotal - (1L << 30), machineTotal / 2)
+  def memoryCeiling(machineTotal: Long, availableAtLaunch: Option[Long]): Long =
+    val fromTotal = machineTotal - (1L << 30)
+    val bounded = availableAtLaunch.fold(fromTotal)(Math.min(fromTotal, _))
+    Math.max(bounded, Math.min(MinimumCeiling, machineTotal))
+
+  /** What the agent CLIs and one modest build need to start at all. */
+  val MinimumCeiling: Long = 1L << 30
+
+  /**
+   * MemAvailable of this host, bytes: what podman's containers can take before the host itself
+   * reclaims. Only where the launcher shares the kernel with them — native Linux; on a podman
+   * machine `podman info` reports MemFree, which a warm page cache makes meaningless, and the
+   * VM is the sandbox's alone.
+   */
+  def hostMemoryAvailable(os: Os, meminfo: => String): Option[Long] =
+    os match
+      case Os.Linux => memoryAvailable(meminfo)
+      case _        => None
+
+  /** `MemAvailable:` out of a `/proc/meminfo`, bytes. */
+  def memoryAvailable(meminfo: String): Option[Long] =
+    meminfo.linesIterator
+      .map(_.trim.split("\\s+"))
+      .collectFirst { case Array("MemAvailable:", kb, _*) => kb.toLongOption }
+      .flatten
+      .map(_ * 1024)
 
   /**
    * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a ceiling exists to
    * prevent, and podman's default of twice the memory in swap is the wrong side of that. An
    * explicit ceiling gets the same treatment, for the same reason.
    */
-  def memoryArguments(explicit: Option[String], machineTotal: Option[Long]): Vector[String] =
+  def memoryArguments(
+    explicit: Option[String],
+    machineTotal: Option[Long],
+    availableAtLaunch: Option[Long],
+  ): Vector[String] =
     explicit.map(_.trim).filter(_.nonEmpty) match
       case Some(value) => Vector(s"--memory=$value", s"--memory-swap=$value")
       case None =>
-        machineTotal.map(memoryCeiling).toVector.flatMap: bytes =>
+        machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
   def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
@@ -2242,8 +2280,10 @@ object AgentSandboxLauncher:
     // total (memoryCeiling), and no swap: a build that swaps is the thrash that makes every podman
     // command slow. KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with other
     // sessions.
+    val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
-    if machineMemory.isEmpty then
+    val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
+    if machineMemory.isEmpty && explicitMemory.isEmpty then
       System.err.println(
         "warning: podman info reports no machine memory; the sandbox runs without a memory ceiling",
       )
@@ -2252,7 +2292,7 @@ object AgentSandboxLauncher:
         s"warning: podman runs on ${gib(total)} of memory; builds in the sandbox OOM below about 4 GiB\n" +
           "  on a podman machine, raise it with `podman machine set --memory` (machine stopped)",
       )
-    val memoryArgs = memoryArguments(env("KO_AGENT_SANDBOX_MEMORY"), machineMemory)
+    val memoryArgs = memoryArguments(explicitMemory, machineMemory, availableMemory)
 
     // -----------------------------------------------------------------------
     // The sandbox container: create, arm the reaper, then attach

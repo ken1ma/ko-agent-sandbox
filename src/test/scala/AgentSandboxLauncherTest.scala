@@ -37,17 +37,38 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("the sandbox gets a memory ceiling below the machine's total, and never swaps"):
     // The invariant is that the sandbox dies before the VM: a ceiling on every launch podman
-    // reports a total for, 1 GiB under it, and half the total on a machine too small for that.
-    assertEquals(memoryCeiling(8L << 30), 7L << 30)
-    assertEquals(memoryCeiling(1L << 30), 1L << 29)
+    // reports a total for, 1 GiB under it, and the minimum on a machine too small for that.
+    assertEquals(memoryCeiling(8L << 30, None), 7L << 30)
+    assertEquals(memoryCeiling(2L << 30, None), MinimumCeiling)
+    assertEquals(memoryCeiling(1L << 30, None), MinimumCeiling)
+    // A host already spending its memory elsewhere gives the sandbox what is left, not its total:
+    // the floor is for a small machine, and does not lift a ceiling over what is available.
+    assertEquals(memoryCeiling(16L << 30, Some(10L << 30)), 10L << 30)
+    assertEquals(memoryCeiling(16L << 30, Some(2L << 30)), 2L << 30)
+    assertEquals(memoryCeiling(16L << 30, Some(20L << 30)), 15L << 30)
+    // The boundary podman would misread: zero is "no limit", so nothing available at launch, or
+    // less than the agent needs, still yields the minimum — and a machine smaller than the
+    // minimum yields its whole total, never zero.
+    assertEquals(memoryCeiling(16L << 30, Some(0L)), MinimumCeiling)
+    assertEquals(memoryCeiling(16L << 30, Some(200L << 20)), MinimumCeiling)
+    assertEquals(memoryCeiling(512L << 20, None), 512L << 20)
+    assertEquals(memoryCeiling(512L << 20, Some(0L)), 512L << 20)
+    assert(memoryCeiling(1L, Some(0L)) > 0)
     assertEquals(
-      memoryArguments(None, Some(8L << 30)),
+      memoryArguments(None, Some(8L << 30), None),
       Vector(s"--memory=${7L << 30}", s"--memory-swap=${7L << 30}"),
     )
-    assertEquals(memoryArguments(Some("8g"), Some(16L << 30)), Vector("--memory=8g", "--memory-swap=8g"))
-    assertEquals(memoryArguments(Some(" "), Some(2L << 30)), memoryArguments(None, Some(2L << 30)))
+    assertEquals(memoryArguments(Some("8g"), Some(16L << 30), None), Vector("--memory=8g", "--memory-swap=8g"))
+    assertEquals(memoryArguments(Some(" "), Some(2L << 30), None), memoryArguments(None, Some(2L << 30), None))
     // No answer from podman leaves the sandbox unlimited, loudly (main), rather than guessing.
-    assertEquals(memoryArguments(None, None), Vector.empty)
+    assertEquals(memoryArguments(None, None, None), Vector.empty)
+    // The host's own MemAvailable is read only where the launcher shares the kernel with podman.
+    val meminfo = "MemTotal:       16000000 kB\nMemFree:          100000 kB\nMemAvailable:   10000000 kB\n"
+    assertEquals(memoryAvailable(meminfo), Some(10000000L * 1024))
+    assertEquals(memoryAvailable("MemTotal: 1 kB\n"), None)
+    assertEquals(hostMemoryAvailable(Os.Linux, meminfo), Some(10000000L * 1024))
+    assertEquals(hostMemoryAvailable(Os.Mac, meminfo), None)
+    assertEquals(hostMemoryAvailable(Os.Windows, meminfo), None)
     assertEquals(memoryTotal(HostCommands.Run(0, "8589934592\n".getBytes, "")), Some(8589934592L))
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)

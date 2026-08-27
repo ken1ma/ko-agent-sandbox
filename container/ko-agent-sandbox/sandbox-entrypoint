@@ -45,9 +45,12 @@ if [ -n "$available" ] && [ "$available" -lt 1048576 ]; then
     warn "$(gib "$available") of $(gib "$total") memory available"
 fi
 
+# Pages left in swap after pressure has passed stay there until touched, so occupied swap alone
+# says nothing; it is pressure when memory is tight now as well: under a quarter available.
 swap_total=$(meminfo SwapTotal)
 swap_free=$(meminfo SwapFree)
-if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_free" ]; then
+if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_free" ] \
+    && [ -n "$available" ] && [ "$available" -lt $((total / 4)) ]; then
     warn "$(gib $((swap_total - swap_free))) of swap in use"
 fi
 

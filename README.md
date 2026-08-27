@@ -160,9 +160,11 @@ which is undecided. Until then the jar is built from a checkout — [Development
       KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
       KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
       KO_AGENT_SANDBOX_PERSISTENT_VOLUME  share one agent-state volume across projects
-      KO_AGENT_SANDBOX_MEMORY             container memory ceiling, e.g. 8g; the default is 1 GiB
-                                          under the podman machine's memory (the host's on
-                                          Linux), and the sandbox never swaps
+      KO_AGENT_SANDBOX_MEMORY             container memory ceiling, e.g. 8g. Default: the podman
+                                          machine's memory (on Linux, the host's) minus 1 GiB,
+                                          and on Linux no more than was available at launch;
+                                          at least 1 GiB, or the whole memory when that is
+                                          less. The sandbox never swaps
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) mounts /workspace through the ko-agent-fs
                                           filter; "none" binds it directly — a weaker boundary,
                                           pinning only .git/config and .git/hooks (SECURITY.md).

@@ -180,6 +180,18 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assert(!output.contains("Press Enter"), output)
     assert(output.endsWith("a b c "), output)
 
+  test("swap left over from pressure that has passed is not pressure"):
+    val (seed, home) = fixture()
+    val lingering = proc(available = 8L << 20, total = 16L << 20, swapUsed = 1L << 20)
+    val (status, output) = finish(start(seed, home, lingering))
+    assertEquals(status, 0, output)
+    assertEquals(output, "a b c ")
+    // The same swap with memory tight now — under a quarter available, not yet under 1 GiB — is.
+    val tight = proc(available = 3L << 20, total = 16L << 20, swapUsed = 1L << 20)
+    val (_, warned) = finish(start(seed, home, tight))
+    assert(warned.contains("  1.0 GiB of swap in use\n"), warned)
+    assert(!warned.contains("memory available"), warned)
+
   test("a pressure file the kernel refuses to serve, or lacks, costs only its line"):
     val (seed, home) = fixture()
     val refused = proc(available = 512L << 10, pressure = Some("x"))

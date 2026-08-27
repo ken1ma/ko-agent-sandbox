@@ -134,14 +134,15 @@ returned `EOF`. Check, in order:
     podman machine ssh 'free -h; df -h /'
     podman machine ssh 'journalctl -k | grep -iE "oom|out of memory" | tail -5'
 
-The sandbox's default ceiling — 1 GiB under the VM's memory, no swap — is what makes sbt die
-before the VM does; the incident above predates it. With more than one session on the machine
-their ceilings add up past that, so lower each with `KO_AGENT_SANDBOX_MEMORY`. Other remedies:
-raise the machine's memory (`podman machine set --memory ...`, machine stopped, your call); keep
+The sandbox's default memory ceiling and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`)
+are what make sbt die before the VM does, except on a machine the launch already warned was short;
+the incident above predates them. With more than one session on the machine their ceilings add
+up past what the VM has, so lower each with `KO_AGENT_SANDBOX_MEMORY`. Other remedies: raise the
+machine's memory (`podman machine set --memory ...`, machine stopped, your call); keep
 gigabyte-scale work under `~` in the container, not `/tmp`. The entrypoint reads the same
-`free`/`df` figures at every launch and holds a warning on screen when they are already short. After a hard stop, `--reset` sweeps the
-stray proxy and networks; the filter needs nothing — mounts died with the VM and stale session
-markers are pruned at a later reap.
+`free`/`df` figures at every launch and holds a warning on screen when they are already short.
+After a hard stop, `--reset` sweeps the stray proxy and networks; the filter needs nothing — mounts
+died with the VM and stale session markers are pruned at a later reap.
 
 ## Stale state after crashes
 
