@@ -31,11 +31,11 @@ which admits what the launch's `--egress` profile resolves to and logs every att
 proxy" below). The default profile admits the launcher-owned baseline — the model-provider
 groups, their model endpoints unrestricted, the curated catalog restricted — and nothing else.
 
-**Writing to remote hosts**, except the agents' model traffic and `git clone`/`fetch`. Every
-admitted destination carries one of two treatments: `unrestricted`, opaque tunnels for the model
-traffic that has to write, and `restricted`, TLS-inspected, where `git push` and every other write
-is refused. "Reading without being able to write" below has the rules, the costs, and what they
-do not cover.
+**Writing to remote hosts**, except the agents' model traffic and `git fetch` (so `clone` and
+`pull`). Every admitted destination carries one of two treatments: `unrestricted`, opaque tunnels
+for the model traffic that has to write, and `restricted`, TLS-inspected, where `git push` and
+every other write is refused. "Reading without being able to write" below has the rules, the
+costs, and what they do not cover.
 
 **Being used to attack someone else.** The same policy. Whatever the profile — the widest admits
 any public hostname on port 443 — the agent cannot reach an arbitrary port or a private address,
@@ -170,11 +170,18 @@ applies to the domains searched — a query is outbound information the provider
 Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
 proxy, answered only by an allowed host and logged like any other connection.
 
-Copilot CLI's model endpoint, `api.githubcopilot.com`, serves its built-in GitHub MCP server on
-the same host — issues, pull requests and comments written with the signed-in account, which the
-opaque tunnel cannot tell from model traffic — and its session export to GitHub's web UI. Both
-are copilot's own switches, `--disable-builtin-mcps` and `--no-remote-export`; the proxy's is
-`denied: model-provider github`, which takes the model traffic with them.
+Copilot CLI is the one agent whose sign-in is a forge credential. `copilot login` obtains an
+OAuth token with `repo` scope — every private repository the account can reach — and, the
+container having no credential store, keeps it in plaintext under `~/.copilot` in the persistent
+volume, next to the other agents' tokens, which can only spend model quota. Inside the sandbox
+that token can read those repositories (a private `clone` on a `=git-fetch` host, `GET`s on
+`api.github.com`); it cannot push or write through any inspected host. It can write through
+Copilot's model endpoint, `api.githubcopilot.com`, which serves the built-in GitHub MCP server on
+the same host — files, branches, issues and pull requests written with the signed-in account,
+which the opaque tunnel cannot tell from model traffic — and Copilot's session export to
+GitHub's web UI. Both are copilot's own switches, `--disable-builtin-mcps` and
+`--no-remote-export`; the proxy's is `denied: model-provider github`, which takes the model
+traffic with them; `--reset` discards the token.
 
 **Low-bandwidth channels.** Which allowed host is contacted, when, and in what order all carry
 information. Nothing measures that.
@@ -484,6 +491,13 @@ request inside it:
   registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
   dependency. A project whose dependency names are themselves secrets restates the entry
   untagged (`+host registry.npmjs.org restricted` in `egress/allowed`) and gives up the warnings
+- on the `=github-login-device`-tagged entry alone (`github.com`), `POST` to the two endpoints of
+  GitHub's OAuth device flow, `/login/device/code` and `/login/oauth/access_token`, which is how
+  Copilot CLI signs in. The second is GitHub's general token endpoint, shared with the web
+  flow's code exchange, whose redirect cannot reach the sandbox. Each body is a fixed form — a
+  client id, a scope, a device code — so no project data rides on it. Any session can begin a
+  device login for any GitHub OAuth app; none can complete one without a person entering the
+  code in a browser, on a page that names the app and its scopes
 - Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery — a
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`

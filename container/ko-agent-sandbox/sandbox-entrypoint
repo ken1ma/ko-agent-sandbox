@@ -1,0 +1,23 @@
+#!/bin/sh
+# The image's ENTRYPOINT. Seeds ~/persistent-volume one agent directory at a time, only where the
+# directory is absent: a fresh volume receives every seed, one created by an older image only the
+# directories it lacks, and a directory that exists is agent state, never touched. Podman's own
+# copy-up into an empty volume would cover only the first case.
+#
+# Each directory is published by one rename, so a session racing another on the same volume sees
+# either nothing or the whole seed; the loser's rename fails on the winner's directory, which is
+# the outcome wanted, and its staging directory is removed.
+set -eu
+
+seed=$SANDBOX_VOLUME_SEED
+volume=$HOME/persistent-volume
+
+for entry in "$seed"/*; do
+    name=$(basename "$entry")
+    [ -e "$volume/$name" ] && continue
+    staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
+    cp -a "$entry/." "$staging/"
+    mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
+done
+
+exec "$@"

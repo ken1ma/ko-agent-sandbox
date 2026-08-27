@@ -1273,7 +1273,7 @@ object AgentSandboxLauncher:
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
        |Anything not admitted below is refused. An unrestricted host is an opaque tunnel; a
        |restricted host answers only GET and HEAD, and one tagged `=git-fetch` also serves
-       |`git clone`/`fetch` — `git push` is refused.
+       |`git fetch`, so `clone` and `pull` — `git push` is refused.
        |
        |$indented
        |
@@ -2271,7 +2271,7 @@ object AgentSandboxLauncher:
     ) ++ memoryArgs ++ Vector(
       "--workdir", "/workspace",
 
-      // No ENTRYPOINT in the image: with no arguments the command is bash, inherited from debian:*-slim.
+      // The image's ENTRYPOINT seeds the persistent volume and execs the command; with none, its CMD, bash.
       image,
     ) ++ command.toVector
 

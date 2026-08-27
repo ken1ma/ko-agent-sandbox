@@ -148,10 +148,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!resolved.ambient)
 
   test("a provider group's forge endpoints stay restricted in the baseline, tags merged"):
-    // github.com is in the catalog (=git-fetch) and in the github group (=copilot-login): the
+    // github.com is in the catalog (=git-fetch) and in the github group (=github-login-device): the
     // baseline carries both, and the group's untagged api.github.com does not strip the
     // catalog's =git-fetch from it.
-    assertEquals(BaselineHosts("github.com"), Treatment.Restricted(Set("git-fetch", "copilot-login")))
+    assertEquals(BaselineHosts("github.com"), Treatment.Restricted(Set("git-fetch", "github-login-device")))
     assertEquals(BaselineHosts("api.github.com"), Treatment.Restricted(Set("git-fetch")))
     assertEquals(BaselineHosts("api.githubcopilot.com"), Treatment.Unrestricted)
     ModelProviderHosts.values.flatten.foreach: (host, treatment) =>
@@ -180,7 +180,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("deny-unless-model for copilot admits the forge for login and token exchange, never for push"):
     val resolved = policyOf(profile = "deny-unless-model", provider = "github")
     assertEquals(resolved.hosts, ModelProviderHosts("github"))
-    assertEquals(resolved.restricted.get("github.com"), Some(Set("copilot-login")))
+    assertEquals(resolved.restricted.get("github.com"), Some(Set("github-login-device")))
     assertEquals(resolved.restricted.get("api.github.com"), Some(Set.empty))
     assert(resolved.unrestrictedHosts.contains("api.githubcopilot.com"))
     // The catalog's =git-fetch is not in the group: under this profile the forge is not even cloned from.
@@ -202,8 +202,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val resolved = policyOf(profile = "allow-unless-denied", denied = "host telemetry.example.com")
     assert(resolved.ambient)
     assertEquals(authorize("anything.example.org", 443, resolved), "anything.example.org")
-    // The narrowing set: a catalog host stays restricted rather than widening to the default.
-    assertEquals(resolved.restricted.get("github.com"), Some(Set("git-fetch")))
+    // The narrowing set is every restricted baseline entry, a group's tags included: a catalog
+    // host stays restricted rather than widening to the default, and copilot still signs in.
+    assertEquals(resolved.restricted.get("github.com"), Some(Set("git-fetch", "github-login-device")))
+    assertEquals(resolved.restricted, BaselineRestricted)
     intercept[PolicyViolation](authorize("telemetry.example.com", 443, resolved))
     // The port and IP-literal rules hold for ambient hosts too.
     intercept[PolicyViolation](authorize("anything.example.org", 8443, resolved))
@@ -218,10 +220,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // set: only denied removes ambient access, so github.com stays restricted rather than
     // becoming an opaque tunnel.
     val ambient = policyOf(profile = "allow-unless-denied", allowed = "-host github.com")
-    assertEquals(ambient.restricted.get("github.com"), Some(Set("git-fetch")))
+    assertEquals(ambient.restricted.get("github.com"), Some(Set("git-fetch", "github-login-device")))
     // .defaults cannot subtract from it either.
     val reset = policyOf(profile = "allow-unless-denied", allowed = ".defaults")
-    assertEquals(reset.restricted, CuratedRestrictedHosts)
+    assertEquals(reset.restricted, BaselineRestricted)
 
   test("a restricted addition extends the narrowing set; an unrestricted one adds nothing to it"):
     val resolved = policyOf(
@@ -266,7 +268,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       policyOf(allowed = "+host github.com=git-fetch restricted").restricted,
       CuratedRestrictedHosts,
     )
-    assertEquals(policyOf(allowed = "+model-provider anthropic").hosts, policyOf().hosts)
+    ModelProviderHosts.keys.foreach: name =>
+      assertEquals(policyOf(allowed = s"+model-provider $name").hosts, policyOf().hosts, name)
 
   test("a retagging addition states its host's complete tagging, and =git-fetch opens git fetch"):
     // An addition states its host's complete tagging and overrides the baseline entry for that
@@ -306,7 +309,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val ex = intercept[IllegalArgumentException](
       policyOf(allowed = "+host mirror.example=lfs restricted"),
     )
-    assert(ex.getMessage.contains("the tags are: copilot-login, git-fetch, npm-audit"), ex.getMessage)
+    assert(ex.getMessage.contains("the tags are: git-fetch, github-login-device, npm-audit"), ex.getMessage)
     intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example=8443 restricted"))
     val treatment = intercept[IllegalArgumentException](
       policyOf(allowed = "+host mirror.example writable"),
@@ -391,6 +394,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assert(!resolved.hosts.contains(host), host)
       intercept[PolicyViolation](authorize(host, 443, resolved))
     intercept[IllegalArgumentException](policyOf(denied = "model-provider meta"))
+    // An allowed removal takes back only the group's contribution: github.com stays the catalog's
+    // =git-fetch host, the model hosts go.
+    val withoutGithub = policyOf(allowed = "-model-provider github")
+    assertEquals(withoutGithub.restricted.get("github.com"), Some(Set("git-fetch")))
+    assertEquals(withoutGithub.restricted.get("api.github.com"), Some(Set("git-fetch")))
+    assert(!withoutGithub.hosts.contains("api.githubcopilot.com"))
     // Denying the github group takes its forge hosts with it, catalog membership notwithstanding:
     // a denial wins over both treatments.
     val noGithub = policyOf(denied = "model-provider github")
@@ -449,7 +458,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(lines(0), "egress profile: deny-unless-allowed")
     assert(lines(1).startsWith(s"restricted hosts (${CuratedRestrictedHosts.size}): "), lines(1))
     // Tags travel in the line; the launcher strips them when minting the leaf's names.
-    assert(lines(1).contains(" github.com=copilot-login=git-fetch "), lines(1))
+    assert(lines(1).contains(" github.com=git-fetch=github-login-device "), lines(1))
     assert(lines(1).contains(" registry.npmjs.org=npm-audit "), lines(1))
     assert(lines(1).contains(" pypi.org "), lines(1))
     assert(lines(2).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(2))
@@ -497,7 +506,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
     assert(ambient.contains("  mirror.example: restricted; allowed +host"), ambient.toString)
-    assert(ambient.contains("  github.com: restricted =git-fetch; curated baseline"), ambient.toString)
+    assert(
+      ambient.contains(
+        "  github.com: restricted =git-fetch =github-login-device; curated baseline, model-provider github",
+      ),
+      ambient.toString,
+    )
     assert(!ambient.exists(_.contains("removed by allowed")), ambient.toString)
     assert(!ambient.exists(_.contains("opaque.example")), ambient.toString)
 
@@ -966,7 +980,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "api.githubcopilot.com", "api.individual.githubcopilot.com",
           "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com",
         ) ++ Map(
-          "github.com" -> Treatment.Restricted(Set("copilot-login")),
+          "github.com" -> Treatment.Restricted(Set("github-login-device")),
           "api.github.com" -> Treatment.Restricted(Set.empty),
         )),
       ),
@@ -979,7 +993,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
     assertEquals(baselinePolicy.tagged("npm-audit"), Set("registry.npmjs.org"))
-    assertEquals(baselinePolicy.tagged("copilot-login"), Set("github.com"))
+    assertEquals(baselinePolicy.tagged("github-login-device"), Set("github.com"))
 
   test("the leaf must name exactly the inspected hosts, in either direction"):
     val required = Set("github.com", "gitlab.com")
@@ -1093,13 +1107,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Set("git-fetch"),
       )
 
-    // =copilot-login opens the device-flow pair and nothing beside it: neither GitHub's other
+    // =github-login-device opens the device-flow pair and nothing beside it: neither GitHub's other
     // OAuth endpoints nor, on the same host, a push.
-    CopilotLoginPaths.foreach: path =>
+    GithubLoginDevicePaths.foreach: path =>
       authorizeInspectedRequest(
         "github.com",
         head(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        Set("git-fetch", "copilot-login"),
+        Set("git-fetch", "github-login-device"),
       )
       intercept[PolicyViolation]:
         authorizeInspectedRequest(
@@ -1111,13 +1125,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
       authorizeInspectedRequest(
         "github.com",
         head("POST /login/oauth/authorize HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        Set("copilot-login"),
+        Set("github-login-device"),
       )
     intercept[PolicyViolation]:
       authorizeInspectedRequest(
         "github.com",
         head("POST /o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        Set("git-fetch", "copilot-login"),
+        Set("git-fetch", "github-login-device"),
       )
 
   test("HTTP request head parses a request line and its headers"):

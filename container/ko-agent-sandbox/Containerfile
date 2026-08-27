@@ -172,18 +172,22 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 #
 # The launcher mounts a per-project named volume at ~/persistent-volume;
 # each agent's dot-directory is a relative symlink into it, so no relocation
-# variables are needed. Podman copies image content into a newly created
-# EMPTY volume — an existing one is never re-seeded, however often the image
-# is rebuilt, so anything added here later reaches only fresh volumes.
-# Discarding a volume (--reset / --reset-all) also discards its logins.
+# variables are needed. The volume's content starts as the seed below, which
+# sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
+# not only into a fresh volume, as Podman's copy-up would, but into one an
+# older image created before an agent was added. A directory the volume has
+# is agent state and is never touched, so a seed change reaches existing
+# volumes only through --reset, which also discards their logins.
 
+ENV SANDBOX_VOLUME_SEED=/etc/ko-agent-sandbox/persistent-volume-seed
 RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0700 /home/nonroot/persistent-volume; \
+    # nonroot-owned: sandbox-entrypoint reads the seed as nonroot, and the copies keep the mode
     install -d -o nonroot -g nonroot -m 0700 \
-        /home/nonroot/persistent-volume \
-        /home/nonroot/persistent-volume/claude \
-        /home/nonroot/persistent-volume/codex \
-        /home/nonroot/persistent-volume/antigravity \
-        /home/nonroot/persistent-volume/copilot; \
+        $SANDBOX_VOLUME_SEED/claude \
+        $SANDBOX_VOLUME_SEED/codex \
+        $SANDBOX_VOLUME_SEED/antigravity \
+        $SANDBOX_VOLUME_SEED/copilot; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
     # `.gemini` is gemini-cli (deprecated) heritage
@@ -243,8 +247,7 @@ RUN set -euxo pipefail; \
         '    }' \
         '  }' \
         '}' \
-        > /home/nonroot/persistent-volume/claude/.claude.json; \
-    chown nonroot:nonroot /home/nonroot/persistent-volume/claude/.claude.json
+        > $SANDBOX_VOLUME_SEED/claude/.claude.json
 
 # Skip permission prompts: this container is the boundary, and an
 # in-container prompt only trains the operator to approve without reading.
@@ -427,8 +430,7 @@ RUN set -euxo pipefail; \
         '    "/workspace"' \
         '  ]' \
         '}' \
-        > /home/nonroot/persistent-volume/copilot/config.json; \
-    chown nonroot:nonroot /home/nonroot/persistent-volume/copilot/config.json
+        > $SANDBOX_VOLUME_SEED/copilot/config.json
 
 
 # ---------------------------------------------------------------------------
@@ -448,9 +450,9 @@ RUN set -euxo pipefail; \
 #           model_instructions_file would *replace* the built-in
 #           instructions, so it is not used.)
 #
-# Symlinks, not copies: an existing volume is never re-seeded, and this text
-# must change with the image. Absolute, because a relative link would have
-# to climb out of the volume.
+# Symlinks, not copies: a seeded directory is never touched again, and this
+# text must change with the image. Absolute, because a relative link would
+# have to climb out of the volume.
 #
 # The launcher gives the image's JDK this session's CA and proxy by mounting over its own cacerts
 # and net.properties, but it can only reach the JDK it shipped. sandbox-prepare-jdk does both for a
@@ -464,7 +466,11 @@ RUN set -euxo pipefail; \
 # ko-agent-clipboard answers under the four names Claude Code shells out to for the clipboard on
 # Linux; it speaks to the launcher's broker (SECURITY.md "Clipboard"), and fails at once when the
 # session has none.
-COPY --chmod=0755 sandbox-prepare-jdk sandbox-apt-get sandbox-install-podman ko-agent-clipboard /usr/local/bin/
+# sandbox-entrypoint is the ENTRYPOINT: the persistent-volume seeding above, then the command.
+COPY --chmod=0755 \
+    sandbox-prepare-jdk sandbox-apt-get sandbox-install-podman ko-agent-clipboard \
+    sandbox-entrypoint \
+    /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
 
 COPY SANDBOX.md STYLE.md /etc/ko-agent-sandbox/
@@ -474,13 +480,9 @@ RUN set -euxo pipefail; \
       cat /etc/ko-agent-sandbox/STYLE.md; } \
         > /etc/ko-agent-sandbox/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/codex/AGENTS.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/antigravity/GEMINI.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/copilot/copilot-instructions.md; \
-    chown -h nonroot:nonroot \
-        /home/nonroot/persistent-volume/codex/AGENTS.md \
-        /home/nonroot/persistent-volume/antigravity/GEMINI.md \
-        /home/nonroot/persistent-volume/copilot/copilot-instructions.md
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md
 
 
 # ---------------------------------------------------------------------------
@@ -495,3 +497,7 @@ RUN set -euxo pipefail; \
 WORKDIR /workspace
 
 USER nonroot
+
+# CMD keeps bash the command a bare launch runs, as the debian base had it before the ENTRYPOINT.
+ENTRYPOINT ["sandbox-entrypoint"]
+CMD ["bash"]

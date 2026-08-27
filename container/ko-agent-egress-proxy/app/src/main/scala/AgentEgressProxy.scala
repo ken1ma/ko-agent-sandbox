@@ -48,7 +48,7 @@ object AgentEgressProxy:
    *     its tag's one POST: `=git-fetch` the git-upload-pack transfer, so cloning works while
    *     `git push` is refused inside the tunnel rather than merely being expected to fail for
    *     want of a credential; `=npm-audit` npm's install-time audit, so dependency-vulnerability
-   *     warnings keep working; `=copilot-login` GitHub's OAuth device flow, so Copilot signs in
+   *     warnings keep working; `=github-login-device` GitHub's OAuth device flow, so Copilot signs in
    *     on a forge that stays read-only otherwise.
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
@@ -128,7 +128,7 @@ object AgentEgressProxy:
       ) ++ Map(
         // The two forge hosts stay inspected here as in the catalog: the login tag's two POSTs are
         // all sign-in needs, and the Copilot token exchange (/copilot_internal/v2/token) is a GET.
-        "github.com" -> Treatment.Restricted(Set("copilot-login")),
+        "github.com" -> Treatment.Restricted(Set("github-login-device")),
         "api.github.com" -> Treatment.Restricted(Set.empty),
       )),
     ).map((provider, hosts) => provider -> hosts.map((host, treatment) => normalizeHost(host) -> treatment))
@@ -136,7 +136,7 @@ object AgentEgressProxy:
   /** The tags a restricted entry may carry — a closed set: a tag names one of the fixed
     * rule-sets in authorizeInspectedRequest, never describes one. Each is named tool-operation,
     * for the single operation it opens. */
-  val KnownTags: Set[String] = Set("git-fetch", "npm-audit", "copilot-login")
+  val KnownTags: Set[String] = Set("git-fetch", "npm-audit", "github-login-device")
 
   /** The audit endpoint the image's npm POSTs at install time — measured on the bundled Node
     * 24.19.0 / npm 11.17.0, not guessed. An older npm's /-/npm/v1/security/audits/quick is
@@ -147,7 +147,7 @@ object AgentEgressProxy:
   /** GitHub's OAuth device flow, as Copilot CLI 1.0.80 drives it: the first mints the user code the
     * agent prints, the second polls for the token once the browser has approved. Both bodies are
     * fixed forms naming a client id, so the allowance carries no project data. */
-  val CopilotLoginPaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
+  val GithubLoginDevicePaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
 
   /**
    * The curated restricted catalog: GET and HEAD with no body, and no POST — except a tagged
@@ -298,7 +298,7 @@ object AgentEgressProxy:
   /**
    * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
    * is restricted in both — a group never widens the catalog — and carries the union of its tags
-   * (github.com: `=git-fetch` from the catalog, `=copilot-login` from its group). What each
+   * (github.com: `=git-fetch` from the catalog, `=github-login-device` from its group). What each
    * profile admits of it is resolvePolicy's equation.
    */
   val BaselineHosts: Map[String, Treatment] =
@@ -632,6 +632,11 @@ object AgentEgressProxy:
    *   deny-unless-allowed = A - D
    *   allow-unless-denied = narrow(U, N) - D
    *
+   * A provider group is a contribution, not a replacement: `+model-provider` merges a group's
+   * restricted tags into a host the catalog restricts too, and `-model-provider` takes back only
+   * those — `+` then `-` is the identity, and over the baseline `+` alone is a no-op. `D`'s
+   * `model-provider` form is the one that removes such a host outright.
+   *
    * The internal-network denials of the security model are not host rules here: they are
    * IPAddrHelper's address vetting, applied to every resolved destination at connection time,
    * ambient hosts included, so no policy file can spell them away.
@@ -698,10 +703,11 @@ object AgentEgressProxy:
     // that restates what already held — re-adding a baseline host with its baseline treatment,
     // removing under .defaults what .defaults already cleared — shapes nothing and is reported
     // nowhere.
+    // A host in the catalog and a group names both: its tags came from both.
     def baselineSource(host: String): String =
-      ModelProviderHosts
-        .collectFirst { case (name, hosts) if hosts.contains(host) => s"model-provider $name" }
-        .getOrElse("curated baseline")
+      (Option.when(CuratedRestrictedHosts.contains(host))("curated baseline")
+        ++ ModelProviderHosts.collect { case (name, hosts) if hosts.contains(host) => s"model-provider $name" })
+        .mkString(", ")
 
     def overlay(
       current: Map[String, (Treatment, String)],
@@ -713,19 +719,35 @@ object AgentEgressProxy:
         case Some((standing, _)) if standing == treatment => current
         case _ => current.updated(host, (treatment, source))
 
+    // A group's restricted entry contributes its tags to a host the catalog already restricts, as
+    // BaselineHosts merged them: `+model-provider github` over the baseline is a no-op, not a
+    // retagging of github.com. Removing the group takes back only what it contributed.
+    def addGroup(current: Map[String, (Treatment, String)], name: String, source: String) =
+      ModelProviderHosts(name).foldLeft(current):
+        case (current, (host, Treatment.Restricted(tags))) =>
+          current.get(host) match
+            case Some((Treatment.Restricted(standing), _)) if tags.subsetOf(standing) => current
+            case Some((Treatment.Restricted(standing), _)) =>
+              current.updated(host, (Treatment.Restricted(standing ++ tags), source))
+            case _ => current.updated(host, (Treatment.Restricted(tags), source))
+        case (current, (host, treatment)) => overlay(current, host, treatment, source)
+    def removeGroup(current: Map[String, (Treatment, String)], name: String) =
+      ModelProviderHosts(name).keys.foldLeft(current): (current, host) =>
+        CuratedRestrictedHosts.get(host) match
+          case Some(tags) if current.contains(host) =>
+            current.updated(host, (Treatment.Restricted(tags), "curated baseline"))
+          case _ => current - host
+
     // A: the allowed delta applied to B, in the delta's fixed order. Additions land last, so an
     // exact entry overrides the baseline's treatment of the same host (the widening direction was
     // refused above).
     val cleared: Map[String, (Treatment, String)] =
       if delta.defaults then Map.empty
       else BaselineHosts.map((host, treatment) => host -> (treatment, baselineSource(host)))
-    val afterProviderRemovals = cleared.filterNot((host, _) =>
-      delta.removedProviders.exists(name => ModelProviderHosts(name).contains(host)),
-    )
+    val afterProviderRemovals = delta.removedProviders.toVector.sorted.foldLeft(cleared)(removeGroup)
     val withAddedProviders =
       delta.addedProviders.toVector.sorted.foldLeft(afterProviderRemovals): (current, name) =>
-        ModelProviderHosts(name).foldLeft(current):
-          case (current, (host, treatment)) => overlay(current, host, treatment, s"allowed +model-provider $name")
+        addGroup(current, name, s"allowed +model-provider $name")
     // Sequentially, each rule judged against the map as the rules before it left it: of two
     // overlapping removals, only the first removes anything, and only it is reported.
     val (afterRemovals, effectiveHostRemovals) =
@@ -743,15 +765,16 @@ object AgentEgressProxy:
           .map(name => s"model-provider:$name")
         ++ effectiveHostRemovals
 
-    // N: what stays restricted under allow-unless-denied. Only additions extend it; nothing in
+    // N: what stays restricted under allow-unless-denied — every restricted baseline entry, a
+    // group's included, so github.com keeps =github-login-device. Only additions extend it; nothing in
     // the delta subtracts from it, so a removal or .defaults cannot widen an ambient host.
     val narrowed: Map[String, (Treatment, String)] =
       delta.addedHosts.toVector.sortBy(_(0))
         .filter((_, treatment) => treatment != Treatment.Unrestricted)
         .foldLeft(
-          CuratedRestrictedHosts.map((host, tags) =>
-            host -> (Treatment.Restricted(tags), "curated baseline"),
-          ),
+          BaselineHosts.collect { case (host, treatment @ Treatment.Restricted(_)) =>
+            host -> ((treatment: Treatment) -> baselineSource(host))
+          },
         ):
           case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
 
@@ -1296,8 +1319,8 @@ object AgentEgressProxy:
    * HEAD to any path, bodyless. Each of the host's tags additionally admits
    * its POSTs: `=git-fetch` the git-upload-pack path, without which "read
    * access" would silently exclude `git clone`; `=npm-audit` the audit
-   * endpoint npm hits during install (NpmAuditPath); `=copilot-login` the
-   * device-flow pair (CopilotLoginPaths). On an untagged host, no
+   * endpoint npm hits during install (NpmAuditPath); `=github-login-device` the
+   * device-flow pair (GithubLoginDevicePaths). On an untagged host, no
    * POST at all: a path there is an object name anyone can choose, so a
    * path rule authorizes nothing (DefaultReadOnlyHosts has the type case).
    *
@@ -1357,7 +1380,7 @@ object AgentEgressProxy:
         val opened =
           (hostTags.contains("git-fetch") && isUploadPack(head.path))
             || (hostTags.contains("npm-audit") && head.path == NpmAuditPath)
-            || (hostTags.contains("copilot-login") && CopilotLoginPaths.contains(head.path))
+            || (hostTags.contains("github-login-device") && GithubLoginDevicePaths.contains(head.path))
         if !opened then
           throw PolicyViolation(if hostTags.isEmpty then "restricted host" else "restricted path")
 

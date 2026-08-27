@@ -80,7 +80,8 @@ STYLE.md and rebuilding.
 
 The policy stays four fixed profiles over two fixed files — `allowed`, a `+host` / `-host` /
 `+model-provider` / `-model-provider` / `.defaults` delta over the launcher-owned baseline with
-treatments and tags from closed sets (`restricted`/`unrestricted`; `=git-fetch`, `=npm-audit`),
+treatments and tags from closed sets (`restricted`/`unrestricted`; `=git-fetch`, `=npm-audit`,
+`=github-login-device`),
 and `denied` (hosts, `**.domain`, provider groups) applied last — no fields, no globs beyond the
 taking-away subtree, no ranked rules, no open tag vocabulary, no selected-provider-plus-extras
 profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;

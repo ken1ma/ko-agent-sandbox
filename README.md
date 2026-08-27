@@ -237,9 +237,10 @@ which is undecided. Until then the jar is built from a checkout — [Development
        the code back. Unlike `claude` and `codex`, permission prompts are not pre-disabled (agy has
        no documented settings key for it); run `agy --dangerously-skip-permissions`, or set it once
        via the in-app `/permissions` command, which persists.
-    1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Tool prompts
-       are pre-disabled; prompts for paths outside `/workspace` and for URLs remain unless you run
-       `copilot --yolo`.
+    1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
+       other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
+       web reached through the model provider"). Prompts for paths outside `/workspace` and for
+       URLs remain unless you run `copilot --yolo`.
     1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so it is one setting in the volume;
@@ -260,13 +261,14 @@ which is undecided. Until then the jar is built from a checkout — [Development
 Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
 A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` —
 TLS-inspected, GET and HEAD only, except that an entry tagged `=git-fetch` also serves
-`git clone`/`fetch` (whose transfer leg is a `POST`) and one tagged `=npm-audit` serves npm's
-install-time audit.
+`git fetch` — so `clone` and `pull` — whose transfer leg is a `POST`; one tagged `=npm-audit`
+serves npm's install-time audit; one tagged `=github-login-device` GitHub's device-flow sign-in.
 
 The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
 `github` — each expanding to that provider's model, authentication and control-plane endpoints,
-unrestricted, except that `github`'s forge hosts stay restricted, tagged `=copilot-login` for the
-sign-in) plus a curated catalog of restricted documentation, package-registry and forge hosts.
+unrestricted, except that `github`'s forge hosts stay restricted, tagged `=github-login-device`
+for the sign-in) plus a curated catalog of restricted documentation, package-registry and forge
+hosts.
 
 1. `deny-unless-allowed` (the default) — the baseline, shaped by the project's `allowed` delta.
 1. `deny-unless-model` — only the launched agent's own provider group: `claude` selects
@@ -274,8 +276,8 @@ sign-in) plus a curated catalog of restricted documentation, package-registry an
    Only the basename of the directly launched command is classified; anything else — `bash`, a
    wrapper script — selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — every public hostname on port 443, unrestricted, except that the
-   restricted catalog (plus restricted `allowed` additions) stays inspected and `denied` still
-   applies.
+   baseline's restricted entries (plus restricted `allowed` additions) stay inspected, tags and
+   all, and `denied` still applies.
 1. `deny-all` — nothing.
 
 ### Modifying the egress policy
@@ -295,8 +297,12 @@ restricted additions, by `allow-unless-denied`'s narrowing set):
 
 An addition states its host's complete treatment and tagging, and overrides the baseline entry
 for the same host — `+host gitlab.com restricted` makes gitlab.com plain restricted, its baseline
-`=git-fetch` gone. The tags are a closed set the proxy defines: `git-fetch` and `npm-audit`,
-each named for the one operation it opens. Widening has no delta spelling: re-adding a
+`=git-fetch` gone. The tags are a closed set the proxy defines: `git-fetch`, `npm-audit` and
+`github-login-device`, each named for the one operation it opens. A provider entry adds or takes
+back the group's own contribution and no more: `github.com` is in the catalog (`=git-fetch`) and in
+the `github` group (`=github-login-device`), so `+model-provider github` merges the login tag in and
+`-model-provider github` leaves the catalog's clonable host behind; to drop the host outright,
+deny the group. Widening has no delta spelling: re-adding a
 restricted baseline host as `unrestricted` is refused; a project that needs it writes
 `.defaults` — which removes the whole baseline before additions apply — and states its complete
 replacement policy:

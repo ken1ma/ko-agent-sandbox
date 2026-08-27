@@ -34,8 +34,8 @@ sandbox write is absent from the host after exit.
 
 The target is to remove image-managed Coursier content from the copied home while retaining its
 small seed files. Do not add `nocopy` to the home volume in this increment: that also hides the
-`.claude`, `.codex`, `.gemini` and `.copilot` symlinks and can prevent a new persistent volume
-from receiving its seed. A small ordinary copy-up preserves those contracts without material startup cost.
+`.claude`, `.codex`, `.gemini` and `.copilot` symlinks. A small ordinary copy-up preserves those
+contracts without material startup cost.
 
 ## Cold default
 
@@ -213,7 +213,7 @@ copy-up must also provide:
 - `.codex -> persistent-volume/codex`;
 - `.gemini -> persistent-volume/antigravity`;
 - `.copilot -> persistent-volume/copilot`;
-- the seed files copied into a newly created persistent volume;
+- the persistent volume seeded by `sandbox-entrypoint`;
 - a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and other session-created paths.
 
 Construct the overlay as exactly one `--volume` value ending in `:O`. Do not combine `O` with `U`,
@@ -335,7 +335,7 @@ Add image/toolchain checks:
 - the image-home allowlist, size and inode limits hold;
 - the nonroot-owned `.cache/coursier` directory is empty, and no Coursier cache content or
   installed launcher remains under image home;
-- a newly created persistent volume still receives all agent seeds and its three home links work.
+- a newly created persistent volume still receives every agent seed and each home link works.
 
 Run the exact final mount topology on macOS, native Linux and Windows/WSL2. Record create, start and
 total times separately for three warm-machine runs in each mode. Performance acceptance is based
@@ -384,7 +384,7 @@ profile can prevent the download. It does not need to teach Podman overlay mecha
       created; a safe explicit cache outside home is accepted.
 - [ ] SELinux support either preserves host metadata without weakening labels or refuses clearly.
 - [ ] macOS, native Linux and Windows claims match completed platform probes.
-- [ ] The persistent volume is seeded correctly after reset and all three agent state paths work.
+- [ ] The persistent volume is seeded correctly after reset and every agent state path works.
 - [ ] Help, README, security model, sandbox instructions and launcher boundary diagram agree.
 - [ ] Unit tests, full tests and opt-in container integration tests pass.
 - [ ] Startup measurements demonstrate that image-home copy-up is no longer the dominant delay.
