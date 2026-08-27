@@ -333,7 +333,8 @@ object SandboxProject:
    * every write mode before the policy is read — the read is a host-side read either way.
    * Refused shapes: a symlink of the directory or of egress (podman resolves mount sources on
    * the host, and the policy read must see the bytes a mounted-back directory would show);
-   * anything that is not a directory; or an entry that is no configuration of this launcher's — the directory is a closed namespace,
+   * anything that is not a directory; or an entry that is no configuration of this launcher's —
+   * the directory is a closed namespace,
    * decided before it has a second tenant, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule egress/ applies inside itself. The policy files inside
    * egress/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles). An absent

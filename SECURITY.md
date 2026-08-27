@@ -337,7 +337,8 @@ running an unfamiliar project is the user's job, exactly like reading its build 
 `unrestricted` additions most of all, since every such host is an opaque tunnel.
 
 **The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the
-agent's request are trusted as they arrive. npm's install-time audit does work (the `allow=npm-audit`
+agent's request are trusted as they arrive. npm's install-time audit does work (the
+`allow=npm-audit`
 allowance, "Reading without being able to write" below), but its warnings are advisory: nothing
 gates on them.
 
@@ -618,9 +619,9 @@ An addition overrides the baseline entry for its host rather than merging with i
 line says and leave no way to take one allowance away. For the same reason an allowance on anything
 that takes away is refused — a removal or a denied entry removes the host whole — and widening has
 no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`, which
-discards the baseline and makes the file state its complete replacement policy. And under `allow-
-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**` cannot subtract
-from the restricted narrowing set.
+discards the baseline and makes the file state its complete replacement policy. And under
+`allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**` cannot
+subtract from the restricted narrowing set.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`

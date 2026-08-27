@@ -48,15 +48,14 @@ not make the request an information-flow read") is unchanged by it.
 
 ### No general HTTP method/path policy language
 
-Keep protocol-specific inspection only where it buys a concrete property, as it does for git
-reads versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a
-closed set of allowances (`allow=git-fetch`, `allow=npm-audit`) each naming a fixed extra
-permission — not a per-host language. An allowance names a rule-set the proxy defines; it never
-describes one. Its concrete
-property is refusing every allowed host's write surface outside the agent endpoints, the one
-unauthenticated one included (storage.googleapis.com). Do not go further: no per-host rules, no
-path patterns beyond git's, no open tag set, no general-purpose policy engine without concrete
-use cases that outgrow this.
+Keep protocol-specific inspection only where it buys a concrete property, as it does for git reads
+versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a closed
+set of allowances (`allow=git-fetch`, `allow=github-login-device`, `allow=npm-audit`) each naming a
+fixed extra permission — not a per-host language. An allowance names a rule-set the proxy defines;
+it never describes one. Its concrete property is refusing every allowed host's write surface outside
+the agent endpoints, the one unauthenticated one included (storage.googleapis.com). Do not go
+further: no per-host rules, no path patterns beyond git's, no open allowance set, no general-purpose
+policy engine without concrete use cases that outgrow this.
 
 ### No command-name safe lists
 
@@ -84,7 +83,7 @@ The policy stays four fixed profiles over two fixed files — `allowed`, a `+hos
 treatments and allowances from closed sets (`unrestricted`, or restricted by default with
 `allow=git-fetch`, `allow=npm-audit`, `allow=github-login-device`),
 and `denied` (hosts, `**.domain`, provider groups) applied last — no fields, no globs beyond the
-taking-away subtree, no ranked rules, no open tag vocabulary, no selected-provider-plus-extras
+taking-away subtree, no ranked rules, no open allowance vocabulary, no selected-provider-plus-extras
 profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
 `resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
@@ -98,7 +97,8 @@ the launcher's dry run executes), and an allow silently overriding a deny (one f
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/432
 - https://github.com/stripe/smokescreen/issues/236
 
-Do not add wildcard additions, ranked rules, a richer removal-pattern language, or a tag outside
+Do not add wildcard additions, ranked rules, a richer removal-pattern language, or an allowance
+outside
 the closed set without a concrete need that outweighs that surface.
 
 ### No HTTP query surface on the proxy

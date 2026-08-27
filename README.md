@@ -337,8 +337,9 @@ allowances:
    design, as does `deny-unless-model` under `bash`.
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
    duplicate additions with different treatments, a host both added and removed, a removal
-   matching neither the baseline nor an addition, an unknown profile, provider, treatment or tag,
-   a filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself too). A
+   matching neither the baseline nor an addition, an unknown profile, provider, treatment or
+   allowance, a filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself
+   too). A
    `denied` entry matching nothing the profile admits is a startup warning, not an error: it can
    still apply under another profile.
 1. Run `--egress-effective [--] [command]` to resolve the policy — with per-entry provenance —
