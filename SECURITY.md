@@ -22,9 +22,13 @@ never mounted — everything credentialed happens on the host (the README's priv
 workflow generalizes: push, publish, deploy, administer). The one exception is the agents' own
 provider logins, kept in the persistent volume because no agent functions without them.
 
-That is a claim about what the launcher carries in. A credential the user puts in the project
-directory themselves is in the sandbox like any other file — tolerated rather than provided for,
-and reaching whatever this project's egress policy admits.
+That is a claim about what the launcher carries in unasked. A credential the user puts in the
+project directory themselves is in the sandbox like any other file, and one forwarded with
+`--env` is in its environment — tolerated rather than provided for, and reaching whatever this
+project's egress policy admits ("Exfiltration through an allowed host", below). `--env` is
+therefore named only on the command line, never in a repository file, so a checkout cannot choose
+which host variables it receives; it refuses the variables the boundary sets; and the launch
+prints every forwarded name.
 
 **Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
 which admits what the launch's `--egress` profile resolves to and logs every attempt ("Egress

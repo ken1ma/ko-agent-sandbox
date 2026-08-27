@@ -1222,11 +1222,60 @@ object AgentSandboxLauncher:
 
   /** Parsed launcher invocation: the authority options as given (None when defaulted), then
     * either one management verb with its operands, or the command forwarded verbatim. */
+  /** `--env=NAME` (value: the host's, read at launch) or `--env=NAME=VALUE`. */
+  case class EnvForward(name: String, value: Option[String])
+
+  val EnvironmentName = "[A-Za-z_][A-Za-z0-9_]*".r
+
+  /**
+   * Variables `--env` refuses, because the sandbox's boundary or its image sets them: a forwarded
+   * one would replace a launcher setting with the host's, silently — the host's SSL_CERT_FILE
+   * breaks the proxy's CA, a forwarded KO_AGENT_SANDBOX_EGRESS_POLICY tells the agent a policy
+   * that is not enforced. The literal names are every `--env=NAME=` the launcher passes (a test
+   * scans the source for them); the prefixes are the launcher's own vocabulary, the two images', and
+   * the loader's and JDK's option variables, which the image's proxy and trust setup rely on.
+   */
+  val RefusedForwardNames: Set[String] = Set(
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+    "SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO",
+    "TZ", "WAYLAND_DISPLAY",
+    "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+  )
+  val RefusedForwardPrefixes: Vector[String] = Vector("KO_AGENT_SANDBOX_", "SANDBOX_", "EGRESS_", "LD_")
+
+  /**
+   * The `--env=NAME=VALUE` arguments for the forwards, or why one cannot be made. A name unset
+   * on the host is an error, not an empty variable: a forward that configures nothing is the
+   * silent failure the KO_AGENT_SANDBOX_* typo warning exists for. Values never reach a log or
+   * the screen — a forward is how a secret gets in, and SECURITY.md ("Credential theft") is what
+   * that costs.
+   */
+  def forwardedEnvironment(
+    forwards: Vector[EnvForward],
+    hostEnv: String => Option[String],
+  ): Either[String, Vector[String]] =
+    val refused = forwards.map(_.name).filter: name =>
+      RefusedForwardNames(name) || RefusedForwardPrefixes.exists(name.startsWith)
+    if refused.nonEmpty then
+      Left(
+        s"error: --env=${refused.head}; the sandbox sets this variable itself, and a forward would replace it",
+      )
+    else
+      val resolved = forwards.map: forward =>
+        forward.value.orElse(hostEnv(forward.name)).toRight(forward.name)
+          .map(value => s"--env=${forward.name}=$value")
+      resolved.collectFirst { case Left(name) => name } match
+        case Some(name) =>
+          Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
+        case None       => Right(resolved.collect { case Right(arg) => arg })
+
   case class ParsedCommandLine(
     write: Option[String],
     egress: Option[String],
     verb: Option[(String, List[String])],
     command: List[String],
+    env: Vector[EnvForward] = Vector.empty,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -1253,23 +1302,34 @@ object AgentSandboxLauncher:
       rest: List[String],
       write: Option[String],
       egress: Option[String],
+      env: Vector[EnvForward],
     ): Either[String, ParsedCommandLine] =
       rest match
-        case Nil             => Right(ParsedCommandLine(write, egress, None, Nil))
-        case "--" :: command => Right(ParsedCommandLine(write, egress, None, command))
+        case Nil             => Right(ParsedCommandLine(write, egress, None, Nil, env))
+        case "--" :: command => Right(ParsedCommandLine(write, egress, None, command, env))
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
-            .flatMap(value => loop(tail, Some(value), egress))
+            .flatMap(value => loop(tail, Some(value), egress, env))
 
         case arg :: tail if arg.startsWith("--egress=") =>
           if egress.isDefined then Left("error: --egress is given twice")
           else choose("--egress", arg.stripPrefix("--egress="), EgressProfiles)
-            .flatMap(value => loop(tail, write, Some(value)))
+            .flatMap(value => loop(tail, write, Some(value), env))
 
-        case ("--write" | "--egress") :: _ =>
-          Left("error: the authority options are spelled --write=<mode> and --egress=<profile>")
+        case arg :: tail if arg.startsWith("--env=") =>
+          val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
+          if !EnvironmentName.matches(name) then
+            Left(s"error: --env=$name; a variable is named [A-Za-z_][A-Za-z0-9_]*")
+          else if env.exists(_.name == name) then Left(s"error: --env=$name is given twice")
+          else
+            loop(tail, write, egress, env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))))
+
+        case ("--write" | "--egress" | "--env") :: _ =>
+          Left(
+            "error: the launch options are spelled --write=<mode>, --egress=<profile> and --env=<name>[=<value>]",
+          )
 
         case "--proxy-effective" :: _ =>
           Left(
@@ -1282,19 +1342,19 @@ object AgentSandboxLauncher:
             ParsedCommandLine(
               write, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
-              Nil,
+              Nil, env,
             ),
           )
 
         case verb :: tail if ManagementVerbs(verb) =>
-          Right(ParsedCommandLine(write, egress, Some((verb, tail)), Nil))
+          Right(ParsedCommandLine(write, egress, Some((verb, tail)), Nil, env))
 
         case arg :: _ if arg.startsWith("--") =>
           Left(s"error: unknown option $arg\nRun --help for the launcher verbs.")
 
-        case command => Right(ParsedCommandLine(write, egress, None, command))
+        case command => Right(ParsedCommandLine(write, egress, None, command, env))
 
-    loop(args, None, None)
+    loop(args, None, None, Vector.empty)
 
   // -------------------------------------------------------------------------
   // Main
@@ -1360,11 +1420,11 @@ object AgentSandboxLauncher:
     // The verbs that read no authority option refuse one rather than ignoring it: a selection
     // that configures nothing is the silent-authority failure mode the options must not have.
     def noAuthorityOptions(verb: String): Unit =
-      if parsed.write.isDefined || parsed.egress.isDefined then
-        fail(s"error: $verb reads no authority option; drop --write/--egress")
+      if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty then
+        fail(s"error: $verb reads no launch option; drop --write/--egress/--env")
     def noWriteOption(verb: String): Unit =
-      if parsed.write.isDefined then
-        fail(s"error: $verb reads no --write option; drop it")
+      if parsed.write.isDefined || parsed.env.nonEmpty then
+        fail(s"error: $verb reads no --write or --env option; drop it")
 
     parsed.verb match
       case Some(("--help", _)) =>
@@ -1562,6 +1622,7 @@ object AgentSandboxLauncher:
     val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
     val clipboardHost =
       ClipboardBroker.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
+    val forwardedEnv = forwardedEnvironment(parsed.env, env).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
@@ -2180,6 +2241,10 @@ object AgentSandboxLauncher:
     if inspectedHosts.isEmpty then
       System.err.println("egress tls inspection: this policy inspects no hosts; no leaf minted")
     System.err.println(s"egress log: $hostLogFile")
+    // Names only: a forwarded value may be a secret, and this line is the one place the forward
+    // is said aloud, since the variable is otherwise indistinguishable from the image's own.
+    if parsed.env.nonEmpty then
+      System.err.println(s"forwarded environment: ${parsed.env.map(_.name).mkString(", ")}")
 
     // -----------------------------------------------------------------------
     // How the sandbox reaches it
@@ -2342,6 +2407,7 @@ object AgentSandboxLauncher:
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
       // carries +0000 and the agent's "today" turns over at the wrong hour.
       s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
+    ) ++ forwardedEnv ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
       // project checkout").

@@ -119,6 +119,13 @@ which is undecided. Until then the jar is built from a checkout — [Development
                          admits every public host on port 443, the
                          restricted catalog staying inspected; deny-all
                          admits none
+      --env=<name>[=<value>]
+                         set <name> in the sandbox: to <value>, or without
+                         one, to the host's value, which must be set.
+                         Repeatable; names the sandbox sets itself are
+                         refused. Whatever is forwarded is the agent's,
+                         reaching every host the egress policy admits
+                         (SECURITY.md, "Credential theft")
 
     Management verbs, each recognized before the command; whatever follows
     belongs to the verb:

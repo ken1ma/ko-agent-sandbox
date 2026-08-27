@@ -1007,6 +1007,57 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
 
+  test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
+    assertEquals(
+      parseCommandLine(List("--env=SBT_OPTS", "--env=FOO=a=b", "--env=EMPTY=", "claude")).map(_.env),
+      Right(Vector(EnvForward("SBT_OPTS", None), EnvForward("FOO", Some("a=b")), EnvForward("EMPTY", Some("")))),
+    )
+    assert(parseCommandLine(List("--env=SBT_OPTS", "--env=SBT_OPTS=x")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--env=1BAD")).swap.exists(_.contains("[A-Za-z_]")))
+    assert(parseCommandLine(List("--env=")).isLeft)
+    assert(parseCommandLine(List("--env", "SBT_OPTS")).swap.exists(_.contains("--env=<name>")))
+    // After the command, it is the command's.
+    assertEquals(parseCommandLine(List("claude", "--env=X")).map(_.env), Right(Vector.empty))
+
+  test("a forward reads the host at launch, fails on an unset name, and never replaces a boundary variable"):
+    val host = Map("SBT_OPTS" -> "-Xmx2g", "EMPTY" -> "")
+    assertEquals(
+      forwardedEnvironment(Vector(EnvForward("SBT_OPTS", None), EnvForward("FOO", Some("v=1"))), host.get),
+      Right(Vector("--env=SBT_OPTS=-Xmx2g", "--env=FOO=v=1")),
+    )
+    // Set but empty is a value; a name the host lacks is not.
+    assertEquals(forwardedEnvironment(Vector(EnvForward("EMPTY", None)), host.get), Right(Vector("--env=EMPTY=")))
+    assert(forwardedEnvironment(Vector(EnvForward("MISSING", None)), host.get).swap.exists(_.contains("not set")))
+    // An explicit value never consults the host, so it need not be exported there.
+    assertEquals(
+      forwardedEnvironment(Vector(EnvForward("MISSING", Some("x"))), host.get),
+      Right(Vector("--env=MISSING=x")),
+    )
+    Vector(
+      "HTTPS_PROXY", "https_proxy", "SSL_CERT_FILE", "TZ", "HOME", "PATH", "LD_PRELOAD",
+      "KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_MEMORY", "SANDBOX_PROC", "JAVA_TOOL_OPTIONS",
+    ).foreach: name =>
+      val refused = forwardedEnvironment(Vector(EnvForward(name, Some("x"))), host.get)
+      assert(refused.swap.exists(_.contains("sets this variable itself")), s"$name: $refused")
+
+  test("every variable the launcher sets in the sandbox is one --env refuses"):
+    // The refusal list is kept by hand; this holds it to the source. A literal `--env=NAME=` must
+    // be listed — the proxy container's included, since the scan cannot tell the two containers
+    // apart and refusing a proxy name in the sandbox costs nothing; an interpolated `--env=$Constant=` is one of the launcher's own variables, which
+    // the KO_AGENT_SANDBOX_ prefix covers — asserted below so a constant renamed out of the prefix
+    // is caught too.
+    val source = Files.readString(Paths.get("src/main/scala/AgentSandboxLauncher.scala"))
+    // Anchored on the opening quote: string literals, not the comments that spell `--env=NAME=`.
+    val literal = "\"--env=([A-Za-z_][A-Za-z0-9_]*)=".r.findAllMatchIn(source).map(_.group(1)).toSet
+    val unrefused =
+      literal.filterNot(name => RefusedForwardNames(name) || RefusedForwardPrefixes.exists(name.startsWith))
+    assertEquals(unrefused, Set.empty[String])
+    Vector(SessionStartVariable, NestingVariable, ClipboardVariable).foreach: name =>
+      assert(name.startsWith("KO_AGENT_SANDBOX_"), name)
+    // The interpolated forms are exactly those constants and the forwarded arguments themselves.
+    val interpolated = "\"--env=\\$([A-Z][A-Za-z]+)".r.findAllMatchIn(source).map(_.group(1)).toSet
+    assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable"))
+
   test("--self-test's container leaves nothing behind and carries what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and
     // keeps no container. The capability is not
