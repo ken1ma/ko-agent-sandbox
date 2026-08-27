@@ -1,4 +1,4 @@
-// Run Claude Code, Codex, or Antigravity inside a rootless Podman container.
+// Run Claude Code, Codex, Antigravity, or Copilot CLI inside a rootless Podman container.
 //
 // One launcher for Linux, macOS, WSL and native Windows. This file is the policy, the flags, and the flow; the
 // threat model is SECURITY.md. Its neighbours, each the whole blast radius of one thing:
@@ -31,8 +31,8 @@
 //    |      (policyGuardVolume)
 //    |
 //    +-- Podman named volume -----------> ~/persistent-volume RW/persistent
-//    |                                       (~/.claude, ~/.codex, ~/.gemini
-//    |                                        are symlinks into it)
+//    |                                       (~/.claude, ~/.codex, ~/.gemini,
+//    |                                        ~/.copilot are symlinks into it)
 //    |
 //    X-- ~/.ssh                             NOT EXPOSED
 //    X-- ~/.aws                             NOT EXPOSED
@@ -50,9 +50,9 @@
 //
 // The rest of /home/nonroot is an anonymous Podman volume: build caches work, and disappear with the container.
 //
-// The image pre-accepts Claude Code's trust dialog for /workspace and marks it trusted for Codex, so a mounted
-// project's own agent configuration — MCP servers included — takes effect unconfirmed. The container, not those
-// dialogs, is the boundary; whatever they name runs inside it, never in a host-side helper.
+// The image pre-accepts Claude Code's trust dialog for /workspace and marks it trusted for Codex and Copilot, so a
+// mounted project's own agent configuration — MCP servers included — takes effect unconfirmed. The container, not
+// those dialogs, is the boundary; whatever they name runs inside it, never in a host-side helper.
 //
 // Podman arguments are NOT accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
@@ -2261,8 +2261,8 @@ object AgentSandboxLauncher:
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
       "--mount", "type=volume,dst=/home/nonroot",
 
-      // Persist auth/config; ~/.claude, ~/.codex and ~/.gemini are symlinks into this volume. This is Podman-owned
-      // storage, not a bind mount into the host HOME.
+      // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini and ~/.copilot are symlinks into this volume. This is
+      // Podman-owned storage, not a bind mount into the host HOME.
       "--mount", s"type=volume,src=$persistentVolume,dst=/home/nonroot/persistent-volume",
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM

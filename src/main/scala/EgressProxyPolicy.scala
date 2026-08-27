@@ -182,13 +182,13 @@ object EgressProxyPolicy:
        |profile, the closest to the old behavior.""".stripMargin
 
   /**
-   * codex→openai, claude→anthropic, agy→google. Only the basename of the directly launched
+   * codex→openai, claude→anthropic, agy→google, copilot→github. Only the basename of the directly launched
    * command is classified; the launcher does not inspect a wrapper's arguments or guess what it
    * may later execute — a wrapper script selects no provider and, under deny-unless-model, gets
    * the startup warning instead of a guessed grant.
    */
   val AgentProviders: Map[String, String] =
-    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google")
+    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github")
 
   def commandProvider(command: Option[String]): Option[String] =
     command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)

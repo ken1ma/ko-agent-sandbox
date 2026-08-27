@@ -48,7 +48,8 @@ object AgentEgressProxy:
    *     its tag's one POST: `=git-fetch` the git-upload-pack transfer, so cloning works while
    *     `git push` is refused inside the tunnel rather than merely being expected to fail for
    *     want of a credential; `=npm-audit` npm's install-time audit, so dependency-vulnerability
-   *     warnings keep working.
+   *     warnings keep working; `=copilot-login` GitHub's OAuth device flow, so Copilot signs in
+   *     on a forge that stays read-only otherwise.
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
    * rule, and an unknown tag is a refused start — the guardrail DESIGN.md ("No general HTTP
@@ -74,24 +75,33 @@ object AgentEgressProxy:
    * intentional data recipients, never grow by accumulation.
    */
 
+  /** A host's effective treatment. Restricted is inspected HTTPS limited to the closed set of
+    * read and fetch operations (authorizeInspectedRequest); unrestricted is an opaque tunnel. */
+  enum Treatment:
+    case Restricted(tags: Set[String])
+    case Unrestricted
+
   /*
    * The model-provider groups: each names the party trusted to receive project data, and expands
    * only to the launcher-maintained model, authentication and control-plane endpoints operated
-   * by that provider — never every domain the provider owns. They stay opaque (unrestricted)
-   * because terminating their TLS means reading the conversation — privacy is why the treatment
-   * exists at all. The flip side is that such a host is unbounded, unlogged write access, which
-   * makes these the groups to extend last.
+   * by that provider — never every domain the provider owns. The model endpoints stay opaque
+   * (unrestricted) because terminating their TLS means reading the conversation — privacy is why
+   * the treatment exists at all. The flip side is that such a host is unbounded, unlogged write
+   * access, which makes these the groups to extend last, and why an endpoint that is a forge as
+   * well carries the restricted treatment inside its group: the group is what deny-unless-model
+   * admits, and it must not admit `git push`.
    */
-  val ModelProviderHosts: Map[String, Set[String]] =
+  val ModelProviderHosts: Map[String, Map[String, Treatment]] =
+    def opaque(hosts: String*): Map[String, Treatment] = hosts.map(_ -> Treatment.Unrestricted).toMap
     Map(
       // Claude Code
-      "anthropic" -> Set(
+      "anthropic" -> opaque(
         "api.anthropic.com",  // model traffic
         "claude.ai", "platform.claude.com",  // for interactive login
       ),
 
       // Codex
-      "openai" -> Set(
+      "openai" -> opaque(
         "api.openai.com",   //  API-key use
         "auth.openai.com",  // issues the device code and the tokens
         "chatgpt.com",      // model traffic for a ChatGPT plan
@@ -100,24 +110,44 @@ object AgentEgressProxy:
       ),
 
       // Antigravity
-      "google" -> Set(
+      "google" -> opaque(
         "accounts.google.com",          // printed sign-in URL
         "oauth2.googleapis.com",        // exchanges the pasted code and refreshes tokens
         "cloudcode-pa.googleapis.com",  // model traffic and account state
         // play.googleapis.com — telemetry and experiment polling — is absent for the same reason ab.chatgpt.com is.
       ),
-    ).map((provider, hosts) => provider -> hosts.map(normalizeHost))
+
+      // Copilot CLI. Its model endpoint doubles as its GitHub MCP server (/mcp on the same host),
+      // a write path to the forge that opacity cannot separate from model traffic — the trade
+      // SECURITY.md prices under "The web reached through the model provider".
+      "github" -> (opaque(
+        "api.githubcopilot.com",  // model traffic, the plan-specific hosts below being what the token names instead
+        "api.individual.githubcopilot.com",
+        "api.business.githubcopilot.com",
+        "api.enterprise.githubcopilot.com",
+      ) ++ Map(
+        // The two forge hosts stay inspected here as in the catalog: the login tag's two POSTs are
+        // all sign-in needs, and the Copilot token exchange (/copilot_internal/v2/token) is a GET.
+        "github.com" -> Treatment.Restricted(Set("copilot-login")),
+        "api.github.com" -> Treatment.Restricted(Set.empty),
+      )),
+    ).map((provider, hosts) => provider -> hosts.map((host, treatment) => normalizeHost(host) -> treatment))
 
   /** The tags a restricted entry may carry — a closed set: a tag names one of the fixed
     * rule-sets in authorizeInspectedRequest, never describes one. Each is named tool-operation,
     * for the single operation it opens. */
-  val KnownTags: Set[String] = Set("git-fetch", "npm-audit")
+  val KnownTags: Set[String] = Set("git-fetch", "npm-audit", "copilot-login")
 
   /** The audit endpoint the image's npm POSTs at install time — measured on the bundled Node
     * 24.19.0 / npm 11.17.0, not guessed. An older npm's /-/npm/v1/security/audits/quick is
     * refused and logged: the contract is the shipped client, and npm treats the refusal as
     * non-fatal. */
   val NpmAuditPath = "/-/npm/v1/security/advisories/bulk"
+
+  /** GitHub's OAuth device flow, as Copilot CLI 1.0.80 drives it: the first mints the user code the
+    * agent prints, the second polls for the token once the browser has approved. Both bodies are
+    * fixed forms naming a client id, so the allowance carries no project data. */
+  val CopilotLoginPaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
 
   /**
    * The curated restricted catalog: GET and HEAD with no body, and no POST — except a tagged
@@ -265,20 +295,19 @@ object AgentEgressProxy:
       "media.githubusercontent.com",  // LFS files, one URL per file
     ).map(entry => parseTaggedEntry("the curated restricted catalog", entry)).toMap
 
-  /** A host's effective treatment. Restricted is inspected HTTPS limited to the closed set of
-    * read and fetch operations (authorizeInspectedRequest); unrestricted is an opaque tunnel. */
-  enum Treatment:
-    case Restricted(tags: Set[String])
-    case Unrestricted
-
   /**
-   * Baseline `B`: every model-provider group plus the curated restricted catalog, each host
-   * declared in exactly one place above, never here. What each profile admits of it is
-   * resolvePolicy's equation.
+   * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
+   * is restricted in both — a group never widens the catalog — and carries the union of its tags
+   * (github.com: `=git-fetch` from the catalog, `=copilot-login` from its group). What each
+   * profile admits of it is resolvePolicy's equation.
    */
   val BaselineHosts: Map[String, Treatment] =
-    ModelProviderHosts.values.flatten.map(_ -> Treatment.Unrestricted).toMap
-      ++ CuratedRestrictedHosts.map((host, tags) => host -> Treatment.Restricted(tags))
+    (ModelProviderHosts.values.flatten
+      ++ CuratedRestrictedHosts.map((host, tags) => host -> Treatment.Restricted(tags)))
+      .groupMapReduce(_(0))(_(1)):
+        case (Treatment.Restricted(a), Treatment.Restricted(b)) => Treatment.Restricted(a ++ b)
+        case (a, b) =>
+          throw IllegalStateException(s"a provider group and the catalog disagree on a host's treatment: $a, $b")
 
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
@@ -695,9 +724,8 @@ object AgentEgressProxy:
     )
     val withAddedProviders =
       delta.addedProviders.toVector.sorted.foldLeft(afterProviderRemovals): (current, name) =>
-        ModelProviderHosts(name).foldLeft(current)(
-          overlay(_, _, Treatment.Unrestricted, s"allowed +model-provider $name"),
-        )
+        ModelProviderHosts(name).foldLeft(current):
+          case (current, (host, treatment)) => overlay(current, host, treatment, s"allowed +model-provider $name")
     // Sequentially, each rule judged against the map as the rules before it left it: of two
     // overlapping removals, only the first removes anything, and only it is reported.
     val (afterRemovals, effectiveHostRemovals) =
@@ -732,9 +760,7 @@ object AgentEgressProxy:
       case "deny-unless-model" =>
         (
           provider.fold(Map.empty[String, (Treatment, String)])(name =>
-            ModelProviderHosts(name)
-              .map(_ -> (Treatment.Unrestricted, s"model-provider $name"))
-              .toMap,
+            ModelProviderHosts(name).map((host, treatment) => host -> (treatment, s"model-provider $name")),
           ),
           false,
         )
@@ -757,7 +783,7 @@ object AgentEgressProxy:
 
     val warnings =
       provider.toVector.flatMap: selected =>
-        val unreachable = ModelProviderHosts(selected).toVector.sorted.filterNot: host =>
+        val unreachable = ModelProviderHosts(selected).keys.toVector.sorted.filterNot: host =>
           !denied.exists(_.matches(host)) && (hosts.contains(host) || ambient)
         Option.when(unreachable.nonEmpty)(
           s"the selected model provider '$selected' is not fully reachable under $profile: " +
@@ -1268,9 +1294,10 @@ object AgentEgressProxy:
   /**
    * What "read access" means once TLS is terminated. Everywhere: GET and
    * HEAD to any path, bodyless. Each of the host's tags additionally admits
-   * its one POST: `=git-fetch` the git-upload-pack path, without which "read
+   * its POSTs: `=git-fetch` the git-upload-pack path, without which "read
    * access" would silently exclude `git clone`; `=npm-audit` the audit
-   * endpoint npm hits during install (NpmAuditPath). On an untagged host, no
+   * endpoint npm hits during install (NpmAuditPath); `=copilot-login` the
+   * device-flow pair (CopilotLoginPaths). On an untagged host, no
    * POST at all: a path there is an object name anyone can choose, so a
    * path rule authorizes nothing (DefaultReadOnlyHosts has the type case).
    *
@@ -1330,6 +1357,7 @@ object AgentEgressProxy:
         val opened =
           (hostTags.contains("git-fetch") && isUploadPack(head.path))
             || (hostTags.contains("npm-audit") && head.path == NpmAuditPath)
+            || (hostTags.contains("copilot-login") && CopilotLoginPaths.contains(head.path))
         if !opened then
           throw PolicyViolation(if hostTags.isEmpty then "restricted host" else "restricted path")
 

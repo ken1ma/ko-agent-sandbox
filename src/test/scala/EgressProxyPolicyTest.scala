@@ -87,6 +87,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
     assertEquals(commandProvider(Some("/usr/local/bin/codex")), Some("openai"))
     assertEquals(commandProvider(Some("C:\\tools\\agy")), Some("google"))
+    assertEquals(commandProvider(Some("copilot")), Some("github"))
     assertEquals(commandProvider(Some("bash")), None)
     // A wrapper is not inspected: whatever it may later run, the wrapper selects nothing.
     assertEquals(commandProvider(Some("./run-claude.sh")), None)

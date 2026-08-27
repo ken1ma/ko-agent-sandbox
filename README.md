@@ -17,8 +17,8 @@ HTTPS — are each an explicit `--egress` profile.
     │  ┌─ project directory ───────────┐     ┌─ named volume (per project) ──┐     │
     │  │  the only user files the      │     │  agents' auth and config,     │     │
     │  │  sandbox can reach            │     │  kept across sessions;        │     │
-    │  │                               │     │  ~/.claude, ~/.codex and      │     │
-    │  │                               │     │  ~/.gemini point into it      │     │
+    │  │                               │     │  ~/.claude ~/.codex ~/.gemini │     │
+    │  │                               │     │  ~/.copilot point into it     │     │
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
     │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
     │        │ live, the default) with git control   │                             │
@@ -28,7 +28,7 @@ HTTPS — are each an explicit `--egress` profile.
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
     │  ┌─ sandbox container ────┴──────┐     ┌─ egress proxy container ──────┐     │
-    │  │  runs claude / codex / agy    │     │  https only, profile-selected │     │
+    │  │  runs claude/codex/agy/copilot│     │  https only, profile-selected │     │
     │  │  nonroot user, caps dropped,  │ (a) │  hosts, stateless;            │ (b) │
     │  │  read-only rootfs             ├────>│  TLS-inspects restricted      ├─────┼─> Internet
     │  │                               │     │  hosts: read-only + git fetch │     │
@@ -54,12 +54,14 @@ The sandbox image preinstalls:
 1. Claude Code (Anthropic)
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
+1. Copilot CLI (GitHub)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
 and configures them to
 
 1. not ask for permissions
-    1. `agy` needs a one-time step; see [Running `<command>`](#running-command)
+    1. `agy` needs a one-time step, and `copilot` a flag; see
+       [Running `<command>`](#running-command)
 
 [SECURITY.md] describes the security model — what the sandbox defends against, how, and what it does
 not.
@@ -95,7 +97,7 @@ which is undecided. Until then the jar is built from a checkout — [Development
     Usage, from a project directory (which becomes /workspace):
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
-    <command> runs inside the sandbox: claude, codex, agy, bash, ...
+    <command> runs inside the sandbox: claude, codex, agy, copilot, bash, ...
     The first non-option ends launcher parsing and everything after it is
     forwarded verbatim; -- is an optional escape for a command that could
     look like a launcher option.
@@ -112,10 +114,11 @@ which is undecided. Until then the jar is built from a checkout — [Development
                          .ko-agent-sandbox/egress/; deny-unless-model
                          admits only the launched agent's model provider
                          (claude -> anthropic, codex -> openai, agy ->
-                         google; anything else, bash included, admits no
-                         host); allow-unless-denied admits every public
-                         host on port 443, the restricted catalog staying
-                         inspected; deny-all admits none
+                         google, copilot -> github; anything else, bash
+                         included, admits no host); allow-unless-denied
+                         admits every public host on port 443, the
+                         restricted catalog staying inspected; deny-all
+                         admits none
 
     Management verbs, each recognized before the command; whatever follows
     belongs to the verb:
@@ -234,11 +237,15 @@ which is undecided. Until then the jar is built from a checkout — [Development
        the code back. Unlike `claude` and `codex`, permission prompts are not pre-disabled (agy has
        no documented settings key for it); run `agy --dangerously-skip-permissions`, or set it once
        via the in-app `/permissions` command, which persists.
-    1. `claude --resume`, `codex resume`, and `agy --continue` work.
+    1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Tool prompts
+       are pre-disabled; prompts for paths outside `/workspace` and for URLs remain unless you run
+       `copilot --yolo`.
+    1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so it is one setting in the volume;
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
-       them is a Containerfile edit and a rebuild.
+       them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
+       `COPILOT_ALLOW_ALL=false`.
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume, and race on both.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
@@ -256,15 +263,16 @@ TLS-inspected, GET and HEAD only, except that an entry tagged `=git-fetch` also 
 `git clone`/`fetch` (whose transfer leg is a `POST`) and one tagged `=npm-audit` serves npm's
 install-time audit.
 
-The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google` — each
-expanding to that provider's model, authentication and control-plane endpoints, unrestricted)
-plus a curated catalog of restricted documentation, package-registry and forge hosts.
+The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
+`github` — each expanding to that provider's model, authentication and control-plane endpoints,
+unrestricted, except that `github`'s forge hosts stay restricted, tagged `=copilot-login` for the
+sign-in) plus a curated catalog of restricted documentation, package-registry and forge hosts.
 
 1. `deny-unless-allowed` (the default) — the baseline, shaped by the project's `allowed` delta.
 1. `deny-unless-model` — only the launched agent's own provider group: `claude` selects
-   `anthropic`, `codex` selects `openai`, `agy` selects `google`. Only the basename of the
-   directly launched command is classified; anything else — `bash`, a wrapper script — selects no
-   provider, admits no host, and says so at startup.
+   `anthropic`, `codex` selects `openai`, `agy` selects `google`, `copilot` selects `github`.
+   Only the basename of the directly launched command is classified; anything else — `bash`, a
+   wrapper script — selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — every public hostname on port 443, unrestricted, except that the
    restricted catalog (plus restricted `allowed` additions) stays inspected and `denied` still
    applies.

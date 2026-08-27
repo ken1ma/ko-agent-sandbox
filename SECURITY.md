@@ -29,7 +29,7 @@ and reaching whatever this project's egress policy admits.
 **Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
 which admits what the launch's `--egress` profile resolves to and logs every attempt ("Egress
 proxy" below). The default profile admits the launcher-owned baseline — the model-provider
-groups unrestricted, the curated catalog restricted — and nothing else.
+groups, their model endpoints unrestricted, the curated catalog restricted — and nothing else.
 
 **Writing to remote hosts**, except the agents' model traffic and `git clone`/`fetch`. Every
 admitted destination carries one of two treatments: `unrestricted`, opaque tunnels for the model
@@ -169,6 +169,12 @@ the provider's infrastructure does the searching. The proxy sees one connection 
 applies to the domains searched — a query is outbound information the provider relays onward.
 Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
 proxy, answered only by an allowed host and logged like any other connection.
+
+Copilot CLI's model endpoint, `api.githubcopilot.com`, serves its built-in GitHub MCP server on
+the same host — issues, pull requests and comments written with the signed-in account, which the
+opaque tunnel cannot tell from model traffic — and its session export to GitHub's web UI. Both
+are copilot's own switches, `--disable-builtin-mcps` and `--no-remote-export`; the proxy's is
+`denied: model-provider github`, which takes the model traffic with them.
 
 **Low-bandwidth channels.** Which allowed host is contacted, when, and in what order all carry
 information. Nothing measures that.

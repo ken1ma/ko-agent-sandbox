@@ -182,15 +182,18 @@ RUN set -euxo pipefail; \
         /home/nonroot/persistent-volume \
         /home/nonroot/persistent-volume/claude \
         /home/nonroot/persistent-volume/codex \
-        /home/nonroot/persistent-volume/antigravity; \
+        /home/nonroot/persistent-volume/antigravity \
+        /home/nonroot/persistent-volume/copilot; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
     # `.gemini` is gemini-cli (deprecated) heritage
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
+    ln -s persistent-volume/copilot /home/nonroot/.copilot; \
     chown -h nonroot:nonroot \
         /home/nonroot/.claude \
         /home/nonroot/.codex \
-        /home/nonroot/.gemini
+        /home/nonroot/.gemini \
+        /home/nonroot/.copilot
 
 
 # ---------------------------------------------------------------------------
@@ -380,25 +383,75 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
+# Copilot CLI
+# ---------------------------------------------------------------------------
+#
+# GitHub's install script (gh.io/copilot-install) fetches the release tarball
+# and checks it against the release's SHA256SUMS; the same two fetches here,
+# without the shell-profile editing. The npm package wraps the same binary.
+# `releases/latest` as for Codex, so a release landing between the two
+# fetches fails the checksum and the build, never installs a mismatch. The
+# smoke test gets a throwaway HOME because copilot writes a package cache on
+# every invocation and this RUN is root.
+RUN set -euxo pipefail; \
+    COPILOT_ASSET="copilot-linux-$(dpkg --print-architecture | sed s/amd64/x64/).tar.gz"; \
+    COPILOT_RELEASE=https://github.com/github/copilot-cli/releases/latest/download; \
+    curl -fsSL "${COPILOT_RELEASE}/${COPILOT_ASSET}" -o /tmp/copilot.tar.gz; \
+    printf '%s  /tmp/copilot.tar.gz\n' \
+        "$(curl -fsSL "${COPILOT_RELEASE}/SHA256SUMS.txt" \
+            | awk -v asset="$COPILOT_ASSET" '$2 == asset { print $1 }')" \
+        | sha256sum -c -; \
+    tar -xzf /tmp/copilot.tar.gz -C /tmp copilot; \
+    install -m 0755 /tmp/copilot /usr/local/bin/copilot; \
+    rm /tmp/copilot.tar.gz /tmp/copilot; \
+    HOME=/tmp/copilot-smoke copilot --version >/dev/null; \
+    rm -rf /tmp/copilot-smoke
+
+# A read-only binary does not stop copilot's updater: it extracts new
+# versions into a package cache under ~/.cache/copilot and runs those. Off,
+# so it updates on rebuild like the others.
+ENV COPILOT_AUTO_UPDATE=false
+
+# Tool prompts off, the Codex counterpart above. Copilot has no system config
+# layer, so the default is an environment variable a launch can override
+# (COPILOT_ALLOW_ALL=false). It covers tools only; --yolo adds paths outside
+# /workspace and URLs, whose prompts the user keeps otherwise.
+ENV COPILOT_ALLOW_ALL=true
+
+# The trust seeding for copilot: ~/.copilot/config.json is user state that
+# copilot rewrites, in the persistent volume like Claude's .claude.json.
+RUN set -euxo pipefail; \
+    printf '%s\n' \
+        '{' \
+        '  "trustedFolders": [' \
+        '    "/workspace"' \
+        '  ]' \
+        '}' \
+        > /home/nonroot/persistent-volume/copilot/config.json; \
+    chown nonroot:nonroot /home/nonroot/persistent-volume/copilot/config.json
+
+
+# ---------------------------------------------------------------------------
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
 # SANDBOX.md tells the running agent what this container is; STYLE.md how
-# to write. They concatenate into AGENTS.md, the target of all three links.
+# to write. They concatenate into AGENTS.md, the target of every link below.
 # Without them an agent reads `Read-only file system` as breakage, or writes
 # deliverables somewhere discarded on exit.
 #
 #   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
 #           first, project-unexcludable, read-only like managed-settings
-#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md — no system scope,
-#           so both resolve through the persistent volume. (Codex's
+#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; copilot
+#           ~/.copilot/copilot-instructions.md — no system scope, so each
+#           resolves through the persistent volume. (Codex's
 #           model_instructions_file would *replace* the built-in
 #           instructions, so it is not used.)
 #
 # Symlinks, not copies: an existing volume is never re-seeded, and this text
 # must change with the image. Absolute, because a relative link would have
-# to climb out of the volume. `test -r` resolves all three at build time, so
-# a renamed target fails the build rather than leaving an agent uninformed.
+# to climb out of the volume.
+#
 # The launcher gives the image's JDK this session's CA and proxy by mounting over its own cacerts
 # and net.properties, but it can only reach the JDK it shipped. sandbox-prepare-jdk does both for a
 # JVM the agent installs itself (`cs java`), from the certificate mounted beside these instructions.
@@ -423,12 +476,11 @@ RUN set -euxo pipefail; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/codex/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/antigravity/GEMINI.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md /home/nonroot/persistent-volume/copilot/copilot-instructions.md; \
     chown -h nonroot:nonroot \
         /home/nonroot/persistent-volume/codex/AGENTS.md \
-        /home/nonroot/persistent-volume/antigravity/GEMINI.md; \
-    test -r /etc/claude-code/CLAUDE.md; \
-    test -r /home/nonroot/persistent-volume/codex/AGENTS.md; \
-    test -r /home/nonroot/persistent-volume/antigravity/GEMINI.md
+        /home/nonroot/persistent-volume/antigravity/GEMINI.md \
+        /home/nonroot/persistent-volume/copilot/copilot-instructions.md
 
 
 # ---------------------------------------------------------------------------

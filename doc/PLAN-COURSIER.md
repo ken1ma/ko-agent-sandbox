@@ -34,8 +34,8 @@ sandbox write is absent from the host after exit.
 
 The target is to remove image-managed Coursier content from the copied home while retaining its
 small seed files. Do not add `nocopy` to the home volume in this increment: that also hides the
-`.claude`, `.codex` and `.gemini` symlinks and can prevent a new persistent volume from receiving
-its seed. A small ordinary copy-up preserves those contracts without material startup cost.
+`.claude`, `.codex`, `.gemini` and `.copilot` symlinks and can prevent a new persistent volume
+from receiving its seed. A small ordinary copy-up preserves those contracts without material startup cost.
 
 ## Cold default
 
@@ -212,6 +212,7 @@ copy-up must also provide:
 - `.claude -> persistent-volume/claude`;
 - `.codex -> persistent-volume/codex`;
 - `.gemini -> persistent-volume/antigravity`;
+- `.copilot -> persistent-volume/copilot`;
 - the seed files copied into a newly created persistent volume;
 - a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and other session-created paths.
 

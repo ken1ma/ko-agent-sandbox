@@ -12,8 +12,8 @@ write mode — the appended "Authority in force for this session" section says w
 
 `/workspace` is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
-`~/persistent-volume` — where `~/.claude`, `~/.codex` and `~/.gemini` point — survives,
-and holds agent state, not project output.
+`~/persistent-volume` — where `~/.claude`, `~/.codex`, `~/.gemini` and `~/.copilot` point —
+survives, and holds agent state, not project output.
 
 The host clipboard is reachable only when `KO_AGENT_SANDBOX_CLIPBOARD` is set: `paste` serves an
 image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image/png -o`), and
