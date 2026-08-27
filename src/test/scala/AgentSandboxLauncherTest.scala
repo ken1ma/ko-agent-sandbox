@@ -1033,30 +1033,24 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       forwardedEnvironment(Vector(EnvForward("MISSING", Some("x"))), host.get),
       Right(Vector("--env=MISSING=x")),
     )
-    Vector(
-      "HTTPS_PROXY", "https_proxy", "SSL_CERT_FILE", "TZ", "HOME", "PATH", "LD_PRELOAD",
-      "KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_MEMORY", "SANDBOX_PROC", "JAVA_TOOL_OPTIONS",
-    ).foreach: name =>
+    Vector("KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_NESTING", "KO_AGENT_SANDBOX_MEMORY").foreach: name =>
       val refused = forwardedEnvironment(Vector(EnvForward(name, Some("x"))), host.get)
-      assert(refused.swap.exists(_.contains("sets this variable itself")), s"$name: $refused")
+      assert(refused.swap.exists(_.contains("KO_AGENT_SANDBOX_*")), s"$name: $refused")
+    // Everything else the launcher or the image sets is the user's to override, by name.
+    Vector("HTTPS_PROXY", "SSL_CERT_FILE", "TZ", "PAGER", "PATH").foreach: name =>
+      assertEquals(forwardedEnvironment(Vector(EnvForward(name, Some("v"))), host.get), Right(Vector(s"--env=$name=v")))
 
-  test("every variable the launcher sets in the sandbox is one --env refuses"):
-    // The refusal list is kept by hand; this holds it to the source. A literal `--env=NAME=` must
-    // be listed — the proxy container's included, since the scan cannot tell the two containers
-    // apart and refusing a proxy name in the sandbox costs nothing; an interpolated `--env=$Constant=` is one of the launcher's own variables, which
-    // the KO_AGENT_SANDBOX_ prefix covers — asserted below so a constant renamed out of the prefix
-    // is caught too.
-    val source = Files.readString(Paths.get("src/main/scala/AgentSandboxLauncher.scala"))
-    // Anchored on the opening quote: string literals, not the comments that spell `--env=NAME=`.
-    val literal = "\"--env=([A-Za-z_][A-Za-z0-9_]*)=".r.findAllMatchIn(source).map(_.group(1)).toSet
-    val unrefused =
-      literal.filterNot(name => RefusedForwardNames(name) || RefusedForwardPrefixes.exists(name.startsWith))
-    assertEquals(unrefused, Set.empty[String])
-    Vector(SessionStartVariable, NestingVariable, ClipboardVariable).foreach: name =>
-      assert(name.startsWith("KO_AGENT_SANDBOX_"), name)
-    // The interpolated forms are exactly those constants and the forwarded arguments themselves.
-    val interpolated = "\"--env=\\$([A-Z][A-Za-z]+)".r.findAllMatchIn(source).map(_.group(1)).toSet
-    assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable"))
+  test("what the launcher tells the sandbox is in force is all KO_AGENT_SANDBOX_*, the prefix --env refuses"):
+    // The refusal is a prefix, so a variable the launcher passes to say what is enforced must
+    // carry it: the interpolated `--env=$Constant=` forms are those, and EgressProxyPolicy's
+    // `$variable` names the proxy container's policy files, which no forward reaches.
+    val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
+      .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
+    val interpolated = sources.flatMap("\"--env=\\$([A-Za-z]+)".r.findAllMatchIn(_).map(_.group(1))).toSet
+    assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable"))
+    Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_POLICY").foreach: name =>
+      assert(name.startsWith(RefusedForwardPrefix), name)
+    assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=")))
 
   test("--self-test's container leaves nothing behind and carries what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and

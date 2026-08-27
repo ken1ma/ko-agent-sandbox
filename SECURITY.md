@@ -27,8 +27,8 @@ project directory themselves is in the sandbox like any other file, and one forw
 `--env` is in its environment — tolerated rather than provided for, and reaching whatever this
 project's egress policy admits ("Exfiltration through an allowed host", below). `--env` is
 therefore named only on the command line, never in a repository file, so a checkout cannot choose
-which host variables it receives; it refuses the variables the boundary sets; and the launch
-prints every forwarded name.
+which host variables it receives; it refuses `KO_AGENT_SANDBOX_*`, the launcher's own account of
+what is enforced; and the launch prints every forwarded name.
 
 **Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
 which admits what the launch's `--egress` profile resolves to and logs every attempt ("Egress

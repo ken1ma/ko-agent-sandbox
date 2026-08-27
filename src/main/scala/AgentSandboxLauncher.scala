@@ -1228,21 +1228,15 @@ object AgentSandboxLauncher:
   val EnvironmentName = "[A-Za-z_][A-Za-z0-9_]*".r
 
   /**
-   * Variables `--env` refuses, because the sandbox's boundary or its image sets them: a forwarded
-   * one would replace a launcher setting with the host's, silently — the host's SSL_CERT_FILE
-   * breaks the proxy's CA, a forwarded KO_AGENT_SANDBOX_EGRESS_POLICY tells the agent a policy
-   * that is not enforced. The literal names are every `--env=NAME=` the launcher passes (a test
-   * scans the source for them); the prefixes are the launcher's own vocabulary, the two images', and
-   * the loader's and JDK's option variables, which the image's proxy and trust setup rely on.
+   * The one thing `--env` refuses: the launcher's own KO_AGENT_SANDBOX_* variables, which are how
+   * it tells the sandbox what is in force — the resolved egress policy, the nesting, clipboard and
+   * session-start modes. Forwarded, one would make what the agent is told differ from what is
+   * enforced, the drift the launcher exists to rule out. Every other variable the launcher or the
+   * image sets (the proxy and CA-bundle variables, TZ, PAGER) is forwardable: the network has no
+   * route but the proxy whatever the environment says, so an override can only fail, visibly,
+   * under a name the launch printed — and overriding a default is what a forward is for.
    */
-  val RefusedForwardNames: Set[String] = Set(
-    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
-    "SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO",
-    "TZ", "WAYLAND_DISPLAY",
-    "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR",
-    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
-  )
-  val RefusedForwardPrefixes: Vector[String] = Vector("KO_AGENT_SANDBOX_", "SANDBOX_", "EGRESS_", "LD_")
+  val RefusedForwardPrefix = "KO_AGENT_SANDBOX_"
 
   /**
    * The `--env=NAME=VALUE` arguments for the forwards, or why one cannot be made. A name unset
@@ -1255,20 +1249,19 @@ object AgentSandboxLauncher:
     forwards: Vector[EnvForward],
     hostEnv: String => Option[String],
   ): Either[String, Vector[String]] =
-    val refused = forwards.map(_.name).filter: name =>
-      RefusedForwardNames(name) || RefusedForwardPrefixes.exists(name.startsWith)
-    if refused.nonEmpty then
-      Left(
-        s"error: --env=${refused.head}; the sandbox sets this variable itself, and a forward would replace it",
-      )
-    else
-      val resolved = forwards.map: forward =>
-        forward.value.orElse(hostEnv(forward.name)).toRight(forward.name)
-          .map(value => s"--env=${forward.name}=$value")
-      resolved.collectFirst { case Left(name) => name } match
-        case Some(name) =>
-          Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
-        case None       => Right(resolved.collect { case Right(arg) => arg })
+    forwards.map(_.name).find(_.startsWith(RefusedForwardPrefix)) match
+      case Some(name) =>
+        Left(s"error: --env=$name; the launcher sets $RefusedForwardPrefix* itself, and a forward would replace it")
+      case None => resolve(forwards, hostEnv)
+
+  private def resolve(forwards: Vector[EnvForward], hostEnv: String => Option[String]): Either[String, Vector[String]] =
+    val resolved = forwards.map: forward =>
+      forward.value.orElse(hostEnv(forward.name)).toRight(forward.name)
+        .map(value => s"--env=${forward.name}=$value")
+    resolved.collectFirst { case Left(name) => name } match
+      case Some(name) =>
+        Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
+      case None => Right(resolved.collect { case Right(arg) => arg })
 
   case class ParsedCommandLine(
     write: Option[String],
@@ -1622,7 +1615,9 @@ object AgentSandboxLauncher:
     val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
     val clipboardHost =
       ClipboardBroker.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
-    val forwardedEnv = forwardedEnvironment(parsed.env, env).fold(fail(_), identity)
+    // Raw, not HostCommands.env: that one reads an empty variable as unset, which is right for the
+    // launcher's own settings and wrong here, where set-but-empty is a value to forward.
+    val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
 
     val projectDir = resolveProjectDir()
 
