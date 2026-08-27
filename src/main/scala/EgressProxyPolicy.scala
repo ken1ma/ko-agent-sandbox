@@ -113,6 +113,7 @@ object EgressProxyPolicy:
    * that is not a regular file, which would leave its file silently unread;
    * a present-but-empty file, more likely a forgotten edit than a
    * deliberate no-op — an intentionally empty policy is an absent file.
+   * Dot-named metadata is exempt from all of it (SandboxProject.isMetadataEntry).
    */
   def readPolicyFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
     def symlinkRefusal(path: Path): String =
@@ -132,6 +133,7 @@ object EgressProxyPolicy:
         .list(egressDir)
         .iterator()
         .asScala
+        .filterNot(entry => SandboxProject.isMetadataEntry(entry.getFileName.toString))
         .toVector
         .sortBy(_.getFileName.toString)
 

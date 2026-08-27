@@ -181,6 +181,9 @@ object HTTPHelper:
     /** Ambiguous framing is refused rather than resolved, per the file
       * header. */
     def bodyFraming: BodyFraming =
+      protectedConnectionNomination(values("Connection")).foreach: name =>
+        throw BadRequest(s"Connection nominates $name, which this proxy reads")
+
       val encodings = values("Transfer-Encoding")
       val lengths = values("Content-Length")
 
@@ -253,6 +256,16 @@ object HTTPHelper:
       .map(_.trim.toLowerCase(Locale.ROOT))
       .filter(_.nonEmpty)
       .toSet
+
+  /** The headers this hop reads for itself — the framing pair, and the Host the policy checked. A
+    * Connection header nominating one asks this hop to strip a header it has already acted on: the
+    * body would go out framed by a header the message no longer carries, which is a smuggling
+    * primitive, not a hop-by-hop courtesy. Both bodyFraming implementations refuse it — they are
+    * the framing authorities, and each runs before a byte of its message is forwarded. */
+  val ConnectionProtectedHeaders: Set[String] = Set("content-length", "transfer-encoding", "host")
+
+  def protectedConnectionNomination(connection: Vector[String]): Option[String] =
+    connectionNamedHeaders(connection).intersect(ConnectionProtectedHeaders).toVector.sorted.headOption
 
   object HttpRequestHead:
     def parse(bytes: Array[Byte]): HttpRequestHead =
@@ -349,6 +362,9 @@ object HTTPHelper:
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
       * UntilClose, because this proxy sends `Connection: close` upstream. */
     def bodyFraming(requestMethod: String): BodyFraming =
+      protectedConnectionNomination(values("Connection")).foreach: name =>
+        throw IOException(s"origin's Connection nominates $name, which this proxy reads")
+
       if requestMethod == "HEAD" || status / 100 == 1 || status == 204 || status == 304 then
         BodyFraming.Empty
       else

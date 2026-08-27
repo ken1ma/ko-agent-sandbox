@@ -370,8 +370,9 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   they measure. A backing mount point makes `readdir`'s reported `d_ino` cosmetic; harmless.
 - **`FOPEN_DIRECT_IO` for coherency.** It would work, and it disables shared `mmap`, which git needs
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
-- **A cache TTL as a performance knob.** Real-time bidirectional visibility is the defining
-  requirement; a nonzero TTL trades correctness for speed. Invariant, not a tunable.
+- **An always-on nonzero cache TTL.** Real-time bidirectional visibility is the defining
+  requirement, so the default is 0 and no built-in value exists; "The cache-TTL knob" above is
+  the one exception, per project and opt-in, and its exposure is stated there.
 - **Blocking executable-bit changes.** This prevents only accidental direct POSIX execution;
   explicit interpreters and Windows bypass the bit, so it adds little beside read-only-by-default
   and staged review. The mutation journal and apply plan report new executable bits and other mode

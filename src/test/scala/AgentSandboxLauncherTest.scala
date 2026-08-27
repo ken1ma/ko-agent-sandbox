@@ -76,36 +76,51 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("a clipboard mode is refused where the host cannot serve it"):
     // Windows needs PowerShell by absolute path; Linux the tools each direction calls, absolute
-    // because the reaper's PATH is not the one they were found on; off needs nothing anywhere.
+    // because the reaper's PATH is not the one they were found on; both POSIX hosts the ps the
+    // reaper's cleanup walks the broker's tree with, proven to answer the exact command shape —
+    // an absent one, or one that prints nothing for it (BusyBox's shape), would leave a blocked
+    // clipboard tool alive after the session; off needs nothing anywhere.
     import ClipboardBroker.{hostBackend, HostBackend}
     val bin = java.nio.file.Files.createTempDirectory("clipboard-host")
-    def tool(name: String): String =
+    def tool(name: String, body: String = ""): String =
       val path = bin.resolve(name)
-      java.nio.file.Files.writeString(path, "")
+      java.nio.file.Files.writeString(path, body)
       path.toFile.setExecutable(true)
       path.toString
     assertEquals(hostBackend("off", Os.Linux, ""), Right(HostBackend()))
     assert(hostBackend("paste", Os.Linux, bin.toString).isLeft)
     assert(hostBackend("paste", Os.Windows, bin.toString).isLeft)
-    assertEquals(hostBackend("paste", Os.Mac, ""), Right(HostBackend()))
+    val noPs = hostBackend("paste", Os.Mac, bin.toString)
+    assert(noPs.swap.exists(_.contains("needs ps")), noPs.toString)
+    // Windows resolves its shell and executes nothing, so this holds on every runner.
+    val powershell = tool("powershell.exe")
+    assertEquals(
+      hostBackend("paste", Os.Windows, bin.toString),
+      Right(HostBackend(powershell = Some(java.nio.file.Paths.get(powershell)))),
+    )
+    // From here the fakes are executed, as shell scripts: a POSIX runner only.
+    assume(!scala.util.Properties.isWin, "the fake tools are /bin/sh scripts")
+    tool("ps", "#!/bin/sh\nexit 0\n")
+    val mutePs = hostBackend("paste", Os.Mac, bin.toString)
+    assert(mutePs.swap.exists(_.contains("pid=,ppid=")), mutePs.toString)
+    // A ps answering the shape with this JVM's own row, pid and parent — the parent baked in by
+    // the test, so the fake proves the parser and needs no ps of the host's own.
+    val parent = ProcessHandle.current.parent.map[String](_.pid.toString).orElse("1")
+    val ps = tool("ps", s"#!/bin/sh\nprintf '%s %s\\n' \"$$PPID\" $parent\n")
+    assertEquals(hostBackend("paste", Os.Mac, bin.toString), Right(HostBackend(ps = ps)))
     val wlPaste = tool("wl-paste")
-    assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(wlPaste = wlPaste)))
+    assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(wlPaste = wlPaste, ps = ps)))
     assert(hostBackend("bidirectional", Os.Linux, bin.toString).isLeft, "a write mode without wl-copy")
     val wlCopy = tool("wl-copy")
     assertEquals(
       hostBackend("bidirectional", Os.Linux, bin.toString),
-      Right(HostBackend(wlPaste = wlPaste, wlCopy = wlCopy)),
+      Right(HostBackend(wlPaste = wlPaste, wlCopy = wlCopy, ps = ps)),
     )
     // Every tool found travels: xclip answers first, the Wayland pair when it cannot.
     val xclip = tool("xclip")
     assertEquals(
       hostBackend("bidirectional", Os.Linux, bin.toString),
-      Right(HostBackend(xclip = xclip, wlPaste = wlPaste, wlCopy = wlCopy)),
-    )
-    val powershell = tool("powershell.exe")
-    assertEquals(
-      hostBackend("paste", Os.Windows, bin.toString),
-      Right(HostBackend(powershell = Some(java.nio.file.Paths.get(powershell)))),
+      Right(HostBackend(xclip = xclip, wlPaste = wlPaste, wlCopy = wlCopy, ps = ps)),
     )
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):

@@ -139,6 +139,12 @@ class HostCommandsTest extends munit.FunSuite:
     )
     scripts.foreach: (name, script) =>
       assertEquals(script.linesIterator.next(), s"export PATH=$ScriptPath", name)
+      // Syntax only, by the interpreter that runs it; what a valid script does is each script's
+      // own behavioural test.
+      if !isWindows then
+        val parsed = ProcessBuilder("/bin/sh", "-n", "-c", script).redirectErrorStream(true).start()
+        val output = String(parsed.getInputStream.readAllBytes())
+        assertEquals(parsed.waitFor(), 0, s"$name does not parse:\n$output")
     // Absolute system directories only: a relative entry is the whole thing being kept out.
     assert(
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),

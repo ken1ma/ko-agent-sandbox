@@ -96,6 +96,9 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("egress")
     Files.writeString(dir.resolve("denied"), "host gitlab.com\nhost **.example.org # a comment\n")
     Files.writeString(dir.resolve("allowed"), "+host ghcr.io restricted\n")
+    // Dot-named editor and OS metadata is exempt from the closed namespace, as one level up
+    // (SandboxProject.isMetadataEntry): a Finder visit must not fail the next launch.
+    Files.createFile(dir.resolve(".DS_Store"))
     assertEquals(
       readPolicyFiles(dir),
       Right(

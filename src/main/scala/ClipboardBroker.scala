@@ -109,12 +109,15 @@ object ClipboardBroker:
     xclip: String = "",
     wlPaste: String = "",
     wlCopy: String = "",
+    /** The `ps` the reaper ends the broker's process tree with; empty on Windows and under off. */
+    ps: String = "",
   )
 
   /**
    * Resolved before the launch makes anything, because a tool missing at request time would read
    * as an empty clipboard or a successful copy. On Linux, xclip serves both directions; without it
-   * wl-paste, and wl-copy when the mode writes. macOS always has osascript and pbcopy.
+   * wl-paste, and wl-copy when the mode writes. macOS always has osascript and pbcopy. Both need
+   * the `ps` the reaper's cleanup rests on (probedPs).
    */
   def hostBackend(mode: String, os: Os, pathValue: String): Either[String, HostBackend] =
     def tool(name: String): String = findOnPath(name, pathValue, os).map(_.toString).getOrElse("")
@@ -124,12 +127,34 @@ object ClipboardBroker:
         findOnPath("powershell", pathValue, os).map(path => HostBackend(powershell = Some(path)))
           .toRight(s"error: $ClipboardVariable=$mode needs powershell.exe on PATH")
       case Os.Linux =>
-        val found = HostBackend(xclip = tool("xclip"), wlPaste = tool("wl-paste"), wlCopy = tool("wl-copy"))
-        val reads = found.xclip.nonEmpty || found.wlPaste.nonEmpty
-        val writes = found.xclip.nonEmpty || (found.wlPaste.nonEmpty && found.wlCopy.nonEmpty)
-        if reads && (mode == "paste" || writes) then Right(found)
-        else Left(s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host")
-      case _ => Right(HostBackend())
+        probedPs(mode, os, pathValue).flatMap: ps =>
+          val found = HostBackend(xclip = tool("xclip"), wlPaste = tool("wl-paste"), wlCopy = tool("wl-copy"), ps = ps)
+          val reads = found.xclip.nonEmpty || found.wlPaste.nonEmpty
+          val writes = found.xclip.nonEmpty || (found.wlPaste.nonEmpty && found.wlCopy.nonEmpty)
+          if reads && (mode == "paste" || writes) then Right(found)
+          else Left(s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host")
+      case _ => probedPs(mode, os, pathValue).map(ps => HostBackend(ps = ps))
+
+  /**
+   * The `ps` the reaper enumerates the broker's process tree with, proven on this host before an
+   * enabled mode is accepted: an absent `ps`, or one that answers `ps -A -o pid=,ppid=` with
+   * nothing (BusyBox's takes another shape), would leave a blocked clipboard tool alive after the
+   * session while the cleanup silently ended the job alone. The proof is this launcher's own row —
+   * its pid, and its parent's when the JVM knows one — in exactly the output the reaper parses.
+   */
+  def probedPs(mode: String, os: Os, pathValue: String): Either[String, String] =
+    findOnPath("ps", pathValue, os).map(_.toString)
+      .toRight(s"error: $ClipboardVariable=$mode needs ps on PATH; the reaper ends the broker's processes with it")
+      .flatMap: ps =>
+        val me = ProcessHandle.current
+        val listed =
+          try Some(run(ps, "-A", "-o", "pid=,ppid="))
+          catch case _: IOException => None
+        val own = listed.filter(_.ok).toVector.flatMap(_.text.linesIterator).map(_.trim.split("\\s+")).exists: row =>
+          row.length == 2 && row(0) == me.pid.toString
+            && me.parent.map[Boolean](parent => row(1) == parent.pid.toString).orElse(row(1).forall(_.isDigit))
+        if own then Right(ps)
+        else Left(s"error: $ClipboardVariable=$mode needs a ps answering `ps -A -o pid=,ppid=`, which $ps did not")
 
   private def ClipboardVariable = AgentSandboxLauncher.ClipboardVariable
 

@@ -380,13 +380,17 @@ object SandboxProject:
     if !Files.exists(policyDir) then Files.createDirectory(policyDir)
     s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
 
-  /**
-   * The entries .ko-agent-sandbox may contain. Names beginning with `.` are
-   * exempt as editor and OS metadata (.DS_Store, .gitkeep) — no
-   * configuration will ever be named that way, so the typo protection loses
-   * nothing to the exemption.
-   */
+  /** The entries .ko-agent-sandbox may contain. */
   val PolicyDirEntries: Set[String] = Set("egress")
+
+  /**
+   * Whether an entry of a closed policy namespace is exempt from its unknown-name refusal:
+   * dot-named editor and OS metadata (.DS_Store, .gitkeep). No configuration will ever be named
+   * that way, so the typo protection loses nothing. One predicate for .ko-agent-sandbox and for
+   * egress/ inside it (EgressProxyPolicy.readPolicyFiles), so browsing the tree on macOS cannot
+   * fail the next launch at either level.
+   */
+  def isMetadataEntry(name: String): Boolean = name.startsWith(".")
 
   private def strayPolicyEntries(policyDir: Path): Vector[String] =
     Files
@@ -394,7 +398,7 @@ object SandboxProject:
       .iterator()
       .asScala
       .map(_.getFileName.toString)
-      .filterNot(_.startsWith("."))
+      .filterNot(isMetadataEntry)
       .filterNot(PolicyDirEntries)
       .toVector
       .sorted

@@ -625,6 +625,57 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!relayed.contains("X-Server-Hint"), relayed)
     assert(relayed.contains("Vary: A\r\n"), relayed)
 
+  test("a Connection header may not nominate a header this hop reads, on either side"):
+    // The nomination would strip the framing the proxy already trusted — the body forwarded by
+    // the original framing, its header gone, readable upstream as a second request — or the Host
+    // the policy checked. Every name in the protected set, both directions, so the set and the
+    // rule cannot drift apart; the spelling is the peer's, so one is mixed-case.
+    ConnectionProtectedHeaders.foreach: name =>
+      val spelled = if name == "host" then "Host" else name
+      val request = head(
+        s"POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 4\r\n" +
+          s"Connection: keep-alive, $spelled\r\n\r\n",
+      )
+      val refused = intercept[BadRequest](request.bodyFraming)
+      assert(refused.getMessage.contains(name), refused.getMessage)
+      // The relay's own gate, before any byte goes upstream.
+      intercept[BadRequest](authorizeInspectedRequest("github.com", request, Set("git-fetch")))
+
+      val response = HttpResponseHead.parse(
+        ascii(s"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: $spelled\r\n\r\n"),
+      )
+      val origin = intercept[IOException](response.bodyFraming("GET"))
+      assert(origin.getMessage.contains(name), origin.getMessage)
+
+    // A nomination of anything else still frames as before.
+    assertEquals(
+      head(
+        "POST /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 4\r\nConnection: x-tracing\r\n\r\n",
+      ).bodyFraming,
+      BodyFraming.Length(4),
+    )
+
+  test("relayInspected refuses an origin whose Connection strips its own framing, before the head"):
+    // On the wire: the refusal has to land before toClientBytes, while a 502 is still possible —
+    // afterwards the client would read chunk markers as payload.
+    val (client, clientPeer) = socketPair()
+    val (upstream, upstreamPeer) = socketPair()
+    val origin = playOrigin(
+      upstreamPeer,
+      ascii(
+        "HTTP/1.1 200 OK\r\nConnection: Transfer-Encoding\r\nTransfer-Encoding: chunked\r\n\r\n" +
+          "5\r\nhello\r\n0\r\n\r\n",
+      ),
+    )
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    intercept[IOException]:
+      relayInspected(client, upstream, "docs.python.org", head)
+    client.close()
+    origin.join()
+    assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
+
   test("HTTP/1.0 is refused by name, at CONNECT and inside the tunnel"):
     // No such client exists here, and half-supporting one — it could not parse a relayed
     // chunked response — would be a silent gap instead of this log line.

@@ -163,7 +163,7 @@ object SandboxLifecycle:
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
    * (documented at the step that reads them), $8 the clipboard mode, $9
-   * to ${11} its host tools.
+   * to ${11} its host tools, ${12} the ps its cleanup walks the tree with.
    *
    * The trap is load-bearing: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
@@ -179,7 +179,22 @@ object SandboxLifecycle:
    */
   val ReaperScript: String =
     withScriptPath(
-      "trap '' INT HUP TERM\n\n" + ClipboardBroker.HostShellFunctions +
+      "trap '' INT HUP TERM\n\n" +
+      """# A process and its descendants, through the ps the launcher proved answers this exact
+      |# command shape (ClipboardBroker.probedPs): one answering nothing would leave every job
+      |# childless here and the cleanup ending the job alone, silently. ${12} is read at top
+      |# level; inside a function the positionals are the function's. STOP and KILL, the two
+      |# signals no disposition can refuse — the tree inherits this shell's ignores. A stopped
+      |# process cannot reap, so between stop_tree and end_tree no pid under it changes hands;
+      |# KILL needs no CONT.
+      |ps_command=${12}
+      |children_of() {
+      |  "$ps_command" -A -o pid=,ppid= | while read -r pid ppid; do [ "$ppid" = "$1" ] && echo "$pid"; done
+      |}
+      |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
+      |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
+      |
+      |""".stripMargin + ClipboardBroker.HostShellFunctions +
       """# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten
@@ -194,10 +209,29 @@ object SandboxLifecycle:
       |  sleep 1
       |done
       |
-      |[ "$8" = off ] || clipboard_broker "$3" "$1" "$8" "$9" "${10}" "${11}" &
+      |# An `if`, not `[ ... ] || cmd &`: `&` backgrounds the whole and-or list, so that spelling
+      |# starts a job under `off` too. The job keeps the trap above — a terminal's INT or HUP, or
+      |# a TERM sent to the group, reaches it as it reaches this shell, and one that ended the job
+      |# before the wait returned would free its pid for another process, which the cleanup below
+      |# would then signal; sh has no process handle to tell the two apart, and dash refuses
+      |# `kill %1` non-interactively. For the same reason the job holds its pid after
+      |# clipboard_broker returns, until this shell ends it or is gone.
+      |broker=
+      |if [ "$8" != off ]; then
+      |  ( clipboard_broker "$3" "$1" "$8" "$9" "${10}" "${11}"
+      |    while kill -0 "$$" 2>/dev/null; do sleep 1; done ) &
+      |  broker=$!
+      |fi
       |
       |"$3" wait "$1"
-      |kill $! 2>/dev/null
+      |# The job's whole tree, not the job: xclip -o and wl-paste block for as long as the
+      |# selection owner takes, and a child left behind is the channel outliving the session.
+      |# What survives by design is xclip -i's own fork, the X selection owner: the clipboard
+      |# content, not the channel.
+      |if [ -n "$broker" ]; then
+      |  stop_tree "$broker"
+      |  end_tree "$broker"
+      |fi
       |
       |# Unconditional: the proxy is this run's own. --time 2, because it
       |# holds no state worth draining; its audit log is a host file.
@@ -230,7 +264,7 @@ object SandboxLifecycle:
 
   /**
    * The argument after the script is $0, naming the reaper for ps; the rest
-   * travel as $1-${11} rather than interpolated, keeping the script a constant
+   * travel as $1-${12} rather than interpolated, keeping the script a constant
    * and the rest data.
    */
   def reaperCommand(
@@ -248,7 +282,7 @@ object SandboxLifecycle:
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
       sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode,
-      clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy,
+      clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy, clipboard.ps,
     )
 
   /**

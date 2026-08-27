@@ -47,9 +47,12 @@ fi
 # system property at all. Appended, because a properties file takes the last assignment of a key.
 set_proxy() {
     net=$JAVA_HOME/conf/net.properties
+    # A failure, not a report: every Java 9+ runtime ships this file, and without the proxy the
+    # JDK reaches no host at all — a success here would certify a JDK that is half prepared.
     if [ ! -f "$net" ]; then
-        echo "${0##*/}: no $net; this JDK gets no proxy" >&2
-        return
+        echo "${0##*/}: no $net, so this JDK cannot be pointed at the proxy; it is not a runtime" >&2
+        echo "  layout this tool can prepare. Install a full JDK (cs java --jvm temurin:25)." >&2
+        exit 1
     fi
     # "Already set" means the file's *effective* values are this proxy's, judged by the parser
     # that will consume the file — the target JDK's own Properties.load. A shell reading only
