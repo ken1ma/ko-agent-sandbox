@@ -1,0 +1,135 @@
+# The curated restricted catalog: what deny-unless-allowed admits on its own. Every entry is
+# TLS-inspected, GET and HEAD only, plus its allowance's one POST; SECURITY.md, "Reading without
+# being able to write", has what each allowance opens and what the inspection costs and buys.
+
+# git hosts
++host github.com                     allow=git-fetch
++host raw.githubusercontent.com      allow=git-fetch
++host objects.githubusercontent.com  allow=git-fetch
++host codeload.github.com            allow=git-fetch
++host api.github.com                 allow=git-fetch
++host codeberg.org                   allow=git-fetch
++host gitlab.com                     allow=git-fetch
+
+# GitHub content, served as pre-signed GETs; no allowance, like the doc sites — no
+# git-upload-pack endpoint lives on them
++host release-assets.githubusercontent.com  # release downloads
++host media.githubusercontent.com           # LFS files, one URL per file
+
+# the agent docs
++host code.claude.com        # claude
++host developers.openai.com  # codex
++host antigravity.google     # agy
++host docs.github.com        # copilot
+
+# public documents / repositories
++host www.rfc-editor.org
++host www.w3.org
++host developer.mozilla.org  # HTTP / HTML / CSS / JavaScript / Web APIs
+# WHATWG specs are per-spec subdomains; a project adds the exact host it reads
+# (+host html.spec.whatwg.org)
+
+# Scala / Java
++host www.scala-lang.org
++host docs.scala-lang.org
+
++host typelevel.org
++host fs2.io
++host http4s.org
+
++host www.scala-sbt.org
++host mill-build.org
++host get-coursier.io
++host docs.gradle.org
++host services.gradle.org  # gradlew
++host plugins.gradle.org
+# api.adoptium.net (`cs java` fetching an extra JDK) is not needed: the image bakes its Temurin in
+
++host scala-cli.virtuslab.org
++host scalameta.org
++host javadoc.io
+
++host docs.oracle.com
++host openjdk.org            # JEPs
++host repo.maven.apache.org  # provides javadoc too
++host repo1.maven.org
++host docs.spring.io
+
+# Mobile
++host developer.android.com
++host kotlinlang.org
++host developer.apple.com
++host www.swift.org
++host docs.swift.org         # the Swift book
+# mobile references only; builds stay outside — no Android SDK in the image (dl.google.com absent),
+# and Xcode needs macOS
+
+# JavaScript
++host nodejs.org
++host www.typescriptlang.org
++host registry.npmjs.org     allow=npm-audit  # install-time vulnerability warnings
+# docs.npmjs.com is declined: npm's supply-chain record does not earn optional entries
+
+# Python
++host docs.astral.sh          # uv
++host docs.python.org
++host peps.python.org         # PEPs
++host packaging.python.org    # the packaging guide
++host pypi.org
++host files.pythonhosted.org
+
+# Rust
++host doc.rust-lang.org
++host docs.rs
++host crates.io          # package pages and cargo search
++host index.crates.io    # cargo's sparse registry index
++host static.crates.io   # crate downloads
+
+# Go
++host go.dev
++host pkg.go.dev
+# the Go toolchain waits on an image block plus proxy.golang.org
+
+# DB
++host www.postgresql.org
++host www.sqlite.org
+
+# Containers
++host kubernetes.io
++host containerd.io
++host docs.podman.io
++host docs.docker.com
+
+# Cloud providers
++host docs.aws.amazon.com  # AWS
++host cloud.google.com     # GCP
++host learn.microsoft.com  # Azure
+
+# Infrastructure as code: the docs
+# doc/egress-policy-examples/pulumi-aws/allowed shows what `pulumi up` needs.
++host www.pulumi.com
++host registry.terraform.io    # provider docs, and the API `terraform init` queries
++host developer.hashicorp.com
+
+# Container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). storage.googleapis.com is
+# the one with an unauthenticated write of its own (SECURITY.md, "Reading without being able to
+# write"). The CDN hosts are convention, not contract: when a provider moves one, pulls stall and
+# the log names the successor.
++host registry-1.docker.io              # Docker Hub API
++host auth.docker.io                    # its token issuer — anonymous pulls need it too
+# blob CDN, https://docs.docker.com/docker-hub/release-notes/#2026-05-20
++host production.cloudfront.docker.com
++host production.cloudflare.docker.com  # blob CDN
++host gcr.io                            # distroless
++host storage.googleapis.com            # gcr blobs
++host public.ecr.aws                    # Amazon Linux
++host d5l0dvt14r5h8.cloudfront.net      # blob CDN
++host d2glxqk2uabbnd.cloudfront.net     # blob CDN
+# ghcr.io and quay.io wait for a real need: a project adds them in egress/allowed,
+# and the proxy log names a refused one.
+
+# Unix / Debian
++host git-scm.com
++host man7.org
++host manpages.debian.org
++host deb.debian.org  # apt package

@@ -81,57 +81,6 @@ object AgentEgressProxy:
     case Restricted(tags: Set[String])
     case Unrestricted
 
-  /*
-   * The model-provider groups: each names the party trusted to receive project data, and expands
-   * only to the launcher-maintained model, authentication and control-plane endpoints operated
-   * by that provider — never every domain the provider owns. The model endpoints stay opaque
-   * (unrestricted) because terminating their TLS means reading the conversation — privacy is why
-   * the treatment exists at all. The flip side is that such a host is unbounded, unlogged write
-   * access, which makes these the groups to extend last, and why an endpoint that is a forge as
-   * well carries the restricted treatment inside its group: the group is what deny-unless-model
-   * admits, and it must not admit `git push`.
-   */
-  val ModelProviderHosts: Map[String, Map[String, Treatment]] =
-    def opaque(hosts: String*): Map[String, Treatment] = hosts.map(_ -> Treatment.Unrestricted).toMap
-    Map(
-      // Claude Code
-      "anthropic" -> opaque(
-        "api.anthropic.com",  // model traffic
-        "claude.ai", "platform.claude.com",  // for interactive login
-      ),
-
-      // Codex
-      "openai" -> opaque(
-        "api.openai.com",   //  API-key use
-        "auth.openai.com",  // issues the device code and the tokens
-        "chatgpt.com",      // model traffic for a ChatGPT plan
-        // ab.chatgpt.com — A/B configuration and telemetry — is absent: codex works without it, and a refusal is a
-        // log line here, never a silent gap.
-      ),
-
-      // Antigravity
-      "google" -> opaque(
-        "accounts.google.com",          // printed sign-in URL
-        "oauth2.googleapis.com",        // exchanges the pasted code and refreshes tokens
-        "cloudcode-pa.googleapis.com",  // model traffic and account state
-        // play.googleapis.com — telemetry and experiment polling — is absent for the same reason ab.chatgpt.com is.
-      ),
-
-      // Copilot CLI. Its model endpoint doubles as its GitHub MCP server (/mcp on the same host),
-      // a write path to the forge that opacity cannot separate from model traffic — the trade
-      // SECURITY.md prices under "The web reached through the model provider".
-      "github" -> (opaque(
-        "api.githubcopilot.com",  // model traffic, the plan-specific hosts below being what the token names instead
-        "api.individual.githubcopilot.com",
-        "api.business.githubcopilot.com",
-        "api.enterprise.githubcopilot.com",
-      ) ++ Map(
-        // The two forge hosts stay inspected here as in the catalog: the login tag's two POSTs are
-        // all sign-in needs, and the Copilot token exchange (/copilot_internal/v2/token) is a GET.
-        "github.com" -> Treatment.Restricted(Set("github-login-device")),
-        "api.github.com" -> Treatment.Restricted(Set.empty),
-      )),
-    ).map((provider, hosts) => provider -> hosts.map((host, treatment) => normalizeHost(host) -> treatment))
 
   /** The tags a restricted entry may carry — a closed set: a tag names one of the fixed
     * rule-sets in authorizeInspectedRequest, never describes one. Each is named tool-operation,
@@ -150,150 +99,49 @@ object AgentEgressProxy:
   val GithubLoginDevicePaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
 
   /**
-   * The curated restricted catalog: GET and HEAD with no body, and no POST — except an
-   * allowance's own (KnownTags). The `allow=git-fetch` hosts serve git fetch besides: agents routinely
-   * read issues, release notes and upstream sources from them, and they are where the shortest
-   * path out of /workspace lives — `git push`, an issue comment, a gist — so reading is exactly
-   * the thing that has to keep working while writing is refused. What is permitted once TLS is
-   * terminated is in authorizeInspectedRequest. A project whose checkout holds a forge token
-   * should still deny that forge's hosts in its own .ko-agent-sandbox/egress/denied: inspection
-   * bounds the method and the path, not what a permitted GET can be pointed at.
+   * The baseline is policy, so it is written as policy: resource files in the `allowed` grammar's
+   * addition form, read through the parser a project's file goes through, with the reasoning for
+   * each host as a comment beside it. `baseline/host` is the curated restricted catalog — what
+   * deny-unless-allowed admits on its own; `baseline/model-provider/<name>` is what
+   * `+model-provider <name>` expands to: the party trusted to receive project data, and only its
+   * model, authentication and control-plane endpoints, never every domain it owns. An endpoint
+   * that is a forge as well stays restricted inside its group, since the group is what
+   * deny-unless-model admits and it must not admit `git push`.
    *
-   * An allowance must stay a tag, never every host's rule: on an object store a path is a
-   * name anyone can choose, so an attacker-signed upload URL for an object literally named
-   * .../git-upload-pack would pass the git path rule on a host without the allowance.
-   *
-   * The bulk package registries are in although an inspected session is one request per
-   * connection, so a dependency resolve pays a handshake per request — an accepted cost, because
-   * security is not traded for performance (DESIGN.md's principles). What that buys at a
-   * registry is refusal of its write API and a method-and-target log line per fetch; npm's
-   * install-time audit POST, the one recurring legitimate write, is the allow=npm-audit allowance
-   * rather than a casualty — its body names the project's dependencies, a priced trade a project
-   * revokes by restating the entry without it (SECURITY.md, "Reading without being able to
-   * write").
-   *
-   * storage.googleapis.com is the member that *needs* the treatment rather than merely wearing
-   * it: all of Google Cloud Storage, where an attacker-signed URL accepts a PUT from anyone
-   * holding it — the one unauthenticated write surface the built-in list ever had.
+   * A baseline file holds `+host` entries and nothing else, and the catalog holds no unrestricted
+   * one; either is a refused start, not a silent narrowing, so the image's own `--print-policy`
+   * (the launcher's dry run) is where a malformed baseline surfaces.
    */
+  val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "github")
+
+  private def readBaseline(name: String): Map[String, Treatment] =
+    val variable = s"the baseline file $name"
+    val stream = getClass.getResourceAsStream(s"/baseline/$name")
+    if stream == null then throw IllegalStateException(s"$variable is missing from the proxy jar")
+    val text =
+      try String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+      finally stream.close()
+    val entries = policyEntries(text).map:
+      case "+host" +: entry +: words => parseHostAddition(variable, entry, words)
+      case tokens =>
+        throw IllegalStateException(
+          s"$variable contains '${tokens.mkString(" ")}'; a baseline file holds +host entries only",
+        )
+    val twice = entries.groupBy(_(0)).collect { case (host, seen) if seen.sizeIs > 1 => host }.toVector.sorted
+    if twice.nonEmpty then throw IllegalStateException(s"$variable names ${twice.mkString(", ")} twice")
+    entries.toMap
+
   val CuratedRestrictedHosts: Map[String, Set[String]] =
-    Set(
-      // git hosts: reading plus git fetch — the allow=git-fetch tag
-      "github.com allow=git-fetch",
-      "raw.githubusercontent.com allow=git-fetch",
-      "objects.githubusercontent.com allow=git-fetch",
-      "codeload.github.com allow=git-fetch",
-      "api.github.com allow=git-fetch",
-      "codeberg.org allow=git-fetch",
-      "gitlab.com allow=git-fetch",
+    readBaseline("host").map:
+      case (host, Treatment.Restricted(tags)) => host -> tags
+      case (host, Treatment.Unrestricted) =>
+        throw IllegalStateException(
+          s"the baseline file host makes $host unrestricted; the catalog is restricted, and an " +
+            "opaque tunnel belongs to a model-provider group",
+        )
 
-      // the agent docs
-      "code.claude.com",        // claude
-      "developers.openai.com",  // codex
-      "antigravity.google",     // agy
-
-      // public documents / repositories
-      "www.rfc-editor.org",
-      "www.w3.org",
-      "developer.mozilla.org",  // HTTP / HTML / CSS / JavaScript / Web APIs
-      // WHATWG specs are per-spec subdomains; a project adds the exact host it reads (+html.spec.whatwg.org)
-
-      "www.scala-lang.org",
-      "docs.scala-lang.org",
-
-      "http4s.org",
-      "fs2.io",
-      "typelevel.org",
-
-      "www.scala-sbt.org",
-      "mill-build.org",
-      "get-coursier.io",
-      "docs.gradle.org",
-      "services.gradle.org",  // gradlew
-      "plugins.gradle.org",
-      // api.adoptium.net (`cs java` fetching an extra JDK) is not needed: the image bakes its Temurin in
-
-      "scala-cli.virtuslab.org",
-      "scalameta.org",
-      "javadoc.io",
-
-      "docs.oracle.com",
-      "openjdk.org",  // JEPs
-      "repo.maven.apache.org",  // provides javadoc too
-      "repo1.maven.org",
-
-      "developer.android.com",
-      "kotlinlang.org",
-      "developer.apple.com",
-      "www.swift.org",
-      "docs.swift.org",  // the Swift book
-      // mobile references only; builds stay outside — no Android SDK in the image (dl.google.com absent), and Xcode
-      // needs macOS
-
-      "doc.rust-lang.org",
-      "docs.rs",
-      "crates.io",         // package pages and cargo search
-      "index.crates.io",   // cargo's sparse registry index
-      "static.crates.io",  // crate downloads
-
-      "docs.astral.sh",  // uv
-      "docs.python.org",
-      "pypi.org",
-      "files.pythonhosted.org",
-
-      "nodejs.org",
-      "www.typescriptlang.org",
-      "registry.npmjs.org allow=npm-audit",  // install-time vulnerability warnings (NpmAuditPath)
-      // docs.npmjs.com is declined: npm's supply-chain record does not earn optional entries
-
-      "go.dev",
-      "pkg.go.dev",
-      // the Go toolchain waits on an image block plus proxy.golang.org
-
-      "www.postgresql.org",
-      "www.sqlite.org",
-
-      "docs.aws.amazon.com",  // AWS
-      "cloud.google.com",     // GCP
-      "learn.microsoft.com",  // Azure
-
-      "kubernetes.io",
-      "containerd.io",
-      "docs.podman.io",
-      "docs.docker.com",
-
-      // Container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). None of these
-      // hosts exposes an unauthenticated write of its own — except storage.googleapis.com, whose attacker-signed
-      // PUT the catalog comment above carries. The CDN hosts are convention, not contract: when a
-      // provider moves one, pulls stall and the log names the successor.
-      "registry-1.docker.io",              // Docker Hub API
-      "auth.docker.io",                    // its token issuer — anonymous pulls need it too
-      "production.cloudfront.docker.com",  // blob CDN https://docs.docker.com/docker-hub/release-notes/#2026-05-20
-      "production.cloudflare.docker.com",  // blob CDN
-      "gcr.io",                            // distroless
-      "storage.googleapis.com",            // gcr blobs
-      "public.ecr.aws",                    // Amazon Linux
-      "d5l0dvt14r5h8.cloudfront.net",      // blob CDN
-      "d2glxqk2uabbnd.cloudfront.net",     // blob CDN
-      // ghcr.io and quay.io wait for a real need: a project adds them in egress/allowed,
-      // and the proxy log names a refused one.
-
-      "git-scm.com",
-      "man7.org",
-      "manpages.debian.org",
-      "deb.debian.org",  // apt package
-
-      "www.pulumi.com",
-      "registry.terraform.io",  // provider docs, and the API `terraform init` queries
-      "developer.hashicorp.com",
-      // provider binaries (releases.hashicorp.com, get.pulumi.com) wait for a real need
-      "docs.spring.io",
-
-      // GitHub content hosts serving pre-signed GETs; no allowance, like the doc sites — no
-      // git-upload-pack endpoint lives on them
-      "release-assets.githubusercontent.com",  // release downloads
-      "media.githubusercontent.com",  // LFS files, one URL per file
-    ).map(entry => parseCatalogEntry(entry.split(" ").toVector)).toMap
+  val ModelProviderHosts: Map[String, Map[String, Treatment]] =
+    ModelProviders.map(name => name -> readBaseline(s"model-provider/$name")).toMap
 
   /**
    * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
@@ -853,14 +701,29 @@ object AgentEgressProxy:
         )
     tags.toSet
 
-  /** A catalog entry, `<host> [allow=<tag>,...]` — the `+host` tail's restricted forms, in the code. */
-  private def parseCatalogEntry(words: Vector[String]): (String, Set[String]) =
-    val variable = "the curated restricted catalog"
-    val host = normalizeEntry(variable, words.head)
-    words.tail match
-      case Vector()                                 => (host, Set.empty)
-      case Vector(word) if word.startsWith("allow=") => (host, parseAllowances(variable, host, word))
-      case other => throw IllegalArgumentException(s"$variable follows $host with '${other.mkString(" ")}'")
+  /** The tail of a `+host` line: the host, then nothing, `allow=<tag>,...`, or `unrestricted`. */
+  private def parseHostAddition(variable: String, entry: String, words: Vector[String]): (String, Treatment) =
+    val host = normalizeEntry(variable, entry)
+    words match
+      case Vector()               => host -> Treatment.Restricted(Set.empty)
+      case Vector("unrestricted") => host -> Treatment.Unrestricted
+      case Vector(word) if word.startsWith("allow=") =>
+        host -> Treatment.Restricted(parseAllowances(variable, host, word))
+      case _ if words.contains("unrestricted") =>
+        throw IllegalArgumentException(
+          s"$variable gives the unrestricted host $host an allowance; allow= opens one " +
+            "restricted operation, so it belongs on a restricted entry only",
+        )
+      case _ if words.contains("restricted") =>
+        throw IllegalArgumentException(
+          s"$variable spells $host's treatment 'restricted', which is the default and " +
+            "has no word: +host <host>, or +host <host> allow=<tag>,...",
+        )
+      case other =>
+        throw IllegalArgumentException(
+          s"$variable follows $host with '${other.mkString(" ")}'; the forms are " +
+            "+host <host>, +host <host> allow=<tag>,..., +host <host> unrestricted",
+        )
 
   private enum AllowedEntry:
     case ClearBaseline
@@ -907,27 +770,8 @@ object AgentEgressProxy:
       case Vector("+model-provider", name) => AddProvider(requireProvider(AllowedVariable, name))
       case Vector("-model-provider", name) => RemoveProvider(requireProvider(AllowedVariable, name))
       case "+host" +: entry +: words =>
-        val host = normalizeEntry(AllowedVariable, entry)
-        words match
-          case Vector()               => AddHost(host, Treatment.Restricted(Set.empty))
-          case Vector("unrestricted") => AddHost(host, Treatment.Unrestricted)
-          case Vector(word) if word.startsWith("allow=") =>
-            AddHost(host, Treatment.Restricted(parseAllowances(AllowedVariable, host, word)))
-          case _ if words.contains("unrestricted") =>
-            throw IllegalArgumentException(
-              s"$AllowedVariable gives the unrestricted host $host an allowance; allow= opens one " +
-                "restricted operation, so it belongs on a restricted entry only",
-            )
-          case _ if words.contains("restricted") =>
-            throw IllegalArgumentException(
-              s"$AllowedVariable spells $host's treatment 'restricted', which is the default and " +
-                "has no word: +host <host>, or +host <host> allow=<tag>,...",
-            )
-          case other =>
-            throw IllegalArgumentException(
-              s"$AllowedVariable follows $host with '${other.mkString(" ")}'; the forms are " +
-                "+host <host>, +host <host> allow=<tag>,..., +host <host> unrestricted",
-            )
+        val (host, treatment) = parseHostAddition(AllowedVariable, entry, words)
+        AddHost(host, treatment)
       case Vector("-host", entry) => RemoveHost(parseHostRule(AllowedVariable, entry))
       case tokens =>
         throw IllegalArgumentException(

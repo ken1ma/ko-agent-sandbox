@@ -1,0 +1,14 @@
+# Copilot CLI. Its model endpoint doubles as its GitHub MCP server (/mcp on the same host), a
+# write path to the forge that opacity cannot separate from model traffic — the trade SECURITY.md
+# prices under "The web reached through the model provider".
+# Model traffic goes to whichever of the four the token exchange below names for the account's
+# plan; the first is the generic host, and the MCP server.
++host api.githubcopilot.com unrestricted
++host api.individual.githubcopilot.com unrestricted  # individual plan
++host api.business.githubcopilot.com unrestricted    # business plan
++host api.enterprise.githubcopilot.com unrestricted  # enterprise plan
+
+# The two forge hosts stay TLS-inspected here as in the catalog: this file is what
+# deny-unless-model admits for copilot, and it must not admit git push.
++host github.com allow=github-login-device  # device-flow sign-in: the allowance's two POSTs
++host api.github.com                        # Copilot token exchange, GET /copilot_internal/v2/token

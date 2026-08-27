@@ -923,7 +923,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
 
   test("SECURITY.md names exactly the allow=git-fetch hosts the proxy ships"):
-    // The git-host list has two homes: the allow=git-fetch entries of the proxy's catalog and
+    // The git-host list has two homes: the allow=git-fetch entries of the proxy's baseline/host and
     // the SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
     // names come from the image's own --print-policy at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
@@ -934,14 +934,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .linesIterator
       .collect { case Listed(host) => host }
       .toVector
-    val proxySource = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala"),
+    val catalog = Files.readString(
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/baseline/host"),
     )
-    val block = proxySource.substring(proxySource.indexOf("val CuratedRestrictedHosts"))
-    val gitHosts = "\"([^\"]+) allow=git-fetch\"".r
-      .findAllMatchIn(block.substring(0, block.indexOf(").map(")))
-      .map(_.group(1))
-      .toVector
+    val gitHosts = "(?m)^\\+host (\\S+)\\s+allow=git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
 
   test("the appended egress section names only tags the proxy defines"):

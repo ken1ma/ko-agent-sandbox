@@ -314,12 +314,12 @@ them, which is not a property to rely on in a repository being worked in, and no
 closes it. `WorkspaceGuardOffTest` carries the measurements.
 
 **What is inside TLS, for the hosts that stay opaque.** An unrestricted host is deliberately not
-inspected, so there the proxy sees only the handshake and cannot tell a `GET` from a
-`POST`. In the baseline that is the model-provider endpoints alone, because terminating their TLS
-means reading the conversation in clear inside the proxy. Every other baseline host is inspected —
-restricted, the bulk package registries included at a knowing per-request
-handshake cost: security is not traded for performance (DESIGN.md's principles; the
-catalog comment in the proxy source prices it).
+inspected, so there the proxy sees only the handshake and cannot tell a `GET` from a `POST`. In the
+baseline that is the model-provider endpoints alone: inspection buys nothing at an endpoint that
+must receive the conversation, and would expose that conversation and the provider's tokens in
+clear to the proxy process, while the retained log records each request's method and path. Every
+other baseline host is inspected — restricted, the bulk package registries included at a knowing
+per-request handshake cost: security is not traded for performance (DESIGN.md's principles).
 
 **What the persistent volume carries.** It is read back every time the project opens, and some of
 what it holds — MCP server definitions especially — names commands to run. Treat it as trusted
@@ -477,8 +477,8 @@ Cloud Storage, where a signed URL an attacker minted accepts a `PUT` — the one
 write surface the built-in list ever had, admitted because `gcr.io` (distroless) serves its blobs
 from there. An allowance's POST exception must not reach a host without it: a GCS object name is
 anyone's to choose, so a path that mimics `git-upload-pack` would ride the git rule through. The
-proxy's `CuratedRestrictedHosts` is the canonical built-in membership, allowances included; what
-stays opaque, and why, is "What is inside TLS" below.
+proxy image's `baseline/host` file is the canonical built-in membership, allowances included, with
+the reason beside each entry; what stays opaque, and why, is "What is inside TLS" below.
 
 So for every restricted host the proxy terminates TLS and applies a second, narrower policy to the
 request inside it:

@@ -268,8 +268,9 @@ which is undecided. Until then the jar is built from a checkout — [Development
 ### Choosing an egress profile
 
 Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
-A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` —
-TLS-inspected, GET and HEAD only, except for a named allowance: an entry with `allow=git-fetch`
+A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` — the
+default, which an `allowed` entry spells by saying nothing — TLS-inspected, GET and HEAD only,
+except for a named allowance: an entry with `allow=git-fetch`
 also serves `git fetch` — so `clone` and `pull` — whose transfer leg is a `POST`; one with
 `allow=github-login-device` GitHub's device-flow sign-in; one with `allow=npm-audit` npm's
 install-time audit.
@@ -323,6 +324,9 @@ the file's own additions stand — and states its complete replacement policy:
     # egress/allowed
     -**                                    # nothing built-in survives
     +model-provider anthropic              # re-added Claude Code's endpoints
+
+`doc/egress-policy-examples/` holds complete `egress/` directories for common needs, a Pulumi AWS
+stack among them, to copy over `.ko-agent-sandbox/egress/` and trim.
 
 `denied` applies under every profile and only ever takes away — no `+`/`-` prefixes, no
 allowances:

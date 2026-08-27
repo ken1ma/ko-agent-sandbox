@@ -1,5 +1,6 @@
 package agentsandbox.egress
 
+import scala.jdk.CollectionConverters.*
 import java.io.{ByteArrayInputStream, IOException}
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets
@@ -470,6 +471,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("a provider the profile does not fully admit warns but never fails the start"):
     val resolved = policyOf(provider = "google", allowed = "-model-provider google")
     assert(resolved.warnings.exists(_.contains("google")), resolved.warnings.toString)
+
+  test("the provider list names exactly the baseline's model-provider files"):
+    // A jar cannot list a resource directory, so the names are a constant; this holds it to the
+    // files, both ways.
+    val dir = java.nio.file.Paths.get("src/main/resources/baseline/model-provider")
+    val files = java.nio.file.Files.list(dir).iterator.asScala.map(_.getFileName.toString).toSet
+    assertEquals(files, ModelProviders.toSet)
+    assertEquals(ModelProviderHosts.keySet, ModelProviders.toSet)
 
   test("--print-policy is the shape the launcher mints the leaf from"):
     val lines = policyLines(policyOf())
