@@ -2165,9 +2165,9 @@ object AgentSandboxLauncher:
         )
         NestingLoosenings :+ nestingEnv
 
-    // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code copies through wl-copy only
-    // when it sees a display, and otherwise through OSC 52, which Terminal.app ignores; the value
-    // names the shim so nothing mistakes it for a compositor.
+    // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code and Copilot copy through
+    // wl-copy only when they see a display, and otherwise through OSC 52, which Terminal.app
+    // ignores; the value names the shim so nothing mistakes it for a compositor.
     val clipboardArgs = clipboard match
       case "off" => Vector.empty
       case mode =>

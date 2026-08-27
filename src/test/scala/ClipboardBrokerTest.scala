@@ -126,6 +126,9 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(copied(), "via xsel")
       sandboxCall(sandboxBin, "via xclip\n".getBytes(UTF_8), "xclip", "-selection", "clipboard")
       assertEquals(copied(), "via xclip\n")
+      // Copilot's /copy spelling, under the WAYLAND_DISPLAY the launcher exports in this mode.
+      assertEquals(sandboxCall(sandboxBin, "via copilot".getBytes(UTF_8), "wl-copy", "--type", "text/plain")._1, 0)
+      assertEquals(copied(), "via copilot")
 
   test("a Wayland-only host serves both directions"):
     exchange("bidirectional", wayland = true): (sandboxBin, host) =>

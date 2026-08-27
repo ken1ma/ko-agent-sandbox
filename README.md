@@ -240,7 +240,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
     1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
        other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
        web reached through the model provider"). Prompts for paths outside `/workspace` and for
-       URLs remain unless you run `copilot --yolo`.
+       URLs remain unless you run `copilot --yolo`. Its fullscreen TUI cannot be turned off, so
+       copying text out is `/copy`, which needs `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
     1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so it is one setting in the volume;
