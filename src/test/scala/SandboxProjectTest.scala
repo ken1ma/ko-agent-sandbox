@@ -313,15 +313,6 @@ class SandboxProjectTest extends munit.FunSuite:
     val refused = policyDirError(dir)
     assert(refused.exists(_.contains("egres")), refused.toString)
 
-  test("the pre-release egress-hosts layout refuses with its migration message"):
-    // Stale authority configuration is never silently ignored or translated into broader access.
-    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
-    Files.createDirectory(dir)
-    Files.createDirectory(dir.resolve("egress-hosts"))
-    val refused = policyDirError(dir)
-    assert(refused.exists(_.contains("pre-release egress layout")), refused.toString)
-    assert(refused.exists(_.contains("egress/allowed")), refused.toString)
-
   test("a symlinked policy directory or egress refuses the launch"):
     val project = Files.createTempDirectory("policy-guard")
     val target = Files.createDirectory(project.resolve("target"))

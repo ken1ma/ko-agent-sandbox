@@ -178,7 +178,7 @@ Copilot CLI is the one agent whose sign-in is a forge credential. `copilot login
 OAuth token with `repo` scope — every private repository the account can reach — and, the
 container having no credential store, keeps it in plaintext under `~/.copilot` in the persistent
 volume, next to the other agents' tokens, which can only spend model quota. Inside the sandbox
-that token can read those repositories (a private `clone` on a `=git-fetch` host, `GET`s on
+that token can read those repositories (a private `clone` on an `allow=git-fetch` host, `GET`s on
 `api.github.com`); it cannot push or write through any inspected host. It can write through
 Copilot's model endpoint, `api.githubcopilot.com`, which serves the built-in GitHub MCP server on
 the same host — files, branches, issues and pull requests written with the signed-in account,
@@ -337,7 +337,7 @@ running an unfamiliar project is the user's job, exactly like reading its build 
 `unrestricted` additions most of all, since every such host is an opaque tunnel.
 
 **The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the
-agent's request are trusted as they arrive. npm's install-time audit does work (the `=npm-audit`
+agent's request are trusted as they arrive. npm's install-time audit does work (the `allow=npm-audit`
 allowance, "Reading without being able to write" below), but its warnings are advisory: nothing
 gates on them.
 
@@ -464,51 +464,51 @@ a constant.
 1. `codeberg.org`
 1. `gitlab.com`
 
-are the `=git-fetch`-tagged entries of the curated restricted catalog, in the baseline because
+are the `allow=git-fetch` entries of the curated restricted catalog, in the baseline because
 agents genuinely need to read them: issues, release notes, upstream sources, `git clone`. An
 opaque tunnel to those hosts is also the shortest path out for the contents of `/workspace`,
 since the same tunnel carries `git push`.
 
-The rest of the catalog carries no tag — `GET` and `HEAD` with no body, and no POST at
+The rest of the catalog carries no allowance — `GET` and `HEAD` with no body, and no POST at
 all: the documentation and reference sites, the content CDNs, and the container-image pull hosts.
 One member needs that rather than merely wearing it: `storage.googleapis.com` is all of Google
 Cloud Storage, where a signed URL an attacker minted accepts a `PUT` — the one unauthenticated
 write surface the built-in list ever had, admitted because `gcr.io` (distroless) serves its blobs
-from there. A tag's POST exception must not reach an untagged host: a GCS object name is
+from there. An allowance's POST exception must not reach a host without it: a GCS object name is
 anyone's to choose, so a path that mimics `git-upload-pack` would ride the git rule through. The
-proxy's `CuratedRestrictedHosts` is the canonical built-in membership, tags included; what stays
-opaque, and why, is "What is inside TLS" below.
+proxy's `CuratedRestrictedHosts` is the canonical built-in membership, allowances included; what
+stays opaque, and why, is "What is inside TLS" below.
 
 So for every restricted host the proxy terminates TLS and applies a second, narrower policy to the
 request inside it:
 
 - `GET` and `HEAD` to any path — the whole of the read surface
-- on the `=git-fetch`-tagged entries alone, `POST` to a path ending `/git-upload-pack` — the
+- on the `allow=git-fetch` entries alone, `POST` to a path ending `/git-upload-pack` — the
   transfer step of `clone` and `fetch`: after discovering refs with a `GET`, git sends its wants
   as a `POST` and the packfile comes back in the response. A download that travels as a `POST`,
   so a GET/HEAD-only policy would still read as "reads allowed" while every `git clone https://…`
   failed
-- on the `=npm-audit`-tagged entry alone (`registry.npmjs.org`), `POST` to the one audit endpoint
-  the image's npm was measured to use at install time, so dependency-vulnerability warnings keep
-  working; an older npm's audit endpoint is refused and logged, non-fatally. The body is the
-  accepted price: the dependency graph — package names and versions — including names the
-  registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
-  dependency. A project whose dependency names are themselves secrets restates the entry
-  untagged (`+host registry.npmjs.org restricted` in `egress/allowed`) and gives up the warnings
-- on the `=github-login-device`-tagged entry alone (`github.com`), `POST` to the two endpoints of
+- on the `allow=github-login-device` entry alone (`github.com`), `POST` to the two endpoints of
   GitHub's OAuth device flow, `/login/device/code` and `/login/oauth/access_token`, which is how
   Copilot CLI signs in. The second is GitHub's general token endpoint, shared with the web
   flow's code exchange, whose redirect cannot reach the sandbox. Each body is a fixed form — a
   client id, a scope, a device code — so no project data rides on it. Any session can begin a
   device login for any GitHub OAuth app; none can complete one without a person entering the
   code in a browser, on a page that names the app and its scopes
+- on the `allow=npm-audit` entry alone (`registry.npmjs.org`), `POST` to the one audit endpoint
+  the image's npm was measured to use at install time, so dependency-vulnerability warnings keep
+  working; an older npm's audit endpoint is refused and logged, non-fatally. The body is the
+  accepted price: the dependency graph — package names and versions — including names the
+  registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
+  dependency. A project whose dependency names are themselves secrets restates the entry
+  without it (`+host registry.npmjs.org` in `egress/allowed`) and gives up the warnings
 - Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery — a
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`
 
 The refusal is a `403` inside the tunnel with the reason in it, and a `deny` line in the audit
 log ("The audit line grammar", above). That log is the other half of what this buys: what an
-agent asked a forge to do is now recorded, not merely whether it opened a connection.
+agent asked a forge to do is recorded, not merely whether it opened a connection.
 
 Two consequences:
 
@@ -593,9 +593,8 @@ rather than read, so what is read is what was reviewed. The directory is also a 
 namespace, decided before it has a second tenant: an entry the launcher does not read — a typo'd
 `egres/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
 same rule `egress/` applies inside itself (dot-named editor and OS metadata excepted; no
-configuration will ever be named that way), and the pre-release `egress-hosts/` layout refuses
-with the exact replacement rather than sitting as stale authority configuration. What remains is
-"A repository that ships a wide egress policy", above.
+configuration will ever be named that way). What remains is "A repository that ships a wide
+egress policy", above.
 
 ### Adding hosts, not patterns
 
@@ -615,13 +614,13 @@ user's own profile decision: it grants the public-HTTPS universe by name of the 
 launch command line, never through a pattern a repository ships.)
 
 An addition overrides the baseline entry for its host rather than merging with it (the README's
-"Modifying the egress policy" has the grammar): a merge would widen a host to a treatment no
-single line says and leave no way to take one tag away. For the same reason a tag on anything
-that takes away is refused — a removal or a denied entry removes the host whole — and widening
-has no delta spelling at all: the only way past a baseline host's restricted treatment is
-`.defaults`, which discards the baseline and makes the file state its complete replacement
-policy. And under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals
-and `.defaults` cannot subtract from the restricted narrowing set.
+"Modifying the egress policy" has the grammar): a merge would widen a host to a treatment no single
+line says and leave no way to take one allowance away. For the same reason an allowance on anything
+that takes away is refused — a removal or a denied entry removes the host whole — and widening has
+no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`, which
+discards the baseline and makes the file state its complete replacement policy. And under `allow-
+unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**` cannot subtract
+from the restricted narrowing set.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
@@ -641,7 +640,7 @@ them is a decision rather than a syntax check: a `+host` that falls under a `-ho
 a contradiction, not a precedence to resolve. The allow-versus-deny ordering that egress proxies
 get wrong is a bug family kept out by having one rule — denial wins over either treatment — and
 one fixed order, `denied` last.
-(`.defaults` creates no exception: it is not a host matcher but the name of the baseline itself,
+(`-**` creates no exception: it is not a host matcher but the name of the baseline itself,
 which is why it lives in `allowed`, the delta over that baseline — what it removes is the
 baseline contribution before the file's own additions apply.) The one no-op that is allowed is
 deliberate: an identical restatement of a baseline entry, so a policy that names a host
@@ -651,7 +650,7 @@ self-contained; the README's `--egress-effective` bullet is the mitigation.
 ### Why the policy is not a capability system
 
 The policy names destinations, and the treatments name operations — reading, plus git fetch at
-the `=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate:
+the `allow=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate:
 public reading is meant to be broad —
 discovering and reading arbitrary public repositories is much of what the agents are for — and the
 sandbox carries no credential whose authority a finer grant would attenuate ("Credential theft",

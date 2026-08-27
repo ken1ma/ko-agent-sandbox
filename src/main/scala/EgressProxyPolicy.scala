@@ -18,7 +18,7 @@ object EgressProxyPolicy:
 
   /**
    * Comment-stripped, whitespace-collapsed policy text, one entry per line — the shape the
-   * environment variables carry. Entries are multi-token lines (`+host x restricted`), so line
+   * environment variables carry. Entries are multi-token lines (`+host x`), so line
    * structure is what separates them and must be preserved. What is in force is the proxy's to
    * say — a delta file's resolved policy is not this text.
    */
@@ -162,26 +162,6 @@ object EgressProxyPolicy:
       )
 
   /**
-   * The refusal for the pre-release `.ko-agent-sandbox/egress-hosts/` layout, with the exact
-   * replacement to use: stale authority configuration is never silently ignored or translated
-   * into broader access. The caller says where the directory was found.
-   */
-  def legacyLayoutRefusal(hostsDir: Path): String =
-    s"""error: $hostsDir is the pre-release egress layout, which this launcher no longer reads
-       |
-       |The policy now lives in .ko-agent-sandbox/egress/ as two files:
-       |  egress/allowed — the delta over the launcher-owned baseline
-       |  egress/denied  — always-applied removals
-       |Rewrite each old entry:
-       |  read-only  +h[=tag]   ->  allowed: +host h[=tag] restricted
-       |  read-write +h         ->  allowed: +host h unrestricted
-       |  either     -h, -**.d  ->  allowed: -host h / -host **.d
-       |  blocked    h, **.d    ->  denied:  host h / host **.d
-       |  blocked    .defaults  ->  allowed: .defaults
-       |then remove egress-hosts/. The rewritten files feed the default deny-unless-allowed
-       |profile, the closest to the old behavior.""".stripMargin
-
-  /**
    * codex→openai, claude→anthropic, agy→google, copilot→github. Only the basename of the directly launched
    * command is classified; the launcher does not inspect a wrapper's arguments or guess what it
    * may later execute — a wrapper script selects no provider and, under deny-unless-model, gets
@@ -245,8 +225,8 @@ object EgressProxyPolicy:
 
   /**
    * The inspected hosts out of a --print-policy answer: its `restricted
-   * hosts (N): ...` line, `=tag`s stripped — the leaf names hosts; which
-   * treatment each gets is the proxy's business. This is how the launcher
+   * hosts (N): ...` line, which names every inspected host and nothing else
+   * (the allowances have lines of their own). This is how the launcher
    * learns which names the leaf certificate must carry — the proxy image's
    * own answer under this project's policy, so no second copy of any list
    * exists to drift, and a proxy image or policy of the user's choosing gets
@@ -275,6 +255,5 @@ object EgressProxyPolicy:
                 .split(" ")
                 .toVector
                 .filter(_.nonEmpty)
-                .map(_.takeWhile(_ != '='))
                 .sorted,
             )

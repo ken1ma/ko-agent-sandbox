@@ -103,11 +103,9 @@ which is undecided. Until then the jar is built from a checkout — [Development
     look like a launcher option.
 
     Authority options, selected on every launch and never persisted:
-      --write=reject|staged|live
+      --write=reject|live
                          reject mounts /workspace read-only; live (the
-                         default until the staged workflow ships) is the
-                         shared writable mount; staged is not implemented
-                         yet and refuses
+                         default) is the shared writable mount
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          deny-unless-allowed (default) admits the
                          launcher-owned baseline shaped by
@@ -271,13 +269,14 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
 Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
 A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` —
-TLS-inspected, GET and HEAD only, except that an entry tagged `=git-fetch` also serves
-`git fetch` — so `clone` and `pull` — whose transfer leg is a `POST`; one tagged `=npm-audit`
-serves npm's install-time audit; one tagged `=github-login-device` GitHub's device-flow sign-in.
+TLS-inspected, GET and HEAD only, except for a named allowance: an entry with `allow=git-fetch`
+also serves `git fetch` — so `clone` and `pull` — whose transfer leg is a `POST`; one with
+`allow=github-login-device` GitHub's device-flow sign-in; one with `allow=npm-audit` npm's
+install-time audit.
 
 The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
 `github` — each expanding to that provider's model, authentication and control-plane endpoints,
-unrestricted, except that `github`'s forge hosts stay restricted, tagged `=github-login-device`
+unrestricted, except that `github`'s forge hosts stay restricted, with `allow=github-login-device`
 for the sign-in) plus a curated catalog of restricted documentation, package-registry and forge
 hosts.
 
@@ -287,8 +286,8 @@ hosts.
    Only the basename of the directly launched command is classified; anything else — `bash`, a
    wrapper script — selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — every public hostname on port 443, unrestricted, except that the
-   baseline's restricted entries (plus restricted `allowed` additions) stay inspected, tags and
-   all, and `denied` still applies.
+   baseline's restricted entries (plus restricted `allowed` additions) stay inspected,
+   allowances and all, and `denied` still applies.
 1. `deny-all` — nothing.
 
 ### Modifying the egress policy
@@ -300,29 +299,33 @@ are one per line; `#` comments and blank lines ignored.
 restricted additions, by `allow-unless-denied`'s narrowing set):
 
     # egress/allowed
-    +host html.spec.whatwg.org restricted     # a spec site this project reads
-    +host mirror.example=git-fetch restricted # a git mirror: clonable, never pushable
-    -host github.com                          # a baseline host this project drops
-    -host **.example.com                      # a subtree removal: the apex and everything under it
-    -model-provider google                    # a provider group this project never uses
+    +host html.spec.whatwg.org             # a spec site this project reads: restricted
+    +host mirror.example allow=git-fetch   # a git mirror: clonable, never pushable
+    +host api.example unrestricted         # an opaque tunnel: the one word that widens
+    -host github.com                       # a baseline host this project drops
+    -host **.example.com                   # a subtree removal: the apex and everything under it
+    -model-provider google                 # a provider group this project never uses
 
-An addition states its host's complete treatment and tagging, and overrides the baseline entry
-for the same host — `+host gitlab.com restricted` makes gitlab.com plain restricted, its baseline
-`=git-fetch` gone. The tags are a closed set the proxy defines: `git-fetch`, `npm-audit` and
-`github-login-device`, each named for the one operation it opens. A provider entry adds or takes
-back the group's own contribution and no more: `github.com` is in the catalog (`=git-fetch`) and in
-the `github` group (`=github-login-device`), so `+model-provider github` merges the login tag in and
-`-model-provider github` leaves the catalog's clonable host behind; to drop the host outright,
-deny the group. Widening has no delta spelling: re-adding a
-restricted baseline host as `unrestricted` is refused; a project that needs it writes
-`.defaults` — which removes the whole baseline before additions apply — and states its complete
-replacement policy:
+An addition with no treatment word is restricted; `unrestricted` is the only word that widens,
+so the dangerous entry is the one that says more. An addition states its host's complete
+allowances and overrides the baseline entry for the same host — `+host gitlab.com` makes
+gitlab.com plain restricted, its baseline `allow=git-fetch` gone. The allowances are a closed
+set the proxy defines: `git-fetch`, `github-login-device` and `npm-audit`, each named for the
+one operation it opens; several go in one word, `allow=git-fetch,github-login-device`. A
+provider entry adds or takes back the group's own contribution and no more: `github.com` is in
+the catalog (`allow=git-fetch`) and in the `github` group (`allow=github-login-device`), so
+`+model-provider github` merges the login allowance in and `-model-provider github` leaves the
+catalog's clonable host behind; to drop the host outright, deny the group. Widening has no
+delta spelling: re-adding a restricted baseline host as `unrestricted` is refused; a project
+that needs it writes `-**` — which removes the whole baseline, wherever in the file it appears;
+the file's own additions stand — and states its complete replacement policy:
 
     # egress/allowed
-    .defaults                                # nothing built-in survives
-    +model-provider anthropic                # re-added Claude Code's endpoints
+    -**                                    # nothing built-in survives
+    +model-provider anthropic              # re-added Claude Code's endpoints
 
-`denied` applies under every profile and only ever takes away — no `+`/`-` prefixes, no tags:
+`denied` applies under every profile and only ever takes away — no `+`/`-` prefixes, no
+allowances:
 
     # egress/denied
     host telemetry.example.com    # an exact host

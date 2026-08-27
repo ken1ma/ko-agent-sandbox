@@ -148,9 +148,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!resolved.ambient)
 
   test("a provider group's forge endpoints stay restricted in the baseline, tags merged"):
-    // github.com is in the catalog (=git-fetch) and in the github group (=github-login-device): the
+    // github.com is in the catalog (allow=git-fetch) and in the github group (allow=github-login-device): the
     // baseline carries both, and the group's untagged api.github.com does not strip the
-    // catalog's =git-fetch from it.
+    // catalog's allow=git-fetch from it.
     assertEquals(BaselineHosts("github.com"), Treatment.Restricted(Set("git-fetch", "github-login-device")))
     assertEquals(BaselineHosts("api.github.com"), Treatment.Restricted(Set("git-fetch")))
     assertEquals(BaselineHosts("api.githubcopilot.com"), Treatment.Unrestricted)
@@ -173,7 +173,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[PolicyViolation](authorize("github.com", 443, resolved))
     val withExtras = policyOf(
       profile = "deny-unless-model", provider = "anthropic",
-      allowed = "+host docs.example restricted",
+      allowed = "+host docs.example",
     )
     assertEquals(withExtras.hosts, ModelProviderHosts("anthropic"))
 
@@ -183,7 +183,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(resolved.restricted.get("github.com"), Some(Set("github-login-device")))
     assertEquals(resolved.restricted.get("api.github.com"), Some(Set.empty))
     assert(resolved.unrestrictedHosts.contains("api.githubcopilot.com"))
-    // The catalog's =git-fetch is not in the group: under this profile the forge is not even cloned from.
+    // The catalog's allow=git-fetch is not in the group: under this profile the forge is not even cloned from.
     assert(!resolved.tagged("git-fetch").contains("github.com"))
 
   test("deny-unless-model with no provider selected is a valid empty policy"):
@@ -221,21 +221,21 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // becoming an opaque tunnel.
     val ambient = policyOf(profile = "allow-unless-denied", allowed = "-host github.com")
     assertEquals(ambient.restricted.get("github.com"), Some(Set("git-fetch", "github-login-device")))
-    // .defaults cannot subtract from it either.
-    val reset = policyOf(profile = "allow-unless-denied", allowed = ".defaults")
+    // -** cannot subtract from it either.
+    val reset = policyOf(profile = "allow-unless-denied", allowed = "-**")
     assertEquals(reset.restricted, BaselineRestricted)
 
   test("a restricted addition extends the narrowing set; an unrestricted one adds nothing to it"):
     val resolved = policyOf(
       profile = "allow-unless-denied",
-      allowed = "+host mirror.example=git-fetch restricted\n+host opaque.example unrestricted",
+      allowed = "+host mirror.example allow=git-fetch\n+host opaque.example unrestricted",
     )
     assertEquals(resolved.restricted.get("mirror.example"), Some(Set("git-fetch")))
     assert(!resolved.hosts.contains("opaque.example"))
     assertEquals(authorize("opaque.example", 443, resolved), "opaque.example")
 
   test("the allowed delta adds to and removes from the baseline"):
-    val resolved = policyOf(allowed = "+host html.spec.whatwg.org restricted\n-host pypi.org")
+    val resolved = policyOf(allowed = "+host html.spec.whatwg.org\n-host pypi.org")
     assertEquals(
       resolved.restricted,
       BaselineRestricted - "pypi.org" + ("html.spec.whatwg.org" -> Set.empty[String]),
@@ -246,35 +246,35 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // The launcher passes the files' lines, resolvePolicy normalizes the entries, and
     // authorizeRequest normalizes the CONNECT target: whatever spelling either side used,
     // enforcement compares one canonical form.
-    val resolved = policyOf(allowed = "+host Example.ORG. restricted\n-host GitLab.COM.")
+    val resolved = policyOf(allowed = "+host Example.ORG.\n-host GitLab.COM.")
     assertEquals(authorize("EXAMPLE.ORG.", 443, resolved), "example.org")
     assert(!resolved.hosts.contains("gitlab.com"))
     intercept[PolicyViolation](authorize("example.com", 443, resolved))
 
   test("an entry outside the grammar is refused with the grammar in hand, never skipped"):
-    // The pre-release egress-hosts spelling is the likely stray: a bare +host token.
+    // A bare +host token is the likely stray.
     val ex = intercept[IllegalArgumentException](policyOf(allowed = "+pypi.org"))
     assert(ex.getMessage.contains("allowed grammar"), ex.getMessage)
     intercept[IllegalArgumentException](policyOf(allowed = "host example.com"))
     intercept[IllegalArgumentException](policyOf(denied = "+host example.com"))
     intercept[IllegalArgumentException](policyOf(denied = "example.com"))
-    intercept[IllegalArgumentException](policyOf(denied = ".defaults"))
+    intercept[IllegalArgumentException](policyOf(denied = "-**"))
 
   test("restating a baseline entry identically is a harmless no-op"):
     // Deliberately not an error: a defensively added host must not start failing when a later
     // image adopts it into the baseline.
-    assertEquals(policyOf(allowed = "+host pypi.org restricted").restricted, BaselineRestricted)
+    assertEquals(policyOf(allowed = "+host pypi.org").restricted, BaselineRestricted)
     assertEquals(
-      policyOf(allowed = "+host github.com=git-fetch restricted").restricted,
+      policyOf(allowed = "+host github.com allow=git-fetch").restricted,
       CuratedRestrictedHosts,
     )
     ModelProviderHosts.keys.foreach: name =>
       assertEquals(policyOf(allowed = s"+model-provider $name").hosts, policyOf().hosts, name)
 
-  test("a retagging addition states its host's complete tagging, and =git-fetch opens git fetch"):
-    // An addition states its host's complete tagging and overrides the baseline entry for that
+  test("an addition states its host's complete allowances, and allow=git-fetch opens git fetch"):
+    // An addition states its host's complete allowances and overrides the baseline entry for that
     // host — explicit, printed as written at launch, never a merge.
-    val mirror = policyOf(allowed = "+host mirror.example=git-fetch restricted")
+    val mirror = policyOf(allowed = "+host mirror.example allow=git-fetch")
     assert(mirror.tagged("git-fetch").contains("mirror.example"))
     authorizeInspectedRequest(
       "mirror.example",
@@ -284,45 +284,63 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
       Set("git-fetch"),
     )
-    // Revoking: a bare restatement strips the built-in =git-fetch; the host stays restricted.
-    val demoted = policyOf(allowed = "+host gitlab.com restricted")
+    // Revoking: a bare restatement strips the built-in allow=git-fetch; the host stays restricted.
+    val demoted = policyOf(allowed = "+host gitlab.com")
     assert(!demoted.tagged("git-fetch").contains("gitlab.com"))
     assert(demoted.restricted.contains("gitlab.com"))
     // Granting is just as explicit — legal, and the entry says exactly what it opens.
     assert(
-      policyOf(allowed = "+host pypi.org=git-fetch restricted")
+      policyOf(allowed = "+host pypi.org allow=git-fetch")
         .tagged("git-fetch").contains("pypi.org"),
     )
 
   test("one host, one treatment: entries that disagree are refused"):
     val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example restricted\n+host docs.example=git-fetch restricted"),
+      policyOf(allowed = "+host docs.example\n+host docs.example allow=git-fetch"),
     )
     assert(ex.getMessage.contains("two different treatments"), ex.getMessage)
     intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example restricted\n+host docs.example unrestricted"),
+      policyOf(allowed = "+host docs.example\n+host docs.example unrestricted"),
     )
 
-  test("an unknown tag or treatment is refused with the closed set in hand"):
-    // A tag names a fixed treatment, never describes one — and the port habit (host=8443) fails
-    // closed here too.
+  test("an unknown allowance or treatment is refused with the closed set in hand"):
+    // An allowance names a fixed treatment, never describes one.
     val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host mirror.example=lfs restricted"),
+      policyOf(allowed = "+host mirror.example allow=lfs"),
     )
-    assert(ex.getMessage.contains("the tags are: git-fetch, github-login-device, npm-audit"), ex.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example=8443 restricted"))
+    assert(ex.getMessage.contains("the allowances are: git-fetch, github-login-device, npm-audit"), ex.getMessage)
+    intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example=8443"))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example 8443"))
     val treatment = intercept[IllegalArgumentException](
       policyOf(allowed = "+host mirror.example writable"),
     )
-    assert(treatment.getMessage.contains("restricted and unrestricted"), treatment.getMessage)
+    assert(treatment.getMessage.contains("the forms are"), treatment.getMessage)
 
-  test("a tag belongs on a restricted addition and nowhere else"):
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example=git-fetch unrestricted"))
-    intercept[IllegalArgumentException](policyOf(allowed = "-host github.com=git-fetch"))
-    intercept[IllegalArgumentException](policyOf(denied = "host github.com=git-fetch"))
+  test("restricted is the default and has no word; an empty allow= says nothing and is refused"):
+    val spelled = intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example restricted"))
+    assert(spelled.getMessage.contains("has no word"), spelled.getMessage)
+    intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example allow="))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example allow=git-fetch,"))
+    // Several allowances go in one word, and the order does not matter.
+    assertEquals(
+      policyOf(allowed = "+host mirror.example allow=github-login-device,git-fetch").restricted("mirror.example"),
+      Set("git-fetch", "github-login-device"),
+    )
+
+  test("-** is a flag, not a rule in sequence: the file's own additions stand on either side of it"):
+    val below = policyOf(allowed = "-**\n+host docs.example\n+model-provider openai")
+    val above = policyOf(allowed = "+host docs.example\n+model-provider openai\n-**")
+    assertEquals(above.hosts, below.hosts)
+    assert(above.restricted.contains("docs.example"))
+
+  test("an allowance belongs on a restricted addition and nowhere else"):
+    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example allow=git-fetch unrestricted"))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example unrestricted allow=git-fetch"))
+    intercept[IllegalArgumentException](policyOf(allowed = "-host github.com allow=git-fetch"))
+    intercept[IllegalArgumentException](policyOf(denied = "host github.com allow=git-fetch"))
 
   test("adding and removing the same host is refused"):
-    intercept[IllegalArgumentException](policyOf(allowed = "+host pypi.org restricted\n-host pypi.org"))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host pypi.org\n-host pypi.org"))
 
   test("a removal matching neither the baseline nor an addition is refused, not a silent no-op"):
     // The sharp fail-open edge: a typo'd '-host githib.example' that removed nothing would read
@@ -333,13 +351,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("delta entries reject IP literals and malformed hostnames like any other"):
     intercept[IllegalArgumentException](policyOf(allowed = "+host 10.0.0.1 unrestricted"))
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api..example restricted"))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host api..example"))
     intercept[IllegalArgumentException](policyOf(denied = "host 10.0.0.1"))
 
   test("a comma joins nothing: tokens split on whitespace alone, like the policy files"):
     // A comma-joined pair must not silently become two entries — it stays one token and fails
     // hostname validation, so the mistake is a refused launch, not a policy nobody wrote.
-    intercept[IllegalArgumentException](policyOf(allowed = "+host a.example,b.example restricted"))
+    intercept[IllegalArgumentException](policyOf(allowed = "+host a.example,b.example"))
     intercept[IllegalArgumentException](policyOf(denied = "host gitlab.com,chatgpt.com"))
 
   test("a -host **.domain removal drops the domain and everything under it"):
@@ -352,7 +370,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a +host under a -host **.domain is a contradiction, not a precedence"):
     intercept[IllegalArgumentException](
-      policyOf(allowed = "-host **.github.com\n+host api.github.com=git-fetch restricted"),
+      policyOf(allowed = "-host **.github.com\n+host api.github.com allow=git-fetch"),
     )
 
   test("a bare -host * and the undotted **domain spelling are refused, never suffix-matched"):
@@ -368,7 +386,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assert(!resolved.hosts.contains(host), host)
       intercept[PolicyViolation](authorize(host, 443, resolved))
     assert(
-      !policyOf(allowed = "+host docs.example restricted", denied = "host docs.example")
+      !policyOf(allowed = "+host docs.example", denied = "host docs.example")
         .hosts.contains("docs.example"),
     )
 
@@ -395,7 +413,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       intercept[PolicyViolation](authorize(host, 443, resolved))
     intercept[IllegalArgumentException](policyOf(denied = "model-provider meta"))
     // An allowed removal takes back only the group's contribution: github.com stays the catalog's
-    // =git-fetch host, the model hosts go.
+    // allow=git-fetch host, the model hosts go.
     val withoutGithub = policyOf(allowed = "-model-provider github")
     assertEquals(withoutGithub.restricted.get("github.com"), Some(Set("git-fetch")))
     assertEquals(withoutGithub.restricted.get("api.github.com"), Some(Set("git-fetch")))
@@ -424,19 +442,19 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Vector.empty,
     )
 
-  test(".defaults removes the whole baseline before additions apply"):
+  test("-** removes the whole baseline before additions apply"):
     val resolved = policyOf(
-      allowed = ".defaults\n+model-provider anthropic\n+host docs.python.org restricted",
+      allowed = "-**\n+model-provider anthropic\n+host docs.python.org",
     )
     assertEquals(resolved.unrestrictedHosts, ModelProviderHosts("anthropic").keySet)
     assertEquals(resolved.restricted, Map("docs.python.org" -> Set.empty[String]))
 
-  test("treatment widening has no delta spelling; .defaults states a replacement instead"):
+  test("treatment widening has no delta spelling; -** states a replacement instead"):
     val ex = intercept[IllegalArgumentException](policyOf(allowed = "+host github.com unrestricted"))
-    assert(ex.getMessage.contains(".defaults"), ex.getMessage)
-    // Under a .defaults replacement the same entry is the stated policy, not a widening.
+    assert(ex.getMessage.contains("-**"), ex.getMessage)
+    // Under a -** replacement the same entry is the stated policy, not a widening.
     assertEquals(
-      policyOf(allowed = ".defaults\n+host github.com unrestricted").unrestrictedHosts,
+      policyOf(allowed = "-**\n+host github.com unrestricted").unrestrictedHosts,
       Set("github.com"),
     )
 
@@ -457,12 +475,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val lines = policyLines(policyOf())
     assertEquals(lines(0), "egress profile: deny-unless-allowed")
     assert(lines(1).startsWith(s"restricted hosts (${CuratedRestrictedHosts.size}): "), lines(1))
-    // Tags travel in the line; the launcher strips them when minting the leaf's names.
-    assert(lines(1).contains(" github.com=git-fetch=github-login-device "), lines(1))
-    assert(lines(1).contains(" registry.npmjs.org=npm-audit "), lines(1))
-    assert(lines(1).contains(" pypi.org "), lines(1))
-    assert(lines(2).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(2))
-    assertEquals(lines(3), "denied rules (0):")
+    // The restricted line is hosts only — the leaf's names, verbatim; each allowance in force
+    // has a line of its own, hosts sorted, allowances sorted.
+    assert(lines(1).contains(" github.com "), lines(1))
+    assert(!lines(1).contains("allow="), lines(1))
+    val gitHosts = CuratedRestrictedHosts.collect { case (host, tags) if tags("git-fetch") => host }.toVector.sorted
+    assertEquals(lines(2), s"restricted allow=git-fetch (${gitHosts.size}):" + gitHosts.map(" " + _).mkString)
+    assertEquals(lines(3), "restricted allow=github-login-device (1): github.com")
+    assertEquals(lines(4), "restricted allow=npm-audit (1): registry.npmjs.org")
+    assert(lines(5).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(5))
+    assertEquals(lines(6), "denied rules (0):")
 
   test("an empty policy prints zero counts, parseable like any other"):
     val lines = policyLines(policyOf(profile = "deny-unless-model"))
@@ -473,11 +495,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val lines = policyLines(policyOf(profile = "allow-unless-denied", denied = "host x.example"))
     assertEquals(lines(0), "egress profile: allow-unless-denied; default: public HTTPS unrestricted")
     assert(!lines.exists(_.startsWith("unrestricted hosts")), lines.toString)
-    assertEquals(lines(2), "denied rules (1): x.example")
+    assert(lines.contains("denied rules (1): x.example"), lines.toString)
 
   test("provenance names each entry's source, and an overriding removal or denial is shown"):
     val lines = provenanceLines(
-      policyOf(allowed = "+host docs.example restricted\n-host pypi.org", denied = "host gitlab.com"),
+      policyOf(allowed = "+host docs.example\n-host pypi.org", denied = "host gitlab.com"),
     )
     assert(lines.contains("  docs.example: restricted; allowed +host"), lines.toString)
     assert(lines.contains("  api.anthropic.com: unrestricted; model-provider anthropic"), lines.toString)
@@ -491,7 +513,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val model = provenanceLines(
       policyOf(
         profile = "deny-unless-model", provider = "openai",
-        allowed = "-host api.openai.com\n+host docs.example restricted",
+        allowed = "-host api.openai.com\n+host docs.example",
       ),
     )
     assert(model.contains("  api.openai.com: unrestricted; model-provider openai"), model.toString)
@@ -502,13 +524,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
       policyOf(
         profile = "allow-unless-denied",
         allowed =
-          "-host github.com\n+host opaque.example unrestricted\n+host mirror.example restricted",
+          "-host github.com\n+host opaque.example unrestricted\n+host mirror.example",
       ),
     )
     assert(ambient.contains("  mirror.example: restricted; allowed +host"), ambient.toString)
     assert(
       ambient.contains(
-        "  github.com: restricted =git-fetch =github-login-device; curated baseline, model-provider github",
+        "  github.com: restricted allow=git-fetch,github-login-device; curated baseline, model-provider github",
       ),
       ambient.toString,
     )
@@ -516,25 +538,25 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!ambient.exists(_.contains("opaque.example")), ambient.toString)
 
   test("provenance reports a rule only when it actually changed the resolved policy"):
-    // A removal under .defaults removes what .defaults already cleared: not reported.
-    val defaults = policyOf(allowed = ".defaults\n-host pypi.org\n+host docs.example restricted")
-    assertEquals(defaults.removedSpellings, Vector(".defaults (baseline cleared)"))
+    // A removal under -** removes what -** already cleared: not reported.
+    val defaults = policyOf(allowed = "-**\n-host pypi.org\n+host docs.example")
+    assertEquals(defaults.removedSpellings, Vector("-** (baseline cleared)"))
     // Of two overlapping removals, the second finds nothing left to remove: not reported.
     val overlapping = policyOf(allowed = "-host pypi.org\n-host **.pypi.org")
     assertEquals(overlapping.removedSpellings, Vector("pypi.org"))
     // Re-adding a baseline host with its baseline treatment changes nothing, so the standing
     // source holds — the provider group's and the curated catalog's alike.
     val restated = provenanceLines(
-      policyOf(allowed = "+host api.openai.com unrestricted\n+host crates.io restricted"),
+      policyOf(allowed = "+host api.openai.com unrestricted\n+host crates.io"),
     )
     assert(
       restated.contains("  api.openai.com: unrestricted; model-provider openai"),
       restated.toString,
     )
     assert(restated.contains("  crates.io: restricted; curated baseline"), restated.toString)
-    // A provider group the allowed delta restored after .defaults is the delta's doing; naming
+    // A provider group the allowed delta restored after -** is the delta's doing; naming
     // the built-in group would hide that the project's own file re-opened it.
-    val restored = provenanceLines(policyOf(allowed = ".defaults\n+model-provider openai"))
+    val restored = provenanceLines(policyOf(allowed = "-**\n+model-provider openai"))
     assert(
       restored.contains("  api.openai.com: unrestricted; allowed +model-provider openai"),
       restored.toString,
@@ -1015,9 +1037,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a restricted host allows reading and nothing else"):
     // The tier exists for storage.googleapis.com: all of GCS, where an attacker-signed URL
-    // accepts writes — so unlike a =git-fetch host there is no POST exception at all. The sharp case is a
+    // accepts writes — so unlike a allow=git-fetch host there is no POST exception at all. The sharp case is a
     // POST whose path mimics git-upload-pack: an object name is anyone's to choose, and it must
-    // NOT ride the =git-fetch rule through.
+    // NOT ride the allow=git-fetch rule through.
     def storage(request: String): Unit =
       authorizeInspectedRequest("storage.googleapis.com", head(request), Set.empty)
 
@@ -1072,7 +1094,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
 
     // A package registry wears the tier too — security is not traded for performance — so a
-    // fetch reads, npm's measured install-time audit POST is its =npm-audit allowance, and an
+    // fetch reads, npm's measured install-time audit POST is its allow=npm-audit allowance, and an
     // older npm's endpoint (or any other POST) earns an honest refusal.
     authorizeInspectedRequest(
       "registry.npmjs.org",
@@ -1097,7 +1119,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Set("npm-audit"),
       )
     assert(oldNpm.getMessage.contains("restricted path"), oldNpm.getMessage)
-    // The =npm-audit allowance opens nothing on a =git-fetch host, and vice versa.
+    // The allow=npm-audit allowance opens nothing on a allow=git-fetch host, and vice versa.
     intercept[PolicyViolation]:
       authorizeInspectedRequest(
         "github.com",
@@ -1107,7 +1129,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Set("git-fetch"),
       )
 
-    // =github-login-device opens the device-flow pair and nothing beside it: neither GitHub's other
+    // allow=github-login-device opens the device-flow pair and nothing beside it: neither GitHub's other
     // OAuth endpoints nor, on the same host, a push.
     GithubLoginDevicePaths.foreach: path =>
       authorizeInspectedRequest(
@@ -1160,7 +1182,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       head("GET / HTTP/1.1\r\nHost: github.com\r\n continued\r\n\r\n")
 
-  test("reading a =git-fetch host is allowed"):
+  test("reading a allow=git-fetch host is allowed"):
     inspected("GET /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(
@@ -1416,7 +1438,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
-  /** The built-in =git-fetch hosts, as the resolved default policy carries them. */
+  /** The built-in allow=git-fetch hosts, as the resolved default policy carries them. */
   /** The baseline as a policy: deny-unless-allowed with no project files. */
   private lazy val baselinePolicy: ResolvedEgress =
     resolvePolicy(Some("deny-unless-allowed"), None, None, None)

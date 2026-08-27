@@ -922,8 +922,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         )
       case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
 
-  test("SECURITY.md names exactly the =git-fetch hosts the proxy ships"):
-    // The git-host list has two homes: the =git-fetch entries of the proxy's DefaultReadOnlyHosts and
+  test("SECURITY.md names exactly the allow=git-fetch hosts the proxy ships"):
+    // The git-host list has two homes: the allow=git-fetch entries of the proxy's catalog and
     // the SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
     // names come from the image's own --print-policy at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
@@ -938,7 +938,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala"),
     )
     val block = proxySource.substring(proxySource.indexOf("val CuratedRestrictedHosts"))
-    val gitHosts = "\"([^\"]+)=git-fetch\"".r
+    val gitHosts = "\"([^\"]+) allow=git-fetch\"".r
       .findAllMatchIn(block.substring(0, block.indexOf(").map(")))
       .map(_.group(1))
       .toVector
@@ -958,15 +958,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val known = """"([^"]+)"""".r.findAllMatchIn(declared.group(1)).map(_.group(1)).toSet
     assert(known.nonEmpty, "scraped no tags at all")
 
-    // A resolved policy with no tags of its own, so every `=tag` found is the prose's own. The
-    // lookbehind keeps an option spelling (--egress=profile) out of the tag hunt: a tag mention
-    // is `=name` with nothing word-like before the `=`.
+    // A resolved policy with no allowances of its own, so every `allow=tag` found is the prose's
+    // own.
     val emptyResolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
-    val named = "(?<![a-z-])=([a-z-]+)".r
+    val named = "allow=([a-z-]+)".r
       .findAllMatchIn(authoritySection("live", emptyResolution))
       .map(_.group(1))
       .toSet
-    assert(named.nonEmpty, "the section names no tag, so it teaches an agent nothing about them")
+    assert(named.nonEmpty, "the section names no allowance, so it teaches an agent nothing about them")
     assertEquals(named -- known, Set.empty[String], s"the proxy defines only $known")
 
   test("the authority section directs the agent by write mode, never leaves it to probing"):
@@ -1001,7 +1000,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(Nil).map(_.egressProfile), Right("deny-unless-allowed"))
 
   test("option parsing: authority values are a closed set and are selected once"):
-    assert(parseCommandLine(List("--write=maybe")).swap.exists(_.contains("reject, staged, live")))
+    assert(parseCommandLine(List("--write=maybe")).swap.exists(_.contains("reject, live")))
     assert(parseCommandLine(List("--egress=allow-all")).isLeft)
     assert(parseCommandLine(List("--write=live", "--write=reject")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
@@ -1124,7 +1123,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       parseCommandLine(List("--self-test", "a_handle_held")),
       Right(ParsedCommandLine(None, None, Some(("--self-test", List("a_handle_held"))), Nil)),
     )
-    assert(parseCommandLine(List("--proxy-effective")).swap.exists(_.contains("--egress-effective")))
 
   test("the state root must be absolute, resolves canonically, and stays outside the project"):
     // A relative value resolves against the current directory — the repository being sandboxed —

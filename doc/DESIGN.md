@@ -50,8 +50,9 @@ not make the request an information-flow read") is unchanged by it.
 
 Keep protocol-specific inspection only where it buys a concrete property, as it does for git
 reads versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a
-closed set of tags (`=git-fetch`, `=npm-audit`) each naming a fixed extra allowance — not a
-per-host language. A tag names a rule-set the proxy defines; it never describes one. Its concrete
+closed set of allowances (`allow=git-fetch`, `allow=npm-audit`) each naming a fixed extra
+permission — not a per-host language. An allowance names a rule-set the proxy defines; it never
+describes one. Its concrete
 property is refusing every allowed host's write surface outside the agent endpoints, the one
 unauthenticated one included (storage.googleapis.com). Do not go further: no per-host rules, no
 path patterns beyond git's, no open tag set, no general-purpose policy engine without concrete
@@ -79,9 +80,9 @@ STYLE.md and rebuilding.
 ### No richer egress-policy format
 
 The policy stays four fixed profiles over two fixed files — `allowed`, a `+host` / `-host` /
-`+model-provider` / `-model-provider` / `.defaults` delta over the launcher-owned baseline with
-treatments and tags from closed sets (`restricted`/`unrestricted`; `=git-fetch`, `=npm-audit`,
-`=github-login-device`),
+`+model-provider` / `-model-provider` / `-**` delta over the launcher-owned baseline with
+treatments and allowances from closed sets (`unrestricted`, or restricted by default with
+`allow=git-fetch`, `allow=npm-audit`, `allow=github-login-device`),
 and `denied` (hosts, `**.domain`, provider groups) applied last — no fields, no globs beyond the
 taking-away subtree, no ranked rules, no open tag vocabulary, no selected-provider-plus-extras
 profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;

@@ -222,7 +222,7 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();
         fs::write(
             backing.join(".ko-agent-sandbox/egress/allowed"),
-            b"+host docs.python.org restricted\n",
+            b"+host docs.python.org\n",
         )
         .unwrap();
     });

@@ -96,10 +96,10 @@ class EgressPolicyTest extends munit.FunSuite:
 
     withSession(
       "allowed" ->
-        """|+host example.com restricted
-           |+host expired.badssl.com restricted
-           |+host wrong.host.badssl.com restricted
-           |+host 127.0.0.1.nip.io restricted
+        """|+host example.com
+           |+host expired.badssl.com
+           |+host wrong.host.badssl.com
+           |+host 127.0.0.1.nip.io
            |""".stripMargin
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
@@ -132,17 +132,17 @@ class EgressPolicyTest extends munit.FunSuite:
       // The bound: adding four hosts adds four hosts.
       refusedAtConnect(session, "https://www.iana.org/", "a host the policy never named was allowed")
 
-  test("an addition states a host's complete tagging, dropping the built-in tag"):
+  test("an addition states a host's complete allowances, dropping the built-in one"):
     assume(enabled, requirement)
 
-    // github.com is `=git-fetch` in the baseline: restricted, plus the POST a clone's transfer
+    // github.com is `allow=git-fetch` in the baseline: restricted, plus the POST a clone's transfer
     // leg needs. Re-adding it plain is documented to replace that entry outright.
     val clone = Vector(
       "git", "clone", "--depth", "1", "--quiet",
       "https://github.com/octocat/Hello-World.git", "/tmp/hello"
     )
 
-    withSession("allowed" -> "+host github.com restricted\n"): session =>
+    withSession("allowed" -> "+host github.com\n"): session =>
       assertEquals(status(session, "https://github.com/"), "200", "the re-added host lost its read access")
       val attempt = exec(session, clone*)
       assert(!attempt.ok, "SECURITY: the clone succeeded; the built-in git-fetch tag outlived the addition")
@@ -196,7 +196,7 @@ class EgressPolicyTest extends munit.FunSuite:
         s"${controlLines.dropRight(1).mkString(" ")} ${control.err}",
     )
 
-    withSession("allowed" -> s"+host $bucketHost restricted\n"): session =>
+    withSession("allowed" -> s"+host $bucketHost\n"): session =>
       val attempt = curl(session, "-X", "PUT", "--data-binary", "from-the-sandbox", url)
       assert(
         attempt.text.contains("restricted host"),
@@ -209,11 +209,11 @@ class EgressPolicyTest extends munit.FunSuite:
         "no deny line records the refused PUT",
       )
 
-  test("a .defaults lockdown removes the built-in policy and still signs in"):
+  test("a -** lockdown removes the built-in policy and still signs in"):
     assume(enabled, requirement)
 
     withSession(
-      "allowed" -> ".defaults\n+host api.anthropic.com unrestricted\n",
+      "allowed" -> "-**\n+host api.anthropic.com unrestricted\n",
     ): session =>
       // An unrestricted host is an opaque tunnel: any status means the CONNECT was granted, and
       // the agent endpoint answering at all is what "still signs in" means.
@@ -222,5 +222,5 @@ class EgressPolicyTest extends munit.FunSuite:
         "the re-added agent endpoint is unreachable under the lockdown",
       )
       // Nothing restricted survives, so this session inspects nothing — and the baseline is gone.
-      refusedAtConnect(session, "https://pypi.org/", "a built-in host survived `.defaults`")
-      refusedAtConnect(session, "https://github.com/", "a built-in host survived `.defaults`")
+      refusedAtConnect(session, "https://pypi.org/", "a built-in host survived `-**`")
+      refusedAtConnect(session, "https://github.com/", "a built-in host survived `-**`")

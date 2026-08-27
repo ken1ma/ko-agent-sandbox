@@ -1,9 +1,8 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
 The remaining increments of the workspace-authority work. The option surface (`--write`,
-`--egress`), the egress profiles and reject mode are implemented; `--write=staged` parses and
-refuses until the engine below exists, the writable default stays `live`, and
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD` stays honored until the final step here. No distributable
+`--egress`), the egress profiles and reject mode are implemented; the writable default is `live`,
+and `KO_AGENT_SANDBOX_WORKSPACE_GUARD` stays honored until the final step here. No distributable
 build may make ordinary launches read-only before the staged workflow is usable.
 
 ## Staged mode

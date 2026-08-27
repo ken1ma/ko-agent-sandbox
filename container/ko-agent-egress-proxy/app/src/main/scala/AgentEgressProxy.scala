@@ -44,12 +44,12 @@ object AgentEgressProxy:
    * A host's treatment is one of two:
    *
    *   - unrestricted: an opaque tunnel — nothing seen or logged past the CONNECT.
-   *   - restricted: TLS-inspected; only GET and HEAD — except that a tagged entry also admits
-   *     its tag's one POST: `=git-fetch` the git-upload-pack transfer, so cloning works while
+   *   - restricted: TLS-inspected; only GET and HEAD — except that an entry with an allowance also
+   *     admits its one POST: `allow=git-fetch` the git-upload-pack transfer, so cloning works while
    *     `git push` is refused inside the tunnel rather than merely being expected to fail for
-   *     want of a credential; `=npm-audit` npm's install-time audit, so dependency-vulnerability
-   *     warnings keep working; `=github-login-device` GitHub's OAuth device flow, so Copilot signs in
-   *     on a forge that stays read-only otherwise.
+   *     want of a credential; `allow=github-login-device` GitHub's OAuth device flow, so Copilot
+   *     signs in on a forge that stays read-only otherwise; `allow=npm-audit` npm's install-time
+   *     audit, so dependency-vulnerability warnings keep working.
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
    * rule, and an unknown tag is a refused start — the guardrail DESIGN.md ("No general HTTP
@@ -150,8 +150,8 @@ object AgentEgressProxy:
   val GithubLoginDevicePaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
 
   /**
-   * The curated restricted catalog: GET and HEAD with no body, and no POST — except a tagged
-   * entry's own (KnownTags). The `=git-fetch` hosts serve git fetch besides: agents routinely
+   * The curated restricted catalog: GET and HEAD with no body, and no POST — except an
+   * allowance's own (KnownTags). The `allow=git-fetch` hosts serve git fetch besides: agents routinely
    * read issues, release notes and upstream sources from them, and they are where the shortest
    * path out of /workspace lives — `git push`, an issue comment, a gist — so reading is exactly
    * the thing that has to keep working while writing is refused. What is permitted once TLS is
@@ -161,15 +161,15 @@ object AgentEgressProxy:
    *
    * An allowance must stay a tag, never every host's rule: on an object store a path is a
    * name anyone can choose, so an attacker-signed upload URL for an object literally named
-   * .../git-upload-pack would pass the git path rule on an untagged host.
+   * .../git-upload-pack would pass the git path rule on a host without the allowance.
    *
    * The bulk package registries are in although an inspected session is one request per
    * connection, so a dependency resolve pays a handshake per request — an accepted cost, because
    * security is not traded for performance (DESIGN.md's principles). What that buys at a
    * registry is refusal of its write API and a method-and-target log line per fetch; npm's
-   * install-time audit POST, the one recurring legitimate write, is the =npm-audit allowance
+   * install-time audit POST, the one recurring legitimate write, is the allow=npm-audit allowance
    * rather than a casualty — its body names the project's dependencies, a priced trade a project
-   * revokes by restating the entry untagged (SECURITY.md, "Reading without being able to
+   * revokes by restating the entry without it (SECURITY.md, "Reading without being able to
    * write").
    *
    * storage.googleapis.com is the member that *needs* the treatment rather than merely wearing
@@ -178,14 +178,14 @@ object AgentEgressProxy:
    */
   val CuratedRestrictedHosts: Map[String, Set[String]] =
     Set(
-      // git hosts: reading plus git fetch — the =git-fetch tag
-      "github.com=git-fetch",
-      "raw.githubusercontent.com=git-fetch",
-      "objects.githubusercontent.com=git-fetch",
-      "codeload.github.com=git-fetch",
-      "api.github.com=git-fetch",
-      "codeberg.org=git-fetch",
-      "gitlab.com=git-fetch",
+      // git hosts: reading plus git fetch — the allow=git-fetch tag
+      "github.com allow=git-fetch",
+      "raw.githubusercontent.com allow=git-fetch",
+      "objects.githubusercontent.com allow=git-fetch",
+      "codeload.github.com allow=git-fetch",
+      "api.github.com allow=git-fetch",
+      "codeberg.org allow=git-fetch",
+      "gitlab.com allow=git-fetch",
 
       // the agent docs
       "code.claude.com",        // claude
@@ -243,7 +243,7 @@ object AgentEgressProxy:
 
       "nodejs.org",
       "www.typescriptlang.org",
-      "registry.npmjs.org=npm-audit",  // install-time vulnerability warnings (NpmAuditPath)
+      "registry.npmjs.org allow=npm-audit",  // install-time vulnerability warnings (NpmAuditPath)
       // docs.npmjs.com is declined: npm's supply-chain record does not earn optional entries
 
       "go.dev",
@@ -289,16 +289,16 @@ object AgentEgressProxy:
       // provider binaries (releases.hashicorp.com, get.pulumi.com) wait for a real need
       "docs.spring.io",
 
-      // GitHub content hosts serving pre-signed GETs; untagged like the doc sites — no
+      // GitHub content hosts serving pre-signed GETs; no allowance, like the doc sites — no
       // git-upload-pack endpoint lives on them
       "release-assets.githubusercontent.com",  // release downloads
       "media.githubusercontent.com",  // LFS files, one URL per file
-    ).map(entry => parseTaggedEntry("the curated restricted catalog", entry)).toMap
+    ).map(entry => parseCatalogEntry(entry.split(" ").toVector)).toMap
 
   /**
    * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
    * is restricted in both — a group never widens the catalog — and carries the union of its tags
-   * (github.com: `=git-fetch` from the catalog, `=github-login-device` from its group). What each
+   * (github.com: `allow=git-fetch` from the catalog, `allow=github-login-device` from its group). What each
    * profile admits of it is resolvePolicy's equation.
    */
   val BaselineHosts: Map[String, Treatment] =
@@ -397,10 +397,8 @@ object AgentEgressProxy:
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
         resolved.hosts.get(authorized) match
-          case Some(Treatment.Restricted(tags)) =>
-            "restricted" + tags.toVector.sorted.map(" =" + _).mkString
-          case Some(Treatment.Unrestricted) => "unrestricted"
-          case None                         => "unrestricted (the public-HTTPS default)"
+          case Some(treatment) => spelled(treatment)
+          case None            => "unrestricted (the public-HTTPS default)"
       catch case ex: PolicyViolation => s"refused: ${ex.getMessage}"
     println(s"policy: $host $decision")
 
@@ -409,13 +407,22 @@ object AgentEgressProxy:
       case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
       case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
 
+  /** A treatment as the policy file spells it: `unrestricted`, or `restricted` with its allowances. */
+  def spelled(treatment: Treatment): String = treatment match
+    case Treatment.Restricted(tags) if tags.nonEmpty => s"restricted allow=${tags.toVector.sorted.mkString(",")}"
+    case Treatment.Restricted(_)                     => "restricted"
+    case Treatment.Unrestricted                      => "unrestricted"
+
   /**
    * The resolved policy, one line each — printed by --print-policy and
    * logged by serve() in the same shape, so the dry-run banner, the runtime
-   * log and the launcher's leaf minting all read one format. A restricted
-   * entry carries its tags (`github.com=git-fetch`). Under allow-unless-denied
-   * there is no finite unrestricted line to print — the profile line carries
-   * the public-HTTPS default instead, and no host count is invented.
+   * log and the launcher's leaf minting all read one format. The restricted
+   * line is the whole inspected set — what the leaf certificate names — and
+   * each allowance in force gets a line of its own (`restricted allow=git-fetch
+   * (7): ...`), so which hosts carry which exception is read off directly.
+   * Under allow-unless-denied there is no finite unrestricted line to print —
+   * the profile line carries the public-HTTPS default instead, and no host
+   * count is invented.
    */
   def policyLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
@@ -425,9 +432,10 @@ object AgentEgressProxy:
         "egress profile: allow-unless-denied; default: public HTTPS unrestricted"
       case other => s"egress profile: $other"
 
-    val restrictedEntries = resolved.restricted.toVector
-      .map((host, tags) => host + tags.toVector.sorted.map("=" + _).mkString)
-      .sorted
+    val restrictedHosts = resolved.restricted.keys.toVector.sorted
+    val allowanceLines = resolved.restricted.values.flatten.toVector.distinct.sorted.map: tag =>
+      val hosts = resolved.tagged(tag).toVector.sorted
+      s"restricted allow=$tag (${hosts.size}):" + hosts.map(" " + _).mkString
     val unrestrictedLine = Option.when(!resolved.ambient)(
       s"unrestricted hosts (${resolved.unrestrictedHosts.size}):"
         + resolved.unrestrictedHosts.toVector.sorted.map(" " + _).mkString,
@@ -435,8 +443,8 @@ object AgentEgressProxy:
 
     Vector(
       profileLine,
-      s"restricted hosts (${restrictedEntries.size}):" + restrictedEntries.map(" " + _).mkString,
-    ) ++ unrestrictedLine ++ Vector(
+      s"restricted hosts (${restrictedHosts.size}):" + restrictedHosts.map(" " + _).mkString,
+    ) ++ allowanceLines ++ unrestrictedLine ++ Vector(
       s"denied rules (${resolved.denied.size}):"
         + resolved.denied.map(" " + _.spelled).mkString,
     ) ++ Option.when(resolved.idleDenied.nonEmpty)(
@@ -453,12 +461,8 @@ object AgentEgressProxy:
   def provenanceLines(resolved: ResolvedEgress): Vector[String] =
     def sourceOf(host: String): String = resolved.sources(host)
 
-    def treatmentOf(treatment: Treatment): String = treatment match
-      case Treatment.Restricted(tags) => "restricted" + tags.toVector.sorted.map(" =" + _).mkString
-      case Treatment.Unrestricted     => "unrestricted"
-
     val hostLines = resolved.hosts.toVector.sorted(using Ordering.by(_(0))).map: (host, treatment) =>
-      s"  $host: ${treatmentOf(treatment)}; ${sourceOf(host)}"
+      s"  $host: ${spelled(treatment)}; ${sourceOf(host)}"
     val deniedOverrides = resolved.deniedAdmitted.toVector.sortBy(_(0)).map: (host, rule) =>
       s"  $host: denied by ${rule.spelled}; ${sourceOf(host)}"
     val removalLines = resolved.removedSpellings.map(spelling => s"  $spelling: removed by allowed")
@@ -603,7 +607,7 @@ object AgentEgressProxy:
     val unrestrictedHosts: Set[String] =
       hosts.collect { case (host, Treatment.Unrestricted) => host }.toSet
     val inspected: Set[String] = restricted.keySet
-    /** The hosts carrying one tag — the =git-fetch hosts, the =npm-audit hosts. */
+    /** The hosts carrying one tag — the allow=git-fetch hosts, the allow=npm-audit hosts. */
     def tagged(tag: String): Set[String] =
       restricted.collect { case (host, tags) if tags.contains(tag) => host }.toSet
 
@@ -623,7 +627,7 @@ object AgentEgressProxy:
    *
    * Let `M` be the selected provider's group, `B` the baseline (BaselineHosts), `A` the result
    * of applying the `allowed` delta to `B`, `N` the restricted narrowing set — `B`'s restricted
-   * entries plus restricted exact-host additions; removals, `.defaults` and unrestricted
+   * entries plus restricted exact-host additions; removals, `-**` and unrestricted
    * additions cannot subtract from it — `D` the `denied` rules expanded, and `U` the implicit
    * map from every public hostname on port 443 to unrestricted:
    *
@@ -644,7 +648,7 @@ object AgentEgressProxy:
    * Fails closed on every ambiguity: an unknown profile, provider, tag or entry shape; duplicate
    * exact-host additions with different treatments; a host both added and removed — a `+host`
    * under a `-host **.domain` included; an addition that would widen a restricted baseline host
-   * to unrestricted, which has no delta spelling short of `.defaults` plus a complete
+   * to unrestricted, which has no delta spelling short of `-**` plus a complete
    * replacement; a removal matching neither the baseline nor an addition. A `denied` entry
    * matching nothing the selected profile admits is a startup warning, not an error: it can
    * still apply under another profile or a future provider expansion, and a typo cannot be
@@ -671,7 +675,7 @@ object AgentEgressProxy:
     val denied = parseDenied(deniedText.getOrElse(""))
 
     delta.addedHosts.foreach: (host, treatment) =>
-      val widens = !delta.defaults && treatment == Treatment.Unrestricted &&
+      val widens = !delta.clearsBaseline && treatment == Treatment.Unrestricted &&
         BaselineHosts.get(host).exists {
           case Treatment.Restricted(_) => true
           case Treatment.Unrestricted  => false
@@ -679,7 +683,7 @@ object AgentEgressProxy:
       if widens then
         throw IllegalArgumentException(
           s"$AllowedVariable re-adds the restricted baseline host $host as unrestricted; " +
-            "treatment widening has no delta spelling — use .defaults and state the complete " +
+            "treatment widening has no delta spelling — use -** and state the complete " +
             "replacement policy",
         )
 
@@ -701,7 +705,7 @@ object AgentEgressProxy:
     // last rule that actually changed it, and a delta rule is reported as a removal only when it
     // removed a host that was present when it applied. A rule the profile never consults, or one
     // that restates what already held — re-adding a baseline host with its baseline treatment,
-    // removing under .defaults what .defaults already cleared — shapes nothing and is reported
+    // removing under -** what -** already cleared — shapes nothing and is reported
     // nowhere.
     // A host in the catalog and a group names both: its tags came from both.
     def baselineSource(host: String): String =
@@ -721,7 +725,7 @@ object AgentEgressProxy:
 
     // A group's restricted entry contributes its tags to a host the catalog already restricts, as
     // BaselineHosts merged them: `+model-provider github` over the baseline is a no-op, not a
-    // retagging of github.com. Removing the group takes back only what it contributed.
+    // re-allowancing of github.com. Removing the group takes back only what it contributed.
     def addGroup(current: Map[String, (Treatment, String)], name: String, source: String) =
       ModelProviderHosts(name).foldLeft(current):
         case (current, (host, Treatment.Restricted(tags))) =>
@@ -742,7 +746,7 @@ object AgentEgressProxy:
     // exact entry overrides the baseline's treatment of the same host (the widening direction was
     // refused above).
     val cleared: Map[String, (Treatment, String)] =
-      if delta.defaults then Map.empty
+      if delta.clearsBaseline then Map.empty
       else BaselineHosts.map((host, treatment) => host -> (treatment, baselineSource(host)))
     val afterProviderRemovals = delta.removedProviders.toVector.sorted.foldLeft(cleared)(removeGroup)
     val withAddedProviders =
@@ -759,15 +763,15 @@ object AgentEgressProxy:
       case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
 
     val effectiveRemovals =
-      Option.when(delta.defaults)(".defaults (baseline cleared)").toVector
+      Option.when(delta.clearsBaseline)("-** (baseline cleared)").toVector
         ++ delta.removedProviders.toVector.sorted
           .filter(name => cleared.keys.exists(ModelProviderHosts(name).contains))
           .map(name => s"model-provider:$name")
         ++ effectiveHostRemovals
 
     // N: what stays restricted under allow-unless-denied — every restricted baseline entry, a
-    // group's included, so github.com keeps =github-login-device. Only additions extend it; nothing in
-    // the delta subtracts from it, so a removal or .defaults cannot widen an ambient host.
+    // group's included, so github.com keeps allow=github-login-device. Only additions extend it; nothing in
+    // the delta subtracts from it, so a removal or `-**` cannot widen an ambient host.
     val narrowed: Map[String, (Treatment, String)] =
       delta.addedHosts.toVector.sortBy(_(0))
         .filter((_, treatment) => treatment != Treatment.Unrestricted)
@@ -836,31 +840,37 @@ object AgentEgressProxy:
     name
 
   /**
-   * One addition split at `=`: the hostname, then its tags — KnownTags
-   * members only, so a tag names a fixed treatment. The port habit fails
-   * closed here too: `host=8443` is an unknown tag with the tag list in
-   * hand (`host:8443` is already refused as a hostname).
+   * The allowances of one `allow=<tag>,...` word: KnownTags members only, so a tag names a fixed
+   * treatment, and never empty — `allow=` saying nothing is refused, not read as none.
    */
-  private def parseTaggedEntry(variable: String, entry: String): (String, Set[String]) =
-    val parts = entry.split("=", -1).toVector
-    val host = normalizeEntry(variable, parts.head)
-    parts.tail.foreach: tag =>
+  private def parseAllowances(variable: String, host: String, word: String): Set[String] =
+    val tags = word.stripPrefix("allow=").split(",", -1).toVector
+    tags.foreach: tag =>
       if !KnownTags.contains(tag) then
         throw IllegalArgumentException(
-          s"$variable tags '$host' with '$tag', which is no treatment this proxy defines; " +
-            s"the tags are: ${KnownTags.toVector.sorted.mkString(", ")}",
+          s"$variable allows '$host' the operation '$tag', which is none this proxy defines; " +
+            s"the allowances are: ${KnownTags.toVector.sorted.mkString(", ")}",
         )
-    (host, parts.tail.toSet)
+    tags.toSet
+
+  /** A catalog entry, `<host> [allow=<tag>,...]` — the `+host` tail's restricted forms, in the code. */
+  private def parseCatalogEntry(words: Vector[String]): (String, Set[String]) =
+    val variable = "the curated restricted catalog"
+    val host = normalizeEntry(variable, words.head)
+    words.tail match
+      case Vector()                                 => (host, Set.empty)
+      case Vector(word) if word.startsWith("allow=") => (host, parseAllowances(variable, host, word))
+      case other => throw IllegalArgumentException(s"$variable follows $host with '${other.mkString(" ")}'")
 
   private enum AllowedEntry:
-    case Defaults
+    case ClearBaseline
     case AddProvider(name: String)
     case RemoveProvider(name: String)
     case AddHost(host: String, treatment: Treatment)
     case RemoveHost(removal: DenyRule)
 
   private case class AllowedDelta(
-    defaults: Boolean,
+    clearsBaseline: Boolean,
     addedProviders: Set[String],
     removedProviders: Set[String],
     addedHosts: Map[String, Treatment],
@@ -871,46 +881,59 @@ object AgentEgressProxy:
    * The `allowed` delta's grammar, one entry per line, `#` comments:
    *
    *   +model-provider <name>            -model-provider <name>
-   *   +host <host[=tag...]> <restricted|unrestricted>
+   *   +host <host>                      restricted, the default: TLS-inspected, GET and HEAD
+   *   +host <host> allow=<tag>,...      restricted, plus the named allowances (KnownTags)
+   *   +host <host> unrestricted         an opaque tunnel — the one word that widens
    *   -host <host | **.domain>
-   *   .defaults                         (removes the whole baseline before additions apply)
+   *   -**                               removes the whole baseline, wherever it appears
+   *
+   * The safe treatment has no word, so the dangerous one is the only entry with an extra word;
+   * `restricted` spelled out is refused rather than accepted as a second spelling. `-**` is a
+   * flag, not a rule in sequence — the file is not applied top to bottom (resolvePolicy) — so
+   * the file's own additions stand above or below it.
    *
    * An entry outside the grammar is refused, never skipped: a stray line configures nothing,
-   * which is the silent-weakening failure mode this file must not have. A retagging addition
-   * states its host's complete tagging and overrides the baseline entry for the same host —
-   * never a merge, which would widen a host to a treatment no single line says. Two entries for
-   * one host with different treatments or taggings are refused; restating a baseline entry
+   * which is the silent-weakening failure mode this file must not have. An addition states its
+   * host's complete allowances and overrides the baseline entry for the same host — never a
+   * merge, which would widen a host to a treatment no single line says. Two entries for one
+   * host with different treatments or allowances are refused; restating a baseline entry
    * identically stays the legal defensive no-op, so a policy that names a host keeps working
    * when the image adopts it.
    */
   private def parseAllowed(text: String): AllowedDelta =
     import AllowedEntry.*
     val entries = policyEntries(text).map:
-      case Vector(".defaults")             => Defaults
+      case Vector("-**")                   => ClearBaseline
       case Vector("+model-provider", name) => AddProvider(requireProvider(AllowedVariable, name))
       case Vector("-model-provider", name) => RemoveProvider(requireProvider(AllowedVariable, name))
-      case Vector("+host", entry, treatment) =>
-        val (host, tags) = parseTaggedEntry(AllowedVariable, entry)
-        treatment match
-          case "restricted" => AddHost(host, Treatment.Restricted(tags))
-          case "unrestricted" =>
-            if tags.nonEmpty then
-              throw IllegalArgumentException(
-                s"$AllowedVariable tags the unrestricted host $host; a =tag opens one " +
-                  "restricted operation, so it belongs on a restricted entry only",
-              )
-            AddHost(host, Treatment.Unrestricted)
+      case "+host" +: entry +: words =>
+        val host = normalizeEntry(AllowedVariable, entry)
+        words match
+          case Vector()               => AddHost(host, Treatment.Restricted(Set.empty))
+          case Vector("unrestricted") => AddHost(host, Treatment.Unrestricted)
+          case Vector(word) if word.startsWith("allow=") =>
+            AddHost(host, Treatment.Restricted(parseAllowances(AllowedVariable, host, word)))
+          case _ if words.contains("unrestricted") =>
+            throw IllegalArgumentException(
+              s"$AllowedVariable gives the unrestricted host $host an allowance; allow= opens one " +
+                "restricted operation, so it belongs on a restricted entry only",
+            )
+          case _ if words.contains("restricted") =>
+            throw IllegalArgumentException(
+              s"$AllowedVariable spells $host's treatment 'restricted', which is the default and " +
+                "has no word: +host <host>, or +host <host> allow=<tag>,...",
+            )
           case other =>
             throw IllegalArgumentException(
-              s"$AllowedVariable gives $host the treatment '$other'; the treatments are " +
-                "restricted and unrestricted",
+              s"$AllowedVariable follows $host with '${other.mkString(" ")}'; the forms are " +
+                "+host <host>, +host <host> allow=<tag>,..., +host <host> unrestricted",
             )
       case Vector("-host", entry) => RemoveHost(parseHostRule(AllowedVariable, entry))
       case tokens =>
         throw IllegalArgumentException(
           s"$AllowedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
             "allowed grammar: +model-provider <name>, -model-provider <name>, " +
-            "+host <host[=tag]> <restricted|unrestricted>, -host <host | **.domain>, .defaults",
+            "+host <host> [allow=<tag>,... | unrestricted], -host <host | **.domain>, -**",
         )
 
     val added = entries.collect { case AddHost(host, treatment) => (host, treatment) }.distinct
@@ -930,7 +953,7 @@ object AgentEgressProxy:
       )
 
     AllowedDelta(
-      entries.contains(Defaults),
+      entries.contains(ClearBaseline),
       addedProviders,
       removedProviders,
       added.toMap,
@@ -939,7 +962,7 @@ object AgentEgressProxy:
 
   /**
    * The `denied` file's grammar, one entry per line, `#` comments — no `+`/`-` prefixes and no
-   * `=tag`, because denied only ever takes away, the host whole, under every profile:
+   * `allow=`, because denied only ever takes away, the host whole, under every profile:
    *
    *   model-provider <name>
    *   host <host | **.domain>
@@ -1317,10 +1340,10 @@ object AgentEgressProxy:
   /**
    * What "read access" means once TLS is terminated. Everywhere: GET and
    * HEAD to any path, bodyless. Each of the host's tags additionally admits
-   * its POSTs: `=git-fetch` the git-upload-pack path, without which "read
-   * access" would silently exclude `git clone`; `=npm-audit` the audit
-   * endpoint npm hits during install (NpmAuditPath); `=github-login-device` the
-   * device-flow pair (GithubLoginDevicePaths). On an untagged host, no
+   * its POSTs: `allow=git-fetch` the git-upload-pack path, without which "read
+   * access" would silently exclude `git clone`; `allow=npm-audit` the audit
+   * endpoint npm hits during install (NpmAuditPath); `allow=github-login-device` the
+   * device-flow pair (GithubLoginDevicePaths). On a host without it, no
    * POST at all: a path there is an object name anyone can choose, so a
    * path rule authorizes nothing (DefaultReadOnlyHosts has the type case).
    *

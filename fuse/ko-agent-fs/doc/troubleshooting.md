@@ -135,8 +135,8 @@ returned `EOF`. Check, in order:
     podman machine ssh 'journalctl -k | grep -iE "oom|out of memory" | tail -5'
 
 The sandbox's default memory ceiling and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`)
-are what make sbt die before the VM does, except on a machine the launch already warned was short;
-the incident above predates them. With more than one session on the machine their ceilings add
+are what make sbt die before the VM does, except on a machine the launch already warned was short.
+With more than one session on the machine their ceilings add
 up past what the VM has, so lower each with `KO_AGENT_SANDBOX_MEMORY`. Other remedies: raise the
 machine's memory (`podman machine set --memory ...`, machine stopped, your call); keep
 gigabyte-scale work under `~` in the container, not `/tmp`. The entrypoint reads the same

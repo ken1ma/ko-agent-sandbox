@@ -138,7 +138,7 @@ At `same-uid` a runtime runs, within four limits:
 - **Host network only.** `-p` does not exist; services bind 127.0.0.1 directly, and egress is
   still the proxy's.
 - **Most registries need the allowlist.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
-  baseline; for any other, ask the user to add `+host <registry> restricted` to
+  baseline; for any other, ask the user to add `+host <registry>` to
   `.ko-agent-sandbox/egress/allowed`. A stalled pull is a refused host.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 

@@ -333,9 +333,7 @@ object SandboxProject:
    * every write mode before the policy is read — the read is a host-side read either way.
    * Refused shapes: a symlink of the directory or of egress (podman resolves mount sources on
    * the host, and the policy read must see the bytes a mounted-back directory would show);
-   * anything that is not a directory; the pre-release egress-hosts layout, refused with the
-   * exact replacement rather than sitting as ignored, stale authority configuration; or an
-   * entry that is no configuration of this launcher's — the directory is a closed namespace,
+   * anything that is not a directory; or an entry that is no configuration of this launcher's — the directory is a closed namespace,
    * decided before it has a second tenant, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule egress/ applies inside itself. The policy files inside
    * egress/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles). An absent
@@ -354,8 +352,6 @@ object SandboxProject:
           "Remove what is in its place; the directory holds this project's boundary configuration.",
       )
     else if !Files.exists(policyDir) then None
-    else if Files.exists(policyDir.resolve("egress-hosts")) then
-      Some(EgressProxyPolicy.legacyLayoutRefusal(policyDir.resolve("egress-hosts")))
     else
       strayPolicyEntries(policyDir) match
         case Vector() => None

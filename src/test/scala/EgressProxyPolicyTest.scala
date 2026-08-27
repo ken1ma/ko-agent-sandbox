@@ -10,31 +10,31 @@ import EgressProxyPolicy.*
 class EgressProxyPolicyTest extends munit.FunSuite:
 
   test("policy normalization strips comments and collapses whitespace but keeps lines"):
-    // Entries are multi-token lines (`+host x restricted`), so line structure is what separates
+    // Entries are multi-token lines (`+host x`), so line structure is what separates
     // them and must survive the trip through the environment variable.
     val text =
       """# Reads public Python documentation.
-        |+host docs.python.org restricted
+        |+host docs.python.org
         |
         |-host   pypi.org
         |+model-provider anthropic  # trailing comment
         |""".stripMargin
     assertEquals(
       normalizePolicyText(text),
-      "+host docs.python.org restricted\n-host pypi.org\n+model-provider anthropic",
+      "+host docs.python.org\n-host pypi.org\n+model-provider anthropic",
     )
 
   test("a policy of only comments and blanks normalizes to empty"):
     assertEquals(normalizePolicyText("# nothing\n\n   \n# more\n"), "")
 
   test("normalization is idempotent, so a normalized policy re-reads unchanged"):
-    val normalized = normalizePolicyText("+host a.example restricted\n\n.defaults # x\n")
+    val normalized = normalizePolicyText("+host a.example\n\n-** # x\n")
     assertEquals(normalizePolicyText(normalized), normalized)
 
   test("the banner summary joins a file's entries on one line"):
     assertEquals(
-      entriesSummary("+host a.example restricted\n-host b.example"),
-      "+host a.example restricted; -host b.example",
+      entriesSummary("+host a.example\n-host b.example"),
+      "+host a.example; -host b.example",
     )
 
   test("the launch banner names the profile and the counts, never the host names"):
@@ -43,7 +43,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed\n" +
-          "restricted hosts (2): github.com=git-fetch secret.example\n" +
+          "restricted hosts (2): github.com secret.example\n" +
           "unrestricted hosts (3): a.example b.example c.example\n" +
           "denied rules (0):",
       ),
@@ -96,7 +96,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("the policy directory reads present files, normalized, in file order"):
     val dir = Files.createTempDirectory("egress")
     Files.writeString(dir.resolve("denied"), "host gitlab.com\nhost **.example.org # a comment\n")
-    Files.writeString(dir.resolve("allowed"), "+host ghcr.io restricted\n")
+    Files.writeString(dir.resolve("allowed"), "+host ghcr.io\n")
     // Dot-named editor and OS metadata is exempt from the closed namespace, as one level up
     // (SandboxProject.isMetadataEntry): a Finder visit must not fail the next launch.
     Files.createFile(dir.resolve(".DS_Store"))
@@ -104,7 +104,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       readPolicyFiles(dir),
       Right(
         Vector(
-          "allowed" -> "+host ghcr.io restricted",
+          "allowed" -> "+host ghcr.io",
           "denied" -> "host gitlab.com\nhost **.example.org",
         ),
       ),
@@ -119,13 +119,13 @@ class EgressProxyPolicyTest extends munit.FunSuite:
 
     // egress itself as a file, not a directory: a policy that must never be skipped unseen.
     val asFile = parent.resolve("egress")
-    Files.writeString(asFile, "+host ghcr.io restricted\n")
+    Files.writeString(asFile, "+host ghcr.io\n")
     assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
     Files.delete(asFile)
 
     // A typo'd file name configures nothing.
     val dir = Files.createDirectory(parent.resolve("egress"))
-    Files.writeString(dir.resolve("alowed"), "+host ghcr.io restricted\n")
+    Files.writeString(dir.resolve("alowed"), "+host ghcr.io\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
     Files.delete(dir.resolve("alowed"))
 
@@ -143,12 +143,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // Present but empty: more likely a forgotten edit than a deliberate no-op.
     Files.writeString(dir.resolve("allowed"), "# only a comment\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
-
-  test("the legacy egress-hosts refusal carries the exact replacement"):
-    val refusal = legacyLayoutRefusal(Paths.get("/p/.ko-agent-sandbox/egress-hosts"))
-    // One line per old form, so a migration is a rewrite, never a guess.
-    Vector("+host h[=tag] restricted", "+host h unrestricted", "denied:", ".defaults",
-      "deny-unless-allowed").foreach(part => assert(refusal.contains(part), part))
 
   test("the policy env args carry the authority selection and each file's variable"):
     // The dry run and the proxy container get these same args, so what was vetted is enforced.
@@ -170,11 +164,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none"),
     )
 
-  test("the inspected hosts are the restricted line's names, tags stripped"):
+  test("the inspected hosts are the restricted line's names; the allowance lines are not read"):
     assertEquals(
       inspectedHostsOf(
         "egress profile: deny-unless-allowed\n" +
-          "restricted hosts (2): github.com=git-fetch pypi.org\n" +
+          "restricted hosts (2): github.com pypi.org\n" +
+          "restricted allow=git-fetch (1): github.com\n" +
           "unrestricted hosts (0):\ndenied rules (0):",
       ),
       Right(Vector("github.com", "pypi.org")),

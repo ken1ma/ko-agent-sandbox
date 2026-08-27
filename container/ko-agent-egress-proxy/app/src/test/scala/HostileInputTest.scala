@@ -278,13 +278,13 @@ class HostileInputTest extends munit.FunSuite:
     // baseline hosts plus the ones its own text spells, never to something the arithmetic
     // invented — and never to a treatment wider than a single line says.
     val lines = Vector(
-      "+host github.com=git-fetch restricted", "-host github.com", "-host **.github.com",
-      "+host pypi.org restricted", "-host pypi.org", "+host mirror.example unrestricted",
-      "+host mirror.example=git-fetch restricted", "+host mirror.example=lfs restricted",
-      "+host mirror.example writable", ".defaults", "+model-provider anthropic",
-      "-model-provider google", "+host", "-host", "+host a..b restricted",
-      "+host 10.0.0.1 unrestricted", "+host [github.com] restricted", "+host github.com. restricted",
-      "+github.com", "pypi.org", "host pypi.org", "=git-fetch",
+      "+host github.com allow=git-fetch", "-host github.com", "-host **.github.com",
+      "+host pypi.org", "-host pypi.org", "+host mirror.example unrestricted",
+      "+host mirror.example allow=git-fetch", "+host mirror.example allow=lfs",
+      "+host mirror.example writable", "-**", "+model-provider anthropic",
+      "-model-provider google", "+host", "-host", "+host a..b",
+      "+host 10.0.0.1 unrestricted", "+host [github.com] restricted", "+host github.com.",
+      "+github.com", "pypi.org", "host pypi.org", "allow=git-fetch",
     )
     var resolved = 0
     var refused = 0

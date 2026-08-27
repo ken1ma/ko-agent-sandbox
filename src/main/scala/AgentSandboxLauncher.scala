@@ -1209,12 +1209,11 @@ object AgentSandboxLauncher:
 
   /**
    * The two independent authority options, selected on every launch and never persisted by a
-   * stage or an agent resume. `--write=staged` is parsed but refuses at launch until the staged
-   * engine ships (doc/PLAN-STAGED.md); the writable default stays `live` until then — no
-   * distributable build may make ordinary launches read-only before the staged workflow is
-   * usable.
+   * stage or an agent resume. The writable default is `live` (doc/PLAN-STAGED.md has the staged
+   * mode and the default flip that follow it); no distributable build may make ordinary launches
+   * read-only before the staged workflow is usable.
    */
-  val WriteModes = Vector("reject", "staged", "live")
+  val WriteModes = Vector("reject", "live")
   val DefaultWriteMode = "live"
   val EgressProfiles =
     Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
@@ -1324,12 +1323,6 @@ object AgentSandboxLauncher:
             "error: the launch options are spelled --write=<mode>, --egress=<profile> and --env=<name>[=<value>]",
           )
 
-        case "--proxy-effective" :: _ =>
-          Left(
-            "error: --proxy-effective was renamed\n" +
-              "Run --egress-effective [--] [command] instead; it uses the accompanying --egress=<profile>.",
-          )
-
         case arg :: tail if arg.startsWith("--egress-check=") =>
           Right(
             ParsedCommandLine(
@@ -1393,8 +1386,8 @@ object AgentSandboxLauncher:
        |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
        |Anything not admitted below is refused. An unrestricted host is an opaque tunnel; a
-       |restricted host answers only GET and HEAD, and one tagged `=git-fetch` also serves
-       |`git fetch`, so `clone` and `pull` — `git push` is refused.
+       |restricted host answers only GET and HEAD, and one on the `allow=git-fetch` line also
+       |serves `git fetch`, so `clone` and `pull` — `git push` is refused.
        |
        |$indented
        |
@@ -1596,12 +1589,6 @@ object AgentSandboxLauncher:
     val writeMode = parsed.writeMode
     val egressProfile = parsed.egressProfile
 
-    if writeMode == "staged" then
-      fail(
-        """error: --write=staged is not implemented yet
-          |The staged workspace ships in a later increment (doc/PLAN-STAGED.md); until then a
-          |writable session is --write=live, the default.""".stripMargin
-      )
 
     val image = env("KO_AGENT_SANDBOX_IMAGE").getOrElse("ko-agent-sandbox:latest")
 
@@ -1823,7 +1810,7 @@ object AgentSandboxLauncher:
           writeStamped(resolvedWarningsFile, policyStamp, warnings)
           (resolved.text, warnings)
 
-    // The leaf certificate's names: the restricted line of the dry run above, tags stripped — the
+    // The leaf certificate's names: the restricted line of the dry run above, verbatim — the
     // proxy image's own answer under this project's policy — so no second copy of any list
     // exists to drift (the proxy still refuses a mismatched leaf at startup), and a policy that
     // moves a host in or out of the restricted set reissues the leaf through leaf.sans below.
