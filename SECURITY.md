@@ -342,7 +342,7 @@ the OCI runtime, namespaces, seccomp and the host kernel. This design is not bui
 working kernel or container-runtime exploit; if that enters the threat model, the answer is a
 stronger isolation layer (gVisor, a microVM), bought at its compatibility cost, not more flags here.
 
-**Resource exhaustion.** The PID limit and the opt-in memory ceiling bound the two runaways this
+**Resource exhaustion.** The PID limit and the memory ceiling bound the two runaways this
 environment actually invites. CPU, disk growth under `/workspace`, network bandwidth, and denial of
 service against the host generally are not comprehensively bounded.
 

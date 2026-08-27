@@ -32,13 +32,65 @@ class SandboxEntrypointTest extends munit.FunSuite:
     Files.createDirectory(home.resolve("persistent-volume"))
     (seed, home)
 
-  /** Starts the entrypoint with the fixture's seed and HOME; the command it execs prints its arguments. */
-  private def start(seed: Path, home: Path): Process =
-    val builder = ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
+  /**
+   * Starts the entrypoint with the fixture's seed and HOME; the command it execs prints its
+   * arguments. `/proc` is the healthy fixture unless a test hands over its own, so the machine
+   * this suite runs on never decides whether a warning prints.
+   */
+  private def start(
+    seed: Path,
+    home: Path,
+    proc: Path = healthyProc(),
+    path: Option[Path] = None,
+  ): Process =
+    val builder =
+      ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
     builder.environment.put("SANDBOX_VOLUME_SEED", seed.toString)
     builder.environment.put("HOME", home.toString)
+    builder.environment.put("SANDBOX_PROC", proc.toString)
+    path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
     builder.redirectErrorStream(true)
     builder.start()
+
+  /** A `/proc` in kB, as the kernel writes it, with the pressure file present or absent. */
+  private def proc(
+    available: Long,
+    total: Long = 16L << 20,
+    swapUsed: Long = 0,
+    pressure: Option[String] = None,
+  ): Path =
+    val root = Files.createTempDirectory("sandbox-entrypoint-proc")
+    Files.writeString(
+      root.resolve("meminfo"),
+      s"""MemTotal:       $total kB
+         |MemFree:        ${available / 2} kB
+         |MemAvailable:   $available kB
+         |SwapTotal:      ${4L << 20} kB
+         |SwapFree:       ${(4L << 20) - swapUsed} kB
+         |""".stripMargin,
+    )
+    pressure.foreach: line =>
+      Files.createDirectory(root.resolve("pressure"))
+      Files.writeString(
+        root.resolve("pressure").resolve("memory"),
+        line + "\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      )
+    root
+
+  private def healthyProc(): Path =
+    proc(available = 8L << 20, pressure = Some("some avg10=0.00 avg60=0.00 avg300=0.00 total=0"))
+
+  /** A `df` answering with the given free kB, on a PATH entry to put before the real one. */
+  private def fakeDf(availableKb: Long): Path =
+    val dir = Files.createTempDirectory("sandbox-entrypoint-bin")
+    val df = dir.resolve("df")
+    Files.writeString(
+      df,
+      s"#!/bin/sh\necho 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n" +
+        s"echo 'vda 100 1 $availableKb 1% /'\n",
+    )
+    df.toFile.setExecutable(true)
+    dir
 
   private def finish(process: Process): (Int, String) =
     val output = String(process.getInputStream.readAllBytes())
@@ -101,3 +153,39 @@ class SandboxEntrypointTest extends munit.FunSuite:
     results.foreach((status, output) => assertEquals(status, 0, output))
     assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
     assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md"))
+
+  test("a healthy machine prints nothing before the command"):
+    val (seed, home) = fixture()
+    val (status, output) = run(seed, home)
+    assertEquals(status, 0, output)
+    assertEquals(output, "a b c ")
+
+  test("a machine short of memory, swapping, stalled, or out of disk is said before the command, once"):
+    val (seed, home) = fixture()
+    val sick = proc(
+      available = 512L << 10,
+      total = 8L << 20,
+      swapUsed = 1L << 20,
+      pressure = Some("some avg10=40.00 avg60=25.50 avg300=3.00 total=1"),
+    )
+    val (status, output) = finish(start(seed, home, sick, Some(fakeDf(1L << 20))))
+    assertEquals(status, 0, output)
+    assert(output.startsWith("warning: the machine podman runs on is under pressure"), output)
+    assert(output.contains("  0.5 GiB of 8.0 GiB memory available\n"), output)
+    assert(output.contains("  1.0 GiB of swap in use\n"), output)
+    assert(output.contains("  memory pressure: tasks stalled on memory 25.50% of the last minute\n"), output)
+    assert(output.contains("  1.0 GiB of disk left on the machine\n"), output)
+    assert(output.contains("podman machine set --memory"), output)
+    // No terminal on stdin, so no hold: the command still ran.
+    assert(!output.contains("Press Enter"), output)
+    assert(output.endsWith("a b c "), output)
+
+  test("a pressure file the kernel refuses to serve, or lacks, costs only its line"):
+    val (seed, home) = fixture()
+    val refused = proc(available = 512L << 10, pressure = Some("x"))
+    refused.resolve("pressure").resolve("memory").toFile.setReadable(false)
+    Vector(refused, proc(available = 512L << 10)).foreach: sick =>
+      val (status, output) = finish(start(seed, home, sick))
+      assertEquals(status, 0, output)
+      assert(output.contains("memory available"), output)
+      assert(!output.contains("memory pressure"), output)

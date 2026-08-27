@@ -196,6 +196,36 @@ object AgentSandboxLauncher:
       console.printf("%nPress Enter to start %s ", command)
       console.readLine()
 
+  /** Below this a JVM build in the sandbox does not fit; the launch says so once. */
+  val SmallMachineMemory: Long = 4L << 30
+
+  /** `podman info --format '{{.Host.MemTotal}}'`, bytes; None when podman did not answer with one. */
+  def memoryTotal(answer: HostCommands.Run): Option[Long] =
+    if !answer.ok then None else answer.text.trim.toLongOption.filter(_ > 0)
+
+  /**
+   * The sandbox's default memory ceiling: 1 GiB under the total of the machine podman runs on —
+   * the podman machine VM, or the host on native Linux — which is what podman, the workspace
+   * filter and the kernel need to keep answering while the sandbox is at its limit; and never
+   * below half the total, so a small machine still gets a sandbox that can build.
+   */
+  def memoryCeiling(machineTotal: Long): Long =
+    Math.max(machineTotal - (1L << 30), machineTotal / 2)
+
+  /**
+   * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a ceiling exists to
+   * prevent, and podman's default of twice the memory in swap is the wrong side of that. An
+   * explicit ceiling gets the same treatment, for the same reason.
+   */
+  def memoryArguments(explicit: Option[String], machineTotal: Option[Long]): Vector[String] =
+    explicit.map(_.trim).filter(_.nonEmpty) match
+      case Some(value) => Vector(s"--memory=$value", s"--memory-swap=$value")
+      case None =>
+        machineTotal.map(memoryCeiling).toVector.flatMap: bytes =>
+          Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
+
+  def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
+
   /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_POLICY, which
    * it sets inside the sandbox rather than reads, so a launcher nested in a sandbox session is not
@@ -2149,6 +2179,10 @@ object AgentSandboxLauncher:
       // it. It grants nothing: an agent can already enumerate the policy by probing, slowly and
       // noisily, and reading a refusal as breakage is the usual outcome of not knowing.
       s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=$policyResolvedText",
+
+      // The entrypoint holds its machine-health warning on screen under the same setting as
+      // holdForReader, for the same reason: the TUI clears it otherwise.
+      s"--env=$SessionStartVariable=$sessionStartMode",
     ) ++ sandboxTlsArgs ++ jdkProxy ++ agentDocArgs ++ policyGuardArgs ++ gitGuardArgs
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
@@ -2198,12 +2232,27 @@ object AgentSandboxLauncher:
       case (_, None)                     => s"$projectDir:/workspace:rw"
 
     // -----------------------------------------------------------------------
-    // Optional memory ceiling
+    // Memory ceiling
     // -----------------------------------------------------------------------
     //
-    // Opt-in: a limit that is too low turns a slow build into an opaque OOM kill. Memory is the runaway this
-    // environment invites (the cs java OOM in the Containerfile).
-    val memoryArgs = env("KO_AGENT_SANDBOX_MEMORY").map(m => s"--memory=$m").toVector
+    // Memory is the runaway this environment invites (the cs java OOM in the Containerfile), and
+    // the sandbox must die before the machine does: one in-sandbox build exhausting the VM takes
+    // podman's own service with it, and every session on the machine (the troubleshooting
+    // document's "The whole machine degrades"). Hence a ceiling by default, below the machine's
+    // total (memoryCeiling), and no swap: a build that swaps is the thrash that makes every podman
+    // command slow. KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with other
+    // sessions.
+    val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
+    if machineMemory.isEmpty then
+      System.err.println(
+        "warning: podman info reports no machine memory; the sandbox runs without a memory ceiling",
+      )
+    machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
+      System.err.println(
+        s"warning: podman runs on ${gib(total)} of memory; builds in the sandbox OOM below about 4 GiB\n" +
+          "  on a podman machine, raise it with `podman machine set --memory` (machine stopped)",
+      )
+    val memoryArgs = memoryArguments(env("KO_AGENT_SANDBOX_MEMORY"), machineMemory)
 
     // -----------------------------------------------------------------------
     // The sandbox container: create, arm the reaper, then attach

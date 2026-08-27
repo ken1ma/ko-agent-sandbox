@@ -65,6 +65,11 @@ not ask for a credential to be mounted or copied in, and do not look for another
 Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large checkout or build there can
 take the whole podman machine down with it.
 
+When every command turns slow, read `/proc/pressure/memory` — it is the machine's, not this
+container's; `some avg60` above 10 means the machine is short — and
+`/sys/fs/cgroup/memory.events`, where a non-zero `oom_kill` means this container hit its own
+ceiling. Either way run fewer things in parallel, and tell the user which of the two it was.
+
 An LFS-tracked file checks out as its pointer stub, and installing `git-lfs` will not change
 that. Read the content one file at a time from
 `https://media.githubusercontent.com/media/<owner>/<repo>/<ref>/<path>`.

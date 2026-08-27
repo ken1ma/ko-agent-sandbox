@@ -35,6 +35,23 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
 
+  test("the sandbox gets a memory ceiling below the machine's total, and never swaps"):
+    // The invariant is that the sandbox dies before the VM: a ceiling on every launch podman
+    // reports a total for, 1 GiB under it, and half the total on a machine too small for that.
+    assertEquals(memoryCeiling(8L << 30), 7L << 30)
+    assertEquals(memoryCeiling(1L << 30), 1L << 29)
+    assertEquals(
+      memoryArguments(None, Some(8L << 30)),
+      Vector(s"--memory=${7L << 30}", s"--memory-swap=${7L << 30}"),
+    )
+    assertEquals(memoryArguments(Some("8g"), Some(16L << 30)), Vector("--memory=8g", "--memory-swap=8g"))
+    assertEquals(memoryArguments(Some(" "), Some(2L << 30)), memoryArguments(None, Some(2L << 30)))
+    // No answer from podman leaves the sandbox unlimited, loudly (main), rather than guessing.
+    assertEquals(memoryArguments(None, None), Vector.empty)
+    assertEquals(memoryTotal(HostCommands.Run(0, "8589934592\n".getBytes, "")), Some(8589934592L))
+    assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
+    assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
+
   test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
     // The same fail-closed contract as the workspace guard, through the same closedChoice.
     assertEquals(nestingMode(None), Right("none"))
