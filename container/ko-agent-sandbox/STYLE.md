@@ -11,6 +11,10 @@ reason. Search structure and trace behavior — wording search is not an invento
 reported instance appears, assume the class is too narrow. Fix the canonical enforcement point,
 add a population-level test, and do not report completion until every member is accounted for.
 
+Preserve the boundaries, such as scope and ownership, including how work is separated for review.
+If completing the request requires changing/crossing a boundary, name it and its consequence and ask.
+Never rewrite histories unless explicitly asked.
+
 
 # Writing style
 
