@@ -3,7 +3,9 @@
 
 package agentsandbox.launcher
 
+import java.nio.ByteBuffer
 import java.nio.file.{Files, Path}
+import java.nio.file.attribute.UserDefinedFileAttributeView
 import scala.jdk.CollectionConverters.*
 
 class SandboxEntrypointTest extends munit.FunSuite:
@@ -47,6 +49,18 @@ class SandboxEntrypointTest extends munit.FunSuite:
   private def entries(volume: Path): Set[String] =
     Files.list(volume).iterator.asScala.map(_.getFileName.toString).toSet
 
+  private def setUserAttribute(path: Path, name: String): Unit =
+    val attributes = Files.getFileAttributeView(path, classOf[UserDefinedFileAttributeView])
+    assume(attributes != null, "the test filesystem supports user-defined attributes")
+    try attributes.write(name, ByteBuffer.wrap(Array[Byte](1)))
+    catch
+      case _: UnsupportedOperationException | _: java.io.IOException =>
+        assume(false, "the test filesystem supports user-defined attributes")
+
+  private def userAttributes(path: Path): Set[String] =
+    val attributes = Files.getFileAttributeView(path, classOf[UserDefinedFileAttributeView])
+    Option(attributes).fold(Set.empty[String])(_.list().asScala.toSet)
+
   test("a fresh volume receives every seed directory, and the command runs with its arguments intact"):
     val (seed, home) = fixture()
     val (status, output) = run(seed, home)
@@ -68,6 +82,17 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(Files.readString(volume.resolve("claude").resolve("seeded")), "login state")
     assertEquals(entries(volume.resolve("codex")), Set.empty[String])
     assertEquals(Files.readString(volume.resolve("copilot").resolve("seeded")), "copilot")
+
+  test("seed metadata does not escape into the cross-session volume"):
+    val (seed, home) = fixture()
+    val privateAttribute = "ko-agent-sandbox-private-label"
+    setUserAttribute(seed.resolve("copilot"), privateAttribute)
+    setUserAttribute(seed.resolve("copilot").resolve("seeded"), privateAttribute)
+    val (status, output) = run(seed, home)
+    assertEquals(status, 0, output)
+    val copied = home.resolve("persistent-volume").resolve("copilot")
+    assert(!userAttributes(copied).contains(privateAttribute))
+    assert(!userAttributes(copied.resolve("seeded")).contains(privateAttribute))
 
   test("sessions seeding one volume at once all succeed, and leave one copy and no staging behind"):
     val (seed, home) = fixture()

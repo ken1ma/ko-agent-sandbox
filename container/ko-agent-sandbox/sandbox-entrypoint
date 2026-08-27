@@ -16,7 +16,10 @@ for entry in "$seed"/*; do
     name=$(basename "$entry")
     [ -e "$volume/$name" ] && continue
     staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
-    cp -a "$entry/." "$staging/"
+    # Do not preserve metadata: on SELinux, the image seed carries this container's private MCS
+    # categories. Copying that context into the shared volume makes the directory unreadable to
+    # every later session. The staging directory and new children inherit the volume's shared label.
+    cp -R "$entry/." "$staging/"
     mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
 done
 
