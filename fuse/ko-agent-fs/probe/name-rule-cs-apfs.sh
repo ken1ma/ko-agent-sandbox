@@ -14,7 +14,7 @@
 set -eu
 
 jar=${1:-target/dist/ko-agent-sandbox.jar}
-[ -f "$jar" ] || { echo "no launcher jar at $jar; run: sbt --server dist" >&2; exit 1; }
+[ -f "$jar" ] || { echo "no launcher jar at $jar; run: sbt dist" >&2; exit 1; }
 jar=$(cd "$(dirname "$jar")" && pwd)/$(basename "$jar")
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

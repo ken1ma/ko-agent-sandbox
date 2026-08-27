@@ -422,7 +422,7 @@ The per-project CA lives on the host, under
 
 ### Build the launcher and images
 
-    sbt --server dist && java -jar target/dist/ko-agent-sandbox.jar --build
+    sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
 1. This assembles one self-contained jar — a single file is the whole install.
 1. With Windows PowerShell version below 7, run the commands separated by `&&` individually.
