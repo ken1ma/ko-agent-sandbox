@@ -331,22 +331,22 @@ object SandboxProject:
   /**
    * Why .ko-agent-sandbox cannot serve as this project's policy directory, or None. Checked in
    * every write mode before the policy is read — the read is a host-side read either way.
-   * Refused shapes: a symlink of the directory or of egress (podman resolves mount sources on
+   * Refused shapes: a symlink of the directory or of an entry (podman resolves mount sources on
    * the host, and the policy read must see the bytes a mounted-back directory would show);
    * anything that is not a directory; or an entry that is no configuration of this launcher's —
-   * the directory is a closed namespace,
-   * decided before it has a second tenant, so a typo'd `egres/` is a refused launch and not
-   * ignored config, the same rule egress/ applies inside itself. The policy files inside
-   * egress/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles). An absent
+   * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
+   * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
+   * agent/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles,
+   * readAgentInstructions). An absent
    * directory is empty policy input, never a directory to materialize.
    */
   def policyDirError(policyDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
       s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
 
+    val linkedEntry = PolicyDirEntries.toVector.sorted.map(policyDir.resolve).find(Files.isSymbolicLink)
     if Files.isSymbolicLink(policyDir) then Some(symlinkRefusal(policyDir))
-    else if Files.isSymbolicLink(policyDir.resolve("egress")) then
-      Some(symlinkRefusal(policyDir.resolve("egress")))
+    else if linkedEntry.isDefined then linkedEntry.map(symlinkRefusal)
     else if Files.exists(policyDir) && !Files.isDirectory(policyDir) then
       Some(
         s"error: $policyDir must be a directory\n" +
@@ -378,7 +378,53 @@ object SandboxProject:
     s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
 
   /** The entries .ko-agent-sandbox may contain. */
-  val PolicyDirEntries: Set[String] = Set("egress")
+  val PolicyDirEntries: Set[String] = Set("egress", "agent")
+
+  /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
+  val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"
+
+  /**
+   * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
+   * Read on the host, so the same shapes egress/ refuses (EgressProxyPolicy.readPolicyFiles) are
+   * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
+   * file, an empty file. Not normalized — it is prose, mounted as written.
+   */
+  def readAgentInstructions(agentDir: Path): Either[String, Option[String]] =
+    def symlinkRefusal(path: Path): String =
+      s"error: $path must not be a symlink\nRefusing to read this project's agent instructions through one."
+
+    val file = agentDir.resolve(AgentInstructionsFile)
+    if Files.isSymbolicLink(agentDir) then Left(symlinkRefusal(agentDir))
+    else if !Files.exists(agentDir) then Right(None)
+    else if !Files.isDirectory(agentDir) then
+      Left(
+        s"""error: $agentDir is a file
+           |agent is a directory holding $AgentInstructionsFile; move the file there.""".stripMargin
+      )
+    else
+      val entries = Files
+        .list(agentDir)
+        .iterator()
+        .asScala
+        .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
+        .toVector
+        .sortBy(_.getFileName.toString)
+
+      val refusal = entries
+        .collectFirst:
+          case entry if entry.getFileName.toString != AgentInstructionsFile =>
+            s"error: $entry is not agent instructions\nagent/ holds only $AgentInstructionsFile; " +
+              "a stray name would be ignored config."
+          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
+          case entry if !Files.isRegularFile(entry) =>
+            s"error: $entry is not a regular file\nagent/$AgentInstructionsFile is a text file; " +
+              "anything else would leave it silently unread."
+        .orElse:
+          Option.when(readIfPresent(file).exists(_.isBlank))(
+            s"error: $file is empty\nDelete the file; the image's own instructions then apply."
+          )
+
+      refusal.toLeft(readIfPresent(file))
 
   /**
    * Whether an entry of a closed policy namespace is exempt from its unknown-name refusal:

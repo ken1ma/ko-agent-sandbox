@@ -121,7 +121,7 @@ ENV npm_config_prefix=/home/nonroot/.local
 #
 # gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
 # rustc's own LLVM emits the objects and only shells out to cc to drive ld
-# against glibc's crt*.o. Kept out of SANDBOX.md's tool table for that
+# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's tool table for that
 # reason — nothing here invites C development, though gcc compiles C if asked.
 #
 # Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
@@ -424,8 +424,12 @@ RUN set -euxo pipefail; \
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
-# SANDBOX.md tells the running agent what this container is; STYLE.md how
-# to write. They concatenate into AGENTS.md, the target of every link below.
+# AGENTS-SANDBOX.md tells the running agent what this container is;
+# AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
+# every link below. The launcher mounts its own assembly over AGENTS.md — the
+# policy in force appended, and a project's
+# .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
+# why the parts ship beside the whole.
 # Without them an agent reads `Read-only file system` as breakage, or writes
 # deliverables somewhere discarded on exit.
 #
@@ -445,7 +449,7 @@ RUN set -euxo pipefail; \
 # and net.properties, but it can only reach the JDK it shipped. sandbox-prepare-jdk does both for a
 # JVM the agent installs itself (`cs java`), from the certificate mounted beside these instructions.
 #
-# sandbox-apt-get is the SANDBOX.md-documented package unpacker: real apt-get install can never
+# sandbox-apt-get is the AGENTS-SANDBOX.md-documented package unpacker: real apt-get install can never
 # work on a read-only rootfs as uid 65532, and shipping the workaround beats retyping it.
 # sandbox-install-podman is the same bargain for the nesting opt-in: a fetch plus four config
 # files an agent would otherwise transcribe from the instructions, and a refusal when the session
@@ -460,11 +464,11 @@ COPY --chmod=0755 \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
 
-COPY SANDBOX.md STYLE.md /etc/ko-agent-sandbox/
+COPY AGENTS-SANDBOX.md AGENTS-CUSTOM.md /etc/ko-agent-sandbox/
 
 RUN set -euxo pipefail; \
-    { cat /etc/ko-agent-sandbox/SANDBOX.md; echo; \
-      cat /etc/ko-agent-sandbox/STYLE.md; } \
+    { cat /etc/ko-agent-sandbox/AGENTS-SANDBOX.md; echo; \
+      cat /etc/ko-agent-sandbox/AGENTS-CUSTOM.md; } \
         > /etc/ko-agent-sandbox/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \

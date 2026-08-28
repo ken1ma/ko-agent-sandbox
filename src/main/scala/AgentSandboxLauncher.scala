@@ -25,10 +25,10 @@
 //    |      gitGuardVolumes are the opted-out fallback); reject is a
 //    |      read-only bind of the raw tree)
 //    |
-//    +-- .ko-agent-sandbox: the egress policy, read on the host; the
-//    |      write mode is what keeps a session from writing the next
-//    |      one's — only the pin fallback still mounts it back RO
-//    |      (policyGuardVolume)
+//    +-- .ko-agent-sandbox: the egress policy and the project's agent
+//    |      instructions, read on the host; the write mode is what keeps
+//    |      a session from writing the next one's — only the pin
+//    |      fallback still mounts it back RO (policyGuardVolume)
 //    |
 //    +-- Podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini,
@@ -1755,6 +1755,13 @@ object AgentSandboxLauncher:
     policyDirError(policyDir).foreach(fail(_))
 
     val policyFiles = readPolicyFiles(policyDir.resolve("egress")).fold(fail(_), identity)
+    // The project's replacement for the image's AGENTS-CUSTOM.md, read here for the same reason
+    // the policy is: a session must not rewrite the instructions governing the next one.
+    val agentInstructions = readAgentInstructions(policyDir.resolve("agent")).fold(fail(_), identity)
+    agentInstructions.foreach: _ =>
+      System.err.println(
+        s"agent instructions: .ko-agent-sandbox/agent/$AgentInstructionsFile replaces the image's",
+      )
 
     // The provider the launched command selects, and the one warning that is the launcher's to
     // print: the proxy never sees the command, so "this command selects no provider" cannot come
@@ -1954,14 +1961,17 @@ object AgentSandboxLauncher:
     // session knowing what it can reach instead of learning it from a refused request. Same
     // technique as the CA bundle below — read the image's own file, add this project's part, mount
     // the result back over it — and the image points all three agents' instruction files at this one
-    // path by symlink, so a single mount reaches every one of them. Cached on (image Id, resolved
-    // policy), the only two inputs; the policy is hashed into the stamp because it is multi-line.
+    // path by symlink, so a single mount reaches every one of them. A project shipping its own
+    // AGENTS-CUSTOM.md takes the image's AGENTS-SANDBOX.md alone and supplies the middle part
+    // itself. Cached on (image Id, write mode, resolved policy, project instructions); the
+    // multi-line inputs are hashed into the stamp.
     val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = policyCacheDir.resolve("agents.md")
     val agentDocStampFile = policyCacheDir.resolve("agents.stamp")
-    // The write mode is a stamp input of its own; the profile and provider need none — the
-    // resolved text's first line carries both.
-    val agentDocStamp = s"$imageId $writeMode ${sha256Hex(policyResolvedText)}"
+    // The profile and provider need no stamp input of their own — the resolved text's first line
+    // carries both.
+    val agentDocStamp =
+      s"$imageId $writeMode ${sha256Hex(policyResolvedText)} ${agentInstructions.fold("image")(sha256Hex)}"
 
     val (proxyTlsArgs, sandboxTlsArgs, agentDocArgs, jdkProxy) = withFileLock(tlsDir.resolve(".lock")):
       // Run copies whose runs are provably gone — and past the launch bound, so a launch between
@@ -2051,14 +2061,17 @@ object AgentSandboxLauncher:
       if readIfPresent(agentDocFile).forall(_.isEmpty)
         || firstLine(agentDocStampFile) != agentDocStamp
       then
+        val imagePart =
+          if agentInstructions.isDefined then "/etc/ko-agent-sandbox/AGENTS-SANDBOX.md" else agentDocPath
         val imageDoc = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", agentDocPath,
+          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", imagePart,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
         writeReadable(
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
+            + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
             + authoritySection(writeMode, policyResolvedText),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -2351,7 +2364,7 @@ object AgentSandboxLauncher:
       "--security-opt=no-new-privileges",
 
       // /tmp and /var/tmp stay writable through podman's --read-only-tmpfs default — the writability
-      // SANDBOX.md promises the agents.
+      // AGENTS-SANDBOX.md promises the agents.
       "--read-only",
 
       // Defense against accidental or hostile fork bombs. Raise this if a particular parallel build genuinely needs

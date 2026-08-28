@@ -52,18 +52,18 @@ open allowance set, no general-purpose policy engine without concrete use cases 
 repository-controlled behavior. The outer container/network boundary should contain them all instead
 of trying to classify command names as safe.
 
-### No per-project agent-instruction override in `.ko-agent-sandbox`
+### The agent-instruction override replaces only the conventions
 
-Style and workflow instructions already have a native per-project channel every agent reads with no
-launcher help: the project's own CLAUDE.md / AGENTS.md / GEMINI.md in the workspace, committed and
-reviewed like any other file. `.ko-agent-sandbox` is unwritable in every write mode because its
-content governs the boundary — a session must not write the egress policy governing the next one
-— and prose
-instructions govern nothing enforceable, so the ceremony would protect nothing a hostile repo cannot
-already do through any file in the checkout. The image-side AGENTS.md admits only what a project
-cannot know about itself (the environment, SANDBOX.md) or must not be trusted to declare (the
-policy in force, appended at launch); the operator changes its defaults by editing SANDBOX.md or
-STYLE.md and rebuilding.
+`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` replaces the image's `AGENTS-CUSTOM.md` and nothing
+else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and the policy section is
+what it must not be trusted to declare. It is not the workspace's own CLAUDE.md / AGENTS.md /
+GEMINI.md, which every agent reads with no launcher help, because the managed-policy location
+loads unconditionally — a project file can add to the image's conventions but never drop them —
+and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
+session cannot rewrite the instructions governing the next one, as it could any file in the
+checkout. Prose governs nothing enforceable; the file sits in the boundary directory for that
+read-before-launch property alone, and is the directory's second tenant, so its closed namespace
+admits `agent/` with the one filename.
 
 ### No richer egress-policy format
 
@@ -144,8 +144,9 @@ art:
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress` or a policy
-file inside it refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
+A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a
+file inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
+`readAgentInstructions`,
 tested). Podman resolves mount sources on the host,
 so mounting through a repository-controlled link would expose its target into the sandbox, and
 following the link to pin its resolved target would make the pinned surface depend on where the link

@@ -5,7 +5,8 @@ describes mechanism, and the launcher — `src/main/scala/`, with `AgentSandboxL
 flow and its neighbours one concern each — is the canonical description of the mounts and flags
 that implement it.
 
-The instructions to the agents are separate at `container/ko-agent-sandbox/SANDBOX.md`.
+The instructions to the agents are separate, at `container/ko-agent-sandbox/AGENTS-SANDBOX.md` and
+`AGENTS-CUSTOM.md`.
 
 ## Defended
 
@@ -53,9 +54,10 @@ another either, and nothing network-shaped is ever reused from an earlier run.
 **A project loosening its own confinement.** Managed settings sit in the read-only image above
 every scope a repository can write, so a repository's own settings cannot weaken them; only an
 organization's server-managed settings outrank the file, and they replace it whole (the sandbox
-Containerfile's managed-settings note has what that costs). The egress policy in
-`.ko-agent-sandbox` is read on the host before the container starts, and the session's write mode
-is what keeps a session from writing the policy governing the next launch: under `--write=reject`
+Containerfile's managed-settings note has what that costs). The egress policy and the project's
+agent instructions in `.ko-agent-sandbox` are read on the host before the container starts, and
+the session's write mode is what keeps a session from writing the policy governing the next
+launch: under `--write=reject`
 the whole tree is read-only, and under the filter `.ko-agent-sandbox` is control state — the name
 cannot be created at any depth, under the same fold rule `.git` gets, and nothing under an
 existing one can be written. Only the pin fallback (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`),
@@ -720,7 +722,7 @@ Deliberate, both directions:
 What containers are usually wanted for here — a test database, an S3 endpoint — runs as ordinary
 processes inside the sandbox instead, with the same uid, capabilities and egress confinement as
 everything else: PostgreSQL rootless via `initdb`/`pg_ctl`, S3 via a JVM mock such as Adobe S3Mock.
-`SANDBOX.md` points the agents the same way.
+`AGENTS-SANDBOX.md` points the agents the same way.
 
 **The opt-in, and its price.** `KO_AGENT_SANDBOX_NESTING=same-uid` (exactly `none` or `same-uid`;
 anything else refuses the launch, like the workspace guard) loosens exactly three things, and

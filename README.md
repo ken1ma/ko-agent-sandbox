@@ -188,7 +188,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
 
     Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
     "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and
-    provider groups under every profile.
+    provider groups under every profile. .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces
+    the image's conventions in the agent instructions ("Overriding the agent instructions").
 
 
 ### `--build`
@@ -258,7 +259,7 @@ which is undecided. Until then the jar is built from a checkout — [Development
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume, and race on both.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
-   in SANDBOX.md): `distroless` and `alpine` images work — one uid, so
+   in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
    stock `postgres` and `nginx` cannot.
 
 
@@ -352,6 +353,18 @@ allowances:
    project, in the project, and read-only").
 1. The directory is meant to be committed. Review it in an unfamiliar repository before
    launching, exactly as you would its build scripts — `unrestricted` additions most of all.
+
+### Overriding the agent instructions
+
+Every agent starts from one instruction file the image assembles: `AGENTS-SANDBOX.md` (what the
+container is), `AGENTS-CUSTOM.md` (how to work: priorities, writing and coding style), and the
+authority in force this session, appended at launch. To replace the middle part for a project,
+put yours at `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's copy in
+`container/ko-agent-sandbox/` is the starting point. The other two parts are not overridable, and
+the file cannot be empty — delete it to return to the image's. The directory's rules above apply:
+one filename, no symlinks, read on the host at launch, uneditable from the sandbox, committed and
+reviewed with the rest. Instructions that should merely *add* to the image's belong in the
+project's own CLAUDE.md / AGENTS.md / GEMINI.md, which every agent reads anyway.
 
 ### Audit what has been allowed or denied
 

@@ -312,6 +312,45 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createDirectory(dir.resolve("egres"))
     val refused = policyDirError(dir)
     assert(refused.exists(_.contains("egres")), refused.toString)
+    Files.delete(dir.resolve("egres"))
+
+    // The second tenant is admitted by name, and a symlink of it refused like egress.
+    Files.createDirectory(dir.resolve("agent"))
+    assertEquals(policyDirError(dir), None)
+    Files.delete(dir.resolve("agent"))
+    Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
+    val linked = policyDirError(dir)
+    assert(linked.exists(_.contains("agent")), linked.toString)
+
+  test("agent/ holds one file, with the shapes egress/ refuses refused for the same reasons"):
+    val parent = Files.createTempDirectory("agent-shapes")
+    assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
+
+    val asFile = parent.resolve("agent")
+    Files.writeString(asFile, "# Priorities\n")
+    assert(readAgentInstructions(asFile).swap.exists(_.contains("is a file")))
+    Files.delete(asFile)
+
+    val dir = Files.createDirectory(asFile)
+    Files.createFile(dir.resolve(".DS_Store"))
+    assertEquals(readAgentInstructions(dir), Right(None))
+
+    Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "# Priorities\n\nBe brief.\n")
+    assertEquals(readAgentInstructions(dir), Right(Some("# Priorities\n\nBe brief.\n")))
+
+    // A typo'd name configures nothing; an empty file is a forgotten edit, not an opt-out.
+    Files.writeString(dir.resolve("AGENTS-CUSTOM.MD"), "x")
+    assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
+    Files.delete(dir.resolve("AGENTS-CUSTOM.MD"))
+    Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "\n")
+    assert(readAgentInstructions(dir).swap.exists(_.contains("is empty")))
+
+    Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
+    Files.createDirectory(dir.resolve("AGENTS-CUSTOM.md"))
+    assert(readAgentInstructions(dir).swap.exists(_.contains("not a regular file")))
+    Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
+    Files.createSymbolicLink(dir.resolve("AGENTS-CUSTOM.md"), parent.resolve("elsewhere"))
+    assert(readAgentInstructions(dir).swap.exists(_.contains("symlink")))
 
   test("a symlinked policy directory or egress refuses the launch"):
     val project = Files.createTempDirectory("policy-guard")

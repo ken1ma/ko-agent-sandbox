@@ -355,7 +355,7 @@ Update each claim at its binding site:
 | option syntax, defaults and exact `v1` meaning | README Reference/`--help` | parser tests |
 | complete host-readable boundary | launcher diagram | README diagram, `SECURITY.md` |
 | private artifacts and mutable-lower risk | `SECURITY.md` | README option warning |
-| installed tools and session cache behavior | `SANDBOX.md` | Containerfile tests |
+| installed tools and session cache behavior | `AGENTS-SANDBOX.md` | Containerfile tests |
 | mount and cleanup mechanism | launcher source | integration lifecycle tests |
 | platform qualification | README option text | platform verification record |
 
@@ -364,7 +364,7 @@ default-mode claim with the opt-in cache exception named. Its diagram must show 
 host-cache lower and disposable per-run upper. Do not repeat the full threat analysis there; point
 to `SECURITY.md`.
 
-At the existing `cs install TOOL` instruction, `SANDBOX.md` should tell an acting agent that
+At the existing `cs install TOOL` instruction, `AGENTS-SANDBOX.md` should tell an acting agent that
 session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed
 launchers under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that
 a missing Scala artifact is downloaded into disposable session state and that a narrow egress
