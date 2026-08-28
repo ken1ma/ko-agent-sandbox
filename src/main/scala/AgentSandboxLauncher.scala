@@ -188,26 +188,76 @@ object AgentSandboxLauncher:
 
   /**
    * The decision the reader takes on the workspace and egress lines above: Enter or y starts, n
-   * declines, EOF counts as n (a closed stdin must not start an agent), and any other answer asks
-   * again; Ctrl-C ends the JVM through the shutdown hook, which is the same outcome as n. The full
-   * command is shown, since its arguments are part of what is agreed to. isTerminal, not a null check: since JDK 22 System.console() answers a
-   * Console for a redirected stream too, and holding a pipe open would hang a scripted launch
-   * instead of skipping the hold.
+   * declines, EOF at the prompt counts as n, and any other answer asks again; Ctrl-C ends the JVM
+   * through the shutdown hook, which is the same outcome as n. The full command is shown, since
+   * its arguments are part of what is agreed to. With no reader — no terminal, or a mode other
+   * than pause — there is nothing to hold.
    */
-  def holdForReader(mode: String, command: Seq[String]): Boolean =
-    val console = System.console()
-    if mode != "pause" || console == null || !console.isTerminal then true
+  def holdForReader(mode: String, command: Seq[String], reader: Option[Reader]): Boolean =
+    reader.filter(_ => mode == "pause") match
+      case None => true
+      case Some(reader) =>
+        def ask(): Boolean =
+          reader.prompt(s"\nstart: ${command.map(renderArgument).mkString(" ")} [Y/n] ")
+          reader.readLine() match
+            case None => false
+            case Some(answer) =>
+              answer.trim.toLowerCase(java.util.Locale.ROOT) match
+                case "" | "y" | "yes" => true
+                case "n" | "no"       => false
+                case _                => ask()
+        ask()
+
+  /** What a hold prompts on and reads from; readLine answers None at EOF. */
+  final case class Reader(prompt: String => Unit, readLine: () => Option[String])
+
+  /**
+   * The process's terminal, if stdin is one. isTerminal, not a null check: since JDK 22
+   * System.console() answers a Console for a redirected stream too, and holding a pipe open would
+   * hang a scripted launch instead of skipping the hold.
+   */
+  def terminalReader: Option[Reader] =
+    Option(System.console()).filter(_.isTerminal).map: console =>
+      Reader(text => console.printf("%s", text), () => Option(console.readLine()))
+
+  /**
+   * One argument as the reader agrees to it: verbatim when it is one plain word, so that the
+   * usual command reads as typed, and otherwise quoted so that `tool "a b"` and `tool a b` render
+   * apart and a character that would drive or reorder the terminal's display — a control,
+   * a bidi or other format character, a line or paragraph separator — is spelled out instead.
+   * The spelling is the shell's: single quotes, or `$'...'` around escapes.
+   */
+  def renderArgument(argument: String): String =
+    val plain = argument.nonEmpty && argument.forall(ch => ch.isLetterOrDigit && ch < 0x80 || "_@%+=:,./-".contains(ch))
+    if plain then argument
+    else if !argument.codePoints().anyMatch(invisible(_)) then s"'${argument.replace("'", "'\\''")}'"
     else
-      def ask(): Boolean =
-        console.printf("%nstart: %s [Y/n] ", command.mkString(" "))
-        console.readLine() match
-          case null => false
-          case answer =>
-            answer.trim.toLowerCase(java.util.Locale.ROOT) match
-              case "" | "y" | "yes" => true
-              case "n" | "no" => false
-              case _ => ask()
-      ask()
+      val escaped = new StringBuilder
+      argument.codePoints().forEach: cp =>
+        cp match
+          case '\\'                   => escaped ++= "\\\\"
+          case '\''                   => escaped ++= "\\'"
+          case '\n'                   => escaped ++= "\\n"
+          case '\t'                   => escaped ++= "\\t"
+          case '\r'                   => escaped ++= "\\r"
+          case cp if cp < 0x80 && invisible(cp) => escaped ++= f"\\x$cp%02x"
+          case cp if invisible(cp) && cp <= 0xffff => escaped ++= f"\\u$cp%04x"
+          case cp if invisible(cp) => escaped ++= f"\\U$cp%08x"
+          case cp                  => escaped.appendAll(Character.toChars(cp))
+      s"$$'$escaped'"
+
+  /** Character.getType values the terminal would act on rather than show: escaped by renderArgument. */
+  val InvisibleTypes: Set[Int] = Set(
+    Character.CONTROL,
+    Character.FORMAT,
+    Character.LINE_SEPARATOR,
+    Character.PARAGRAPH_SEPARATOR,
+    Character.SURROGATE,
+    Character.PRIVATE_USE,
+    Character.UNASSIGNED,
+  ).map(_.toInt)
+
+  private def invisible(codePoint: Int): Boolean = InvisibleTypes.contains(Character.getType(codePoint))
 
   /** Below this a JVM build in the sandbox does not fit; the launch says so once. */
   val SmallMachineMemory: Long = 4L << 30
@@ -2421,7 +2471,8 @@ object AgentSandboxLauncher:
     // created-but-never-started wait (SandboxLifecycle, ReaperScript) and leave it polling podman
     // for minutes after the launcher was gone. The cost is that the note below — the reaper could
     // not be spawned — prints after the release, and the TUI then clears it with the rest.
-    if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command) then sys.exit(0)
+    if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
+      sys.exit(0)
 
     // The create and the start behind it, for the reason removeWhatThisRunCreated states.
     // The blank line separates the launch's own output from the agent's.

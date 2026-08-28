@@ -103,6 +103,54 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector("none", "off", "0", "false", "no", "PAUSE", " pause ", "now", "skip").foreach: value =>
       assert(sessionStart(Some(value)).isLeft, s"'$value' was not refused")
 
+  test("the hold starts on Enter or y, declines on n or EOF, and asks again on anything else"):
+    // Every terminal outcome, over a scripted reader: the answers are consumed in order, and the
+    // prompts show how many times the hold asked.
+    def hold(mode: String, answers: Option[String]*): (Boolean, Vector[String]) =
+      val prompts = Vector.newBuilder[String]
+      val remaining = answers.iterator
+      val reader = Reader(prompts += _, () => if remaining.hasNext then remaining.next() else None)
+      (holdForReader(mode, Vector("claude", "--resume"), Some(reader)), prompts.result())
+    assertEquals(hold("pause", Some("")), (true, Vector("\nstart: claude --resume [Y/n] ")))
+    Vector("y", "Y", "yes", " YES ").foreach(answer => assertEquals(hold("pause", Some(answer))._1, true, answer))
+    Vector("n", "N", "no", " No ").foreach(answer => assertEquals(hold("pause", Some(answer))._1, false, answer))
+    // EOF at the prompt is a decline, never a start: nothing was agreed to. (Stdin that was never a
+    // terminal is the no-reader case below, and starts.)
+    assertEquals(hold("pause")._1, false)
+    assertEquals(hold("pause", Some("maybe"), Some("?"), Some("y")), (true, Vector.fill(3)("\nstart: claude --resume [Y/n] ")))
+    assertEquals(hold("pause", Some("maybe"))._1, false)
+    // immediate, and no terminal at all, start without asking.
+    assertEquals(hold("immediate", Some("n")), (true, Vector()))
+    assertEquals(holdForReader("pause", Vector("claude"), None), true)
+
+  test("the hold renders each argument unambiguously"):
+    // The prompt is an approval: two argument vectors must never read the same, and an argument
+    // must not drive the terminal that shows it.
+    def rendered(command: String*): String =
+      val prompts = Vector.newBuilder[String]
+      holdForReader("pause", command, Some(Reader(prompts += _, () => Some("n"))))
+      prompts.result().mkString
+    assertNotEquals(rendered("tool", "a b"), rendered("tool", "a", "b"))
+    assertEquals(rendered("tool", "a b"), "\nstart: tool 'a b' [Y/n] ")
+    assertEquals(renderArgument("--write=live"), "--write=live")
+    assertEquals(renderArgument("/usr/local/bin/x.sh"), "/usr/local/bin/x.sh")
+    assertEquals(renderArgument(""), "''")
+    assertEquals(renderArgument("it's"), "'it'\\''s'")
+    assertEquals(renderArgument("a\"b$c"), "'a\"b$c'")
+    assertEquals(renderArgument("a\nb"), "$'a\\nb'")
+    assertEquals(renderArgument("\u001b[2J\u009b1m\u007f\\'"), "$'\\x1b[2J\\u009b1m\\x7f\\\\\\''")
+    // Bidi overrides and isolates, which reorder what is displayed, and the Unicode line breaks.
+    assertEquals(renderArgument("a\u202eb\u2066c"), "$'a\\u202eb\\u2066c'")
+    assertEquals(renderArgument("a\u2028b\u2029c"), "$'a\\u2028b\\u2029c'")
+    assertEquals(renderArgument("a\ud83c\udff4\udb40\udc67b"), "$'a🏴\\U000e0067b'")
+    assertEquals(renderArgument("日本語 café"), "'日本語 café'")
+    // Nothing rendered carries a character the terminal would act on, whatever the argument held:
+    // every code point, in an argument that already needs quoting.
+    (0 to Character.MAX_CODE_POINT).foreach: cp =>
+      val out = renderArgument(new String(Character.toChars(cp)) + " ")
+      out.codePoints().forEach: rendered =>
+        assert(!InvisibleTypes.contains(Character.getType(rendered)), f"U+$cp%04X rendered as $out")
+
   test("the clipboard defaults to off and fails closed on anything else"):
     assertEquals(clipboardMode(None), Right("off"))
     assertEquals(clipboardMode(Some("")), Right("off"))

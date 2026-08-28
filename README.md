@@ -178,8 +178,9 @@ which is undecided. Until then the jar is built from a checkout — [Development
                                           labeling and adds SYS_CHROOT for the whole
                                           session, one mapped uid only (SECURITY.md)
       KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
-                                          screen until you press Enter, because the agent TUIs
-                                          clear the screen; "immediate" starts the agent at once
+                                          screen, because the agent TUIs clear it: Enter or y
+                                          starts, n or EOF at the prompt exits without starting;
+                                          "immediate" starts the agent at once
       KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
                                           lets the agent read an image you copied (Ctrl-V in
                                           claude); "bidirectional" also lets it set your
@@ -229,8 +230,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
 ### Running `<command>`
 
 1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
-   plus its policy files and any warning, then waits for Enter (`KO_AGENT_SANDBOX_SESSION_START`,
-   Reference).
+   plus its policy files and any warning, then asks `[Y/n]` over the full command
+   (`KO_AGENT_SANDBOX_SESSION_START`, Reference).
 1. Agent state persists in a per-project named volume.
     1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
        resulting code back.
