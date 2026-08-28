@@ -127,7 +127,6 @@ Compile / resourceGenerators += Def.task {
   index +: bundled.map(_._2)
 }.taskValue
 
-// One self-contained jar: a single file is the unit of installation.
 assembly / assemblyJarName := "ko-agent-sandbox.jar"
 assembly / assemblyOutputPath :=
   baseDirectory.value / "target" / "dist" / "ko-agent-sandbox.jar"
@@ -142,8 +141,6 @@ assembly / assemblyMergeStrategy := {
     default(path)
 }
 
-// Enable-Native-Access: the execvp downcall, warning-free and future-proof.
-//
 // Multi-Release is required, not an optimization: the assembled jar carries BouncyCastle's versioned
 // trees, and 49 of those classes — the X25519 and Ed25519 key implementations among them — exist
 // *only* under META-INF/versions, so without the attribute the JVM never looks there and they are

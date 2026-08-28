@@ -10,7 +10,7 @@
 //   EgressProxyPolicy.scala     this project's egress policy, its resolution, and the audit log
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
-//   BouncyCastleHelper.scala    building certificates and PEM — the only file importing bouncycastle
+//   BouncyCastleHelper.scala    building certificates and PEM (its header has the import rule)
 //   JdkTrust.scala              making JVMs trust the inspection CA — locate, merge, mount
 //   FFMHelper.scala             the execvp downcall
 //
@@ -1219,8 +1219,6 @@ object AgentSandboxLauncher:
     Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
   val DefaultEgressProfile = "deny-unless-allowed"
 
-  /** Parsed launcher invocation: the authority options as given (None when defaulted), then
-    * either one management verb with its operands, or the command forwarded verbatim. */
   /** `--env=NAME` (value: the host's, read at launch) or `--env=NAME=VALUE`. */
   case class EnvForward(name: String, value: Option[String])
 
@@ -1262,6 +1260,8 @@ object AgentSandboxLauncher:
         Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
       case None => Right(resolved.collect { case Right(arg) => arg })
 
+  /** Parsed launcher invocation: the authority options as given (None when defaulted), then
+    * either one management verb with its operands, or the command forwarded verbatim. */
   case class ParsedCommandLine(
     write: Option[String],
     egress: Option[String],
@@ -1810,11 +1810,8 @@ object AgentSandboxLauncher:
           writeStamped(resolvedWarningsFile, policyStamp, warnings)
           (resolved.text, warnings)
 
-    // The leaf certificate's names: the restricted line of the dry run above, verbatim — the
-    // proxy image's own answer under this project's policy — so no second copy of any list
-    // exists to drift (the proxy still refuses a mismatched leaf at startup), and a policy that
-    // moves a host in or out of the restricted set reissues the leaf through leaf.sans below.
-    // Empty is a policy that inspects nothing: no leaf, and no inspection material for the proxy.
+    // The leaf's names, from the dry run (inspectedHostsOf); a policy change reissues the leaf
+    // through leaf.sans below. Empty: no leaf, no inspection material.
     val inspectedHosts = inspectedHostsOf(policyResolvedText).fold(fail(_), identity)
 
     // The workspace FUSE filter, mounted before any volume is assembled (the lifecycle banner above
@@ -2123,11 +2120,6 @@ object AgentSandboxLauncher:
     // Networks
     // -----------------------------------------------------------------------
     //
-    // --internal removes the gateway; without it the proxy would be
-    // advisory.
-    // Armed before the first network exists, not after both: `createNetwork` refuses by ending the
-    // JVM, so arming between the two would leak the first when the second fails. Removing what was
-    // never created costs a failed `podman rm` nobody sees.
     createNetwork(sandboxNetwork, internal = true)
     createNetwork(egressNetwork, internal = false)
 
@@ -2243,10 +2235,6 @@ object AgentSandboxLauncher:
     // failing as an unexplained resolution error.
     val egressProxyUrl = s"http://$EgressProxyHost:$EgressProxyPort"
 
-    // A JVM reads none of the variables below, so the image's JDK is pointed at the proxy through
-    // its own configuration instead — the same read-add-mount the CA bundle gets, one directory
-    // over (JdkTrust.jdkProxyMount); `jdkProxy` carried it out of the locked derivation above.
-
     val egressArgs = Vector(
       s"--network=$sandboxNetwork",
       "--dns=none",
@@ -2271,9 +2259,7 @@ object AgentSandboxLauncher:
     ) ++ sandboxTlsArgs ++ jdkProxy ++ agentDocArgs ++ policyGuardArgs ++ gitGuardArgs
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
-    // they apply: the weaker boundary must never be the silent one. The resolved mode goes into
-    // the session either way — none included — so agents read one variable with one spelling and
-    // never also handle unset.
+    // they apply: the weaker boundary must never be the silent one.
     val nestingEnv = s"--env=$NestingVariable=$nesting"
     val nestedArgs = nesting match
       case "none" => Vector(nestingEnv)
@@ -2301,11 +2287,6 @@ object AgentSandboxLauncher:
     // Project bind mount
     // -----------------------------------------------------------------------
     //
-    // With the workspace filter on — every session but one that opted out — /workspace binds the
-    // filter's mountpoint, never the raw tree, and a failure anywhere in the gate aborted the launch
-    // above; there is no fallback to an unfiltered bind. The .git pins were skipped in that case,
-    // where the volumes were assembled.
-    //
     // :Z only on native SELinux-enforcing Linux, and only on the raw bind; podman-machine sources
     // must not be relabelled, and neither must a FUSE mountpoint.
     val projectVolume = (writeMode, filteredWorkspace) match
@@ -2324,9 +2305,8 @@ object AgentSandboxLauncher:
     // the sandbox must die before the machine does: one in-sandbox build exhausting the VM takes
     // podman's own service with it, and every session on the machine (the troubleshooting
     // document's "The whole machine degrades"). Hence a ceiling by default, below the machine's
-    // total (memoryCeiling), and no swap: a build that swaps is the thrash that makes every podman
-    // command slow. KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with other
-    // sessions.
+    // total (memoryCeiling). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
+    // other sessions.
     val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
@@ -2356,10 +2336,7 @@ object AgentSandboxLauncher:
       "--rm",
       "-it",
 
-      // Never update or pull implicitly at execution time.
       "--pull=never",
-
-      // Reap orphaned grandchildren and forward signals correctly.
       "--init",
 
       // Map the invoking rootless Podman user to our fixed non-root user. Files created under /workspace consequently

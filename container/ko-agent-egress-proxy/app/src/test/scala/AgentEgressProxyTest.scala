@@ -50,9 +50,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       parseConnect("GET https://api.anthropic.com/ HTTP/1.1\r\n\r\n")
 
   test("the pull hosts are reachable and restricted"):
-    // The registry APIs and blob CDNs have no unauthenticated write of their own; membership in
-    // the restricted catalog is defense in depth plus a method-and-path log line per pull. The
-    // one member that needs the treatment is storage.googleapis.com — its own test below.
+    // Why the tier, and which member needs it: SECURITY.md, "Reading without being able to write".
     Vector(
       "registry-1.docker.io", "auth.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com",
@@ -622,8 +620,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
 
   test("readHttpHeader tells an unused connection from a half-sent header"):
-    // Zero bytes then EOF is routine pooled-client behavior and must not read as a refused
-    // request; EOF inside a header stays the BadRequest it always was.
     intercept[ClosedWithoutRequest](readHttpHeader(ByteArrayInputStream(Array.emptyByteArray), 4096))
     intercept[BadRequest](readHttpHeader(ByteArrayInputStream(ascii("GET / HT")), 4096))
 
@@ -663,9 +659,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
 
   test("the relayed response head speaks this hop's own Connection: close"):
-    // The origin's connection options describe the origin↔proxy leg; the client must hear close
-    // from this proxy, whatever the origin sent — a client that misses it reuses or pipelines,
-    // and its next request turns the proxy's close into an RST that eats the response's tail.
     val head = HttpResponseHead.parse(
       ascii(
         "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n" +
@@ -752,8 +745,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
 
   test("HTTP/1.0 is refused by name, at CONNECT and inside the tunnel"):
-    // No such client exists here, and half-supporting one — it could not parse a relayed
-    // chunked response — would be a silent gap instead of this log line.
     val connect = intercept[BadRequest](
       ConnectRequest.parse(ascii("CONNECT github.com:443 HTTP/1.0\r\n\r\n")),
     )
@@ -764,9 +755,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(inTunnel.getMessage, "HTTP/1.0 is not supported")
 
   test("Expect: 100-continue is answered by this proxy and never forwarded"):
-    // The proxy forwards every body unconditionally, so an origin must not be left waiting for
-    // one — and the client must not stall until its own 100 timeout (git's large fetch
-    // negotiation sends the Expect).
     val head = HttpRequestHead.parse(
       ascii(
         "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
@@ -1045,10 +1033,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
   test("a restricted host allows reading and nothing else"):
-    // The tier exists for storage.googleapis.com: all of GCS, where an attacker-signed URL
-    // accepts writes — so unlike a allow=git-fetch host there is no POST exception at all. The sharp case is a
-    // POST whose path mimics git-upload-pack: an object name is anyone's to choose, and it must
-    // NOT ride the allow=git-fetch rule through.
+    // SECURITY.md, "Reading without being able to write". The sharp case pinned here: a POST whose
+    // path mimics git-upload-pack must NOT ride the allow=git-fetch rule through.
     def storage(request: String): Unit =
       authorizeInspectedRequest("storage.googleapis.com", head(request), Set.empty)
 
@@ -1384,8 +1370,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       readCrLfLine(ByteArrayInputStream(ascii("0123456789\r\n")), 4)
 
   test("audit lines are verb host method [target] tail, with - for fields never learned"):
-    // The stable head SECURITY.md ("The audit line grammar") documents: fields 1-3 always
-    // present, the target exactly when a parsed inspected request exists, the rest human text.
+    // SECURITY.md, "The audit line grammar".
     assertEquals(
       auditLine("allow", "github.com", "GET", "/r?tab=readme", "-> 140.82.112.3"),
       "allow github.com GET /r?tab=readme -> 140.82.112.3",
@@ -1447,7 +1432,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
-  /** The built-in allow=git-fetch hosts, as the resolved default policy carries them. */
   /** The baseline as a policy: deny-unless-allowed with no project files. */
   private lazy val baselinePolicy: ResolvedEgress =
     resolvePolicy(Some("deny-unless-allowed"), None, None, None)

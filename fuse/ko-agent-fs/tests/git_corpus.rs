@@ -1,21 +1,10 @@
-//! The operational allowlist, checked against the paths real `git` writes.
-//!
-//! These paths were observed by driving git through init/commit/branch/switch/merge/rebase/tag/
-//! stash/fetch/gc/`worktree add`/`submodule add` and enumerating everything written under `.git`
-//! (the `classify_paths` example reproduces the run). The corpus is static so the test is
-//! deterministic and needs no git at test time; the live FUSE-mount integration tests are the
-//! ultimate gate. If a future git version writes a new operational file at a gitdir root, the
-//! fail-closed classifier will freeze it — caught there as a broken git command, and worth adding
-//! here once identified.
+//! Static corpus of what real git writes, pinned from `probe/observe-git.sh` (`doc/git-metadata.md`,
+//! "Premises"); needs no git at test time.
 
 use ko_agent_fs::policy::{GitPathClass, classify_relative_path};
 
-/// Where this corpus's submodule gitdirs are. Stated rather than assumed, because a submodule's
-/// name defaults to its *path*: `libs/foo` is an ordinary name, so `.git/modules/libs/foo` is one
-/// gitdir and not two levels of one, and no rule over the path alone can tell those apart
-/// (`policy::GitContext::ModuleNamespace`). The FUSE layer learns the same fact from the tree.
-/// Linked worktrees need no entry — their name is the basename of their path, always one component
-/// (`doc/git-metadata.md`, P1).
+/// Where this corpus's submodule gitdirs are (`policy::GitContext::ModuleNamespace`). Linked
+/// worktrees need no entry — always one component (`doc/git-metadata.md`, P1).
 const GITDIR_ROOTS: &[&[u8]] = &[b".git/modules/sub", b".git/modules/libs/foo"];
 
 #[track_caller]
@@ -100,8 +89,7 @@ fn control_state_stays_frozen() {
         ".git/modules/sub/hooks/pre-commit",
         ".git/modules/libs/foo/config",
         ".git/modules/libs/foo/hooks/pre-commit",
-        // The namespace between `modules` and the gitdir holds only gitdirs, so nothing is written
-        // directly in it — and freezing it is what stops a `HEAD` being planted there.
+        // The namespace between `modules` and the gitdir (`GitContext::ModuleNamespace`).
         ".git/modules/libs",
         // A worktree's redirection markers — re-aiming these would relocate config/hooks resolution.
         ".git/worktrees/wt/gitdir",

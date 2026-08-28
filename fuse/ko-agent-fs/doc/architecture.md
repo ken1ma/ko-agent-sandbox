@@ -126,18 +126,13 @@ itself. Therefore, as invariants and not tunables:
   `probe/coherency-probe.py` measures it across the real host share.
 
 The invariant has a measured price: with entry TTL 0, every path component of every syscall is a
-fresh LOOKUP round trip. `TODO.md`, "Performance", carries the measurements and what is left to
-profile.
+fresh LOOKUP round trip.
 
 Performance is recovered only by means that keep every answer fresh — batching, parallelism and a
-shorter per-op path, never a cache; `TODO.md`, "Performance", has the open rows. In place:
+shorter per-op path, never a cache; `TODO.md`, "Performance", has the measurements and the open
+rows. In place:
 
-- **A directory snapshot per `opendir`** — the entry *names* are read once into the handle rather
-  than the directory being re-read on every `readdir` call. This is a correctness fix first (a scan
-  can no longer skip or duplicate entries when the tree moves under it, and POSIX leaves the
-  visibility of concurrent additions unspecified for exactly this reason), and it removes an O(n²)
-  re-read besides. It is not a cache: the next `opendir` sees the new state, and attributes stay
-  live at TTL 0.
+- **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
 - **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
   git-context fast-path keeps non-`.git` ops free of policy work.
 
@@ -222,9 +217,8 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
      workspace's backing filesystem is. The image already lives in the VM's image storage, so the
      extraction is run *there*, through `podman machine ssh` (which lands in the VM user's home,
      whoever that is), rather than on the host where a plain `podman cp` would land it.
-5. **Verify what was installed.** The launcher runs the installed binary's `--version`, reporting
-   the source id stamped in at step 2, and compares it with the digest of the source it bundles. A
-   binary that is not the one this launcher would build is replaced, not trusted.
+5. **Verify what was installed.** The launcher compares the installed binary's `--version` with
+   the digest of the source it bundles (`Containerfile`, header).
 
 The digest's construction, and why the algorithm exists only on the launcher side, live with the
 code: `KoAgentFs.koAgentFsSourceId`.

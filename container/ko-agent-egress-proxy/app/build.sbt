@@ -16,8 +16,7 @@ scalacOptions ++= Seq(
 )
 
 // The runtime image is distroless (`java -jar`, no shell), so the jar finds the Scala library through a manifest
-// Class-Path, resolved relative to the jar's directory — which is why `dist` puts everything in one. Compile scope, so
-// munit is not in it.
+// Class-Path, resolved relative to the jar's directory — which is why `dist` puts everything in one.
 Compile / packageBin / packageOptions += {
   val converter = fileConverter.value
 

@@ -93,31 +93,9 @@ const IGNORABLE: &[&[u8]] = &[
 
 /// Whether `name` (a raw basename, no slashes) must be refused as a new `.git` entry.
 ///
-/// Conservative superset, on every platform, because the backing store may be a case-insensitive
-/// host filesystem (macOS APFS, Windows NTFS) that resolves `lstat(".git")` to a differently-cased
-/// or trailing-punctuated entry the sandbox created (`doc/git-metadata.md`, "The name rule").
-///
-/// Definite rule: strip trailing `.` and space (Win32 ignores them), then ASCII case-fold and
-/// compare to `.git`. The four target bytes are ASCII.
-///
-/// Conservative additions, each rejecting a name nobody legitimately wants:
-///
-/// - The Turkish i-family U+0130 (İ) and U+0131 (ı) fold to `i`, because some Windows upcase tables
-///   map dotless/dotted i to `I`, so `.gıt` could collide with `.git` there.
-/// - Invisible/ignorable code points ([`IGNORABLE`]) are dropped before comparing, because a
-///   filesystem that ignores them in comparison resolves `.gi<U+200C>t` to `.git` — the HFS+ half of
-///   CVE-2014-9390.
-///
-/// Unicode *normalization* deliberately needs no handling: NFC/NFD only relate composed and
-/// decomposed forms of the same character and never produce an ASCII `g`, `i` or `t`, so APFS being
-/// normalization-insensitive (its headline difference from HFS+) creates no `.git` collision. That
-/// is why the audited core needs no normalization library.
-///
-/// This stays a small explicit rule rather than a case-fold table, because the fold set cannot be
-/// known statically anyway: NTFS folds through a *per-volume* `$UpCase` table. The superset is the
-/// belt; the per-backing empirical test (`doc/git-metadata.md`) is the braces.
-///
-/// Byte-safe: a non-UTF-8 `name` simply fails to match `.git` and is allowed, never a panic.
+/// The rule as executed: strip trailing `.` and space, drop [`IGNORABLE`], fold U+0130/U+0131 to
+/// `i`, ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` simply fails to match
+/// and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
 pub fn is_dotgit_name(name: &[u8]) -> bool {
     folds_to(name, b".git")
 }
@@ -186,11 +164,10 @@ pub fn gitdir_root() -> GitContext {
 /// themselves gitdirs, so classification must restart at `<name>` — otherwise a submodule's
 /// writable `objects/` would be judged against the outer gitdir's layout and wrongly frozen.
 ///
-/// The two differ in how far `<name>` reaches, which is a measured fact rather than a symmetry
-/// (`doc/git-metadata.md`, P1). A linked worktree is named for the basename of its path, so it
-/// is always one component and re-roots here. A submodule is named for its whole path, so `libs/foo`
-/// is an ordinary name and the re-root point is not knowable from the path: those children become
-/// [`GitContext::ModuleNamespace`] until the plumbing says otherwise. Both compose recursively.
+/// The two differ in how far `<name>` reaches (`doc/git-metadata.md`, P1): a linked worktree's is
+/// always one component and re-roots here; a submodule's is not knowable from the path, so those
+/// children become [`GitContext::ModuleNamespace`] until the plumbing says otherwise. Both compose
+/// recursively.
 pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
     match parent {
         GitContext::NotGit => {
@@ -227,9 +204,6 @@ pub fn classify(context: &GitContext) -> GitPathClass {
     match context {
         GitContext::NotGit => GitPathClass::Operational,
         GitContext::SandboxConfig => GitPathClass::Control,
-        // Git writes nothing directly into the namespace between `modules` and a submodule's
-        // gitdir, so freezing it costs nothing — and it is what keeps the sandbox from writing a
-        // `HEAD` there and passing the plumbing's question off as a gitdir of its own.
         GitContext::ModuleNamespace => GitPathClass::Control,
         GitContext::InGit(rel) => {
             let refs: Vec<&[u8]> = rel.iter().map(Vec::as_slice).collect();
@@ -243,8 +217,7 @@ pub fn classify(context: &GitContext) -> GitPathClass {
 /// inode's context incrementally at lookup; this reproduces the same result so tests and the
 /// real-git corpus exercise identical logic.
 ///
-/// `gitdir_roots` supplies what the walk cannot derive: the workspace-relative paths of the
-/// submodule gitdirs, which the FUSE layer learns by looking at the tree
+/// `gitdir_roots` supplies the workspace-relative paths of the submodule gitdirs
 /// ([`GitContext::ModuleNamespace`]). A caller that names none is saying there are none, and every
 /// directory under `modules/` then reads as a namespace — control, the stricter answer.
 pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClass {
@@ -523,9 +496,8 @@ mod tests {
 
     #[test]
     fn the_launcher_configuration_is_control_at_every_depth() {
-        // Its read-only mount is the first line and this is the second: when a host-side removal
-        // takes the mount with it, the name cannot be recreated and nothing under it can be
-        // written. Unlike a gitdir it has no operational half, so depth changes nothing.
+        // The second line behind the launcher's read-only mount (`is_sandbox_config_name`). Unlike
+        // a gitdir it has no operational half, so depth changes nothing.
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox", &[]),
             GitPathClass::Control
@@ -630,9 +602,7 @@ mod tests {
 
     #[test]
     fn a_directory_under_modules_is_a_namespace_until_the_plumbing_says_otherwise() {
-        // Names cannot say where a submodule's gitdir begins, because its name defaults to its
-        // path. Until the plumbing looks, the answer is the strict one: a namespace, frozen — which
-        // is also what stops a `HEAD` being planted there to manufacture the answer.
+        // Until the plumbing looks, the answer is the strict one (`GitContext::ModuleNamespace`).
         let modules = ingit(&[b"modules"]);
         assert_eq!(
             child_context(&modules, b"libs"),

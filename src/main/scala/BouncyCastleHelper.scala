@@ -96,7 +96,8 @@ object BouncyCastleHelper:
     generator.initialize(ECGenParameterSpec("secp256r1"))
     generator.generateKeyPair()
 
-  // DER encodes the serial as a signed integer, so the high bit is cleared to keep a random 16-byte one non-negative.
+  // BigInteger(1, _) is non-negative whatever the bytes; clearing the high bit keeps the DER serial at 16 octets
+  // rather than the leading zero octet a set high bit would add.
   def randomSerial(): BigInteger =
     val bytes = new Array[Byte](16)
     SecureRandom().nextBytes(bytes)

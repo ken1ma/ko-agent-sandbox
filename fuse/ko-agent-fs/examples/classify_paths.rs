@@ -12,10 +12,8 @@ use std::os::unix::ffi::OsStringExt;
 use ko_agent_fs::policy::{GitPathClass, classify_relative_path};
 
 fn main() {
-    // Submodule gitdir roots, as workspace-relative paths: a submodule's name defaults to its path,
-    // so `.git/modules/libs/foo` is one root and not two levels of namespace, and nothing but the
-    // tree can tell those apart (`policy::GitContext::ModuleNamespace`). `probe/observe-git.sh`
-    // discovers them and passes them here; naming none says there are none.
+    // Submodule gitdir roots, as workspace-relative paths (`policy::GitContext::ModuleNamespace`).
+    // `probe/observe-git.sh` discovers them and passes them here; naming none says there are none.
     let roots: Vec<Vec<u8>> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.into_vec())

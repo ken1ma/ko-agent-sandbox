@@ -228,9 +228,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
 ### Running `<command>`
 
 1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
-   plus its policy files and any warning, then waits for Enter: claude's fullscreen TUI and codex
-   clear the screen as they start, so the lines would otherwise never be read.
-   `KO_AGENT_SANDBOX_SESSION_START=immediate` skips the wait.
+   plus its policy files and any warning, then waits for Enter (`KO_AGENT_SANDBOX_SESSION_START`,
+   Reference).
 1. Agent state persists in a per-project named volume.
     1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
        resulting code back.
@@ -270,10 +269,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
 Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
 A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` — the
 default, which an `allowed` entry spells by saying nothing — TLS-inspected, GET and HEAD only,
-except for a named allowance: an entry with `allow=git-fetch`
-also serves `git fetch` — so `clone` and `pull` — whose transfer leg is a `POST`; one with
-`allow=github-login-device` GitHub's device-flow sign-in; one with `allow=npm-audit` npm's
-install-time audit.
+except for a named allowance ("Modifying the egress policy" below; SECURITY.md, "Reading without
+being able to write", has what each one opens).
 
 The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
 `github` — each expanding to that provider's model, authentication and control-plane endpoints,
@@ -336,7 +333,8 @@ allowances:
     host **.googleapis.com        # the apex and every subdomain, whatever their treatment
     model-provider google         # the group, whatever its concrete endpoints become
 
-1. An absent directory or file is empty policy input; the launcher never creates the directory.
+1. An absent directory or file is empty policy input; the launcher creates the directory only
+   as the pin fallback's empty mount target (SECURITY.md, "Silent changes to what you own").
    An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
    design, as does `deny-unless-model` under `bash`.
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
@@ -346,10 +344,8 @@ allowances:
    too). A
    `denied` entry matching nothing the profile admits is a startup warning, not an error: it can
    still apply under another profile.
-1. Run `--egress-effective [--] [command]` to resolve the policy — with per-entry provenance —
-   without starting a session, and `--egress-check=<host>` for one host's decision plus its
-   current DNS resolution through the proxy's own resolver path. Every start prints your policy
-   files as written, and the resolved hosts as counts.
+1. `--egress-effective` and `--egress-check=<host>` (Reference) answer without starting a
+   session. Every start prints your policy files as written, and the resolved hosts as counts.
 1. Editing the files takes effect on the next launch, which starts its own proxy; a session
    already running keeps the policy it started with.
 1. The sandbox cannot edit them, under either write mode ([SECURITY.md], "Why the policy is per
@@ -365,11 +361,9 @@ and the proxy appends the log to a per-run file on the host, under
     ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
 
-With no arguments, `--proxy-log` prints the
-retained files oldest first — the newest 20 runs, and any older one whose session is still running,
-since a live proxy is still appending to its file; with trailing arguments (`-f` to follow, `--tail
-50` to limit) it runs `podman logs` on the currently running proxies instead, which is the live view
-of the same lines. The startup lines are the resolved policy and whether inspection is active;
+With no arguments, `--proxy-log` prints the retained files oldest first — the newest 20 runs, and
+any older one whose session is still running, since a live proxy is still appending to its file.
+The startup lines are the resolved policy and whether inspection is active;
 every connection event after them is one line, with an inspected request's full target — query
 string included, which is what makes an exfiltrating `GET` visible. A refusal reads as
 

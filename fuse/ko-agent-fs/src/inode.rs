@@ -76,8 +76,8 @@ impl InodeTable {
     /// kernel reference count, and return it. The Git context is computed once, here, from the
     /// parent's — the O(1) step that every later operation on this inode reads instead of recomputing.
     ///
-    /// `is_gitdir_root` answers the one question names cannot ([`GitContext::ModuleNamespace`]),
-    /// and only matters where the context would otherwise be a namespace. It is read on the
+    /// `is_gitdir_root` ([`GitContext::ModuleNamespace`]) only matters where the context would
+    /// otherwise be a namespace. It is read on the
     /// allocating path alone: a reused entry keeps the context it was created with, so a directory
     /// that *becomes* a gitdir root after its first lookup stays a namespace — control — until the
     /// kernel forgets it. Both drift directions land on the stricter answer.

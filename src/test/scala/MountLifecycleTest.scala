@@ -1,7 +1,6 @@
 // The workspace filter's mount lifecycle and its reference count, against real sessions.
 //
-// This one launches containers, so it is opt-in rather than venue-detected: an ordinary `sbt test`
-// must never start a session. Run it from the repository on a host with podman:
+// Opt-in like the other container-launching suites (IntegrationSession has the gate):
 //
 //     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *MountLifecycleTest"
 //

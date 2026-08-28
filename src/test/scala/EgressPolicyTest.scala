@@ -153,11 +153,9 @@ class EgressPolicyTest extends munit.FunSuite:
       assert(exec(session, clone*).ok, "the clone fails under the built-in policy too; this fixture proves nothing")
 
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
-    // The restricted treatment's reason to exist (SECURITY.md, "Reading without being able to write"):
-    // on an object store, a signed URL accepts a PUT from anyone holding it, so the method rule
-    // inside the tunnel is all that stands between the workspace and the bucket. The rule is
-    // host-independent, which is what lets any owner-minted bucket serve as the fixture —
-    // storage.googleapis.com is the built-in member with that surface. For an S3 bucket:
+    // The restricted treatment's reason to exist (SECURITY.md, "Reading without being able to write").
+    // The rule is host-independent, which is what lets any owner-minted bucket serve as the fixture.
+    // For an S3 bucket:
     //
     // ('boto3[crt]', because the credential provider behind `aws login` needs the CRT extra;
     // s3v4, because in older regions boto3 still mints deprecated SigV2 URLs; `--server`, because

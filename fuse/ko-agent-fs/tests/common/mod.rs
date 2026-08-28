@@ -1,10 +1,7 @@
 //! Shared harness for the mounted integration tests.
 //!
 //! These mount a real filter over a throwaway backing tree, so they need `/dev/fuse` and
-//! `CAP_SYS_ADMIN`. Every test that uses this is `#[ignore]`d and runs only in the privileged dev
-//! rig — `cargo test -- --ignored`, in the container `doc/testing.md` gives — never in the
-//! hardened sandbox, where mounting is refused by design. `cargo test` alone still runs the pure
-//! unit and corpus tests.
+//! `CAP_SYS_ADMIN` and are `#[ignore]`d. Mounted tests: `doc/testing.md`, "Mounted".
 
 #![allow(dead_code)] // each test binary uses a subset of the harness
 

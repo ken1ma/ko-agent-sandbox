@@ -4,7 +4,6 @@
 //! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
 //! The exception is the pair of stale-handle tests at the end, whose refusal comes from the
 //! resolver rather than the policy and is `ELOOP` for the reason `stale` gives.
-//! Needs `/dev/fuse` and `CAP_SYS_ADMIN` (the dev rig).
 
 mod common;
 
@@ -180,10 +179,7 @@ fn creating_a_dotgit_entry_is_refused_in_every_shape() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn the_launcher_configuration_directory_cannot_be_created_or_written() {
-    // The launcher mounts `.ko-agent-sandbox` back over itself read-only, and that mount is the
-    // first line. This is the second, for when it is not there: a mount cannot follow its source,
-    // so a host that removes the directory takes the mount with it and leaves the name free inside
-    // a writable workspace — where writing it would set the egress policy the *next* launch reads.
+    // The second line behind the launcher's read-only mount: `policy::is_sandbox_config_name`.
     let mount = TestMount::new(repository);
 
     denied(
@@ -661,15 +657,9 @@ fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them() {
-    // If the host relocated its hook directory into the worktree, the files host `git` executes sit
-    // at an ordinary worktree path that the classifier calls writable project data — and blocking
-    // the write *through* `.git/hooks/` would be theatre, since the same bytes are reachable under
-    // the target's own name. The answer is not a per-operation rule but a refusal to serve the tree
-    // at all (`guard::check_hook_location`, `doc/git-metadata.md`).
-    //
-    // Both halves are asserted here: that the guard refuses such a tree, and — mounting past the
-    // guard, which only the harness can do — *why* it must, since the FUSE layer alone would let the
-    // write through.
+    // Both halves are asserted here: that the guard refuses such a tree (`doc/git-metadata.md`,
+    // "Relocated hook directories"), and — mounting past the guard, which only the harness can do —
+    // *why* it must, since the FUSE layer alone would let the write through.
     let mount = TestMount::new(relocated_hooks);
 
     let refusal = ko_agent_fs::guard::check_hook_location(&mount.backing)
@@ -748,12 +738,7 @@ fn ordinary_project_work_is_unaffected() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_symlink_target_in_a_nonportable_shape_is_refused_and_an_ordinary_one_is_not() {
-    // The refusal in this file that is not about git, and the only one about what the *host* would
-    // make of what a session wrote — which it reads through a path of its own, so a target that is
-    // absolute or climbs above the workspace root cannot be assumed to mean there what it means
-    // here. A shape is asserted and nothing more: `fs.rs`, `target_has_portable_shape`, has where
-    // shape and meaning come apart, and what a later rename or hardlink can do to a conforming
-    // link.
+    // A shape is asserted and nothing more: `fs.rs`, `target_has_portable_shape`.
     //
     // sbt 2 is why it exists: a build-cache hit is materialized as a link into ~/.cache/sbt, and the
     // host's next compile fails writing its own class files through what the session left behind.

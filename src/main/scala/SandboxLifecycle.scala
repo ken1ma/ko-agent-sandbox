@@ -66,10 +66,6 @@ object SandboxLifecycle:
   // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's policy and
   // certificate are current; nothing worth keeping dies with any of it (the audit log is a host file).
   //
-  // Removal: one shutdown hook covering this JVM from before the first resource to the end of the session
-  // (armRunCleanup), plus — on the exec path (POSIX) — a detached sh reaper spawned just before the exec, which is what
-  // removes anything at all once execvp has replaced this process and taken its hooks with it.
-  //
   // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never toward
   // a removed proxy under a live sandbox:
   //

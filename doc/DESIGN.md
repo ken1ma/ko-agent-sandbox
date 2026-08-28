@@ -24,9 +24,7 @@ this project's operating model deliberately avoids:
 
 ### No per-repository `GitRead(repository)` policy
 
-Public repository discovery/read access is useful. There is no private forge credential in the
-sandbox whose authority needs to be attenuated, and forge writes are already blocked at the protocol
-boundary.
+SECURITY.md, "Why the policy is not a capability system".
 
 ### No Git/SSH/cloud credential injection into the proxy
 
@@ -35,27 +33,18 @@ only if that operating model changes.
 
 ### No generic "GET is safe, POST is dangerous" rule
 
-A URL is outbound information. For example:
-
-```text
-GET https://allowed.example/<encoded-project-secret>
-```
-
-is a write from an information-flow perspective. The restricted treatment does not breach this:
-it uses GET/HEAD-only to remove a host's *write API* (SECURITY.md, "Reading without being able to
-write"), never to declare a GET safe — the design principle below ("HTTP \"read\" semantics do
-not make the request an information-flow read") is unchanged by it.
+The principle below and SECURITY.md, "Exfiltration through an allowed host". The restricted
+treatment removes a host's write API, never declares a GET safe.
 
 ### No general HTTP method/path policy language
 
 Keep protocol-specific inspection only where it buys a concrete property, as it does for git reads
 versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a closed
-set of allowances (`allow=git-fetch`, `allow=github-login-device`, `allow=npm-audit`) each naming a
-fixed extra permission — not a per-host language. An allowance names a rule-set the proxy defines;
-it never describes one. Its concrete property is refusing every allowed host's write surface outside
-the agent endpoints, the one unauthenticated one included (storage.googleapis.com). Do not go
-further: no per-host rules, no path patterns beyond git's, no open allowance set, no general-purpose
-policy engine without concrete use cases that outgrow this.
+set of allowances (SECURITY.md, "Reading without being able to write"), each naming a rule-set the
+proxy defines, never describing one — not a per-host language. Its concrete property is refusing
+every allowed host's write surface outside the agent endpoints, the one unauthenticated one included
+(storage.googleapis.com). Do not go further: no per-host rules, no path patterns beyond git's, no
+open allowance set, no general-purpose policy engine without concrete use cases that outgrow this.
 
 ### No command-name safe lists
 
@@ -78,12 +67,9 @@ STYLE.md and rebuilding.
 
 ### No richer egress-policy format
 
-The policy stays four fixed profiles over two fixed files — `allowed`, a `+host` / `-host` /
-`+model-provider` / `-model-provider` / `-**` delta over the launcher-owned baseline with
-treatments and allowances from closed sets (`unrestricted`, or restricted by default with
-`allow=git-fetch`, `allow=npm-audit`, `allow=github-login-device`),
-and `denied` (hosts, `**.domain`, provider groups) applied last — no fields, no globs beyond the
-taking-away subtree, no ranked rules, no open allowance vocabulary, no selected-provider-plus-extras
+The policy stays four fixed profiles over two fixed files, `allowed` and `denied`, in the grammar
+the README's "Modifying the egress policy" spells — no fields, no globs beyond the taking-away
+subtree, no ranked rules, no open allowance vocabulary, no selected-provider-plus-extras
 profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
 `resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
@@ -133,13 +119,8 @@ would need the launcher pausable from outside — a variable read on the launch 
 to be known, documented in `--help`, and fail closed like every other variable: boundary code
 carrying scaffolding for a test, on the path that decides whether the filter is mounted at all.
 
-`MountLifecycleTest` reaches the same evidence without it. The state a paused launch
-presents to a reap is a marker whose container does not exist, and that state is created directly;
-that a real launch passes through it is the marker's mtime against its container's creation time;
-and that the project lock serializes a reap against a launch is a blocked `FLOCK` request in
-`/proc/locks`, observed rather than inferred from how long a teardown took. What stays out of reach
-is an interleaving at some other instant — which a pause hook would not enumerate either, since it
-can only stop where someone thought to put it.
+`MountLifecycleTest` reaches the same evidence without it; its header has how. What stays out of
+reach is an interleaving at some other instant — which a pause hook would not enumerate either.
 
 ### No scheduled or self-triggering verification
 
@@ -155,14 +136,9 @@ entries that are absolute **and** outside the repository being sandboxed —
 the reaper receives the resolved path as an argument, so no host-side invocation consults `PATH` or,
 on Windows, CreateProcess's implicit current-directory search.
 
-Both halves of that filter are load-bearing, and neither subsumes the other. A relative entry
-(`.`, `bin`, `../tools`) resolves against the working directory, which is the checkout. An
-*absolute* entry inside the checkout does the same thing while looking deliberate: `npm run` puts
-`$PWD/node_modules/.bin` on `PATH` absolutely, and a transitive dependency can ship a `bin` entry
-named `podman` without executing a line of its own code — `--ignore-scripts` and all. The launcher
-would then be the first thing to run it, on the host, before any confinement exists. Absoluteness
-is not consent, and a repository must never be what supplies the host's container runtime. Entries
-are compared canonically, so the rule is not one `ln -s` from decorative. Prior art:
+Absoluteness is not consent, and a repository must never be what supplies the host's container
+runtime: both halves of that filter are load-bearing, and `findOnPath`'s comment has why. Prior
+art:
 
 - https://github.com/docker/sbx-releases/issues/392
 

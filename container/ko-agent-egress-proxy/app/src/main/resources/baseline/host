@@ -1,6 +1,12 @@
 # The curated restricted catalog: what deny-unless-allowed admits on its own. Every entry is
 # TLS-inspected, GET and HEAD only, plus its allowance's one POST; SECURITY.md, "Reading without
 # being able to write", has what each allowance opens and what the inspection costs and buys.
+#
+# Before adding a host, answer all five: why does an arbitrary project need it by default; what
+# sandbox data could be sent to it; does it expose an unauthenticated write endpoint; which
+# treatment — and which tags — do its operations call for; and could it be project-specific
+# (.ko-agent-sandbox/egress/) instead? This list stays a small set of intentional data
+# recipients; it never grows by accumulation.
 
 # git hosts
 +host github.com                     allow=git-fetch

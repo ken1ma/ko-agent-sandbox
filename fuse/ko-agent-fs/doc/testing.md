@@ -83,3 +83,7 @@ rename that vacates its name); real git, where the everyday commands
 must pass, `rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist
 cannot quietly reopen them, and the host's own hook must still run; and the concurrency/TOCTOU pair,
 which is also the only thing that reaches `openat2`'s `EAGAIN` path.
+
+The suites run as a single uid, so they cannot tell `allow_other` + `default_permissions`
+(`architecture.md`, "Who may reach the mount") from the alternative; only the launcher mounting for
+a real container can.

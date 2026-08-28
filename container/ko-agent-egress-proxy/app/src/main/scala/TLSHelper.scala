@@ -108,11 +108,7 @@ object TLSHelper:
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
 
-      // Exact equality with the inspected set this policy resolves to: the launcher minted the leaf from the same
-      // policy's --print-policy, so a mismatch in either direction is drift — a missing name would surface as an
-      // inexplicable certificate error inside the sandbox, and an extra one means the launcher expects an inspection
-      // this proxy would not perform; that host would tunnel opaquely, writable. Refusing to start says so here
-      // instead, whichever direction drifted.
+      // Either direction is drift (SECURITY.md, "Who holds the CA key").
       inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 

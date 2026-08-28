@@ -41,9 +41,7 @@ object HTTPHelper:
 
       val value = in.read()
       if value < 0 then
-        // Zero bytes then EOF is its own case: a pooled client discarding a spare connection is
-        // routine and must not be logged as a refused request, while EOF inside a half-sent
-        // header stays the anomaly it is.
+        // ClosedWithoutRequest has why zero bytes is not a refused request.
         if count == 0 then throw ClosedWithoutRequest()
         else throw BadRequest("connection closed before HTTP header completed")
 
@@ -587,7 +585,6 @@ object HTTPHelper:
     detail: String,
   ): Unit =
     try
-      // encoded once: declared length == bytes sent, non-ASCII included
       val body = s"ko-agent-egress-proxy: $detail\n".getBytes(StandardCharsets.UTF_8)
 
       val out = socket.getOutputStream

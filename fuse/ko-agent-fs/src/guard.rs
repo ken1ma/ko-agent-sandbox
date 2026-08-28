@@ -1,26 +1,7 @@
 //! Startup guards: the conditions under which the filter refuses to mount at all.
 //!
-//! The binding rule (`doc/git-metadata.md`, "Relocated hook directories"): bytes host `git`
-//! consumes as control — the gitdir a `.git` pointer names, `commondir`, the config files, the
-//! hook directory and every entry in it — must not depend on any workspace path the policy
-//! classifies operational. Each of them is resolved here component by component, and every
-//! workspace-resident component traversed must classify `Control`, or the resolution has
-//! permanently left the workspace. Directories count, not only symlinks: an operational directory
-//! on the chain is a future symlink slot — the sandbox renames it away and plants a link.
-//! `canonicalize` cannot express the rule, because it returns only the endpoint and erases the
-//! chain, so the walk is explicit, depth-bounded, and refuses on every doubt — a read error, a
-//! config that is not UTF-8, an unresolvable step. Only NotFound means absent.
-//!
-//! Validation is a snapshot, and that is why the rule is exactly this one: a snapshot is sound
-//! only over paths its subject cannot mutate. Every admitted chain is made of Control components
-//! the sandbox can neither write nor rename, so the snapshot stays true for the session's whole
-//! life; only the host can invalidate it, which is the window `SECURITY.md` records.
-//!
-//! Two scope bounds, both argued in `doc/git-metadata.md`: only the workspace-root repository is
-//! checked — a bare layout standing at the root included — and only once, before the mount.
-//! Repositories the host nested deeper, and bare layouts the sandbox itself can create from
-//! ordinary names — below the root, or at the root once this check has passed — are the residue
-//! `SECURITY.md` names.
+//! The binding rule and the snapshot argument are `doc/git-metadata.md`, "Relocated hook
+//! directories"; the scope residue — root repository only, once, before the mount — is `SECURITY.md`.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;

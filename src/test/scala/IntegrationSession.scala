@@ -75,8 +75,7 @@ object IntegrationSession:
   ): Session =
     // The id the launcher will compute for this directory, derived through its own function rather
     // than parsed back out of whatever container turns up. Waiting for *any* new session instead
-    // would adopt one another suite started concurrently — which is exactly what happened when
-    // these first ran together, and produced a marker set belonging to two different projects.
+    // would adopt one another suite started concurrently.
     // `toRealPath` because the launcher resolves the project directory before hashing it, and on
     // macOS a temporary directory is reached through a symlink.
     val id = SandboxProject.projectIdOf(project.toRealPath(), currentOs)

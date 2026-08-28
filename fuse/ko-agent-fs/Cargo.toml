@@ -8,9 +8,8 @@ publish = false
 
 # The policy core (src/policy.rs) imports nothing external — that is the audited heart. The
 # dependencies below serve only the plumbing (src/fs.rs, src/main.rs): fuser for the FUSE protocol,
-# nix/libc for the fd-relative syscalls. fuser without its libfuse feature has no C linkage: it
-# attempts mount(2) itself and falls back to executing the setuid fusermount3 when that is denied,
-# which is what lets an ordinary VM user mount (`doc/architecture.md`, "Build and install").
+# nix/libc for the fd-relative syscalls. fuser without its libfuse feature has no C linkage and
+# mounts unprivileged (`doc/architecture.md`, "Build and install").
 [dependencies]
 fuser = { version = "0.18", default-features = false }
 libc = "0.2"

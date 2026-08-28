@@ -18,8 +18,8 @@ class JdkTrustTest extends munit.FunSuite:
       .asInstanceOf[X509Certificate]
 
   test("the JDK's home comes from the image's own declaration, or is absent"):
-    // podman image inspect prints Config.Env one entry per line. Reading JAVA_HOME from there is
-    // what keeps the launcher from needing a symlink the image would have to agree to maintain.
+    // SECURITY.md, "Who holds the CA key", has why the store is merged and why JAVA_HOME comes
+    // from the image. podman image inspect prints Config.Env one entry per line.
     val env = "PATH=/usr/bin\nJAVA_HOME=/usr/lib/jvm/temurin-25-jdk-arm64\nLANG=C.UTF-8"
     assertEquals(javaHomeOf(env), Some("/usr/lib/jvm/temurin-25-jdk-arm64"))
     // An image with no JDK is an absence, not an error: nothing to merge a CA into.
@@ -30,9 +30,8 @@ class JdkTrustTest extends munit.FunSuite:
     assertEquals(javaHomeOf("XJAVA_HOME=/nope"), None)
 
   test("the JDK trust store gains this project's CA and keeps every root it shipped with"):
-    // The JVM reads `cacerts`, not the PEM bundle, so this merge is what lets a JVM tool verify any
-    // inspected host. Dropping a shipped root would be the silent half of getting it wrong:
-    // the sandbox would keep working until something needed a public CA.
+    // Dropping a shipped root would be the silent half of getting it wrong: the sandbox would keep
+    // working until something needed a public CA.
     val shipped = KeyStore.getInstance("PKCS12")
     shipped.load(null, CacertsPassword)
     shipped.setCertificateEntry("a-public-root", parse(mintCa("a-public-root").certificatePem))

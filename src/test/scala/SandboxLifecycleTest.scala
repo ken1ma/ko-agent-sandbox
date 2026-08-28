@@ -103,7 +103,6 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ClipboardBroker.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste"),
     )
     assertEquals(command.take(3), Vector("/bin/sh", "-c", ReaperScript))
-    // sh -c: the argument after the script becomes $0; $1 through ${12} follow.
     assertEquals(command(3), "ko-agent-sandbox-reaper")
     assertEquals(
       command.drop(4),

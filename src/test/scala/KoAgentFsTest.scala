@@ -221,8 +221,7 @@ class KoAgentFsTest extends munit.FunSuite:
     )
 
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
-    // `container exists` answers 1 for a gone container and 125 when podman itself fails; the
-    // resolved-path fix closed the 127 miss, and this is the rest of the class — any non-1
+    // `container exists` answers 1 for a gone container and 125 when podman itself fails; any non-1
     // failure is unknown liveness, and pruning on unknown unmounts under a live session.
     assume(!isWindows)
     assertEquals(
@@ -239,8 +238,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(koAgentFsTeardownMode(Os.Linux), "local")
 
   test("the reap script's podman is resolved on the host and bare only inside the VM"):
-    // ScriptPath closed the PATH-substitution hole this first answered; what remains is that a
-    // host's podman need not be in ScriptPath at all, and only the resolved path is the podman
+    // A host's podman need not be in ScriptPath at all, and only the resolved path is the podman
     // that created these containers and can answer for them (the exit-code gate above is the
     // backstop for one that fails rather than answers). Inside the VM the bare name is the only
     // one that reaches the machine's own podman, which owns those containers.

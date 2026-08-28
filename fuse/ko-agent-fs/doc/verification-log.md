@@ -20,8 +20,8 @@ FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
   `git status` discovered no repository — the property itself, on the real fold table.
 - Bonus observation: the NFC and NFD spellings of `.gít` collapsed to **one** file — APFS's
   normalization-insensitivity seen live through the whole stack, confirming both halves of the
-  normalization finding above: the filesystem really does treat the forms as one name, and neither
-  resolves anywhere near `.git`.
+  normalization finding in `security-research.md` ("Real-filesystem case-folding"): the filesystem
+  really does treat the forms as one name, and neither resolves anywhere near `.git`.
 
 Fold tables are OS-version-specific, so this verifies **this** release against macOS 26.4.1;
 re-run the probe when either side moves.

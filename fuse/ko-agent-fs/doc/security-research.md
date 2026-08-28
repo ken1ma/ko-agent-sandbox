@@ -86,7 +86,7 @@ rests on:
   `init`.
 - **A readdir that re-reads and paginates by index skips or duplicates entries** when the directory
   changes mid-scan — a known FUSE issue, which libfuse's `passthrough_hp` avoids by keeping the
-  directory stream in the handle. `opendir` snapshots the entry names into the handle instead.
+  directory stream in the handle. What the filter does instead: `fs.rs`, `opendir`.
 
 What these findings settled into — which alternatives were weighed and rejected, and why — is
 `TODO.md`'s Non-TODOs. Decisions live there, findings here; a decision kept in both places is the

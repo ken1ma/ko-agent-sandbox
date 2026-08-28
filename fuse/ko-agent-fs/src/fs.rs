@@ -4,15 +4,8 @@
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
 //! on a denial, with a structured `DENY` log line.
 //!
-//! Resolution is model B: one `O_PATH` fd for the backing root, and every operation re-resolves via
-//! `openat2(root, relpath, RESOLVE_IN_ROOT)` — kernel-contained, TOCTOU-safe, never a path join fed
-//! to a plain syscall. A mutation acts on a fresh parent-dir fd plus the final name, so the `.git`
-//! name rule sees the exact name and no final symlink is followed. Attribute/entry TTLs are
-//! **zero** (`TTL`).
-//!
-//! Deferred: xattrs, unimplemented so that nothing reaches the backing store through them (the
-//! deny-surface note above `impl Filesystem` has what a caller sees; `doc/TODO.md`, "Non-TODOs",
-//! has the measurement), and the performance rows `doc/TODO.md` carries.
+//! Resolution: `doc/architecture.md`, "Inode model". The deny surface, xattrs included: the note above
+//! `impl Filesystem`.
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
@@ -629,11 +622,8 @@ fn dir_type(kind: nix::dir::Type) -> FileType {
 // git-behaviour premises `doc/git-metadata.md` records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
-        // Data-cache coherency: the zero metadata TTL keeps *attributes* fresh, but cached or
-        // mmap'd file *pages* could still lag a host write. Why this rather than FOPEN_DIRECT_IO
-        // is `doc/architecture.md`, "Coherency" — where it is an invariant and not a tunable,
-        // which is why a kernel that cannot offer it gets no mount rather than a degraded one:
-        // serving stale pages to a build tool is a wrong answer, not a slow one.
+        // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
+        // `FOPEN_DIRECT_IO`: `doc/TODO.md`, "Non-TODOs".
         if config
             .add_capabilities(InitFlags::FUSE_AUTO_INVAL_DATA)
             .is_err()
@@ -652,7 +642,6 @@ impl Filesystem for KoAgentFs {
             Ok(value) => value,
             Err(err) => return reply.error(to_errno(err)),
         };
-        // Parent dir fd, then stat the child without following a final symlink (report the link).
         let dirfd = match self.open_ino(parent.0, OFlag::O_PATH | OFlag::O_DIRECTORY) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
@@ -1018,8 +1007,7 @@ impl Filesystem for KoAgentFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
-        // Source-side too: aliasing a control inode to a writable name would let a write through the
-        // alias mutate the frozen inode (a hardlink shares the inode, bypassing path classification).
+        // Source-side too (`doc/git-metadata.md`, "Operations that carry these mutations").
         if let Err(err) = self.allow_ino(ino.0, Mutation::Link, "link-source") {
             return reply.error(err);
         }
@@ -1079,8 +1067,6 @@ impl Filesystem for KoAgentFs {
         reply: ReplyEmpty,
     ) {
         let exchange = flags.bits() & libc::RENAME_EXCHANGE != 0;
-        // Source must be movable, destination must be creatable. RENAME_EXCHANGE moves both ways,
-        // so each operand is checked as both a source and a destination.
         if let Err(err) = self.allow_child(parent.0, name, Mutation::RenameFrom, "rename-from") {
             return reply.error(err);
         }
@@ -1151,7 +1137,6 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.apply_setattr(ino.0, mode, uid, gid, size, atime, mtime) {
             return reply.error(to_errno(err));
         }
-        // Re-stat and report the result, so the kernel's cached attributes match the backing.
         let fd = match self.open_ino(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
@@ -1174,7 +1159,6 @@ impl Filesystem for KoAgentFs {
         _lock: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
-        // The write access was authorized at open(); the handle only exists for an allowed target.
         let handle = self
             .inner
             .lock()
@@ -1381,21 +1365,14 @@ mod tests {
 
     #[test]
     fn the_carried_open_flags_are_the_allowlist_and_nothing_else() {
-        // Each of these changes what the backing fd is: the access mode, the exclusivity that makes
-        // a lock file a lock, and the truncation the caller asked for.
+        // Reasons: `passthrough_flags`.
         assert_eq!(passthrough_flags(libc::O_WRONLY), OFlag::O_WRONLY);
         assert_eq!(passthrough_flags(libc::O_RDWR), OFlag::O_RDWR);
         assert!(passthrough_flags(libc::O_WRONLY | libc::O_EXCL).contains(OFlag::O_EXCL));
         assert!(passthrough_flags(libc::O_WRONLY | libc::O_TRUNC).contains(OFlag::O_TRUNC));
-        // O_APPEND is carried, and `write` honours it: the kernel does not refresh the size it
-        // computes an append's offset from, so only the backing fd knows where the end is.
         assert!(passthrough_flags(libc::O_WRONLY | libc::O_APPEND).contains(OFlag::O_APPEND));
-        // O_SYNC and O_DSYNC are not, and that is the deliberate one: the kernel routes a
-        // synchronous write through this filesystem's `fsync` already, so carrying them would buy
-        // a second flush per write.
         assert!(!passthrough_flags(libc::O_WRONLY | libc::O_SYNC).contains(OFlag::O_SYNC));
         assert!(!passthrough_flags(libc::O_WRONLY | libc::O_DSYNC).contains(OFlag::O_DSYNC));
-        // The rest is surface nobody reasoned about, so the allowlist drops it.
         assert!(!passthrough_flags(libc::O_RDONLY | libc::O_NOATIME).contains(OFlag::O_NOATIME));
         assert!(!passthrough_flags(libc::O_WRONLY | libc::O_DIRECT).contains(OFlag::O_DIRECT));
     }

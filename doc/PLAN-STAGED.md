@@ -1,9 +1,7 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
-The remaining increments of the workspace-authority work. The option surface (`--write`,
-`--egress`), the egress profiles and reject mode are implemented; the writable default is `live`,
-and `KO_AGENT_SANDBOX_WORKSPACE_GUARD` stays honored until the final step here. No distributable
-build may make ordinary launches read-only before the staged workflow is usable.
+The remaining increments of the workspace-authority work. No distributable build may make
+ordinary launches read-only before the staged workflow is usable.
 
 ## Staged mode
 
@@ -71,9 +69,9 @@ once; that the filter can still mount here now is the filter's own `--self-test`
 session.
 
 Windows carries one measured hazard to settle before the apply state machine is built rather than
-during it: a host write to a file a live session holds open is refused with a sharing violation,
-because the daemon's backing descriptor reaches NTFS through the machine's 9p server
-(`../fuse/ko-agent-fs/doc/verification-log.md`). Apply writes to the host while sessions are
+during it: a host write to a file a live session holds open is refused with a sharing violation
+(SECURITY.md, "The project checkout"; `../fuse/ko-agent-fs/doc/verification-log.md` has the
+measurement). Apply writes to the host while sessions are
 attached, and sealing rebinds write authority without necessarily closing the lower descriptor, so
 apply's atomic replacement can be refused on exactly the paths it is applying.
 
@@ -279,8 +277,5 @@ bulk stage discard, host-wide command broker, executable-bit enforcement, or imp
 between write modes. Project-controlled commands remain a workflow concern rather than a claimed
 host-wide boundary.
 
-Deferred staged work lives in `TODO.md`: project-directory replacement detection, apply
-rollback bundles, disk-exhaustion preflight and recovery, persistent-format migration,
-shared-workspace session attribution, non-interactive plan/apply, and named parallel stages. The
-optional no-symlink profile and the settled executable-bit decision live in
-`../fuse/ko-agent-fs/doc/TODO.md`.
+Deferred staged work is `TODO.md` ("staged-workspace extensions and hardening"); the optional
+no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/TODO.md`.

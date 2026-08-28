@@ -3,8 +3,7 @@
 # set is excluded from the launcher jar's bundled copy of this directory
 # (the resourceGenerators task in the repository root's build.sbt); keep the
 # two in step. `**/`, because a bare name only matches at the context root
-# and sbt writes .bsp under app/. .dockerignore rather than .containerignore
-# because both podman and docker look for it.
+# and sbt writes .bsp under app/.
 **/target
 **/project/project
 **/.bsp

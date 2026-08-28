@@ -131,10 +131,8 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
   test("a host-side inode replacement is what stops a .git pin being honoured"):
     assume(enabled, requirement)
 
-    // One replacement, then watch. The path is stale for an instant — unreadable and unwritable —
-    // and writable a couple of seconds later, so a check made in that first instant reports a pin
-    // that is already gone. SECURITY.md ("The opted-out mode's `.git` pins") has the property;
-    // Docker Sandboxes #388 is the same shape reported against another runtime.
+    // One replacement, then watch: a check made in the stale instant after it reports a pin that
+    // is already gone.
     //
     // Asserted rather than left failing: no mount over a path closes this, so a red suite would
     // report the same thing every run, while an assertion turns a Podman release that changes it
@@ -163,10 +161,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         println(f"[guard-off] t=$at%3ds  mount=$isMounted%-5s read=$readable%-5s write=$fellThrough")
         if !fellThrough then Thread.sleep(2000)
 
-      // Which way it goes is the host family's answer, and SECURITY.md carries both: the macOS
-      // machine's share follows the replacement within seconds, while on Windows (Server 24H2,
-      // WSL2; 2026-08-19) the pin refused writes for this whole two-minute window. Linux rootless
-      // is the row still missing (doc/TODO.md) and expects the macOS answer until measured.
+      // Linux rootless expects the macOS answer until measured.
       if currentOs == Os.Windows then
         assert(!fellThrough, "the pin fell through on Windows; record the new result (SECURITY.md)")
       else

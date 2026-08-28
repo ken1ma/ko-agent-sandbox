@@ -62,11 +62,8 @@ class HostCommandsTest extends munit.FunSuite:
 
   test("an absolute PATH entry inside the checkout is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
-    // The shape absoluteness alone does not catch, and the reason this rule is not about relative
-    // entries: `npm run` puts `$PWD/node_modules/.bin` on PATH as an *absolute* entry, and a
-    // transitive dependency can ship a `bin` named `podman` without running a line of its own code.
-    // The launcher would then be the first thing to execute it — on the host, before any
-    // confinement exists.
+    // The absolute-entry-inside-the-checkout shape (HostCommands.findOnPath's doc, DESIGN.md "No
+    // PATH-resolved host executables").
     val checkout = Files.createTempDirectory("untrusted-checkout").toRealPath()
     val shipped = Files.createDirectories(checkout.resolve("node_modules/.bin"))
     val planted = shipped.resolve("podman")

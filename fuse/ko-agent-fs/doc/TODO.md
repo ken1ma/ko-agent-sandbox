@@ -119,15 +119,8 @@ What the suites cover and how to run them, the self-test image and the privilege
 
 ## Correctness
 
-`opendir` reads the entry names once into the handle, so a scan cannot skip or duplicate entries
-when the directory changes under it, and a large directory costs one read rather than one per
-`readdir` call. `a_directory_scan_is_stable_while_the_host_changes_the_directory` covers it.
 `setattr` applies times through `utimensat`, so `touch -t` and archive extraction round-trip, with
 `UTIME_OMIT` keeping one of the pair from clobbering the other.
-
-The mount shape is `allow_other` + `default_permissions` (`architecture.md`, "Who may reach the
-mount"). The tests run as a single uid, so they cannot tell that choice from the alternative; only
-the launcher mounting for a real container can.
 
 
 ## P1 — Performance (the measurements say the target workload would hurt)
@@ -288,14 +281,8 @@ The filter is the **default** enforcement on every platform, ahead of that verif
   enforcement that means a project which launched yesterday does not launch today, and the remedy
   is to edit one's own `.git/config`. Decide whether that is acceptable, or whether the undecidable
   cases should fall back to the pin rather than refuse.
-- [ ] The guard checks only the workspace root — the repository standing there, or the root
-  itself as a bare layout — and only at mount. Two residues remain (SECURITY.md names both): a
-  repository the host nested deeper keeps its `.git`-rooted control state frozen, but control
-  bytes its owner had already routed into the worktree — relocated hooks, a redirected gitdir —
-  are served as ordinary writable data, a shape the sandbox cannot create; and a bare layout the
-  sandbox *can* create from ordinary names — below the root, or at the root itself after the
-  mount-time check. Decide whether to extend the checks to the repositories and bare layouts a
-  pre-mount walk finds, or to keep recording the residue.
+- [ ] The guard's scope residue (`SECURITY.md`, "Not defended"): decide whether to extend the
+  checks to the repositories and bare layouts a pre-mount walk finds, or to keep recording it.
 
 
 ## Deferred research
@@ -353,11 +340,11 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   because their cwd is inside the dead mount. The failure is already total, loud and
   fail-closed, so outside machinery would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.
-- **A Unicode normalization library in the policy core.** `.git` is pure ASCII, so a
-  normalization-insensitive backing creates no collision (`git-metadata.md`, "The name rule").
-  Settled by research, pinned by a test.
-- **Mirroring a filesystem's case-fold table.** NTFS's is per-volume; the exact set is not
-  statically knowable. Conservative superset plus the empirical test above, instead.
+- **A Unicode normalization library in the policy core.** Not needed (`git-metadata.md`, "The
+  name rule"); pinned by a test.
+- **Mirroring a filesystem's case-fold table.** The set is not statically knowable
+  (`security-research.md`, "Real-filesystem case-folding"). Conservative superset plus the
+  empirical test above, instead.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.
 - **Guarding against inode reuse.** Model B reuses an inode number for a recreated

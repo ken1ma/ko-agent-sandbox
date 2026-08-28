@@ -5,10 +5,8 @@
 // part, and hand the launch a mount that puts the result back. The one JVM the launcher cannot
 // reach — installed by the agent itself — gets both from inside, via `sandbox-prepare-jdk`.
 //
-// Java 25's standard library alone, deliberately: KeyStore and CertificateFactory are JCA, and
-// BouncyCastleHelper's contract is to be the only file that imports org.bouncycastle. What
-// BouncyCastle is actually for is *building* certificates, which JCA cannot do; reading and
-// storing them it can.
+// No bouncycastle import here: reading and storing certificates is JCA (BouncyCastleHelper has the
+// rule).
 
 package agentsandbox.launcher
 

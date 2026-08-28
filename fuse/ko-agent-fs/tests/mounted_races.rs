@@ -4,8 +4,6 @@
 //! The property is not "every operation succeeds" — under a concurrent rename a failure is a correct
 //! answer. It is that the filter never serves the *wrong* object, never panics, and never leaves the
 //! daemon wedged. These also drive `openat2`'s `EAGAIN` path, which nothing else reaches.
-//!
-//! Needs `/dev/fuse` and `CAP_SYS_ADMIN` (the dev rig).
 
 mod common;
 

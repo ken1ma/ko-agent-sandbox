@@ -6,7 +6,7 @@
 //! rather than as a security hole. The blocked commands are asserted too, so a later widening of the
 //! allowlist that quietly reopened them would be caught.
 //!
-//! Needs `/dev/fuse` and `CAP_SYS_ADMIN` (the dev rig), and `git` on PATH.
+//! Needs `git` on PATH.
 
 mod common;
 

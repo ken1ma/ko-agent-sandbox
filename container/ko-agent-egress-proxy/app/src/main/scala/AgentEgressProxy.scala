@@ -61,22 +61,10 @@ object AgentEgressProxy:
    * printed at startup and every denial is logged, which is how you find out what an agent
    * actually wanted.
    *
-   * Inspection is off unless the launcher supplies a certificate and key naming exactly the
-   * resolved restricted hosts. The launcher keeps no copy of the lists: it reads the resolved
-   * policy from this image's own --print-policy when minting the leaf certificate's
-   * subjectAltName list — tags stripped, since which treatment a host gets is this proxy's
-   * business and the leaf only names it — and TlsInspection.load refuses a mismatch in either
-   * direction.
-   *
-   * Before adding a host here, answer all five: why does an arbitrary project need it by
-   * default; what sandbox data could be sent to it; does it expose an unauthenticated write
-   * endpoint; which treatment — and which tags — do its operations call for; and could it be
-   * project-specific (.ko-agent-sandbox/egress/) instead? These lists should stay a small set of
-   * intentional data recipients, never grow by accumulation.
+   * Inspection is off unless the launcher supplies a certificate and key; the leaf must name
+   * exactly the resolved restricted hosts, tags stripped (SECURITY.md, "Who holds the CA key").
    */
 
-  /** A host's effective treatment. Restricted is inspected HTTPS limited to the closed set of
-    * read and fetch operations (authorizeInspectedRequest); unrestricted is an opaque tunnel. */
   enum Treatment:
     case Restricted(tags: Set[String])
     case Unrestricted
@@ -104,9 +92,8 @@ object AgentEgressProxy:
    * each host as a comment beside it. `baseline/host` is the curated restricted catalog — what
    * deny-unless-allowed admits on its own; `baseline/model-provider/<name>` is what
    * `+model-provider <name>` expands to: the party trusted to receive project data, and only its
-   * model, authentication and control-plane endpoints, never every domain it owns. An endpoint
-   * that is a forge as well stays restricted inside its group, since the group is what
-   * deny-unless-model admits and it must not admit `git push`.
+   * model, authentication and control-plane endpoints, never every domain it owns (the github
+   * group's forge entries have the case).
    *
    * A baseline file holds `+host` entries and nothing else, and the catalog holds no unrestricted
    * one; either is a refused start, not a silent narrowing, so the image's own `--print-policy`
@@ -378,12 +365,11 @@ object AgentEgressProxy:
     acceptForever(server, policy)
 
   /*
-   * Read before the port binds: unloadable material must not become a proxy
-   * quietly tunnelling the inspected hosts opaquely. Both variables absent is
-   * not an error — the image runs on its own, inspection off and said so.
-   * Material for a policy that inspects nothing is an error, not a narrower
-   * policy: the launcher never mints a leaf for such a policy, so a supplied
-   * one means the two disagree about what this policy is.
+   * Both variables absent is not an error — the image runs on its own,
+   * inspection off and said so. Material for a policy that inspects nothing
+   * is an error, not a narrower policy: the launcher never mints a leaf for
+   * such a policy, so a supplied one means the two disagree about what this
+   * policy is.
    */
   def loadInspection(resolved: ResolvedEgress): Option[TlsInspection] =
     val certificate = Option(System.getenv(CertificateVariable)).filter(_.nonEmpty)
@@ -912,7 +898,7 @@ object AgentEgressProxy:
           case ex: IOException =>
             throw BadRequest(s"unreadable CONNECT request: ${ex.getMessage}")
 
-      host = request.host // as requested; replaced by the normalized form once authorized
+      host = request.host
       host = authorizeRequest(request, policy.resolved)
       addresses = resolvePublic(host)
       val upstream = connect(addresses, request.port)
@@ -922,7 +908,6 @@ object AgentEgressProxy:
 
     catch
       case _: ClosedWithoutRequest =>
-        // The plaintext twin of the inspected case: a connection opened and closed silently.
         System.err.println(auditLine("error", host, "-", "", "client closed before sending a request"))
 
       case ex: BadRequest =>
@@ -1035,11 +1020,6 @@ object AgentEgressProxy:
     inspection: TlsInspection,
     hostTags: Set[String],
   ): Unit =
-    /*
-     * The client's ClientHello has already been read off the socket to check
-     * its SNI, so it is replayed into the TLS engine here rather than being
-     * forwarded upstream as it is for an opaque tunnel.
-     */
     val clientTls = inspection.accept(client, hello.wireBytes)
 
     // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
@@ -1071,8 +1051,8 @@ object AgentEgressProxy:
 
       catch
         case _: ClosedWithoutRequest =>
-          // Routine — pooled clients open spares and drop them unused (apt does) — but logged:
-          // a TLS-handshaked connection must not vanish without a line. No response; peer gone.
+          // Logged even so: a TLS-handshaked connection must not vanish without a line. No
+          // response; peer gone.
           System.err.println(
             auditLine("error", host, method, target, "client closed before sending a request"),
           )
@@ -1139,7 +1119,6 @@ object AgentEgressProxy:
 
       val response = HttpResponseHead.parse(bytes)
       if response.status / 100 == 1 then
-        // Informational; the final head follows on the same connection.
         toClient.write(response.rawBytes)
         finalResponseHead()
       else response
@@ -1189,20 +1168,10 @@ object AgentEgressProxy:
    * endpoint npm hits during install (NpmAuditPath); `allow=github-login-device` the
    * device-flow pair (GithubLoginDevicePaths). On a host without it, no
    * POST at all: a path there is an object name anyone can choose, so a
-   * path rule authorizes nothing (DefaultReadOnlyHosts has the type case).
+   * path rule authorizes nothing.
    *
-   * Receive-pack ref discovery, a GET and so otherwise permitted, is
-   * refused too: `git push` fails at its first request with a reason in
-   * the log, not at its second.
-   *
-   * The LFS batch endpoint stays closed: a POST whose body chooses between
-   * download and upload, and git-lfs being absent from the image is no
-   * boundary — it is one static binary away. Content stays readable per
-   * file through media.githubusercontent.com; SECURITY.md has the trade.
-   *
-   * GraphQL is a POST even to read and is refused with the rest. GitHub's
-   * accepts no unauthenticated query anyway; gitlab.com's does, and its
-   * REST reads remain (SECURITY.md).
+   * Receive-pack discovery, the LFS batch endpoint and GraphQL stay refused:
+   * SECURITY.md, "Reading without being able to write".
    */
   def authorizeInspectedRequest(
     host: String,
@@ -1242,8 +1211,6 @@ object AgentEgressProxy:
       case "POST" =>
         requireUnambiguousPath(head.path)
 
-        // Each POST allowance is its tag's alone: on a host without the tag a path is a name
-        // anyone can choose, so a path rule authorizes nothing.
         val opened =
           (hostTags.contains("git-fetch") && isUploadPack(head.path))
             || (hostTags.contains("npm-audit") && head.path == NpmAuditPath)
@@ -1355,18 +1322,16 @@ object AgentEgressProxy:
    * One connection event of the audit log: `verb host method [target] tail` — the grammar
    * SECURITY.md ("The audit line grammar") declares stable through field 3. A `-` fills a field
    * the connection ended before revealing; the target appears exactly when a parsed inspected
-   * request exists; the tail is human text with no field structure. No peer address: the per-run
-   * internal network has exactly one client, so the field would be a constant.
+   * request exists; the tail is human text with no field structure.
    */
   def auditLine(verb: String, host: String, method: String, target: String, tail: String): String =
     (Vector(verb, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
 
   /**
    * Every line the proxy reports, prefixed with the instant it was written, as
-   * `2026-08-26T11:59:38Z `. UTC with the zone spelled out: a run's file spans
-   * days and is read on machines in other zones, and the container has no
-   * zone of its own to be local to. Prefixing at the byte level, on the first
-   * byte after a newline, so a line printed in pieces is stamped once.
+   * `2026-08-26T11:59:38Z `. UTC, per SECURITY.md "The audit line grammar".
+   * Prefixing at the byte level, on the first byte after a newline, so a line
+   * printed in pieces is stamped once.
    */
   def stampLines(out: OutputStream, now: () => Instant): OutputStream = new OutputStream:
     private var lineStart = true

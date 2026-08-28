@@ -1,8 +1,6 @@
 # Debian 13 (trixie)
 #
 # This aligns with the distroless java25-debian13 runtime base.
-# `debian:13.6-slim` is a mutable tag, and most APT package versions are unpinned,
-# so the resulting image is not reproducible.
 FROM docker.io/library/debian:13.6-slim
 
 ARG TEMURIN_VERSION=25.0.4
@@ -20,8 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # The uid/gid distroless :nonroot uses; USER still decides who runs.
 # `--no-log-init`: uid 65532 would otherwise leave a large sparse faillog.
 #
-# `;` not `&&` throughout: `set -e` already sequences. `set -x` would expose
-# secrets passed to commands, so keep build logs private. dash supports
+# `;` not `&&` throughout: `set -e` already sequences. dash supports
 # pipefail since Debian 13.
 RUN set -euxo pipefail; \
     groupadd --gid 65532 nonroot; \
@@ -37,8 +34,6 @@ RUN set -euxo pipefail; \
 # Temurin (Java)
 #
 # APT on Debian 13 can consume an ASCII-armored OpenPGP key directly.
-#
-# Signed-By restricts this repository to both the specified keyring and Adoptium's published signing-key fingerprint.
 
 RUN set -euxo pipefail; \
     apt-get update; \
@@ -81,5 +76,4 @@ RUN set -euxo pipefail; \
     test -n "$TEMURIN_DEB_VERSION"; \
     apt-get install -y --no-install-recommends "$TEMURIN_DEB_PACKAGE=$TEMURIN_DEB_VERSION"; \
     rm -rf /var/lib/apt/lists/*; \
-    # Make sure JAVA_HOME is correct, particularly the `%%` expansion above
     test -x "$JAVA_HOME/bin/java"

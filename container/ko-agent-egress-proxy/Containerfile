@@ -1,8 +1,6 @@
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-#
-# Compiled with the same debian-coursier toolchain the sandbox offers.
 ARG IMG_TAG_VER
 FROM debian-coursier:${IMG_TAG_VER} AS build
 

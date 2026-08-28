@@ -298,9 +298,8 @@ object HostCommands:
    * afterwards holds its content at 0644 for as long as the write takes, and what `writePrivate`
    * writes is the CA private key. Setting it again is what makes the mode exact: umask can only
    * clear bits, so a strict one would otherwise leave `writeReadable` narrower than the container
-   * reading that file needs. Windows has no POSIX modes and needs none — `%LOCALAPPDATA%` inherits
-   * an ACL that already excludes other users — so the attribute is refused there and the file is
-   * created plainly.
+   * reading that file needs. On Windows the attribute is refused and the file is created plainly
+   * (the section banner has why nothing is needed there).
    */
   private def writeWithMode(path: Path, content: Array[Byte], mode: String): Unit =
     val permissions = PosixFilePermissions.fromString(mode)

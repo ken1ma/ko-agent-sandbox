@@ -1,7 +1,5 @@
 # Security model
 
-This document describes what the sandbox setup defends against, how, and what it does not.
-
 The README opens with a diagram of the boundary this file reasons about. The rest of the repository
 describes mechanism, and the launcher — `src/main/scala/`, with `AgentSandboxLauncher.scala` the
 flow and its neighbours one concern each — is the canonical description of the mounts and flags
@@ -246,19 +244,15 @@ cannot: repositories planted or nested below the workspace root. A FUSE layer ra
 kernel-side mechanism because it works wherever the VM does; `fuse/ko-agent-fs/doc/architecture.md`
 ("Mediation mechanism") weighs the alternatives.
 
-Two residues stay yours to know about. The mount-time guard refuses a workspace-root repository
-whose control bytes resolve through the writable workspace — hooks relocated into the worktree, a
-redirected gitdir or `commondir`, an aliased config, an individual hook symlinked back in — and a
-bare layout standing at the root; `fuse/ko-agent-fs/doc/git-metadata.md` ("Relocated hook
-directories") states the binding rule it enforces. What it does not cover: a repository *you*
-nested deeper keeps its control state frozen like any other, but control bytes you had already
-routed into its worktree — relocated hooks, a redirected gitdir — are served as ordinary writable
-data (`fuse/ko-agent-fs/doc/TODO.md` records the gap); and a bare layout is served writable
-anywhere — below the root, or assembled at the root after the mount-time check — the one shape
-the *sandbox* can create itself ("The project checkout", above). The
-check is also a snapshot: reshape control state mid-session and this session will not notice. The
-snapshot admits only resolution chains made of components the sandbox cannot write or rename, so
-the sandbox cannot invalidate it — the windows only open if you open them.
+Two residues stay yours to know about. The mount-time guard (above;
+`fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories", binds the rule) does not
+cover: a repository *you* nested deeper keeps its control state frozen like any other, but control
+bytes you had already routed into its worktree — relocated hooks, a redirected gitdir — are served
+as ordinary writable data (`fuse/ko-agent-fs/doc/TODO.md` records the gap); and a bare layout
+anywhere ("The project checkout", above). The check is also a snapshot: reshape control state
+mid-session and this session will not notice. The snapshot admits only resolution chains made of
+components the sandbox cannot write or rename, so the sandbox cannot invalidate it — the windows
+only open if you open them.
 
 What an auditor trusts, and how each link is checked:
 
@@ -355,9 +349,8 @@ service against the host generally are not comprehensively bounded.
 
 An HTTP proxy in its own container, so the policy is enforced somewhere the agent cannot
 edit, on the far side of a network the agent cannot route out of. The container is created per
-sandbox run and removed when the run ends — in `podman ps` a run's containers are
-`ko-agent-egress-proxy-<directory>-<hash>-<run>` and `ko-agent-sandbox-run-<...>`, in
-`podman network ls` its networks `ko-agent-sandbox-<...>` and `ko-agent-egress-<...>`. Its log —
+sandbox run and removed when the run ends, named in the reserved shapes ("Silent changes to what
+you own", above). Its log —
 every allow and every refusal — is appended through a bind mount to a per-run file in the
 launcher's state directory on the host, so the audit record does not share the container's
 lifetime. Every connection has to pass all of this, in order:
@@ -618,8 +611,8 @@ An addition overrides the baseline entry for its host rather than merging with i
 "Modifying the egress policy" has the grammar): a merge would widen a host to a treatment no single
 line says and leave no way to take one allowance away. For the same reason an allowance on anything
 that takes away is refused — a removal or a denied entry removes the host whole — and widening has
-no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`, which
-discards the baseline and makes the file state its complete replacement policy. And under
+no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`. And
+under
 `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**` cannot
 subtract from the restricted narrowing set.
 
@@ -642,8 +635,7 @@ a contradiction, not a precedence to resolve. The allow-versus-deny ordering tha
 get wrong is a bug family kept out by having one rule — denial wins over either treatment — and
 one fixed order, `denied` last.
 (`-**` creates no exception: it is not a host matcher but the name of the baseline itself,
-which is why it lives in `allowed`, the delta over that baseline — what it removes is the
-baseline contribution before the file's own additions apply.) The one no-op that is allowed is
+which is why it lives in `allowed`, the delta over that baseline.) The one no-op that is allowed is
 deliberate: an identical restatement of a baseline entry, so a policy that names a host
 defensively keeps working when a later image adopts it. The cost is that a delta file is not
 self-contained; the README's `--egress-effective` bullet is the mitigation.

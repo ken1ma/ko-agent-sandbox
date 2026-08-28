@@ -899,9 +899,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // Build output must not have been swept into the bundle — Rust's target/ as well as sbt's.
     assert(!index.exists(_.split("/").contains("target")), "target leaked")
 
-    // ko-agent-fs/doc and ko-agent-fs/probe are deliberately absent: neither is distribution nor
-    // a build input, and keeping them out is what stops editing a design document or a platform
-    // probe from changing koAgentFsSourceId and invalidating every installed filter binary.
+    // ko-agent-fs/doc and probe are deliberately absent (build.sbt, the bundling task, has why).
     Vector("ko-agent-fs/doc/", "ko-agent-fs/probe/").foreach: prefix =>
       assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
 
@@ -1207,12 +1205,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(newRunSuffix().matches("[0-9a-f]{8}"))
 
   test("reset filters match exactly the launcher's reserved name shapes"):
-    // The `--reset-all` sweeps force-remove what they match, so a bare prefix match would take a
-    // user's own ko-agent-sandbox-persistent-backup with it. What separates launcher-owned from
-    // user-owned is the reserved shape — slug, twelve-hex hash, and for per-run resources the
-    // eight-hex suffix — a namespace contract rather than provenance: SECURITY.md ("Silent
-    // changes to what you own") states it, and the sharedVolumeNameError test below keeps the
-    // one launcher-adopted name out of it.
+    // A bare prefix match would sweep a user's own ko-agent-sandbox-persistent-backup; the reserved
+    // shape (SECURITY.md, "Silent changes to what you own") is what separates launcher-owned from
+    // user-owned, and sharedVolumeNameError below keeps the one adopted name out of it.
     val id = "app-0123456789ab"
     assertEquals(
       proxyContainers(

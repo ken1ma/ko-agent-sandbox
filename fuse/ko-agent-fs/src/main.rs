@@ -13,10 +13,7 @@ use ko_agent_fs::fs::{KoAgentFs, mount_config};
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 
-/// What source this binary was built from. The build stamps it in (see `Containerfile`): the
-/// launcher digests the source it bundles, passes that digest as a build argument, and later
-/// compares it with what `--version` reports — so an installed binary that is *not* the one this
-/// launcher would build is detected rather than trusted. Unstamped when built by hand.
+/// The identity the launcher checks (`Containerfile`, `KO_AGENT_FS_SOURCE_ID`). Unstamped when built by hand.
 const SOURCE_ID: &str = match option_env!("KO_AGENT_FS_SOURCE_ID") {
     Some(id) => id,
     None => "unstamped",
@@ -61,15 +58,6 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
     }
 }
 
-/// `--self-test`: prove, against a scratch tree that is never the user's workspace, that this
-/// binary can mount in *this* environment, that the policy actually bites, and that a host write
-/// reaches both a cached read and an established mapping (`coherency_check`). It runs where the
-/// daemon will serve — inside the Podman machine, or on a native Linux host — at install time and
-/// again before every session (`KoAgentFs.installKoAgentFs`, `ensureKoAgentFsMounted`), aborting
-/// either on failure, so the exit code is the contract and the text is for the human reading the
-/// log. Beyond the policy, this is the probe for the two environmental assumptions an unprivileged
-/// mount rests on: a `fusermount3` on PATH, and `user_allow_other` enabled in /etc/fuse.conf (the
-/// mount asks for `allow_other`).
 /// Which stage a self-test failure came from, because only this code knows. Everything up to and
 /// including the mount is the environment's — the scratch tree it needs, and the mount itself — and
 /// a caller can answer it by changing the venue; everything after the mount is this filter's own
@@ -87,6 +75,15 @@ enum SelfTestFailure {
 /// decide whether to retry; a test holds the two together (`KoAgentFsTest`).
 const SELF_TEST_VENUE_EXIT: u8 = 3;
 
+/// `--self-test`: prove, against a scratch tree that is never the user's workspace, that this
+/// binary can mount in *this* environment, that the policy actually bites, and that a host write
+/// reaches both a cached read and an established mapping (`coherency_check`). It runs where the
+/// daemon will serve — inside the Podman machine, or on a native Linux host — at install time and
+/// again before every session (`KoAgentFs.installKoAgentFs`, `ensureKoAgentFsMounted`), aborting
+/// either on failure, so the exit code is the contract and the text is for the human reading the
+/// log. Beyond the policy, this is the probe for the two environmental assumptions an unprivileged
+/// mount rests on: a `fusermount3` on PATH, and `user_allow_other` enabled in /etc/fuse.conf (the
+/// mount asks for `allow_other`).
 fn self_test() -> ExitCode {
     match self_test_run() {
         Ok(()) => {
@@ -342,9 +339,7 @@ fn main() -> ExitCode {
         Err(code) => return code,
     };
 
-    // Refuse rather than serve a tree whose hooks the filter cannot protect (`guard`): a repository
-    // whose hook directory already lives inside the workspace would be writable by the sandbox and
-    // executed by the host's git, and no mount-time filtering can fix that.
+    // The startup guard (`guard`).
     if let Err(refusal) = ko_agent_fs::guard::check_hook_location(&args.source) {
         eprintln!(
             "ko-agent-fs: refusing to serve {:?}\n{refusal}",

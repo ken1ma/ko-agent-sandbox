@@ -20,9 +20,7 @@
 # assume. The final stage is `scratch` holding only the binary, so the
 # extraction step has exactly one obvious thing to take.
 
-# Debian 13 (trixie), matching the rest of this project's images. If this tag
-# ever stops existing the build fails immediately and loudly, which is the
-# right failure for a base image.
+# Debian 13 (trixie), matching the rest of this project's images.
 ARG RUST_VERSION=1.98.0
 FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
 
@@ -38,8 +36,7 @@ RUN set -eux; \
 RUN set -eux; \
     rustup target add "$(uname -m)-unknown-linux-musl"
 
-# The licence gate. Pinned so a gate that passes today passes tomorrow, and
-# --locked so it cannot quietly resolve something new.
+# The licence gate (`deny.toml`).
 ARG CARGO_DENY_VERSION=0.20.2
 RUN set -eux; \
     cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked
@@ -47,9 +44,7 @@ RUN set -eux; \
 WORKDIR /build
 COPY . .
 
-# The identity the launcher checks. It digests the source it bundles and passes
-# the digest here; `--version` reports it back, so an installed binary that is
-# not the one this launcher would build is detected rather than trusted.
+# The identity the launcher checks (header above).
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 

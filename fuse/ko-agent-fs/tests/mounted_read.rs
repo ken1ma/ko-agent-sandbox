@@ -1,6 +1,4 @@
 //! The read path through a real mount: what the sandbox sees must be the backing tree, live.
-//!
-//! Needs `/dev/fuse` and `CAP_SYS_ADMIN` (the dev rig).
 
 mod common;
 
@@ -228,12 +226,8 @@ fn a_positional_write_lands_at_its_offset_not_at_the_descriptor() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
-    // The other arm, and the reason `O_APPEND` is carried to the backing fd at all. The kernel
-    // computes an appending write's offset from the size it has cached, and refreshes that size
-    // beforehand only under writeback caching — which this filesystem turns off (`fs.rs`,
-    // `passthrough_flags`). So a host that grows the file behind the mount leaves that offset
-    // stale, and a `pwrite` there overwrites the host's bytes instead of following them. git
-    // appends its reflogs, so this is an ordinary path rather than a corner.
+    // Why `O_APPEND` is carried: `fs.rs`, `passthrough_flags`. git appends its reflogs, so this is
+    // an ordinary path.
     //
     // A control for this has to drop `O_APPEND` from `passthrough_flags` *as well as* forcing the
     // `pwrite` arm: with the flag still on the backing fd, Linux appends whatever offset `pwrite`
@@ -269,11 +263,10 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
-    // `O_APPEND` belongs to the file description, not to the open: `fcntl(F_SETFL)` toggles it
-    // afterwards, and the kernel sends the current flags with every write. A filter that decided at
-    // open time gets both directions wrong — a description switched *to* appending would write at a
-    // stale offset, and one switched *away* would keep appending, because the backing descriptor
-    // still carried the flag and `pwrite` on such a descriptor ignores its offset.
+    // A filter that decided at open time gets both directions wrong — a description switched *to*
+    // appending would write at a stale offset, and one switched *away* would keep appending, because
+    // the backing descriptor still carried the flag and `pwrite` on such a descriptor ignores its
+    // offset (`fs.rs`, `Handle`).
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::os::unix::fs::FileExt;

@@ -106,7 +106,6 @@ impl Filesystem for HelloFs {
             (FILE_INO, FileType::RegularFile, FILE_NAME),
         ];
         for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-            // `add` returns true once the reply buffer is full.
             if reply.add(*ino, (i + 1) as u64, *kind, name) {
                 break;
             }
@@ -141,6 +140,6 @@ fn main() -> std::io::Result<()> {
     }
     println!("PROBE {}", if pass { "PASS" } else { "FAIL" });
 
-    drop(session); // unmounts via umount2
+    drop(session);
     std::process::exit(if pass { 0 } else { 1 });
 }

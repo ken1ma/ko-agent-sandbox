@@ -54,17 +54,15 @@ ENV PAGER=cat
 #
 # 2026 models like to use python.
 #
-# Astral recommends copying uv from its official distroless image.
 COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
 
 # /opt/uv/python and /usr/local/bin are image-managed; runtime uv keeps
-# using ~/.local. --default also creates `python` and `python3`.
+# using ~/.local.
 RUN set -euxo pipefail; \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install "${PYTHON_VERSION}" --default
 
-# Runtime uv installations use ~/.local/bin by default.
 ENV PATH="/home/nonroot/.local/bin:$PATH"
 
 
@@ -206,7 +204,7 @@ RUN set -euxo pipefail; \
 #
 # `latest` rather than `stable`: the update check compares against `latest`,
 # and `stable` lags it into a permanent "Update available!" banner. Updates
-# arrive by rebuilding. Signed-By pins Anthropic's documented fingerprint.
+# arrive by rebuilding.
 
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
@@ -223,11 +221,12 @@ RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         claude-code \
-        # Claude Code's own sandbox for Bash commands; it refuses to start without both
-        # wherever managed settings enforce sandbox.failIfUnavailable, which an organization
-        # can set server-side. bwrap mounts a fresh /proc even unprivileged in here, so
-        # enableWeakerNestedSandbox — which bind-mounts this container's instead — is not
-        # needed and is not set.
+        # Claude Code's own sandbox for Bash commands, off in the managed settings below.
+        # Carried because an organization's server-managed settings, which outrank that
+        # file, can enforce sandbox.failIfUnavailable: without these the session exits,
+        # with the reason on stderr, which the TUI discards. Enabled in here it would
+        # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
+        # podman's masked /proc entries (measured, as for Codex below).
         bubblewrap \
         socat; \
     rm -rf /var/lib/apt/lists/*
@@ -260,8 +259,7 @@ RUN set -euxo pipefail; \
 # fetched when the session signs in to Anthropic directly. Claude Code
 # reads a single admin source, so under one this file is ignored whole —
 # prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
-# the source in force. A policy there that requires the sandbox refuses to
-# start here, since the packages below are not carried for it.
+# the source in force — and can require the sandbox (the apt step above).
 #
 # `bypassPermissions` refuses to start as root; USER below is nonroot.
 # `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time
@@ -275,27 +273,16 @@ RUN set -euxo pipefail; \
 # bound whatever survives to the one project.
 #
 # `sandbox` off: this container is the boundary, and Claude Code's own
-# bubblewrap sandbox would be a second one inside it that a project can
-# demand — `sandbox.failIfUnavailable` in a repository's `.claude/settings.json`
-# makes every version refuse to start unless bubblewrap and socat are
-# installed, and the refusal goes to stderr, which the TUI discards, so the
-# session just exits. Managed outranks that scope, so no project can require
-# what the image does not carry. Not carrying it also keeps
+# bubblewrap sandbox would be a second one inside it, which a project's
+# `sandbox.failIfUnavailable` could otherwise demand. Off also keeps
 # anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
 # distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
 #
-# What a session can observe of it, on 2.1.232 from inside: a project
-# `.claude/settings.json` carrying SessionStart and PreToolUse hooks yields
-# no hook and no hook lifecycle event under --include-hook-events, while
-# tool calls run. That is consistent with the setting biting without
-# establishing it, because the negative control is out of reach from in
-# here — displacing the managed file needs a writable /etc, and
-# CLAUDE_CODE_MANAGED_SETTINGS_PATH, which the binary carries, does not
-# displace it either (a managed file denying Bash leaves Bash working). So
-# the setting's own effect is unverified, while those two refusals are
-# evidence for the premise above: a mounted project cannot weaken this
-# scope. Verifying the rest needs a host-side run where the managed file is
-# yours to vary.
+# `disableAllHooks`'s own effect is unverified from inside: the managed file
+# cannot be displaced there (a writable /etc is needed, and
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH does not displace it either), which is
+# itself evidence for the premise above. Verifying it needs a host-side run
+# where the managed file is yours to vary.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/claude-code; \
     printf '%s\n' \
@@ -498,6 +485,5 @@ WORKDIR /workspace
 
 USER nonroot
 
-# CMD keeps bash the command a bare launch runs, as the debian base had it before the ENTRYPOINT.
 ENTRYPOINT ["sandbox-entrypoint"]
 CMD ["bash"]

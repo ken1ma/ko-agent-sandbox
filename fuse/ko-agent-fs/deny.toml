@@ -21,10 +21,8 @@ confidence-threshold = 0.9
 [bans]
 # A duplicate major version of a dependency is noise, not an error, in a tree this small.
 multiple-versions = "allow"
-# Nothing here should need a C toolchain at build time beyond the linker, so the two crates that
-# would introduce one are named: `cc` compiles C sources during a build, `bindgen` runs libclang over
-# headers. Neither is in Cargo.lock today — this is the tripwire for the day a dependency brings one
-# in, not a fact about the current tree.
+# Nothing here should need a C toolchain beyond the linker. Neither crate is in Cargo.lock today:
+# a tripwire for the day a dependency brings one in, not a fact about the current tree.
 deny = ["cc", "bindgen"]
 
 [advisories]
