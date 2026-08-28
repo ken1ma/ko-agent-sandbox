@@ -179,8 +179,11 @@ SECURITY.md sites:
 - [ ] `+host example.test path=/x/` admits `GET /x/y` and refuses `GET /z/y`,
       `GET /x/../z/y`, `GET /x/%2e%2e/z/y`, each with a `deny` line naming the reason.
 - [ ] Every launch refusal fires with its message; `--egress-effective` shows the prefix.
-- [ ] `git clone https://github.com/owner/repo` works under `+host github.com path=/owner/
-      allow=git-fetch,github-login-device` and `copilot login` still completes.
+- [ ] `+host github.com path=/owner/ allow=git-fetch,github-login-device` refuses the launch
+      (invariant 6: the login paths are not under `/owner/`), naming the allowance and prefix.
+- [ ] Under `+host github.com path=/owner/ allow=git-fetch` beside `+host github.com
+      path=/login/ allow=github-login-device`, `git clone https://github.com/owner/repo` works,
+      a clone of `other/repo` is refused, and `copilot login` still completes.
 - [ ] `sbt testFull` green.
 
 ## Deliberate exclusions
