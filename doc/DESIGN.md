@@ -154,6 +154,20 @@ It would be incomplete against encoding, timing, allowed-host selection, and pro
 channels while adding false positives and another complex policy engine. Destination restriction
 remains the primary exfiltration control.
 
+### No masking of secret-named files in the workspace
+
+Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and
+the like inside the sandbox. Here the boundary is that the checkout is hostile data and nothing
+credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary where it
+is and hides one class of files by name, so the document could claim nothing more afterwards than
+it claims now — a secret under any other name, in `config.yaml`, or in git history stays visible.
+It also costs every project to serve the undisciplined one: a default `.env` mask breaks tests
+that read `.env`, the first `-name .env` removes the protection, and the user who commits a
+credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
+Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
+under no well-known name. Keep the rule procedural: a credential in the checkout is the user's to
+keep out, and a forge token there is answered by denying the forge in `egress/denied`.
+
 ### No gVisor/microVM migration yet
 
 Rootless Podman is the chosen portability/security trade-off. Revisit only if
