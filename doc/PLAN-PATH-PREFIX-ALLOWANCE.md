@@ -52,9 +52,13 @@ system"). It is an instrument for the entry whose reviewer meant one tenant.
    `allow=github-login-device` needs `/login/device/code` and `/login/oauth/access_token`,
    `allow=npm-audit` its one path; `allow=git-fetch` composes (upload-pack under `/owner/…`).
    A prefix that silently disables an allowance is the failure this rule exists to refuse.
-1. Several prefixes for one host are several entries, each with its own `path=`; they union.
-   An entry with `path=` and one without for the same host is a contradiction, refused —
-   the same rule as an addition contradicting a removal.
+1. Several prefixes for one host are several entries, each with its own `path=`; their reach
+   unions, their allowances do not: an allowance stays with the prefix it was written on, so
+   `path=/public/` beside `path=/repos/ allow=git-fetch` serves `git fetch` under `/repos/`
+   only. Prefixes on one host are disjoint or the launch fails: one containing the other
+   (`/org/` and `/org/private/`, or an entry without `path=` — the prefix `/` — beside one
+   with it) would make the scope of a request a matter of selection order or of pooling, and
+   either is reach a reviewer did not write. A request therefore matches at most one scope.
 1. The leaf certificate is unchanged: it names hosts. `--print-policy`, `--egress-effective`
    and the startup lines carry the prefix beside the host, so the one format the launcher,
    the proxy log and the dry run read stays one format.
@@ -73,16 +77,17 @@ free. The README's "Modifying the egress policy" gains the lines above and one s
 "`path=` narrows an entry to one tree; a request outside it is refused like a write".
 
 Refusals at launch, each naming the entry: prefix not canonical (invariant 3); `path=` with
-`unrestricted`; `path=` in `denied`; an allowance path outside the prefix (invariant 6); the
-same host with and without a prefix (invariant 7).
+`unrestricted`; `path=` in `denied`; an allowance path outside the prefix (invariant 6); two
+prefixes on one host where one contains the other, an unprefixed entry included (invariant 7).
 
 ## Enforcement
 
 In `authorizeInspectedRequest`, before the method rule and after the `Host` header check: if
-the entry carries prefixes, `requireLiteralPath(head.path)` (invariant 4) and then
-`prefixes.exists(head.path.startsWith)`; a miss is `PolicyViolation("path outside allowance")`
-with the advice "this host is admitted under `<prefixes>` only" — its row in
-`PLAN-PROXY-DENIAL-REASON.md`'s table.
+the entry carries prefixes, `requireLiteralPath(head.path)` (invariant 4) and then the scope
+whose prefix `head.path` starts with — at most one, by invariant 7; a miss is
+`PolicyViolation("path outside allowance")` with the advice "this host is admitted under
+`<prefixes>` only" — its row in `PLAN-PROXY-DENIAL-REASON.md`'s table. The method rule that
+follows sees that scope's tags alone (invariant 7).
 
 `requireUnambiguousPath` today refuses `%` and dot segments on `POST` only, because only the
 allowance paths are compared. `requireLiteralPath` is the same check plus `\` and `//`, applied
@@ -133,8 +138,10 @@ SECURITY.md sites:
 
 ### `container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala`
 
-- `Treatment.Restricted(tags, prefixes: Set[String])`; entry parser for `path=`; the launch
-  refusals; `spelled` and the `--print-policy` lines carry `path=`.
+- `Treatment.Restricted(scopes: Set[Scope])` with `Scope(prefix: Option[String], tags)`, so
+  a tag cannot exist apart from its prefix; a host's entries merge as a union of scopes, and
+  the merge that unions tags today does so only within one scope. Entry parser for `path=`;
+  the launch refusals; `spelled` and the `--print-policy` lines emit one line per scope.
 - `authorizeInspectedRequest`: the prefix check; `requireLiteralPath` in `GitHelper` beside
   `requireUnambiguousPath`, one implementation.
 - Baseline merge: an addition with `path=` overrides the baseline entry as any addition does.
@@ -147,11 +154,13 @@ SECURITY.md sites:
 ### Tests
 
 - Grammar: every launch refusal above, with its message; canonical-form table (each forbidden
-  shape once); an allowance path outside the prefix for each allowance.
+  shape once); an allowance path outside the prefix for each allowance; `/org/` beside
+  `/org/private/`, and beside an unprefixed entry, each refused in both orders.
 - Enforcement, end-to-end against the local TLS origin: under-prefix `GET` allowed;
   sibling path refused; `/prefix/../other` refused; `/prefix/%2e%2e/other` refused;
   `/prefix\..\other` refused; `//prefix/` refused; wrong-case prefix refused; two prefixes
-  union; `git clone` under `/owner/` works with `allow=git-fetch` and is refused outside it;
+  union for `GET` while `allow=git-fetch` on one of them leaves upload-pack under the other
+  refused; `git clone` under `/owner/` works with `allow=git-fetch` and is refused outside it;
   an unprefixed host still accepts a percent-encoded `GET`.
 - `HostileInputTest`: the population of path spellings that differ from the prefix only by
   an encoding or a separator the origin might fold, each refused before the prefix compare.
@@ -176,6 +185,8 @@ SECURITY.md sites:
 
 ## Deliberate exclusions
 
+- Nested prefixes on one host with most-specific-wins or pooled allowances: a launch
+  refusal is the only reading with no selection rule to get wrong.
 - Wildcards or globs inside a prefix, and suffix or regex matching: a prefix is the one shape
   whose worst case is over-blocking; a pattern reintroduces reach a reviewer did not enumerate.
 - Path rules on `denied`: denial is whole-host so that "denial wins" stays one rule.
