@@ -35,6 +35,18 @@ class ProxyContainerTest extends munit.FunSuite:
         s"no-new-privileges is not set: ${inspect(proxy, "{{.HostConfig.SecurityOpt}}")}",
       )
       assertEquals(inspect(proxy, "{{.HostConfig.ReadonlyRootfs}}"), "true", "read-only rootfs")
+      assertEquals(inspect(proxy, "{{.HostConfig.Memory}}"), (256L << 20).toString, "memory ceiling")
+      assertEquals(inspect(proxy, "{{.HostConfig.MemorySwap}}"), (256L << 20).toString, "swap ceiling")
+      assertEquals(inspect(proxy, "{{json .HostConfig.Tmpfs}}"), "{}", "explicit tmpfs mounts")
+      assert(
+        inspect(proxy, "{{json .Config.CreateCommand}}").contains("\"--read-only-tmpfs=false\""),
+        "Podman's implicit writable temporary filesystems are not disabled",
+      )
+      assertEquals(
+        inspect(proxy, "{{json .Config.Entrypoint}}"),
+        "[\"/usr/local/bin/agent-egress-proxy\"]",
+        "native entrypoint",
+      )
 
       // The two builds spell the ready line separately; this session launched, so the launcher's
       // spelling was matched against the image's — asserted here so a drift fails a test and not
@@ -57,10 +69,13 @@ class ProxyContainerTest extends munit.FunSuite:
       val binds = inspect(proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       val sources = binds.map(_.takeWhile(_ != ':'))
+      val writableMounts = inspect(proxy, "{{range .Mounts}}{{if .RW}}{{println .Destination}}{{end}}{{end}}")
+        .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
 
       assert(sources.exists(_.endsWith("leaf.crt")), s"no leaf certificate is mounted: $binds")
       assert(sources.exists(_.endsWith("leaf.key")), s"no leaf key is mounted: $binds")
       assert(!sources.exists(_.endsWith("ca.key")), s"SECURITY: the CA private key is mounted: $binds")
+      assertEquals(writableMounts, Vector("/var/log/agent-egress-proxy/proxy.log"))
 
       val logs = sources.filter(_.endsWith(".log"))
       assertEquals(logs.size, 1, s"expected exactly this run's audit log, got $logs")

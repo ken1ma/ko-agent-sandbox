@@ -334,7 +334,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Vector(
         "docker.io/library/debian",
         "ghcr.io/astral-sh/uv",
-        "gcr.io/distroless/java25-debian13",
+        "gcr.io/distroless/base-debian13",
         "docker.io/library/rust",
       ),
     )

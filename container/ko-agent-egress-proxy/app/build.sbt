@@ -15,8 +15,8 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
-// The runtime image is distroless (`java -jar`, no shell), so the jar finds the Scala library through a manifest
-// Class-Path, resolved relative to the jar's directory — which is why `dist` puts everything in one.
+// Native Image follows the jar's manifest Class-Path, resolved relative to the application jar. `dist` puts the
+// application and every library jar in one directory so the container build needs no sbt-specific target paths.
 Compile / packageBin / packageOptions += {
   val converter = fileConverter.value
 
@@ -27,8 +27,8 @@ Compile / packageBin / packageOptions += {
   )
 }
 
-// One directory for the Containerfile to copy, insulating it from sbt 2's target layout. The application jar gets the
-// stable name the ENTRYPOINT uses; library jars keep the names the Class-Path references.
+// One directory for Native Image, insulating the Containerfile from sbt 2's target layout. The application jar gets a
+// stable name; library jars keep the names the Class-Path references.
 lazy val dist = taskKey[Unit]("Assemble the runtime jars under target/dist")
 
 dist := {

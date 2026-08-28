@@ -315,6 +315,12 @@ object AgentSandboxLauncher:
   /** Below this a JVM build in the sandbox does not fit; the launch says so once. */
   val SmallMachineMemory: Long = 4L << 30
 
+  /** Bodies stream independently of their total size. Eight concurrent TLS downloads throttled to
+    * 1 MiB/s peaked near 60 MB, while sequential multi-gigabyte transfers remained bounded. Even
+    * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB ceiling
+    * would retain about 135 MiB for native and workload overhead. */
+  val ProxyMemoryCeiling = "256m"
+
   /** `podman info --format '{{.Host.MemTotal}}'`, bytes; None when podman did not answer with one. */
   def memoryTotal(answer: HostCommands.Run): Option[Long] =
     if !answer.ok then None else answer.text.trim.toLongOption.filter(_ > 0)
@@ -2293,8 +2299,8 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // A session keeps the policy it started with; the next launch re-reads.
-    // --rm, so a proxy whose JVM exits removes itself.
-    // The sandbox's hardening; --tmpfs /tmp because the JVM writes its perf-data file at startup.
+    // --rm, so a proxy whose process exits removes itself. The audit-log bind is its only writable
+    // path; the native executable needs no scratch filesystem.
     val proxyCreated = run(
       Vector(
         podman, "create",
@@ -2307,11 +2313,14 @@ object AgentSandboxLauncher:
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--read-only",
-        "--tmpfs=/tmp",
-        "--pids-limit=512",
-        "--http-proxy=false",
-        s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
-      ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
+        "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
+      ) ++
+        // memoryArguments has why the equal limits disable Podman's default swap allowance.
+        memoryArguments(Some(ProxyMemoryCeiling), None, None) ++ Vector(
+          "--pids-limit=512",
+          "--http-proxy=false",
+          s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
+        ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
         ++ proxyTlsArgs ++ proxyLogArgs ++ Vector(proxyImage)*
     )
     if !proxyCreated.ok then
