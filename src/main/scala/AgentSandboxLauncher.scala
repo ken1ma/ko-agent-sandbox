@@ -62,6 +62,7 @@
 
 package agentsandbox.launcher
 
+import java.io.{BufferedReader, IOException, InputStreamReader}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.nio.file.attribute.PosixFilePermissions
@@ -146,6 +147,47 @@ object AgentSandboxLauncher:
    */
   val EgressProxyHost = "egress-proxy"
   val EgressProxyPort = 3128
+
+  /** The proxy's own spelling (AgentEgressProxy.ReadyLine): printed once its socket is bound. */
+  val EgressProxyReadyLine = s"agent-egress-proxy listening on :$EgressProxyPort"
+
+  /** A JVM start on a loaded machine; a proxy silent past this is failed, not waited for. */
+  val EgressProxyReadyBound: java.time.Duration = java.time.Duration.ofSeconds(30)
+
+  /**
+   * `podman start` returns once the process is spawned and says nothing about whether it stayed
+   * up: a proxy refusing at start — a leaf naming other than its inspected set, a credential file
+   * it will not honour — would otherwise leave a sandbox with no egress and the reason in a log
+   * nobody was shown. Follows the proxy's log until EgressProxyReadyLine, or the container exits,
+   * or `bound` elapses; either failure carries what the proxy said, which is the refusal it wrote.
+   */
+  def awaitProxyReady(podman: String, container: String, bound: java.time.Duration): Either[String, Unit] =
+    val process = ProcessBuilder(podman, "logs", "--follow", container).redirectErrorStream(true).start()
+    process.getOutputStream.close()
+    val seen = StringBuilder()
+    @volatile var ready = false
+    // A daemon that is never joined: a pipe a grandchild inherited stays open past the destroy,
+    // and a read on a process stream does not end when the stream is closed under it. A reader
+    // idling on a dead `podman logs` costs nothing; a launch joining it would wait the grandchild out.
+    val follower = Thread(() =>
+      val lines = BufferedReader(InputStreamReader(process.getInputStream, StandardCharsets.UTF_8))
+      try
+        var line = lines.readLine()
+        while line != null && !ready do
+          seen.synchronized(seen.append(line).append('\n'))
+          ready = line == EgressProxyReadyLine
+          if !ready then line = lines.readLine()
+      catch case _: IOException => ()
+    )
+    follower.setDaemon(true)
+    follower.start()
+    follower.join(bound.toMillis)
+    val timedOut = follower.isAlive && !ready
+    process.destroy()
+    val said = seen.synchronized(seen.toString)
+    if ready then Right(())
+    else if timedOut then Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said")
+    else Left(s"the egress proxy exited before listening\n$said")
 
   /**
    * Everything a launch prints — which guard this session runs under, the egress policy, every
@@ -2267,6 +2309,8 @@ object AgentSandboxLauncher:
     val proxyStarted = run(podman, "start", proxyContainer)
     if !proxyStarted.ok then
       fail(s"error: could not start the egress proxy container\n${proxyStarted.err}")
+    awaitProxyReady(podman, proxyContainer, EgressProxyReadyBound).left.foreach: reason =>
+      fail(s"error: $reason")
 
     val networksFormat =
       "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}"

@@ -22,6 +22,13 @@ import TLSHelper.*
 object AgentEgressProxy:
 
   val ListenPort = 3128
+
+  /** Printed after `bind` and before any policy line, so a reader that saw it has a proxy
+    * accepting connections; every refusal made before then ends the process instead. The
+    * launcher gates the sandbox on this spelling (AgentSandboxLauncher.EgressProxyReadyLine);
+    * ProxyContainerTest holds the two together. */
+  val ReadyLine = s"agent-egress-proxy listening on :$ListenPort"
+
   val ConnectTimeoutMillis = 10_000
   val HandshakeTimeoutMillis = 10_000
   val MaxHttpHeaderBytes = 16 * 1024
@@ -353,7 +360,7 @@ object AgentEgressProxy:
     server.setReuseAddress(true)
     server.bind(InetSocketAddress(ListenPort))
 
-    System.err.println(s"agent-egress-proxy listening on :$ListenPort")
+    System.err.println(ReadyLine)
     val lines = policyLines(policy.resolved)
     lines.foreach(System.err.println)
     // The digest gives the audit log one stable, grep-able line naming which policy this run

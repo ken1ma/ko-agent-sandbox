@@ -210,6 +210,32 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(HostBackend(xclip = xclip, wlPaste = wlPaste, wlCopy = wlCopy, ps = ps)),
     )
 
+  test("the sandbox waits for the proxy's ready line, and a proxy that exits or stalls fails the launch"):
+    // `podman start` says nothing about whether the process stayed up, so the gate follows the log.
+    // A fake podman answers `logs --follow` with a scripted proxy: one that listened, one that
+    // refused at start, one that never spoke.
+    assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
+    val bin = Files.createTempDirectory("proxy-ready").toRealPath()
+    def podman(logs: String): String =
+      val path = bin.resolve(s"podman-${logs.hashCode.toHexString}")
+      Files.writeString(path, s"#!/bin/sh\n[ \"$$1 $$2\" = 'logs --follow' ] || exit 9\n$logs\n")
+      path.toFile.setExecutable(true)
+      path.toString
+    val bound = java.time.Duration.ofSeconds(2)
+    // The proxy writes to stderr, which `podman logs` relays as its own; the line ends the wait
+    // even with the process still attached, so the launch does not pay for the whole bound.
+    val listened = podman(s"echo '$EgressProxyReadyLine' >&2; echo 'restricted hosts (1): a' >&2; sleep 30")
+    assertEquals(awaitProxyReady(listened, "proxy", bound), Right(()))
+    // A refusal is what the proxy wrote, verbatim: the launcher has no list of reasons to consult.
+    val refused = podman("echo 'the leaf certificate names 2 hosts; the policy inspects 3' >&2; exit 0")
+    val reason = awaitProxyReady(refused, "proxy", bound).swap.getOrElse(fail("a refusal must fail"))
+    assert(reason.startsWith("the egress proxy exited before listening\n"), reason)
+    assert(reason.contains("names 2 hosts"), reason)
+    // Silence past the bound is a failure too, or a hung proxy would hold the launch forever.
+    val stalled = podman("sleep 30")
+    val silent = awaitProxyReady(stalled, "proxy", bound).swap.getOrElse(fail("a stall must fail"))
+    assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
+
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
     // is also why the pair lives beside UsageText rather than in HostCommands, whose contract is

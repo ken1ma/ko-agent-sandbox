@@ -8,6 +8,7 @@
 
 package agentsandbox.launcher
 
+import HostCommands.*
 import IntegrationSession.*
 
 class ProxyContainerTest extends munit.FunSuite:
@@ -34,6 +35,15 @@ class ProxyContainerTest extends munit.FunSuite:
         s"no-new-privileges is not set: ${inspect(proxy, "{{.HostConfig.SecurityOpt}}")}",
       )
       assertEquals(inspect(proxy, "{{.HostConfig.ReadonlyRootfs}}"), "true", "read-only rootfs")
+
+      // The two builds spell the ready line separately; this session launched, so the launcher's
+      // spelling was matched against the image's — asserted here so a drift fails a test and not
+      // every launch, by its bound.
+      val said = run(podman, "logs", proxy).err
+      assert(
+        said.linesIterator.contains(AgentSandboxLauncher.EgressProxyReadyLine),
+        s"the proxy image's ready line is not the launcher's:\n$said",
+      )
 
       // Exactly this run's two networks: the internal one it shares with its sandbox, and its own
       // route out. A proxy on any third network would be reachable from somewhere nobody chose.

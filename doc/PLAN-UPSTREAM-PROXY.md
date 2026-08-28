@@ -260,26 +260,9 @@ acceptable substitute.
 
 The launcher validates the profile and copies its files before creating resources. The proxy
 resolves and pins the endpoint and loads its trust material before opening its listening socket,
-and exits with the reason otherwise — through the same readiness gate every start-time refusal
-takes, since `podman start` returns once the process is spawned and says nothing about whether
-it stayed up:
-
-- The proxy's `agent-egress-proxy listening on :3128` line is the readiness contract: printed
-  after `bind` and before any policy line, so a proxy that printed it accepts connections. The
-  spelling is one constant the proxy prints and the launcher matches.
-- After `podman start`, and before the sandbox container is created, the launcher follows the
-  proxy's log until that line appears, the container exits, or a bound wait elapses. The line
-  means proceed. Either other outcome fails the launch with the proxy's stderr verbatim — the
-  refusal the proxy already wrote is the message — and the ordinary failed-launch cleanup.
-- Every refusal the proxy makes before `bind` rides this gate without a launcher-side list:
-  a leaf certificate naming other than the inspected set (SECURITY.md, "Who holds the CA key"),
-  a credential file failing its grammar (`PLAN-CREDENTIAL-BROKER-PROXY.md`), an unresolvable or
-  untrusted upstream endpoint here. The launcher never reasons about which; it reads.
-
-Tests: the proxy suite asserts the listening line precedes every policy line and follows `bind`;
-the launcher suite, with a proxy image that exits at start and one that never listens, asserts
-the launch fails with the proxy's own message, no sandbox container is created, and the run's
-containers and networks are removed.
+and exits with the reason otherwise; the launcher's readiness gate
+(`AgentSandboxLauncher.awaitProxyReady`) turns that exit into a failed launch carrying the
+proxy's own message, as it does every refusal the proxy makes before `bind`.
 
 Each HTTPS connection verifies endpoint identity before sending authentication.
 
