@@ -315,16 +315,24 @@ clear to the proxy process, while the retained log records each request's method
 other baseline host is inspected — restricted, the bulk package registries included at a knowing
 per-request handshake cost: security is not traded for performance (DESIGN.md's principles).
 
-**What the persistent volume carries.** It is read back every time the project opens, and some of
-what it holds — MCP server definitions especially — names commands to run. Treat it as trusted
-input; reset it if a project is suspect. `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` shares one volume
-across every project, trading that isolation for signing in once: what a session of one repository
-writes there becomes startup input to every other's.
+**What the persistent volume carries.** Every session mounts every installed agent's state
+read-write under the same uid, regardless of which agent the host launched. The launched command is
+not a security principal: any process in the sandbox can read another agent's provider login,
+history and session metadata, or change its configuration and MCP definitions for a later session.
+This is deliberate. An agent can invoke another installed agent as a command or MCP server and the
+called agent reuses its persisted login and configuration; the project, not the agent executable,
+is the isolation boundary.
 
-Concurrent sessions of a project mount it read-write together: state files race, last writer wins —
-same repository, same trust domain, so a data-integrity caveat, not a new trust edge. A `--reset`
-from another terminal ends live sessions by design; one racing a launch mid-start fails that launch
-loudly rather than weakening it.
+The volume is read back every time the project opens, and some of what it holds — MCP server
+definitions especially — names commands to run. Treat it as trusted input; reset it if a project
+is suspect. `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` shares one volume across every project, trading
+that isolation for signing in once: what a session of one repository writes there becomes startup
+input to every other's.
+
+Concurrent sessions of a project mount it read-write together: state files race, last writer
+wins — same repository, same trust domain, so a data-integrity caveat, not a new trust edge. A
+`--reset` from another terminal ends live sessions by design; one racing a launch mid-start fails
+that launch loudly rather than weakening it.
 
 **A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress/` before
 running an unfamiliar project is the user's job, exactly like reading its build scripts — its

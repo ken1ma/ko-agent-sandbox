@@ -259,6 +259,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
        `COPILOT_ALLOW_ALL=false`.
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume, and race on both.
+1. Calling another installed agent’s command or MCP server reuses that agent’s login and
+   configuration. Treat the project directory as their shared trust domain.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
    in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
    stock `postgres` and `nginx` cannot.
