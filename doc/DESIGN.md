@@ -26,11 +26,6 @@ this project's operating model deliberately avoids:
 
 SECURITY.md, "Why the policy is not a capability system".
 
-### No Git/SSH/cloud credential injection into the proxy
-
-Private/privileged operations happen on the host. Credential injection becomes worth considering
-only if that operating model changes.
-
 ### No generic "GET is safe, POST is dangerous" rule
 
 SECURITY.md, "Exfiltration through an allowed host". The restricted treatment removes a host's
