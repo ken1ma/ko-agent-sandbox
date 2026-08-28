@@ -41,7 +41,7 @@ class ProxyContainerTest extends munit.FunSuite:
       // every launch, by its bound.
       val said = run(podman, "logs", proxy).err
       assert(
-        said.linesIterator.contains(AgentSandboxLauncher.EgressProxyReadyLine),
+        said.linesIterator.exists(AgentSandboxLauncher.isProxyReadyLine),
         s"the proxy image's ready line is not the launcher's:\n$said",
       )
 

@@ -211,29 +211,56 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the sandbox waits for the proxy's ready line, and a proxy that exits or stalls fails the launch"):
-    // `podman start` says nothing about whether the process stayed up, so the gate follows the log.
-    // A fake podman answers `logs --follow` with a scripted proxy: one that listened, one that
-    // refused at start, one that never spoke.
+    // `podman start` says nothing about whether the process stayed up, so the gate reads the run's
+    // host log — the file outlives a `--rm` container that refused at once — beside a liveness
+    // answer from a fake podman.
     assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
-    val bin = Files.createTempDirectory("proxy-ready").toRealPath()
-    def podman(logs: String): String =
-      val path = bin.resolve(s"podman-${logs.hashCode.toHexString}")
-      Files.writeString(path, s"#!/bin/sh\n[ \"$$1 $$2\" = 'logs --follow' ] || exit 9\n$logs\n")
+    val dir = Files.createTempDirectory("proxy-ready").toRealPath()
+    def podman(running: Boolean, logs: Option[String] = None): String =
+      val path = dir.resolve(s"podman-$running-${logs.hashCode.toHexString}")
+      // `logs` on a container `--rm` already took: podman's own complaint, and a failure.
+      val relay = logs.fold("echo 'no such container' >&2; exit 125")(text => s"printf '%s' '$text' >&2")
+      Files.writeString(
+        path,
+        s"""#!/bin/sh
+           |case "$$1 $$2" in
+           |  'container inspect') echo $running ;;
+           |  'logs proxy') $relay ;;
+           |  *) exit 9 ;;
+           |esac
+           |""".stripMargin,
+      )
       path.toFile.setExecutable(true)
       path.toString
     val bound = java.time.Duration.ofSeconds(2)
-    // The proxy writes to stderr, which `podman logs` relays as its own; the line ends the wait
-    // even with the process still attached, so the launch does not pay for the whole bound.
-    val listened = podman(s"echo '$EgressProxyReadyLine' >&2; echo 'restricted hosts (1): a' >&2; sleep 30")
-    assertEquals(awaitProxyReady(listened, "proxy", bound), Right(()))
+    // Stamped as the proxy writes it, and with a policy line after it: the line, not the last line.
+    val listened = dir.resolve("listened.log")
+    Files.writeString(
+      listened,
+      s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z restricted hosts (1): a\n",
+    )
+    assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right(()))
     // A refusal is what the proxy wrote, verbatim: the launcher has no list of reasons to consult.
-    val refused = podman("echo 'the leaf certificate names 2 hosts; the policy inspects 3' >&2; exit 0")
-    val reason = awaitProxyReady(refused, "proxy", bound).swap.getOrElse(fail("a refusal must fail"))
+    val refused = dir.resolve("refused.log")
+    Files.writeString(refused, "2026-08-29T00:00:00Z the leaf certificate names 2 hosts; the policy inspects 3\n")
+    val reason = awaitProxyReady(podman(running = false), "proxy", refused, bound).swap
+      .getOrElse(fail("a refusal must fail"))
     assert(reason.startsWith("the egress proxy exited before listening\n"), reason)
     assert(reason.contains("names 2 hosts"), reason)
+    // A proxy that could not open its log said so to podman alone; that is read only then.
+    val unopened = dir.resolve("unopened.log")
+    Files.writeString(unopened, "")
+    val podmanOnly =
+      awaitProxyReady(podman(running = false, logs = Some("cannot open the log")), "proxy", unopened, bound)
+    assert(podmanOnly.swap.exists(_.endsWith("cannot open the log")), podmanOnly.toString)
+    // And when podman has already removed that container, what is said is that nothing survived —
+    // never podman's complaint passed off as the proxy's.
+    val vanished = awaitProxyReady(podman(running = false), "proxy", unopened, bound)
+    assert(vanished.swap.exists(_.contains(s"nothing was written to $unopened")), vanished.toString)
+    assert(!vanished.swap.exists(_.contains("no such container")), vanished.toString)
     // Silence past the bound is a failure too, or a hung proxy would hold the launch forever.
-    val stalled = podman("sleep 30")
-    val silent = awaitProxyReady(stalled, "proxy", bound).swap.getOrElse(fail("a stall must fail"))
+    val silent = awaitProxyReady(podman(running = true), "proxy", unopened, bound).swap
+      .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):

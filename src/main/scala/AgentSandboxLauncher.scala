@@ -62,7 +62,7 @@
 
 package agentsandbox.launcher
 
-import java.io.{BufferedReader, IOException, InputStreamReader}
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.nio.file.attribute.PosixFilePermissions
@@ -151,6 +151,10 @@ object AgentSandboxLauncher:
   /** The proxy's own spelling (AgentEgressProxy.ReadyLine): printed once its socket is bound. */
   val EgressProxyReadyLine = s"agent-egress-proxy listening on :$EgressProxyPort"
 
+  /** The proxy stamps every line it writes with an instant and a space; the spelling follows. */
+  def isProxyReadyLine(line: String): Boolean =
+    line == EgressProxyReadyLine || line.endsWith(" " + EgressProxyReadyLine)
+
   /** A JVM start on a loaded machine; a proxy silent past this is failed, not waited for. */
   val EgressProxyReadyBound: java.time.Duration = java.time.Duration.ofSeconds(30)
 
@@ -158,36 +162,43 @@ object AgentSandboxLauncher:
    * `podman start` returns once the process is spawned and says nothing about whether it stayed
    * up: a proxy refusing at start — a leaf naming other than its inspected set, a credential file
    * it will not honour — would otherwise leave a sandbox with no egress and the reason in a log
-   * nobody was shown. Follows the proxy's log until EgressProxyReadyLine, or the container exits,
-   * or `bound` elapses; either failure carries what the proxy said, which is the refusal it wrote.
+   * nobody was shown. Reads the run's host log, the file the proxy tees to before it does
+   * anything else, until EgressProxyReadyLine, or the container is no longer running, or `bound`
+   * elapses; either failure carries what the proxy wrote. The file rather than `podman logs`:
+   * the container is `--rm`, and a proxy refusing at once is gone, with its output, before a
+   * follower attaches — the file outlives it.
    */
-  def awaitProxyReady(podman: String, container: String, bound: java.time.Duration): Either[String, Unit] =
-    val process = ProcessBuilder(podman, "logs", "--follow", container).redirectErrorStream(true).start()
-    process.getOutputStream.close()
-    val seen = StringBuilder()
-    @volatile var ready = false
-    // A daemon that is never joined: a pipe a grandchild inherited stays open past the destroy,
-    // and a read on a process stream does not end when the stream is closed under it. A reader
-    // idling on a dead `podman logs` costs nothing; a launch joining it would wait the grandchild out.
-    val follower = Thread(() =>
-      val lines = BufferedReader(InputStreamReader(process.getInputStream, StandardCharsets.UTF_8))
-      try
-        var line = lines.readLine()
-        while line != null && !ready do
-          seen.synchronized(seen.append(line).append('\n'))
-          ready = line == EgressProxyReadyLine
-          if !ready then line = lines.readLine()
-      catch case _: IOException => ()
-    )
-    follower.setDaemon(true)
-    follower.start()
-    follower.join(bound.toMillis)
-    val timedOut = follower.isAlive && !ready
-    process.destroy()
-    val said = seen.synchronized(seen.toString)
-    if ready then Right(())
-    else if timedOut then Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said")
-    else Left(s"the egress proxy exited before listening\n$said")
+  def awaitProxyReady(podman: String, container: String, log: Path, bound: java.time.Duration): Either[String, Unit] =
+    val deadline = System.nanoTime() + bound.toNanos
+    def said: String =
+      try Files.readString(log, StandardCharsets.UTF_8) catch case _: IOException => ""
+    def ready: Boolean = said.linesIterator.exists(isProxyReadyLine)
+    def running: Boolean =
+      val state = run(podman, "container", "inspect", "--format", "{{.State.Running}}", container)
+      state.ok && state.text.trim == "true"
+    var outcome: Option[Either[String, Unit]] = None
+    while outcome.isEmpty do
+      if ready then outcome = Some(Right(()))
+      else if !running then
+        // The last write may land after the liveness answer; read once more, then report.
+        if ready then outcome = Some(Right(()))
+        else
+          val written = said
+          // Only when the proxy could not even open its log does its refusal live in podman alone
+          // — and `--rm` may have taken the container, and the refusal with it, before this read.
+          val reason =
+            if written.nonEmpty then written
+            else
+              val relayed = run(podman, "logs", container)
+              if relayed.ok then relayed.err
+              else
+                s"nothing was written to $log and podman had already removed the container: the " +
+                  "proxy exited before opening its log, which is that file's mount"
+          outcome = Some(Left(s"the egress proxy exited before listening\n$reason"))
+      else if System.nanoTime() >= deadline then
+        outcome = Some(Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said"))
+      else Thread.sleep(200)
+    outcome.get
 
   /**
    * Everything a launch prints — which guard this session runs under, the egress policy, every
@@ -2309,7 +2320,7 @@ object AgentSandboxLauncher:
     val proxyStarted = run(podman, "start", proxyContainer)
     if !proxyStarted.ok then
       fail(s"error: could not start the egress proxy container\n${proxyStarted.err}")
-    awaitProxyReady(podman, proxyContainer, EgressProxyReadyBound).left.foreach: reason =>
+    awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound).left.foreach: reason =>
       fail(s"error: $reason")
 
     val networksFormat =

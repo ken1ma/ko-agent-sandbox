@@ -25,8 +25,8 @@ object AgentEgressProxy:
 
   /** Printed after `bind` and before any policy line, so a reader that saw it has a proxy
     * accepting connections; every refusal made before then ends the process instead. The
-    * launcher gates the sandbox on this spelling (AgentSandboxLauncher.EgressProxyReadyLine);
-    * ProxyContainerTest holds the two together. */
+    * launcher gates the sandbox on this spelling, after the stamp every line here carries
+    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together. */
   val ReadyLine = s"agent-egress-proxy listening on :$ListenPort"
 
   val ConnectTimeoutMillis = 10_000
