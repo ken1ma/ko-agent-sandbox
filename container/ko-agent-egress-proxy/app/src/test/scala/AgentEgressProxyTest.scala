@@ -787,6 +787,31 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // An origin whose chunking cannot be parsed is the same abort, not a 400 at the client.
     intercept[TruncatedResponse](relay(ascii("zz\r\n"), BodyFraming.Chunked))
 
+  test("each bulk body relay reuses one 16 KiB buffer"):
+    final class TrackingInput(bytes: Array[Byte]) extends java.io.InputStream:
+      private val delegate = ByteArrayInputStream(bytes)
+      val bulkReadBuffers = scala.collection.mutable.ArrayBuffer.empty[Array[Byte]]
+
+      override def read(): Int = delegate.read()
+
+      override def read(buffer: Array[Byte], offset: Int, length: Int): Int =
+        bulkReadBuffers += buffer
+        delegate.read(buffer, offset, length)
+
+    def assertOneBuffer(bytes: Array[Byte])(relay: (TrackingInput, java.io.OutputStream) => Unit): Unit =
+      val in = TrackingInput(bytes)
+      val out = java.io.ByteArrayOutputStream()
+      relay(in, out)
+
+      assert(in.bulkReadBuffers.nonEmpty)
+      assert(in.bulkReadBuffers.forall(_ eq in.bulkReadBuffers.head))
+      assertEquals(in.bulkReadBuffers.head.length, RelayBufferBytes)
+
+    val largeBody = Array.fill[Byte](RelayBufferBytes * 2 + 1)(0x5a)
+    assertOneBuffer(largeBody)((in, out) => copyExactly(in, out, largeBody.length))
+    assertOneBuffer(largeBody)(copyUntilEof)
+    assertOneBuffer(ascii("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"))(copyChunked)
+
   // ---------------------------------------------------------------------------
   // The relay on real sockets: loopback pairs, a thread playing the origin, the in-tunnel client
   // observed on the wire. These are the tests that catch what head-level assertions cannot — the

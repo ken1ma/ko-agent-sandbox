@@ -25,6 +25,13 @@ object HTTPHelper:
 
   val MaxChunkLineBytes = 1024
 
+  /** TLSPlaintext is capped at 16 KiB, and JDK 25's InputStream.transferTo uses the same buffer size.
+    * A larger relay buffer would multiply per-connection memory without carrying a larger TLS record.
+    * https://www.rfc-editor.org/rfc/rfc8446#section-5.1
+    * https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/io/InputStream.java
+    */
+  val RelayBufferBytes = 16 * 1024
+
   def readHttpHeader(
     in: InputStream,
     maxBytes: Int,
@@ -503,10 +510,17 @@ object HTTPHelper:
             throw TruncatedResponse(s"origin chunking unparseable: ${ex.getMessage}")
 
       case BodyFraming.UntilClose =>
-        in.transferTo(out)
+        copyUntilEof(in, out)
 
   def copyExactly(in: InputStream, out: OutputStream, count: Long): Unit =
-    val buffer = new Array[Byte](16 * 1024)
+    copyExactly(in, out, count, new Array[Byte](RelayBufferBytes))
+
+  private def copyExactly(
+    in: InputStream,
+    out: OutputStream,
+    count: Long,
+    buffer: Array[Byte],
+  ): Unit =
 
     @tailrec
     def loop(remaining: Long): Unit =
@@ -525,6 +539,8 @@ object HTTPHelper:
   /** Re-emitted canonically — extensions and trailers dropped — so nothing
     * in it reads differently at the two ends. */
   def copyChunked(in: InputStream, out: OutputStream): Unit =
+    val buffer = new Array[Byte](RelayBufferBytes)
+
     @tailrec
     def loop(): Unit =
       val header = readCrLfLine(in, MaxChunkLineBytes)
@@ -547,12 +563,24 @@ object HTTPHelper:
         out.write(
           s"${java.lang.Long.toHexString(size)}\r\n".getBytes(StandardCharsets.US_ASCII),
         )
-        copyExactly(in, out, size)
+        copyExactly(in, out, size, buffer)
 
         if readCrLfLine(in, MaxChunkLineBytes).nonEmpty then
           throw BadRequest("chunk not terminated by CRLF")
 
         out.write("\r\n".getBytes(StandardCharsets.US_ASCII))
+        loop()
+
+    loop()
+
+  def copyUntilEof(in: InputStream, out: OutputStream): Unit =
+    val buffer = new Array[Byte](RelayBufferBytes)
+
+    @tailrec
+    def loop(): Unit =
+      val read = in.read(buffer)
+      if read >= 0 then
+        out.write(buffer, 0, read)
         loop()
 
     loop()

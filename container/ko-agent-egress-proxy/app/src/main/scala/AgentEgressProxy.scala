@@ -1294,7 +1294,7 @@ object AgentEgressProxy:
       halfClose: () => Unit,
     ): Unit =
       try
-        in.transferTo(out)
+        copyUntilEof(in, out)
         out.flush()
       catch
         case _: SocketException => ()
