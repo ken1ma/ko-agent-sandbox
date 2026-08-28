@@ -181,20 +181,33 @@ object AgentSandboxLauncher:
       value,
       Vector("pause", "immediate"),
       "pause",
-      "Unset it (or set it to pause) to keep the hold; set it to immediate to start the\nagent " +
-        "at once, leaving what the launch printed to be read from the scrollback afterwards.",
+      "Unset it (or set it to pause) to keep the prompt, where n exits without starting;\nset it " +
+        "to immediate to start the agent at once, leaving what the launch printed to be\nread " +
+        "from the scrollback afterwards.",
     )
 
   /**
-   * The command names what is about to take the screen, so the prompt says what it is waiting on.
-   * isTerminal, not a null check: since JDK 22 System.console() answers a Console for a redirected
-   * stream too, and holding a pipe open would hang a scripted launch instead of skipping the hold.
+   * The decision the reader takes on the workspace and egress lines above: Enter or y starts, n
+   * declines, EOF counts as n (a closed stdin must not start an agent), and any other answer asks
+   * again; Ctrl-C ends the JVM through the shutdown hook, which is the same outcome as n. The full
+   * command is shown, since its arguments are part of what is agreed to. isTerminal, not a null check: since JDK 22 System.console() answers a
+   * Console for a redirected stream too, and holding a pipe open would hang a scripted launch
+   * instead of skipping the hold.
    */
-  def holdForReader(mode: String, command: String): Unit =
+  def holdForReader(mode: String, command: Seq[String]): Boolean =
     val console = System.console()
-    if mode == "pause" && console != null && console.isTerminal then
-      console.printf("%nPress Enter to start %s ", command)
-      console.readLine()
+    if mode != "pause" || console == null || !console.isTerminal then true
+    else
+      def ask(): Boolean =
+        console.printf("%nstart: %s [Y/n] ", command.mkString(" "))
+        console.readLine() match
+          case null => false
+          case answer =>
+            answer.trim.toLowerCase(java.util.Locale.ROOT) match
+              case "" | "y" | "yes" => true
+              case "n" | "no" => false
+              case _ => ask()
+      ask()
 
   /** Below this a JVM build in the sandbox does not fit; the launch says so once. */
   val SmallMachineMemory: Long = 4L << 30
@@ -2216,10 +2229,10 @@ object AgentSandboxLauncher:
     // with the repository never takes effect unseen: the files as written, then the dry run's
     // counts, the proxy's own answers to exactly what is enforced.
     System.err.println(writeMode match
-      case "reject" => "Workspace: REJECT; /workspace is read-only this session"
+      case "reject" => "workspace: REJECT; /workspace is read-only this session"
       case _ if filteredWorkspace.isDefined =>
-        "Workspace: LIVE; one FUSE mount and daemon shared by this project's live sessions"
-      case _ => "Workspace: LIVE; /workspace bound directly (pin fallback)")
+        "workspace: LIVE; one FUSE mount and daemon shared by this project's live sessions"
+      case _ => "workspace: LIVE; /workspace bound directly (pin fallback)")
     if policyFiles.nonEmpty then
       policyFiles.foreach: (name, text) =>
         System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
@@ -2408,10 +2421,11 @@ object AgentSandboxLauncher:
     // created-but-never-started wait (SandboxLifecycle, ReaperScript) and leave it polling podman
     // for minutes after the launcher was gone. The cost is that the note below — the reaper could
     // not be spawned — prints after the release, and the TUI then clears it with the rest.
-    holdForReader(sessionStartMode, command.headOption.getOrElse("bash"))
+    if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command) then sys.exit(0)
 
     // The create and the start behind it, for the reason removeWhatThisRunCreated states.
-    System.err.println(s"starting in sandbox")
+    // The blank line separates the launch's own output from the agent's.
+    System.err.println("starting in sandbox\n")
 
     val created = run(createCommand*)
     if !created.ok then

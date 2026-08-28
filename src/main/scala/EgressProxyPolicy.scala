@@ -59,7 +59,7 @@ object EgressProxyPolicy:
         val effective = restricted + countOf("unrestricted hosts (").getOrElse(0)
         profile match
           case "allow-unless-denied" =>
-            s"Egress: ALLOW-UNLESS-DENIED; public HTTPS; $restricted restricted, $denied denied"
+            s"egress: ALLOW-UNLESS-DENIED; public HTTPS; $restricted restricted, $denied denied"
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -69,11 +69,11 @@ object EgressProxyPolicy:
               .getOrElse("none")
             val selected =
               if provider == "none" then "no provider selected" else s"model provider $provider"
-            s"Egress: ${profile.toUpperCase}; $selected; $effective effective hosts"
+            s"egress: ${profile.toUpperCase}; $selected; $effective effective hosts"
           case _ =>
-            s"Egress: ${profile.toUpperCase}; $effective effective hosts"
+            s"egress: ${profile.toUpperCase}; $effective effective hosts"
 
-    parsed.getOrElse(s"Egress: ${lines.headOption.getOrElse("(empty resolution)")}")
+    parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names

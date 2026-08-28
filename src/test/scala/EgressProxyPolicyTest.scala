@@ -47,35 +47,35 @@ class EgressProxyPolicyTest extends munit.FunSuite:
           "unrestricted hosts (3): a.example b.example c.example\n" +
           "denied rules (0):",
       ),
-      "Egress: DENY-UNLESS-ALLOWED; 5 effective hosts",
+      "egress: DENY-UNLESS-ALLOWED; 5 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\n" +
           "restricted hosts (0):\nunrestricted hosts (3): a b c\ndenied rules (0):",
       ),
-      "Egress: DENY-UNLESS-MODEL; model provider anthropic; 3 effective hosts",
+      "egress: DENY-UNLESS-MODEL; model provider anthropic; 3 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: none\n" +
           "restricted hosts (0):\nunrestricted hosts (0):\ndenied rules (0):",
       ),
-      "Egress: DENY-UNLESS-MODEL; no provider selected; 0 effective hosts",
+      "egress: DENY-UNLESS-MODEL; no provider selected; 0 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
           "restricted hosts (2): a b\ndenied rules (4): w x y z",
       ),
-      "Egress: ALLOW-UNLESS-DENIED; public HTTPS; 2 restricted, 4 denied",
+      "egress: ALLOW-UNLESS-DENIED; public HTTPS; 2 restricted, 4 denied",
     )
     assertEquals(
       egressBanner("egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x"),
-      "Egress: DENY-ALL; 0 effective hosts",
+      "egress: DENY-ALL; 0 effective hosts",
     )
     // An unparseable resolution is printed whole rather than guessed at.
-    assertEquals(egressBanner("some reason instead"), "Egress: some reason instead")
+    assertEquals(egressBanner("some reason instead"), "egress: some reason instead")
     // Whatever the proxy says, no hostname survives into the banner.
     assert(
       !egressBanner(

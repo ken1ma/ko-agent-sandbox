@@ -177,7 +177,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assert(output.contains("  1.0 GiB of disk left on the machine\n"), output)
     assert(output.contains("podman machine set --memory"), output)
     // No terminal on stdin, so no hold: the command still ran.
-    assert(!output.contains("Press Enter"), output)
+    assert(!output.contains("[Y/n]"), output)
     assert(output.endsWith("a b c "), output)
 
   test("swap left over from pressure that has passed is not pressure"):
