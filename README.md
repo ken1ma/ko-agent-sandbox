@@ -341,10 +341,9 @@ allowances:
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
    duplicate additions with different treatments, a host both added and removed, a removal
    matching neither the baseline nor an addition, an unknown profile, provider, treatment or
-   allowance, a filename that is neither `allowed` nor `denied` (in `.ko-agent-sandbox/` itself
-   too). A
-   `denied` entry matching nothing the profile admits is a startup warning, not an error: it can
-   still apply under another profile.
+   allowance, a filename that is neither `allowed` nor `denied` (and in `.ko-agent-sandbox/`
+   itself, an entry other than `egress` or `agent`). A `denied` entry matching nothing the
+   profile admits is a startup warning, not an error: it can still apply under another profile.
 1. `--egress-effective` and `--egress-check=<host>` (Reference) answer without starting a
    session. Every start prints your policy files as written, and the resolved hosts as counts.
 1. Editing the files takes effect on the next launch, which starts its own proxy; a session

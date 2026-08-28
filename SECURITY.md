@@ -251,8 +251,9 @@ Two residues stay yours to know about. The mount-time guard (above;
 cover: a repository *you* nested deeper keeps its control state frozen like any other, but control
 bytes you had already routed into its worktree — relocated hooks, a redirected gitdir — are served
 as ordinary writable data (`fuse/ko-agent-fs/doc/TODO.md` records the gap); and a bare layout
-anywhere ("The project checkout", above). The check is also a snapshot: reshape control state
-mid-session and this session will not notice. The snapshot admits only resolution chains made of
+below the root ("The project checkout", above — one standing *at* the root is refused). The
+check is also a snapshot: reshape control state mid-session, a bare layout built at the root
+included, and this session will not notice. The snapshot admits only resolution chains made of
 components the sandbox cannot write or rename, so the sandbox cannot invalidate it — the windows
 only open if you open them.
 
