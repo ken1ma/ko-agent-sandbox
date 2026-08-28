@@ -119,7 +119,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // an absent one, or one that prints nothing for it (BusyBox's shape), would leave a blocked
     // clipboard tool alive after the session; off needs nothing anywhere.
     import ClipboardBroker.{hostBackend, HostBackend}
-    val bin = java.nio.file.Files.createTempDirectory("clipboard-host")
+    // findOnPath answers with the real path, and macOS keeps its temp directory behind /var -> /private/var.
+    val bin = java.nio.file.Files.createTempDirectory("clipboard-host").toRealPath()
     def tool(name: String, body: String = ""): String =
       val path = bin.resolve(name)
       java.nio.file.Files.writeString(path, body)

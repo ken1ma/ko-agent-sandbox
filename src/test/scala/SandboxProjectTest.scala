@@ -338,10 +338,11 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "# Priorities\n\nBe brief.\n")
     assertEquals(readAgentInstructions(dir), Right(Some("# Priorities\n\nBe brief.\n")))
 
-    // A typo'd name configures nothing; an empty file is a forgotten edit, not an opt-out.
-    Files.writeString(dir.resolve("AGENTS-CUSTOM.MD"), "x")
+    // A typo'd name configures nothing; an empty file is a forgotten edit, not an opt-out. The typo
+    // differs by more than case, which macOS and Windows would fold into the real file.
+    Files.writeString(dir.resolve("AGENT-CUSTOM.md"), "x")
     assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
-    Files.delete(dir.resolve("AGENTS-CUSTOM.MD"))
+    Files.delete(dir.resolve("AGENT-CUSTOM.md"))
     Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "\n")
     assert(readAgentInstructions(dir).swap.exists(_.contains("is empty")))
 
