@@ -33,18 +33,8 @@ only if that operating model changes.
 
 ### No generic "GET is safe, POST is dangerous" rule
 
-The principle below and SECURITY.md, "Exfiltration through an allowed host". The restricted
-treatment removes a host's write API, never declares a GET safe.
-
-### No general HTTP method/path policy language
-
-Keep protocol-specific inspection only where it buys a concrete property, as it does for git reads
-versus writes. The restricted treatment is the one bounded exception taken: one rule, plus a closed
-set of allowances (SECURITY.md, "Reading without being able to write"), each naming a rule-set the
-proxy defines, never describing one — not a per-host language. Its concrete property is refusing
-every allowed host's write surface outside the agent endpoints, the one unauthenticated one included
-(storage.googleapis.com). Do not go further: no per-host rules, no path patterns beyond git's, no
-open allowance set, no general-purpose policy engine without concrete use cases that outgrow this.
+SECURITY.md, "Exfiltration through an allowed host". The restricted treatment removes a host's
+write API, never declares a GET safe.
 
 ### No command-name safe lists
 

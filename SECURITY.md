@@ -163,9 +163,6 @@ path, not what a permitted read can be pointed at: a `GET` still carries its URL
 message. A project whose checkout holds a forge token should still deny that forge's hosts in
 its own `egress/denied`.
 
-`storage.googleapis.com` is the widest such recipient, and restricted for that reason ("Reading
-without being able to write", below).
-
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
 on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
 the provider's infrastructure does the searching. The proxy sees one connection to
@@ -468,11 +465,8 @@ since the same tunnel carries `git push`.
 
 The rest of the catalog carries no allowance — `GET` and `HEAD` with no body, and no POST at
 all: the documentation and reference sites, the content CDNs, and the container-image pull hosts.
-One member needs that rather than merely wearing it: `storage.googleapis.com` is all of Google
-Cloud Storage, where a signed URL an attacker minted accepts a `PUT` — the one unauthenticated
-write surface the built-in list ever had, admitted because `gcr.io` (distroless) serves its blobs
-from there. An allowance's POST exception must not reach a host without it: a GCS object name is
-anyone's to choose, so a path that mimics `git-upload-pack` would ride the git rule through. The
+An allowance's POST exception must not reach a host without it: on a content host whose paths
+are anyone's to choose, a path that mimics `git-upload-pack` would ride the git rule through. The
 proxy image's `baseline/host` file is the canonical built-in membership, allowances included, with
 the reason beside each entry; what stays opaque, and why, is "What is inside TLS" below.
 

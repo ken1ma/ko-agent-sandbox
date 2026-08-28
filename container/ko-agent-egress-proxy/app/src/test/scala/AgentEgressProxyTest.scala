@@ -50,11 +50,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       parseConnect("GET https://api.anthropic.com/ HTTP/1.1\r\n\r\n")
 
   test("the pull hosts are reachable and restricted"):
-    // Why the tier, and which member needs it: SECURITY.md, "Reading without being able to write".
+    // Why the tier: SECURITY.md, "Reading without being able to write".
     Vector(
       "registry-1.docker.io", "auth.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com",
-      "gcr.io", "storage.googleapis.com", "public.ecr.aws",
+      "gcr.io", "public.ecr.aws",
       "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net",
     ).foreach: host =>
       assertEquals(authorize(host, 443), host)
@@ -400,10 +400,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(resolved.warnings.exists(_.contains("chatgpt.com")), resolved.warnings.toString)
 
   test("a denied **.domain subtree crosses treatment boundaries"):
-    val resolved = policyOf(denied = "host **.googleapis.com")
-    assert(!resolved.hosts.contains("storage.googleapis.com"))   // curated catalog
-    assert(!resolved.hosts.contains("oauth2.googleapis.com"))    // provider endpoint
-    assert(!resolved.hosts.contains("cloudcode-pa.googleapis.com"))
+    val resolved = policyOf(denied = "host **.claude.com")
+    assert(!resolved.hosts.contains("code.claude.com"))         // curated catalog, restricted
+    assert(!resolved.hosts.contains("platform.claude.com"))     // provider endpoint, unrestricted
 
   test("a denied model-provider group denies whatever the group expands to"):
     val resolved = policyOf(denied = "model-provider google")
@@ -1035,44 +1034,44 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("a restricted host allows reading and nothing else"):
     // SECURITY.md, "Reading without being able to write". The sharp case pinned here: a POST whose
     // path mimics git-upload-pack must NOT ride the allow=git-fetch rule through.
-    def storage(request: String): Unit =
-      authorizeInspectedRequest("storage.googleapis.com", head(request), Set.empty)
+    def pull(request: String): Unit =
+      authorizeInspectedRequest("public.ecr.aws", head(request), Set.empty)
 
-    storage("GET /bucket/blobs/sha256:abc?X-Goog-Signature=x HTTP/1.1\r\nHost: storage.googleapis.com\r\n\r\n")
-    storage("HEAD /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\n\r\n")
+    pull("GET /v2/amazonlinux/blobs/sha256:abc HTTP/1.1\r\nHost: public.ecr.aws\r\n\r\n")
+    pull("HEAD /v2/x/object HTTP/1.1\r\nHost: public.ecr.aws\r\n\r\n")
 
     Vector("PUT", "POST", "PATCH", "DELETE").foreach: method =>
       intercept[PolicyViolation]:
-        storage(
-          s"$method /bucket/object HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
+        pull(
+          s"$method /v2/x/object HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
         )
     intercept[PolicyViolation]:
-      storage(
-        "POST /bucket/x/git-upload-pack HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
+      pull(
+        "POST /v2/x/x/git-upload-pack HTTP/1.1\r\n" +
+          "Host: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
       )
     // The user-facing concern is not the method name but the channel: a GET carrying a body is
     // an upload wearing a read method, and is refused on every inspected host — the fact named,
     // never a git host blamed for one that is not.
     val bodied = intercept[PolicyViolation]:
-      storage(
-        "GET /bucket/object HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\nContent-Length: 9\r\n\r\n",
+      pull(
+        "GET /v2/x/object HTTP/1.1\r\n" +
+          "Host: public.ecr.aws\r\nContent-Length: 9\r\n\r\n",
       )
     assert(bodied.getMessage.contains("request body"), bodied.getMessage)
 
     // The other refusal branches carry the tier in their wording too.
     val optioned = intercept[PolicyViolation]:
-      storage(
-        "OPTIONS /bucket HTTP/1.1\r\nHost: storage.googleapis.com\r\nContent-Length: 0\r\n\r\n",
+      pull(
+        "OPTIONS /v2/x HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
       )
     assert(optioned.getMessage.contains("restricted host"), optioned.getMessage)
 
     // Uniform deny-side rules still apply: push ref discovery is refused here as anywhere.
     intercept[PolicyViolation]:
-      storage(
+      pull(
         "GET /x/info/refs?service=git-receive-pack HTTP/1.1\r\n" +
-          "Host: storage.googleapis.com\r\n\r\n",
+          "Host: public.ecr.aws\r\n\r\n",
       )
 
     // A documentation site wears the same tier: reads pass, anything else does not.

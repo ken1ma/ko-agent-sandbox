@@ -125,17 +125,15 @@
 +host registry.terraform.io    # provider docs, and the API `terraform init` queries
 +host developer.hashicorp.com
 
-# Container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). storage.googleapis.com is
-# the one with an unauthenticated write of its own (SECURITY.md, "Reading without being able to
-# write"). The CDN hosts are convention, not contract: when a provider moves one, pulls stall and
-# the log names the successor.
+# Container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). The CDN hosts are
+# convention, not contract: when a provider moves one, pulls stall and the log names the successor.
 +host registry-1.docker.io              # Docker Hub API
 +host auth.docker.io                    # its token issuer — anonymous pulls need it too
 # blob CDN, https://docs.docker.com/docker-hub/release-notes/#2026-05-20
 +host production.cloudfront.docker.com
 +host production.cloudflare.docker.com  # blob CDN
-+host gcr.io                            # distroless
-+host storage.googleapis.com            # gcr blobs
++host gcr.io                            # distroless; Artifact Registry serves the blobs itself,
+                                        # so storage.googleapis.com is not needed
 +host public.ecr.aws                    # Amazon Linux
 +host d5l0dvt14r5h8.cloudfront.net      # blob CDN
 +host d2glxqk2uabbnd.cloudfront.net     # blob CDN
