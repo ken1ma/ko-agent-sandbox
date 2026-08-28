@@ -12,7 +12,8 @@ reported instance appears, assume the class is too narrow. Fix the canonical enf
 add a population-level test, and do not report completion until every member is accounted for.
 
 Preserve the boundaries, such as scope and ownership, including how work is separated for review.
-If completing the request requires changing/crossing a boundary, name it and its consequence and ask.
+If completing the request requires changing or crossing a boundary, name it and its consequence
+and ask.
 Never rewrite histories unless explicitly asked.
 
 
@@ -24,18 +25,16 @@ or write down universal practice ("pinned exactly", "for security"). A dependenc
 to reasonable expectation ("JVM tools ignore HTTPS_PROXY") does earn its place, even when its own
 documentation says so: a reader who does not expect the behavior never looks it up.
 
-A deliberate absence is always worth recording: the code cannot show what was rejected, so state it
-— with its one-line why — at the place someone would add it back.
+A deliberate absence is worth recording once, with its why; the sites that omit it stay silent — a
+note per site is the volume the rule exists to save.
 
 A standing practice worth recording is recorded once, at its canonical site, and referenced — never
 repeated per instance. When a fact has two homes, it lives where it binds: the document that made
 the decision, or the code that enforces it.
 
 Deduplicate by fact, not by file: a table of claim → every site that states it → which one binds.
-Going file by file finds per-file problems and is blind to one fact stated in three, because no
-single file reads wrong; searching for the wording finds only that wording. Every non-binding site
-then becomes a pointer or is deleted — no third option, and no new homes. Duplication is a defect,
-not a preference: do not ask permission, and do not report it as "worth weighing".
+Every non-binding site then becomes a pointer or is deleted — no third option, and no new homes.
+Duplication is a defect, not a preference: do not ask permission.
 
 After inserting or trimming, re-read the merged unit and test every clause against its new
 neighbors — for duplication a sentence drafted in isolation smuggles in, and for altitude: a
@@ -61,7 +60,8 @@ deletions waiting to happen. Evidence is stated as a measurement of the present.
 A completed TODO row whose facts have reached their canonical sites is deleted.
 
 Replies follow the earns-its-place rule: lead with the result, include only detail that changes
-what the reader does next, and do not narrate your process unless absolutely necessary.
+what the reader does next, and do not narrate your process unless absolutely necessary. When the
+user proposes something, lead with whether and how far you agree.
 
 Do not assume the writer is a native English speaker. Report unnatural English, but do not play the
 schoolteacher.
@@ -69,12 +69,13 @@ schoolteacher.
 
 # Coding style
 
-Documents are at most 100 columns wide; code is at most 120 — its indentation earns the extra.
+Documents are at most 100 characters wide; code is at most 120 — its indentation earns the extra.
+
+Use trailing comma where possible.
 
 Do not use one-letter names, except for
 
 1. integer loop indices
-2. names whose lifecycle is contained in a few lines, in a block not expected to grow — though a
-   caught exception is always `ex`, never `e`: some handler outgrows a few lines, and one spelling
-   beats two
+2. names whose whole lifecycle is in view, in a block not expected to grow — though a caught
+   exception is always `ex`, never `e`: some handler outgrows that, and one spelling beats two
 3. names established in the literature
