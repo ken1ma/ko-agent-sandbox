@@ -3,8 +3,6 @@
 # ---------------------------------------------------------------------------
 #
 # Compiled with the same debian-coursier toolchain the sandbox offers.
-# testFull, not sbt 2's incremental `test`: this run is the gate that stops
-# a broken egress policy from being packaged, so every test runs every time.
 ARG IMG_TAG_VER
 FROM debian-coursier:${IMG_TAG_VER} AS build
 
@@ -18,7 +16,7 @@ COPY --chown=nonroot:nonroot app /build/app
 WORKDIR /build/app
 
 RUN set -euxo pipefail; \
-    sbt -batch "testFull; dist"
+    sbt -batch dist
 
 # The leaf cert/key mount point, created here because distroless has no
 # shell to mkdir with; in the image the contract is visible and independent

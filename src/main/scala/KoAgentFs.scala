@@ -55,12 +55,13 @@ object KoAgentFs:
    * launcher would build is detected rather than trusted (fuse/ko-agent-fs/doc/architecture.md,
    * "Build and install").
    *
-   * Every bundled file counts, tests included: `cargo deny` and `cargo test` run before
-   * `cargo build`, so they decide whether a binary exists at all, and picking out which of the
-   * remaining files "really" affect it is a judgement that can rot. The exclusions are drawn where
-   * they cannot rot into a second opinion: ko-agent-fs/doc and ko-agent-fs/probe are not bundled at
-   * all (build.sbt), so they are neither distributed nor digested, and editing a design document or
-   * a platform probe does not invalidate every installed binary.
+   * Every bundled file counts, tests included: the digest names the source a binary was built
+   * from, which is also the source its suites covered (the developer's run and `--self-test`),
+   * and picking out which of the bundled files "really" affect it is a judgement that can rot.
+   * The exclusions are drawn where they cannot rot into a second opinion: ko-agent-fs/doc and
+   * ko-agent-fs/probe are not bundled at all (build.sbt), so they are neither distributed nor
+   * digested, and editing a design document or a platform probe does not invalidate every
+   * installed binary.
    */
   def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs")
 

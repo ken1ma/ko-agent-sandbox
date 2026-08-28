@@ -53,17 +53,19 @@ COPY . .
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 
-# Gate, then build. `cargo deny` is here because a licence and sourcing gate has
-# to bind where the artifact is produced, and it is cheap.
+# `cargo deny` runs here because a licence and sourcing gate binds where the
+# artifact is produced, and it costs seconds.
 #
-# The tests are deliberately not. They would compile the dependency tree in the
-# test profile as well as the release one below, on every user's --build, to
-# establish a property of the source rather than of their machine: the toolchain
-# is pinned above, `--locked` fixes the dependencies, and the source id proves
-# the binary is the one this launcher's bundle builds. They run in
-# ko-agent-self-test, which the launcher's `--self-test` builds
-# (`doc/testing.md`). What is per-machine has its own gate: the
-# filter's `--self-test` runs at install and before every session.
+# `cargo test` deliberately does not. This step runs on every user's --build,
+# and a test proves a property of the source, which the developer establishes
+# once: the toolchain is pinned above, `--locked` fixes the dependencies, and
+# the source id ties the binary to the bundle the suites covered. Here it would
+# compile the dependency tree a second time, in the test profile, and put test
+# output in front of a user who can do nothing about it. The suites run on the
+# developer's machine (`doc/testing.md`) and, on any machine with podman, in
+# the ko-agent-self-test image the launcher's `--self-test` builds. What is
+# per-machine has a per-machine gate: the filter binary's own `--self-test`,
+# at install and before every session.
 #
 # The cache mounts carry cargo's target directory and registry between builds.
 # The source id is compiled in (`option_env!`), so every change to it busts the

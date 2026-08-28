@@ -434,10 +434,15 @@ The per-project CA lives on the host, under
 1. `testFull` executes every test every time,
    unlike `test` which is incremental and reports "No tests to run" when
    it believes nothing relevant changed.
-1. That covers the launcher. The egress proxy has its own suite, run by its image build
-   (`container/ko-agent-egress-proxy/Containerfile`). `ko-agent-fs` has two suites — one that mounts
-   nothing and runs anywhere, one that mounts a real filter in a privileged container — whose exact
-   commands, the shipping musl target included, are in `fuse/ko-agent-fs/doc/testing.md`.
+1. That covers the launcher. The egress proxy has its own suite:
+
+       (cd container/ko-agent-egress-proxy/app; sbt testFull)
+
+   `ko-agent-fs` has two — one that mounts nothing and runs anywhere, one that mounts a real
+   filter in a privileged container — whose exact commands, the shipping musl target included,
+   are in `fuse/ko-agent-fs/doc/testing.md`; `--self-test` runs both on any machine with podman.
+   No image build runs a suite: a test proves a property of the source, so it runs here, not on
+   every user's `--build` (`fuse/ko-agent-fs/Containerfile` has why).
 1. Some suites test a running session rather than a function, and each gates itself on its venue.
    `SessionBoundaryTest` runs **inside** a session — capabilities, mounts, routes, the CONNECT
    gate, a host's treatment as told by the certificate it presents, and the filter's refusals —
