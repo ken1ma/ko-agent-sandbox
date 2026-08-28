@@ -29,11 +29,19 @@
 +host docs.github.com        # copilot
 
 # public documents / repositories
-+host www.rfc-editor.org
-+host www.w3.org
-+host developer.mozilla.org  # HTTP / HTML / CSS / JavaScript / Web APIs
-# WHATWG specs are per-spec subdomains; a project adds the exact host it reads
-# (+host html.spec.whatwg.org)
++host www.rfc-editor.org     # Published RFCs
++host datatracker.ietf.org   # Internet-Drafts / RFC status / history / IETF process
++host www.iana.org           # Protocol registries / assigned values referenced by specs
+
++host developer.mozilla.org  # Dev reference: HTTP / HTML / CSS / JavaScript / Web APIs
++host www.w3.org             # W3C standards and drafts
+# WHATWG specs are per-spec subdomains
+#+host html.spec.whatwg.org     # HTML
+#+host dom.spec.whatwg.org      # DOM
+#+host fetch.spec.whatwg.org    # Fetch
+#+host streams.spec.whatwg.org  # ReadableStream, WritableStream, TransformStream
+#+host url.spec.whatwg.org      # URL
+#+host drafts.csswg.org         # CSS drafts
 
 # Scala / Java
 +host www.scala-lang.org
