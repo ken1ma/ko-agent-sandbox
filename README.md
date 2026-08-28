@@ -431,42 +431,50 @@ The per-project CA lives on the host, under
     sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
 1. This assembles one self-contained jar — a single file is the whole install.
-1. With Windows PowerShell version below 7, run the commands separated by `&&` individually.
+1. On Windows PowerShell below version 7, run the commands separated by `&&` individually.
 
 ### Tests
 
-    sbt testFull
+#### launcher
 
-1. `testFull` executes every test every time,
-   unlike `test` which is incremental and reports "No tests to run" when
-   it believes nothing relevant changed.
-1. That covers the launcher. The egress proxy has its own suite:
+1. On the host, after "Build the launcher and images" above: the variable opts the
+   container-launching suites in, and they run the jar and images that step built.
 
-       (cd container/ko-agent-egress-proxy/app; sbt testFull)
+    1. macOS / Linux / bash on Windows
 
-   `ko-agent-fs` has two — one that mounts nothing and runs anywhere, one that mounts a real
-   filter in a privileged container — whose exact commands, the shipping musl target included,
-   are in `fuse/ko-agent-fs/doc/testing.md`; `--self-test` runs both on any machine with podman.
-   No image build runs a suite: a test proves a property of the source, so it runs here, not on
-   every user's `--build` (`fuse/ko-agent-fs/Containerfile` has why).
-1. Some suites test a running session rather than a function, and each gates itself on its venue.
-   `SessionBoundaryTest` runs **inside** a session — capabilities, mounts, routes, the CONNECT
-   gate, a host's treatment as told by the certificate it presents, and the filter's refusals —
-   so `sbt testFull` from a session runs it and skips it everywhere else, with no separate
-   command to remember; its network checks assume the baseline, so run it from an
-   `--egress=deny-unless-allowed` session. The rest run on the **host** and launch real
-   containers, so they are
-   opt-in rather than detected: `MountLifecycleTest` drives the workspace filter's mount lifecycle,
-   `ProxyContainerTest` inspects the proxy's own container, `RunTopologyTest` covers a run's
-   networks, the isolation between concurrent sessions and projects, and `--reset` after a crash,
-   `WorkspaceGuardOffTest` drives the opted-out mode's `.git` pins against host-side mutation,
-   `BundleLockTest` drives the launcher-image version lock against a mislabelled image it builds
-   itself, and `EgressPolicyTest` launches a session per project-supplied policy, the proxy's
-   check of the origin's own certificate included.
+           KO_AGENT_SANDBOX_INTEGRATION=1 sbt testFull
 
-       KO_AGENT_SANDBOX_INTEGRATION=1 sbt testFull
+    1. Windows PowerShell (version 7 or later)
 
-   Each names in its own header what it cannot reach and what would.
+           $env:KO_AGENT_SANDBOX_INTEGRATION = 1 && sbt testFull
+
+    1. Windows Command Prompt
+
+           set "KO_AGENT_SANDBOX_INTEGRATION=1" && sbt testFull
+
+1. On Linux, in a session with the default egress profile, which skips the container suites
+
+       KO_AGENT_SANDBOX_SESSION_START=immediate \
+           java -jar target/dist/ko-agent-sandbox.jar \
+           sh -c 'find target -xtype l -delete && sbt testFull'
+
+1. `testFull` executes every test every time, unlike `test` which is incremental.
+1. The `find` removes the host sbt's cache links under `target/`, which dangle in the session
+   (`container/ko-agent-sandbox/AGENTS-SANDBOX.md`). The session run adds `SessionBoundaryTest`,
+   which runs only inside a session and checks the baseline policy, so a broader
+   `--egress=` fails it.
+
+#### egress-proxy
+
+    (cd container/ko-agent-egress-proxy/app; sbt testFull)
+
+#### ko-agent-fs
+
+    java -jar target/dist/ko-agent-sandbox.jar --self-test
+
+1. `--self-test` runs both of its suites — one mounts nothing and runs anywhere, one mounts a
+   real filter in a privileged container — on any machine with podman; running either on its
+   own is in `fuse/ko-agent-fs/doc/testing.md`.
 
 ### Native image (optional, instant startup)
 

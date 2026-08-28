@@ -84,7 +84,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     session
 
   test("the .git pins hold across host-side mutations that keep the file's inode"):
-    assume(enabled, requirement)
+    optIn()
 
     val project = repository()
     val config = project.resolve(".git").resolve("config")
@@ -129,7 +129,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a host-side inode replacement is what stops a .git pin being honoured"):
-    assume(enabled, requirement)
+    optIn()
 
     // One replacement, then watch: a check made in the stale instant after it reports a pin that
     // is already gone.
@@ -189,7 +189,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a pointer-file .git is pinned whole, so its redirection cannot be re-aimed"):
-    assume(enabled, requirement)
+    optIn()
 
     // The second of gitGuardVolumes' shapes: a linked worktree's `.git` is a file naming the real
     // gitdir, and rewriting it re-aims a repository's control state
@@ -228,7 +228,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a project with no repository gets an empty read-only .git the host cannot seed mid-session"):
-    assume(enabled, requirement)
+    optIn()
 
     // The third shape: no `.git` at all, so the name is pinned over the launcher's own empty
     // directory and a sandbox cannot fabricate a repository for host git to discover. The mount

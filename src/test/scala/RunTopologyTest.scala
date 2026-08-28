@@ -58,7 +58,7 @@ class RunTopologyTest extends munit.FunSuite:
   private def exists(container: String): Boolean = run(podman, "container", "exists", container).ok
 
   test("a run's networks are created by its launch and removed when its sandbox exits"):
-    assume(enabled, requirement)
+    optIn()
 
     val project = scratchProject()
     try
@@ -78,7 +78,7 @@ class RunTopologyTest extends munit.FunSuite:
     finally discard(project)
 
   test("a session reaches its own proxy and no other session's"):
-    assume(enabled, requirement)
+    optIn()
 
     // Two projects rather than two sessions of one, because that also settles the cross-*project*
     // claim. The run suffix is fresh per launch, so two sessions of one project are separated the
@@ -113,7 +113,7 @@ class RunTopologyTest extends munit.FunSuite:
       discard(projectB)
 
   test("a run whose reaper died strands its resources, and --reset sweeps them"):
-    assume(enabled, requirement)
+    optIn()
     // No reaper exists on Windows by construction — the resident launcher is the teardown there,
     // which the first test verifies — and pkill is not a Windows tool either way.
     assume(currentOs != Os.Windows, "no reaper exists on Windows")

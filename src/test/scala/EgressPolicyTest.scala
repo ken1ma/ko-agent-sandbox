@@ -92,7 +92,7 @@ class EgressPolicyTest extends munit.FunSuite:
       discard(project)
 
   test("a restricted addition is inspected, verified upstream, and opens nothing else"):
-    assume(enabled, requirement)
+    optIn()
 
     withSession(
       "allowed" ->
@@ -133,7 +133,7 @@ class EgressPolicyTest extends munit.FunSuite:
       refusedAtConnect(session, "https://www.iana.org/", "a host the policy never named was allowed")
 
   test("an addition states a host's complete allowances, dropping the built-in one"):
-    assume(enabled, requirement)
+    optIn()
 
     // github.com is `allow=git-fetch` in the baseline: restricted, plus the POST a clone's transfer
     // leg needs. Re-adding it plain is documented to replace that entry outright.
@@ -170,7 +170,7 @@ class EgressPolicyTest extends munit.FunSuite:
     //
     // The URL's query string is a capability, and it lands whole in this run's owner-only audit
     // log; it expires on its own, and the probe object is the owner's to delete.
-    assume(enabled, requirement)
+    optIn()
     val signed = env("INTEGRATION_SIGNED_PUT_URL")
     assume(signed.isDefined, "set INTEGRATION_SIGNED_PUT_URL to a presigned PUT URL (test header)")
     val url = signed.get
@@ -208,7 +208,7 @@ class EgressPolicyTest extends munit.FunSuite:
       )
 
   test("a -** lockdown removes the built-in policy and still signs in"):
-    assume(enabled, requirement)
+    optIn()
 
     withSession(
       "allowed" -> "-**\n+host api.anthropic.com unrestricted\n",

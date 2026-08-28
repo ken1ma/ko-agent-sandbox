@@ -36,7 +36,7 @@ class MountLifecycleTest extends munit.FunSuite:
     run(koAgentFsScriptCommand(podman, currentOs, script)*).text
 
   test("a project's mount is created, reused, held through a launch in flight, and released"):
-    assume(enabled, requirement)
+    optIn()
 
     val project = scratchProject()
     var started = Vector.empty[Session]

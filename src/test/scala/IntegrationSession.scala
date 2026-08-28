@@ -11,15 +11,19 @@ import java.nio.file.{Files, Path, Paths}
 
 import HostCommands.*
 
-object IntegrationSession:
+object IntegrationSession extends munit.Assertions:
 
   val jar: Path = Paths.get("target/dist/ko-agent-sandbox.jar").toAbsolutePath
 
   /** Opt-in rather than venue-detected: these launch containers, and an ordinary `sbt test` must
     * never start a session. */
-  val enabled: Boolean = env("KO_AGENT_SANDBOX_INTEGRATION").isDefined && Files.isRegularFile(jar)
+  val enabled: Boolean = env("KO_AGENT_SANDBOX_INTEGRATION").isDefined
 
-  val requirement: String = s"set KO_AGENT_SANDBOX_INTEGRATION, and build $jar first"
+  /** Skips without the opt-in; with it, a missing jar is a broken run, not an absent venue, and
+    * fails rather than lets `testFull` pass with every session suite skipped. */
+  def optIn(): Unit =
+    assume(enabled, "set KO_AGENT_SANDBOX_INTEGRATION to run the container-launching suites")
+    assert(Files.isRegularFile(jar), s"KO_AGENT_SANDBOX_INTEGRATION is set but $jar is missing: run `sbt dist` first")
 
   /** Long enough that a session outlives its suite; they are stopped explicitly, never waited out. */
   private val Linger = "900"

@@ -15,7 +15,7 @@ class ProxyContainerTest extends munit.FunSuite:
   override val munitTimeout = scala.concurrent.duration.Duration(10, "min")
 
   test("this run's proxy is hardened, on its own networks, holding only this run's material"):
-    assume(enabled, requirement)
+    optIn()
 
     val project = scratchProject()
     var session: Option[Session] = None

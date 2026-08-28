@@ -40,7 +40,7 @@ class BundleLockTest extends munit.FunSuite:
     builder.start().waitFor()
 
   test("a mislabelled default image refuses the launch; the same image overridden only warns"):
-    assume(enabled, requirement)
+    optIn()
 
     val project = scratchProject()
     var retagged = false
