@@ -7,17 +7,10 @@ same shape; the proxy holds the value and substitutes it into one header of requ
 inspected host the secret is bound to. Everywhere else the placeholder goes out as it is and
 authenticates nothing.
 
-Two secrets qualify:
-
-1. A value forwarded with `--env`, bound to a host: `--env=GH_TOKEN@api.github.com`.
-1. Copilot CLI's sign-in — the one agent login that is a forge credential (SECURITY.md,
-   "Exfiltration through an allowed host"). The proxy intercepts the device flow's token
-   response and hands Copilot a placeholder, so `~/.copilot` in the persistent volume never
-   holds the `repo`-scope token.
-
-Delivered in that order; the first is a contained change to the launcher and the inspected
-relay, and the second is the same substitution applied at one more site plus a decision about
-`api.githubcopilot.com` ("Copilot", below).
+One secret qualifies here: a value forwarded with `--env`, bound to a host —
+`--env=GH_TOKEN@api.github.com`. Copilot CLI's sign-in — the one agent login that is a forge
+credential (SECURITY.md, "Exfiltration through an allowed host") — is a provider instance of
+`PLAN-PROVIDER-CREDENTIAL-PROXY.md`, which reuses the rewrite below ("Copilot").
 
 ## Evidence and target
 
@@ -48,9 +41,11 @@ something it should not"; repository scoping is a later increment ("Deliberate e
 
 1. The value reaches the proxy container only, never the sandbox's environment, the persistent
    volume, `/workspace`, the launch banner, or the audit log.
-1. A secret binds to exactly one host, which must be `restricted` in the resolved profile. An
-   `unrestricted` host is an opaque tunnel where no substitution can happen; a denied or absent
-   host is a binding to nothing. Both refuse the launch with the reason.
+1. An explicit `--env` binding names exactly one host, which must be `restricted` in the
+   resolved profile. An `unrestricted` host is an opaque tunnel where no substitution can
+   happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
+   reason. A service instance (`PLAN-PROVIDER-CREDENTIAL-PROXY.md`) spends on its finite
+   target list instead, under the same rewrite.
 1. Substitution happens in a declared header only — `Authorization`, or the header a binding
    names — and only when the whole credential token equals the placeholder. Never in the
    request target, the query, a body, or a response. A placeholder that appears anywhere else is
@@ -140,46 +135,10 @@ values are substituted in `Authorization` only".
 
 ## Copilot
 
-`copilot login` ends with `POST github.com/login/oauth/access_token`, a request the
-`allow=github-login-device` allowance already inspects; the token is in the JSON response body
-(`access_token`). Brokering Copilot means:
-
-1. On that response, when a session was launched with `--broker-copilot` (name to settle), the
-   proxy replaces `access_token` with a placeholder and writes the value to the run's secret
-   file — the one write the proxy makes to the launcher's state directory, through a bind mount
-   in the log's manner, so the value outlives the run for the next session's proxy to load.
-1. Every later session's proxy loads it as a binding: placeholder → value on `github.com` and
-   `api.github.com`, `Authorization` only. Copilot's own state under `~/.copilot` holds the
-   placeholder.
-1. `--reset` removes the file with the volume.
-
-Whether the placeholder can stand in for the token everywhere Copilot presents it turns on one
-fact to measure on the installed CLI, from a `--proxy-log` of a `copilot` session: which token
-reaches `api.githubcopilot.com`. Copilot clients generally exchange the GitHub OAuth token at
-`api.github.com/copilot_internal/v2/token` for a short-lived Copilot session token and present
-only that to the model endpoint. Three cases, in order of preference:
-
-- The CLI uses the exchange and the built-in GitHub MCP server also authenticates with the
-  session token. The exchange request is on the inspected path, so the placeholder is
-  substituted there and nothing else changes: `api.githubcopilot.com` stays an opaque tunnel,
-  the sandbox holds a placeholder plus a short-lived Copilot-scoped token, and the residue
-  "writes hidden in model traffic" stays as written.
-- The CLI uses the exchange but the MCP server sends the OAuth token itself. Brokering then
-  breaks the built-in MCP server and nothing else — `--disable-builtin-mcps` is already the
-  documented switch for that surface, so this is the first case with one line added to the
-  Copilot paragraph.
-- The CLI sends the OAuth token straight to `api.githubcopilot.com`. Then an opaque tunnel
-  cannot substitute, and the choice is between two ways out:
-    - Inspect `api.githubcopilot.com`: move it to `restricted` with an allowance that admits
-      its model traffic (`POST` on the chat paths, a body the proxy does not read, streamed
-      responses). The proxy relays a conversation it does not police — the trust the opaque
-      tunnel already carries — and gains the substitution point plus, as a by-product, the MCP
-      writes become visible and refusable by path. Copilot CLI is a Node program and trusts
-      `NODE_EXTRA_CA_CERTS`, so inspection is feasible unless it pins. Cost: the inspected relay
-      becomes a long-lived streaming path for one host, and the one-request-per-connection
-      stance has to hold under a model client's reconnect pattern.
-    - Leave Copilot unbrokered: the token stays real in `~/.copilot`, step 2 is the `--env`
-      case only, and the document keeps the residue as written.
+Not brokered by this plan. Its production design — a host-side OAuth mechanism or a `gh`
+executable source, the token exchanged at `api.github.com/copilot_internal/v2/token` and
+substituted by the rewrite above — is `PLAN-PROVIDER-CREDENTIAL-PROXY.md`, "OAuth mechanisms",
+with the one measurement that design must settle first.
 
 ## Claude Code and Codex logins: excluded
 
@@ -210,7 +169,6 @@ Additions to SECURITY.md, each at its binding site:
   container, nowhere else; the proxy was already the policy's single point of trust and becomes
   a holder of what the policy admits spending. Its compromise was a full policy compromise and
   is now also a credential — one boundary, not two.
-- The Copilot paragraph is rewritten for whichever of the two ways is chosen.
 - "The audit line grammar": the `inject` field.
 
 Residues that stay, stated: the credential is still spent by the agent on the bound host within
@@ -245,10 +203,6 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - `HTTPHelper`: `HttpRequestHead.withCredential(bindings)` — the scheme-aware rewrite of one
   header; pure, so it is unit-testable on heads alone.
 - `AgentEgressProxy`: apply it on the inspected path before forwarding; emit `inject=NAME`.
-- Copilot (step 2): a response-body hook on `POST /login/oauth/access_token` only, JSON field
-  replacement, write to the mounted file. A captured token outside the grammar is not stored
-  and the exchange is answered with a proxy refusal naming it, not passed through: the token
-  must not reach the sandbox by failing to be brokered.
 
 ### Tests
 
@@ -271,12 +225,10 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
   the persistent volume and `/workspace` contain neither the value nor the placeholder-to-value
   mapping — the openai/codex #30971 check, population-level over every agent's state directory.
-- Copilot (step 2): the token-exchange response reaches the client with the placeholder; the
-  next run's proxy substitutes it on `api.github.com`; `--reset` leaves no file.
 
 ### Documentation
 
-- README `--env` entry and the Copilot login paragraph.
+- README `--env` entry.
 - SECURITY.md sites above.
 - Agent instructions: one line — "a brokered credential works only as `Authorization` on its
   host; a 401 elsewhere is the placeholder, not a wrong token".
@@ -284,9 +236,6 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   not intervene.
 
 ## Acceptance checklist
-
-- [ ] Before step 2: a `--proxy-log` of a `copilot` session shows which token the CLI presents
-      where ("Copilot"); the case found is written into the Copilot paragraph.
 
 - [ ] `--env=GH_TOKEN@api.github.com` launches; `env` inside the sandbox shows a `gh`-shaped
       placeholder; `gh api user` succeeds; the same token sent to `gitlab.com` arrives there as
@@ -297,8 +246,6 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - [ ] `--proxy-log` shows `inject=GH_TOKEN` on exactly the authenticated requests.
 - [ ] `SessionBoundaryTest` finds no value in the volume after exit.
 - [ ] `sbt testFull` green on Linux, macOS and Windows podman machines.
-- [ ] Step 2 only: `copilot login` completes, `~/.copilot` holds a placeholder, `copilot` works
-      in the next session, `--reset` removes the stored value.
 
 ## Deliberate exclusions
 

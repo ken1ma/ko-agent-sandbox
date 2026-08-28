@@ -32,11 +32,6 @@ Facts have one binding site:
 - The resolved egress policy owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
 
-If both plans are accepted before either is implemented, replace the original plan's Copilot
-special case with a pointer here. Copilot is a provider instance, not a second response-rewriting
-framework. Qualify its one-host invariant as applying to explicit `--env` bindings; service
-instances use the finite target list defined here.
-
 ## Required use cases
 
 1. Store or resolve one GitHub credential once, select it for a run and use it at the exact GitHub
@@ -301,11 +296,20 @@ Do not reuse another application's private client identity or copy its refresh t
 without a project-owned public-client registration uses an executable source such as its official
 host CLI, or remains unsupported.
 
-The Copilot device flow in `PLAN-CREDENTIAL-BROKER-PROXY.md` may remain an evidence probe, but its
-production implementation moves here: either a host OAuth mechanism or a `gh` executable source.
-Do not add a generic response-body interceptor merely to imitate an agent's token cache. If one
-provider can only work through intercepted OAuth responses, specify its endpoint, bounded JSON
-fields, rotation and write mount as a provider adapter with separate security review.
+Copilot is one such instance: a host OAuth mechanism or a `gh` executable source, never a
+response-body interceptor imitating the CLI's token cache. If a provider can only work through
+intercepted OAuth responses, specify its endpoint, bounded JSON fields, rotation and write mount
+as a provider adapter with separate security review.
+
+What the Copilot adapter must measure first, from a `--proxy-log` of a `copilot` session on the
+installed CLI: which token reaches `api.githubcopilot.com`. Copilot clients generally exchange
+the GitHub OAuth token at `api.github.com/copilot_internal/v2/token` for a short-lived session
+token and present only that to the model endpoint; the exchange is on the inspected path, so the
+placeholder is substituted there and `api.githubcopilot.com` stays an opaque tunnel. If the
+built-in GitHub MCP server sends the OAuth token itself, brokering breaks that server alone —
+`--disable-builtin-mcps` is the documented switch. If the CLI sends the OAuth token straight to
+`api.githubcopilot.com`, an opaque tunnel cannot substitute, and that host is mediated under
+"Mediated provider traffic" or Copilot stays unbrokered.
 
 ## Mediated provider traffic
 
@@ -473,8 +477,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
    source execution, TLS changes or proxy substitution.
 2. Implement host storage, management verbs and per-run generations for static API keys. Reuse the
    existing plan's exact-token rewrite on currently restricted hosts.
-3. Generalize one instance to multiple exact targets and resolve the original plan's one-host and
-   Copilot text with pointers to this document.
+3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the
    crash and concurrency matrix before adding OAuth.
 5. Add the mediated-provider overlay and one TLS-compatible API-key client. Update `SECURITY.md`
