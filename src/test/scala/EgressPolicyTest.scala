@@ -129,8 +129,9 @@ class EgressPolicyTest extends munit.FunSuite:
         "SECURITY: a name resolving to loopback was not refused after resolution",
       )
 
-      // The bound: adding four hosts adds four hosts.
-      refusedAtConnect(session, "https://www.iana.org/", "a host the policy never named was allowed")
+      // The bound: adding four hosts adds four hosts. A reserved name (RFC 6761), so that no
+      // baseline growth can ever turn the sentinel into an admitted host.
+      refusedAtConnect(session, "https://unlisted.invalid/", "a host the policy never named was allowed")
 
   test("an addition states a host's complete allowances, dropping the built-in one"):
     optIn()

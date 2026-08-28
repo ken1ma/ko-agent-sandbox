@@ -146,7 +146,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error carrying the proxy's status instead of as an HTTP code.
     Vector(
-      "https://example.com/",
+      "https://unlisted.invalid/",  // reserved (RFC 6761): never an admitted host
       "https://8.8.8.8/",
       "https://169.254.169.254/",
       "https://10.0.0.1/",
