@@ -172,8 +172,10 @@ path /
 The serialized form is internal to the image, not project configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
-- a header from a small supported set, initially `Authorization`, `x-api-key` and `PRIVATE-TOKEN`;
-- a format containing exactly one `%s`, no other conversion and no control byte;
+- a header from the base plan's closed set (its invariant 4);
+- a format containing exactly one `%s`, no other conversion, and otherwise only visible ASCII
+  and space: catalog text, trusted for the space `Bearer %s` needs, and the field is built by
+  placing a value that has separately passed the raw-value grammar into the format;
 - a method set and optional literal prefix that cannot be wider than the target's standing
   restricted policy;
 - unique `(host, header, format, matcher)` entries inside one service.
@@ -201,6 +203,14 @@ the same account would not add a boundary.
 Source metadata and values are separate. Metadata contains the service, instance, mechanism,
 source kind, descriptor digest and refresh times. The secret backend contains only the value or
 OAuth material. Project state contains neither.
+
+The backend write and the generation publish are the one gate for value shape: every value
+passes the base plan's value grammar (its invariant 4) there, whatever produced it — `set`,
+`import`, an executable result, an OAuth access token at issuance or refresh, a cached
+generation being reused. A value that fails is refused at that producer with the byte's offset
+and nothing is stored; a refresh that yields one is a refresh failure, and the current
+generation stays until its expiry. Storage therefore never holds a value the proxy will refuse,
+and the proxy's own re-check at load is a second reading of the same rule, not the first.
 
 An executable source descriptor is bounded JSON:
 
@@ -237,8 +247,9 @@ Successful stdout is one bounded UTF-8 JSON object:
 `expiresAt` is required unless the descriptor supplies `maxAgeSeconds`. Unknown fields, duplicate
 keys, control bytes, an empty token, a past expiry and trailing data refuse the result. A provider
 can instead return the fixed error codes `temporarily-unavailable` or `reauth-required`. After
-formatting, the token must pass the base plan's complete header-value grammar; an escaped newline
-cannot become header injection. Free-form provider text is never stored or put in a proxy response.
+decoding, the raw token passes the gate in "Credential sources and custody"; an escaped newline
+cannot become header injection. Free-form provider text is never stored or put in a proxy
+response.
 
 ## Refresh coordinator
 
@@ -431,6 +442,12 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
   replacement, removal and absence from list output.
 - Test executable descriptor parsing, absolute-path enforcement, no shell, environment allowlist,
   closed stdin, timeout, output bounds, malformed JSON, expiry and protected stderr.
+- Test the value gate as a population over every producer — `set`, `import`, an executable
+  result, OAuth issuance, OAuth refresh, a cached generation — with each byte the base plan's
+  value grammar refuses: nothing is stored or published, the refusal names the offset and not
+  the value, and a refreshed bad token leaves the prior generation in place. Test that a
+  `Bearer %s` format with a conforming token yields one field, and that a format with `%s`
+  twice, a control byte, or a byte outside visible ASCII and space fails catalog parsing.
 - Use a process barrier across concurrent launchers to prove one source invocation per refresh and
   complete generation publication to every waiting run.
 - Test refresh success, jitter, transient failure, backoff, expiry, reauthentication, removal races

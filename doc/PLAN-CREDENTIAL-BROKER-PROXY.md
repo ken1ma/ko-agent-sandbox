@@ -55,6 +55,14 @@ something it should not"; repository scoping is a later increment ("Deliberate e
    names — and only when the whole credential token equals the placeholder. Never in the
    request target, the query, a body, or a response. A placeholder that appears anywhere else is
    forwarded verbatim, which is harmless: it authenticates nothing.
+1. A value and a header name reach the request bytes only through one grammar, checked where
+   each is produced and again where the proxy loads the file. A value is 1–4096 bytes of
+   visible ASCII (`0x21`–`0x7E`): no space, tab, control byte, CR, LF, or byte above `0x7E`,
+   so it cannot end a field, start another, or alter framing. A header name is one of a closed
+   set — `Authorization`, `x-api-key`, `PRIVATE-TOKEN` — never a free token: `Host`,
+   `Content-Length`, `Transfer-Encoding`, `Connection` and their kin route or frame, and a
+   set is the one shape that needs no list of them. The rewrite replaces the token inside a
+   header the client sent; it never adds a header.
 1. The placeholder is unpredictable to the checkout: fresh random bytes per launch, in the shape
    of the value it stands for (prefix and length preserved for a recognizable prefix such as
    `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Tools that validate
@@ -84,6 +92,9 @@ Refusals, each fatal at launch and naming the fix:
   forward unbrokered with `--env=NAME`".
 - `HOST` is denied: the denial wins, as for every other entry.
 - two bindings for one `NAME`: refused; one name, one host.
+- the value outside the grammar (invariant 4): "value of `NAME` contains a byte a header cannot
+  carry" — the byte's offset, never the value; an empty value is "`NAME` is empty".
+- `HEADER` outside the set: "header must be one of `Authorization`, `x-api-key`, `PRIVATE-TOKEN`".
 
 ## Custody
 
@@ -93,10 +104,11 @@ proxy container, removed with the run. Not an environment variable on the proxy 
 `KO_AGENT_SANDBOX_EGRESS_POLICY` is public by design and `podman inspect` shows environment;
 a secret does not belong beside it.
 
-The proxy reads the file once at start and refuses to start if a binding names a host outside
-its own resolved inspected set — the same in-both-directions check the leaf certificate gets, for
-the same reason: a binding the proxy cannot honour would surface as a 401 inside the sandbox
-with nothing in the log to explain it.
+The proxy reads the file once at start and refuses to start if a value or header fails the
+grammar (invariant 4) or a binding names a host outside its own resolved inspected set — the
+same in-both-directions check the leaf certificate gets, for the same reason: a binding the
+proxy cannot honour would surface as a 401 inside the sandbox with nothing in the log to
+explain it.
 
 ## Substitution
 
@@ -212,30 +224,46 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   sandbox `--env` list with placeholders and, separately, the proxy's secret-file contents.
 - Binding validation against the resolved profile, reusing the restricted line read from
   `--print-policy` (the leaf certificate's source of truth, so no second host list).
-- Placeholder generation: `SecureRandom`, shape rules from invariant 4.
+- `CredentialGrammar`: the value and header-name checks of invariant 4, one source file under
+  `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles as an
+  ordinary source and the launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
+  — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
+  policy arithmetic: the gate must fire in `PLAN-PROVIDER-CREDENTIAL-PROXY.md`'s management
+  verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
+  would be one more custody site. The executable-source result there passes through the same
+  object.
+- Placeholder generation: `SecureRandom`, shape rules from invariant 5.
 - Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
   into the proxy, removed in `SandboxLifecycle` with the leaf.
 - Banner and `--egress-effective`: `NAME → HOST (Authorization)` per binding.
 
 ### `container/ko-agent-egress-proxy/app`
 
-- Start-up: load bindings, check hosts against the resolved inspected set both ways, refuse
-  otherwise with the mismatch named.
+- Start-up: load bindings, re-check each through `CredentialGrammar`, check hosts against the
+  resolved inspected set both ways, refuse otherwise with the mismatch named.
 - `HTTPHelper`: `HttpRequestHead.withCredential(bindings)` — the scheme-aware rewrite of one
   header; pure, so it is unit-testable on heads alone.
 - `AgentEgressProxy`: apply it on the inspected path before forwarding; emit `inject=NAME`.
 - Copilot (step 2): a response-body hook on `POST /login/oauth/access_token` only, JSON field
-  replacement, write to the mounted file.
+  replacement, write to the mounted file. A captured token outside the grammar is not stored
+  and the exchange is answered with a proxy refusal naming it, not passed through: the token
+  must not reach the sandbox by failing to be brokered.
 
 ### Tests
 
-- Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`), every refusal with its message,
+- Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`), every refusal with its message;
+  `CredentialGrammar` over the population of bytes a header cannot carry — CR, LF, NUL, tab,
+  space, `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused from the
+  environment and from `=VALUE` alike, and each header name outside the set, `Host` and
+  `Transfer-Encoding` among them;
   placeholder shape per prefix, secret file mode and lifetime, banner content, no value in any
   `--env` argument the sandbox receives (`AgentSandboxLauncherTest` already checks the forwarded
   list — extend the same test).
 - Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
   header, wrong host, placeholder in URL and query left alone, non-placeholder token untouched,
-  two placeholders in one request (one bound to another host).
+  two placeholders in one request (one bound to another host); a secret file with a value or
+  header outside the grammar refuses start-up; `HostileInputTest` gains the substituted head
+  re-parsed as exactly one request with the same header count.
 - Proxy end-to-end (`AgentEgressProxyTest` style, local TLS origin): a `GET` with the
   placeholder arrives at the origin with the value; the same to an unbound inspected host
   arrives with the placeholder; audit line shows `inject` exactly once.
