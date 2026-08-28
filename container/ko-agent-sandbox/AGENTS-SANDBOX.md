@@ -119,7 +119,10 @@ Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -conne
 
 A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-ca.crt`, or
 the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
-run `sandbox-prepare-jdk <jdk-home>` on one you installed yourself.
+run `sandbox-jdk-use-proxy <jdk-home>` on one you installed yourself. A native-image tool has no
+`conf/` to prepare and reads no environment variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in
+its own spelling — `scala-cli $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
+`cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs nothing.
 
 
 ## Containers in here: only if this session opted in

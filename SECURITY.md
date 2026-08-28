@@ -573,10 +573,12 @@ postdates the image.
 
 Two kinds of program stay outside all of it, neither reachable from the launcher. A JVM the agent
 installs itself (`cs java --jvm ...`) brings its own untouched store — the image ships
-`sandbox-prepare-jdk`, which gives one such JDK both the CA and the proxy from inside, so the gap
+`sandbox-jdk-use-proxy`, which gives one such JDK both the CA and the proxy from inside, so the gap
 is one command rather than a dead end; the certificate it reads is mounted beside the agent
-instructions, and is the same public one already inside the bundle. And a statically linked binary
-keeps its compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
+instructions, and is the same public one already inside the bundle. A GraalVM native image — the
+`cs` and `scala-cli` launchers — has no `conf/` and reads no variable, so the same facts travel as
+`-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand. And a statically
+linked binary keeps its compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
 
 ### Why the policy is per project, in the project, and read-only
 

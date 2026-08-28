@@ -269,8 +269,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // to know nothing of the sandbox.
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
-    // Everything known is documented, except the one the launcher sets rather than reads.
-    assertEquals(KnownSandboxVariables -- documented, Set("KO_AGENT_SANDBOX_EGRESS_POLICY"))
+    // Everything known is documented, except the two the launcher sets rather than reads: the
+    // --help text is what the host user sets, and these two are the sandbox's own, documented
+    // where their reader is — the agent instructions.
+    assertEquals(
+      KnownSandboxVariables -- documented,
+      Set("KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_JAVA_OPTS"),
+    )
 
   test("the proxy address is read for the right network only"):
     val output =
@@ -974,10 +979,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // The only way an agent-installed JVM reaches an inspected forge host at all — it needs both
     // the CA and the proxy — so a bundle without it is a silently degraded sandbox.
-    assert(index.contains("ko-agent-sandbox/sandbox-prepare-jdk"), "prepare-jdk script missing")
-    val prepareJdk = buildContextResource("ko-agent-sandbox/sandbox-prepare-jdk")
-    assert(prepareJdk.contains("-importcert"), "the prepare-jdk script imports no certificate")
-    assert(prepareJdk.contains("net.properties"), "the prepare-jdk script sets no proxy")
+    assert(index.contains("ko-agent-sandbox/sandbox-jdk-use-proxy"), "sandbox-jdk-use-proxy script missing")
+    val useProxy = buildContextResource("ko-agent-sandbox/sandbox-jdk-use-proxy")
+    assert(useProxy.contains("-importcert"), "sandbox-jdk-use-proxy imports no certificate")
+    assert(useProxy.contains("net.properties"), "sandbox-jdk-use-proxy sets no proxy")
     assert(index.contains("ko-agent-sandbox/sandbox-apt-get"), "sandbox-apt-get script missing")
     assert(
       buildContextResource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),

@@ -3,7 +3,10 @@
 // SSL_CERT_FILE / HTTPS_PROXY families that cover everything else in the sandbox mean nothing to
 // it. Both halves are the same move: locate the image's JDK, take its own file, add this session's
 // part, and hand the launch a mount that puts the result back. The one JVM the launcher cannot
-// reach — installed by the agent itself — gets both from inside, via `sandbox-prepare-jdk`.
+// reach — installed by the agent itself — gets both from inside, via `sandbox-jdk-use-proxy`. A
+// GraalVM native image (the `cs` and `scala-cli` launchers) has neither file and reads no
+// variable at all: it takes the same facts as `-D` options on its command line, which is what
+// KO_AGENT_SANDBOX_JAVA_OPTS carries (jdkJavaOpts).
 //
 // No bouncycastle import here: reading and storing certificates is JCA (BouncyCastleHelper has the
 // rule).
@@ -157,14 +160,30 @@ object JdkTrust:
 
       (netPropertiesFile, netPropertiesPath)
 
+  /** What `net.properties` cannot say for itself: the route. `http.*` too, as HTTP_PROXY is set —
+    * an `http://` attempt then lands in the proxy log instead of failing unexplained. */
+  def proxyProperties(proxyHost: String, proxyPort: Int): Vector[(String, String)] =
+    Vector(
+      "http.proxyHost" -> proxyHost,
+      "http.proxyPort" -> proxyPort.toString,
+      "https.proxyHost" -> proxyHost,
+      "https.proxyPort" -> proxyPort.toString,
+    )
+
   /** The lines appended to the JDK's `net.properties`; separated so a test can read them without a
     * podman image. */
   def netProxyProperties(proxyHost: String, proxyPort: Int): String =
-    s"""
-       |# ko-agent-sandbox: the proxy is the only route out, and a JVM reads none of the
-       |# HTTPS_PROXY family.
-       |http.proxyHost=$proxyHost
-       |http.proxyPort=$proxyPort
-       |https.proxyHost=$proxyHost
-       |https.proxyPort=$proxyPort
-       |""".stripMargin
+    """
+      |# ko-agent-sandbox: the proxy is the only route out, and a JVM reads none of the
+      |# HTTPS_PROXY family.
+      |""".stripMargin
+      + proxyProperties(proxyHost, proxyPort).map((key, value) => s"$key=$value\n").mkString
+
+  /** The value of KO_AGENT_SANDBOX_JAVA_OPTS: the route as `-D` options, and the image JDK's
+    * merged `cacerts` as the trust store, for a JVM that reads no `conf/` — a native image, or a
+    * JDK the agent installed. Space-separated words with no quoting, so `$VAR` unquoted in a
+    * shell splits into them. */
+  def jdkJavaOpts(javaHome: String, proxyHost: String, proxyPort: Int): String =
+    (proxyProperties(proxyHost, proxyPort)
+      :+ ("javax.net.ssl.trustStore" -> s"$javaHome/lib/security/cacerts"))
+      .map((key, value) => s"-D$key=$value").mkString(" ")

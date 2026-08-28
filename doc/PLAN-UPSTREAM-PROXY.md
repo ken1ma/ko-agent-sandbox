@@ -215,7 +215,7 @@ With it, append the supplied certificates to these existing launch-built stores:
 - the egress proxy's origin TLS trust, used for restricted hosts;
 - the sandbox PEM bundle and every environment variable pointing at it;
 - the image JDK's merged `cacerts` store, used by opaque JVM clients;
-- the certificate supplied to `sandbox-prepare-jdk` for a JDK installed during the session.
+- the certificate supplied to `sandbox-jdk-use-proxy` for a JDK installed during the session.
 
 Keep the project's inspection CA separate and continue mounting only its leaf and leaf key into the
 proxy. The corporate CA is public material, but its inclusion is authority: it lets the corporate

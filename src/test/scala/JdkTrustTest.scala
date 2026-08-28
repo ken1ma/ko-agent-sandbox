@@ -17,6 +17,18 @@ class JdkTrustTest extends munit.FunSuite:
       .generateCertificate(java.io.ByteArrayInputStream(pem.getBytes("US-ASCII")))
       .asInstanceOf[X509Certificate]
 
+  test("the -D words carry every fact net.properties carries, plus the trust store"):
+    // Two spellings of one route, for the JVMs that read the file and the ones that read none;
+    // a key in one and not the other is a JVM that reaches the proxy and one that does not.
+    val properties = proxyProperties("egress-proxy", 3128)
+    val lines = netProxyProperties("egress-proxy", 3128).linesIterator.filterNot(_.startsWith("#")).filter(_.nonEmpty)
+    assertEquals(lines.toVector, properties.map((key, value) => s"$key=$value"))
+    val words = jdkJavaOpts("/opt/jdk", "egress-proxy", 3128).split(" ").toVector
+    assertEquals(
+      words,
+      properties.map((key, value) => s"-D$key=$value") :+ "-Djavax.net.ssl.trustStore=/opt/jdk/lib/security/cacerts",
+    )
+
   test("the JDK's home comes from the image's own declaration, or is absent"):
     // SECURITY.md, "Who holds the CA key", has why the store is merged and why JAVA_HOME comes
     // from the image. podman image inspect prints Config.Env one entry per line.

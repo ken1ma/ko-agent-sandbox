@@ -8,8 +8,11 @@
 # hand. Untouched, such a JDK fails a dependency resolve twice over — no route to the proxy, and no
 # trust for the certificate an inspected host presents — with nothing to say why.
 #
-#   sandbox-prepare-jdk                  # $JAVA_HOME
-#   sandbox-prepare-jdk /path/to/jdk     # some other JDK
+#   sandbox-jdk-use-proxy                  # $JAVA_HOME
+#   sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
+#
+# Not for a GraalVM native image (cs, scala-cli): it has no conf/ to edit and takes the same facts
+# as -D options — KO_AGENT_SANDBOX_JAVA_OPTS, in the agent instructions.
 #
 # Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
 # failing on the read-only files. The certificate is public — the private key that signs with it

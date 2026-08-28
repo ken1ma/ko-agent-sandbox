@@ -387,11 +387,13 @@ object AgentSandboxLauncher:
   def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
 
   /**
-   * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_POLICY, which
-   * it sets inside the sandbox rather than reads, so a launcher nested in a sandbox session is not
-   * warned about the variable that session legitimately carries.
+   * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_POLICY and
+   * KO_AGENT_SANDBOX_JAVA_OPTS, which it sets inside the sandbox rather than reads, so a launcher
+   * nested in a sandbox session is not warned about the variables that session legitimately
+   * carries.
    */
   val KnownSandboxVariables: Set[String] = Set(
+    "KO_AGENT_SANDBOX_JAVA_OPTS",
     "KO_AGENT_SANDBOX_IMAGE",
     "KO_AGENT_SANDBOX_PROXY_IMAGE",
     "KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
@@ -2230,7 +2232,7 @@ object AgentSandboxLauncher:
       // The bundle replaces the image's; the variables cover tools carrying their own trust store
       // (certifi, Node's roots), and the keystore covers the JVM, which reads neither.
       val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
-      // The CA on its own, for sandbox-prepare-jdk: a JVM the agent installs itself is out of
+      // The CA on its own, for sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
       // the launcher's reach, and that script hands it this file. No new exposure — the same
       // certificate is already inside the bundle above — it just saves a script parsing one out.
       val sandboxEgressCa = "/etc/ko-agent-sandbox/egress-ca.crt"
@@ -2243,6 +2245,10 @@ object AgentSandboxLauncher:
         s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
         s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
       ) ++ cacertsMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector
+        // The same facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
+        ++ javaHomeOf(imageEnv).map(home =>
+          s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
+        ).toVector
 
       (
         proxyTls,

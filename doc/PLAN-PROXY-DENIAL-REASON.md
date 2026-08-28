@@ -83,7 +83,7 @@ advice is chosen by the request, not by a body the proxy does not read.
 
 The `CONNECT` refusal answers `403` with the same body, `Content-Type: text/plain` and a
 `Content-Length` — a proxy's failed `CONNECT` may carry a body, and this one does. No client
-displays it, so the image ships `sandbox-egress-check`, beside `sandbox-prepare-jdk`:
+displays it, so the image ships `sandbox-egress-check`, beside `sandbox-jdk-use-proxy`:
 
 ```text
 sandbox-egress-check <host>
