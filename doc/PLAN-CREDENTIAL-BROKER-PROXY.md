@@ -108,7 +108,8 @@ The proxy reads the file once at start and refuses to start if a value or header
 grammar (invariant 4) or a binding names a host outside its own resolved inspected set — the
 same in-both-directions check the leaf certificate gets, for the same reason: a binding the
 proxy cannot honour would surface as a 401 inside the sandbox with nothing in the log to
-explain it.
+explain it. The refusal reaches the user through the readiness gate in
+`PLAN-UPSTREAM-PROXY.md`, "Lifecycle and ownership": the launch fails with the message.
 
 ## Substitution
 
