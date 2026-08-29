@@ -283,7 +283,7 @@ fn the_name_rule_covers_the_case_folded_and_collapsing_spellings() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn ordinary_dot_git_prefixed_names_are_still_allowed() {
+fn ordinary_dot_git_prefixed_names_are_allowed() {
     // The superset must not have swallowed the names real projects use.
     let mount = TestMount::new(repository);
     for name in [
@@ -299,7 +299,7 @@ fn ordinary_dot_git_prefixed_names_are_still_allowed() {
         );
     }
     // An accented name in both normalization forms: the control proving we need no normalization
-    // handling, and that we have not started rejecting legitimate Unicode.
+    // handling, and that legitimate Unicode is not rejected.
     allowed("NFC name", fs::write(mount.at("src/.gít"), b"x"));
     allowed("NFD name", fs::write(mount.at("src/.gi\u{301}t"), b"x"));
 }

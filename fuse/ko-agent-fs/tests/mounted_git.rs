@@ -282,7 +282,7 @@ fn a_submodule_in_a_subdirectory_works_like_any_other() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn a_hook_the_host_installed_still_runs_for_the_host() {
+fn a_hook_the_host_installed_runs_for_the_host() {
     // The filter freezes hooks against the sandbox; it must not break the host's own hook, which is
     // the thing being protected rather than disabled.
     let mount = TestMount::new(|backing| {

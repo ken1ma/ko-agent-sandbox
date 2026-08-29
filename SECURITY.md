@@ -80,9 +80,9 @@ gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktr
 pointing back in — and a bare layout standing at the workspace root. A gitdir-shaped directory
 *without* a `.git` name elsewhere in the tree is the residue "The project checkout" describes.
 
-This is the default, and two things qualify it, both under Not defended: a session opted out with
+This is the default, and two things qualify it, both under Not defended: a session that sets
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, which do not carry the claim
-("The opted-out mode's `.git` pins"); and what the filter does not yet have on every platform is
+("The `.git` pins of `WORKSPACE_GUARD=none`"); and on some platforms the filter has no measured
 evidence ("The workspace filter, on the platforms where it is unverified").
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
@@ -198,8 +198,8 @@ Everything else writable — build scripts, CI definitions, IDE configuration, g
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
 for a contribution from a stranger. That includes a repository the agent created deeper in the
-tree, in both guard modes: an opted-out session leaves any shape unpinned, and the default
-session's filter — which refuses creating a `.git` entry — cannot refuse a *bare layout*, built
+tree, in both guard modes: under `WORKSPACE_GUARD=none` any shape is left unpinned, and the
+filter — which refuses creating a `.git` entry — cannot refuse a *bare layout*, built
 from ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and
 hooks are served as writable data anywhere in the writable workspace — the mount-time check
 catches only a layout already standing at the root, not one assembled there afterwards in a
@@ -277,16 +277,17 @@ Windows, each through the whole production stack
 line means: on Linux the guarantees are reasoned rather than measured, while the filter is every
 session's enforcement on every platform.
 
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the mount pins, the next entry. The two
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the mount pins instead, the next entry. The two
 are alternatives, never a stack: the filter's policy is a strict superset of the pins', and
 preparing a pin's bind targets would mean creating `.git` entries through the filter, which the
 filter denies. Every gate on the filtered path fails closed — a version mismatch, a failed
 self-test or a failed mount aborts the launch, never falling back to an unfiltered bind. Mechanics,
 policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 
-**The opted-out mode's `.git` pins.** `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces the filter
-with mounts: `.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git` pinned whole,
-and the bare name when no repository exists). A session that takes it says so on its first line.
+**The `.git` pins of `WORKSPACE_GUARD=none`.** `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces
+the filter with mounts: `.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git`
+pinned whole, and the bare name when no repository exists). A session that takes it says so on its
+`workspace:` line.
 Their shape is fixed at launch — a host-created repository appears behind the whole-directory pin,
 read-only until the next launch — and they cover only the workspace root, so a repository the agent
 creates deeper in the tree is unpinned there, the residue "The project checkout" describes.
@@ -592,7 +593,7 @@ Where `/workspace` is writable, the policy files would be the agent's to rewrite
 session; what refuses that is the write mode itself — "A project loosening its own confinement",
 above. A symlinked policy directory, or anything other than a directory in its place, is refused
 rather than read, so what is read is what was reviewed. The directory is also a closed
-namespace, decided before it has a second tenant: an entry the launcher does not read — a typo'd
+namespace, two tenants included: an entry the launcher does not read — a typo'd
 `egres/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
 same rule `egress/` applies inside itself (dot-named editor and OS metadata excepted; no
 configuration will ever be named that way). What remains is "A repository that ships a wide

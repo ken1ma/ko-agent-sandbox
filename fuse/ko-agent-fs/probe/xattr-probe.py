@@ -2,7 +2,7 @@
 """Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
 "Non-TODOs")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
 an execution vector — but the raw bind mount underneath *does* support `user.*` xattrs, so the
-question is not whether ENOSYS is safe. It is whether ENOSYS is a regression the tools notice.
+question is not whether ENOSYS is safe. It is whether ENOSYS is a cost the tools notice.
 
 Answer it by measurement, not by reasoning: run this in a filtered session and again in an
 unfiltered one, and compare. The unfiltered run is the control, exactly as the perf table's raw-bind

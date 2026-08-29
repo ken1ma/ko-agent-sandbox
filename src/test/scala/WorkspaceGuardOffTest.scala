@@ -1,4 +1,4 @@
-// The session that opted out of the workspace filter: `/workspace` bound directly, with
+// The guard=none session: `/workspace` bound directly, with
 // `.git/config` and `.git/hooks` pinned read-only. Every default session runs the filter instead,
 // so nothing else here can reach this path — the in-session probe skips its git rows whenever the
 // filter is on, which is always. The first two tests drive an ordinary repository's pins; the

@@ -28,7 +28,7 @@
 //    +-- .ko-agent-sandbox: the egress policy and the project's agent
 //    |      instructions, read on the host; the write mode is what keeps
 //    |      a session from writing the next one's — only guard=none
-//    |      still mounts it back RO (policyGuardVolume)
+//    |      mounts it back RO (policyGuardVolume)
 //    |
 //    +-- Podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini,
@@ -1429,8 +1429,8 @@ object AgentSandboxLauncher:
    * Outside a management verb's documented operands, the first non-option is the command and
    * ends launcher parsing; everything after it is passed verbatim. `--` is an optional escape
    * for a command that could look like a launcher option; no launcher option is parsed after
-   * the command. The renamed and removed spellings refuse with their replacement — stale
-   * authority configuration is never silently ignored.
+   * the command. An option this launcher does not parse refuses the launch rather than passing
+   * through — authority is never configured by a spelling that is not read.
    */
   def parseCommandLine(args: List[String]): Either[String, ParsedCommandLine] =
     def choose(option: String, value: String, choices: Vector[String]): Either[String, String] =
@@ -1896,8 +1896,8 @@ object AgentSandboxLauncher:
     // The project's egress/ is read here on the host and handed to the proxy at startup.
     // policyDirError and readPolicyFiles have the shapes, SECURITY.md the why. What keeps a
     // session from writing the next one's policy is the write mode itself: reject's read-only
-    // tree, or live's FUSE reserved-name rule; only guard=none still needs the read-only
-    // mount-back (policyGuardArgs below).
+    // tree, or live's FUSE reserved-name rule; only guard=none needs the read-only mount-back
+    // (policyGuardArgs below).
     val policyDir = projectDir.resolve(".ko-agent-sandbox")
     policyDirError(policyDir).foreach(fail(_))
 
@@ -1969,8 +1969,8 @@ object AgentSandboxLauncher:
     val inspectedHosts = inspectedHostsOf(policyResolvedText).fold(fail(_), identity)
 
     // The workspace FUSE filter, mounted before any volume is assembled (the lifecycle banner above
-    // ensureKoAgentFsMounted has the shape). Every session's enforcement now, on every platform;
-    // the .git pins below are what a session that opted out gets instead. The two are alternatives
+    // ensureKoAgentFsMounted has the shape). Every live session's enforcement, on every platform;
+    // the .git pins below are what a guard=none session gets instead. The two are alternatives
     // rather than a stack: the filter's policy is a strict superset of the pins', and preparing a
     // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
     // (observed as a container-start failure, not deduced).
@@ -2060,7 +2060,7 @@ object AgentSandboxLauncher:
         val (emptyFile, emptyDir) = emptyMountSources(stateRoot(os))
         gitGuardVolumes(projectDir.resolve(".git"), emptyFile, emptyDir).fold(fail(_), identity)
 
-    // guard=none is the one arrangement still needing the read-only mount-back of the policy
+    // guard=none is the one arrangement needing the read-only mount-back of the policy
     // directory: the raw tree is writable there, so without it a session could mkdir
     // .ko-agent-sandbox and write the policy governing the next one (SECURITY.md). Reject's tree
     // is read-only whole; the filter refuses the reserved name at any depth.
@@ -2578,8 +2578,8 @@ object AgentSandboxLauncher:
     if !created.ok then
       fail(s"error: could not create the sandbox container\n${created.err}")
 
-    // A failed spawn is not fatal — it downgrades the handover to the resident path (handOver), which is the fully
-    // supported Windows model, not a degraded one.
+    // A failed spawn is not fatal: the handover takes the resident path (handOver), the model Windows
+    // always uses.
     val reaperArmed =
       os != Os.Windows &&
         spawnReaper(
@@ -2590,7 +2590,7 @@ object AgentSandboxLauncher:
           clipboardHost,
         )
     if os != Os.Windows && !reaperArmed then
-      // Not a downgrade when the clipboard was asked for: the sandbox would wait the shim's bound
+      // Except when the clipboard was asked for: the sandbox would wait the shim's bound
       // on every paste for a broker that never comes. The cleanup hook removes what was created,
       // the never-started sandbox included (removeRunResources).
       if clipboard != "off" then

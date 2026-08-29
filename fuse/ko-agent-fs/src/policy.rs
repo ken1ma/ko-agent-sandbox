@@ -276,7 +276,7 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     // `sequencer` hold the rebase/cherry-pick todo, whose `exec` lines a later host
     // `git rebase --continue` runs — a file whose content git executes, exactly like a hook. They
     // fall through to Control below, so a rebase/am/sequenced cherry-pick cannot be left in
-    // /workspace for the host to resume. This note marks the spot where they must not be added back.
+    // /workspace for the host to resume. This note marks the spot where they must not be added.
 
     // Operational single files at the gitdir root. Refs and scratch messages git rewrites
     // constantly; the `.lock` siblings are git's own atomic-write temporaries.
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn mutating_control_state_is_denied_for_every_op() {
         // Every variant of Mutation, which is every mutation the FUSE layer routes here — the enum
-        // is trimmed to that set precisely so this list is exhaustive rather than aspirational.
+        // holds exactly that set, precisely so this list is exhaustive rather than aspirational.
         let hooks = ingit(&[b"hooks", b"pre-commit"]);
         for op in [
             Mutation::Write,

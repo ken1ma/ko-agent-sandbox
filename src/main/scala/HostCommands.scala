@@ -321,8 +321,8 @@ object HostCommands:
    * A write that would change neither the content nor the mode is skipped: a cache stamp that
    * misses on identical output must not churn the shared source's inode under a concurrent
    * launch's copy. A real change replaces the inode and reaches only the runs that copy after it —
-   * a mount cannot follow a file out from under it (SECURITY.md, "The opted-out mode's `.git`
-   * pins", has the measurement), which is why containers mount per-run copies rather than these
+   * a mount cannot follow a file out from under it (SECURITY.md, "The `.git` pins of
+   * `WORKSPACE_GUARD=none`", has the measurement), which is why containers mount per-run copies rather than these
    * files.
    *
    * The mode is requested at creation and set again after the write, and both halves earn their

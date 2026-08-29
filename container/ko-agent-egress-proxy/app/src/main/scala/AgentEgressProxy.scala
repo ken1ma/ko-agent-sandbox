@@ -339,8 +339,8 @@ object AgentEgressProxy:
      * that fails to start, with the one-line reason — a stack trace would
      * read as a proxy bug. Launches never get here (the launcher dry-runs
      * the same variables first); this is the standalone-image path, or
-     * inspection material that cannot be read or no longer names the
-     * inspected set.
+     * inspection material that cannot be read or names a set other than
+     * the one this policy inspects.
      */
     val policy =
       try

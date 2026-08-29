@@ -188,7 +188,7 @@ RUN set -euxo pipefail; \
         $SANDBOX_VOLUME_SEED/copilot; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
-    # `.gemini` is gemini-cli (deprecated) heritage
+    # agy reads its state from ~/.gemini, not a name of its own
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
     ln -s persistent-volume/copilot /home/nonroot/.copilot; \
     chown -h nonroot:nonroot \
@@ -366,7 +366,7 @@ RUN set -euxo pipefail; \
     HOME=/tmp/agy-smoke agy --help >/dev/null; \
     rm -rf /tmp/agy-smoke
 
-# All agy state lives under ~/.gemini (gemini-cli heritage), a symlink into
+# All agy state lives under ~/.gemini, a symlink into
 # the persistent volume. Unlike the others, permission prompts are not
 # pre-disabled: agy has no settings key for it, only
 # --dangerously-skip-permissions or the in-app /permissions, which persists.
@@ -450,7 +450,7 @@ RUN set -euxo pipefail; \
 # from the certificate mounted beside these instructions.
 #
 # sandbox-apt-get is the AGENTS-SANDBOX.md-documented package unpacker: real apt-get install can never
-# work on a read-only rootfs as uid 65532, and shipping the workaround beats retyping it.
+# work on a read-only rootfs as uid 65532, and shipping the unpacker beats retyping it.
 # sandbox-install-podman is the same bargain for the nesting opt-in: a fetch plus four config
 # files an agent would otherwise transcribe from the instructions, and a refusal when the session
 # was not launched with KO_AGENT_SANDBOX_NESTING=same-uid.

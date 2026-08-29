@@ -234,7 +234,7 @@ object KoAgentFs:
     System.err.println(selfTest.text)
 
   // ---------------------------------------------------------------------------
-  // The workspace FUSE filter's mount lifecycle (every session's, unless opted out)
+  // The workspace FUSE filter's mount lifecycle (every live session's under guard=fuse)
   //
   // One daemon per project, alive while the project has sessions: started on
   // demand, reused by concurrent sessions, restarted when the

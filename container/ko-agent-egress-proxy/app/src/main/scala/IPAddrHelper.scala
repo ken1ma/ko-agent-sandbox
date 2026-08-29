@@ -36,8 +36,8 @@ object IPAddrHelper:
    * TLD — no enumeration of the resolver's numeric forms to keep in step
    * with. ASCII digits only: Char.isDigit would accept non-ASCII digits.
    *
-   * The colon test below is unreachable through every current caller and kept
-   * anyway: normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which
+   * The colon test below is unreachable through every caller here:
+   * normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which
    * refuses a `:` outright, so an IPv6 literal is already a BadRequest
    * ("invalid hostname", a 400) before it can become the PolicyViolation the
    * message below describes. Keeping the test costs nothing and holds if this

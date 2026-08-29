@@ -108,7 +108,7 @@ object TLSHelper:
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
 
-      // Either direction is drift (SECURITY.md, "Who holds the CA key").
+      // Either direction is a leaf that does not match this policy (SECURITY.md, "Who holds the CA key").
       inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 

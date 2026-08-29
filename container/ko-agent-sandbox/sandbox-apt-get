@@ -14,8 +14,8 @@
 #
 # What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
 # users or setuid bits a package expects do not materialize. Like everything under ~, it is gone
-# when the session ends — if the same tool gets installed session after session, tell the user; the
-# durable fix is one line in the Containerfile.
+# when the session ends — if the same tool gets installed session after session, tell the user;
+# only the image installs it for good, one line in the Containerfile.
 set -eu
 
 root=$HOME/.local/deb

@@ -1,7 +1,6 @@
-// What remains launcher-owned after the per-file suites split off: the run/reset naming that
-// keeps projects apart, the configuration surface, the build verbs, and the documents the code
-// must stay in step with (the --help text's Environment section, SECURITY.md's forge list against
-// the proxy's source, the bundled context).
+// The launcher's own surface: the run/reset naming that keeps projects apart, the configuration
+// surface, the build verbs, and the documents the code must stay in step with (the --help text's
+// Environment section, SECURITY.md's forge list against the proxy's source, the bundled context).
 
 package agentsandbox.launcher
 
@@ -1224,7 +1223,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(pinnedRustVersion(context), "9.9.9")
 
-  test("option parsing: management verbs take the rest as operands, renamed spellings refuse"):
+  test("option parsing: management verbs take the rest as operands"):
     assertEquals(
       parseCommandLine(List("--proxy-log", "-f")),
       Right(ParsedCommandLine(None, None, Some(("--proxy-log", List("-f"))), Nil)),

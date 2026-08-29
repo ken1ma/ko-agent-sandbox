@@ -115,7 +115,7 @@ enforcement, and it acts at the moment the answer matters rather than at some ea
 
 ### No PATH-resolved host executables
 
-Resolved, not pending: the launcher resolves `podman` (and `selinuxenabled`) through `PATH`
+The launcher resolves `podman` (and `selinuxenabled`) through `PATH`
 entries that are absolute **and** outside the repository being sandboxed —
 `HostCommands.findOnPath` — and
 the reaper receives the resolved path as an argument, so no host-side invocation consults `PATH` or,

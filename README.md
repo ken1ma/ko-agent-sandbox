@@ -216,8 +216,8 @@ which is undecided. Until then the jar is built from a checkout — [Development
        `/etc/fuse.conf.ko-agent-sandbox.orig`, and declining prints the script to run yourself.
        One-time until the machine is recreated. Your native Linux host is never touched or
        prompted for.
-    1. Every session mounts through it; `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above) is the
-       opt-out, and a session that takes it says so on its first line.
+    1. Every session mounts through it unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above)
+       selects the mount pins, and a session that does says so on its `workspace:` line.
     1. One filter daemon per project, shared by that project's concurrent sessions and
        never across projects ("ko-agent-fs filter in the podman machine: reusing the existing
        mount"; "on the host" on Linux); when the project's last session ends, it is unmounted

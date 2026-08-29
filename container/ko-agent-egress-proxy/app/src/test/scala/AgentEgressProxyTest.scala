@@ -766,7 +766,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!HttpRequestHead.parse(ascii("GET /x HTTP/1.1\r\nHost: a.example\r\n\r\n")).expectsContinue)
 
   test("forwardResponseBody relays complete bodies and turns early EOF into TruncatedResponse"):
-    // The invisible-kill fix: an upstream close inside a declared length must become a loggable
+    // An upstream close inside a declared length must become a loggable
     // failure, never a quiet end the client can mistake for a completed response.
     def relay(bytes: Array[Byte], framing: BodyFraming): Array[Byte] =
       val out = java.io.ByteArrayOutputStream()

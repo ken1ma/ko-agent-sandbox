@@ -1,5 +1,5 @@
 // The workspace FUSE filter as the launcher drives it: source identity, install and consent
-// commands, the mount and reap scripts, and the opt-out that fails closed.
+// commands, the mount and reap scripts, and the guard selection (fuse | none) that fails closed.
 
 package agentsandbox.launcher
 
@@ -205,7 +205,7 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(home)
 
   test("a reap leaves a launch that has mounted but has no container yet"):
-    // The defect this closes: a marker is written at the mount, its container exists only once
+    // The failure this rules out: a marker is written at the mount, its container exists only once
     // the proxy is up, and a concurrent session's reap in between would prune the marker, find
     // none left and unmount under the launch. Deterministic because the stub podman answers "no
     // such container" for every marker — the state a launch in flight is indistinguishable from.

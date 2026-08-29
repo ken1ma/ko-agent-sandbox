@@ -268,7 +268,7 @@ launch gate. The gap:
 ## P2 — Launcher and deployment integration
 
 The filter is the **default** enforcement on every platform, ahead of that verification;
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` is the way back to the pin. What that leaves:
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the pin instead. What that leaves:
 
 - [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
   unverified — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows that
