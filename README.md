@@ -339,7 +339,8 @@ allowances:
     model-provider google         # the group, whatever its concrete endpoints become
 
 1. An absent directory or file is empty policy input; the launcher creates the directory only
-   as the pin fallback's empty mount target (SECURITY.md, "Silent changes to what you own").
+   as the empty mount target of `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (SECURITY.md, "Silent
+   changes to what you own").
    An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
    design, as does `deny-unless-model` under `bash`.
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,

@@ -1,7 +1,7 @@
 // The project directory as the launcher judges it: identity, the refused directories, and the
 // .git / .ko-agent-sandbox mount guards — where a wrong answer either exposes the host or lets a
-// session write the policy governing the next one. The .git pin tests cover the opt-out fallback
-// (KO_AGENT_SANDBOX_WORKSPACE_GUARD=none); default sessions get the FUSE filter, whose policy is
+// session write the policy governing the next one. The .git pin tests cover
+// KO_AGENT_SANDBOX_WORKSPACE_GUARD=none; default sessions get the FUSE filter, whose policy is
 // tested in fuse/ko-agent-fs.
 
 package agentsandbox.launcher
@@ -285,7 +285,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
     assertEquals(policyDirError(dir), None)
     assert(!Files.exists(dir))
-    // The pin fallback's mount-back alone creates it, because that mount must exist to guard a
+    // guard=none's mount-back alone creates it, because that mount must exist to guard a
     // writable raw tree.
     assertEquals(policyGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
     assert(Files.isDirectory(dir))

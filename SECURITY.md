@@ -60,8 +60,8 @@ the session's write mode is what keeps a session from writing the policy governi
 launch: under `--write=reject`
 the whole tree is read-only, and under the filter `.ko-agent-sandbox` is control state — the name
 cannot be created at any depth, under the same fold rule `.git` gets, and nothing under an
-existing one can be written. Only the pin fallback (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`),
-whose raw tree is writable, still needs the directory mounted back over itself read-only.
+existing one can be written. Only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is
+writable, still needs the directory mounted back over itself read-only.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
@@ -96,22 +96,22 @@ a shortcut would be tempting:
   yourself;
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
-- the **project tree** is never written by the launcher, with two enumerated exceptions, both
-  empty directories the pin fallback's read-only guard mounts require and both confined to it. An
-  empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
+- the **project tree** is never written by the launcher, with two enumerated exceptions, both empty
+  directories the read-only guard mounts of `WORKSPACE_GUARD=none` require and both confined to it.
+  An empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
   exist — without it its writable raw tree would let a session write the egress policy governing
-  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own
-  empty directory read-only over that name (so a sandbox cannot fabricate a repository for host
-  git to discover), and the container runtime creates the mount target it needs in the project.
-  The filter denies creating either name itself and needs no mount target, and reject's tree is
-  read-only whole, so those two modes write nothing;
-- the **project tree's SELinux labels**: on an enforcing host, the pin fallback's raw bind is
-  readable to the container only under `:Z`, which relabels the checkout recursively — a
-  host-metadata write, said in that mode's banner line every session it happens. The filter's
-  mountpoint needs no relabel, a permissive or disabled host reads unrelabeled and is never
-  relabeled, and `--write=reject` refuses on an enforcing host rather than relabeling, unless
-  the tree already carries a shared container-accessible context — a container type with no MCS
-  categories, since categories from a previous `:Z` are private to the container they were
+  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own empty
+  directory read-only over that name (so a sandbox cannot fabricate a repository for host git to
+  discover), and the container runtime creates the mount target it needs in the project. The filter
+  denies creating either name itself and needs no mount target, and reject's tree is read-only
+  whole, so those two modes write nothing;
+- the **project tree's SELinux labels**: on an enforcing host, the raw bind of
+  `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the checkout
+  recursively — a host-metadata write, said in that mode's `workspace:` line every session it
+  happens. The filter's mountpoint needs no relabel, a permissive or disabled host reads unrelabeled
+  and is never relabeled, and `--write=reject` refuses on an enforcing host rather than relabeling,
+  unless the tree already carries a shared container-accessible context — a container type with no
+  MCS categories, since categories from a previous `:Z` are private to the container they were
   minted for;
 
 What the launcher does write, it owns: its images, containers, networks and named volumes, its

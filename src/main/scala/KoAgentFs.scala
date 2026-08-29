@@ -531,7 +531,7 @@ object KoAgentFs:
     projectId: String,
     projectDir: Path,
     sandboxContainer: String,
-  ): String =
+  ): KoAgentFsMount =
     val home = koAgentFsHome(podman, os)
     val expected = bundledKoAgentFsSourceId()
     val version = run(koAgentFsVersionCommand(podman, os, home)*)
@@ -550,6 +550,13 @@ object KoAgentFs:
     val mount = run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
       fail(s"error: mounting the ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
-    // Which branch the script took — the user should not have to infer "reused" from silence.
-    System.err.println(s"${koAgentFsLabel(os)}: ${mount.text}")
-    s"$home/${koAgentFsMountDir(projectId)}/workspace"
+    KoAgentFsMount(
+      s"$home/${koAgentFsMountDir(projectId)}/workspace",
+      joined = mount.text.contains("reusing"),
+    )
+
+  /**
+   * Which branch the mount script took, carried into the launch summary — the user should not
+   * have to infer "joined" from silence.
+   */
+  final case class KoAgentFsMount(mountpoint: String, joined: Boolean)

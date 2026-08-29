@@ -289,7 +289,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
     // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
-    // included; the pin fallback's read-only mount-back answers EROFS. Either way the write must
+    // included; guard=none's read-only mount-back answers EROFS. Either way the write must
     // fail — a session able to create or edit the policy writes the allowlist governing the
     // *next* session (SECURITY.md).
     val policyDir = Paths.get("/workspace/.ko-agent-sandbox")
@@ -305,7 +305,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       s"the policy write was refused with '${refused.getMessage}', not by a boundary mechanism",
     )
 
-    // The pin fallback's mount, where present, must be read-only; under the filter there is no
+    // guard=none's mount, where present, must be read-only; under the filter there is no
     // mount to check — the rule lives in the filesystem itself.
     mountOptions(policyDir.toString).foreach: options =>
       assert(

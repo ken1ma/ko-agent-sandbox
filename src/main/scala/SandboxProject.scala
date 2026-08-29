@@ -255,7 +255,7 @@ object SandboxProject:
     s"${slugOf(dir.getFileName.toString)}-${projectHash(dir.toString, os)}"
 
   /**
-   * The opt-out fallback's enforcement: default sessions get the workspace
+   * Enforcement under guard=none: default sessions get the workspace
    * FUSE filter instead, whose policy is a strict superset of these pins
    * (AgentSandboxLauncher's header map has the split).
    *
@@ -365,11 +365,11 @@ object SandboxProject:
           )
 
   /**
-   * The pin fallback's mount at /workspace/.ko-agent-sandbox, which must exist even with no
+   * guard=none's mount at /workspace/.ko-agent-sandbox, which must exist even with no
    * policy shipped so that session cannot fabricate the policy governing the next one
    * (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only thing
    * standing between the session and the policy files. Created here when absent, not by podman,
-   * whose machine path refuses a missing bind source — a residue of the pin mode alone: the
+   * whose machine path refuses a missing bind source — a residue of guard=none alone: the
    * FUSE filter enforces the same rule by name (protected-sandbox-config) with no mount and no
    * created path, and reject mode's read-only tree needs neither. Call after policyDirError.
    */

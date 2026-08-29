@@ -21,14 +21,14 @@
 //    +-- current project -------------------> /workspace
 //    |     (--write selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with git and policy control
-//    |      state frozen (ensureKoAgentFsMounted; the .git pins of
-//    |      gitGuardVolumes are the opted-out fallback); reject is a
+//    |      state frozen (ensureKoAgentFsMounted; under guard=none the
+//    |      .git pins of gitGuardVolumes stand in); reject is a
 //    |      read-only bind of the raw tree)
 //    |
 //    +-- .ko-agent-sandbox: the egress policy and the project's agent
 //    |      instructions, read on the host; the write mode is what keeps
-//    |      a session from writing the next one's — only the pin
-//    |      fallback still mounts it back RO (policyGuardVolume)
+//    |      a session from writing the next one's — only guard=none
+//    |      still mounts it back RO (policyGuardVolume)
 //    |
 //    +-- Podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini,
@@ -1741,8 +1741,8 @@ object AgentSandboxLauncher:
 
     // Read before anything is created, like the egress policy below: a variable that would weaken
     // the boundary must not be discovered halfway through a launch that has already made resources.
-    // The pin fallback it selects exists only for live mode; reject binds the tree read-only and
-    // has nothing for either mechanism to guard.
+    // It selects among live mode's guards only; reject binds the tree read-only and has nothing
+    // for either mechanism to guard.
     val guard = workspaceGuard(env(WorkspaceGuardVariable)).fold(fail(_), identity)
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
@@ -1896,7 +1896,7 @@ object AgentSandboxLauncher:
     // The project's egress/ is read here on the host and handed to the proxy at startup.
     // policyDirError and readPolicyFiles have the shapes, SECURITY.md the why. What keeps a
     // session from writing the next one's policy is the write mode itself: reject's read-only
-    // tree, or live's FUSE reserved-name rule; only the pin fallback still needs the read-only
+    // tree, or live's FUSE reserved-name rule; only guard=none still needs the read-only
     // mount-back (policyGuardArgs below).
     val policyDir = projectDir.resolve(".ko-agent-sandbox")
     policyDirError(policyDir).foreach(fail(_))
@@ -2049,17 +2049,7 @@ object AgentSandboxLauncher:
 
     val filteredWorkspace = (writeMode, guard) match
       case ("reject", _) => None
-      case (_, "none") =>
-        // Said every session it happens, because this is the weaker boundary and silence about it
-        // is how a user forgets which one they are running under — the relabel notice included,
-        // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
-        System.err.println(
-          s"workspace guard: NONE by $WorkspaceGuardVariable; /workspace is bound directly, with " +
-            "only .git/config and .git/hooks pinned read-only, and only until the host rewrites one"
-            + (if selinuxEnforcing then "; the checkout is relabeled for container access (:Z)"
-               else ""),
-        )
-        None
+      case (_, "none") => None
       case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
 
     // gitGuardVolumes has the threat and the shapes. Reject mode needs no pin: the whole tree is
@@ -2070,8 +2060,8 @@ object AgentSandboxLauncher:
         val (emptyFile, emptyDir) = emptyMountSources(stateRoot(os))
         gitGuardVolumes(projectDir.resolve(".git"), emptyFile, emptyDir).fold(fail(_), identity)
 
-    // The pin fallback is the one arrangement still needing the read-only mount-back of the
-    // policy directory: the raw tree is writable there, so without it a session could mkdir
+    // guard=none is the one arrangement still needing the read-only mount-back of the policy
+    // directory: the raw tree is writable there, so without it a session could mkdir
     // .ko-agent-sandbox and write the policy governing the next one (SECURITY.md). Reject's tree
     // is read-only whole; the filter refuses the reserved name at any depth.
     val policyGuardArgs =
@@ -2373,11 +2363,22 @@ object AgentSandboxLauncher:
     // Both authorities and their relevant state, said every launch — and a policy that arrived
     // with the repository never takes effect unseen: the files as written, then the dry run's
     // counts, the proxy's own answers to exactly what is enforced.
-    System.err.println(writeMode match
-      case "reject" => "workspace: REJECT; /workspace is read-only this session"
-      case _ if filteredWorkspace.isDefined =>
-        "workspace: LIVE; one FUSE mount and daemon shared by this project's live sessions"
-      case _ => "workspace: LIVE; /workspace bound directly (pin fallback)")
+    // The workspace line is also where the mount step reports which branch it took, and where
+    // guard=none is said every session it happens: it is the weaker boundary, and silence about
+    // it is how a user forgets which one they are running under — the relabel notice included,
+    // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
+    System.err.println((writeMode, filteredWorkspace) match
+      case ("reject", _) => "workspace: REJECT; /workspace is read-only this session"
+      case (_, Some(mount)) =>
+        s"workspace: LIVE; ${koAgentFsLabel(os)}, " +
+          (if mount.joined then "joined the mount" else "mounted") +
+          " shared by this project's live sessions"
+      case (_, None) =>
+        s"workspace: LIVE; guard NONE by $WorkspaceGuardVariable — /workspace bound directly, " +
+          "with only .git/config and .git/hooks pinned read-only, and only until the host " +
+          "rewrites one" +
+          (if selinuxEnforcing then "; the checkout is relabeled for container access (:Z)"
+           else ""))
     if policyFiles.nonEmpty then
       policyFiles.foreach: (name, text) =>
         System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
@@ -2464,7 +2465,7 @@ object AgentSandboxLauncher:
       // Never :Z: the reject gate above established the tree is already container-readable, and
       // relabeling is the host write the mode withholds.
       case ("reject", _)                 => s"$projectDir:/workspace:ro"
-      case (_, Some(mountpoint))         => s"$mountpoint:/workspace:rw"
+      case (_, Some(mount))              => s"${mount.mountpoint}:/workspace:rw"
       case (_, None) if selinuxEnforcing => s"$projectDir:/workspace:rw,Z"
       case (_, None)                     => s"$projectDir:/workspace:rw"
 
