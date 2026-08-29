@@ -2,13 +2,17 @@
 
 Status: Beta on macOS, alpha on Linux and Windows
 
-The sandbox reaches no user files but the project directory (current directory), and by default
-no network but a launcher-owned baseline: the agents' model providers, plus a curated catalog of
-inspected sites limited to reads and named operations, such as `git clone`/`pull`, shaped per
-project by `.ko-agent-sandbox/egress/`. Narrower egress — one model provider, or none — and
-wider — public HTTPS — are each an explicit `--egress` profile.
+The AI agents in this sandbox
 
-    ┌─ Linux / macOS / Windows (WSL, native) ──────────────────────────────────────┐
+1. reach no user files except the project directory (current directory)
+1. reach, by default, no network except the launcher-owned baseline:
+    1. the model providers of the agents
+    1. a curated set of sites, limited to reads and named operations, such as `git clone`/`pull`,
+       shaped per project by `.ko-agent-sandbox/egress/`
+
+How it is put together:
+
+    ┌─ macOS / Linux / Windows (WSL, native) ──────────────────────────────────────┐
     │                                                                              │
     │  ┌─ launcher ──────────────────────────────────────────────────────────┐     │
     │  │  runs podman to manage the containers, volumes, and networks        │     │
@@ -18,7 +22,7 @@ wider — public HTTPS — are each an explicit `--egress` profile.
     │  │  the only user files the      │     │  agents' auth and config,     │     │
     │  │  sandbox can reach            │     │  kept across sessions;        │     │
     │  │                               │     │  ~/.claude ~/.codex ~/.gemini │     │
-    │  │                               │     │  ~/.copilot point into it     │     │
+    │  │                               │     │  ... point into it            │     │
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
     │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
     │        │ live, the default) with git control   │                             │
@@ -28,10 +32,9 @@ wider — public HTTPS — are each an explicit `--egress` profile.
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
     │  ┌─ sandbox container ────┴──────┐     ┌─ egress proxy container ──────┐     │
-    │  │  runs claude/codex/agy/copilot│     │  https only, profile-selected │     │
-    │  │  nonroot user, caps dropped,  │ (a) │  hosts, stateless;            │ (b) │
-    │  │  read-only rootfs             ├────>│  TLS-inspects restricted      ├─────┼─> Internet
-    │  │                               │     │  hosts: reads + named actions │     │
+    │  │  runs claude/codex/agy/...    │     │  https only, stateless,       │     │
+    │  │  nonroot user, caps dropped,  │ (a) │  TLS-inspects except model    │ (b) │
+    │  │  read-only rootfs             ├────>│  providers                    ├─────┼─> Internet
     │  └───────────────────────────────┘     └────┬──────────────────────────┘     │
     │  (a) internal network, no gateway           │                                │
     │  (b) only egress network                    │                                │
@@ -41,13 +44,16 @@ wider — public HTTPS — are each an explicit `--egress` profile.
     │  they are all removed (not reused)        └───────────────────────────┘      │
     └──────────────────────────────────────────────────────────────────────────────┘
 
+1. The intended workflow:
+    1. `git clone`/`pull`/`fetch` on the host first — the launcher passes none of your host
+       credentials in
+    1. run the agent in the sandbox: it should feel like running claude/codex/agy on the host,
+       just safer
+    1. review the changes, then `git commit`/`push` on the host
 1. The launcher refuses `$HOME` and its ancestors as the project directory
    (it would expose `~/.aws`, `~/.ssh`), along with the well-known home
    containers (`/home`, `/Users`, the Windows profiles root), and any path
    containing a dot-prefixed directory.
-1. To work with private repositories, `git clone`/`pull`/`fetch` on the host first:
-   the launcher passes none of your host credentials in.
-   Review the sandbox's changes and `commit`/`push` on the host.
 
 The sandbox image preinstalls:
 

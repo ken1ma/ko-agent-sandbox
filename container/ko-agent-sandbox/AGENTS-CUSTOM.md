@@ -14,7 +14,6 @@ add a population-level test, and do not report completion until every member is 
 Preserve the boundaries, such as scope and ownership, including how work is separated for review.
 If completing the request requires changing or crossing a boundary, name it and its consequence
 and ask.
-Never rewrite histories unless explicitly asked.
 
 
 # Writing style
@@ -85,3 +84,8 @@ Do not use one-letter names, except for
 2. names whose whole lifecycle is in view, in a block not expected to grow — though a caught
    exception is always `ex`, never `e`: some handler outgrows that, and one spelling beats two
 3. names established in the literature
+
+
+# git
+
+Do not change the git state: no `add` / `commit` / `rebase` / `push` unless explicitly asked.
