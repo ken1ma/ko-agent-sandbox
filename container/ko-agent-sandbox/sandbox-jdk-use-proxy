@@ -2,11 +2,12 @@
 # Give one JVM what this session's network needs: the egress proxy's inspection CA, and the proxy
 # itself.
 #
-# The image's own JDK has both already — the launcher merges the CA into its cacerts and the proxy
-# into its net.properties, and mounts the results read-only. This is for the JVMs the launcher
-# cannot reach: one the agent installed with `cs java --jvm temurin:25`, or any JDK unpacked by
-# hand. Untouched, such a JDK fails a dependency resolve twice over — no route to the proxy, and no
-# trust for the certificate an inspected host presents — with nothing to say why.
+# The image's own JDK has both already: the launcher runs this same script on it in a throwaway
+# container at launch and mounts the two files it wrote read-only (JdkTrust.scala). In a session it
+# is for the JVMs the launcher cannot reach: one the agent installed with `cs java --jvm
+# temurin:25`, or any JDK unpacked by hand. Untouched, such a JDK fails a dependency resolve twice
+# over — no route to the proxy, and no trust for the certificate an inspected host presents — with
+# nothing to say why.
 #
 #   sandbox-jdk-use-proxy                  # $JAVA_HOME
 #   sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
@@ -19,8 +20,23 @@
 # never enters this container (SECURITY.md, "Who holds the CA key").
 set -eu
 
-PROXY_HOST=egress-proxy
-PROXY_PORT=3128
+# The proxy's address is read from HTTPS_PROXY rather than spelled here, so the launcher — which
+# sets that variable for every session and for its own run of this script — is its only home.
+case "${HTTPS_PROXY:-}" in
+    http://*) ;;
+    *)
+        echo "${0##*/}: HTTPS_PROXY is not an http:// URL, so there is no proxy to point the JDK at" >&2
+        exit 2
+        ;;
+esac
+proxy_address=${HTTPS_PROXY#http://}
+proxy_address=${proxy_address%/}
+PROXY_HOST=${proxy_address%:*}
+PROXY_PORT=${proxy_address##*:}
+if [ -z "$PROXY_HOST" ] || [ "$PROXY_HOST" = "$PROXY_PORT" ]; then
+    echo "${0##*/}: HTTPS_PROXY=$HTTPS_PROXY names no host:port" >&2
+    exit 2
+fi
 
 CA=/etc/ko-agent-sandbox/egress-ca.crt
 ALIAS=ko-agent-sandbox-egress
@@ -47,7 +63,9 @@ fi
 
 # The proxy, written where the JDK's own ProxySelector reads it. JAVA_TOOL_OPTIONS would also
 # work, and adds a banner to every JVM start that corrupts output other tools parse; this sets no
-# system property at all. Appended, because a properties file takes the last assignment of a key.
+# system property at all. Appended, because a properties file takes the last assignment of a key;
+# http.nonProxyHosts is left as shipped, since it already spells the loopback exemptions NO_PROXY
+# carries.
 set_proxy() {
     net=$JAVA_HOME/conf/net.properties
     # A failure, not a report: every Java 9+ runtime ships this file, and without the proxy the

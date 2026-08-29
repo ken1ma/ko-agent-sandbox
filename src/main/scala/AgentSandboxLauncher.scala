@@ -11,7 +11,7 @@
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
 //   BouncyCastleHelper.scala    building certificates and PEM (its header has the import rule)
-//   JdkTrust.scala              making JVMs trust the inspection CA — locate, merge, mount
+//   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
 //   FFMHelper.scala             the execvp downcall
 //
 // This file is the canonical description of what the boundary is made of:
@@ -143,7 +143,7 @@ object AgentSandboxLauncher:
   /**
    * How the sandbox addresses the proxy: a name `--add-host` puts in /etc/hosts, so no resolver is
    * involved, and the port the proxy listens on. Named apart rather than only spelled into a URL,
-   * because a JVM wants them as two properties rather than one (JdkTrust.jdkProxyMount).
+   * because a JVM wants them as two properties rather than one (JdkTrust.jdkJavaOpts).
    */
   val EgressProxyHost = "egress-proxy"
   val EgressProxyPort = 3128
@@ -2097,7 +2097,7 @@ object AgentSandboxLauncher:
     val agentDocStamp =
       s"$imageId $writeMode ${sha256Hex(policyResolvedText)} ${agentInstructions.fold("image")(sha256Hex)}"
 
-    val (proxyTlsArgs, sandboxTlsArgs, agentDocArgs, jdkProxy) = withFileLock(tlsDir.resolve(".lock")):
+    val (proxyTlsArgs, sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
       // Run copies whose runs are provably gone — and past the launch bound, so a launch between
       // its copies and its `podman create` is never swept — leave with this launch rather than
       // accumulating; the resets take the rest.
@@ -2176,11 +2176,11 @@ object AgentSandboxLauncher:
         writeReadable(bundleStampFile, bundleStamp + "\n")
 
       // The JVM reads a `cacerts` keystore and no proxy variable, so the bundle above and the
-      // HTTPS_PROXY family cannot reach it; JdkTrust.scala is that whole story, and None means
+      // HTTPS_PROXY family cannot reach it; JdkTrust.scala is that whole story, and empty means
       // the image ships no JDK.
-      val cacertsMount = jdkTrustMount(podman, image, imageEnv, tlsDir, bundleStamp, caCertFile)
-      val netPropertiesMount =
-        jdkProxyMount(podman, image, imageEnv, tlsDir, imageId, EgressProxyHost, EgressProxyPort)
+      val jdkFileMounts = jdkMounts(
+        podman, image, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
+      )
 
       if readIfPresent(agentDocFile).forall(_.isEmpty)
         || firstLine(agentDocStampFile) != agentDocStamp
@@ -2235,16 +2235,15 @@ object AgentSandboxLauncher:
       // The CA on its own, for sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
       // the launcher's reach, and that script hands it this file. No new exposure — the same
       // certificate is already inside the bundle above — it just saves a script parsing one out.
-      val sandboxEgressCa = "/etc/ko-agent-sandbox/egress-ca.crt"
       val sandboxTls = Vector(
         s"--volume=${carried(bundleFile)}:$sandboxCaBundle:ro",
-        s"--volume=${carried(caCertFile)}:$sandboxEgressCa:ro",
+        s"--volume=${carried(caCertFile)}:$SandboxEgressCaPath:ro",
         s"--env=SSL_CERT_FILE=$sandboxCaBundle",
         s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
         s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
         s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
         s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
-      ) ++ cacertsMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector
+      ) ++ jdkFileMounts.map((file, at) => s"--volume=${carried(file)}:$at:ro")
         // The same facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
         ++ javaHomeOf(imageEnv).map(home =>
           s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
@@ -2254,7 +2253,6 @@ object AgentSandboxLauncher:
         proxyTls,
         sandboxTls,
         Vector(s"--volume=${carried(agentDocFile)}:$agentDocPath:ro"),
-        netPropertiesMount.map((file, at) => s"--volume=${carried(file)}:$at:ro").toVector,
       )
 
     // -----------------------------------------------------------------------
@@ -2402,7 +2400,7 @@ object AgentSandboxLauncher:
       // The entrypoint holds its machine-health warning on screen under the same setting as
       // holdForReader, for the same reason: the TUI clears it otherwise.
       s"--env=$SessionStartVariable=$sessionStartMode",
-    ) ++ sandboxTlsArgs ++ jdkProxy ++ agentDocArgs ++ policyGuardArgs ++ gitGuardArgs
+    ) ++ sandboxTlsArgs ++ agentDocArgs ++ policyGuardArgs ++ gitGuardArgs
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
     // they apply: the weaker boundary must never be the silent one.

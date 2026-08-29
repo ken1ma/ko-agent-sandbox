@@ -445,10 +445,9 @@ RUN set -euxo pipefail; \
 # text must change with the image. Absolute, because a relative link would
 # have to climb out of the volume.
 #
-# The launcher gives the image's JDK this session's CA and proxy by mounting over its own cacerts
-# and net.properties, but it can only reach the JDK it shipped. sandbox-jdk-use-proxy does both for
-# a JVM the agent installs itself (`cs java`), from the certificate mounted beside these
-# instructions.
+# sandbox-jdk-use-proxy gives one JDK this session's CA and proxy. The launcher runs it on the
+# image's own JDK and mounts the result; the agent runs it on a JVM it installs itself (`cs java`),
+# from the certificate mounted beside these instructions.
 #
 # sandbox-apt-get is the AGENTS-SANDBOX.md-documented package unpacker: real apt-get install can never
 # work on a read-only rootfs as uid 65532, and shipping the workaround beats retyping it.

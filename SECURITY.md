@@ -562,20 +562,21 @@ plus this project's CA, mounted over `/etc/ssl/certs/ca-certificates.crt`. `SSL_
 file, for the tools that carry their own trust store rather than reading the system one.
 
 The image's JDK is covered by the same technique one layer over, because it reads none of the
-above: a JVM consults a `cacerts` keystore, so the launcher takes the image's own store, adds this
-project's CA, and mounts the result read-only over `$JAVA_HOME/lib/security/cacerts` — with
-`JAVA_HOME` read from the image's own environment, so the launcher never hardcodes the
-arch-dependent Temurin directory and an image without a JDK simply skips the mount. The store is
-written back in the format it arrived in, and every root the image shipped survives the merge:
-dropping one would be the failure that stays invisible until something needs a public CA, so it is
-what the merge is tested on. Merged at launch rather than baked in, since the per-project CA
-postdates the image.
+above: a JVM consults a `cacerts` keystore and a `net.properties` file. The image ships
+`sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that JDK's own `keytool`
+and appends the proxy to its `net.properties`; the launcher runs it on the image's own JDK in a
+throwaway container with no network, copies the two files out, and mounts them read-only over the
+originals — with `JAVA_HOME` read from the image's own environment, so the launcher never
+hardcodes the arch-dependent Temurin directory and an image without a JDK simply skips the mounts.
+Every root the image shipped survives: dropping one would be the failure that stays invisible until
+something needs a public CA, so it is what the mounted store is tested on. Prepared at launch
+rather than baked in, since the per-project CA postdates the image.
 
 Two kinds of program stay outside all of it, neither reachable from the launcher. A JVM the agent
-installs itself (`cs java --jvm ...`) brings its own untouched store — the image ships
-`sandbox-jdk-use-proxy`, which gives one such JDK both the CA and the proxy from inside, so the gap
-is one command rather than a dead end; the certificate it reads is mounted beside the agent
-instructions, and is the same public one already inside the bundle. A GraalVM native image — the
+installs itself (`cs java --jvm ...`) brings its own untouched store — the same
+`sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, so the gap is one command
+rather than a dead end; the certificate it reads is mounted beside the agent instructions, and is
+the same public one already inside the bundle. A GraalVM native image — the
 `cs` and `scala-cli` launchers — has no `conf/` and reads no variable, so the same facts travel as
 `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand. And a statically
 linked binary keeps its compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.

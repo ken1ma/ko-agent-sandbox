@@ -206,7 +206,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
     // A JVM reads none of the HTTPS_PROXY family, so the image's JDK is pointed at the proxy
-    // through its own net.properties instead (JdkTrust.jdkProxyMount). Driven as a program rather
+    // through its own net.properties instead (JdkTrust.jdkMounts). Driven as a program rather
     // than asserted against the mounted file, because what matters is that the default
     // ProxySelector acts on it — and that it does so without setting a system property, which is
     // the whole reason this is not JAVA_TOOL_OPTIONS.
@@ -235,6 +235,19 @@ class SessionBoundaryTest extends munit.FunSuite:
         s"the proxy arrived as a system property, which prints a banner on every JVM: ${answer.text}",
       )
     finally deleteRecursively(probe)
+
+  test("the image JDK's trust store holds this project's CA beside every root it shipped"):
+    inSession()
+    // Dropping a shipped root would be the silent half of preparing the store wrong: the sandbox
+    // would keep working until something needed a public CA. The shipped store is under the
+    // mount, so the check is for a root every Temurin ships and for a count no per-project
+    // addition could reach on its own.
+    val listing = run("keytool", "-list", "-cacerts", "-storepass", "changeit")
+    assert(listing.ok, s"keytool could not read the mounted store: ${listing.err}")
+    val aliases = listing.text.linesIterator.filter(_.contains("trustedCertEntry")).map(_.takeWhile(_ != ',')).toVector
+    assert(aliases.contains("ko-agent-sandbox-egress"), "this project's CA is not in the store")
+    assert(aliases.exists(_.contains("isrgrootx1")), s"a shipped root is gone: ${aliases.take(5)}")
+    assert(aliases.size > 100, s"the store holds ${aliases.size} roots, not the image's set")
 
   test("a git host serves an anonymous clone"):
     inSession()
@@ -317,7 +330,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // /etc/ssl/certs/adoptium/cacerts and podman resolves a bind target before mounting it.
     val alsoExpected =
       raw"^/etc/(hosts|hostname|resolv\.conf)$$|^/etc/(ko-agent-sandbox|ssl/certs)($$|/)".r.unanchored
-    // The JDK's proxy configuration, the other half of jdkTrustMount's technique. Unlike `cacerts`
+    // The JDK's proxy configuration, the other half of jdkMounts' technique. Unlike `cacerts`
     // this one is a real file, so its mount stays where the launcher put it and is named from
     // JAVA_HOME rather than matched by a fixed prefix.
     val netProperties = env("JAVA_HOME").map(_ + "/conf/net.properties")

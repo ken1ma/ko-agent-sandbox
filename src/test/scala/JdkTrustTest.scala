@@ -1,28 +1,26 @@
-// Making JVMs trust the inspection CA: locating the image's JDK, and the trust-store merge that
-// must keep every root the image shipped.
+// Making JVMs reach the proxy: locating the image's JDK, and the -D spelling of what
+// sandbox-jdk-use-proxy writes into a JDK's files. That script itself is exercised by
+// SessionBoundaryTest, on the image's JDK it prepared.
 
 package agentsandbox.launcher
 
-import java.security.KeyStore
-import java.security.cert.{CertificateFactory, X509Certificate}
+import java.nio.file.{Files, Paths}
 
-import BouncyCastleHelper.*
 import JdkTrust.*
 
 class JdkTrustTest extends munit.FunSuite:
 
-  private def parse(pem: String): X509Certificate =
-    CertificateFactory
-      .getInstance("X.509")
-      .generateCertificate(java.io.ByteArrayInputStream(pem.getBytes("US-ASCII")))
-      .asInstanceOf[X509Certificate]
-
-  test("the -D words carry every fact net.properties carries, plus the trust store"):
-    // Two spellings of one route, for the JVMs that read the file and the ones that read none;
-    // a key in one and not the other is a JVM that reaches the proxy and one that does not.
+  test("the -D words carry every fact sandbox-jdk-use-proxy writes, plus the trust store"):
+    // Two spellings of one route, for the JVMs that read the file and the ones that read none; a
+    // key in one and not the other is a JVM that reaches the proxy and one that does not. The
+    // script's spelling is read from its source: the properties block it appends is the one
+    // consumed by the JDK's ProxySelector.
     val properties = proxyProperties("egress-proxy", 3128)
-    val lines = netProxyProperties("egress-proxy", 3128).linesIterator.filterNot(_.startsWith("#")).filter(_.nonEmpty)
-    assertEquals(lines.toVector, properties.map((key, value) => s"$key=$value"))
+    val script = Files.readString(Paths.get("container/ko-agent-sandbox/sandbox-jdk-use-proxy"))
+    val appended = script.linesIterator
+      .filter(line => line.matches("""https?\.proxy(Host|Port)=.*"""))
+      .map(_.replace("$PROXY_HOST", "egress-proxy").replace("$PROXY_PORT", "3128"))
+    assertEquals(appended.toVector, properties.map((key, value) => s"$key=$value"))
     val words = jdkJavaOpts("/opt/jdk", "egress-proxy", 3128).split(" ").toVector
     assertEquals(
       words,
@@ -40,33 +38,3 @@ class JdkTrustTest extends munit.FunSuite:
     assertEquals(javaHomeOf("JAVA_HOME="), None)
     // Not a prefix match on some other variable that happens to end in JAVA_HOME.
     assertEquals(javaHomeOf("XJAVA_HOME=/nope"), None)
-
-  test("the JDK trust store gains this project's CA and keeps every root it shipped with"):
-    // Dropping a shipped root would be the silent half of getting it wrong: the sandbox would keep
-    // working until something needed a public CA.
-    val shipped = KeyStore.getInstance("PKCS12")
-    shipped.load(null, CacertsPassword)
-    shipped.setCertificateEntry("a-public-root", parse(mintCa("a-public-root").certificatePem))
-    shipped.setCertificateEntry("another-root", parse(mintCa("another-root").certificatePem))
-    val asShipped = java.io.ByteArrayOutputStream()
-    shipped.store(asShipped, CacertsPassword)
-
-    val ca = mintCa("proj")
-    val merged = KeyStore.getInstance("PKCS12")
-    merged.load(
-      java.io.ByteArrayInputStream(
-        mergeCacerts(asShipped.toByteArray, ca.certificatePem, "ko-agent-sandbox-egress"),
-      ),
-      CacertsPassword,
-    )
-
-    assert(merged.containsAlias("a-public-root"), "a shipped root was dropped")
-    assert(merged.containsAlias("another-root"), "a shipped root was dropped")
-    assertEquals(merged.getCertificate("ko-agent-sandbox-egress"), parse(ca.certificatePem))
-    assertEquals(merged.size, 3)
-
-  test("a keystore the launcher cannot read is refused rather than replaced"):
-    // The store is the image's; if it arrives in a shape neither type reads, the launch has to say
-    // so. Writing a fresh keystore holding only our CA would strip every public root instead.
-    intercept[IllegalArgumentException]:
-      mergeCacerts("not a keystore".getBytes("UTF-8"), mintCa("proj").certificatePem, "x")
