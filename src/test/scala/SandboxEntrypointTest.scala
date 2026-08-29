@@ -154,6 +154,14 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
     assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md"))
 
+  test("a home with no persistent-volume — a container run by hand, not a session — still runs the command"):
+    val (seed, home) = fixture()
+    Files.delete(home.resolve("persistent-volume"))
+    val (status, output) = run(seed, home)
+    assertEquals(status, 0, output)
+    assertEquals(output, "a b c ")
+    assert(!Files.exists(home.resolve("persistent-volume")))
+
   test("a healthy machine prints nothing before the command"):
     val (seed, home) = fixture()
     val (status, output) = run(seed, home)

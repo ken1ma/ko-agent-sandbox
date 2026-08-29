@@ -20,16 +20,23 @@ volume=$HOME/persistent-volume
 # The tests substitute a fixture for /proc; nothing else sets it.
 proc=${SANDBOX_PROC:-/proc}
 
-for entry in "$seed"/*; do
-    name=$(basename "$entry")
-    [ -e "$volume/$name" ] && continue
-    staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
-    # Do not preserve metadata: on SELinux, the image seed carries this container's private MCS
-    # categories. Copying that context into the shared volume makes the directory unreadable to
-    # every later session. The staging directory and new children inherit the volume's shared label.
-    cp -R "$entry/." "$staging/"
-    mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
-done
+# No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the
+# launcher mounts the named volume over it — so its absence means a container run by hand, likely
+# as root, whose $HOME holds none. Seeding would only abort on the mktemp under set -eu and take
+# the command down with it, over state such a container was never going to keep.
+if [ -d "$volume" ]; then
+    for entry in "$seed"/*; do
+        name=$(basename "$entry")
+        [ -e "$volume/$name" ] && continue
+        staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
+        # Do not preserve metadata: on SELinux, the image seed carries this container's private MCS
+        # categories. Copying that context into the shared volume makes the directory unreadable to
+        # every later session. The staging directory and new children inherit the volume's shared
+        # label.
+        cp -R "$entry/." "$staging/"
+        mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
+    done
+fi
 
 # kB, as /proc/meminfo counts; empty when the field is absent.
 meminfo() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/meminfo" 2>/dev/null; }

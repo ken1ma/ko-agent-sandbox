@@ -2163,8 +2163,10 @@ object AgentSandboxLauncher:
       val bundleStamp = s"$imageId $caFingerprint"
 
       if readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp then
+        // --entrypoint=: what lands in the bundle must be cat's stdout alone, whatever ENTRYPOINT
+        // the image declares (JdkTrust.jdkMounts has the argument).
         val imageBundle = run(
-          podman, "run", "--rm", "--pull=never", "--network=none",
+          podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
           image, "cat", "/etc/ssl/certs/ca-certificates.crt",
         )
         if !imageBundle.ok || imageBundle.out.isEmpty then
@@ -2187,8 +2189,10 @@ object AgentSandboxLauncher:
       then
         val imagePart =
           if agentInstructions.isDefined then "/etc/ko-agent-sandbox/AGENTS-SANDBOX.md" else agentDocPath
+        // --entrypoint= for the same reason as the bundle read above.
         val imageDoc = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", image, "cat", imagePart,
+          podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
+          image, "cat", imagePart,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")

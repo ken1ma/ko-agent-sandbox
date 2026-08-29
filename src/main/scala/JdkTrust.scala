@@ -76,8 +76,14 @@ object JdkTrust:
         // `cp -L` first: the Debian Temurin packages link `cacerts` into /etc/ssl/certs, and a copy
         // out of the container must carry the store, not the link.
         val prepared = "/prepared-jdk"
+        // --entrypoint=: this container depends on nothing but sh and the script. The stock
+        // sandbox-entrypoint would come through — it skips seeding when the root this runs as has
+        // no $HOME/persistent-volume — but that guard is the stock image's, and a
+        // KO_AGENT_SANDBOX_IMAGE promises only to ship sandbox-jdk-use-proxy, not an ENTRYPOINT
+        // that tolerates this container or execs its arguments at all. Nothing an entrypoint does
+        // is for this container anyway.
         val created = run(
-          podman, "create", "--pull=never", "--network=none", "--user=0",
+          podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
           s"--volume=$caCertFile:$SandboxEgressCaPath:ro",
           s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
           image, "sh", "-euc",
