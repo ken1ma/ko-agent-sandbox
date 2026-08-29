@@ -275,6 +275,11 @@ object ContainerfileSources:
    * so putting --pull=always on their builds would also look for those local names in registries.
    * Bare `pull` has always semantics; spelling that as --policy=always requires Podman 5.6 for no
    * behavior change. Do not use `newer`: it suppresses pull errors when a local image exists.
+   *
+   * --quiet, because the default output answers the wrong question: it is the copier's per-layer
+   * report, printed for every layer before the store is asked whether it already holds it, so an
+   * unchanged image and a fresh download look alike. What is wanted is whether the image changed,
+   * and podman does not say; --quiet leaves the image id, and runBuilds adds the verdict.
    */
   def remoteImagePullCommands(podman: String, images: Vector[String]): Vector[Vector[String]] =
-    images.map(image => Vector(podman, "pull", image))
+    images.map(image => Vector(podman, "pull", image, "--quiet"))

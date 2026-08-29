@@ -43,6 +43,32 @@ object HostCommands:
     def text: String = String(out, StandardCharsets.UTF_8).stripLineEnd
     def ok: Boolean = exit == 0
 
+  /**
+   * A command echoed before it runs, in xtrace's form: `+ ` and then the words, each quoted as
+   * sh would need to read it back — so a multi-line script argument prints as the one quoted
+   * word it is, not as lines that look like commands of their own. The marker is what tells a
+   * command from the output that follows it; the launcher's own lines carry a `label:` instead,
+   * and a subprocess's carry neither.
+   *
+   * The resolved podman is shown by its bare name, since the `using:` line said the path once
+   * when it was resolved — and only then: an unannounced path stays spelled out.
+   */
+  def echoCommand(command: Seq[String]): Unit =
+    System.err.println(renderCommand(command, announcedPodman))
+
+  /** The echoed line; `announcedPodman` is the path the `using:` line said, or None before it has. */
+  def renderCommand(command: Seq[String], announcedPodman: Option[String]): String =
+    val words = command.toVector
+    val shown =
+      if words.headOption.exists(announcedPodman.contains) then "podman" +: words.tail else words
+    "+ " + shown.map(shellWord).mkString(" ")
+
+  private val BareWord = "[A-Za-z0-9_@%+=:,./-]+".r
+
+  /** The word as sh reads it back: bare where sh would, single-quoted otherwise. */
+  def shellWord(word: String): String =
+    if BareWord.matches(word) then word else "'" + word.replace("'", "'\\''") + "'"
+
   def run(command: String*): Run =
     val process = ProcessBuilder(command*).start()
     // stdin is closed at once, so a child that unexpectedly prompts reads EOF and fails loudly
@@ -159,7 +185,7 @@ object HostCommands:
    * podman at all.
    */
   lazy val podman: String =
-    findOnPath("podman", env("PATH").getOrElse(""), currentOs)
+    val found = findOnPath("podman", env("PATH").getOrElse(""), currentOs)
       .map(_.toString)
       .getOrElse(
         fail(
@@ -172,6 +198,12 @@ object HostCommands:
           127,
         ),
       )
+    // Said once, here, so every echoed command can then say just `podman` (echoCommand).
+    System.err.println(s"using: $found")
+    announcedPodman = Some(found)
+    found
+
+  @volatile private var announcedPodman: Option[String] = None
 
   def readIfPresent(path: Path): Option[String] =
     if Files.isRegularFile(path) then Some(Files.readString(path)) else None

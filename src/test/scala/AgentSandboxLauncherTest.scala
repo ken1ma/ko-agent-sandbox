@@ -359,10 +359,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(
       remoteImagePullCommands("podman", buildImages),
-      buildImages.map(image => Vector("podman", "pull", image)),
+      buildImages.map(image => Vector("podman", "pull", image, "--quiet")),
     )
     buildCommands.foreach: command =>
       assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
+
+  test("an echoed command quotes each word as sh reads it, so a script argument stays one word"):
+    import HostCommands.shellWord
+    assertEquals(shellWord("/opt/podman/bin/podman"), "/opt/podman/bin/podman")
+    assertEquals(shellWord("--format"), "--format")
+    assertEquals(shellWord("{{.Id}}"), "'{{.Id}}'")
+    assertEquals(shellWord("set -eu\npodman rm x >/dev/null"), "'set -eu\npodman rm x >/dev/null'")
+    assertEquals(shellWord("it's"), "'it'\\''s'")
+    assertEquals(shellWord(""), "''")
+    import HostCommands.renderCommand
+    val pull = Vector("/opt/podman/bin/podman", "pull", "docker.io/library/debian:13.6-slim", "--quiet")
+    assertEquals(renderCommand(pull, Some("/opt/podman/bin/podman")), "+ podman pull docker.io/library/debian:13.6-slim --quiet")
+    assertEquals(renderCommand(pull, None), "+ /opt/podman/bin/podman pull docker.io/library/debian:13.6-slim --quiet")
+    assertEquals(renderCommand(Vector("rm", "-rf", "/a b"), Some("/opt/podman/bin/podman")), "+ rm -rf '/a b'")
+
+  test("a --quiet pull's verdict comes from the image id before and after"):
+    val old = "sha256:7e3898f7b011a107d0ef7393d5f604a6e0c0ff05ac4f2476630a8af21059ec9b"
+    val now = "sha256:e46eecd22d3291011dd3f0b1c627d5a7222406fc1429e537bf0e6a2bd9f55c92"
+    assertEquals(pullVerdict(Some(old), Some(old)), "unchanged")
+    assertEquals(pullVerdict(Some(old), Some(now)), "updated from 7e3898f7b011")
+    assertEquals(pullVerdict(None, Some(now)), "new on this machine")
 
   test("remote image parsing reads every shape the bundled Containerfiles use"):
     assertEquals(

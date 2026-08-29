@@ -749,16 +749,24 @@ object AgentSandboxLauncher:
              |too. Remove $image, then rerun the same launcher verb.""".stripMargin
         )
 
+  /**
+   * Each command echoed before it runs, so what follows is what podman prints for exactly that
+   * line. A build's output says where its cache hit; a --quiet pull prints only the image id, so
+   * the launcher reads the id before and after and says whether the tag moved, as its own
+   * `pull:` line.
+   */
   def runBuilds(context: Path, commands: Vector[Vector[String]]): Unit =
     commands.foreach: command =>
-      System.err.println(command.mkString(" "))
+      echoCommand(command)
+      val pulled = if command.lift(1).contains("pull") then command.lift(2) else None
+      val before = pulled.flatMap(imageId(command.head, _))
       val exit = ProcessBuilder(command*)
         .directory(context.toFile)
         .inheritIO()
         .start()
         .waitFor()
       if exit != 0 then
-        if command.lift(1).contains("pull") then
+        if pulled.isDefined then
           deleteRecursively(context)
           fail(s"error: image refresh failed: ${command.mkString(" ")}", exit)
         else
@@ -767,7 +775,22 @@ object AgentSandboxLauncher:
               s"build context retained at $context",
             exit,
           )
+      pulled.foreach: image =>
+        System.err.println("pull: " + pullVerdict(before, imageId(command.head, image)))
     deleteRecursively(context)
+
+  /** The local image's id, or None where there is no such image. */
+  private def imageId(podman: String, image: String): Option[String] =
+    val inspected = run(podman, "image", "inspect", "--format", "{{.Id}}", image)
+    Option.when(inspected.ok && inspected.text.nonEmpty)(inspected.text)
+
+  /** What a pull did to the local image, from its id before and after. */
+  def pullVerdict(before: Option[String], after: Option[String]): String =
+    (before, after) match
+      case (Some(old), Some(now)) if old == now => "unchanged"
+      case (Some(old), Some(_)) => s"updated from ${old.stripPrefix("sha256:").take(12)}"
+      case (None, Some(_)) => "new on this machine"
+      case (_, None) => "no local image after the pull"
 
   private def buildContextReader(context: Path): String => String =
     relative => Files.readString(context.resolve(relative))
@@ -955,7 +978,7 @@ object AgentSandboxLauncher:
 
     System.err.println(s"venue: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
     val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
-    System.err.println(unprivileged.mkString(" "))
+    echoCommand(unprivileged)
     val exit = ProcessBuilder(unprivileged*).inheritIO().start().waitFor()
     if exit != SelfTestVenueExit then sys.exit(exit)
 
@@ -967,7 +990,7 @@ object AgentSandboxLauncher:
         "(fuse/ko-agent-fs/doc/verification-log.md).",
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
-    System.err.println(privileged.mkString(" "))
+    echoCommand(privileged)
     sys.exit(ProcessBuilder(privileged*).inheritIO().start().waitFor())
 
   /** The podman build the venue record names, so a run is evidence rather than an outcome. */
@@ -977,7 +1000,7 @@ object AgentSandboxLauncher:
 
   /** A command that is printed before it runs; returns false on failure. */
   def stepOk(command: String*): Boolean =
-    System.err.println(command.mkString(" "))
+    echoCommand(command)
     ProcessBuilder(command*).inheritIO().start().waitFor() == 0
 
   /**
@@ -1156,17 +1179,17 @@ object AgentSandboxLauncher:
       .foreach(network => remove(podman, "network", "rm", network))
 
     val tls = tlsStateRoot(os).resolve(id)
-    System.err.println(s"rm -rf $tls")
+    echoCommand(Vector("rm", "-rf", tls.toString))
     deleteRecursively(tls)
 
     val policyCache = policyStateRoot(os).resolve(id)
-    System.err.println(s"rm -rf $policyCache")
+    echoCommand(Vector("rm", "-rf", policyCache.toString))
     deleteRecursively(policyCache)
 
     // The audit trail goes with the rest of the project's state: "reset" means "as if this project had never been
     // opened". Copy the files out first if a session's refusals still matter.
     val logs = logStateRoot(os).resolve(id)
-    System.err.println(s"rm -rf $logs")
+    echoCommand(Vector("rm", "-rf", logs.toString))
     deleteRecursively(logs)
 
     // The project's filter daemon and mountpoint, where the feature has been used. Best effort by
@@ -1202,7 +1225,7 @@ object AgentSandboxLauncher:
     var failures = 0
 
     def listed(command: String*): Vector[String] =
-      System.err.println(command.mkString(" "))
+      echoCommand(command)
       val result = run(command*)
       if !result.ok then
         failures += 1
@@ -1222,15 +1245,15 @@ object AgentSandboxLauncher:
       .foreach(name => remove(podman, "network", "rm", name))
 
     val tls = tlsStateRoot(os)
-    System.err.println(s"rm -rf $tls")
+    echoCommand(Vector("rm", "-rf", tls.toString))
     deleteRecursively(tls)
 
     val policyCache = policyStateRoot(os)
-    System.err.println(s"rm -rf $policyCache")
+    echoCommand(Vector("rm", "-rf", policyCache.toString))
     deleteRecursively(policyCache)
 
     val logs = logStateRoot(os)
-    System.err.println(s"rm -rf $logs")
+    echoCommand(Vector("rm", "-rf", logs.toString))
     deleteRecursively(logs)
 
     // Every project's filter mount. Best effort, as in the per-project reset.

@@ -207,7 +207,7 @@ object KoAgentFs:
     if os == Os.Linux then Files.createDirectories(Paths.get(home, KoAgentFsInstallDir))
     else ensureUserAllowOther(podman)
     koAgentFsInstallCommands(podman, os, home).foreach: command =>
-      System.err.println(command.mkString(" "))
+      echoCommand(command)
       val result = run(command*)
       if !result.ok then
         fail(s"error: ko-agent-fs install failed: ${command.mkString(" ")}\n${result.err}", result.exit)

@@ -6,7 +6,7 @@ package agentsandbox.launcher
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
-import HostCommands.{fail, readIfPresent, run, writePrivate}
+import HostCommands.{echoCommand, fail, readIfPresent, run, writePrivate}
 import KoAgentFs.bundleSourceId
 
 object LauncherImages:
@@ -257,14 +257,14 @@ object LauncherImages:
     staleTags.filterNot(image => currentIds.contains(image.id)).foreach: image =>
       val command = Vector(podman, "image", "untag", image.id, image.tag)
       System.err.println(s"removing launcher tag from an older build: ${image.tag}")
-      System.err.println(command.mkString(" "))
+      echoCommand(command)
       val untagged = run(command*)
       if !untagged.ok then
         System.err.println(s"note: keeping stale launcher tag ${image.tag}\n${untagged.err}")
     val remaining = Vector.newBuilder[String]
     supersededImageRemoveCommands(podman, candidates, current).foreach: command =>
       System.err.println(s"removing launcher image from an older build: ${command.last}")
-      System.err.println(command.mkString(" "))
+      echoCommand(command)
       val removed = run(command*)
       if !removed.ok then
         remaining += command.last
