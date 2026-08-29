@@ -44,8 +44,8 @@ object HostCommands:
     def ok: Boolean = exit == 0
 
   /**
-   * A command echoed before it runs, in xtrace's form: `+ ` and then the words, each quoted as
-   * sh would need to read it back — so a multi-line script argument prints as the one quoted
+   * A command echoed before it runs, in xtrace's form: `+ ` and then the words, each shown
+   * unambiguously on the one line — so a multi-line script argument prints as the one quoted
    * word it is, not as lines that look like commands of their own. The marker is what tells a
    * command from the output that follows it; the launcher's own lines carry a `label:` instead,
    * and a subprocess's carry neither.
@@ -65,9 +65,21 @@ object HostCommands:
 
   private val BareWord = "[A-Za-z0-9_@%+=:,./-]+".r
 
-  /** The word as sh reads it back: bare where sh would, single-quoted otherwise. */
+  /** The word as an unambiguous one-line display: bare where sh would read it so, single-quoted
+    * otherwise, with a line break or another control character shown as `\n`, `\t` or `\xNN`
+    * and a backslash as `\\` so the two stay apart. No shell of the supported hosts reads that
+    * back; it keeps the command on one physical line, so a following line is never one of its
+    * words. */
   def shellWord(word: String): String =
-    if BareWord.matches(word) then word else "'" + word.replace("'", "'\\''") + "'"
+    if BareWord.matches(word) then word
+    else "'" + word.replace("\\", "\\\\").flatMap(visible).replace("'", "'\\''") + "'"
+
+  private def visible(char: Char): String =
+    char match
+      case '\n' => "\\n"
+      case '\t' => "\\t"
+      case other if other.isControl => f"\\x${other.toInt}%02x"
+      case other => other.toString
 
   def run(command: String*): Run =
     val process = ProcessBuilder(command*).start()

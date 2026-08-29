@@ -93,15 +93,21 @@ object JdkTrust:
         )
         if !created.ok then fail(s"error: could not create a container of $image to prepare its JDK\n${created.err}")
         val container = created.text
-        try
-          val ran = run(podman, "start", "--attach", container)
-          if !ran.ok then fail(s"error: sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
-          files.foreach: (file, at) =>
-            val copied = run(podman, "cp", s"$container:$prepared/${file.getFileName}", file.toString)
-            if !copied.ok || !Files.isRegularFile(file) || Files.size(file) == 0L then
-              fail(s"error: could not copy the prepared $at out of $image\n${copied.err}")
-          writeReadable(stampFile, stamp + "\n")
-        finally run(podman, "rm", "--force", container)
+        // The failure is raised after the container is removed: `fail` exits the JVM, which skips
+        // a `finally`, and the container is unnamed, so no --reset would find it.
+        val failure =
+          try
+            val ran = run(podman, "start", "--attach", container)
+            if !ran.ok then Some(s"error: sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
+            else
+              files.iterator.map: (file, at) =>
+                val copied = run(podman, "cp", s"$container:$prepared/${file.getFileName}", file.toString)
+                Option.when(!copied.ok || !Files.isRegularFile(file) || Files.size(file) == 0L):
+                  s"error: could not copy the prepared $at out of $image\n${copied.err}"
+              .flatten.nextOption()
+          finally run(podman, "rm", "--force", container)
+        failure.foreach(message => fail(message))
+        writeReadable(stampFile, stamp + "\n")
 
       files
 

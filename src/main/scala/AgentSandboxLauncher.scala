@@ -788,7 +788,7 @@ object AgentSandboxLauncher:
   def pullVerdict(before: Option[String], after: Option[String]): String =
     (before, after) match
       case (Some(old), Some(now)) if old == now => "unchanged"
-      case (Some(old), Some(_)) => s"updated from ${old.stripPrefix("sha256:").take(12)}"
+      case (Some(old), Some(_)) => s"updated from ${shortId(old)}"
       case (None, Some(_)) => "new on this machine"
       case (_, None) => "no local image after the pull"
 

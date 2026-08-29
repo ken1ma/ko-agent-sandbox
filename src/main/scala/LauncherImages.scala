@@ -133,6 +133,10 @@ object LauncherImages:
 
   private val FullImageId = "(?:sha256:)?[0-9a-f]{64}".r
 
+  /** An image or container id at podman's own listing width; `image ls` and `inspect` may
+    * prefix it with `sha256:`, which the listing does not show. */
+  def shortId(id: String): String = id.stripPrefix("sha256:").take(12)
+
   private def imageCleanupJournalEntries(path: Path): Vector[String] =
     readIfPresent(path).toVector.flatMap(_.linesIterator.map(_.trim).filter(_.nonEmpty))
 
@@ -236,17 +240,17 @@ object LauncherImages:
     "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
 
   /**
-   * Ids at podman's own listing width, and a continuation line indented under the note, as
-   * every launcher line carries a label and an unindented bare line reads as a subprocess's.
-   * The second form's continuation is podman's error text, so it stays as podman wrote it.
+   * The continuation line is indented under the note, as every launcher line carries a label and
+   * an unindented bare line reads as a subprocess's. The second form's continuation is podman's
+   * error text, so it stays as podman wrote it.
    */
   def supersededImageRetentionNote(imageId: String, error: String): String =
     ImageUsingContainer.findFirstMatchIn(error) match
       case Some(matched) =>
-        s"note: keeping superseded image ${imageId.take(12)} while container ${matched.group(1).take(12)} still uses it;\n" +
-          "  a later --build, --update, or --self-test will retry once that container is gone"
+        s"note: keeping superseded image ${shortId(imageId)} while container ${shortId(matched.group(1))}"
+          + " still uses it;\n  a later --build, --update, or --self-test will retry once that container is gone"
       case None =>
-        s"note: keeping superseded image ${imageId.take(12)}; Podman did not remove it\n${error.trim}"
+        s"note: keeping superseded image ${shortId(imageId)}; Podman did not remove it\n${error.trim}"
 
   def removeSupersededImages(
     podman: String,

@@ -363,12 +363,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     buildCommands.foreach: command =>
       assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
 
-  test("an echoed command quotes each word as sh reads it, so a script argument stays one word"):
+  test("an echoed command shows each word unambiguously on one line, a script argument included"):
     import HostCommands.shellWord
     assertEquals(shellWord("/opt/podman/bin/podman"), "/opt/podman/bin/podman")
     assertEquals(shellWord("--format"), "--format")
     assertEquals(shellWord("{{.Id}}"), "'{{.Id}}'")
-    assertEquals(shellWord("set -eu\npodman rm x >/dev/null"), "'set -eu\npodman rm x >/dev/null'")
+    assertEquals(shellWord("set -eu\npodman rm x >/dev/null"), "'set -eu\\npodman rm x >/dev/null'")
+    assertEquals(shellWord("it's\tnot\\"), "'it'\\''s\\tnot\\\\'")
+    assertEquals(shellWord("C:\\new"), "'C:\\\\new'")
+    assertNotEquals(shellWord("\\n"), shellWord("\n"))
     assertEquals(shellWord("it's"), "'it'\\''s'")
     assertEquals(shellWord(""), "''")
     import HostCommands.renderCommand
@@ -376,6 +379,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(renderCommand(pull, Some("/opt/podman/bin/podman")), "+ podman pull docker.io/library/debian:13.6-slim --quiet")
     assertEquals(renderCommand(pull, None), "+ /opt/podman/bin/podman pull docker.io/library/debian:13.6-slim --quiet")
     assertEquals(renderCommand(Vector("rm", "-rf", "/a b"), Some("/opt/podman/bin/podman")), "+ rm -rf '/a b'")
+    val script = "set -eu\nsudo sh -c 'echo user_allow_other >> /etc/fuse.conf'\n"
+    val rendered = renderCommand(Vector("podman", "machine", "ssh", script), None)
+    assert(!rendered.contains('\n'), rendered)
+    assert(rendered.startsWith("+ podman machine ssh 'set -eu\\nsudo"), rendered)
 
   test("a --quiet pull's verdict comes from the image id before and after"):
     val old = "sha256:7e3898f7b011a107d0ef7393d5f604a6e0c0ff05ac4f2476630a8af21059ec9b"
@@ -910,12 +917,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("an image retained by a container is reported as a later cleanup retry"):
-    val imageId = "1" * 64
+    val imageId = "sha256:" + "1" * 64
     val containerId = "2" * 64
     val error = s"Error: image used by $containerId: image is in use by a container"
     val note = supersededImageRetentionNote(imageId, error)
-    assert(note.contains(s"container ${containerId.take(12)} still uses it"), note)
-    assert(!note.contains(containerId), note)
+    assert(note.contains(s"image ${"1" * 12} while container ${"2" * 12} still uses it"), note)
+    assert(!note.contains(containerId) && !note.contains("sha256"), note)
     assert(note.contains("\n  a later --build, --update, or --self-test will retry"), note)
     assert(!note.contains("Error:"), note)
 
