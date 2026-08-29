@@ -84,8 +84,8 @@ not.
 
 ### With Coursier
 
-The intended channel, and not one yet: publication coordinates fall out of the artifact's name,
-which is undecided. Until then the jar is built from a checkout — [Development](#development).
+Publication coordinates wait on the artifact's name, which is undecided; the jar is built from a
+checkout — [Development](#development).
 
 
 ## Commands

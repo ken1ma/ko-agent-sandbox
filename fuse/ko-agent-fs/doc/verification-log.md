@@ -138,10 +138,10 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
   host-made pair reads back through the mount as two inode numbers with `st_nlink` 2, while a
   session-made pair reads on the host as one inode with `st_nlink` 2. `to_file_attr` replies with
   the number `InodeTable` allocated per `(parent, name)` (`src/fs.rs`, `src/inode.rs`), so two names
-  for one object are two inodes by construction of model B — under any share, not this one. The
-  unfiltered control settles the attribution rather than leaving it to the code: with the filter out
-  of the path the same host-made pair reads back as one inode, so virtiofs carries identity end to
-  end. The lower keeps the relationship, which is the half apply depends on.
+  for one object are two inodes by construction of the path inode model — under any share, not this
+  one. The unfiltered control settles the attribution rather than leaving it to the code: with the
+  filter out of the path the same host-made pair reads back as one inode, so virtiofs carries
+  identity end to end. The lower keeps the relationship, which is the half apply depends on.
 - **Atomic exchange exists on both sides.** `RENAME_EXCHANGE` through the mount and
   `renamex_np(RENAME_SWAP)` on APFS both succeed, and `RENAME_NOREPLACE` and `RENAME_EXCL` both
   refuse a taken name.

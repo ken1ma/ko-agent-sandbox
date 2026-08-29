@@ -297,7 +297,7 @@ The same recognition covers the shape with no `.git` name at all: a workspace ro
 laid out as a gitdir — a valid `HEAD` plus `objects/` and `refs/`, git's own `is_git_directory`
 triple, which reftable repositories keep precisely so old gits recognize them — is refused, since
 ascending discovery would adopt it and its config and hooks sit at ordinary writable names.
-Re-check the triple against git's discovery rules on upgrade (P6).
+Re-check the triple against git's discovery rules on upgrade (P5).
 
 The refusal is deliberately narrow — it fires only when the hook directory resolves **inside** the
 workspace. Hooks kept outside it are unreachable through the mount (`RESOLVE_IN_ROOT` clamps the
@@ -394,7 +394,7 @@ clever the trick that produced the path. (Host-side git bypasses the filter by d
 mitigation is a patched git, as for any untrusted clone.)
 
 **The `.gitmodules` residual.** Leaving `.gitmodules` writable rests on "Premises"'s P0 and
-P5, so it assumes git handles hostile `.gitmodules` correctly — and CVE-2018-11235, CVE-2024-32002
+P4, so it assumes git handles hostile `.gitmodules` correctly — and CVE-2018-11235, CVE-2024-32002
 and CVE-2025-48384 are cases where a git bug broke that. Accepted as "hostile data plus a git bug"
 (SECURITY.md): on the sandbox side the filter still denies the final `.git` write; on the host side
 the mitigation is keeping git patched.
@@ -479,23 +479,22 @@ written does not make it safe to allow. Only real git against a real mount exerc
   A new operational file that is *not* listed is frozen by default: a broken git command in the
   live-mount tests, not a hole, but a maintenance signal to add it to the allowlist and to
   `git_corpus.rs`. The `rebase-merge`/`rebase-apply`/`sequencer` exception is group 1's; do not add
-  them back on the grounds that git writes them.
+  them on the grounds that git writes them.
 - **P3 — the control files are written only at creation time.** `config`, `config.worktree`,
   `hooks/**`, `commondir`, `gitdir`, `description`, `branches/**` are written by init,
   `submodule add` and `worktree add`, never during ordinary commit/checkout/merge/fetch — which is
   why freezing them costs an existing repository nothing, and why creating a submodule or linked
   worktree inside `/workspace` is blocked ("Consequences", above). Guarded by `tests/git_corpus.rs`.
-- **P5 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
+- **P4 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
   data (group 2). Re-check on upgrade that git still refuses a `submodule.<name>.update = !command`
   sourced from it; if that ever changed, `.gitmodules` would need protecting.
-- **P6 — repository discovery keys on an entry named exactly `.git`** — a directory or a `gitdir:`
+- **P5 — repository discovery keys on an entry named exactly `.git`** — a directory or a `gitdir:`
   pointer file — **or on a directory that is itself a gitdir** (the bare layout: valid `HEAD`,
-  `objects/`, `refs/`, git's `is_git_directory` triple, which reftable repositories keep so old
-  gits recognize them). The first form is the basis of the name rule and of freezing the pointer
-  entry; the second is what the guard's bare-root check mirrors, and what the bare-layout residue
-  exists for. Re-check on upgrade that git introduces no third discovery form and no change to the
-  triple.
+  `objects/`, `refs/`, git's `is_git_directory` triple, which reftable repositories keep so old gits
+  recognize them). The first form is the basis of the name rule and of freezing the pointer entry;
+  the second is what the guard's bare-root check mirrors, and what the bare-layout residue exists
+  for. Re-check on upgrade that git introduces no third discovery form and no change to the triple.
 
-Most drift shows up as a broken git command rather than a silent hole — P2 especially. **P0 and P5
+Most drift shows up as a broken git command rather than a silent hole — P2 especially. **P0 and P4
 are the two that could weaken the boundary if they regressed**, and neither is caught by a script:
 both need a human read of git's release notes on upgrade.

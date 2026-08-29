@@ -11,11 +11,11 @@ them without a new requirement.
 
 ### No general capability broker
 
-The current architecture deliberately avoids most cases in which a broker is useful by keeping
+This architecture deliberately avoids most cases in which a broker is useful by keeping
 valuable credentials outside the sandbox.
 
 A capability layer would create a second security-policy language and another enforcement surface
-while providing little reduction in authority under the current operating model. Prior art proposing
+while providing little reduction in authority under this operating model. Prior art proposing
 exactly this shape — a host-side MCP auth broker/gateway holding credentials the agent container
 never sees — solves a real problem for workflows that need credentialed MCP servers, a requirement
 this project's operating model deliberately avoids:
@@ -168,7 +168,7 @@ Password-protected containers (`*.p12`, `*.pfx`) are inert without the password,
 under no well-known name. Keep the rule procedural: a credential in the checkout is the user's to
 keep out, and a forge token there is answered by denying the forge in `egress/denied`.
 
-### No gVisor/microVM migration yet
+### No gVisor or microVM isolation layer
 
 Rootless Podman is the chosen portability/security trade-off. Revisit only if
 host-kernel/container-runtime exploitation enters the threat model.

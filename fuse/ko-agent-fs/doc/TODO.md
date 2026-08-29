@@ -180,12 +180,12 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
 - [ ] **Run it on Windows/WSL**, same reason, lowest priority.
 - [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so
   ~0.4 ms of a depth-1 `lstat`'s 0.44 ms is the container→daemon FUSE hop plus the daemon's own
-  work per op — still unattributed between the two: model B's full-path `openat2` per op, per-op fd
-  open/close, the inode-table lock, and the single-threaded session serializing round trips.
-  Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
-  This is the only lever for `find`-shaped tools, which hold directory fds and never pay the walk;
-  it composes with the cache-TTL knob below, which reaches only path-walking ones.
-  A directory-fd cache *across* operations is excluded: it pins the directory, so one the host
+  work per op — still unattributed between the two: the path inode model's full-path `openat2` per
+  op, per-op fd open/close, the inode-table lock, and the single-threaded session serializing round
+  trips. Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one
+  operation*. This is the only lever for `find`-shaped tools, which hold directory fds and never pay
+  the walk; it composes with the cache-TTL knob below, which reaches only path-walking ones. A
+  directory-fd cache *across* operations is excluded: it pins the directory, so one the host
   replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
   through the stale fd, unbounded in time, which is worse than any TTL.
 - [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help getdents-shaped
@@ -347,7 +347,7 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   empirical test above, instead.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.
-- **Guarding against inode reuse.** Model B reuses an inode number for a recreated
+- **Guarding against inode reuse.** The path inode model reuses an inode number for a recreated
   `(parent, name)`, which is safe because context and resolution derive from the *same* names
   rather than from the backing inode's identity — `RESOLVE_NO_SYMLINKS` is what keeps the two from
   parting company (`fs.rs`, `open_ino`). Reuse while the old object is still referenced — a name

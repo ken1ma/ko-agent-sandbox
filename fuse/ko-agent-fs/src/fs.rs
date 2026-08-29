@@ -1,5 +1,5 @@
-//! The FUSE filesystem (model B — `doc/architecture.md`): a coherent passthrough of the backing
-//! tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
+//! The FUSE filesystem (the path inode model — `doc/architecture.md`): a coherent passthrough of the
+//! backing tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
 //! on a denial, with a structured `DENY` log line.

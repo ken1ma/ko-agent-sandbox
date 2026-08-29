@@ -1,5 +1,5 @@
-//! The inode table for model B (`doc/architecture.md`). FUSE addresses objects by inode number
-//! and `(parent, name)`, so this maps those to a position in the backing tree: each entry keeps its
+//! The inode table of the path inode model (`doc/architecture.md`). FUSE addresses objects by inode
+//! number and `(parent, name)`, so this maps those to a position in the backing tree: each entry keeps its
 //! parent, basename, kernel lookup count, and cached [`GitContext`]. A path is reconstructed by
 //! walking parents to the root only when an operation needs one; nothing here caches attributes or
 //! opens backing fds (that is the resolver's job, per operation).

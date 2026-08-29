@@ -25,8 +25,8 @@ A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 - **`.gitmodules` / submodule name or path parsing.** `.gitmodules` is writable worktree data, so a
   git bug here is the accepted "hostile data + git bug" residual — but track it.
 - **Config parsing bugs** (CR, quoting, encoding). Same residual class as `.gitmodules`.
-- **A new repository-discovery name** other than `.git` (would extend the name rule / P6).
-- **`.gitmodules` `!command`** ever being honored again (would break P5).
+- **A new repository-discovery name** other than `.git` (would extend the name rule / P5).
+- **`.gitmodules` `!command`** ever being honored again (would break P4).
 
 
 ## Reviewed CVEs (snapshot 2026-08-13)
@@ -48,7 +48,7 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
   *Residual* (hostile `.gitmodules` + git bug).
 - **CVE-2025-48384** — CR inconsistency in a config/submodule path + symlink plants a hook.
   *Residual*; no name-rule change (NTFS forbids control chars; Linux treats `.git\r` as distinct).
-- **CVE-2017-1000117** — `ssh://` / submodule `!command` injection. Premise **P5** (git refuses
+- **CVE-2017-1000117** — `ssh://` / submodule `!command` injection. Premise **P4** (git refuses
   `!command` from `.gitmodules`).
 
 

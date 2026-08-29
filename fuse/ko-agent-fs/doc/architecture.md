@@ -41,7 +41,7 @@ program whose enablement (`CONFIG_BPF_LSM`, the active LSM list) is itself an en
 FUSE is the mechanism — chosen against the alternatives, not defaulted into.
 
 
-## Inode model: path + `openat2(RESOLVE_IN_ROOT)` (model B)
+## Inode model: path + `openat2(RESOLVE_IN_ROOT)`
 
 FUSE addresses objects by inode number and `(parent_ino, name)`, never by path, so an inode table is
 unavoidable. The table is the minimum that reconstructs a position:
@@ -69,8 +69,8 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
   wrong — the chain then resolves to whatever now bears those names, which those same names
   classify, or it fails (`fs.rs`, `open_ino`). The fd-per-inode alternative trades the staleness for
   its own mirror quirk (an fd to a renamed-away subtree keeps operating on the moved inode) plus one
-  open fd per live inode, which at 100k files is real fd pressure. Model B holds one fd for the root
-  and transient fds per op.
+  open fd per live inode, which at 100k files is real fd pressure. The path model holds one fd for
+  the root and transient fds per op.
 
 ### Bounded memory and the O(1) policy fast-path (the scale constraints)
 
@@ -86,9 +86,9 @@ At hundreds of thousands of files the two risks are table growth and per-op poli
   does real work inside a gitdir, which is a vanishing fraction of the op stream.
 
 
-## Data path: userspace first, `FUSE_PASSTHROUGH` later
+## Data path: userspace I/O, and the `FUSE_PASSTHROUGH` accelerator it does not use
 
-Reads and writes are served from userspace in the first correct version. Once mediation is proven,
+Reads and writes are served from userspace. Once mediation is proven,
 **`FUSE_PASSTHROUGH`** (Linux 6.9; present in fuser 0.18 as `FUSE_DEV_IOC_BACKING_OPEN` /
 `ReplyOpen::opened_passthrough`, pure Rust, no libfuse) registers an *allowed* file's backing fd
 with the kernel at `open`, after which bulk read/write bypass the daemon at native speed.
@@ -223,13 +223,13 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
 The digest's construction, and why the algorithm exists only on the launcher side, live with the
 code: `KoAgentFs.koAgentFsSourceId`.
 
-**Wired up through step 5** (`AgentSandboxLauncher.buildCommands`, `KoAgentFs.koAgentFsSourceId`
-and `installKoAgentFs` — all run by `--build`), **plus the mount lifecycle every session runs**
-(unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD` says otherwise — exactly `fuse` or `none`, so an
-unclear value is a refused launch, never a silently weaker boundary): each launch gates on the
+**All five steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
+`KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
+session** (unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD` says otherwise — exactly `fuse` or `none`, so
+an unclear value is a refused launch, never a silently weaker boundary): each launch gates on the
 installed binary's identity and self-test, then mounts the project through a per-project daemon
-shared by its sessions and binds the mountpoint at `/workspace`. The lifecycle's shape and
-reasoning live with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
+shared by its sessions and binds the mountpoint at `/workspace`. The lifecycle's shape and reasoning
+live with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid
 `fusermount3` when direct `mount(2)` is denied, so an ordinary VM user's mount lands in their
