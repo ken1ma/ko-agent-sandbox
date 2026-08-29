@@ -3,7 +3,7 @@
 // the per-project mount lifecycle every session that mounts it runs through.
 //
 // It is a separate program with its own source tree, docs, tests and version contract
-// (fuse/ko-agent-fs/), and it reaches the launch through exactly two calls — workspaceGuard and
+// (fuse/ko-agent-fs/), and it reaches the launch through workspaceGuard and
 // ensureKoAgentFsMounted. That is why it is a file rather than a section.
 
 package agentsandbox.launcher
@@ -239,11 +239,11 @@ object KoAgentFs:
   // source builds, and unmounted when the project's last session ends. The
   // reference count is the session markers under <mountdir>/sessions/, written
   // by the mount script *before* it touches the mount and collected by the
-  // reaper (or the resident path) after `podman wait`. Three rules together
-  // keep a concurrent reap off a live session — that ordering, the age below
-  // which no marker is pruned, and the project lock the two scripts share;
-  // koAgentFsReapScript has what each one covers. The resets remain the sweep
-  // for whatever a crashed launcher leaves. A daemon dying mid-session leaves
+  // reaper (or the resident path) after `podman wait`. The ordering, the age
+  // below which no marker is pruned, and the project lock shared by the scripts
+  // keep a concurrent reap off a live session; koAgentFsReapScript has what each
+  // covers. The resets remain the sweep for whatever a crashed launcher leaves.
+  // A daemon dying mid-session leaves
   // the container's bind on a dead FUSE superblock — every access fails
   // ENOTCONN, never a fallthrough to the unfiltered tree.
   // ---------------------------------------------------------------------------
@@ -253,13 +253,17 @@ object KoAgentFs:
    * unset variable means — mounts /workspace through the FUSE filter; `none` binds it directly
    * with only the mount pins, the weaker boundary. The variable names the effect and the value
    * names the mechanism, so a better guard someday is a new value here, not a new variable.
-   * This is one of the two launcher variables that can weaken the boundary, and "security
+   * This variable can weaken the boundary, so "security
    * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
    * not silently weaken the effective boundary" (DESIGN.md's principles) applies to it
    * exactly: any other value is a refused launch, never a guard quietly switched off
    * (HostCommands.closedChoice).
    */
   val WorkspaceGuardVariable = "KO_AGENT_SANDBOX_WORKSPACE_GUARD"
+  val RawWorkspaceBoundary =
+    "workspace-root .git/config and .git/hooks are pinned when .git is a directory; the whole " +
+      ".git file is pinned in a linked worktree; an empty .git mount is pinned when no repository " +
+      "exists; the workspace-root .ko-agent-sandbox is also pinned"
 
   def workspaceGuard(value: Option[String]): Either[String, String] =
     closedChoice(
@@ -268,7 +272,7 @@ object KoAgentFs:
       Vector("fuse", "none"),
       "fuse",
       "Unset it (or set it to fuse) to keep the workspace filter; set it to none\nto bind " +
-        "/workspace directly, with only .git/config and .git/hooks pinned read-only.",
+        s"/workspace directly; $RawWorkspaceBoundary.",
     )
 
   /**
@@ -367,8 +371,8 @@ object KoAgentFs:
    * container to find and pruning its marker would unmount under it. A
    * crashed launcher's marker still self-heals, one bound later.
    *
-   * Three rules together keep a reap off a live session, and none of them is
-   * sufficient alone. The bound above covers a launch with no container yet.
+   * The safeguards below keep a reap off a live session, and none is sufficient
+   * alone. The bound above covers a launch with no container yet.
    * The marker is written before the mount, so a reap that starts later must
    * see it. And `lock` — held here across counting the markers and
    * unmounting, and by the mount script across its reuse decision — covers

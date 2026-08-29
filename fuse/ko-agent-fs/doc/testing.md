@@ -39,7 +39,7 @@ This is the venue for proving the filter on a machine. The rig below is the loop
 
 ## Mounted — the privileged dev rig
 
-Everything in `tests/mounted_*.rs`, and the two `#[ignore]`d cases in `tests/binary.rs`, mounts a
+Everything in `tests/mounted_*.rs`, and the ignored mount cases in `tests/binary.rs`, mounts a
 real filter over a throwaway backing tree. That needs `/dev/fuse` and `CAP_SYS_ADMIN` — which
 the sandbox deliberately does not have (`SECURITY.md`, "No containers inside the sandbox by
 default") — so they are `#[ignore]`d by default. `--self-test` above runs them on an arbitrary

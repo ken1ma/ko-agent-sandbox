@@ -41,8 +41,8 @@ of trying to classify command names as safe.
 
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` replaces the image's `AGENTS-CUSTOM.md` and nothing
 else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and the policy section is
-what it must not be trusted to declare. It is not the workspace's own CLAUDE.md / AGENTS.md /
-GEMINI.md, which every agent reads with no launcher help, because the managed-policy location
+what it must not be trusted to declare. It is not an agent's own project-level instructions,
+which that agent reads with no launcher help, because the managed-policy location
 loads unconditionally — a project file can add to the image's conventions but never drop them —
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
 session cannot rewrite the instructions governing the next one, as it could any file in the
@@ -136,11 +136,15 @@ The refusal is loud, names the path, and comes before the launcher creates anyth
 nothing through a pre-seeded link (tested: "a refused symlink shape leaves no artifact through the
 link"); the project directory itself is `toRealPath()`-canonical before any of this. Prior art for
 both failure shapes — a sandbox that crashed mid-setup on a symlink, and setup code whose
-mount-target creation wrote through one to paths outside its root: -
-https://github.com/anthropic-experimental/sandbox-runtime/issues/221 -
-https://github.com/bazelbuild/bazel/issues/28515 The cost is that a repository sharing hooks through
-a symlinked `.git/hooks` cannot be sandboxed as-is; its user replaces the link with a real directory
-first. Accept that cost rather than following links.
+mount-target creation wrote through one to paths outside its root:
+
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/221
+- https://github.com/bazelbuild/bazel/issues/28515
+
+The cost is that a repository sharing hooks through a symlinked `.git/hooks` cannot be sandboxed
+as-is; its user replaces the link with a real directory first. Accept that cost rather than
+following links.
+
 ### No DLP/entropy/LLM firewall
 
 It would be incomplete against encoding, timing, allowed-host selection, and protocol-specific
@@ -152,9 +156,9 @@ remains the primary exfiltration control.
 Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and
 the like inside the sandbox. Here the boundary is that the project directory is hostile data and
 nothing credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary
-where it is and hides one class of files by name, so the document could claim nothing more
-afterwards than it claims now — a secret under any other name, in `config.yaml`, or in git history
-stays visible. It also costs every project to serve the undisciplined one: a default `.env` mask
+where it is and hides one class of files by name, without strengthening the boundary: a secret
+under any other name, in `config.yaml`, or in git history stays visible. It also costs every
+project to serve the undisciplined one: a default `.env` mask
 breaks tests that read `.env`, the first `-name .env` removes the protection, and the user who
 commits a credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
 Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
@@ -174,7 +178,7 @@ design; it means the additional boundary should be purchased only when the threa
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
 
-## The three axes verification has to separate
+## The axes verification has to separate
 
 Conflating them is what makes verification look larger than it is.
 
@@ -205,7 +209,7 @@ are linked inline where that decision is recorded; these are the broader sources
 - Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
   model: https://www.anthropic.com/engineering/claude-code-sandboxing
   https://docs.anthropic.com/en/docs/claude-code/settings
-- Stripe Smokescreen — mature egress-proxy prior art; the two ACL-bypass advisories are permanent
+- Stripe Smokescreen — mature egress-proxy prior art; its ACL-bypass advisories are permanent
   regression inputs, in the proxy's `AgentEgressProxyTest`:
   https://github.com/stripe/smokescreen
   https://github.com/stripe/smokescreen/security/advisories/GHSA-qwrf-gfpj-qvj6
@@ -248,7 +252,7 @@ Do not create a host-side execution path merely to make an agent workflow easier
 ```text
 The workspace's writability is the user's per-launch authority decision (`--write`).
 In a writable mode, the workspace is untrusted output: protect implicit host execution
-paths, but keep ordinary project files writable, because editing them is the purpose
+paths, but keep files outside that control state writable, because editing them is the purpose
 of such a session; a read-only session's purpose is reading, and its results leave
 through the conversation.
 ```

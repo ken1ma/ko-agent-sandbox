@@ -367,7 +367,7 @@ impl Workspace {
         let common = self.common_of(gitdir)?;
 
         // Every effective hooks directory: where git looks by default — the common gitdir's
-        // `hooks`, which for an ordinary repository is the gitdir's own — plus every directory a
+        // `hooks`, which is `.git/hooks` when `.git` is the gitdir — plus every directory a
         // decidable `hooksPath` names, collected below.
         let mut hooks_dirs: Vec<PathBuf> = vec![common.join("hooks")];
         if !hooks_dirs.contains(&gitdir.join("hooks")) {
@@ -513,7 +513,7 @@ impl Workspace {
         };
         let first = text.lines().next().unwrap_or("").trim();
         // git's validate_headref: a symref must aim under refs/ — `ref: nonsense` is a file git
-        // does not recognize, and refusing on it would call an ordinary project a repository.
+        // does not recognize, and refusing on it would call a non-repository project a repository.
         let head_valid = match first.strip_prefix("ref:") {
             Some(target) => target.trim_start().starts_with("refs/"),
             None => {
@@ -545,7 +545,7 @@ impl Workspace {
                  valid HEAD, objects/ and refs/",
                 self.root
             ),
-            remedy: "Its config and hooks sit at ordinary workspace names the filter must keep \
+            remedy: "Its config and hooks sit at workspace-root names the filter must keep \
                      writable, so it cannot be served. Launch from a worktree with a .git entry, \
                      or move the bare repository elsewhere."
                 .to_string(),
@@ -587,8 +587,8 @@ enum HooksPath {
 /// put hooks inside the workspace — and every doubt resolves to [`HooksPath::Undecidable`], which
 /// refuses the mount.
 ///
-/// Blunt has to mean blunt *toward refusing*, which is the whole discipline here and the one thing
-/// to preserve when touching this. It reads no section headers, so it reports every `hooksPath` in
+/// Blunt has to mean blunt *toward refusing*, which is the invariant to preserve when changing
+/// this scanner. It reads no section headers, so it reports every `hooksPath` in
 /// the file and lets the caller refuse if *any* lands inside the workspace — keeping only the last
 /// would be the fail-open shape — and each doubt refuses because reading it any other way would
 /// compare a different string than the one hooks run from. The worked example and the per-doubt

@@ -1,9 +1,10 @@
-// The guard=none session: `/workspace` bound directly, with
-// `.git/config` and `.git/hooks` pinned read-only. Every default session runs the filter instead,
-// so nothing else here can reach this path — the in-session probe skips its git rows whenever the
-// filter is on, which is always. The first two tests drive an ordinary repository's pins; the
-// last two drive the other shapes gitGuardVolumes mounts — a pointer-file `.git` pinned whole,
-// and the empty whole-directory pin a repository-less project gets.
+// The guard=none session binds `/workspace` directly. It pins `.git/config` and `.git/hooks` when
+// `.git` is a directory, the whole `.git` file in a linked worktree, an empty `.git` mount when no
+// repository exists, and `.ko-agent-sandbox`. Every default session runs the filter instead, so
+// nothing else here can reach this path — the in-session probe skips its git rows whenever the
+// filter is on, which is always. The tests cover a directory repository's pins and the other shapes
+// gitGuardVolumes mounts — a pointer-file `.git` pinned whole, and the empty whole-directory pin a
+// repository-less project gets.
 //
 // The pins are nested read-only mounts inside a writable bind, the shape Docker Sandboxes #388
 // reported losing under host-side mutation: the nested mount disappears and access falls through to
@@ -18,8 +19,8 @@
 // That second measurement is per host family, and the test expects each family's own answer: the
 // macOS machine's share follows the replacement within seconds, the Windows machine's held against
 // it for the whole window (SECURITY.md carries both). Linux rootless is the row still missing
-// (doc/TODO.md, "Nested read-only mount stability under host-side mutation"); a failure there is
-// the result worth recording, not a red suite to silence.
+// (SECURITY.md, "The `.git` pins of `WORKSPACE_GUARD=none`"); a failure there is the result worth
+// recording, not a red suite to silence.
 //
 // Opt-in like the other container-launching suites (IntegrationSession has the gate):
 //

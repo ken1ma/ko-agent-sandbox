@@ -20,9 +20,10 @@ image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image
 `bidirectional` also accepts text on `wl-copy`'s stdin. Unset, a paste reports no image; tell the
 user to save the image under the project and pass its path instead.
 
-A symlink in `/workspace` needs a relative target staying inside it; anything else, an absolute
-`/workspace/...` included, fails. A tool that caches outside the workspace, such as `sbt`,
-falls back to copying instead of linking.
+With the default `ko-agent-fs` workspace guard, a new symlink in `/workspace` needs a relative
+target staying inside it; anything else, an absolute `/workspace/...` included, fails. A tool that
+caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
+appended authority section says when the weaker raw bind is in force instead.
 
 The host's own symlinks are served as they are, so one with an absolute target dangles in here.
 sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
@@ -43,7 +44,8 @@ Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellche
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.
 
-These fail, by policy. Report them; do not work around them.
+With the default `ko-agent-fs` guard, these filesystem operations fail by policy. Report them; do
+not work around them.
 
 - Writing `config`, `hooks/` or rebase state in any repository under `/workspace`.
 - `git init` and `git clone` under `/workspace`. Clone under `~` instead — the bare forms
@@ -52,9 +54,15 @@ These fail, by policy. Report them; do not work around them.
   clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `~`.
 - `git worktree add` under `/workspace`.
 - `git submodule update --init` on a submodule not yet checked out; being public does not help.
-  One the host already initialized is an ordinary directory to work in.
+  A submodule the host already initialized is a checked-out directory and works normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
-- `git push` to any remote, and `git commit` until an identity is set.
+
+Under the raw-bind guard, the appended authority section names the workspace-root paths that are
+pinned. Do not use writable nested repository control state or non-portable symlinks as a
+workaround; make those host-side changes on the host.
+
+Under every guard, network `git push` is refused by the egress proxy, and `git commit` fails until
+an identity is set.
 
 `git config --global`, `git -c` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` do work. Do not use them to
 invent a name and email — ask the user, and leave the work as uncommitted changes meanwhile.
@@ -107,8 +115,8 @@ The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this sessi
 with what treatment, is the appended "Authority in force for this session" section;
 `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
 
-On a restricted host, a `git push`, an API `POST`, a `PUT` are refused by the proxy, with the
-reason in the body. GraphQL is a `POST`; read through REST.
+On a restricted host, `git push`, an API `POST` outside a named allowance, and `PUT` are refused
+by the proxy, with the reason in the body. GraphQL is a `POST`; read through REST.
 
 If a host will not connect, name it to the user and stop. Do not look for another route, and do
 not spend the session diagnosing it — they can add a host in seconds.

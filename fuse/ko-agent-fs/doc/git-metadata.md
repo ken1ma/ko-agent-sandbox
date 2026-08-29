@@ -237,7 +237,8 @@ when the resolved target is opened for write.
 Residual: a hardlink the *host* already created between a control inode and a worktree path lets
 a write to the worktree path reach the frozen inode. Detecting that needs every write to prove its
 inode is not also reachable under a gitdir — not feasible per write. It is out of scope as host-
-created setup (the host is trusted; no ordinary repository aliases a hook so). The filter closes
+created setup (the host is trusted; Git's default layout creates no hardlink between a hook and a
+worktree path). The filter closes
 only *sandbox*-created aliasing.
 
 
@@ -319,7 +320,7 @@ scanner never opens. All are rare in a *repository-local* config, and the messag
 what to change.
 
 Scope: the repository at the workspace root, matching the launcher's own root-only pin, plus the
-bare-root check above. Below the root, two shapes stay residue, recorded in `TODO.md` and named in
+bare-root check above. The residual shapes below the root are recorded in `TODO.md` and named in
 `SECURITY.md`: a repository the **host** nested deeper — its control state under `.git` names is
 frozen like any other's, but control bytes the host routed into the worktree (relocated hooks, a
 redirected gitdir) are served writable; the sandbox cannot create this shape. And a **bare
@@ -496,5 +497,5 @@ written does not make it safe to allow. Only real git against a real mount exerc
   for. Re-check on upgrade that git introduces no third discovery form and no change to the triple.
 
 Most drift shows up as a broken git command rather than a silent hole — P2 especially. **P0 and P4
-are the two that could weaken the boundary if they regressed**, and neither is caught by a script:
+could weaken the boundary if they regressed**, and neither is caught by a script:
 both need a human read of git's release notes on upgrade.

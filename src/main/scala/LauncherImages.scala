@@ -12,7 +12,7 @@ import KoAgentFs.bundleSourceId
 object LauncherImages:
 
   /**
-   * The Debian/Temurin base the two base images pin, passed to every image
+   * The Debian/Temurin base the launcher-owned base images pin, passed to every image
    * as IMG_TAG_VER; leaf images stay on `latest` (buildCommands). Mirrors
    * the pins in debian-temurin's Containerfile — a bump edits both files,
    * and the "ImgTagVersion mirrors" test fails when they disagree.
@@ -88,10 +88,10 @@ object LauncherImages:
       fail(s"error: $failure; could not find the image id for $image")
 
   /**
-   * Old launcher versions varied only the two base repositories' tags. The fixed leaf and cache
-   * tags are deliberately excluded: a supported custom sandbox or proxy image may use another tag
-   * in the same repository. Leaves precede bases. `localhost/` is Podman's display form for the
-   * unqualified names the launcher passes to `build -t`.
+   * Only the launcher-owned base repositories carry versioned tags. Fixed leaf and cache tags are
+   * deliberately excluded: a supported custom sandbox or proxy image may use another tag in the
+   * same repository. Leaves precede bases. `localhost/` is Podman's display form for the unqualified
+   * names the launcher passes to `build -t`.
    */
   def staleVersionedBaseImageTags(
     existing: Vector[TaggedImage],

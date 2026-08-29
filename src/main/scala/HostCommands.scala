@@ -118,8 +118,8 @@ object HostCommands:
    *     chosen it — and invoking the returned absolute path forecloses
    *     CreateProcess's implicit current-directory search on Windows for the
    *     same reason (prior art: Docker Sandboxes #392);
-   *   - an *absolute* entry that names a directory inside the project does
-   *     the same thing while looking deliberate. `npm run` puts an absolute
+   *   - an *absolute* entry that names a directory inside the project also lets the project select
+   *     the host executable while looking deliberate. `npm run` puts an absolute
    *     `$PWD/node_modules/.bin` on PATH, and a transitive dependency can ship
    *     a `bin` entry named `podman` without running a line of its own code.
    *     Nothing about absoluteness makes the project's copy the user's

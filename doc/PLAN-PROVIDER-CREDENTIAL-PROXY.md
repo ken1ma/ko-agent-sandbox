@@ -181,7 +181,7 @@ and relay, but it does not claim to make model traffic read-only.
 
 Multiple domains are one service only when the provider documents them as recipients of the same
 credential. Convenience is not evidence. Authentication, token and resource endpoints are named
-separately so a value intended for one is not automatically sent to all three.
+separately so a value intended for one is not automatically sent to all of them.
 
 The initial catalog work is limited to services needed by installed agents. A third-party kit or
 repository cannot supply a definition. Add a host-owned custom-definition format only after a
@@ -313,7 +313,7 @@ built-in GitHub MCP server sends the OAuth token itself, brokering breaks that s
 
 ## Mediated provider traffic
 
-The resolved policy currently has two treatments:
+The project policy treatments are:
 
 ```text
 restricted   TLS-terminated; fixed read and named-operation policy
@@ -337,10 +337,9 @@ effective-policy answer and startup banner list the mediated targets and say:
 credential mediation: proxy reads provider HTTP for <service>/<instance>: <hosts>
 ```
 
-This is a privacy boundary: the trusted proxy sees model request and response bytes that were
-previously opaque. It already owns egress authority, but plaintext model conversations are a new
-asset in its memory. The proxy never logs bodies or headers; crash reports and exceptions must not
-include them.
+This is a privacy boundary: the trusted proxy sees model request and response bytes for mediated
+hosts. Plaintext model conversations are an asset in its memory. The proxy never logs bodies or
+headers; crash reports and exceptions must not include them.
 
 For one mediated connection:
 
@@ -397,7 +396,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Deliberate exclusions
 
-- **Automatic provider selection:** command-name inference chooses an egress group today, but a
+- **Automatic provider selection:** command-name inference chooses an egress group, but a
   credential is stronger authority and requires explicit `--credential` selection.
 - **Project or kit service declarations:** repository-controlled target or host-exec declarations
   would let untrusted input choose where a credential is spent or what runs on the host.
@@ -476,7 +475,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.
 2. Implement host storage, management verbs and per-run generations for static API keys. Reuse the
-   existing plan's exact-token rewrite on currently restricted hosts.
+   existing plan's exact-token rewrite on restricted hosts.
 3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the
    crash and concurrency matrix before adding OAuth.

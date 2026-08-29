@@ -51,7 +51,7 @@ object AgentEgressProxy:
    * A host's treatment is one of two:
    *
    *   - unrestricted: an opaque tunnel — nothing seen or logged past the CONNECT.
-   *   - restricted: TLS-inspected; only GET and HEAD, plus the one POST each `allow=` tag opens
+   *   - restricted: TLS-inspected; only GET and HEAD, plus the POST paths its `allow=` tags open
    *     (authorizeInspectedRequest).
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
@@ -152,7 +152,7 @@ object AgentEgressProxy:
   val AllowedVariable = "EGRESS_ALLOWED"
   val DeniedVariable = "EGRESS_DENIED"
 
-  /** The four authority profiles, weakest-to-widest; deny-unless-allowed is what an unset
+  /** The authority profiles, weakest-to-widest; deny-unless-allowed is what an unset
     * EGRESS_PROFILE means — the launcher-owned baseline, every entry restricted or a model
     * provider's own endpoints, so the default is useful without opening the open internet. */
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
@@ -457,7 +457,7 @@ object AgentEgressProxy:
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
 
   /**
-   * The four variables resolved to the policy in force.
+   * The variables resolved to the policy in force.
    *
    * Let `M` be the selected provider's group, `B` the baseline (BaselineHosts), `A` the result
    * of applying the `allowed` delta to `B`, `N` the restricted narrowing set — `B`'s restricted
@@ -1379,8 +1379,8 @@ object AgentEgressProxy:
 
 case class BadRequest(message: String) extends RuntimeException(message)
 
-/** A connection that closed after zero bytes: routine pooled-client behavior, logged as `error`
-  * — the world moved on, nothing was refused (SECURITY.md, "The audit line grammar"). */
+/** A connection that closed after zero bytes: routine pooled-client behavior after admission,
+  * logged as `error`; policy refused nothing (SECURITY.md, "The audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
 /** An upstream EOF where response framing promised more. Distinct from IOException because the

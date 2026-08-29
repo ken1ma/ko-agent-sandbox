@@ -82,10 +82,9 @@ object SandboxLifecycle:
    * rootless default is 256 — and a launch that refuses halfway leaks two, so enough failed
    * launches make every later launch fail for want of one, until a reset.
    *
-   * One hook and not two, because swapping one for another leaves a window between the swap's
-   * halves: a JVM shutting down there would run the half that removes at once, against a sandbox
-   * podman had already started. Behaviour follows the run's own state instead, and the three
-   * answers are the whole design:
+   * A single hook avoids a window where swapping hooks could let a JVM shutdown remove a sandbox
+   * whose podman had already started. Behaviour follows the run's own state instead; these answers
+   * are the whole design:
    *
    *   - before the handover, nothing outside this process knows what was made — remove it;
    *   - during the handover, podman is being started and there is no process to wait on yet —

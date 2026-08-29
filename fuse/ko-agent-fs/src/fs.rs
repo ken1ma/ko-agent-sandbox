@@ -155,7 +155,7 @@ impl KoAgentFs {
     /// legitimate, because the kernel resolves the sandbox's own symlinks — it reads the link and
     /// looks up each resolved component in turn — so every component of a live chain is a directory
     /// and a symlink can only appear in one that has gone stale. Following one there is exactly
-    /// what would let a name classified as ordinary project data resolve into a gitdir. With the
+    /// what would let project data outside Git control state resolve into a gitdir. With the
     /// flag, the resolved object's path *is* the chain the context was computed from, and a stale
     /// chain fails closed with `ELOOP` — no `DENY` line, because no policy decision was reached.
     ///

@@ -6,7 +6,7 @@ Every refusal the proxy can express reaches the agent as one line naming the ref
 sentence naming the sanctioned next step, at the enforcement point, so the agent instructions
 shrink to a pointer and no session is spent diagnosing the proxy.
 
-Three deliverables, one behind the other:
+Deliverables, in order:
 
 1. Inside TLS, the `403` body carries the reason and the advice.
 1. At `CONNECT`, the `403` carries the same body, and `sandbox-egress-check <host>` in the image
@@ -22,10 +22,9 @@ A refusal at `CONNECT` is `403 Forbidden` with an empty body (`respondQuietly`):
 Node "Proxy response (403) !== 200 when HTTP Tunneling". The reason exists only in the audit
 log on the host, which the sandbox cannot read by design.
 
-The agent instructions cover two cases in prose — GraphQL is a `POST`, read through REST; an
-unreachable host is named to the user — and nothing else. The LFS escape (one file at a time
-from `media.githubusercontent.com`) lives only in SECURITY.md, which no agent reads. The
-sessions this costs are the ones every comparable tracker shows: "why does `npm install` hang",
+The agent instructions duplicate selected refusal advice in prose, while other reasons exist only
+in the host audit log. The split costs the sessions every comparable tracker shows: "why does
+`npm install` hang",
 "why does clone fail" (google-gemini/gemini-cli #23875, openai/codex #22387). The design that
 answers it is sandbox-runtime's `deniedDomainReasons` and Codex's proxy decision reasons —
 here fixed and launcher-owned, since the policy admits hosts, not patterns.
@@ -66,14 +65,15 @@ checked against the code for completeness.
 | `only origin-form request targets are allowed` | Send the path, not the absolute URL. |
 | `Host header <declared>` | The `Host` header must name the host the tunnel was opened to. |
 
-Two refusal stages have no body and are outside the table, each with its reason:
+Refusal stages with no body stay outside the table, each with its reason:
 
 - The ClientHello stage — no SNI, SNI not matching the `CONNECT` host, Encrypted ClientHello —
   happens after the `200`, so the proxy closes the connection instead of answering (SECURITY.md,
   "Egress proxy", steps 8–11). The agent sees a TLS failure. One sentence in the instructions
   covers it: "a TLS error on an allowed host is a client sending no SNI or ECH; plain
   `curl`/`git` never do".
-- A `502` is the world failing, not a refusal; its body stays the origin error.
+- A `502` is an origin-connection or relay failure after policy admission, not a refusal; its body
+  stays the origin error.
 
 The path rows for `restricted path` are matched on the request path the proxy already parsed
 (`HttpRequestHead.path`), exact for `/graphql` and suffix for the LFS batch endpoint, so the
@@ -106,7 +106,7 @@ the agent reports to the user in place of "a host will not connect".
 
 `AGENTS-SANDBOX.md`, "Network", after the change:
 
-- the two sentences on `git push`/`POST` refusals and on GraphQL become one: "A refused
+- the sentences on `git push`/`POST` refusals and on GraphQL become: "A refused
   request's `403` body says what to do next."
 - "If a host will not connect, name it to the user and stop" becomes "If a host will not
   connect, run `sandbox-egress-check <host>` and report its line to the user; do not look for
@@ -119,7 +119,7 @@ their reference-mode explanations of *why* those requests are refused.
 
 ## Security model
 
-SECURITY.md changes at two sites:
+SECURITY.md changes where it describes the refusal and audit surfaces:
 
 - "Egress proxy": the refusal "is a `403` inside the tunnel with the reason in it" gains "and
   the sanctioned next step"; the `CONNECT` refusal gains its body.

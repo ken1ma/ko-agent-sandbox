@@ -34,22 +34,23 @@ which admits what the launch's `--egress` profile resolves to and logs every att
 proxy" below). The default profile admits the launcher-owned baseline — the model-provider
 groups, their model endpoints unrestricted, the curated catalog restricted — and nothing else.
 
-**Writing to remote hosts**, except the agents' model traffic and `git fetch` (so `clone` and
-`pull`). Every admitted destination carries one of two treatments: `unrestricted`, opaque tunnels
-for the model traffic that has to write, and `restricted`, TLS-inspected, where `git push` and
-every other write is refused. "Reading without being able to write" below has the rules, the
-costs, and what they do not cover.
+**Writing to remote hosts**, except the agents' model traffic and the restricted hosts' named
+allowances: Git fetch (so `clone` and `pull`), GitHub device login, and npm audit. Every admitted
+destination is either `unrestricted`, an opaque tunnel for model traffic that has to write, or
+`restricted`, TLS-inspected, where `git push` and every operation outside those allowances is
+refused. "Reading without being able to write" below has the rules, costs, and limits.
 
 **Being used to attack someone else.** The same policy. Whatever the profile — the widest admits
 any public hostname on port 443 — the agent cannot reach an arbitrary port or a private address,
 cloud metadata services such as 169.254.169.254 included: the proxy validates every resolved
 address at connection time.
 
-**One session affecting the next, or another project.** Agent state is a per-project volume, the
-rest of the sandbox home is discarded on exit, and Claude Code's hooks are disabled (the sandbox
-Containerfile's `disableAllHooks` note has the reasoning). The networks and the proxy are per
-sandbox run, created by the launch and removed with it — so concurrent sessions cannot reach one
-another either, and nothing network-shaped is ever reused from an earlier run.
+**A session reaching another project, or persisting outside declared state.** Agent state is a
+per-project volume and deliberately affects later sessions of that project ("What the persistent
+volume carries", below); the rest of the sandbox home is discarded on exit. Claude Code's hooks
+are disabled (the sandbox Containerfile's `disableAllHooks` note has the reasoning). The networks
+and proxy are per run and removed with it, so concurrent sessions cannot reach one another through
+those networks and nothing network-shaped is reused.
 
 **A project loosening its own confinement.** Managed settings sit in the read-only image above every
 scope a repository can write, so a repository's own settings cannot weaken them; only an
@@ -79,7 +80,7 @@ gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktr
 pointing back in — and a bare layout standing at the workspace root. A gitdir-shaped directory
 *without* a `.git` name elsewhere in the tree is the residue "The project directory" describes.
 
-This is the default, and two things qualify it, both under Not defended: a session that sets
+This is the default, with qualifications under Not defended: a session that sets
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, which do not carry the claim
 ("The `.git` pins of `WORKSPACE_GUARD=none`"); and on some platforms the filter has no measured
 evidence ("The workspace filter, on the platforms where it is unverified").
@@ -95,15 +96,15 @@ a shortcut would be tempting:
   yourself;
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
-- the **project tree** is never written by the launcher, with two enumerated exceptions, both empty
-  directories the read-only guard mounts of `WORKSPACE_GUARD=none` require and both confined to it.
+- the **project tree** is never written by the launcher, except for the empty directories that the
+  read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode.
   An empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
   exist — without it its writable raw tree would let a session write the egress policy governing
   the next one. And in a project with no repository, an empty `.git`: the launcher binds its own
   empty directory read-only over that name (so a sandbox cannot fabricate a repository for host git
   to discover), and the container runtime creates the mount target it needs in the project. The
   filter denies creating either name itself and needs no mount target, and reject's tree is
-  read-only whole, so those two modes write nothing;
+  read-only whole, so those modes write nothing;
 - the **project tree's SELinux labels**: on an enforcing host, the raw bind of
   `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the project
   directory recursively — a host-metadata write, said in that mode's `workspace:` line every
@@ -135,8 +136,8 @@ launcher refuses:
   as this one's would — and POSIX root's own homes, `/root` and `/var/root`;
 - a path whose current or ancestor directory has a dot-prefixed name.
 
-A project *inside* a home is not refused: `~/src/app` and `~/app` alike are ordinary project
-directories, and refusing them would leave nowhere obvious to work.
+A project *inside* a home is not refused: `~/src/app` and `~/app` are both valid choices, and
+refusing them would leave nowhere obvious to work.
 
 Home discovery degrades loudly, never silently: a `HOME` that is set but invalid fails the
 launch on POSIX, while on Windows an invalid secondary value (Git Bash's POSIX-style `HOME`)
@@ -157,9 +158,9 @@ consequence can be; it does not notice the attempt.
 **Exfiltration through an allowed host.** For the agent endpoints that stay opaque tunnels, a
 host reachable for reading is reachable for writing if it has a write API; `api.anthropic.com`
 receives the conversation by design. At every other host the proxy terminates TLS and names the
-permitted operations — reading, plus git fetch at the forges — but that bounds the method and the
-path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a URL is a
-message. A project directory holding a forge token should still deny that forge's hosts in
+permitted operations — reading plus the named allowances described below — but that bounds the
+method and path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a
+URL is a message. A project directory holding a forge token should still deny that forge's hosts in
 its own `egress/denied`.
 
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
@@ -170,10 +171,11 @@ applies to the domains searched — a query is outbound information the provider
 Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
 proxy, answered only by an allowed host and logged like any other connection.
 
-Copilot CLI is the one agent whose sign-in is a forge credential. `copilot login` obtains an
-OAuth token with `repo` scope — every private repository the account can reach — and, the
+Copilot CLI's sign-in stores a forge credential, not merely a model-provider credential.
+`copilot login` obtains an OAuth token with `repo` scope — every private repository the account
+can reach — and, the
 container having no credential store, keeps it in plaintext under `~/.copilot` in the persistent
-volume, next to the other agents' tokens, which can only spend model quota. Inside the sandbox
+volume, next to model-provider tokens that can only spend model quota. Inside the sandbox
 that token can read those repositories (a private `clone` on an `allow=git-fetch` host, `GET`s on
 `api.github.com`); it cannot push or write through any inspected host. It can write through
 Copilot's model endpoint, `api.githubcopilot.com`, which serves the built-in GitHub MCP server on
@@ -241,7 +243,7 @@ cannot: repositories planted or nested below the workspace root. A FUSE layer ra
 kernel-side mechanism because it works wherever the VM does; `fuse/ko-agent-fs/doc/architecture.md`
 ("Mediation mechanism") weighs the alternatives.
 
-Two residues stay yours to know about. The mount-time guard (above;
+The filter's residual gaps are yours to know about. The mount-time guard (above;
 `fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories", binds the rule) does not
 cover: a repository *you* nested deeper keeps its control state frozen like any other, but control
 bytes you had already routed into its worktree — relocated hooks, a redirected gitdir — are served
@@ -275,8 +277,8 @@ Windows, each through the whole production stack
 line means: on Linux the guarantees are reasoned rather than measured, while the filter is the
 enforcement of every `--write=live` session under `WORKSPACE_GUARD=fuse`, on every platform.
 
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the mount pins instead, the next entry. The two
-are alternatives, never a stack: the filter's policy is a strict superset of the pins', and
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the mount pins instead, the next entry. They are
+alternatives, never a stack: the filter's policy is a strict superset of the pins', and
 preparing a pin's bind targets would mean creating `.git` entries through the filter, which the
 filter denies. Every gate on the filtered path fails closed — a version mismatch, a failed
 self-test or a failed mount aborts the launch, never falling back to an unfiltered bind. Mechanics,
@@ -302,17 +304,21 @@ measured, not designed, so the macOS behavior stays the one to plan around. Muta
 the inode hold: an in-place edit, and files appearing or disappearing inside the pinned
 `.git/hooks`.
 
-So this mode holds those two paths against the sandbox for as long as nothing on the host rewrites
+Native Linux remains unmeasured. The integration test expects the macOS fall-through there until a
+Linux run supplies evidence, so this mode carries no stronger claim on that platform.
+
+So this mode holds the pinned paths against the sandbox for as long as nothing on the host rewrites
 them, which is not a property to rely on in a repository being worked in, and no mount over a path
 closes it. `WorkspaceGuardOffTest` carries the measurements.
 
 **What is inside TLS, for the hosts that stay opaque.** An unrestricted host is deliberately not
-inspected, so there the proxy sees only the handshake and cannot tell a `GET` from a `POST`. In the
-baseline that is the model-provider endpoints alone: inspection buys nothing at an endpoint that
-must receive the conversation, and would expose that conversation and the provider's tokens in
-clear to the proxy process, while the retained log records each request's method and path. Every
-other baseline host is inspected — restricted, the bulk package registries included at a knowing
-per-request handshake cost: security is not traded for performance (DESIGN.md's principles).
+inspected, so the proxy sees only the handshake and cannot tell a `GET` from a `POST`. In the
+baseline that is the model-provider endpoints alone: their required writes cannot be blocked, and
+inspection would expose the conversation and provider tokens in plaintext to the proxy process.
+Inspection lets the retained log record each request's method and target; an opaque tunnel logs
+the `CONNECT` alone. Every other baseline host is inspected — restricted, the bulk package
+registries included at a known per-request handshake cost: security is not traded for performance
+(DESIGN.md's principles).
 
 **What the persistent volume carries.** Every session mounts every installed agent's state
 read-write under the same uid, regardless of which agent the host launched. The launched command is
@@ -347,9 +353,9 @@ the OCI runtime, namespaces, seccomp and the host kernel. This design is not bui
 working kernel or container-runtime exploit; if that enters the threat model, the answer is a
 stronger isolation layer (gVisor, a microVM), bought at its compatibility cost, not more flags here.
 
-**Resource exhaustion.** The PID limit and the memory ceiling bound the two runaways this
-environment actually invites. CPU, disk growth under `/workspace`, network bandwidth, and denial of
-service against the host generally are not comprehensively bounded.
+**Resource exhaustion.** The PID limit and memory ceiling bound runaway process and memory use.
+CPU, disk growth under `/workspace`, network bandwidth, and denial of service against the host
+generally are not comprehensively bounded.
 
 ## Egress proxy
 
@@ -484,8 +490,8 @@ request inside it:
   as a `POST` and the packfile comes back in the response. A download that travels as a `POST`,
   so a GET/HEAD-only policy would still read as "reads allowed" while every `git clone https://…`
   failed
-- on the `allow=github-login-device` entry alone (`github.com`), `POST` to the two endpoints of
-  GitHub's OAuth device flow, `/login/device/code` and `/login/oauth/access_token`, which is how
+- on the `allow=github-login-device` entry alone (`github.com`), `POST` to GitHub's OAuth device
+  flow endpoints, `/login/device/code` and `/login/oauth/access_token`, which is how
   Copilot CLI signs in. The second is GitHub's general token endpoint, shared with the web
   flow's code exchange, whose redirect cannot reach the sandbox. Each body is a fixed form — a
   client id, a scope, a device code — so no project data rides on it. Any session can begin a
@@ -506,14 +512,14 @@ The refusal is a `403` inside the tunnel with the reason in it, and a `deny` lin
 log ("The audit line grammar", above). That log is the other half of what this buys: what an
 agent asked a forge to do is recorded, not merely whether it opened a connection.
 
-Two consequences:
+Consequences:
 
 - The GraphQL endpoints are a `POST` even to read: a query and a mutation are the same request
   shape, telling them apart means reading the body, and this proxy does not. GraphQL is therefore
   refused; the REST read endpoints are not. On GitHub that costs nothing — its GraphQL API accepts
   no unauthenticated query, and the sandbox carries no forge credential by design. GitLab's answers
   anonymously, so the cost is real there; its REST API still reads with `GET`s. (Codeberg's
-  Forgejo has no GraphQL API, so those two are the whole cost.)
+  Forgejo has no GraphQL API, so no GraphQL read is lost there.)
 - The LFS batch endpoint is not opened. It is a `POST` whose body chooses between download and
   upload — another request whose meaning is in the body. Unlike GraphQL, this refusal is what
   actually stops something: LFS batch downloads on public repositories are anonymous, and git-lfs
@@ -542,6 +548,9 @@ Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls
 signs what it is shown nor replace it for the next session. A CA minted for one project cannot be
 used to read another's traffic.
 
+The launcher reissues the CA a month before expiry. It reissues the leaf with the CA, a month
+before the leaf expires, or when the resolved inspected set changes.
+
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
 read-only. The leaf names exactly this project's resolved inspected set — the restricted hosts
 after its profile and `egress/` files apply — which the launcher does not keep a copy
@@ -562,21 +571,22 @@ The image's JDK is covered by the same technique one layer over, because it read
 above: a JVM consults a `cacerts` keystore and a `net.properties` file. The image ships
 `sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that JDK's own `keytool`
 and appends the proxy to its `net.properties`; the launcher runs it on the image's own JDK in a
-throwaway container with no network, copies the two files out, and mounts them read-only over the
+throwaway container with no network, copies the files out, and mounts them read-only over the
 originals — with `JAVA_HOME` read from the image's own environment, so the launcher never
 hardcodes the arch-dependent Temurin directory and an image without a JDK simply skips the mounts.
-Every root the image shipped survives: dropping one would be the failure that stays invisible until
-something needs a public CA, so it is what the mounted store is tested on. Prepared at launch
-rather than baked in, since the per-project CA postdates the image.
+Every root the image shipped survives: dropping one would stay invisible until a TLS client reaches
+an origin signed by that public CA, so the mounted store test checks the complete root set. The
+store is prepared at launch rather than baked in, since the per-project CA postdates the image.
 
-Two kinds of program stay outside all of it, neither reachable from the launcher. A JVM the agent
-installs itself (`cs java --jvm ...`) brings its own untouched store — the same
+Programs not covered by the launcher's prepared trust stores need separate handling. A JVM the agent
+installs itself (`cs java --jvm ...`) brings its own untouched store —
 `sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, so the gap is one command
 rather than a dead end; the certificate it reads is mounted beside the agent instructions, and is
 the same public one already inside the bundle. A GraalVM native image — the
-`cs` and `scala-cli` launchers — has no `conf/` and reads no variable, so the same facts travel as
-`-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand. And a statically
-linked binary keeps its compiled-in roots — the Codex CLI, which talks only to uninspected OpenAI.
+`cs` and `scala-cli` launchers — has no `conf/` and reads no variable, so the proxy and CA
+settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand.
+A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
+uninspected OpenAI.
 
 ### Why the policy is per project, in the project, and read-only
 
@@ -588,8 +598,8 @@ other file.
 Where `/workspace` is writable, the policy files would be the agent's to rewrite for the next
 session; what refuses that is the write mode itself — "A project loosening its own confinement",
 above. A symlinked policy directory, or anything other than a directory in its place, is refused
-rather than read, so what is read is what was reviewed. The directory is also a closed
-namespace, two tenants included: an entry the launcher does not read — a typo'd
+rather than read, so what is read is what was reviewed. The directory is also a closed namespace:
+an entry the launcher does not read — a typo'd
 `egres/`, notes, a backup — refuses the launch instead of sitting as ignored config, the
 same rule `egress/` applies inside itself (dot-named editor and OS metadata excepted; no
 configuration will ever be named that way). What remains is "A repository that ships a wide
@@ -623,10 +633,10 @@ cannot subtract from the restricted narrowing set.
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
 drops `foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`),
-which is the concise way to drop a provider that ships several subdomains without re-listing the
-whole thing; `denied`'s `model-provider` form goes one further and stays attached to the group as
-its concrete endpoints change. The failure a removal *can* have is the opposite of a grant's: a
-typo that matches nothing would leave a default in place while reading as though it were dropped.
+which is the concise way to drop a provider that ships several subdomains without re-listing its
+current subdomains; `denied`'s `model-provider` form goes one further and stays attached to the
+group as its concrete endpoints change. Unlike a grant, a removal can fail when a typo matches
+nothing, leaving a default in place while reading as though it were dropped.
 For `allowed` removals that is closed by refusing any removal — exact or `**` — matching neither
 the baseline nor an addition, so a misspelling is a failed launch, not a silent non-narrowing.
 A `denied` entry matching nothing the selected profile admits is a startup warning instead, and
@@ -726,9 +736,9 @@ everything else: PostgreSQL rootless via `initdb`/`pg_ctl`, S3 via a JVM mock su
 `AGENTS-SANDBOX.md` points the agents the same way.
 
 **The opt-in, and its price.** `KO_AGENT_SANDBOX_NESTING=same-uid` (exactly `none` or `same-uid`;
-anything else refuses the launch, like the workspace guard) loosens exactly three things, and
-loosens them for the whole session — the untrusted repository code included, which is the cost.
-Why each one is unavoidable is measured at `NestingLoosenings`; what each one costs is:
+anything else refuses the launch, like the workspace guard) loosens only the controls below, for
+the whole session — the untrusted repository code included, which is the cost. Why each loosening
+is unavoidable is measured at `NestingLoosenings`; what each costs is:
 
 - `--security-opt=unmask=ALL` re-exposes the informational surface — `/proc/keys`,
   `/proc/timer_list`, `/proc/sched_debug` — while `/proc/kcore` stays unreadable, owned by a real

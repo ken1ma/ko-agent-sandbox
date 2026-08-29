@@ -89,7 +89,7 @@ whose prefix `head.path` starts with — at most one, by invariant 7; a miss is
 `<prefixes>` only" — its row in `PLAN-PROXY-DENIAL-REASON.md`'s table. The method rule that
 follows sees that scope's tags alone (invariant 7).
 
-`requireUnambiguousPath` today refuses `%` and dot segments on `POST` only, because only the
+`requireUnambiguousPath` refuses `%` and dot segments on `POST` only, because only the
 allowance paths are compared. `requireLiteralPath` is the same check plus `\` and `//`, applied
 to every method on a prefixed entry; the two share one implementation with the `POST` rule
 keeping its current scope on unprefixed entries, so a `GET` to an unprefixed host with a
@@ -140,7 +140,7 @@ SECURITY.md sites:
 
 - `Treatment.Restricted(scopes: Set[Scope])` with `Scope(prefix: Option[String], tags)`, so
   a tag cannot exist apart from its prefix; a host's entries merge as a union of scopes, and
-  the merge that unions tags today does so only within one scope. Entry parser for `path=`;
+  the existing tag merge applies only within one scope. Entry parser for `path=`;
   the launch refusals; `spelled` and the `--print-policy` lines emit one line per scope.
 - `authorizeInspectedRequest`: the prefix check; `requireLiteralPath` in `GitHelper` beside
   `requireUnambiguousPath`, one implementation.
@@ -148,7 +148,7 @@ SECURITY.md sites:
 
 ### `src/main/scala/EgressProxyPolicy.scala`, `AgentSandboxLauncher.scala`
 
-- The launcher reads the restricted line for the leaf as today — hosts only — and prints the
+- The launcher reads only hosts from the restricted line for the leaf, and prints the
   prefixes in `--egress-effective` and the banner.
 
 ### Tests

@@ -1,7 +1,7 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
-The remaining increments of the workspace-authority work. No distributable build may make
-ordinary launches read-only before the staged workflow is usable.
+The remaining increments of the workspace-authority work. No distributable build may make launches
+with no `--write` option read-only before the staged workflow is usable.
 
 ## Staged mode
 
@@ -199,7 +199,7 @@ rollback bundles and staged control journals (`TODO.md`).
 ## Git residue closure
 
 Live mode recursively validates nested repositories before mounting without following symlinks.
-It validates `.git` directories and pointer files, detects bare layouts in ordinary directories,
+It validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs,
 and gates create, write, rename, exchange, hardlink and symlink operations that could complete one.
 Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy projects on
 every platform. An acceleration must still validate the current complete tree; a skipped directory
@@ -208,8 +208,8 @@ or stale result would reopen the residue.
 The bare-layout rule uses Git's valid-`HEAD` plus `objects/` plus `refs/` discovery shape. Gitdirs
 reached from an existing worktree's `.git` metadata are classified separately. Elsewhere, only a
 mutation affecting an entry whose basename is one of those three candidates performs sibling
-lookups and, when necessary, validates `HEAD`; ordinary filesystem operations and tree walks pay no
-extra checks. Benchmark the candidate path against the standing FUSE performance measurements.
+lookups and, when necessary, validates `HEAD`; operations on other names and tree walks pay no extra
+checks. Benchmark the candidate path against the standing FUSE performance measurements.
 
 This rule cannot distinguish a bare repository from a project fixture containing the same valid
 triple. Live mode deliberately refuses completing either one, and recursive preflight refuses an
@@ -218,16 +218,17 @@ host. This narrower completion rule supersedes the current per-name infeasibilit
 `../fuse/ko-agent-fs/doc/git-metadata.md` ("Consequences"), whose text — with `guard.rs` and its
 tests — changes in the same increment.
 
-Initialized submodules and ordinary Git commands continue working. Initializing a missing
-submodule remains blocked in live mode and works inside a stage; its private Git metadata cannot be
-applied.
+Initialized submodules and the permitted Git commands named in `AGENTS-SANDBOX.md` continue
+working. Initializing a missing submodule remains blocked in live mode and works inside a stage;
+its private Git metadata cannot be applied.
 
 ## Delivery order
 
-1. Characterize the three lowers, before the stage representation is fixed. Hardlink identity,
-   rename and exchange, symlink creation, case folding between upper and lower and the reach of an
-   open-file hold each decide a representation choice, and none can be reasoned to a conclusion
-   (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Their answers are cheapest to act on now.
+1. Characterize the supported lower filesystems before the stage representation is fixed.
+   Hardlink identity, rename and exchange, symlink creation, case folding between upper and lower
+   and the reach of an open-file hold each decide a representation choice, and none can be reasoned
+   to a conclusion (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Settling them first avoids revising
+   an implemented representation.
 2. Close nested Git and bare-layout residues and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
    lifecycle and visibility, with the in-situ suite, the launcher verb and the stamp that gates

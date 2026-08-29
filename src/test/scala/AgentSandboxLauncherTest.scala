@@ -994,7 +994,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val gitHosts = "(?m)^\\+host (\\S+)\\s+allow=git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
 
-  test("the appended egress section names only tags the proxy defines"):
+  test("agent egress instructions use the proxy's allowance vocabulary without denying its exceptions"):
     // The launcher writes this prose; the proxy owns the vocabulary. An agent following a tag the
     // proxy does not define writes a policy file that fails the *next* launch, so the drift shows
     // up nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
@@ -1012,23 +1012,56 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // own.
     val emptyResolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
     val named = "allow=([a-z-]+)".r
-      .findAllMatchIn(authoritySection("live", emptyResolution))
+      .findAllMatchIn(authoritySection("live", "fuse", emptyResolution))
       .map(_.group(1))
       .toSet
     assert(named.nonEmpty, "the section names no allowance, so it teaches an agent nothing about them")
     assertEquals(named -- known, Set.empty[String], s"the proxy defines only $known")
+    val section = authoritySection("live", "fuse", emptyResolution)
+    assert(section.contains("named allowances"), section)
+    val baseInstructions = Files.readString(
+      Paths.get("container/ko-agent-sandbox/AGENTS-SANDBOX.md"),
+    )
+    assert(baseInstructions.contains("outside a named allowance"), baseInstructions)
 
   test("the authority section directs the agent by write mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
-    val readOnly = authoritySection("reject", resolution)
+    val readOnly = authoritySection("reject", "fuse", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
-    val writable = authoritySection("live", resolution)
-    assert(writable.contains("writable"), writable)
+    val filtered = authoritySection("live", "fuse", resolution)
+    assert(filtered.contains("ko-agent-fs"), filtered)
+    assert(filtered.contains("at any depth"), filtered)
+    assert(filtered.contains("symlink targets"), filtered)
+    val raw = authoritySection("live", "none", resolution)
+    assert(raw.contains("raw writable bind"), raw)
+    assert(raw.contains(KoAgentFs.RawWorkspaceBoundary), raw)
+    assert(raw.contains("Nested repository control state"), raw)
+    assert(raw.contains("non-portable"), raw)
+    assert(raw.contains("symlinks remain writable"), raw)
     // Both name the relaunch path for a host the policy does not admit.
-    Vector(readOnly, writable).foreach: section =>
+    Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/allowed"), section)
       assert(section.contains("deny-unless-allowed"), section)
+
+  test("the generated agent document cache varies with every authority input"):
+    def stamp(
+      imageId: String = "image-a",
+      writeMode: String = "live",
+      guard: String = "fuse",
+      policy: String = "policy-a",
+      instructions: Option[String] = None,
+    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions)
+
+    val variants = Vector(
+      stamp(),
+      stamp(imageId = "image-b"),
+      stamp(writeMode = "reject"),
+      stamp(guard = "none"),
+      stamp(policy = "policy-b"),
+      stamp(instructions = Some("project instructions")),
+    )
+    assertEquals(variants.distinct.size, variants.size)
 
   test("option parsing: the first non-option ends launcher parsing, -- is an optional escape"):
     assertEquals(

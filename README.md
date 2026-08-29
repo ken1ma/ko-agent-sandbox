@@ -4,9 +4,9 @@ Status: Beta on macOS, alpha on Linux and Windows
 
 The sandbox reaches no user files but the project directory (current directory), and by default
 no network but a launcher-owned baseline: the agents' model providers, plus a curated catalog of
-inspected read-only sites with `git clone`/`pull`, shaped per project by
-`.ko-agent-sandbox/egress/`. Narrower egress — one model provider, or none — and wider — public
-HTTPS — are each an explicit `--egress` profile.
+inspected sites limited to reads and named operations, such as `git clone`/`pull`, shaped per
+project by `.ko-agent-sandbox/egress/`. Narrower egress — one model provider, or none — and
+wider — public HTTPS — are each an explicit `--egress` profile.
 
     ┌─ Linux / macOS / Windows (WSL, native) ──────────────────────────────────────┐
     │                                                                              │
@@ -31,7 +31,7 @@ HTTPS — are each an explicit `--egress` profile.
     │  │  runs claude/codex/agy/copilot│     │  https only, profile-selected │     │
     │  │  nonroot user, caps dropped,  │ (a) │  hosts, stateless;            │ (b) │
     │  │  read-only rootfs             ├────>│  TLS-inspects restricted      ├─────┼─> Internet
-    │  │                               │     │  hosts: read-only + git fetch │     │
+    │  │                               │     │  hosts: reads + named actions │     │
     │  └───────────────────────────────┘     └────┬──────────────────────────┘     │
     │  (a) internal network, no gateway           │                                │
     │  (b) only egress network                    │                                │
@@ -169,14 +169,19 @@ checkout — [Development](#development).
                                           and on Linux no more than was available at launch;
                                           at least 1 GiB, or the whole memory when that is
                                           less. The sandbox never swaps
-      KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) mounts /workspace through the ko-agent-fs
-                                          filter; "none" binds it directly — a weaker boundary,
-                                          pinning only .git/config and .git/hooks (SECURITY.md).
+      KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps /workspace shared live and
+                                          writable while protecting Git control state and
+                                          .ko-agent-sandbox at any depth; "none" weakens this to
+                                          the workspace root's Git configuration, hooks, .git
+                                          entry and .ko-agent-sandbox; nested Git control state
+                                          and .ko-agent-sandbox directories remain writable
+                                          (SECURITY.md).
                                           Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
-                                          allows one: unmasks /proc, disables SELinux
-                                          labeling and adds SYS_CHROOT for the whole
-                                          session, one mapped uid only (SECURITY.md)
+                                          allows rootless containers with one uid, host networking
+                                          and session-only storage, but unmasks /proc, disables
+                                          SELinux labeling and adds SYS_CHROOT for the whole
+                                          session (SECURITY.md)
       KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
                                           screen, because the agent TUIs clear it: Enter or y
                                           starts, n or EOF at the prompt exits without starting;
@@ -256,7 +261,8 @@ checkout — [Development](#development).
        copying text out is `/copy`, which needs `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
     1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
-       `~/.codex/config.toml` over the image's defaults, so it is one setting in the volume;
+       `~/.codex/config.toml` over the image's defaults, so set
+       `approval_policy = "on-request"` there;
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
        them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
        `COPILOT_ALLOW_ALL=false`.
@@ -273,11 +279,11 @@ checkout — [Development](#development).
 
 ### Choosing an egress profile
 
-Every launch selects one of four profiles with `--egress=`; `deny-unless-allowed` is the default.
-A host's treatment is one of two: `unrestricted` — an opaque tunnel — or `restricted` — the
-default, which an `allowed` entry spells by saying nothing — TLS-inspected, GET and HEAD only,
-except for a named allowance ("Modifying the egress policy" below; SECURITY.md, "Reading without
-being able to write", has what each one opens).
+Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. A host is
+either `unrestricted` — an opaque tunnel — or `restricted` — the default, which an `allowed`
+entry spells by saying nothing — TLS-inspected, GET and HEAD only, except for a named allowance
+("Modifying the egress policy" below; SECURITY.md, "Reading without being able to write", has
+what each opens).
 
 The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
 `github` — each expanding to that provider's model, authentication and control-plane endpoints,
@@ -340,9 +346,9 @@ allowances:
     host **.googleapis.com        # the apex and every subdomain, whatever their treatment
     model-provider google         # the group, whatever its concrete endpoints become
 
-1. An absent directory or file is empty policy input; the launcher creates the directory only
-   as the empty mount target of `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (SECURITY.md, "Silent
-   changes to what you own").
+1. An absent directory or file is empty policy input. `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may
+   create an empty `.ko-agent-sandbox` directory in the project (SECURITY.md, "Silent changes to
+   what you own").
    An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
    design, as does `deny-unless-model` under `bash`.
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
@@ -353,8 +359,7 @@ allowances:
    profile admits is a startup warning, not an error: it can still apply under another profile.
 1. `--egress-effective` and `--egress-check=<host>` (Reference) answer without starting a
    session. Every start prints your policy files as written, and the resolved hosts as counts.
-1. Editing the files takes effect on the next launch, which starts its own proxy; a session
-   already running keeps the policy it started with.
+1. Editing the files takes effect on the next launch; a running session keeps its original policy.
 1. The sandbox cannot edit them, under either write mode ([SECURITY.md], "Why the policy is per
    project, in the project, and read-only").
 1. The directory is meant to be committed. Review it in an unfamiliar repository before
@@ -362,19 +367,20 @@ allowances:
 
 ### Overriding the agent instructions
 
-Every agent starts from one instruction file the image assembles: `AGENTS-SANDBOX.md` (what the
-container is), `AGENTS-CUSTOM.md` (how to work: priorities, writing and coding style), and the
-authority in force this session, appended at launch. To replace the middle part for a project,
-put yours at `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's copy in
-`container/ko-agent-sandbox/` is the starting point. The other two parts are not overridable, and
-the file cannot be empty — delete it to return to the image's. The directory's rules above apply:
-one filename, no symlinks, read on the host at launch, uneditable from the sandbox, committed and
-reviewed with the rest. Instructions that should merely *add* to the image's belong in the
-project's own CLAUDE.md / AGENTS.md / GEMINI.md, which every agent reads anyway.
+Every agent receives one assembled instruction file: sandbox facts from `AGENTS-SANDBOX.md`,
+working conventions from `AGENTS-CUSTOM.md`, and the authority appended for this session. To
+replace only the working conventions for a project, put yours at
+`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's parts in
+`container/ko-agent-sandbox/` are the starting point. The sandbox facts and session authority are
+not overridable, and the file cannot be empty — delete it to return to the image's. The
+directory's rules above apply: one filename, no symlinks, read on the host at launch, uneditable
+from the sandbox, committed and reviewed with the rest. Instructions that should merely *add* to
+the image's belong in the agent's own project-level instruction file, such as `CLAUDE.md`,
+`AGENTS.md`, or `GEMINI.md`.
 
 ### Audit what has been allowed or denied
 
-Run with `--proxy-log` from the project directory. Every request from the sandbox is logged,
+Run with `--proxy-log` from the project directory. Every proxy connection is logged,
 and the proxy appends the log to a per-run file on the host, under
 
     ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
@@ -401,8 +407,8 @@ The per-project CA lives on the host, under
     ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
 
-1. The CA is created on first launch and reissued a month before it expires. The leaf is reissued
-   with it, and whenever the inspected host list changes.
+1. The certificates are created and refreshed automatically for each project ([SECURITY.md],
+   "Who holds the CA key").
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
    launch's proxy starts with the certificates current at that moment.
 
@@ -479,9 +485,9 @@ The per-project CA lives on the host, under
 
     java -jar target/dist/ko-agent-sandbox.jar --self-test
 
-1. `--self-test` runs both of its suites — one mounts nothing and runs anywhere, one mounts a
-   real filter in a privileged container — on any machine with podman; running either on its
-   own is in `fuse/ko-agent-fs/doc/testing.md`.
+1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
+   privileged container, on any machine with podman; running either suite directly is documented in
+   `fuse/ko-agent-fs/doc/testing.md`.
 
 ### Native image (optional, instant startup)
 

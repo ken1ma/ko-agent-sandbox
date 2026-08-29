@@ -44,8 +44,8 @@
 //    |
 //    +-- egress proxy ------------------> the hosts --egress=<profile> admits, CONNECT :443 only
 //    |                                       (EgressProxyPolicy.scala; the flags are below)
-//    |                                    restricted hosts TLS-inspected read-only;
-//    |                                       git hosts additionally refuse git push
+//    |                                    restricted hosts: TLS-inspected reads plus named operations;
+//    |                                       git push refused
 //    X-- everything else                    NO ROUTE
 //
 // The rest of /home/nonroot is an anonymous Podman volume: build caches work, and disappear with the container.
@@ -99,7 +99,7 @@ object AgentSandboxLauncher:
 
   /**
    * Whether a container runtime may run inside the sandbox: `none` — the default, what an unset
-   * variable means — or `same-uid`, which buys the three loosenings below for the whole session,
+   * variable means — or `same-uid`, which buys the listed loosenings for the whole session,
    * the cost SECURITY.md's "No containers inside the sandbox by default" section prices. `unmask=ALL`
    * because a nested pid namespace must mount a fresh /proc, and the kernel refuses that while
    * the masked entries sit on it (measured: EPERM from a bare unshare with the masks in
@@ -570,7 +570,7 @@ object AgentSandboxLauncher:
     )
 
   /**
-   * The five product images and both named build caches, in dependency order. Leaf images stay on
+   * The product images and named build caches, in dependency order. Leaf images stay on
    * `latest`: a
    * rebuild there picks up new agent releases, which the base version says
    * nothing about; the base is an image label instead. debian-temurin does
@@ -1032,7 +1032,7 @@ object AgentSandboxLauncher:
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)
 
-  /** The shared front half of the two egress preflights: this project's vetted policy files,
+  /** The shared front half of the egress preflights: this project's vetted policy files,
     * the provider the given command selects, and the proxy image to consult — with the
     * command-selection notes a launch would print. `operands` is the verb's optional
     * `[--] [command [arguments...]]`, accepted without launching anything. */
@@ -1334,10 +1334,10 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
-   * The two independent authority options, selected on every launch and never persisted by a
+   * The independent authority options, selected on every launch and never persisted by a
    * stage or an agent resume. The writable default is `live` (doc/PLAN-STAGED.md has the staged
-   * mode and the default flip that follow it); no distributable build may make ordinary launches
-   * read-only before the staged workflow is usable.
+   * mode and the default flip that follow it); no distributable build may make launches with no
+   * `--write` option read-only before the staged workflow is usable.
    */
   val WriteModes = Vector("reject", "live")
   val DefaultWriteMode = "live"
@@ -1489,18 +1489,26 @@ object AgentSandboxLauncher:
    * commands. Directive by design: it says what to do, never how to probe. It states the *tag*
    * vocabulary and the proxy owns that: an agent told a tag the proxy does not define writes a
    * policy file that fails the next launch with "no treatment this proxy defines", which is a
-   * confusing way to learn that these instructions drifted. A test holds the two together
-   * (AgentSandboxLauncherTest, "the appended egress section names only tags the proxy defines").
+   * confusing way to learn that these instructions drifted. AgentSandboxLauncherTest holds the
+   * instruction vocabulary to the proxy source.
    */
-  def authoritySection(writeMode: String, resolved: String): String =
+  def authoritySection(writeMode: String, workspaceGuard: String, resolved: String): String =
     val indented = resolved.linesIterator.map("    " + _).mkString("\n")
-    val workspace = writeMode match
-      case "reject" =>
+    val workspace = (writeMode, workspaceGuard) match
+      case ("reject", _) =>
         """`/workspace` is read-only this session. Do not attempt writes there; put results under
           |`~` or `/tmp` and tell the user, who relaunches with `--write=live` for a writable
           |session.""".stripMargin
+      case ("live", "fuse") =>
+        """`/workspace` is writable and shared live with the host project directory through the
+          |`ko-agent-fs` filter. Git control state and `.ko-agent-sandbox` are frozen at any depth;
+          |symlink targets must be relative and remain inside the workspace.""".stripMargin
+      case ("live", "none") =>
+        s"""`/workspace` is a raw writable bind shared live with the host project directory.
+           |Raw guard: $RawWorkspaceBoundary. Nested repository control state and non-portable
+           |symlinks remain writable.""".stripMargin
       case _ =>
-        "`/workspace` is writable and shared live with the host project directory."
+        throw IllegalArgumentException(s"unknown workspace authority: $writeMode/$workspaceGuard")
     s"""
        |
        |# Authority in force for this session
@@ -1512,8 +1520,8 @@ object AgentSandboxLauncher:
        |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
        |Anything not admitted below is refused. An unrestricted host is an opaque tunnel; a
-       |restricted host answers only GET and HEAD, and one on the `allow=git-fetch` line also
-       |serves `git fetch`, so `clone` and `pull` — `git push` is refused.
+       |restricted host answers GET and HEAD plus only the named allowances shown below.
+       |`allow=git-fetch` serves `clone` and `pull`; `git push` is always refused.
        |
        |$indented
        |
@@ -1522,6 +1530,16 @@ object AgentSandboxLauncher:
        |the host and relaunches — under the default deny-unless-allowed profile or a broader
        |one, if this session's profile does not admit project hosts at all.
        |""".stripMargin
+
+  def agentDocumentStamp(
+    imageId: String,
+    writeMode: String,
+    workspaceGuard: String,
+    policyResolvedText: String,
+    agentInstructions: Option[String],
+  ): String =
+    s"$imageId $writeMode $workspaceGuard ${sha256Hex(policyResolvedText)} "
+      + agentInstructions.fold("image")(sha256Hex)
 
   def main(args: Array[String]): Unit =
     unknownSandboxVariables(System.getenv().keySet().asScala).foreach: name =>
@@ -2074,18 +2092,18 @@ object AgentSandboxLauncher:
     // The egress policy, appended to the agent instructions the image ships, so an agent starts the
     // session knowing what it can reach instead of learning it from a refused request. Same
     // technique as the CA bundle below — read the image's own file, add this project's part, mount
-    // the result back over it — and the image points all three agents' instruction files at this one
-    // path by symlink, so a single mount reaches every one of them. A project shipping its own
+    // the result back over it — and the image points the installed agents' instruction files at
+    // this path by symlink, so a single mount reaches all of them. A project shipping its own
     // AGENTS-CUSTOM.md takes the image's AGENTS-SANDBOX.md alone and supplies the middle part
-    // itself. Cached on (image Id, write mode, resolved policy, project instructions); the
+    // itself. Cached on (image Id, write mode, workspace guard, resolved policy, project
+    // instructions); the
     // multi-line inputs are hashed into the stamp.
     val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = policyCacheDir.resolve("agents.md")
     val agentDocStampFile = policyCacheDir.resolve("agents.stamp")
     // The profile and provider need no stamp input of their own — the resolved text's first line
     // carries both.
-    val agentDocStamp =
-      s"$imageId $writeMode ${sha256Hex(policyResolvedText)} ${agentInstructions.fold("image")(sha256Hex)}"
+    val agentDocStamp = agentDocumentStamp(imageId, writeMode, guard, policyResolvedText, agentInstructions)
 
     val (proxyTlsArgs, sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
       // Run copies whose runs are provably gone — and past the launch bound, so a launch between
@@ -2190,7 +2208,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
             + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
-            + authoritySection(writeMode, policyResolvedText),
+            + authoritySection(writeMode, guard, policyResolvedText),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
@@ -2352,8 +2370,8 @@ object AgentSandboxLauncher:
           " shared by this project's live sessions"
       case (_, None) =>
         s"workspace: LIVE; guard NONE by $WorkspaceGuardVariable — /workspace bound directly, " +
-          "with only .git/config and .git/hooks pinned read-only, and only until the host " +
-          "rewrites one" +
+          s"$RawWorkspaceBoundary; mount pins can fall through when the host replaces " +
+          "their source" +
           (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
            else ""))
     if policyFiles.nonEmpty then

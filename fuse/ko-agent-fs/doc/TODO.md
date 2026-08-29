@@ -127,10 +127,10 @@ What the suites cover and how to run them, the self-test image and the privilege
 
 The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
 the sandbox's own. `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
-`probe/perf-probe.py` is the measurement: it builds its own corpus, so two runs are comparable
-across machines, and reports per-entry times for the five shapes below. Run it once in a filtered
-session and once with the guard off — the ratio between the columns is the answer, and the control
-is the half that matters, since the raw bind is fast for precisely the reason the invariant forbids.
+`probe/perf-probe.py` builds its own corpus, so two runs are comparable
+across machines, and reports per-entry times for the operation shapes below. Run it once in a
+filtered session and once with the guard off — the ratio between the columns is the answer, and
+the control isolates the filter's cost from the backing share.
 
 Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
 virtiofs, against the same corpus over a plain bind mount:
@@ -194,8 +194,9 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
-  `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe revoke
-  and re-register protocol. Do not make staged mode inherit a live-only optimization by accident.
+  `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe
+  revoke and re-register protocol. Do not make staged mode inherit a live-only optimization by
+  accident.
 - [ ] Push-invalidation: the knob below kept *correct* by the daemon watching the backing (inotify
   inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode`, so its window closes at the
   host write rather than at T. Only sound if a watch in the guest sees a host-side virtiofs write,
@@ -322,13 +323,14 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   Implementing xattrs is a compatibility feature to schedule, not a regression to repair; the new
   evidence that reopens this is a tool that complains, and the probe is what re-measures then.
 
-  Two things to know before picking it up. `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
+  Constraints before picking it up: `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
   `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
   *daemon's* kernel — not on this project's Debian 13 or podman floor (README names it), which
-  govern the container userspace the filter does not run in. On a podman machine that kernel is Fedora
-  CoreOS's (7.1 as measured on 2026-08-14, so present); on native Linux it is the user's own and is
-  not bounded by anything here — Debian 13 as a *host* is 6.12, just under. One path that works on
-  both is `/proc/self/fd/<fd>` with the `l*xattr` calls, which is what libfuse's `passthrough_hp`
+  govern the container userspace the filter does not run in. On a podman machine that kernel is
+  Fedora CoreOS's (7.1 as measured on 2026-08-14, so present); on native Linux it is the user's own
+  and is not bounded by anything here — Debian 13 as a *host* is 6.12, just under. One path that
+  works on both is `/proc/self/fd/<fd>` with the `l*xattr` calls, which is what libfuse's
+  `passthrough_hp`
   does; that is a magiclink path in the one file that sets `RESOLVE_NO_MAGICLINKS` deliberately —
   safe, because the fd is the daemon's own and never attacker-supplied, but it has to be justified
   at the call site rather than left to look like an oversight. And `policy::Mutation` gains its

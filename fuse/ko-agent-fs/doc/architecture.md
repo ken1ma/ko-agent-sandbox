@@ -223,7 +223,7 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
 The digest's construction, and why the algorithm exists only on the launcher side, live with the
 code: `KoAgentFs.koAgentFsSourceId`.
 
-**All five steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
+**All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
 `--write=live` session under `KO_AGENT_SANDBOX_WORKSPACE_GUARD=fuse`** (`--write=reject` binds the
 tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear value is a refused

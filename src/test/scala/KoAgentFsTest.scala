@@ -323,8 +323,9 @@ class KoAgentFsTest extends munit.FunSuite:
     val refused = workspaceGuard(Some("on")).swap.getOrElse("")
     assert(refused.contains("the only values are fuse and none, exactly"), refused)
     assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
+    assert(refused.contains(RawWorkspaceBoundary), refused)
 
-  test("the venue exit code means the same thing in the filter and in the launcher"):
+  test("the venue exit code matches in the filter and launcher"):
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a
     // bad venue as a bug.
     val declared = """(?m)^const SELF_TEST_VENUE_EXIT: u8 = (\d+);$""".r

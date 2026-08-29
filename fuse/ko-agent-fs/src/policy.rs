@@ -39,7 +39,7 @@ pub enum Decision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitPathClass {
-    /// Operational state git must write, or ordinary project data; not executed. Writable.
+    /// Operational state git must write, or project data outside Git control state. Writable.
     Operational,
     /// Control state — config, hooks, redirections. Immutable to the sandbox.
     Control,
@@ -508,7 +508,7 @@ mod tests {
             classify_relative_path(b".ko-agent-sandbox/.git/objects/ab/cdef", &[]),
             GitPathClass::Control
         );
-        // And the name is ordinary project data everywhere it is not that name.
+        // The name remains writable project data everywhere it is not that name.
         assert_eq!(
             classify_relative_path(b"docs/ko-agent-sandbox/notes.md", &[]),
             GitPathClass::Operational

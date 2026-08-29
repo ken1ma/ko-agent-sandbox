@@ -6,14 +6,12 @@ without a concrete gain live in DESIGN.md as Non-TODOs so they stop resurfacing.
 ## Deferred — inspected-relay keep-alive
 
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
-  measurably hurts (a 104-archive install's 104 handshakes cost seconds today). Both legs' framing
-  is parsed and enforced, so the shape is a request loop per client connection with a fresh
-  upstream connection per request; the price is a larger state machine at the enforcement point and
-  the one-request stance's smuggling argument re-argued in SECURITY.md.
+  measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
+  framing is parsed and enforced, so the shape is a request loop per client connection with a
+  fresh upstream connection per request; the price is a larger state machine at the enforcement
+  point and the one-request stance's smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
-
-No implementation now.
 
 If `git lfs pull` becomes important:
 
@@ -67,7 +65,7 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
 
 ## Deferred — `--self-test`'s share rows
 
-`--self-test` today builds the self-test image and runs the crate's suites in it
+`--self-test` builds the self-test image and runs the crate's suites in it
 (`../fuse/ko-agent-fs/doc/testing.md`). Those settle the code's own logic and the kernel; the share
 is the axis they cannot reach, because their backing tree is the container's own storage
 (`DESIGN.md`). The rows that do reach it are hand-run probes with a host terminal beside them, and
@@ -111,7 +109,7 @@ launcher execs away on POSIX, so neither side has an obvious place to stand.
   kernel32 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` via FFM — per-thread
   state that clears when the thread dies, so no teardown path. WSL is a documented gap: the Linux
   mechanism cannot reach the Windows power manager.
-- Two simpler halves that come with it: `--build`/`--update` wrapped in `caffeinate -i`
+- Simpler work that comes with it: `--build`/`--update` wrapped in `caffeinate -i`
   unconditionally on macOS (finite work, no reason to ask), and *not* a session-wide env-var wrap —
   the launcher's only scope is the whole session, so an idle open agent would pin the laptop awake,
   which is the reason the lease is scoped to a command at all.
@@ -123,33 +121,22 @@ on podman-less machines and kills the test JVM.
 
 ## Before the first release — continuous integration
 
-There is none, which is why both image builds run their own suites on every user's `--build`:
-`ko-agent-fs`'s Containerfile runs `cargo deny` and `cargo test` before it produces a binary, and
-the proxy's runs `sbt testFull` before it packages a jar. That is the right arrangement while it is
-the only automated gate in existence — removing it would not move those suites anywhere, it would
-leave them running when a developer remembers.
+There is no CI. The README's developer commands run the launcher, proxy and filter suites;
+`--self-test` runs the filter suites on demand. A user's `--build` instead performs the gates whose
+answers belong to that artifact and machine: `cargo deny check licenses bans sources`, compilation,
+binary identity, and the installed filter's mount self-test.
 
-- [ ] Add CI, then trim each image build to what belongs on the user's machine rather than on ours:
-  - `cargo deny check licenses bans sources` stays. It gates the licences of what actually ships,
-    and an image whose licences were never checked should not exist. Its fourth check, `advisories`,
-    is what CI adds rather than moves: nothing runs it today, and the image build is the wrong home
-    for it — `deny.toml` records why a moving external input must not gate the command a user
-    installs with.
-  - `tests/binary.rs` stays. It spawns the built artifact for the shipping musl triple on the
-    user's own architecture, which is the one thing our machine cannot cover for theirs
-    (`fuse/ko-agent-fs/doc/testing.md` has why the triple is not cosmetic).
-  - The pure suites — policy, inode, guard, the git corpus, the proxy's parsers — move to CI, where
-    they run once per change instead of once per user.
-
-  What that buys is build time. What it costs is that a user who edits the source they were handed
-  to read no longer has its tests run against what they built, which is not nothing in a design
-  that ships source rather than a binary. Weigh it when the time comes.
+- [ ] Add CI for the launcher's and proxy's `sbt testFull`, and the filter's pure and binary suites
+  on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
+  its moving external database must not gate installation.
+- [ ] Keep the artifact-local gates above in `--build`, and keep the mounted filter suites in
+  `--self-test`; CI does not prove a user's FUSE venue.
 
 ## Before the first release — the published identity
 
 - [ ] One decision, several names that must fall out of it together: the jar's artifact name and
-  publication coordinates; the Scala package names (`agentsandbox.*` today, carrying neither the
-  `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` today —
+  publication coordinates; the Scala package names (`agentsandbox.*`, carrying neither the
+  `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` —
   OCI convention wants a reverse-DNS key, and the right prefix is this same identity, so deciding
   the key alone would decide the identity by accident). Until then a changed key self-heals
   through the "rebuild with --build" refusal, so the exposure is bounded.

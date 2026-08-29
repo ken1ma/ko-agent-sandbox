@@ -15,8 +15,8 @@ set -eu
 nesting=${KO_AGENT_SANDBOX_NESTING:-none}
 if [ "$nesting" != same-uid ]; then
     echo "${0##*/}: this session is KO_AGENT_SANDBOX_NESTING=$nesting; a container runtime" >&2
-    echo "  runs only under same-uid, which is the user's choice at launch. Run the service as" >&2
-    echo "  an ordinary process instead, or ask them to relaunch (AGENTS-SANDBOX.md)." >&2
+    echo "  runs only under same-uid, which is the user's choice at launch. Run the service" >&2
+    echo "  directly instead, or ask them to relaunch (AGENTS-SANDBOX.md)." >&2
     exit 1
 fi
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The metadata cost of the filter, as a command rather than a reconstruction (doc/TODO.md,
 "Performance"). It builds its own corpus, so two runs are comparable even on different machines,
-and reports microseconds per entry for the five operation shapes the table there is built from.
+and reports microseconds per entry for the operation shapes the table there is built from.
 
 Run it INSIDE a sandbox session, twice, and compare the columns — the second run is the control:
 
@@ -11,9 +11,9 @@ Run it INSIDE a sandbox session, twice, and compare the columns — the second r
     KO_AGENT_SANDBOX_WORKSPACE_GUARD=none java -jar ko-agent-sandbox.jar bash
     python3 perf-probe.py
 
-The control matters more than the absolute numbers: the raw bind is fast because the VM kernel
-caches virtiofs metadata across processes, which is exactly the caching the coherency invariant
-forbids the filter (doc/architecture.md). What the ratio prices is that invariant, not the backing.
+The control matters more than the absolute numbers: on the measured macOS stack the hypervisor
+answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
+resolution. What the ratio prices is the filter, not the backing share (doc/architecture.md).
 
 Everything is written under a temporary directory in /workspace — which is the point, /tmp is not
 the filesystem under test — and removed afterwards. FILES=n varies the corpus size.

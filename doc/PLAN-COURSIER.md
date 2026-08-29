@@ -34,8 +34,8 @@ sandbox write is absent from the host after exit.
 
 The target is to remove image-managed Coursier content from the copied home while retaining its
 small seed files. Do not add `nocopy` to the home volume in this increment: that also hides the
-`.claude`, `.codex`, `.gemini` and `.copilot` symlinks. A small ordinary copy-up preserves those
-contracts without material startup cost.
+`.claude`, `.codex`, `.gemini` and `.copilot` symlinks. Copying only the remaining home seed keeps
+those contracts without material startup cost.
 
 ## Cold default
 
@@ -205,7 +205,7 @@ type=volume,dst=/home/nonroot
 type=volume,src=<persistent>,dst=/home/nonroot/persistent-volume
 ```
 
-The exact ordering and nested-mount behavior must be proven with all three mounts together. The
+The exact ordering and nested-mount behavior must be proven with the full mount set. The
 small home copy-up includes `.cache/coursier`; Podman creates only the nested `v1` mountpoint. The
 copy-up must also provide:
 

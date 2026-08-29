@@ -1,6 +1,7 @@
 # The curated restricted catalog: what deny-unless-allowed admits on its own. Every entry is
-# TLS-inspected, GET and HEAD only, plus its allowance's one POST; SECURITY.md, "Reading without
-# being able to write", has what each allowance opens and what the inspection costs and buys.
+# TLS-inspected, GET and HEAD only, plus the POSTs its named allowances permit; SECURITY.md,
+# "Reading without being able to write", has what each allowance opens and what the inspection
+# costs and buys.
 #
 # Before adding a host, answer all five: why does an arbitrary project need it by default; what
 # sandbox data could be sent to it; does it expose an unauthenticated write endpoint; which

@@ -322,7 +322,7 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
                      Its mtime did move on the backing, so AUTO_INVAL_DATA was negotiated and is\n\
                      not invalidating; this kernel cannot serve the workspace coherently\n\
                      (doc/architecture.md, \"Coherency\"; probe/coherency-probe.py measures the\n\
-                     same thing across the host share)"
+                     same read and mmap behavior across the host share)"
                 ));
             }
             std::thread::sleep(Duration::from_millis(10));

@@ -8,13 +8,13 @@ inspected host the secret is bound to. Everywhere else the placeholder goes out 
 authenticates nothing.
 
 One secret qualifies here: a value forwarded with `--env`, bound to a host —
-`--env=GH_TOKEN@api.github.com`. Copilot CLI's sign-in — the one agent login that is a forge
-credential (SECURITY.md, "Exfiltration through an allowed host") — is a provider instance of
+`--env=GH_TOKEN@api.github.com`. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web
+reached through the model provider") is a provider instance of
 `PLAN-PROVIDER-CREDENTIAL-PROXY.md`, which reuses the rewrite below ("Copilot").
 
 ## Evidence and target
 
-Two residues SECURITY.md concedes are the target.
+The credential residues SECURITY.md concedes are the target.
 
 - A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
   reaching whatever this project's egress policy admits". A `GET` carries its URL, and a URL is
@@ -29,13 +29,13 @@ web (real GitHub token in a proxy outside the VM), Codex CLI (`credential_broker
 same prefix and length in the child's environment, swapped only for the bound GitHub hosts),
 Docker Sandboxes (`proxy-managed` sentinel, value in the OS keychain), greywall
 (`greyproxy:credential:v1:…`, headers and query only), clampdown (auth-proxy container, `sk-proxy`
-inside). Three rules recur and this plan keeps them: sentinel inside, one host per secret,
+inside). This plan keeps the recurring rules: sentinel inside, one host per secret,
 header-only rewrite.
 
 What brokering does not change: the bound host still receives authenticated requests, within the
 method policy the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
 `allow=git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
-something it should not"; repository scoping is a later increment ("Deliberate exclusions").
+an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
 
 ## Invariants
 
@@ -103,8 +103,8 @@ The proxy reads the file once at start and refuses to start if a value or header
 grammar (invariant 4) or a binding names a host outside its own resolved inspected set — the
 same in-both-directions check the leaf certificate gets, for the same reason: a binding the
 proxy cannot honour would surface as a 401 inside the sandbox with nothing in the log to
-explain it. The refusal reaches the user through the readiness gate in
-`PLAN-UPSTREAM-PROXY.md`, "Lifecycle and ownership": the launch fails with the message.
+explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProxyReady`: the launch
+fails with the message.
 
 ## Substitution
 
@@ -167,8 +167,8 @@ Additions to SECURITY.md, each at its binding site:
   residue narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the policy's single point of trust and becomes
-  a holder of what the policy admits spending. Its compromise was a full policy compromise and
-  is now also a credential — one boundary, not two.
+  a holder of what the policy admits spending. Compromising it compromises both policy and
+  credential — one boundary.
 - "The audit line grammar": the `inject` field.
 
 Residues that stay, stated: the credential is still spent by the agent on the bound host within
@@ -184,8 +184,8 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - Binding validation against the resolved profile, reusing the restricted line read from
   `--print-policy` (the leaf certificate's source of truth, so no second host list).
 - `CredentialGrammar`: the value and header-name checks of invariant 4, one source file under
-  `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles as an
-  ordinary source and the launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
+  `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
+  launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
   — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
   policy arithmetic: the gate must fire in `PLAN-PROVIDER-CREDENTIAL-PROXY.md`'s management
   verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
