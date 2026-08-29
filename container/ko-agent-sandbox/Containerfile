@@ -363,7 +363,7 @@ RUN set -euxo pipefail; \
     tar -xzf /tmp/agy.tar.gz -C /tmp antigravity; \
     install -m 0755 /tmp/antigravity /usr/local/bin/agy; \
     rm /tmp/agy.tar.gz /tmp/antigravity; \
-    HOME=/tmp/agy-smoke agy --help >/dev/null; \
+    HOME=/tmp/agy-smoke agy --version >/dev/null; \
     rm -rf /tmp/agy-smoke
 
 # All agy state lives under ~/.gemini, a symlink into
