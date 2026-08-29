@@ -984,10 +984,10 @@ object AgentSandboxLauncher:
 
     System.err.println(
       "note: the filter's self-test failed at the venue rather than at a check; retrying as\n" +
-        "root. Its own message above is the report of what failed, and this launcher does not\n" +
-        "narrow it further. If root serves, this venue never exercises the setuid fusermount3\n" +
-        "route a session takes, which is worth recording with its venue\n" +
-        "(fuse/ko-agent-fs/doc/verification-log.md).",
+        "  root. Its own message above is the report of what failed, and this launcher does not\n" +
+        "  narrow it further. If root serves, this venue never exercises the setuid fusermount3\n" +
+        "  route a session takes, which is worth recording with its venue\n" +
+        "  (fuse/ko-agent-fs/doc/verification-log.md).",
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
     echoCommand(privileged)

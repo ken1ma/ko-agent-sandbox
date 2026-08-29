@@ -235,13 +235,18 @@ object LauncherImages:
   private val ImageUsingContainer =
     "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
 
+  /**
+   * Ids at podman's own listing width, and a continuation line indented under the note, as
+   * every launcher line carries a label and an unindented bare line reads as a subprocess's.
+   * The second form's continuation is podman's error text, so it stays as podman wrote it.
+   */
   def supersededImageRetentionNote(imageId: String, error: String): String =
     ImageUsingContainer.findFirstMatchIn(error) match
       case Some(matched) =>
-        s"note: keeping superseded image $imageId while container ${matched.group(1)} still uses it;\n" +
-          "a later --build, --update, or --self-test will retry after that container is removed"
+        s"note: keeping superseded image ${imageId.take(12)} while container ${matched.group(1).take(12)} still uses it;\n" +
+          "  a later --build, --update, or --self-test will retry once that container is gone"
       case None =>
-        s"note: keeping superseded image $imageId; Podman did not remove it\n${error.trim}"
+        s"note: keeping superseded image ${imageId.take(12)}; Podman did not remove it\n${error.trim}"
 
   def removeSupersededImages(
     podman: String,

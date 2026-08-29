@@ -915,8 +915,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val containerId = "2" * 64
     val error = s"Error: image used by $containerId: image is in use by a container"
     val note = supersededImageRetentionNote(imageId, error)
-    assert(note.contains(s"container $containerId still uses it"), note)
-    assert(note.contains("a later --build, --update, or --self-test will retry"), note)
+    assert(note.contains(s"container ${containerId.take(12)} still uses it"), note)
+    assert(!note.contains(containerId), note)
+    assert(note.contains("\n  a later --build, --update, or --self-test will retry"), note)
     assert(!note.contains("Error:"), note)
 
     val unexpected = supersededImageRetentionNote(imageId, "Error: storage is unavailable")
