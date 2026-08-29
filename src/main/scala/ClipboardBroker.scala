@@ -99,7 +99,7 @@ object ClipboardBroker:
 
   /**
    * What the host runs for the mode: PowerShell for the resident twin, or the tools the shell twin
-   * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the checkout,
+   * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the project directory,
    * DESIGN.md "No PATH-resolved host executables"). Each tool is its own field rather than a name
    * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
    * Empty where absent, and everywhere on macOS.
@@ -172,7 +172,6 @@ object ClipboardBroker:
     "[System.Console]::InputEncoding = [System.Text.Encoding]::UTF8; " +
       "Set-Clipboard -Value ([System.Console]::In.ReadToEnd())"
 
-  /** Started once the sandbox runs; returns at once. Nothing to start when the mode is off. */
   def startResident(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     if mode != "off" then
       val thread = Thread(() => serve(powershell, podman, sandboxContainer, mode), "ko-agent-sandbox-clipboard")

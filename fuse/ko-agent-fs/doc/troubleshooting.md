@@ -50,12 +50,11 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   thing to the host (`SECURITY.md`, "A symlink is the sharpest case"; the rule and its limits are
   `fs.rs`, `target_has_portable_shape`). Give the tool a relative target landing inside the
   workspace, or let it cache inside the project. Tools that link into a store of their own generally
-  fall back to copying: sbt turns off linking for the session on the first refusal and copies out
-  of its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an
-  absolute link to the interpreter — `--copies` builds the same environment, and a virtualenv under
-  `~` is the better answer anyway, since one under `/workspace` names container paths in its
-  `pyvenv.cfg` and
-  shebangs and is unusable on the host regardless.
+  fall back to copying: sbt turns off linking for the session on the first refusal and copies out of
+  its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an absolute
+  link to the interpreter — `--copies` builds the same environment, and a virtualenv under `~` is
+  the better answer anyway, since one under `/workspace` names container paths in its `pyvenv.cfg`
+  and shebangs and is unusable on the host regardless.
 
 No DENY line for the failure? Then the `EPERM` did not come from the filter — check the backing
 share's own permissions and SELinux label from inside the machine.
@@ -134,22 +133,20 @@ returned `EOF`. Check, in order:
     podman machine ssh 'free -h; df -h /'
     podman machine ssh 'journalctl -k | grep -iE "oom|out of memory" | tail -5'
 
-The sandbox's default memory ceiling and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`)
-are what make sbt die before the VM does, except on a machine the launch already warned was short.
-With more than one session on the machine their ceilings add
-up past what the VM has, so lower each with `KO_AGENT_SANDBOX_MEMORY`. Other remedies: raise the
-machine's memory (`podman machine set --memory ...`, machine stopped, your call); keep
-gigabyte-scale work under `~` in the container, not `/tmp`. The entrypoint reads the same
-`free`/`df` figures at every launch and holds a warning on screen when they are already short.
-After a hard stop, `--reset` sweeps the stray proxy and networks; the filter needs nothing — mounts
-died with the VM and stale session markers are pruned at a later reap.
+The sandbox's default memory ceiling and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`) are
+what make sbt die before the VM does, except on a machine the launch already warned was short. With
+more than one session on the machine their ceilings add up past what the VM has, so lower each with
+`KO_AGENT_SANDBOX_MEMORY`. Other remedies: raise the machine's memory (`podman machine set --memory
+...`, machine stopped, your call); keep gigabyte-scale work under `~` in the container, not `/tmp`.
+The entrypoint reads the same `free`/`df` figures at every launch and holds a warning on screen when
+they are already short. After a hard stop, `--reset` sweeps the stray proxy and networks; the filter
+needs nothing — mounts died with the VM and stale session markers are pruned at a later reap.
 
 ## Stale state after crashes
 
 Self-healing by design, so intervention is rarely needed: a leaked session marker is pruned by the
 first reap that finds it older than the launch bound of ten minutes (its container no longer exists,
 and by then no launch could still be on its way to creating one); a stale or version-skewed mount is
-unmounted and
-replaced at the next launch; `--reset` removes the project's whole `mounts/<project>` tree. The
-one thing worth checking after repeated crashes is that `pgrep -a ko-agent-fs` matches the projects
-that actually have sessions.
+unmounted and replaced at the next launch; `--reset` removes the project's whole `mounts/<project>`
+tree. The one thing worth checking after repeated crashes is that `pgrep -a ko-agent-fs` matches the
+projects that actually have sessions.

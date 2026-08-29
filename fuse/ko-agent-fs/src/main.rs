@@ -340,7 +340,6 @@ fn main() -> ExitCode {
         Err(code) => return code,
     };
 
-    // The startup guard (`guard`).
     if let Err(refusal) = ko_agent_fs::guard::check_hook_location(&args.source) {
         eprintln!(
             "ko-agent-fs: refusing to serve {:?}\n{refusal}",
@@ -349,8 +348,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // O_PATH|O_DIRECTORY: a resolution base for openat2, not a readable handle. Fails loudly if the
-    // backing path is absent or not a directory — the launcher created it, so this is a sanity check.
+    // O_PATH|O_DIRECTORY: a resolution base for openat2, not a readable handle.
     let root: OwnedFd = match open(
         &args.source,
         OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
@@ -389,11 +387,10 @@ fn main() -> ExitCode {
 mod tests {
     use super::coherency_check;
 
-    /// Whether the *mount* keeps its data coherent is `--self-test`'s to prove, and it needs a
-    /// mount. What can be held upright without one is the check itself: with one directory playing
-    /// both the backing and the mountpoint, a live page cache satisfies it by construction, so a
-    /// wrong mapping length, a read the compiler hoisted out of the poll, or a mapping left behind
-    /// fails here instead of at someone's `--build`.
+    /// The check itself, not the mount (that is `--self-test`'s): with one directory playing both
+    /// the backing and the mountpoint, a live page cache satisfies it by construction, so a wrong
+    /// mapping length, a read the compiler hoisted out of the poll, or a mapping left behind fails
+    /// here instead of at someone's `--build`.
     #[test]
     fn the_coherency_check_holds_where_one_directory_plays_both_sides() {
         let dir =

@@ -128,7 +128,6 @@ fn main() -> std::io::Result<()> {
     println!("mounting probe filesystem at {mountpoint} ...");
     let session = fuser::spawn_mount(HelloFs, &mountpoint, &config)?;
 
-    // Let the mount settle, then read the file back through it.
     std::thread::sleep(Duration::from_millis(300));
     let path = std::path::Path::new(&mountpoint).join(FILE_NAME);
     let got = std::fs::read_to_string(&path);

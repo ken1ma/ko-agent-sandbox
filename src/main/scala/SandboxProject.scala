@@ -119,12 +119,10 @@ object SandboxProject:
 
   /**
    * The directories whose contents must never become a project mount, and
-   * the warnings describing any degradation in deriving them. The configured
-   * homes (HOME on POSIX; USERPROFILE, HOME and PUBLIC — the shared profile —
-   * on Windows) are protected together with the well-known home roots above,
-   * with macOS data-volume spellings treated as the same directory. A home
-   * variable that is set but invalid refuses the launch on POSIX; on Windows
-   * it is dropped with a warning as long as another home variable resolved,
+   * the warnings describing any degradation in deriving them. PUBLIC is the
+   * shared Windows profile. A home variable that is set but invalid refuses
+   * the launch on POSIX; on Windows it is dropped with a warning as long as
+   * another home variable resolved,
    * because Git Bash and MSYS2 export a POSIX-style HOME (/c/Users/me) beside
    * a perfectly good USERPROFILE. No home variable at all degrades to the
    * well-known roots, with a warning — HOME-less environments (cron, CI,
@@ -188,8 +186,7 @@ object SandboxProject:
    * user-facing and names the rule that fired: telling someone inside
    * ~/.config to "change into a project directory" would send them deeper
    * into a tree the dot rule refuses everywhere. A project at <home>/project
-   * remains valid: the guard protects homes, what contains them and the other
-   * homes those containers hold, never the projects inside a home.
+   * remains valid (HomeProtection has what is refused).
    */
   def forbiddenProjectDirReason(dir: Path, homes: HomeProtection): Option[String] =
     val candidate = dir.normalize()
@@ -265,7 +262,7 @@ object SandboxProject:
    * execution outside the boundary. A mount point cannot be written,
    * deleted or replaced from inside; pinning these two pins the execution
    * surface while the rest of .git stays writable data (SECURITY.md, "The
-   * project checkout").
+   * project directory").
    *
    * Shapes:
    *   - directory: pin config and hooks; an absent one is pinned from the
@@ -337,8 +334,8 @@ object SandboxProject:
    * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
    * agent/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles,
-   * readAgentInstructions). An absent
-   * directory is empty policy input, never a directory to materialize.
+   * readAgentInstructions). An absent directory is empty policy input, never a directory to
+   * materialize.
    */
   def policyDirError(policyDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
@@ -377,7 +374,6 @@ object SandboxProject:
     if !Files.exists(policyDir) then Files.createDirectory(policyDir)
     s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
 
-  /** The entries .ko-agent-sandbox may contain. */
   val PolicyDirEntries: Set[String] = Set("egress", "agent")
 
   /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */

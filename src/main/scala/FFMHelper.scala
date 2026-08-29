@@ -4,16 +4,12 @@ import java.io.IOException
 import java.lang.foreign.{Arena, FunctionDescriptor, Linker, MemoryLayout, MemorySegment, StructLayout, ValueLayout}
 import scala.util.Using
 
-/** Foreign Function and Memory API */
 object FFMHelper:
 
   object libc:
 
-    /** `execvp` replaces this process: same pid, terminal, signals and exit
-      * status. A restricted method — the build bakes
-      * `--enable-native-access=ALL-UNNAMED` into the manifest and run task.
-      * The caller treats any throwable as "no exec on this platform" and
-      * falls back to spawning and waiting.
+    /** A restricted method — the build bakes `--enable-native-access=ALL-UNNAMED` into the
+      * manifest and run task. Returns only by throwing (SandboxLifecycle.handOver has the fallback).
       */
     def execvp(command: Vector[String]): Unit =
       val linker = Linker.nativeLinker()

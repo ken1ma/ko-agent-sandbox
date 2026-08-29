@@ -15,11 +15,6 @@ import scala.util.control.NonFatal
 
 import IPAddrHelper.normalizeHost
 
-/**
- * The TLS surface: parsing a ClientHello within a fixed byte budget to get
- * at its SNI, the identity check that ties that SNI to the CONNECT target,
- * and TlsInspection — the MITM for the inspected hosts.
- */
 object TLSHelper:
 
   def validateTlsIdentity(
@@ -128,8 +123,6 @@ object TLSHelper:
 
       new TlsInspection(context, hosts)
 
-    /** The one-line refusal when the leaf's DNS names differ from the names
-      * the proxy is built to inspect; None when they match exactly. */
     def inspectedNamesError(covered: Set[String], required: Set[String]): Option[String] =
       if covered == required then None
       else

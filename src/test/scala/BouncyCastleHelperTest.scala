@@ -59,9 +59,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     leaf.verify(parse(ca.certificatePem).getPublicKey)
 
   test("the chain carries the key identifiers strict verifiers require"):
-    // OpenSSL's X509_STRICT — Python's default since 3.13 — refuses a chain without them with
-    // "Missing Authority Key Identifier"; curl and apt merely tolerate the omission, which is
-    // why nothing else notices. The leaf's AKI must name the CA's SKI, or matching still fails.
+    // The leaf's AKI must name the CA's SKI, or matching still fails.
     val SkiOid = "2.5.29.14"
     val AkiOid = "2.5.29.35"
     val ca = mintCa("proj")
@@ -102,8 +100,6 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     assert(fingerprint.matches("([0-9A-F]{2}:){31}[0-9A-F]{2}"), fingerprint)
 
   test("a key answers its own certificate and nothing else — mixed generations are incoherent"):
-    // The state a launch that died between writing the key and the certificate leaves behind:
-    // both files current and non-empty, every handshake failing. Currency cannot see it; this can.
     val one = mintCa("proj")
     val other = mintCa("proj")
     assert(keyMatchesCertificate(one.certificatePem, one.privateKeyPem))
@@ -114,8 +110,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
 
     val leaf = mintLeaf(one.certificatePem, one.privateKeyPem, Vector("github.com"))
     assert(keyMatchesCertificate(leaf.certificatePem, leaf.privateKeyPem))
-    // And the chain: a leaf minted under a CA since replaced is internally coherent and still
-    // fails every handshake, so issuance is checked apart from correspondence.
+    // Issuance is checked apart from correspondence.
     assert(signedBy(leaf.certificatePem, one.certificatePem))
     assert(!signedBy(leaf.certificatePem, other.certificatePem))
     assert(!signedBy(leaf.certificatePem, ""))

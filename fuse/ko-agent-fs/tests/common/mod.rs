@@ -81,12 +81,10 @@ impl TestMount {
         panic!("the filter did not come up at {}", self.mount.display());
     }
 
-    /// A path inside the filtered mount — what the sandbox sees, and what the policy governs.
     pub fn at(&self, relative: &str) -> PathBuf {
         self.mount.join(relative)
     }
 
-    /// A path in the raw backing tree — what the host sees, bypassing the filter entirely.
     pub fn backing_at(&self, relative: &str) -> PathBuf {
         self.backing.join(relative)
     }
@@ -125,7 +123,6 @@ pub fn denied<T>(what: &str, result: io::Result<T>) {
     }
 }
 
-/// The same, for a `nix` call.
 #[track_caller]
 pub fn denied_nix<T>(what: &str, result: nix::Result<T>) {
     match result {

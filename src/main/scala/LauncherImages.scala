@@ -22,7 +22,7 @@ object LauncherImages:
   val KoAgentFsBuildImage = "ko-agent-fs-build:cache"
   val SelfTestBuildImage = "ko-agent-self-test-build:cache"
 
-  /** Every image tag whose lifecycle belongs to --build, in dependency order. */
+  /** In dependency order. */
   def buildImageTags(version: String): Vector[String] =
     Vector(
       s"debian-temurin:$version",
@@ -34,13 +34,11 @@ object LauncherImages:
       "ko-agent-fs:latest",
     )
 
-  /** The two image tags whose lifecycle belongs to --self-test, in dependency order. */
+  /** In dependency order. */
   val SelfTestImageTags = Vector(SelfTestBuildImage, "ko-agent-self-test:latest")
 
-  /** Every tag an image build must protect while replaying an interrupted cleanup. */
   def managedImageTags(version: String): Vector[String] = buildImageTags(version) ++ SelfTestImageTags
 
-  /** Identity of the self-test sources and the sandbox image they actually inherit. */
   def selfTestBundleId(fsSourceId: String, selfTestSourceId: String, sandboxImageId: String): String =
     bundleSourceId(Vector(
       "ko-agent-fs" -> fsSourceId.getBytes(StandardCharsets.UTF_8),
@@ -72,7 +70,6 @@ object LauncherImages:
   def imageListCommand(podman: String): Vector[String] =
     Vector(podman, "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}\t{{.Id}}")
 
-  /** All named images, including tags from older launcher versions. */
   def existingImageTags(podman: String, failure: String = "build did not start"): Vector[TaggedImage] =
     val listed = run(imageListCommand(podman)*)
     if !listed.ok then fail(s"error: $failure; could not list images\n${listed.err}")

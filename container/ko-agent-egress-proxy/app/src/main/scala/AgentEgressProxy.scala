@@ -51,12 +51,8 @@ object AgentEgressProxy:
    * A host's treatment is one of two:
    *
    *   - unrestricted: an opaque tunnel — nothing seen or logged past the CONNECT.
-   *   - restricted: TLS-inspected; only GET and HEAD — except that an entry with an allowance also
-   *     admits its one POST: `allow=git-fetch` the git-upload-pack transfer, so cloning works while
-   *     `git push` is refused inside the tunnel rather than merely being expected to fail for
-   *     want of a credential; `allow=github-login-device` GitHub's OAuth device flow, so Copilot
-   *     signs in on a forge that stays read-only otherwise; `allow=npm-audit` npm's install-time
-   *     audit, so dependency-vulnerability warnings keep working.
+   *   - restricted: TLS-inspected; only GET and HEAD, plus the one POST each `allow=` tag opens
+   *     (authorizeInspectedRequest).
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
    * rule, and an unknown tag is a refused start — the guardrail DESIGN.md ("No general HTTP
@@ -249,7 +245,6 @@ object AgentEgressProxy:
       case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
       case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
 
-  /** A treatment as the policy file spells it: `unrestricted`, or `restricted` with its allowances. */
   def spelled(treatment: Treatment): String = treatment match
     case Treatment.Restricted(tags) if tags.nonEmpty => s"restricted allow=${tags.toVector.sorted.mkString(",")}"
     case Treatment.Restricted(_)                     => "restricted"
@@ -312,7 +307,6 @@ object AgentEgressProxy:
 
     Vector("provenance:") ++ hostLines ++ deniedOverrides ++ removalLines ++ idleLines
 
-  /** The policy the four variables ask for. */
   def configuredPolicy(): ResolvedEgress =
     def read(variable: String): Option[String] = Option(System.getenv(variable))
     resolvePolicy(
@@ -448,7 +442,6 @@ object AgentEgressProxy:
     val unrestrictedHosts: Set[String] =
       hosts.collect { case (host, Treatment.Unrestricted) => host }.toSet
     val inspected: Set[String] = restricted.keySet
-    /** The hosts carrying one tag — the allow=git-fetch hosts, the allow=npm-audit hosts. */
     def tagged(tag: String): Set[String] =
       restricted.collect { case (host, tags) if tags.contains(tag) => host }.toSet
 
@@ -694,7 +687,6 @@ object AgentEgressProxy:
         )
     tags.toSet
 
-  /** The tail of a `+host` line: the host, then nothing, `allow=<tag>,...`, or `unrestricted`. */
   private def parseHostAddition(variable: String, entry: String, words: Vector[String]): (String, Treatment) =
     val host = normalizeEntry(variable, entry)
     words match
@@ -831,8 +823,6 @@ object AgentEgressProxy:
       .filter(_.nonEmpty)
       .toVector
 
-  /** One entry, prefix stripped: normalized like a CONNECT target, IP
-    * literals refused. */
   private def normalizeEntry(variable: String, entry: String): String =
     val host =
       try normalizeHost(entry)
@@ -1203,8 +1193,7 @@ object AgentEgressProxy:
       case Vector() => throw BadRequest("missing Host header")
       case _        => throw BadRequest("duplicate Host header")
 
-    // Rejects the ambiguous framings before anything is forwarded.
-    head.bodyFraming
+    head.bodyFraming // throws when ambiguous
 
     head.method match
       case "GET" | "HEAD" =>

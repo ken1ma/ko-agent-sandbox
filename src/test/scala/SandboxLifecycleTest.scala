@@ -12,24 +12,16 @@ class SandboxLifecycleTest extends munit.FunSuite:
     val cleanup = RunCleanup(() => removals += 1)
     cleanup.perform()
     assertEquals(removals, 1, "a refusal before the handover left this run's resources behind")
-    // Terminal: nothing it already removed can be removed again, and the handover is refused from
-    // here on, because starting podman now would leave a sandbox with no proxy and no reaper.
     cleanup.perform()
     assertEquals(removals, 1, "the cleanup ran twice")
     assertEquals(cleanup.handingOver(), false, "the handover was allowed after the removal won")
 
   test("a cleanup that throws part-way still refuses the handover"):
-    // The half-removed state is the one that must not be handed over: `remove` may already have
-    // taken the proxy away when it throws, and a launch that went on to start podman would run a
-    // sandbox with nothing to reach the network through and no reaper to remove it.
     val cleanup = RunCleanup(() => throw RuntimeException("podman rm failed"))
     cleanup.perform()
     assertEquals(cleanup.handingOver(), false, "the handover was allowed after a failed removal")
 
   test("the cleanup removes nothing while podman is being started"):
-    // The state that exists only because reading it and acting on it are one critical section: a
-    // hook that sampled "nothing has started yet" and then removed could take the proxy out from
-    // under a sandbox the main thread had meanwhile started.
     var removals = 0
     val cleanup = RunCleanup(() => removals += 1)
     assertEquals(cleanup.handingOver(), true)
@@ -47,8 +39,6 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(!process.isAlive, "perform returned before the process it was watching had exited")
 
   test("a failed start hands the run back to the cleanup"):
-    // `ProcessBuilder.start` throwing leaves no child at all, so the handing-over state would
-    // otherwise mean nobody removes this run's proxy and networks.
     var removals = 0
     val cleanup = RunCleanup(() => removals += 1)
     assertEquals(cleanup.handingOver(), true)
@@ -118,24 +108,19 @@ class SandboxLifecycleTest extends munit.FunSuite:
   test("the reaper ignores terminal signals and removes only this run's resources"):
     // The trap is the first thing that can matter; only the PATH assignment precedes it.
     assertEquals(ReaperScript.linesIterator.drop(1).next(), "trap '' INT HUP TERM")
-    // The stray never-started sandbox is $1; the proxy, stopped with a short grace, is $2; every invocation goes
-    // through the resolved path in $3, never through the reaper's own PATH; the run's networks are $4 and $5.
     assert(ReaperScript.contains("\"$3\" rm --force \"$1\""))
     assert(ReaperScript.contains("\"$3\" rm --force --time 2 \"$2\""))
     assert(ReaperScript.contains("for net in \"$4\" \"$5\""))
     assert(ReaperScript.contains("\"$3\" network rm \"$net\""))
-    // The filter teardown is the LAST step, so a fault in it cannot cost the removals above; the
-    // mode and script travel as $6 and $7, and "none" (an unfiltered run) matches no case.
+    // "none" (an unfiltered run) matches no case.
     assert(ReaperScript.contains("machine) \"$3\" machine ssh \"$7\""))
     assert(ReaperScript.contains("local) /bin/sh -c \"$7\""))
     assert(
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
       "the teardown step must come after this run's own cleanup",
     )
-    // The clipboard broker is a job, never the wait: `podman wait` decides removal, and the job's
-    // tree is ended after it so nothing outlives the sandbox it serves. The shape is pinned here;
-    // what it does — no job under off, a pid held, a signal delivered, a tree ended — is the
-    // lifecycle tests below.
+    // The shape is pinned here; what it does — no job under off, a pid held, a signal delivered, a
+    // tree ended — is the lifecycle tests below.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
     val broker = ReaperScript.indexOf(
       "if [ \"$8\" != off ]; then\n  ( clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +
@@ -261,18 +246,14 @@ class SandboxLifecycleTest extends munit.FunSuite:
       owned.values.foreach(_.destroyForcibly())
 
   test("under off the reaper starts no broker job"):
-    // `[ ... ] || cmd &` would have backgrounded the whole list: a job under off, a pid to kill
-    // that nobody meant to start. Measured, not read off the text.
+    // Measured, not read off the script text (ReaperScript has the `if`-not-`||` pitfall).
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("off", runningAnswers = 99, hangExec = false)
     assertEquals(run.inspects, 1, "something besides the reaper's own check called inspect")
     assertEquals(run.childrenAtWait, Vector.empty, "a job was running at the wait")
 
   test("the broker and everything under it end with the sandbox, through the reaper's ignored TERM"):
-    // The reaper traps TERM to nothing and a job inherits that, so a TERM at cleanup is a no-op
-    // on it: the tree is stopped and KILLed instead. And ending the job alone would leave what
-    // it was blocked in — here an exec that never returns, the shape of xclip waiting on a
-    // selection owner — so the tree is what is ended.
+    // Here an exec that never returns is the shape of xclip waiting on a selection owner.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("paste", runningAnswers = 99, hangExec = true)
     assert(run.inspects > 1, "the broker never ran")
@@ -281,10 +262,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     run.childrenAtWait.foreach(child => assert(!child.isAlive, s"${child.pid} outlived the reaper"))
 
   test("a broker that exits early keeps its pid until the reaper ends it, and no other is touched"):
-    // The pid-reuse window: with the broker gone before the wait returns, its pid could be
-    // another process's by the time the kill lands. The job holds the pid instead — live at the
-    // wait although clipboard_broker returned at once — and is then ended. The unrelated sleeper
-    // is the process a stray kill would have hit.
+    // The unrelated sleeper is the process a stray kill would have hit.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val bystander = ProcessBuilder("sleep", "300").start()
     try
@@ -296,10 +274,6 @@ class SandboxLifecycleTest extends munit.FunSuite:
     finally bystander.destroyForcibly()
 
   test("a TERM to the reaper's process group mid-session leaves the job's pid held until cleanup"):
-    // A signal to the whole group — a terminal's INT or HUP, or a TERM someone sends the group —
-    // reaches the reaper's job too. A job that honoured it would be gone before the wait
-    // returned, its pid free for another process to take and the cleanup to signal; so the job
-    // keeps the reaper's ignores, and cleanup uses STOP and KILL, which no disposition refuses.
     // Both job states are covered: blocked in a hung child, and already past clipboard_broker.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val setsid = sys.env.getOrElse("PATH", "").split(":")
@@ -312,8 +286,6 @@ class SandboxLifecycleTest extends munit.FunSuite:
       assert(!run.hungChildAlive, s"($answers, $hang): a child under the job outlived the reaper")
       run.childrenAtWait.foreach: child =>
         assert(!child.isAlive, s"($answers, $hang): ${child.pid} outlived the reaper")
-    // Both ends bound their own waits: the host may have no `timeout`, so the response writer's
-    // bound runs in the sandbox, and a `set` under paste is drained rather than left in the pipe.
     assert(ReaperScript.contains(ClipboardBroker.SandboxRequestReader))
     assert(ReaperScript.contains(ClipboardBroker.SandboxResponseWriter))
     assert(ClipboardBroker.SandboxResponseWriter.startsWith("timeout "))

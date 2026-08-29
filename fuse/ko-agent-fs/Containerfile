@@ -24,7 +24,6 @@
 ARG RUST_VERSION=1.98.0
 FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
 
-# musl-tools supplies musl-gcc, which the musl target needs to link.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends musl-tools; \
@@ -62,7 +61,6 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # per-machine has a per-machine gate: the filter binary's own `--self-test`,
 # at install and before every session that mounts it.
 #
-# The cache mounts carry cargo's target directory and registry between builds.
 # The source id is compiled in (`option_env!`), so every change to it busts the
 # ENV layer and re-runs this step; without the mounts that means recompiling the
 # whole dependency tree rather than the one crate that changed. A mount is not a

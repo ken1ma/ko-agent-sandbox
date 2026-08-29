@@ -25,7 +25,7 @@ That is a claim about what the launcher carries in unasked. A credential the use
 project directory themselves is in the sandbox like any other file, and one forwarded with
 `--env` is in its environment — tolerated rather than provided for, and reaching whatever this
 project's egress policy admits ("Exfiltration through an allowed host", below). `--env` is
-therefore named only on the command line, never in a repository file, so a checkout cannot choose
+therefore named only on the command line, never in a project file, so the project cannot choose
 which host variables it receives; it refuses `KO_AGENT_SANDBOX_*`, the launcher's own account of
 what is enforced; and the launch prints every forwarded name.
 
@@ -51,17 +51,16 @@ Containerfile's `disableAllHooks` note has the reasoning). The networks and the 
 sandbox run, created by the launch and removed with it — so concurrent sessions cannot reach one
 another either, and nothing network-shaped is ever reused from an earlier run.
 
-**A project loosening its own confinement.** Managed settings sit in the read-only image above
-every scope a repository can write, so a repository's own settings cannot weaken them; only an
+**A project loosening its own confinement.** Managed settings sit in the read-only image above every
+scope a repository can write, so a repository's own settings cannot weaken them; only an
 organization's server-managed settings outrank the file, and they replace it whole (the sandbox
 Containerfile's managed-settings note has what that costs). The egress policy and the project's
-agent instructions in `.ko-agent-sandbox` are read on the host before the container starts, and
-the session's write mode is what keeps a session from writing the policy governing the next
-launch: under `--write=reject`
-the whole tree is read-only, and under the filter `.ko-agent-sandbox` is control state — the name
-cannot be created at any depth, under the same fold rule `.git` gets, and nothing under an
-existing one can be written. Only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is
-writable, still needs the directory mounted back over itself read-only.
+agent instructions in `.ko-agent-sandbox` are read on the host before the container starts, and the
+session's write mode is what keeps a session from writing the policy governing the next launch:
+under `--write=reject` the whole tree is read-only, and under the filter `.ko-agent-sandbox` is
+control state — the name cannot be created at any depth, under the same fold rule `.git` gets, and
+nothing under an existing one can be written. Only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose
+raw tree is writable, still needs the directory mounted back over itself read-only.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
@@ -78,7 +77,7 @@ repository host git discovers from the project directory: it refuses a workspace
 whose gitdir, config or hooks reach host git through a writable workspace path — a redirected
 gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktree, a `commondir`
 pointing back in — and a bare layout standing at the workspace root. A gitdir-shaped directory
-*without* a `.git` name elsewhere in the tree is the residue "The project checkout" describes.
+*without* a `.git` name elsewhere in the tree is the residue "The project directory" describes.
 
 This is the default, and two things qualify it, both under Not defended: a session that sets
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, which do not carry the claim
@@ -106,13 +105,13 @@ a shortcut would be tempting:
   filter denies creating either name itself and needs no mount target, and reject's tree is
   read-only whole, so those two modes write nothing;
 - the **project tree's SELinux labels**: on an enforcing host, the raw bind of
-  `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the checkout
-  recursively — a host-metadata write, said in that mode's `workspace:` line every session it
-  happens. The filter's mountpoint needs no relabel, a permissive or disabled host reads unrelabeled
-  and is never relabeled, and `--write=reject` refuses on an enforcing host rather than relabeling,
-  unless the tree already carries a shared container-accessible context — a container type with no
-  MCS categories, since categories from a previous `:Z` are private to the container they were
-  minted for;
+  `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the project
+  directory recursively — a host-metadata write, said in that mode's `workspace:` line every
+  session it happens. The filter's mountpoint needs no relabel, a permissive or disabled host
+  reads unrelabeled and is never relabeled, and `--write=reject` refuses on an enforcing host
+  rather than relabeling, unless the tree already carries a shared container-accessible context —
+  a container type with no MCS categories, since categories from a previous `:Z` are private to
+  the container they were minted for;
 
 What the launcher does write, it owns: its images, containers, networks and named volumes, its
 per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
@@ -160,7 +159,7 @@ host reachable for reading is reachable for writing if it has a write API; `api.
 receives the conversation by design. At every other host the proxy terminates TLS and names the
 permitted operations — reading, plus git fetch at the forges — but that bounds the method and the
 path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a URL is a
-message. A project whose checkout holds a forge token should still deny that forge's hosts in
+message. A project directory holding a forge token should still deny that forge's hosts in
 its own `egress/denied`.
 
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
@@ -187,25 +186,24 @@ traffic with them; `--reset` discards the token.
 **Low-bandwidth channels.** Which allowed host is contacted, when, and in what order all carry
 information. Nothing measures that.
 
-**The project checkout.** `/workspace` is writable on purpose: the sandbox protects the rest of the
-host, not the repository. With git's control state frozen (above), what an
-agent can still write there is data which your git then parses, so a
-memory-safety bug in git itself remains reachable, exactly as with any cloned untrusted repository
-(`.gitattributes` stays writable, but can only invoke filter commands your host configuration
-already defines). Treat a sandboxed repository as hostile data, not hostile configuration.
+**The project directory.** `/workspace` is writable on purpose: the sandbox protects the rest of the
+host, not the project. With git's control state frozen (above), what an agent can still write there
+is data which your git then parses, so a memory-safety bug in git itself remains reachable, exactly
+as with any cloned untrusted repository (`.gitattributes` stays writable, but can only invoke filter
+commands your host configuration already defines). Treat a sandboxed repository as hostile data, not
+hostile configuration.
 
 Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. That includes a repository the agent created deeper in the
-tree, in both guard modes: under `WORKSPACE_GUARD=none` any shape is left unpinned, and the
-filter — which refuses creating a `.git` entry — cannot refuse a *bare layout*, built
-from ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and
-hooks are served as writable data anywhere in the writable workspace — the mount-time check
-catches only a layout already standing at the root, not one assembled there afterwards in a
-repository-less workspace — and git's ascending discovery adopts it for a host command run at or
-beneath it. Running host git *inside* a directory the agent
-created is running the agent's output.
+for a contribution from a stranger. That includes a repository the agent created deeper in the tree,
+in both guard modes: under `WORKSPACE_GUARD=none` any shape is left unpinned, and the filter — which
+refuses creating a `.git` entry — cannot refuse a *bare layout*, built from ordinary names (`git
+init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks are served as writable
+data anywhere in the writable workspace — the mount-time check catches only a layout already
+standing at the root, not one assembled there afterwards in a repository-less workspace — and git's
+ascending discovery adopts it for a host command run at or beneath it. Running host git *inside* a
+directory the agent created is running the agent's output.
 
 A symlink is the sharpest case of that, because its meaning can change with the namespace reading
 it. `/workspace/x -> /etc/passwd` written inside resolves to the *container's* `/etc/passwd`, and a
@@ -248,7 +246,7 @@ Two residues stay yours to know about. The mount-time guard (above;
 cover: a repository *you* nested deeper keeps its control state frozen like any other, but control
 bytes you had already routed into its worktree — relocated hooks, a redirected gitdir — are served
 as ordinary writable data (`fuse/ko-agent-fs/doc/TODO.md` records the gap); and a bare layout
-below the root ("The project checkout", above — one standing *at* the root is refused). The
+below the root ("The project directory", above — one standing *at* the root is refused). The
 check is also a snapshot: reshape control state mid-session, a bare layout built at the root
 included, and this session will not notice. The snapshot admits only resolution chains made of
 components the sandbox cannot write or rename, so the sandbox cannot invalidate it — the windows
@@ -271,7 +269,7 @@ What an auditor trusts, and how each link is checked:
   mount — is consent-gated ("Silent changes to what you own", above).
 
 Its name rule is verified on macOS against both APFS variants and on Windows against a real NTFS
-volume, its coherency on macOS and — with the share-lock cost "The project checkout" notes — on
+volume, its coherency on macOS and — with the share-lock cost "The project directory" notes — on
 Windows, each through the whole production stack
 (`fuse/ko-agent-fs/doc/verification-log.md` has the runs). The rest is what the README's status
 line means: on Linux the guarantees are reasoned rather than measured, while the filter is the
@@ -284,13 +282,13 @@ filter denies. Every gate on the filtered path fails closed — a version mismat
 self-test or a failed mount aborts the launch, never falling back to an unfiltered bind. Mechanics,
 policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 
-**The `.git` pins of `WORKSPACE_GUARD=none`.** `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces
-the filter with mounts: `.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git`
-pinned whole, and the bare name when no repository exists). A session that takes it says so on its
-`workspace:` line.
-Their shape is fixed at launch — a host-created repository appears behind the whole-directory pin,
-read-only until the next launch — and they cover only the workspace root, so a repository the agent
-creates deeper in the tree is unpinned there, the residue "The project checkout" describes.
+**The `.git` pins of `WORKSPACE_GUARD=none`.** `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces the
+filter with mounts: `.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git` pinned
+whole, and the bare name when no repository exists). A session that takes it says so on its
+`workspace:` line. Their shape is fixed at launch — a host-created repository appears behind the
+whole-directory pin, read-only until the next launch — and they cover only the workspace root, so a
+repository the agent creates deeper in the tree is unpinned there, the residue "The project
+directory" describes.
 
 They also hold only while the file each one pinned keeps its inode, because a pin is a mount and a
 mount cannot follow the file out from under it. On a macOS Podman machine, once the host gives
@@ -339,9 +337,8 @@ that launch loudly rather than weakening it.
 running an unfamiliar project is the user's job, exactly like reading its build scripts — its
 `unrestricted` additions most of all, since every such host is an opaque tunnel.
 
-**The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the
-agent's request are trusted as they arrive. npm's install-time audit does work (the
-`allow=npm-audit`
+**The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the agent's
+request are trusted as they arrive. npm's install-time audit does work (the `allow=npm-audit`
 allowance, "Reading without being able to write" below), but its warnings are advisory: nothing
 gates on them.
 
@@ -356,12 +353,11 @@ service against the host generally are not comprehensively bounded.
 
 ## Egress proxy
 
-An HTTP proxy in its own container, so the policy is enforced somewhere the agent cannot
-edit, on the far side of a network the agent cannot route out of. The container is created per
-sandbox run and removed when the run ends, named in the reserved shapes ("Silent changes to what
-you own", above). Its log —
-every allow and every refusal — is appended through a bind mount to a per-run file in the
-launcher's state directory on the host, so the audit record does not share the container's
+An HTTP proxy in its own container, so the policy is enforced somewhere the agent cannot edit, on
+the far side of a network the agent cannot route out of. The container is created per sandbox run
+and removed when the run ends, named in the reserved shapes ("Silent changes to what you own",
+above). Its log — every allow and every refusal — is appended through a bind mount to a per-run file
+in the launcher's state directory on the host, so the audit record does not share the container's
 lifetime. Every connection has to pass all of this, in order:
 
 1. `CONNECT` only — any other method is a 400
@@ -621,9 +617,8 @@ An addition overrides the baseline entry for its host rather than merging with i
 line says and leave no way to take one allowance away. For the same reason an allowance on anything
 that takes away is refused — a removal or a denied entry removes the host whole — and widening has
 no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`. And
-under
-`allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**` cannot
-subtract from the restricted narrowing set.
+under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**`
+cannot subtract from the restricted narrowing set.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
@@ -651,18 +646,17 @@ self-contained; the README's `--egress-effective` bullet is the mitigation.
 
 ### Why the policy is not a capability system
 
-The policy names destinations, and the treatments name operations — reading, plus git fetch at
-the `allow=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate:
-public reading is meant to be broad —
-discovering and reading arbitrary public repositories is much of what the agents are for — and the
-sandbox carries no credential whose authority a finer grant would attenuate ("Credential theft",
-above). The one distinction that matters at a forge, reading versus writing, is already
-enforced in the protocol. Nor would capabilities fix exfiltration: a permitted read still carries
-its URL ("Exfiltration through an allowed host", above). What a capability vocabulary would add is a
-second policy language whose semantics must stay correct across every layer that reads it —
-precisely where richer sandbox policies fail in the field. Revisit only if an agent must someday
-perform an operation inside the sandbox with a credential materially more powerful than that
-operation.
+The policy names destinations, and the treatments name operations — reading, plus git fetch at the
+`allow=git-fetch` hosts; nothing grants `GitRead(owner/repo)`-style capabilities. Deliberate: public
+reading is meant to be broad — discovering and reading arbitrary public repositories is much of what
+the agents are for — and the sandbox carries no credential whose authority a finer grant would
+attenuate ("Credential theft", above). The one distinction that matters at a forge, reading versus
+writing, is already enforced in the protocol. Nor would capabilities fix exfiltration: a permitted
+read still carries its URL ("Exfiltration through an allowed host", above). What a capability
+vocabulary would add is a second policy language whose semantics must stay correct across every
+layer that reads it — precisely where richer sandbox policies fail in the field. Revisit only if an
+agent must someday perform an operation inside the sandbox with a credential materially more
+powerful than that operation.
 
 ### DNS
 

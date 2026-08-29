@@ -3,11 +3,6 @@ package agentsandbox.egress
 import java.net.{IDN, Inet4Address, Inet6Address, InetAddress}
 import java.util.Locale
 
-/**
- * Hostnames and IP addresses: normalization, the IP-literal test, and the
- * public-destination policy that decides which resolved addresses the proxy
- * is willing to dial.
- */
 object IPAddrHelper:
 
   def normalizeHost(value: String): String =

@@ -60,7 +60,6 @@ fn a_directory_scan_is_stable_while_the_host_changes_the_directory() {
 
     let mut seen: Vec<String> = Vec::new();
     let mut reader = fs::read_dir(mount.at("")).unwrap();
-    // Take a few entries, then churn the directory hard, then drain the rest.
     for _ in 0..20 {
         if let Some(entry) = reader.next() {
             seen.push(entry.unwrap().file_name().to_string_lossy().into_owned());
@@ -275,7 +274,6 @@ fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
 
     let mount = TestMount::new(tree);
 
-    // Opened positionally, switched to appending, with the host growing the file in between.
     let mut switched = OpenOptions::new()
         .write(true)
         .open(mount.at("greeting.txt"))
@@ -296,7 +294,6 @@ fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
         "a description switched to appending did not append"
     );
 
-    // And the other way: opened appending, switched off, then written positionally.
     let reverted = OpenOptions::new()
         .append(true)
         .open(mount.at("greeting.txt"))

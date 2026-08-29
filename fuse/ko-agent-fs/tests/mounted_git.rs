@@ -92,7 +92,7 @@ fn the_everyday_commands_work_on_a_host_repository() {
     let log = succeeds("git log", git_in(&workspace, &["log", "--oneline"]));
     assert_eq!(log.lines().count(), 3, "the commit did not land:\n{log}");
 
-    // And the host sees the new commit, because the backing tree is the same tree.
+    // The backing tree is the same tree.
     let host_log = succeeds(
         "host git log",
         git_in(&mount.backing, &["log", "--oneline"]),
@@ -180,7 +180,6 @@ fn the_deliberately_blocked_commands_fail() {
         git_in(&mount.at("newproject"), &["init", "-q"]),
     );
 
-    // The host's config is untouched by any of it.
     let config = fs::read_to_string(mount.backing_at(".git/config")).unwrap();
     assert!(
         !config.contains("hooksPath"),

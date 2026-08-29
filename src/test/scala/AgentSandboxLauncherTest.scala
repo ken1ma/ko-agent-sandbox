@@ -17,37 +17,24 @@ import KoAgentFs.bundledSourceId
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
 
-  /** What the parser fixtures below treat as launcher-built rather than an external image. */
-  private val LocalImages = Set("local-base:1")
-
+  private val LauncherBuiltImages = Set("local-base:1")
 
   test("a misspelled launcher variable is reported, a foreign or known one is not"):
-    // A typo'd KO_AGENT_SANDBOX_MEMORY silently configures nothing; the warning in main is what
-    // closes that, and this is the classification it relies on.
     assertEquals(
       unknownSandboxVariables(Seq("KO_AGENT_SANDBOX_MEMROY", "PATH", "KO_AGENT_SANDBOX_MEMORY")),
       Vector("KO_AGENT_SANDBOX_MEMROY"),
     )
-    // Every documented variable is known — KO_AGENT_SANDBOX_EGRESS_POLICY included, which the
-    // launcher sets inside the sandbox rather than reads, so a launcher nested in a session is not
-    // warned about it.
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
 
   test("the sandbox gets a memory ceiling below the machine's total, and never swaps"):
-    // The invariant is that the sandbox dies before the VM: a ceiling on every launch podman
-    // reports a total for, 1 GiB under it, and the minimum on a machine too small for that.
     assertEquals(memoryCeiling(8L << 30, None), 7L << 30)
     assertEquals(memoryCeiling(2L << 30, None), MinimumCeiling)
     assertEquals(memoryCeiling(1L << 30, None), MinimumCeiling)
-    // A host already spending its memory elsewhere gives the sandbox what is left, not its total:
-    // the floor is for a small machine, and does not lift a ceiling over what is available.
     assertEquals(memoryCeiling(16L << 30, Some(10L << 30)), 10L << 30)
     assertEquals(memoryCeiling(16L << 30, Some(2L << 30)), 2L << 30)
     assertEquals(memoryCeiling(16L << 30, Some(20L << 30)), 15L << 30)
-    // The boundary podman would misread: zero is "no limit", so nothing available at launch, or
-    // less than the agent needs, still yields the minimum — and a machine smaller than the
-    // minimum yields its whole total, never zero.
+    // Nothing available, less than the agent needs, and a machine smaller than the minimum.
     assertEquals(memoryCeiling(16L << 30, Some(0L)), MinimumCeiling)
     assertEquals(memoryCeiling(16L << 30, Some(200L << 20)), MinimumCeiling)
     assertEquals(memoryCeiling(512L << 20, None), 512L << 20)
@@ -59,9 +46,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(memoryArguments(Some("8g"), Some(16L << 30), None), Vector("--memory=8g", "--memory-swap=8g"))
     assertEquals(memoryArguments(Some(" "), Some(2L << 30), None), memoryArguments(None, Some(2L << 30), None))
-    // No answer from podman leaves the sandbox unlimited, loudly (main), rather than guessing.
     assertEquals(memoryArguments(None, None, None), Vector.empty)
-    // The host's own MemAvailable is read only where the launcher shares the kernel with podman.
     val meminfo = "MemTotal:       16000000 kB\nMemFree:          100000 kB\nMemAvailable:   10000000 kB\n"
     assertEquals(memoryAvailable(meminfo), Some(10000000L * 1024))
     assertEquals(memoryAvailable("MemTotal: 1 kB\n"), None)
@@ -91,10 +76,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the session start defaults to pausing and fails closed on anything else"):
-    // The pause is what makes the launch's lines readable at all, so an unrecognized value must
-    // not be read as the silent side — the same closedChoice contract as the two above. `none`
-    // among the refusals: it is the other two variables' off-switch, and nothing here is spelled
-    // by analogy with a neighbouring variable.
+    // `none` among the refusals: it is the other two variables' off-switch, and nothing here is
+    // spelled by analogy with a neighbouring variable.
     assertEquals(sessionStart(None), Right("pause"))
     assertEquals(sessionStart(Some("")), Right("pause"))
     assertEquals(sessionStart(Some("pause")), Right("pause"))
@@ -118,13 +101,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(hold("pause")._1, false)
     assertEquals(hold("pause", Some("maybe"), Some("?"), Some("y")), (true, Vector.fill(3)("\nstart: claude --resume [Y/n] ")))
     assertEquals(hold("pause", Some("maybe"))._1, false)
-    // immediate, and no terminal at all, start without asking.
     assertEquals(hold("immediate", Some("n")), (true, Vector()))
     assertEquals(holdForReader("pause", Vector("claude"), None), true)
 
   test("the hold renders each argument unambiguously"):
-    // The prompt is an approval: two argument vectors must never read the same, and an argument
-    // must not drive the terminal that shows it.
     def rendered(command: String*): String =
       val prompts = Vector.newBuilder[String]
       holdForReader("pause", command, Some(Reader(prompts += _, () => Some("n"))))
@@ -160,11 +140,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
 
   test("a clipboard mode is refused where the host cannot serve it"):
-    // Windows needs PowerShell by absolute path; Linux the tools each direction calls, absolute
-    // because the reaper's PATH is not the one they were found on; both POSIX hosts the ps the
-    // reaper's cleanup walks the broker's tree with, proven to answer the exact command shape —
-    // an absent one, or one that prints nothing for it (BusyBox's shape), would leave a blocked
-    // clipboard tool alive after the session; off needs nothing anywhere.
     import ClipboardBroker.{hostBackend, HostBackend}
     // findOnPath answers with the real path, and macOS keeps its temp directory behind /var -> /private/var.
     val bin = java.nio.file.Files.createTempDirectory("clipboard-host").toRealPath()
@@ -210,9 +185,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the sandbox waits for the proxy's ready line, and a proxy that exits or stalls fails the launch"):
-    // `podman start` says nothing about whether the process stayed up, so the gate reads the run's
-    // host log — the file outlives a `--rm` container that refused at once — beside a liveness
-    // answer from a fake podman.
+    // The run's host log, beside a liveness answer from a fake podman.
     assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
     val dir = Files.createTempDirectory("proxy-ready").toRealPath()
     def podman(running: Boolean, logs: Option[String] = None): String =
@@ -239,25 +212,20 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z restricted hosts (1): a\n",
     )
     assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right(()))
-    // A refusal is what the proxy wrote, verbatim: the launcher has no list of reasons to consult.
     val refused = dir.resolve("refused.log")
     Files.writeString(refused, "2026-08-29T00:00:00Z the leaf certificate names 2 hosts; the policy inspects 3\n")
     val reason = awaitProxyReady(podman(running = false), "proxy", refused, bound).swap
       .getOrElse(fail("a refusal must fail"))
     assert(reason.startsWith("the egress proxy exited before listening\n"), reason)
     assert(reason.contains("names 2 hosts"), reason)
-    // A proxy that could not open its log said so to podman alone; that is read only then.
     val unopened = dir.resolve("unopened.log")
     Files.writeString(unopened, "")
     val podmanOnly =
       awaitProxyReady(podman(running = false, logs = Some("cannot open the log")), "proxy", unopened, bound)
     assert(podmanOnly.swap.exists(_.endsWith("cannot open the log")), podmanOnly.toString)
-    // And when podman has already removed that container, what is said is that nothing survived —
-    // never podman's complaint passed off as the proxy's.
     val vanished = awaitProxyReady(podman(running = false), "proxy", unopened, bound)
     assert(vanished.swap.exists(_.contains(s"nothing was written to $unopened")), vanished.toString)
     assert(!vanished.swap.exists(_.contains("no such container")), vanished.toString)
-    // Silence past the bound is a failure too, or a hung proxy would hold the launch forever.
     val silent = awaitProxyReady(podman(running = true), "proxy", unopened, bound).swap
       .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
@@ -268,9 +236,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // to know nothing of the sandbox.
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
-    // Everything known is documented, except the two the launcher sets rather than reads: the
-    // --help text is what the host user sets, and these two are the sandbox's own, documented
-    // where their reader is — the agent instructions.
+    // The two the launcher sets rather than reads are documented where their reader is — the
+    // agent instructions.
     assertEquals(
       KnownSandboxVariables -- documented,
       Set("KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_JAVA_OPTS"),
@@ -296,7 +263,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "ko-agent-fs",
     ))
     assert(commands(0).contains("debian-temurin:1.2-3"))
-    // debian-temurin's Containerfile does not consume IMG_TAG_VER.
     assert(!commands(0).contains("--build-arg"))
     assert(commands(1).contains("debian-coursier:1.2-3"))
     assert(commands(2).contains("ko-agent-sandbox:latest"))
@@ -306,17 +272,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     commands.foreach(command => assert(!command.contains("--save-stages")))
     commands.slice(1, 5).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "IMG_TAG_VER=1.2-3")))
-    // ko-agent-fs builds on rust:slim with its own pins; its identity is the source digest instead.
     assert(commands(5).contains(KoAgentFsBuildImage))
     assert(commands(5).containsSlice(Seq("--target", "build")))
     assert(commands(6).contains("ko-agent-fs:latest"))
     commands.slice(5, 7).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=sourceid")))
       assert(!command.exists(_.startsWith("IMG_TAG_VER=")))
-    // The two launcher-facing images carry their bundle digest (the version lock); the base
-    // images and the filter do not — the filter's identity is its own source id above. The
-    // digest travels both as the Containerfile's build arg and as a commit-time --label,
-    // because podman's layer cache serves ARG-derived LABEL steps stale (buildCommands doc).
+    // The digest travels as build arg and as --label both (buildCommands has why).
     assert(commands(2).containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
     assert(commands(4).containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
     assert(commands(2).containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
@@ -326,7 +288,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(!command.contains("--label"))
 
   test("image-producing verbs refresh exactly the remote sources their Containerfiles use"):
-    val readContainerfile: String => String = buildContextResource
+    val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
     val buildCommands = AgentSandboxLauncher.buildCommands(
       "podman", "1.2-3", "sourceid", "sandboxid", "proxyid",
@@ -412,15 +374,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |COPY --from=build /a /b
           |""".stripMargin,
         Map("SUPPLIED" -> "1"),
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/one/second:current", "example.invalid/two/tool:latest")),
     )
 
   test("an image reaches the build through a mount or a continued COPY, and is refreshed too"):
-    // Podman takes an image from a --mount's own from=, not only from COPY --from. Reading COPY
-    // alone would leave --build silently skipping a source the build then pulls itself.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -436,7 +396,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |RUN --mount=type=bind,from=0,target=/m true
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector(
@@ -459,15 +419,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |RUN cargo build --mount=type=bind,from=example.invalid/tool:3
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/base:1")),
     )
 
   test("a FROM reads the global arguments, not a later stage's"):
-    // Podman gives a FROM only the arguments declared before the first one. Sharing one scope
-    // would have --build refresh two.invalid while the build itself pulls one.invalid.
+    // Sharing one scope would have --build refresh two.invalid while the build itself pulls one.invalid.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -477,13 +436,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |FROM ${REGISTRY}/tool:1
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("one.invalid/tool:1")),
     )
-    // A stage's own arguments reach its COPY, and a global reaches the stage only where the stage
-    // redeclares it — which is why ko-agent-sandbox declares ARG IMG_TAG_VER twice.
+    // ko-agent-sandbox declares ARG IMG_TAG_VER twice for this (ContainerfileSources has the scope rule).
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -494,7 +452,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("one.invalid/base:1", "one.invalid/tool:2.0")),
@@ -503,14 +461,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "Containerfile",
       "ARG REGISTRY=one.invalid\nFROM scratch\nCOPY --from=${REGISTRY}/tool:1 /t /t\n",
       Map.empty,
-      LocalImages,
+      LauncherBuiltImages,
       None,
     )
     assert(unshared.swap.exists(_.contains("no value for build-image variable")), unshared.toString)
 
   test("a stage built on an earlier one keeps the arguments that stage declared"):
-    // imagebuilder seeds a stage's arguments from the stage its FROM names, so dropping the scope
-    // at every FROM would resolve a descendant's image differently from the build itself.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -520,7 +476,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |COPY --from=${REGISTRY}/tool:1 /t /t
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/tool:1")),
@@ -534,35 +490,29 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         |COPY --from=${REGISTRY}/tool:1 /t /t
         |""".stripMargin,
       Map.empty,
-      LocalImages,
+      LauncherBuiltImages,
       None,
     )
     assert(unrelated.swap.exists(_.contains("no value for build-image variable")), unrelated.toString)
 
   test("a short image name is identified, not discarded"):
-    // Podman resolves a bare name through the host's registries.conf, so one this cannot place is
-    // an external image --build would never refresh. Stages, scratch and the launcher's own images
-    // are the names it can place; anything else has to stop the verb.
     Vector("FROM alpine:3.20\n", "FROM scratch\nCOPY --from=busybox:1.36 /b /b\n",
       "FROM scratch\nRUN --mount=type=bind,from=busybox:1.36,target=/m true\n",
     ).foreach: text =>
-      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LocalImages, None)
+      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LauncherBuiltImages, None)
       assert(refused.swap.exists(_.contains("unqualified image source")), s"$text -> $refused")
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
         "FROM scratch AS one\nFROM local-base:1\nCOPY --from=one /a /b\nCOPY --from=0 /c /d\n",
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector.empty),
     )
 
   test("a reference naming its registry is refreshed, one naming a launcher image is not"):
-    // Podman reads the component before the first slash as a host when it is localhost, carries a
-    // dot or colon, or holds uppercase. Testing that before the launcher's own images would have
-    // --build schedule a pull for an image it is about to build.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -573,7 +523,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |FROM local-base:1
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector(
@@ -609,8 +559,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       )
 
   test("an unnamed stage keeps its arguments for a descendant that names its position"):
-    // imagebuilder records every stage under its position as well as its name, so a chain through
-    // an unnamed one still resolves; dropping it would refuse a Containerfile Podman builds.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -622,16 +570,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
           |""".stripMargin,
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/tool:2")),
     )
 
   test("a targeted build reads only the stages it reaches"):
-    // --target stops the build there. A later stage is never evaluated, so its images are not
-    // this command's to refresh, and the arguments it needs are not the ones this command passes
-    // — reading it would refuse, or pull for, a build Podman completes without either.
     val twoStages =
       """ARG REACHED=example.invalid
         |FROM ${REACHED}/base:1 AS build
@@ -649,9 +594,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val whole = remoteImagesInContainerfile("Containerfile", twoStages, Map.empty, Set.empty, None)
     assert(whole.swap.exists(_.contains("${UNPASSED}")), whole.toString)
 
-    // Buildah builds a target and the stages it depends on, not every stage before it, so only a
-    // first-stage target is read. A later one would need the stage graph; a target that names no
-    // stage would have Podman reject the command after this had already pulled for it.
     val threeStages =
       """FROM example.invalid/zero:1 AS zero
         |FROM example.invalid/one:2 AS one
@@ -667,7 +609,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         Right(Vector("example.invalid/zero:1")),
         stop,
       )
-    // A Containerfile of one stage closes it at end of input rather than at a later FROM.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -680,14 +621,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("a stage alias is matched exactly, as Buildah matches it"):
-    // Instructions are case-insensitive but stage names are not: Buildah compares them exactly,
-    // so `AS Build` leaves `build` an ordinary short image name — which nothing here can place.
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
         "FROM scratch AS Build\nARG R=example.invalid\nFROM Build\nCOPY --from=${R}/t:1 /t /t\n",
         Map.empty,
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/t:1")),
@@ -696,7 +635,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "Containerfile",
       "FROM scratch AS Build\nARG R=example.invalid\nFROM build\nCOPY --from=${R}/t:1 /t /t\n",
       Map.empty,
-      LocalImages,
+      LauncherBuiltImages,
       None,
     )
     assert(mismatched.swap.exists(_.contains("unqualified image source build")), mismatched.toString)
@@ -704,7 +643,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "Containerfile",
       "ARG N=one\nFROM scratch AS ${N}\n",
       Map.empty,
-      LocalImages,
+      LauncherBuiltImages,
       None,
     )
     assert(expanded.swap.exists(_.contains("unsupported stage alias")), expanded.toString)
@@ -721,22 +660,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "FROM --platform=linux/arm64 example.invalid/base:1\n" -> "unsupported FROM instruction",
       "ARG V=1.0 \\\n  W=2.0\n" -> "continued instruction",
       "FROM \\\n  example.invalid/base:1\n" -> "continued instruction",
-      // `# escape=` is not a comment: it rewrites what a continuation looks like, so a COPY
-      // continued with a backtick would hide its --from= on the next line.
       "# escape=`\nCOPY `\n  --from=example.invalid/tool:1 /a /b\n" -> "unsupported parser directive",
       "# syntax=docker/dockerfile:1\nFROM example.invalid/base:1\n" -> "unsupported parser directive",
-      // A here-document's body is shell input; the COPY below is text a shell reads, not an
-      // instruction, and pulling what it names would reach a registry the build never asks for.
       "FROM scratch\nRUN <<EOF\nCOPY --from=example.invalid/not-an-image:1 /a /b\nEOF\n" ->
         "unsupported here-document",
     ).foreach: (text, expected) =>
-      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LocalImages, None)
+      val refused = remoteImagesInContainerfile("Containerfile", text, Map.empty, LauncherBuiltImages, None)
       assert(refused.swap.exists(_.contains(expected)), s"$text -> $refused")
 
   test("every generated build command uses only flags the remote-source scan reads"):
-    // imageBuildSpecification reads `--build-arg VALUE` and `-f FILE`; a spelling outside the set
-    // — --build-arg=NAME=value, --file, a --build-context naming an image — would resolve sources
-    // from a different Containerfile than the one Podman builds.
     val generated = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid") ++
       updateCommands("podman", "1.2-3", "sandboxid") ++
       selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid")
@@ -745,7 +677,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       operands.filter(_.startsWith("-")).foreach: flag =>
         assert(BuildCommandFlags.contains(flag), s"$flag in ${command.mkString(" ")}")
       operands.sliding(2).foreach:
-        // Podman takes a valueless --build-arg from the environment, which this cannot resolve.
         case Vector("--build-arg", value) =>
           assert(value.contains('='), s"--build-arg $value in ${command.mkString(" ")}")
         case _ => ()
@@ -757,7 +688,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "Containerfile",
       "FROM example.invalid/base:${LATER}\nARG LATER=default\n",
       Map("LATER" -> "override"),
-      LocalImages,
+      LauncherBuiltImages,
       None,
     )
     assert(early.isLeft, early.toString)
@@ -766,7 +697,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         "Containerfile",
         "ARG LATER=default\nFROM example.invalid/base:${LATER}\n",
         Map("LATER" -> "override"),
-        LocalImages,
+        LauncherBuiltImages,
         None,
       ),
       Right(Vector("example.invalid/base:override")),
@@ -886,7 +817,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val declared = managedImageTags(version)
     // child -> parent, read from the bundled Containerfiles rather than restated here.
     val edges = buildOutputImages(verbs)
-      .zip(imageSourcesForBuildCommands(verbs, buildContextResource, declared.toSet))
+      .zip(imageSourcesForBuildCommands(verbs, BundledBuildContext.resource, declared.toSet))
       .flatMap((child, sources) => sources.parents.map(child -> _))
       .distinct
     // Not empty by an accident of parsing: the sandbox image builds on the coursier base.
@@ -975,9 +906,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(bundleMismatch("ko-agent-sandbox:latest", sandboxId, s"$sandboxId\n"), None)
     val stale = bundleMismatch("ko-agent-sandbox:latest", sandboxId, proxyId)
     assert(stale.exists(_.contains("rebuild with --build")), stale.toString)
-    // Named for the reader who is upgrading the launcher, not thinking about images.
     assert(stale.exists(_.startsWith("container image ko-agent-sandbox:latest")), stale.toString)
-    // Both digests are in the message, so the reader can tell which side is stale.
     assert(stale.exists(_.contains(sandboxId)), stale.toString)
     assert(stale.exists(_.contains(proxyId)), stale.toString)
     val unlabeled = bundleMismatch("ko-agent-sandbox:latest", sandboxId, "")
@@ -985,16 +914,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains(s"$sandboxId")), unlabeled.toString)
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
-  private def buildContextResource(name: String): String =
-    val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
-    assert(stream != null, name)
-    try String(stream.readAllBytes(), "UTF-8")
-    finally stream.close()
-
   test("the bundled build context carries every Containerfile and an INDEX"):
     // The resourceGenerators task in build.sbt put these in the jar; this pins that the launcher can find what --build
     // unpacks.
-    val index = buildContextResource("INDEX").linesIterator.filter(_.nonEmpty).toVector
+    val index = BundledBuildContext.resource("INDEX").linesIterator.filter(_.nonEmpty).toVector
     Vector(
       "debian-temurin/Containerfile",
       "debian-coursier/Containerfile",
@@ -1003,17 +926,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "ko-agent-fs/Containerfile",
     ).foreach: path =>
       assert(index.contains(path), s"INDEX missing $path")
-      assert(buildContextResource(path).contains("FROM"), path)
+      assert(BundledBuildContext.resource(path).contains("FROM"), path)
 
     // The only way an agent-installed JVM reaches an inspected forge host at all — it needs both
     // the CA and the proxy — so a bundle without it is a silently degraded sandbox.
     assert(index.contains("ko-agent-sandbox/sandbox-jdk-use-proxy"), "sandbox-jdk-use-proxy script missing")
-    val useProxy = buildContextResource("ko-agent-sandbox/sandbox-jdk-use-proxy")
+    val useProxy = BundledBuildContext.resource("ko-agent-sandbox/sandbox-jdk-use-proxy")
     assert(useProxy.contains("-importcert"), "sandbox-jdk-use-proxy imports no certificate")
     assert(useProxy.contains("net.properties"), "sandbox-jdk-use-proxy sets no proxy")
     assert(index.contains("ko-agent-sandbox/sandbox-apt-get"), "sandbox-apt-get script missing")
     assert(
-      buildContextResource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),
+      BundledBuildContext.resource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),
       "sandbox-apt-get does not resolve dependencies",
     )
     assert(
@@ -1021,7 +944,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "sandbox-install-podman script missing",
     )
     assert(
-      buildContextResource("ko-agent-sandbox/sandbox-install-podman").contains("same-uid"),
+      BundledBuildContext.resource("ko-agent-sandbox/sandbox-install-podman").contains("same-uid"),
       "sandbox-install-podman does not gate on the nesting opt-in",
     )
 
@@ -1029,7 +952,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // not just its Containerfile — have to travel in the jar. The policy core is the one that matters most.
     Vector("ko-agent-fs/src/policy.rs", "ko-agent-fs/Cargo.lock", "ko-agent-fs/deny.toml").foreach: path =>
       assert(index.contains(path), s"INDEX missing $path")
-    assert(buildContextResource("ko-agent-fs/src/policy.rs").contains("is_dotgit_name"))
+    assert(BundledBuildContext.resource("ko-agent-fs/src/policy.rs").contains("is_dotgit_name"))
 
     // Build output must not have been swept into the bundle — Rust's target/ as well as sbt's.
     assert(!index.exists(_.split("/").contains("target")), "target leaked")
@@ -1039,12 +962,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
 
   test("ImgTagVersion mirrors debian-temurin's Debian and Temurin pins"):
-    // The two pins live in debian-temurin's Containerfile, the combined tag here; a bump edits both
-    // files, and this is the check that they moved together.
     val tag = "([0-9.]+)-([0-9.]+)-[0-9]+".r
     ImgTagVersion match
       case tag(debian, temurin) =>
-        val lines = buildContextResource("debian-temurin/Containerfile").linesIterator.toVector
+        val lines = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.toVector
         assert(
           lines.contains(s"FROM docker.io/library/debian:$debian-slim"),
           s"debian-temurin does not pin debian:$debian-slim",
@@ -1182,10 +1103,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("--self-test's container leaves nothing behind and carries what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and
-    // keeps no container. The capability is not
-    // redundant with the image's setuid fusermount3 — a setuid binary does not escape a container's
-    // bounding set, measured in fuse/ko-agent-fs/doc/verification-log.md — so its absence here
-    // would be a venue that cannot mount at all.
+    // keeps no container.
     val command = selfTestRunCommand("podman", Some("a_handle_held"), asRoot = false)
     assert(command.contains("--rm"), command.mkString(" "))
     assert(command.containsSlice(Seq("--device", "/dev/fuse")), command.mkString(" "))
@@ -1207,8 +1125,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(selfTestRunCommand("podman", None, asRoot = false).last, "ko-agent-self-test:latest")
 
   test("--self-test builds its image from the bundle root against the pinned toolchain"):
-    // `-f` with `.`: the crate the image compiles lives beside its Containerfile in the unpacked
-    // bundle, not under it, so the directory cannot be the context.
     val commands = selfTestBuildCommands("podman", "1.2.3", "fsdigest", "selftestdigest")
     assertEquals(commands.size, 2)
     assertEquals(buildOutputImages(commands), SelfTestImageTags)
@@ -1254,9 +1170,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the state root must be absolute, resolves canonically, and stays outside the project"):
-    // A relative value resolves against the current directory — the repository being sandboxed —
-    // which would hand the sandbox the CA signing key and aim the resets' recursive deletions
-    // into the checkout; refused rather than resolved, on every platform spelling.
+    // Refused rather than resolved, on every platform spelling.
     assert(stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> "relative/state").get).isLeft)
     assert(stateRootOf(HostCommands.Os.Linux, Map("HOME" -> "relative/home").get).isLeft)
     assert(stateRootOf(HostCommands.Os.Windows, Map("LOCALAPPDATA" -> "relative").get).isLeft)
@@ -1267,8 +1181,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> base.toString).get),
       Right(base.resolve("ko-agent-sandbox")),
     )
-    // A symlinked spelling resolves to the real location, so the outside-the-project comparison
-    // sees the directory that will actually hold the key — even before it exists.
     val real = Files.createDirectories(base.resolve("real"))
     val linked = Files.createSymbolicLink(base.resolve("linked"), real)
     assertEquals(
@@ -1285,9 +1197,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       forbiddenStateRootReason(linux, project.resolve("state/ko-agent-sandbox"), project).isDefined,
     )
     assertEquals(forbiddenStateRootReason(linux, base.resolve("ko-agent-sandbox"), project), None)
-    // The macOS data volume is a firmlink, which toRealPath leaves uncollapsed: the two spellings
-    // are one directory, so containment must hold across them — and only on macOS. Not exercised
-    // from a Windows runner, whose Path type cannot spell a POSIX absolute path.
+    // Not exercised from a Windows runner, whose Path type cannot spell a POSIX absolute path.
     if !scala.util.Properties.isWin then
       val mac = HostCommands.Os.Mac
       val aliasedProject = Paths.get("/System/Volumes/Data/Users/me/proj")
@@ -1323,9 +1233,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("a directory named after another project's id cannot match its run filters"):
-    // Hex is slug-legal, so a checkout named after a victim's id ("app-abc123-9f8e7d6c" here) produces resources whose
-    // names extend the victim's prefix; the eight-hex suffix anchor in isRunNamed keeps them apart, so the victim's
-    // --reset and --proxy-log never touch them.
     val victimId = "app-abc123"
     assertEquals(
       projectNetworks(Seq("ko-agent-sandbox-app-abc123-9f8e7d6c-1a2b3c4d"), victimId),
@@ -1340,9 +1247,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(newRunSuffix().matches("[0-9a-f]{8}"))
 
   test("reset filters match exactly the launcher's reserved name shapes"):
-    // A bare prefix match would sweep a user's own ko-agent-sandbox-persistent-backup; the reserved
-    // shape (SECURITY.md, "Silent changes to what you own") is what separates launcher-owned from
-    // user-owned, and sharedVolumeNameError below keeps the one adopted name out of it.
     val id = "app-0123456789ab"
     assertEquals(
       proxyContainers(
@@ -1384,8 +1288,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("a shared volume name inside the reserved shape is refused, ordinary names are not"):
-    // Without this, KO_AGENT_SANDBOX_PERSISTENT_VOLUME could adopt a name --reset-all removes —
-    // another project's real volume included, which would also alias its sign-ins.
     assertEquals(sharedVolumeNameError("my-shared-volume"), None)
     assertEquals(sharedVolumeNameError("ko-agent-sandbox-persistent-backup"), None)
     val reserved = sharedVolumeNameError("ko-agent-sandbox-persistent-app-0123456789ab")

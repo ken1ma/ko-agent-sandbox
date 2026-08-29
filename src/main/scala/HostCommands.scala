@@ -44,7 +44,7 @@ object HostCommands:
     def ok: Boolean = exit == 0
 
   /**
-   * A command echoed before it runs, in xtrace's form: `+ ` and then the words, each shown
+   * A command echoed before it runs, as `set -x` prints it: `+ ` and then the words, each shown
    * unambiguously on the one line — so a multi-line script argument prints as the one quoted
    * word it is, not as lines that look like commands of their own. The marker is what tells a
    * command from the output that follows it; the launcher's own lines carry a `label:` instead,
@@ -100,7 +100,7 @@ object HostCommands:
 
   /**
    * The launcher's working directory, canonical where it can be. It is the
-   * repository being sandboxed — untrusted by definition — and so the one
+   * project directory being sandboxed — untrusted by definition — and so the one
    * directory a host executable must never be resolved out of.
    */
   def workingDirectory(): Path =
@@ -110,35 +110,34 @@ object HostCommands:
 
   /**
    * Host executables resolve through PATH entries that are absolute *and*
-   * outside the repository being sandboxed. Two different things are being
+   * outside the project directory. Two different things are being
    * kept out, and neither subsumes the other:
    *
    *   - a relative entry (`.`, `bin`, `../tools`) resolves against the working
-   *     directory, so a checkout supplies the host's podman with nobody having
+   *     directory, so the project supplies the host's podman with nobody having
    *     chosen it — and invoking the returned absolute path forecloses
    *     CreateProcess's implicit current-directory search on Windows for the
    *     same reason (prior art: Docker Sandboxes #392);
-   *   - an *absolute* entry that names a directory inside the checkout does
+   *   - an *absolute* entry that names a directory inside the project does
    *     the same thing while looking deliberate. `npm run` puts an absolute
    *     `$PWD/node_modules/.bin` on PATH, and a transitive dependency can ship
    *     a `bin` entry named `podman` without running a line of its own code.
-   *     Nothing about absoluteness makes the checkout's copy the user's
+   *     Nothing about absoluteness makes the project's copy the user's
    *     choice, so both are skipped.
    *
    * The *candidate* is what gets canonicalized, not the directory holding it,
    * and that distinction is the rule rather than a detail: `isRegularFile` and
    * `isExecutable` follow a symlink, so an innocent directory holding
-   * `podman -> <checkout>/bin/podman` would pass a check made on the directory
-   * alone and run the checkout's binary anyway. Resolving here also fixes
+   * `podman -> <project>/bin/podman` would pass a check made on the directory
+   * alone and run the project's binary anyway. Resolving here also fixes
    * *what* runs — the absolute path handed to podman and to the reaper is the
    * real file, so a link swapped afterwards cannot redirect it.
    */
   def findOnPath(name: String, pathValue: String, os: Os): Option[Path] =
     findOnPath(name, pathValue, os, workingDirectory())
 
-  /** `here` is a parameter so a test can place an entry inside a checkout
-    * without depending on where the suite happens to run. */
-  def findOnPath(name: String, pathValue: String, os: Os, here: Path): Option[Path] =
+  /** @param ignoreUnder a candidate under this path is treated as unresolved. */
+  def findOnPath(name: String, pathValue: String, os: Os, ignoreUnder: Path): Option[Path] =
     val separator = if os == Os.Windows then ';' else ':'
     val extensions =
       if os == Os.Windows then Vector(".exe", ".com", ".bat", ".cmd")
@@ -153,33 +152,25 @@ object HostCommands:
         catch case _: java.nio.file.InvalidPathException => None
       .filter(_.isAbsolute)
       .flatMap(dir => extensions.iterator.map(ext => dir.resolve(name + ext)))
-      .flatMap: candidate =>
-        // A candidate that cannot be resolved does not exist, so it could not have been executed
-        // either; dropping it here and testing the real path below keeps both decisions on one
-        // object.
-        try Some(candidate.toRealPath())
-        catch case _: IOException => None
-      .filterNot(_.startsWith(here))
+      .flatMap(candidate => try Some(candidate.toRealPath()) catch case _: IOException => None)
+      .filterNot(_.startsWith(ignoreUnder))
       .find(p => Files.isRegularFile(p) && Files.isExecutable(p))
 
   /**
    * The PATH every script this launcher writes runs with, named rather than
    * inherited. Those scripts are `sh -c` text, and on native Linux they
    * inherit the launcher's environment and its working directory — the
-   * repository being sandboxed — so a relative entry in the inherited PATH
-   * (`.`, `bin`, `../tools`) would let a checkout supply the `fusermount3`,
-   * `mountpoint`, `stat` or `sleep` they call. findOnPath covers the
-   * executables the launcher itself invokes; this covers the ones its scripts
-   * do.
+   * project directory — so a relative entry in the inherited PATH (`.`,
+   * `bin`, `../tools`) would let the project supply what they run. findOnPath
+   * covers the executables the launcher itself invokes; this covers the ones
+   * its scripts do.
    *
    * The system directories are the whole list, and what that costs is legible
    * rather than silent: a host keeping fusermount3 somewhere unusual — a Nix
    * profile, say — gets a "not found" it can read, never a binary out of the
-   * checkout. Inside a podman machine the value is what the VM already had.
+   * project. Inside a podman machine the value is what the VM already had.
    *
-   * podman never leans on this. The reaper receives the path findOnPath
-   * resolved, and inside the machine it is the machine's own
-   * (koAgentFsReapPodman).
+   * podman never leans on this (koAgentFsReapPodman has the argument).
    *
    * Declared here, above every script that uses it: an object's vals
    * initialize in declaration order, so a later one would read as null.
@@ -204,7 +195,7 @@ object HostCommands:
           """error: podman is not installed or not on PATH
             |
             |PATH entries inside the current directory are not searched: it is the
-            |repository being sandboxed (DESIGN.md, "No PATH-resolved host executables").
+            |project directory being sandboxed (DESIGN.md, "No PATH-resolved host executables").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127,
@@ -261,7 +252,7 @@ object HostCommands:
       catch case ex: IOException => Left(s"cannot resolve $existing to a real path: $ex")
 
   /**
-   * Run `body` holding an exclusive inter-process lock on `lockFile`, blocking until it is free.
+   * Run `body` holding an exclusive inter-process lock on `lockFile`.
    * What it serializes is check-then-act over shared files: two launches that both find state
    * missing or stale otherwise interleave their writes, and the survivors need not belong
    * together — a CA key from one launch beside the other's certificate.

@@ -100,7 +100,6 @@ struct Inner {
     /// Open file handles. The fd is behind an `Arc` so a read, write or sync can clone it out from
     /// under the lock and issue its syscall without serializing on it.
     handles: HashMap<u64, Handle>,
-    /// Open directory handles: fh → the snapshot taken at `opendir`.
     dirs: HashMap<u64, Arc<Vec<DirEntry>>>,
     next_fh: u64,
 }
@@ -181,12 +180,11 @@ impl KoAgentFs {
         }
     }
 
-    /// A parent directory fd for `*at` operations on its children, resolved under `RESOLVE_IN_ROOT`.
     fn parent_dir(&self, ino: u64) -> Result<OwnedFd, NixErrno> {
         self.open_ino(ino, OFlag::O_PATH | OFlag::O_DIRECTORY)
     }
 
-    /// The cached git-context of `ino` — the O(1) fast path; `NotGit` for an unknown inode.
+    /// `NotGit` for an unknown inode.
     fn context(&self, ino: u64) -> GitContext {
         self.inner
             .lock()
@@ -225,7 +223,6 @@ impl KoAgentFs {
         }
     }
 
-    /// Gate a creation of `name` in `parent`: the `.git` name rule plus destination classification.
     fn allow_create(&self, parent: u64, name: &OsStr, op: &str) -> Result<(), Errno> {
         match authorize_create(&self.context(parent), name.as_bytes()) {
             Decision::Allow => Ok(()),
@@ -233,7 +230,6 @@ impl KoAgentFs {
         }
     }
 
-    /// Gate a mutation of an existing child `name` in `parent` (unlink/rmdir/rename-from).
     fn allow_child(
         &self,
         parent: u64,
@@ -248,7 +244,6 @@ impl KoAgentFs {
         }
     }
 
-    /// Gate a mutation of an existing inode (setattr, write-open).
     fn allow_ino(&self, ino: u64, mutation: Mutation, op: &str) -> Result<(), Errno> {
         match authorize(&self.context(ino), mutation) {
             Decision::Allow => Ok(()),
@@ -256,14 +251,12 @@ impl KoAgentFs {
         }
     }
 
-    /// The name and parent directory fd for a `*at` operation on `parent/name`.
     fn child_target(&self, parent: u64, name: &OsStr) -> Result<(CString, OwnedFd), Errno> {
         let cname = cstr(name).map_err(to_errno)?;
         let parentfd = self.parent_dir(parent).map_err(to_errno)?;
         Ok((cname, parentfd))
     }
 
-    /// After creating `parent/name`, stat it and reply with a fresh entry.
     fn reply_new_entry(
         &self,
         parent: u64,
@@ -293,7 +286,6 @@ impl KoAgentFs {
         }
     }
 
-    /// Apply the mutable attributes setattr can change.
     #[allow(clippy::too_many_arguments)] // one per settable attribute; a struct would only rename it
     fn apply_setattr(
         &self,
@@ -427,7 +419,6 @@ const DENY_LOG_CAP: u64 = 10_000;
 
 static DENIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// What the nth denial writes to the log.
 #[derive(Debug, PartialEq, Eq)]
 enum DenyLog {
     Full,
@@ -487,8 +478,8 @@ fn to_errno(err: NixErrno) -> Errno {
 ///   - it accepts a target whose own components are symlinks the host may resolve differently,
 ///     since it walks the target lexically and resolves nothing;
 ///   - it refuses every absolute target, including `/workspace/...` — which is right for a host
-///     checkout anywhere else, and needlessly strict for a native Linux one that really is at
-///     `/workspace`.
+///     project directory anywhere else, and needlessly strict for a native Linux one that really
+///     is at `/workspace`.
 ///
 /// Shape is what a filter serving an unknown host layout can judge. The rule earns its place on the
 /// second direction anyway: what a caching tool plants is the container's own store path, which
@@ -1309,7 +1300,6 @@ mod tests {
         assert_eq!(deny_log_action(DENY_LOG_CAP), DenyLog::Full);
         assert_eq!(deny_log_action(DENY_LOG_CAP + 1), DenyLog::CapNotice);
         assert_eq!(deny_log_action(DENY_LOG_CAP + 2), DenyLog::Silent);
-        // Every thousandth still reports the running total: magnitude survives, detail does not.
         assert_eq!(deny_log_action(11_000), DenyLog::Summary);
         assert_eq!(deny_log_action(11_001), DenyLog::Silent);
         assert_eq!(deny_log_action(1_000_000), DenyLog::Summary);

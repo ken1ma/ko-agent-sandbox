@@ -146,7 +146,7 @@ A launch selects instances explicitly and repeatably:
 ```
 
 Do not infer credential selection from the agent command, provider egress group, environment,
-checkout or presence in the store. Stored authority is dormant until the host selects it.
+project directory or presence in the store. Stored authority is dormant until the host selects it.
 
 `--egress-effective` accepts `--credential` and shows every admitted injection target, excluded
 target and TLS treatment without resolving a source. `--egress-check=<host>` may test reachability

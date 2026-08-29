@@ -1,13 +1,7 @@
-// Making the image's JVM usable: trusting the egress proxy's inspection CA, and reaching the proxy
-// at all. A JVM reads a `cacerts` keystore and a `net.properties` file, so the PEM bundle and the
-// SSL_CERT_FILE / HTTPS_PROXY families that cover everything else in the sandbox mean nothing to
-// it. The image ships `sandbox-jdk-use-proxy`, which writes both into one JDK from inside a
-// container; the launcher runs it on the image's own JDK in a throwaway container and hands the
-// launch mounts that put the two files it wrote back. The one JVM the launcher cannot reach —
-// installed by the agent itself — gets the same script by hand. A GraalVM native image (the `cs`
-// and `scala-cli` launchers) has neither file and reads no variable at all: it takes the same
-// facts as `-D` options on its command line, which is what KO_AGENT_SANDBOX_JAVA_OPTS carries
-// (jdkJavaOpts).
+// Making the image's JVM usable: the launcher runs the image's `sandbox-jdk-use-proxy` on the
+// image's own JDK in a throwaway container and mounts the two files it wrote back. That script's
+// header has why a JVM needs this and which JVMs it is for; jdkJavaOpts covers the ones that read
+// no file.
 
 package agentsandbox.launcher
 
@@ -20,10 +14,11 @@ object JdkTrust:
   /**
    * The JDK's home as the image itself declares it, out of `podman image inspect`'s `Config.Env`.
    * Read rather than agreed: the launcher needs somewhere to mount a merged trust store, and the
-   * image already says where its JDK is. A symlink at a fixed path would work too and would be a
-   * second name to keep in step. An image of the user's own (KO_AGENT_SANDBOX_IMAGE) that declares
-   * a JDK must also ship sandbox-jdk-use-proxy, which prepares it; the launch fails saying so
-   * rather than mounting nothing over a JDK that then cannot reach the proxy.
+   * image already says where its JDK is. An image of the user's own (KO_AGENT_SANDBOX_IMAGE) that
+   * declares a JDK must also ship sandbox-jdk-use-proxy, which prepares it; the launch fails saying
+   * so rather than mounting nothing over a JDK that then cannot reach the proxy.
+   *
+   * A symlink at a fixed path would work too, and would be a second name to keep in step.
    *
    * None means no JVM in the image, which is an absence rather than an error: the PEM bundle still
    * covers everything else, and there is no keystore to merge into.
@@ -43,11 +38,8 @@ object JdkTrust:
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
    * bundle's technique one layer over: take the image's own files, add this session's part, mount
-   * the results back over them. The adding is `sandbox-jdk-use-proxy`'s, run in a container of the
-   * image with no network, as root so the image's files are writable, with the CA mounted where a
-   * session mounts it and the proxy in HTTPS_PROXY as a session has it; the two files it wrote are
-   * copied out before the container goes. Where the JDK lives is the image's to say — the caller
-   * hands in the image's environment (javaHomeOf) — and no JDK yields no mounts at all.
+   * the results back over them. The adding is `sandbox-jdk-use-proxy`'s, run in a throwaway
+   * container of the image as root so the image's files are writable.
    *
    * Keyed on everything the script consumes: the image, the CA, and the address. Returned as
    * (host file, container path) pairs rather than --volume arguments, because what podman mounts

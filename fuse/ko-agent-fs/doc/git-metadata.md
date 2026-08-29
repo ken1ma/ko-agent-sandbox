@@ -20,7 +20,7 @@ document's name rule, because the launcher resolves that name on the same case-f
 
 "Host-side" matters: the danger is not code running in the sandbox (the container is the boundary
 for that) but code the *host user's* `git` runs later, outside the sandbox, against the shared
-checkout — a `git status`, `git commit`, or `git checkout` in their editor or terminal.
+project directory — a `git status`, `git commit`, or `git checkout` in their editor or terminal.
 
 
 ## How a repository makes `git` run a program
@@ -350,15 +350,15 @@ if it had been reshaped before it and the guard had not existed.
 
 ## Consequences: git operations blocked inside `/workspace`
 
-These follow from the name rule and must be documented, not silently broken (the manual explains the
-security reason for each):
+These follow from the name rule and must be documented, not silently broken (SECURITY.md, "The
+project directory", has the security reason for each):
 
 - `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `~`.
   The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror`
   write only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name
   rule can refuse without swallowing legitimate projects that carry them. The guard refuses a bare
   layout standing at the workspace root at mount; one the sandbox creates — below the root, or at
-  the root after that check — is the residue SECURITY.md records ("The project checkout"): running
+  the root after that check — is the residue SECURITY.md records ("The project directory"): running
   host git inside an agent-created directory is running the agent's output.
 - `git worktree add <path>` with `<path>` in `/workspace` — writes a `.git` **file** at the new
   worktree. Blocked.

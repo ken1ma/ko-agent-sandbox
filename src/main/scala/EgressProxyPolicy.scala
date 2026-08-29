@@ -29,7 +29,6 @@ object EgressProxyPolicy:
       .filter(_.nonEmpty)
       .mkString("\n")
 
-  /** One line for the launch banner: a normalized file's entries joined by `; `. */
   def entriesSummary(normalized: String): String =
     normalized.linesIterator.mkString("; ")
 
@@ -93,10 +92,6 @@ object EgressProxyPolicy:
 
   val RetainedProxyLogs = 20
 
-  /**
-   * The files .ko-agent-sandbox/egress/ may hold, each paired with the proxy
-   * variable that carries it.
-   */
   val PolicyFiles: Vector[(String, String)] = Vector(
     "allowed" -> "EGRESS_ALLOWED",
     "denied" -> "EGRESS_DENIED",
@@ -162,10 +157,9 @@ object EgressProxyPolicy:
       )
 
   /**
-   * codex→openai, claude→anthropic, agy→google, copilot→github. Only the basename of the directly launched
-   * command is classified; the launcher does not inspect a wrapper's arguments or guess what it
-   * may later execute — a wrapper script selects no provider and, under deny-unless-model, gets
-   * the startup warning instead of a guessed grant.
+   * Only the basename of the directly launched command is classified; the launcher does not
+   * inspect a wrapper's arguments or guess what it may later execute — a wrapper script selects
+   * no provider and, under deny-unless-model, gets the startup warning instead of a guessed grant.
    */
   val AgentProviders: Map[String, String] =
     Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github")
@@ -210,7 +204,6 @@ object EgressProxyPolicy:
       val variable = PolicyFiles.find(_(0) == name).fold(fail(s"error: no policy file $name"))(_(1))
       s"--env=$variable=$text"
 
-  /** This project's retained proxy log files, in chronological (name) order. */
   def retainedLogs(logDir: Path): Vector[Path] =
     if !Files.isDirectory(logDir) then Vector.empty
     else

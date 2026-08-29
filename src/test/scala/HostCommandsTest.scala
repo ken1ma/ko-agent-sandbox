@@ -60,12 +60,12 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("absent", dir.toString, Os.Linux), None)
     assertEquals(findOnPath("mytool", "", Os.Linux), None)
 
-  test("an absolute PATH entry inside the checkout is skipped, not preferred"):
+  test("an absolute PATH entry inside the project is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
-    // The absolute-entry-inside-the-checkout shape (HostCommands.findOnPath's doc, DESIGN.md "No
+    // The absolute-entry-inside-the-project shape (HostCommands.findOnPath's doc, DESIGN.md "No
     // PATH-resolved host executables").
-    val checkout = Files.createTempDirectory("untrusted-checkout").toRealPath()
-    val shipped = Files.createDirectories(checkout.resolve("node_modules/.bin"))
+    val project = Files.createTempDirectory("untrusted-project").toRealPath()
+    val shipped = Files.createDirectories(project.resolve("node_modules/.bin"))
     val planted = shipped.resolve("podman")
     Files.createFile(planted)
     planted.toFile.setExecutable(true)
@@ -76,40 +76,35 @@ class HostCommandsTest extends munit.FunSuite:
     real.toFile.setExecutable(true)
 
     // Ahead of the system directory, which is exactly where it would otherwise win.
-    assertEquals(findOnPath("podman", s"$shipped:$system", Os.Linux, checkout), Some(real))
+    assertEquals(findOnPath("podman", s"$shipped:$system", Os.Linux, project), Some(real))
     // Skipped rather than merely deprioritized: with nothing else on PATH there is no fallback.
-    assertEquals(findOnPath("podman", shipped.toString, Os.Linux, checkout), None)
-    // A directory that merely shares a prefix with the checkout is not inside it.
-    val sibling = Files.createDirectories(checkout.resolveSibling(s"${checkout.getFileName}x"))
+    assertEquals(findOnPath("podman", shipped.toString, Os.Linux, project), None)
+    // A directory that merely shares a prefix with the project is not inside it.
+    val sibling = Files.createDirectories(project.resolveSibling(s"${project.getFileName}x"))
     val neighbour = sibling.resolve("podman")
     Files.createFile(neighbour)
     neighbour.toFile.setExecutable(true)
-    assertEquals(findOnPath("podman", sibling.toString, Os.Linux, checkout), Some(neighbour))
+    assertEquals(findOnPath("podman", sibling.toString, Os.Linux, project), Some(neighbour))
 
-  test("an executable symlinked out of the checkout is skipped, and the real path is returned"):
+  test("an executable symlinked out of the project is skipped, and the real path is returned"):
     assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
-    // The *candidate* is what must be canonicalized, not the directory holding it. An ordinary
-    // directory containing `podman -> <checkout>/bin/podman` passes any check made on the directory
-    // alone, because `isRegularFile` and `isExecutable` follow the leaf.
-    val checkout = Files.createTempDirectory("untrusted-checkout").toRealPath()
-    val shipped = Files.createDirectories(checkout.resolve("bin"))
+    val project = Files.createTempDirectory("untrusted-project").toRealPath()
+    val shipped = Files.createDirectories(project.resolve("bin"))
     val planted = shipped.resolve("podman")
     Files.createFile(planted)
     planted.toFile.setExecutable(true)
 
     val outside = Files.createTempDirectory("outside-bin").toRealPath()
     Files.createSymbolicLink(outside.resolve("podman"), planted)
-    assertEquals(findOnPath("podman", outside.toString, Os.Linux, checkout), None)
+    assertEquals(findOnPath("podman", outside.toString, Os.Linux, project), None)
 
-    // And the resolution is what is returned, so the path handed to podman and the reaper is the
-    // real file rather than a link that could be re-pointed after it was vetted.
     val elsewhere = Files.createTempDirectory("real-bin").toRealPath()
     val real = elsewhere.resolve("podman")
     Files.createFile(real)
     real.toFile.setExecutable(true)
     val shim = Files.createTempDirectory("shim-bin").toRealPath()
     Files.createSymbolicLink(shim.resolve("podman"), real)
-    assertEquals(findOnPath("podman", shim.toString, Os.Linux, checkout), Some(real))
+    assertEquals(findOnPath("podman", shim.toString, Os.Linux, project), Some(real))
 
   test("Windows resolution appends executable extensions and splits on ;"):
     val dir = Files.createTempDirectory("path-resolve-win").toRealPath()
@@ -123,10 +118,6 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("othertool", dir.toString, Os.Windows), None)
 
   test("every script the launcher writes names its own PATH before running anything"):
-    // These are `sh -c` text inheriting the launcher's environment and its working directory — the
-    // repository being sandboxed — so a relative PATH entry would let a checkout supply
-    // `fusermount3`, `mountpoint`, `stat` or `sleep`. findOnPath covers what the launcher invokes;
-    // this covers what its scripts do.
     val scripts = Vector(
       "mount" -> koAgentFsMountScript("/tmp/backing", "app-abc123def456", "d" * 64, "run-1"),
       "reap" -> koAgentFsReapScript("/usr/bin/podman", "app-abc123def456", "run-1"),
@@ -184,8 +175,6 @@ class HostCommandsTest extends munit.FunSuite:
     assume(posixPermissions(Files.createTempDirectory("perm-probe")), "POSIX permissions only")
     val dir = Files.createTempDirectory("private-write").toRealPath()
 
-    // The end state, and the reason the mode is also requested at creation: `Files.writeString`
-    // alone would leave the key at the umask's mode for the length of the write.
     val key = dir.resolve("ca.key")
     writePrivate(key, "PRIVATE KEY")
     assertEquals(modeOf(key), "rw-------")

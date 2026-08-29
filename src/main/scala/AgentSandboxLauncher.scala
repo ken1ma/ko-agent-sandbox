@@ -779,12 +779,10 @@ object AgentSandboxLauncher:
         System.err.println("pull: " + pullVerdict(before, imageId(command.head, image)))
     deleteRecursively(context)
 
-  /** The local image's id, or None where there is no such image. */
   private def imageId(podman: String, image: String): Option[String] =
     val inspected = run(podman, "image", "inspect", "--format", "{{.Id}}", image)
     Option.when(inspected.ok && inspected.text.nonEmpty)(inspected.text)
 
-  /** What a pull did to the local image, from its id before and after. */
   def pullVerdict(before: Option[String], after: Option[String]): String =
     (before, after) match
       case (Some(old), Some(now)) if old == now => "unchanged"
@@ -795,7 +793,6 @@ object AgentSandboxLauncher:
   private def buildContextReader(context: Path): String => String =
     relative => Files.readString(context.resolve(relative))
 
-  /** The output tags committed by build commands, in their dependency order. */
   def buildOutputImages(commands: Vector[Vector[String]]): Vector[String] =
     commands.flatMap: command =>
       command.sliding(2).collectFirst:
@@ -860,7 +857,6 @@ object AgentSandboxLauncher:
   def persistentVolumes(names: Seq[String]): Seq[String] =
     names.filter(_.matches(s"ko-agent-sandbox-persistent-$ProjectIdShape"))
 
-  /** Both per-run network families, for `--reset-all`. */
   def launcherNetworks(names: Seq[String]): Seq[String] =
     names.filter: name =>
       name.matches(s"ko-agent-sandbox-$RunShape") || name.matches(s"ko-agent-egress-$RunShape")
@@ -891,9 +887,6 @@ object AgentSandboxLauncher:
         .isBefore(Instant.now().minusSeconds(600))
     catch case _: java.io.IOException => false
 
-  /**
-   * This project's networks out of `podman network ls`: the per-run names carry a run suffix after the project id.
-   */
   def projectNetworks(names: Seq[String], projectId: String): Seq[String] =
     names.filter: name =>
       isRunNamed(sandboxRunNetwork, projectId)(name)
@@ -998,7 +991,6 @@ object AgentSandboxLauncher:
     val reported = run(podman, "--version")
     if reported.ok then reported.text.trim else "podman version unknown"
 
-  /** A command that is printed before it runs; returns false on failure. */
   def stepOk(command: String*): Boolean =
     echoCommand(command)
     ProcessBuilder(command*).inheritIO().start().waitFor() == 0
@@ -1104,10 +1096,8 @@ object AgentSandboxLauncher:
 
   /**
    * One host's policy decision and current resolution, through a one-shot proxy container on an
-   * egress-shaped per-run network — the same image, network configuration and resolver path as
-   * enforcement, never the launcher's host resolver. The resolution is reported separately from
-   * the decision because a connection resolves and validates the destination again when it is
-   * made.
+   * egress-shaped per-run network (AgentEgressProxy.checkHost has why the two are reported apart
+   * and why the resolver must be enforcement's).
    */
   def egressCheck(os: Os, profile: String, host: String, operands: List[String]): Nothing =
     val (projectId, proxyImage, policyFiles, provider) = egressPreflight(os, operands)
@@ -1131,17 +1121,12 @@ object AgentSandboxLauncher:
     sys.exit(0)
 
   /**
-   * Removes just this project's runtime state: its per-run egress proxy and
-   * sandbox containers (stray or live), agent-state volume (signing
-   * its agents out), sandbox-side and egress-side networks, TLS inspection
-   * CA, cached policy resolution, retained proxy audit logs, and its
-   * workspace-filter mount. Every other project's state and the
-   * built images are left alone. `--reset-all` is the workstation-wide
-   * version. Every command is printed before it runs.
+   * `--reset` (README has what it removes). Every other project's state and the built images are
+   * left alone.
    */
   def resetProject(os: Os): Nothing =
     val projectDir = resolveProjectDir()
-    // Before the deletions below: a state root inside the checkout must refuse here, not aim
+    // Before the deletions below: a state root inside the project directory must refuse here, not aim
     // `rm -rf` at it.
     requireStateRootOutside(os, projectDir)
     val id = projectIdOf(projectDir, os)
@@ -1202,16 +1187,10 @@ object AgentSandboxLauncher:
     sys.exit(0)
 
   /**
-   * The workstation-wide version of `--reset`: removes every project's
-   * runtime state — the egress proxy containers, the sandbox run containers
-   * (stray or live), the persisted agent-state
-   * volumes (signing every agent out), the Podman networks, all the TLS
-   * inspection CAs, every cached policy resolution, every retained proxy
-   * audit log, and every workspace-filter mount. It deliberately does NOT remove built images or
+   * `--reset-all`, every project's `--reset`. It deliberately does NOT remove built images or
    * their valid pending-cleanup journal: image-producing verbs own both, and the images are costly
    * to rebuild (`podman image rm` removes them by hand). A malformed journal is repaired because
-   * it names no image the launcher can safely remove. Every command is printed before it runs.
-   * Networks and CAs are recreated on the next launch.
+   * it names no image the launcher can safely remove.
    */
   def resetAll(os: Os): Nothing =
     // The workstation-wide deletions below run wherever the state root points; checked against
@@ -1269,8 +1248,8 @@ object AgentSandboxLauncher:
    * agent's to read or rewrite. %LOCALAPPDATA% is per user and not roamed.
    *
    * Validated, not adopted: the value must be absolute — a relative one resolves against the
-   * current directory, which is the repository being sandboxed, and would hand the CA signing key
-   * to the sandbox (and aim `--reset-all`'s recursive deletions into the checkout). It is
+   * current directory, which is the project directory, and would hand the CA signing key
+   * to the sandbox (and aim `--reset-all`'s recursive deletions into the project directory). It is
    * canonicalized through its nearest existing ancestor, so a symlinked spelling cannot place it
    * somewhere the outside-the-project comparison (forbiddenStateRootReason) never sees; on a first
    * launch the directory does not exist yet, which is why a plain toRealPath is not enough.
@@ -1700,7 +1679,7 @@ object AgentSandboxLauncher:
    * missing stat, an unreadable or unexpected context all answer false.
    *
    * stat resolves through findOnPath like every host executable: this runs before the sandbox
-   * exists, and the working directory is the repository being sandboxed.
+   * exists, and the working directory is the project directory.
    */
   def selinuxContainerReadable(dir: Path): Boolean =
     findOnPath("stat", env("PATH").getOrElse(""), Os.Linux).exists: stat =>
@@ -1773,13 +1752,13 @@ object AgentSandboxLauncher:
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
     // A raw bind on an SELinux-enforcing host is readable to the container only after :Z
-    // relabels the checkout — a recursive host-metadata write, which is exactly the authority
+    // relabels the project directory — a recursive host-metadata write, which is exactly the authority
     // reject withholds. Refused rather than relabeled, unless the tree already carries a
     // shared container-accessible context, where a plain read-only bind needs no host write.
     if writeMode == "reject" && selinuxEnforcing && !selinuxContainerReadable(projectDir) then
       fail(
         s"""error: --write=reject cannot mount $projectDir on this SELinux-enforcing host
-           |Reading a raw bind here requires relabeling the checkout (:Z), a recursive
+           |Reading a raw bind here requires relabeling the project directory (:Z), a recursive
            |host-metadata write that reject must not perform. Use --write=live — the filter's
            |mountpoint needs no relabel — or relabel the project yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
@@ -1790,9 +1769,9 @@ object AgentSandboxLauncher:
     // Per-project identity
     // -----------------------------------------------------------------------
     //
-    // Names this checkout and suffixes everything Podman holds for it. The directory name alone would collide — two
-    // checkouts called `app` must not share credentials or a policy — so the hash covers the whole path; moving a
-    // project yields new resources and new sign-ins.
+    // Names this project directory and suffixes everything Podman holds for it. The directory name alone would
+    // collide — two project directories called `app` must not share credentials or a policy — so the hash covers
+    // the whole path; moving a project yields new resources and new sign-ins.
     val projectSlug = slugOf(projectDir.getFileName.toString)
     val projectId = projectIdOf(projectDir, os)
 
@@ -1824,14 +1803,12 @@ object AgentSandboxLauncher:
            |Build it first: run this launcher with --build.""".stripMargin
       )
 
-    // One inspect answers three questions: the id (the CA-bundle and agents.md stamps below),
-    // the bundle label (the version lock), and Config.Env (JdkTrust's JAVA_HOME) — the first
-    // line is the id, the second the label, the rest the environment.
     val imageInspect = run(
       podman, "image", "inspect",
       "--format",
-      s"{{.Id}}{{println}}$BundleLabelTemplate{{println}}" +
-        "{{range .Config.Env}}{{println .}}{{end}}",
+      "{{.Id}}{{println}}" + // the CA-bundle and agents.md stamps below
+        s"$BundleLabelTemplate{{println}}" + // the version lock
+        "{{range .Config.Env}}{{println .}}{{end}}", // JdkTrust's JAVA_HOME
       image,
     ).text
     val imageId = imageInspect.linesIterator.nextOption().getOrElse("")
@@ -2377,7 +2354,7 @@ object AgentSandboxLauncher:
         s"workspace: LIVE; guard NONE by $WorkspaceGuardVariable — /workspace bound directly, " +
           "with only .git/config and .git/hooks pinned read-only, and only until the host " +
           "rewrites one" +
-          (if selinuxEnforcing then "; the checkout is relabeled for container access (:Z)"
+          (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
            else ""))
     if policyFiles.nonEmpty then
       policyFiles.foreach: (name, text) =>
@@ -2516,10 +2493,7 @@ object AgentSandboxLauncher:
       s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
       s"--user=$ContainerUid:$ContainerGid",
 
-      // The agents need no Linux capability.
       "--cap-drop=ALL",
-
-      // Prevent setuid/file-capability binaries from regaining privilege.
       "--security-opt=no-new-privileges",
 
       // /tmp and /var/tmp stay writable through podman's --read-only-tmpfs default — the writability
@@ -2541,7 +2515,7 @@ object AgentSandboxLauncher:
     ) ++ forwardedEnv ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
-      // project checkout").
+      // project directory").
       "--volume", projectVolume,
 
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
@@ -2556,8 +2530,6 @@ object AgentSandboxLauncher:
       "--shm-size=512m",
     ) ++ memoryArgs ++ Vector(
       "--workdir", "/workspace",
-
-      // The image's ENTRYPOINT seeds the persistent volume and execs the command; with none, its CMD, bash.
       image,
     ) ++ command.toVector
 
@@ -2596,7 +2568,6 @@ object AgentSandboxLauncher:
       if clipboard != "off" then
         fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
-    // The resident twin; it waits for the container the start below brings up.
     clipboardHost.powershell.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
 
     handOver(

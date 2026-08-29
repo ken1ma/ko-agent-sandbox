@@ -28,8 +28,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// Check the workspace-root repository's control-state locations. `Ok(())` means the filter may
-/// serve this tree; `Err` means it must not.
 pub fn check_hook_location(backing_root: &Path) -> Result<(), Refusal> {
     let root = backing_root.canonicalize().map_err(|err| Refusal {
         reason: format!("cannot canonicalize the backing directory {backing_root:?}: {err}"),
@@ -555,8 +553,6 @@ impl Workspace {
     }
 }
 
-/// A path's components as the resolver's queue entries: `/` for the root, `.`/`..` verbatim,
-/// names as they are.
 fn components_of(path: &Path) -> Vec<OsString> {
     path.components()
         .map(|component| match component {
@@ -568,7 +564,6 @@ fn components_of(path: &Path) -> Vec<OsString> {
         .collect()
 }
 
-/// A relative path in git's metadata is relative to `base`; an absolute one stands alone.
 fn resolve_against(base: &Path, value: &str) -> PathBuf {
     let path = Path::new(value);
     if path.is_absolute() {
@@ -578,7 +573,6 @@ fn resolve_against(base: &Path, value: &str) -> PathBuf {
     }
 }
 
-/// What a config file says about `core.hooksPath`.
 #[derive(Debug, PartialEq, Eq)]
 enum HooksPath {
     Absent,
@@ -728,7 +722,6 @@ mod tests {
             values(scan_hooks_path("[core]\n\thooksPath = \"./a;b\"\n")),
             vec!["./a;b".to_string()]
         );
-        // Outside quotes they still start a comment.
         assert_eq!(
             values(scan_hooks_path(
                 "[core]\n\thooksPath = ./githooks # the shared ones\n"

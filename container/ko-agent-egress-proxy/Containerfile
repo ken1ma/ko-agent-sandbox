@@ -4,9 +4,8 @@
 ARG IMG_TAG_VER
 FROM debian-coursier:${IMG_TAG_VER} AS build
 
-# GraalVM Community 25.0.4.1, release graal-25.3.4.1. This layer precedes the
-# application COPY so the named build-stage cache retains the toolchain across
-# proxy source changes; only native compilation itself must repeat.
+# This layer precedes the application COPY so the named build-stage cache retains the toolchain
+# across proxy source changes; only native compilation itself must repeat.
 ARG GRAALVM_RELEASE=graal-25.3.4.1
 
 # Even Coursier's latest unpublished index stops at GraalVM Community 25.0.2:

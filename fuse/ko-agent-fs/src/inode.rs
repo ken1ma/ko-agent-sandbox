@@ -13,10 +13,8 @@ use std::os::unix::ffi::OsStrExt;
 
 use crate::policy::{GitContext, child_context, gitdir_root};
 
-/// The FUSE root inode number is fixed by the protocol.
 pub const ROOT_INO: u64 = 1;
 
-/// One live inode: where it sits in the tree and its cached Git position.
 #[derive(Debug)]
 pub struct Inode {
     pub parent: u64,
@@ -58,8 +56,7 @@ impl InodeTable {
         self.by_ino.get(&ino)
     }
 
-    /// The path components (basenames) from `ino` up to — but not including — the root, or `None`
-    /// if the inode (or an ancestor) is unknown. The empty vector is the root itself.
+    /// `None` if the inode or an ancestor is unknown.
     pub fn components(&self, ino: u64) -> Option<Vec<Vec<u8>>> {
         let mut parts = Vec::new();
         let mut current = ino;
@@ -114,8 +111,6 @@ impl InodeTable {
         ino
     }
 
-    /// Apply a kernel `forget(ino, n)`: drop `n` references and, at zero, remove the entry. The root
-    /// is never removed.
     pub fn forget(&mut self, ino: u64, n: u64) {
         if ino == ROOT_INO {
             return;
@@ -130,9 +125,6 @@ impl InodeTable {
         }
     }
 
-    /// The `(parent, basename)` of `ino`, or `None` for the root (which has neither) or an unknown
-    /// inode. Used where an operation needs the parent directory and the final name — e.g. reading a
-    /// symlink through its parent fd.
     pub fn parent_and_name(&self, ino: u64) -> Option<(u64, OsString)> {
         if ino == ROOT_INO {
             return None;
@@ -142,7 +134,6 @@ impl InodeTable {
             .map(|node| (node.parent, node.name.clone()))
     }
 
-    /// Live entries, for tests and diagnostics.
     pub fn len(&self) -> usize {
         self.by_ino.len()
     }
@@ -209,16 +200,15 @@ mod tests {
     fn forget_is_reference_counted_and_bounds_the_table() {
         let mut table = InodeTable::new();
         let ino = look(&mut table, ROOT_INO, "a");
-        look(&mut table, ROOT_INO, "a"); // nlookup = 2
-        assert_eq!(table.len(), 2); // root + a
+        look(&mut table, ROOT_INO, "a");
+        assert_eq!(table.len(), 2);
 
         table.forget(ino, 1);
         assert!(table.get(ino).is_some(), "still referenced");
         table.forget(ino, 1);
         assert!(table.get(ino).is_none(), "dropped at zero references");
-        assert_eq!(table.len(), 1); // just the root
+        assert_eq!(table.len(), 1);
 
-        // The name is free to be allocated a fresh inode afterwards.
         let reallocated = look(&mut table, ROOT_INO, "a");
         assert_ne!(reallocated, ino);
     }
@@ -272,7 +262,6 @@ mod tests {
             classify(&table.get(pack).unwrap().git),
             GitPathClass::Operational
         );
-        // But the submodule's own hooks are still control, and so is the namespace above it.
         let hooks = look(&mut table, foo, "hooks");
         assert_eq!(
             classify(&table.get(hooks).unwrap().git),

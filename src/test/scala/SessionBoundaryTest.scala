@@ -205,11 +205,9 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
-    // A JVM reads none of the HTTPS_PROXY family, so the image's JDK is pointed at the proxy
-    // through its own net.properties instead (JdkTrust.jdkMounts). Driven as a program rather
-    // than asserted against the mounted file, because what matters is that the default
-    // ProxySelector acts on it — and that it does so without setting a system property, which is
-    // the whole reason this is not JAVA_TOOL_OPTIONS.
+    // Driven as a program rather than asserted against the mounted file, because what matters is
+    // that the default ProxySelector acts on it — and that it does so without setting a system
+    // property (sandbox-jdk-use-proxy has why).
     val probe = Files.createTempDirectory("jvm-proxy-probe")
     try
       val source = probe.resolve("Probe.java")

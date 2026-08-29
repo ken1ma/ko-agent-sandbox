@@ -73,8 +73,6 @@ class SandboxProjectTest extends munit.FunSuite:
       val homes = protectedHomes(os, Map("HOME" -> home))
       Seq("/home", "/Users", "/root", "/var/root").foreach: container =>
         assert(isForbiddenProjectDir(Paths.get(container), homes), s"$os $container")
-      // A container holds homes, so its children go too; /root is a home itself and its
-      // children are ordinary projects.
       Seq("/home/someone", "/Users/someone").foreach: otherHome =>
         assert(isForbiddenProjectDir(Paths.get(otherHome), homes), s"$os $otherHome")
       assert(!isForbiddenProjectDir(Paths.get("/root/project"), homes), s"$os /root/project")
@@ -87,8 +85,6 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(isForbiddenProjectDir(Paths.get("/home/someone"), posix))
     assert(!isForbiddenProjectDir(Paths.get("/srv/build/app"), posix))
 
-    // Windows falls back to C: for the profiles root, so an environment with neither a home
-    // variable nor SystemDrive still refuses somewhere rather than nowhere.
     val windows = protectedHomes(Os.Windows, Map.empty)
     assert(windows.warnings.exists(_.contains("USERPROFILE")))
     assert(windows.paths.exists(_.endsWith("Users")), windows.paths.toString)
@@ -140,8 +136,6 @@ class SandboxProjectTest extends munit.FunSuite:
       ).isLeft,
     )
 
-    // Git Bash and MSYS2 export a POSIX-style HOME beside a valid USERPROFILE; the bad
-    // secondary is dropped with a warning, never the reason a launch fails.
     val secondaryBase = Files.createTempDirectory("windows-secondary").toRealPath()
     val secondaryProfile = Files.createDirectories(secondaryBase.resolve("Users").resolve("me"))
     val result = protectedHomes(
@@ -285,8 +279,6 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
     assertEquals(policyDirError(dir), None)
     assert(!Files.exists(dir))
-    // guard=none's mount-back alone creates it, because that mount must exist to guard a
-    // writable raw tree.
     assertEquals(policyGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
     assert(Files.isDirectory(dir))
     // The directory it just created passes the next launch unchanged.
@@ -300,9 +292,6 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(Files.isRegularFile(dir))
 
   test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
-    // A typo'd egress one level up would otherwise be silently ignored config — the exact
-    // failure class the unknown-filename rule inside egress/ exists to kill. Dot-named
-    // editor and OS metadata is exempt: no configuration will ever be named that way.
     val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("egress"))
@@ -338,8 +327,7 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "# Priorities\n\nBe brief.\n")
     assertEquals(readAgentInstructions(dir), Right(Some("# Priorities\n\nBe brief.\n")))
 
-    // A typo'd name configures nothing; an empty file is a forgotten edit, not an opt-out. The typo
-    // differs by more than case, which macOS and Windows would fold into the real file.
+    // The typo differs by more than case, which macOS and Windows would fold into the real file.
     Files.writeString(dir.resolve("AGENT-CUSTOM.md"), "x")
     assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
     Files.delete(dir.resolve("AGENT-CUSTOM.md"))

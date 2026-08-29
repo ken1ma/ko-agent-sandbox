@@ -29,7 +29,6 @@ class HostileInputTest extends munit.FunSuite:
   private def connect(authority: Array[Byte]): Array[Byte] =
     ascii("CONNECT ") ++ authority ++ ascii(" HTTP/1.1\r\n\r\n")
 
-  /** The baseline as a policy: deny-unless-allowed with no project files. */
   private lazy val baselinePolicy: ResolvedEgress =
     resolvePolicy(Some("deny-unless-allowed"), None, None, None)
 
@@ -47,10 +46,6 @@ class HostileInputTest extends munit.FunSuite:
 
   private def printable(value: String): String =
     value.map(ch => if ch < 0x20 || ch > 0x7e then f"\\u${ch.toInt}%04x" else ch).mkString
-
-  // ---------------------------------------------------------------------------
-  // The permanent hostile authority corpus
-  // ---------------------------------------------------------------------------
 
   private val RefusedAuthorities = Vector(
     // Malformed bracket/port combinations. A bracketed *hostname* is accepted and canonicalized

@@ -3,7 +3,6 @@ FROM debian-coursier:${IMG_TAG_VER}
 
 # This image stays on `latest`: rebuilds pick up agent releases, which
 # IMG_TAG_VER says nothing about; the label records the base instead.
-# An ARG is stage-scoped, hence repeated after FROM.
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
@@ -87,9 +86,9 @@ RUN set -euxo pipefail; \
         *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
     esac; \
     NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
+    # `sha256sum -c` resolves the filename relative to the current directory.
     cd /tmp; \
     curl -fsSL -O "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}"; \
-    # `sha256sum -c` resolves the filename relative to the current directory.
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
         | grep -F "  ${NODE_TARBALL}" \
         | sha256sum -c -; \
@@ -321,7 +320,7 @@ RUN set -euxo pipefail; \
 # symlinked argv[0].
 ENV PATH="/opt/codex/bin:$PATH"
 
-# Keep the final image PATH available after Codex's remote executor replaces PATH for a command.
+# What codex/bash-env restores (codex/config.toml has why).
 ENV SANDBOX_TOOLCHAIN_PATH="$PATH"
 
 # /etc/codex/config.toml is the documented system layer, lowest precedence:
@@ -445,19 +444,8 @@ RUN set -euxo pipefail; \
 # text must change with the image. Absolute, because a relative link would
 # have to climb out of the volume.
 #
-# sandbox-jdk-use-proxy gives one JDK this session's CA and proxy. The launcher runs it on the
-# image's own JDK and mounts the result; the agent runs it on a JVM it installs itself (`cs java`),
-# from the certificate mounted beside these instructions.
-#
-# sandbox-apt-get is the AGENTS-SANDBOX.md-documented package unpacker: real apt-get install can never
-# work on a read-only rootfs as uid 65532, and shipping the unpacker beats retyping it.
-# sandbox-install-podman is the same bargain for the nesting opt-in: a fetch plus four config
-# files an agent would otherwise transcribe from the instructions, and a refusal when the session
-# was not launched with KO_AGENT_SANDBOX_NESTING=same-uid.
-# ko-agent-clipboard answers under the four names Claude Code shells out to for the clipboard on
-# Linux; it speaks to the launcher's broker (SECURITY.md "Clipboard"), and fails at once when the
-# session has none.
-# sandbox-entrypoint is the ENTRYPOINT: the persistent-volume seeding above, then the command.
+# Each script's own header says what it is for; they ship because an agent would otherwise retype
+# them from the instructions.
 COPY --chmod=0755 \
     sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman ko-agent-clipboard \
     sandbox-entrypoint \

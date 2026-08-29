@@ -728,7 +728,6 @@ fn ordinary_project_work_is_unaffected() {
         fs::remove_file(mount.at("src/moved.rs")),
     );
 
-    // The host sees the sandbox's work immediately.
     assert_eq!(
         fs::read_to_string(mount.backing_at("src/main.rs")).unwrap(),
         "fn main() { }\n"

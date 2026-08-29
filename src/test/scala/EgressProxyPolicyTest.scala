@@ -10,8 +10,6 @@ import EgressProxyPolicy.*
 class EgressProxyPolicyTest extends munit.FunSuite:
 
   test("policy normalization strips comments and collapses whitespace but keeps lines"):
-    // Entries are multi-token lines (`+host x`), so line structure is what separates
-    // them and must survive the trip through the environment variable.
     val text =
       """# Reads public Python documentation.
         |+host docs.python.org
@@ -38,8 +36,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     )
 
   test("the launch banner names the profile and the counts, never the host names"):
-    // The banner is read every session; a thousand characters of hostnames is a line people learn
-    // to skip, and skipping it is how an unexpected policy goes unnoticed.
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed\n" +
@@ -74,7 +70,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       egressBanner("egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x"),
       "egress: DENY-ALL; 0 effective hosts",
     )
-    // An unparseable resolution is printed whole rather than guessed at.
     assertEquals(egressBanner("some reason instead"), "egress: some reason instead")
     // Whatever the proxy says, no hostname survives into the banner.
     assert(
@@ -89,7 +84,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("C:\\tools\\agy")), Some("google"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
     assertEquals(commandProvider(Some("bash")), None)
-    // A wrapper is not inspected: whatever it may later run, the wrapper selects nothing.
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)
 
@@ -97,8 +91,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("egress")
     Files.writeString(dir.resolve("denied"), "host gitlab.com\nhost **.example.org # a comment\n")
     Files.writeString(dir.resolve("allowed"), "+host ghcr.io\n")
-    // Dot-named editor and OS metadata is exempt from the closed namespace, as one level up
-    // (SandboxProject.isMetadataEntry): a Finder visit must not fail the next launch.
     Files.createFile(dir.resolve(".DS_Store"))
     assertEquals(
       readPolicyFiles(dir),
@@ -114,38 +106,30 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(readPolicyFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
   test("the policy directory's refused shapes each name their reason"):
-    // Every one of these would otherwise be silently ignored or misread config.
     val parent = Files.createTempDirectory("policy-shapes")
 
-    // egress itself as a file, not a directory: a policy that must never be skipped unseen.
     val asFile = parent.resolve("egress")
     Files.writeString(asFile, "+host ghcr.io\n")
     assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
     Files.delete(asFile)
 
-    // A typo'd file name configures nothing.
     val dir = Files.createDirectory(parent.resolve("egress"))
     Files.writeString(dir.resolve("alowed"), "+host ghcr.io\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
     Files.delete(dir.resolve("alowed"))
 
-    // A policy file's own name on something the read would skip — the one stray shape the name
-    // check cannot see, and the only one that would leave that file silently unread.
     Files.createDirectory(dir.resolve("allowed"))
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("allowed"))
 
-    // A symlinked policy file: the read must see the bytes a mounted-back directory would show.
     Files.createSymbolicLink(dir.resolve("denied"), parent.resolve("elsewhere"))
     assert(readPolicyFiles(dir).swap.exists(_.contains("symlink")))
     Files.delete(dir.resolve("denied"))
 
-    // Present but empty: more likely a forgotten edit than a deliberate no-op.
     Files.writeString(dir.resolve("allowed"), "# only a comment\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
 
   test("the policy env args carry the authority selection and each file's variable"):
-    // The dry run and the proxy container get these same args, so what was vetted is enforced.
     assertEquals(
       policyEnvArgs(
         "deny-unless-allowed",
@@ -195,8 +179,6 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(logsToPrune(names, 4, Set.empty), Seq())
     assertEquals(logsToPrune(Vector(), 20, Set.empty), Seq())
 
-    // A live run keeps its log whatever the count says: its proxy still holds that file open, so
-    // pruning it would lose the running session's whole record rather than an old one.
     assertEquals(
       logsToPrune(names, 2, Set("aaaaaaaa")),
       Seq("proxy-20260811-100000-bbbbbbbb.log"),

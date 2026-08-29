@@ -21,9 +21,15 @@ Never rewrite histories unless explicitly asked.
 
 A comment or document earns its place only by what it adds over the code, this repository's existing
 documents, and professional knowledge. Do not explain standard libraries, restate what code shows,
-or write down universal practice ("pinned exactly", "for security"). A dependency behaving contrary
-to reasonable expectation ("JVM tools ignore HTTPS_PROXY") does earn its place, even when its own
-documentation says so: a reader who does not expect the behavior never looks it up.
+or write down universal practice ("pinned exactly", "for security"). A comment argues a decision
+the code cannot demonstrate; it never reassures about a fact running the code demonstrates
+("podman accepts this order"), and never defends against a tool this project does not use. A
+dependency behaving contrary to reasonable expectation ("JVM tools ignore HTTPS_PROXY") does earn
+its place, even when its own documentation says so: a reader who does not expect the behavior
+never looks it up.
+
+A name carries what it can before a comment is written: a comment that only says what a method,
+parameter or value is becomes its name, and the comment goes.
 
 A deliberate absence is worth recording once, with its why; the sites that omit it stay silent — a
 note per site is the volume the rule exists to save.

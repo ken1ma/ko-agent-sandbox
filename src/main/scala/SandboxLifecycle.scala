@@ -25,9 +25,6 @@ object SandboxLifecycle:
    * wait, forward the exit code, and let the run's own hook remove what it
    * made once podman has exited (armRunCleanup).
    *
-   * Cleanup lives in a shutdown hook because a terminal SIGINT reaches this
-   * JVM as well as podman; the hook waits for podman first.
-   *
    * Accepted edges: podman never exiting blocks the hook, as it would block
    * podman alone; a Windows console close allows ~5 seconds, which the wait
    * plus rm can exceed — the run's proxy and networks then linger for a
@@ -37,18 +34,14 @@ object SandboxLifecycle:
   def handOver(command: Vector[String], viaExec: Boolean, cleanup: RunCleanup): Nothing =
     System.out.flush()
     System.err.flush()
-    // Claimed before either way of starting podman, and before the `start()` that can throw: from
-    // here the cleanup removes nothing until it has a process to follow, because the sandbox may
-    // already be running by the time a shutdown reaches it.
+    // Claimed before either way of starting podman, and before the `start()` that can throw.
     if !cleanup.handingOver() then
-      // A shutdown got there first and this run's resources are already gone. Starting podman now
-      // would leave a sandbox with no proxy to reach and no reaper to remove it, which is the one
-      // outcome this file refuses — so decline to be what starts it. The JVM is mid-halt, and a
-      // non-zero exit during shutdown halts rather than re-running the sequence.
+      // A shutdown got there first and this run's resources are already gone. The JVM is mid-halt,
+      // and a non-zero exit during shutdown halts rather than re-running the sequence.
       sys.exit(1)
     if viaExec && currentOs != Os.Windows then
       try FFMHelper.libc.execvp(command)
-      catch case _: Throwable => () // fall through to the wait model
+      catch case _: Throwable => ()
     val process =
       try ProcessBuilder(command*).inheritIO().start()
       catch
@@ -96,8 +89,7 @@ object SandboxLifecycle:
    *
    *   - before the handover, nothing outside this process knows what was made — remove it;
    *   - during the handover, podman is being started and there is no process to wait on yet —
-   *     remove *nothing*. A lingering proxy is the direction every edge in this file fails toward;
-   *     removing under a sandbox that may already be running is the one it never takes;
+   *     remove *nothing*;
    *   - once there is a process, wait for it and then remove, which is a session's ordinary end.
    */
   def armRunCleanup(remove: () => Unit): RunCleanup =
@@ -132,11 +124,9 @@ object SandboxLifecycle:
     /** The start threw, so no process exists and what this run made is the caller's again. */
     def startFailed(): Unit = synchronized { handedOver = false }
 
-    /** There is now a process whose exit the removal must follow. */
     def watching(process: Process): Unit = synchronized { child = Some(process) }
 
     private[launcher] def perform(): Unit = synchronized {
-      // The handover in progress: podman is being started and there is no process to wait on.
       val handingOver = child.isEmpty && handedOver
       if !claimed && !handingOver then
         // Claimed before the removal runs rather than after it succeeds. A `remove` that throws
@@ -314,9 +304,8 @@ object SandboxLifecycle:
     catch case _: IOException => false
 
   /**
-   * The resident-path twin of the reaper's final lines, same brief retry:
-   * the --rm sandbox can still be mid-removal, making podman refuse a
-   * network rm. The sandbox's own removal is for the launch that ends
+   * The resident-path twin of the reaper's final lines, with the same retry
+   * (the reaper has the why). The sandbox's own removal is for the launch that ends
    * between its create and its start — a refusal, a Ctrl-C — where --rm
    * never fires and the container would hold its network; after a run it
    * is already gone, and the rm is a no-op.

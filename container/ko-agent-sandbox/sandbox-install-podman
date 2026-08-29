@@ -20,8 +20,8 @@ if [ "$nesting" != same-uid ]; then
     exit 1
 fi
 
-# netavark is unused under host networking, but podman refuses to start without the binary.
 sandbox-apt-get update
+# netavark is unused under host networking, but podman refuses to start without the binary.
 sandbox-apt-get install podman
 
 mkdir -p /tmp/xdg "$HOME/.config/containers"

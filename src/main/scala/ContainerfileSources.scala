@@ -246,7 +246,6 @@ object ContainerfileSources:
       target,
     )
 
-  /** Sources derived from the same contexts and arguments Podman receives, one per command. */
   def imageSourcesForBuildCommands(
     commands: Vector[Vector[String]],
     readContainerfile: String => String,

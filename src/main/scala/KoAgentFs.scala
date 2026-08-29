@@ -84,7 +84,6 @@ object KoAgentFs:
    * binary on the wrong side of the boundary. The ssh script is fixed text;
    * nothing user-controlled is interpolated into it. `--replace` clears a
    * leftover extract container from a crashed earlier run.
-   *
    */
   def koAgentFsInstallCommands(podman: String, os: Os, home: String): Vector[Vector[String]] =
     os match
@@ -177,7 +176,6 @@ object KoAgentFs:
     if !run(koAgentFsFuseConfCheckCommand(podman)*).ok then
       fail("error: user_allow_other still not set after enabling; check the machine's /etc/fuse.conf")
 
-  /** Run the installed binary with one flag, wherever the daemon lives. */
   private def koAgentFsInvocation(podman: String, os: Os, home: String, flag: String): Vector[String] =
     os match
       case Os.Linux => Vector(s"$home/$KoAgentFsBinary", flag)
@@ -226,8 +224,7 @@ object KoAgentFs:
       case None =>
         fail(s"error: unrecognized ko-agent-fs --version output: ${version.text}")
     // The whole stack, proven where it will run: an unprivileged mount over a scratch tree, with
-    // the policy shown to bite. Its failure text names the environment fix (e.g. a native Linux
-    // host missing user_allow_other, which the launcher must not sudo into place).
+    // the policy shown to bite. Its failure text names the environment fix.
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
       fail(s"error: ko-agent-fs self-test failed after install:\n${selfTest.err}", selfTest.exit)
@@ -294,8 +291,6 @@ object KoAgentFs:
         .toVector
     bundleSourceId(entries)
 
-  /** The digest of the ko-agent-fs source bundled in this jar — what an installed binary's
-    * `--version` must report before a session may mount through it. */
   def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs")
 
   def koAgentFsMountDir(projectId: String): String = s"$KoAgentFsInstallDir/mounts/$projectId"
@@ -307,13 +302,9 @@ object KoAgentFs:
    * path — which is user-controlled and therefore travels base64-encoded,
    * never spliced into shell text.
    *
-   * The steps, each fail-closed: write this session's marker; take the
-   * project lock, under which a concurrent reap cannot unmount (`lock` in
-   * koAgentFsReapScript); reuse an existing healthy mount of the same source
-   * id; lazily unmount a stale or version-skewed one; refuse a non-empty
-   * mountpoint (a vanished mount must expose nothing); start the daemon
-   * detached with its log beside the mount; wait until statfs reports FUSE
-   * (fuse/fuseblk naming varies by stat version, hence the prefix match).
+   * Each step fails closed. The project lock is `lock` in koAgentFsReapScript. A non-empty
+   * mountpoint is refused because a vanished mount must expose nothing. The `fuse*` match on
+   * statfs is because fuse/fuseblk naming varies by stat version.
    */
   def koAgentFsMountScript(
     backing: String,
@@ -446,7 +437,6 @@ object KoAgentFs:
       case Os.Mac | Os.Windows => "in the podman machine"
     s"ko-agent-fs filter $venue"
 
-  /** Where the reaper must run the reap script: inside the VM, or on this host. */
   def koAgentFsTeardownMode(os: Os): String =
     os match
       case Os.Linux => "local"
@@ -468,7 +458,6 @@ object KoAgentFs:
        |rm -rf "$$HOME/$KoAgentFsInstallDir/mounts"""".stripMargin
     )
 
-  /** Run a lifecycle script where the daemon lives: the VM on podman machine, the host on Linux. */
   def koAgentFsScriptCommand(podman: String, os: Os, script: String): Vector[String] =
     os match
       // /bin/sh, not a PATH-resolved `sh`, for the reason findOnPath states; ReaperScript spells it

@@ -1052,7 +1052,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val extra = TlsInspection.inspectedNamesError(required + "gist.github.com", required)
     assert(extra.exists(_.contains("gist.github.com")), extra.toString)
 
-    // Both at once report both.
     val both = TlsInspection.inspectedNamesError(Set("github.com", "gist.github.com"), required)
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
@@ -1456,7 +1455,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
-  /** The baseline as a policy: deny-unless-allowed with no project files. */
   private lazy val baselinePolicy: ResolvedEgress =
     resolvePolicy(Some("deny-unless-allowed"), None, None, None)
 

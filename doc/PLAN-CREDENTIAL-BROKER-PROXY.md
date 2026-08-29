@@ -58,7 +58,7 @@ something it should not"; repository scoping is a later increment ("Deliberate e
    `Content-Length`, `Transfer-Encoding`, `Connection` and their kin route or frame, and a
    set is the one shape that needs no list of them. The rewrite replaces the token inside a
    header the client sent; it never adds a header.
-1. The placeholder is unpredictable to the checkout: fresh random bytes per launch, in the shape
+1. The placeholder is unpredictable to the project: fresh random bytes per launch, in the shape
    of the value it stands for (prefix and length preserved for a recognizable prefix such as
    `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Tools that validate
    token syntax before sending keep working; nothing can be derived from it.
@@ -164,7 +164,7 @@ Not brokered, for reasons that hold independently of effort:
 Additions to SECURITY.md, each at its binding site:
 
 - "Exfiltration through an allowed host": a brokered `--env` value is not in the sandbox; the
-  residue narrows to unbrokered forwards and credentials in the checkout.
+  residue narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the policy's single point of trust and becomes
   a holder of what the policy admits spending. Its compromise was a full policy compromise and
@@ -172,7 +172,7 @@ Additions to SECURITY.md, each at its binding site:
 - "The audit line grammar": the `inject` field.
 
 Residues that stay, stated: the credential is still spent by the agent on the bound host within
-the allowed methods; the placeholder tells a hostile checkout that a `GH_TOKEN` exists and
+the allowed methods; the placeholder tells a hostile project that a `GH_TOKEN` exists and
 where it is honoured (harmless); an origin echoing a credential in a response is not rewritten.
 
 ## Implementation sites

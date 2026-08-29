@@ -166,7 +166,6 @@ fn the_binary_mounts_and_serves_end_to_end() {
         .spawn()
         .expect("spawn ko-agent-fs");
 
-    // Wait until the mountpoint serves; the daemon runs until unmounted or killed.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while fs::read_to_string(mountpoint.join("seed")).ok().as_deref() != Some("seed\n") {
         assert!(

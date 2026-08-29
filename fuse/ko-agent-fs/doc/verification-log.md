@@ -98,7 +98,7 @@ measured with host-side ground truth at every step:
 Together they close the mmap question by construction: a mapped file cannot go stale under a host
 write, because the write is refused while the mapping holds — `probe/coherency-probe.py`'s mmap
 half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
-("The project checkout") carries it: a host editor's save is refused while a session holds that
+("The project directory") carries it: a host editor's save is refused while a session holds that
 file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,

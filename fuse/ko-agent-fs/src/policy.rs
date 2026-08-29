@@ -37,7 +37,6 @@ pub enum Decision {
     Deny(&'static str),
 }
 
-/// Classification of an inode's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitPathClass {
     /// Operational state git must write, or ordinary project data; not executed. Writable.
@@ -74,7 +73,6 @@ pub enum GitContext {
 }
 
 impl GitContext {
-    /// The mount root is outside any gitdir.
     pub fn root() -> GitContext {
         GitContext::NotGit
     }
@@ -121,8 +119,7 @@ pub fn is_sandbox_config_name(name: &[u8]) -> bool {
 /// The single fold behind every reserved-name rule, so no two of them can disagree about what a
 /// backing filesystem might treat as the same name. `target` is ASCII.
 fn folds_to(name: &[u8], target: &[u8]) -> bool {
-    // Fold the i-family (UTF-8: U+0130 = C4 B0, U+0131 = C4 B1) to ASCII 'i' and drop ignorables,
-    // copying to a small buffer.
+    // The i-family folds to ASCII 'i' (U+0130 is C4 B0, U+0131 is C4 B1) and ignorables are dropped.
     let mut folded: Vec<u8> = Vec::with_capacity(name.len());
     let mut i = 0;
     'outer: while i < name.len() {
@@ -141,7 +138,6 @@ fn folds_to(name: &[u8], target: &[u8]) -> bool {
         }
     }
 
-    // Strip trailing '.' and ' '.
     let mut end = folded.len();
     while end > 0 && (folded[end - 1] == b'.' || folded[end - 1] == b' ') {
         end -= 1;
@@ -172,7 +168,6 @@ pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
     match parent {
         GitContext::NotGit => {
             if is_dotgit_name(child_name) {
-                // The `.git` entry itself (directory root or pointer file) — an empty relative path.
                 GitContext::InGit(Vec::new())
             } else if is_sandbox_config_name(child_name) {
                 GitContext::SandboxConfig
@@ -199,7 +194,6 @@ pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
     }
 }
 
-/// Classify an inode by its cached context.
 pub fn classify(context: &GitContext) -> GitPathClass {
     match context {
         GitContext::NotGit => GitPathClass::Operational,
@@ -251,11 +245,10 @@ pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClas
 /// root (`gitdir`, `commondir`, `config.worktree`) are covered below.
 pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     let first = match components.first() {
-        None => return GitPathClass::Control, // the gitdir entry itself
+        None => return GitPathClass::Control,
         Some(component) => *component,
     };
 
-    // Control regardless of depth: the config files, the hook tree, and the redirection markers.
     match first {
         b"config" | b"config.worktree" => return GitPathClass::Control,
         b"hooks" => return GitPathClass::Control,
@@ -263,7 +256,6 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         _ => {}
     }
 
-    // Operational subtrees (any descendant writable).
     const OPERATIONAL_TREES: &[&[u8]] = &[
         b"objects", b"refs", b"logs",
         b"info", // exclude/sparse-checkout/attributes patterns — data, never executed
@@ -278,8 +270,6 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     // fall through to Control below, so a rebase/am/sequenced cherry-pick cannot be left in
     // /workspace for the host to resume. This note marks the spot where they must not be added.
 
-    // Operational single files at the gitdir root. Refs and scratch messages git rewrites
-    // constantly; the `.lock` siblings are git's own atomic-write temporaries.
     if components.len() == 1 {
         const OPERATIONAL_FILES: &[&[u8]] = &[
             b"HEAD",
@@ -315,9 +305,8 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     GitPathClass::Control
 }
 
-/// Authorize creating `new_name` under a parent whose context is `parent_ctx`. Both the `.git` name
-/// rule (a new gitdir the host would discover) and the destination classification (creating inside a
-/// protected tree) apply.
+/// Both the `.git` name rule (a new gitdir the host would discover) and the destination
+/// classification (creating inside a protected tree) apply.
 pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
     if is_dotgit_name(new_name) {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
@@ -341,9 +330,8 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
     Decision::Allow
 }
 
-/// Authorize a mutation of an existing inode with context `ctx` (write/truncate/unlink/
-/// rename-from/etc.). Creation — a rename's destination included — goes through
-/// [`authorize_create`] so the name rule fires.
+/// Creation — a rename's destination included — goes through [`authorize_create`] so the name rule
+/// fires.
 pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
     if classify(ctx) != GitPathClass::Control {
         return Decision::Allow;
@@ -602,7 +590,6 @@ mod tests {
 
     #[test]
     fn a_directory_under_modules_is_a_namespace_until_the_plumbing_says_otherwise() {
-        // Until the plumbing looks, the answer is the strict one (`GitContext::ModuleNamespace`).
         let modules = ingit(&[b"modules"]);
         assert_eq!(
             child_context(&modules, b"libs"),
@@ -662,15 +649,13 @@ mod tests {
         // one-component name is what the plumbing's answer amounts to.
         let modules = ingit(&[b"modules"]);
         assert_eq!(child_context(&modules, b"foo"), GitContext::ModuleNamespace);
-        let foo = gitdir_root(); // .git/modules/foo
+        let foo = gitdir_root();
         assert_eq!(foo, ingit(&[]));
-        // .git/modules/foo/objects/ab is operational, not frozen by the outer layout.
         let objects = child_context(&foo, b"objects");
         assert_eq!(
             classify(&child_context(&objects, b"ab")),
             GitPathClass::Operational
         );
-        // .git/modules/foo/config and hooks stay control.
         assert_eq!(
             classify(&child_context(&foo, b"config")),
             GitPathClass::Control
@@ -852,7 +837,6 @@ mod tests {
             authorize_create(&GitContext::NotGit, b".gitignore"),
             Decision::Allow
         );
-        // A new ref under refs/heads is operational.
         assert_eq!(
             authorize_create(&ingit(&[b"refs", b"heads"]), b"feature"),
             Decision::Allow
@@ -894,7 +878,6 @@ mod tests {
 
     #[test]
     fn mutating_the_gitdir_pointer_entry_is_denied() {
-        // An existing `.git` pointer file (empty relative path) is immutable.
         assert!(matches!(
             authorize(&ingit(&[]), Mutation::Write),
             Decision::Deny(_)

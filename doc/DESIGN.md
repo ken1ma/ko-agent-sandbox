@@ -46,9 +46,9 @@ GEMINI.md, which every agent reads with no launcher help, because the managed-po
 loads unconditionally — a project file can add to the image's conventions but never drop them —
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
 session cannot rewrite the instructions governing the next one, as it could any file in the
-checkout. Prose governs nothing enforceable; the file sits in the boundary directory for that
-read-before-launch property alone, and is the directory's second tenant, so its closed namespace
-admits `agent/` with the one filename.
+project directory. Prose governs nothing enforceable; the file sits in the boundary directory for
+that read-before-launch property alone, and is the directory's second tenant, so its closed
+namespace admits `agent/` with the one filename.
 
 ### No richer egress-policy format
 
@@ -69,8 +69,7 @@ the launcher's dry run executes), and an allow silently overriding a deny (one f
 - https://github.com/stripe/smokescreen/issues/236
 
 Do not add wildcard additions, ranked rules, a richer removal-pattern language, or an allowance
-outside
-the closed set without a concrete need that outweighs that surface.
+outside the closed set without a concrete need that outweighs that surface.
 
 ### No HTTP query surface on the proxy
 
@@ -115,11 +114,10 @@ enforcement, and it acts at the moment the answer matters rather than at some ea
 
 ### No PATH-resolved host executables
 
-The launcher resolves `podman` (and `selinuxenabled`) through `PATH`
-entries that are absolute **and** outside the repository being sandboxed —
-`HostCommands.findOnPath` — and
-the reaper receives the resolved path as an argument, so no host-side invocation consults `PATH` or,
-on Windows, CreateProcess's implicit current-directory search.
+The launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries that are absolute
+**and** outside the project directory — `HostCommands.findOnPath` — and the reaper receives the
+resolved path as an argument, so no host-side invocation consults `PATH` or, on Windows,
+CreateProcess's implicit current-directory search.
 
 Absoluteness is not consent, and a repository must never be what supplies the host's container
 runtime: both halves of that filter are load-bearing, and `findOnPath`'s comment has why. Prior
@@ -129,25 +127,20 @@ art:
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a
-file inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
-`readAgentInstructions`,
-tested). Podman resolves mount sources on the host,
-so mounting through a repository-controlled link would expose its target into the sandbox, and
-following the link to pin its resolved target would make the pinned surface depend on where the link
-points at launch time. The refusal is loud, names the path, and comes before the launcher creates
-anything, so setup writes nothing through a pre-seeded link (tested: "a refused symlink shape leaves
-no artifact through the link"); the project directory itself is `toRealPath()`-canonical before any
-of this. Prior art for both failure shapes — a sandbox that crashed mid-setup on a symlink, and
-setup code whose mount-target creation wrote through one to paths outside its root:
-
-- https://github.com/anthropic-experimental/sandbox-runtime/issues/221
-- https://github.com/bazelbuild/bazel/issues/28515
-
-The cost is that a repository sharing hooks through a symlinked `.git/hooks` cannot be sandboxed
-as-is; its user replaces the link with a real directory first. Accept that cost rather than
-following links.
-
+A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a file
+inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
+`readAgentInstructions`, tested). Podman resolves mount sources on the host, so mounting through a
+repository-controlled link would expose its target into the sandbox, and following the link to pin
+its resolved target would make the pinned surface depend on where the link points at launch time.
+The refusal is loud, names the path, and comes before the launcher creates anything, so setup writes
+nothing through a pre-seeded link (tested: "a refused symlink shape leaves no artifact through the
+link"); the project directory itself is `toRealPath()`-canonical before any of this. Prior art for
+both failure shapes — a sandbox that crashed mid-setup on a symlink, and setup code whose
+mount-target creation wrote through one to paths outside its root: -
+https://github.com/anthropic-experimental/sandbox-runtime/issues/221 -
+https://github.com/bazelbuild/bazel/issues/28515 The cost is that a repository sharing hooks through
+a symlinked `.git/hooks` cannot be sandboxed as-is; its user replaces the link with a real directory
+first. Accept that cost rather than following links.
 ### No DLP/entropy/LLM firewall
 
 It would be incomplete against encoding, timing, allowed-host selection, and protocol-specific
@@ -157,16 +150,16 @@ remains the primary exfiltration control.
 ### No masking of secret-named files in the workspace
 
 Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and
-the like inside the sandbox. Here the boundary is that the checkout is hostile data and nothing
-credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary where it
-is and hides one class of files by name, so the document could claim nothing more afterwards than
-it claims now — a secret under any other name, in `config.yaml`, or in git history stays visible.
-It also costs every project to serve the undisciplined one: a default `.env` mask breaks tests
-that read `.env`, the first `-name .env` removes the protection, and the user who commits a
-credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
+the like inside the sandbox. Here the boundary is that the project directory is hostile data and
+nothing credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary
+where it is and hides one class of files by name, so the document could claim nothing more
+afterwards than it claims now — a secret under any other name, in `config.yaml`, or in git history
+stays visible. It also costs every project to serve the undisciplined one: a default `.env` mask
+breaks tests that read `.env`, the first `-name .env` removes the protection, and the user who
+commits a credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
 Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
-under no well-known name. Keep the rule procedural: a credential in the checkout is the user's to
-keep out, and a forge token there is answered by denying the forge in `egress/denied`.
+under no well-known name. Keep the rule procedural: a credential in the project directory is the
+user's to keep out, and a forge token there is answered by denying the forge in `egress/denied`.
 
 ### No gVisor or microVM isolation layer
 
