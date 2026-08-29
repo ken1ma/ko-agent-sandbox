@@ -33,13 +33,16 @@ object EgressProxyPolicy:
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The launch banner's one-line summary of the resolved policy: the profile in caps, then the
-   * counts that say how wide it is. The full host lists are one `--egress-effective` away, and
-   * the proxy writes them into this session's own log; a thousand characters of hostnames in the
-   * banner is a line people learn to skip, and skipping it is how a policy nobody expected goes
-   * unnoticed. An unparseable resolution is printed whole rather than guessed at.
+   * The launch banner's one-line summary of the resolved policy: the profile as the policy spells
+   * it, then the counts that say how wide it is. The full host lists are one `--egress-effective`
+   * away, and the proxy writes them into this session's own log; a thousand characters of
+   * hostnames in the banner is a line people learn to skip, and skipping it is how a policy nobody
+   * expected goes unnoticed. An unparseable resolution is printed whole rather than guessed at.
+   *
+   * @param color tints the profile, except under the permissive one, where the caller tints the
+   *              whole line.
    */
-  def egressBanner(resolved: String): String =
+  def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
 
     def countOf(prefix: String): Option[Int] =
@@ -58,7 +61,9 @@ object EgressProxyPolicy:
         val effective = restricted + countOf("unrestricted hosts (").getOrElse(0)
         profile match
           case "allow-unless-denied" =>
-            s"egress: ALLOW-UNLESS-DENIED; public HTTPS; $restricted restricted, $denied denied"
+            // Plain: the caller tints this line whole, and a word tinted inside it would end that
+            // colour at its own reset.
+            s"egress: $profile; public HTTPS; $restricted restricted, $denied denied"
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -68,11 +73,16 @@ object EgressProxyPolicy:
               .getOrElse("none")
             val selected =
               if provider == "none" then "no provider selected" else s"model provider $provider"
-            s"egress: ${profile.toUpperCase}; $selected; $effective effective hosts"
+            s"egress: ${statedMode(profile, color)}; $selected; $effective effective hosts"
           case _ =>
-            s"egress: ${profile.toUpperCase}; $effective effective hosts"
+            s"egress: ${statedMode(profile, color)}; $effective effective hosts"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
+
+  /** The one profile weaker than the launcher's default — public HTTPS to whatever is not
+    * denied — and so the one banner line a terminal has reason to tint. */
+  def permissiveProfile(resolved: String): Boolean =
+    resolved.linesIterator.nextOption().exists(_.startsWith("egress profile: allow-unless-denied"))
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names

@@ -54,7 +54,7 @@
 // mounted project's own agent configuration — MCP servers included — takes effect unconfirmed. The container, not
 // those dialogs, is the boundary; whatever they name runs inside it, never in a host-side helper.
 //
-// Podman arguments are NOT accepted: podman merges rather than replaces
+// Podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
 // reopen the boundary. The launcher parses only its authority options and
 // management verbs (parseCommandLine); the first non-option is the command,
@@ -120,7 +120,7 @@ object AgentSandboxLauncher:
    * The resolved mode is always set in the session's environment — `none` included — so an
    * agent reads one variable with one spelling instead of also handling unset.
    *
-   * What is deliberately NOT loosened names the value: no-new-privileges stays, which blocks
+   * What is deliberately not loosened names the value: no-new-privileges stays, which blocks
    * setuid newuidmap, so a nested runtime maps only the uid this session already runs as —
    * images that switch USER or chown to a second uid fail by design, this repository's own among
    * them.
@@ -1087,7 +1087,7 @@ object AgentSandboxLauncher:
     System.out.flush()
     if !resolved.ok then
       fail(s"error: this project's egress policy is not valid\n${resolved.err}")
-    resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(System.err.println)
+    resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
 
     val caCert = tlsStateRoot(os).resolve(projectId).resolve("ca.crt")
     if Files.isRegularFile(caCert) then System.err.println(s"egress tls ca: $caCert")
@@ -1187,7 +1187,7 @@ object AgentSandboxLauncher:
     sys.exit(0)
 
   /**
-   * `--reset-all`, every project's `--reset`. It deliberately does NOT remove built images or
+   * `--reset-all`, every project's `--reset`. It deliberately does not remove built images or
    * their valid pending-cleanup journal: image-producing verbs own both, and the images are costly
    * to rebuild (`podman image rm` removes them by hand). A malformed journal is repaired because
    * it names no image the launcher can safely remove.
@@ -1543,7 +1543,7 @@ object AgentSandboxLauncher:
 
   def main(args: Array[String]): Unit =
     unknownSandboxVariables(System.getenv().keySet().asScala).foreach: name =>
-      System.err.println(s"warning: $name is not a variable this launcher reads; a misspelling configures nothing")
+      warn(s"$name is not a variable this launcher reads; a misspelling configures nothing")
 
     val parsed = parseCommandLine(args.toList).fold(fail(_), identity)
 
@@ -1756,7 +1756,7 @@ object AgentSandboxLauncher:
     // Refuse obviously wrong project directories
     // -----------------------------------------------------------------------
     val homeProtection = protectedHomeDirectories(os, env).fold(fail(_), identity)
-    homeProtection.warnings.foreach(warning => System.err.println(s"warning: $warning"))
+    homeProtection.warnings.foreach(warn)
     forbiddenProjectDirReason(projectDir, homeProtection).foreach: reason =>
       fail(s"error: refusing to mount $projectDir as /workspace\n\n$reason")
     forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
@@ -1836,7 +1836,7 @@ object AgentSandboxLauncher:
     // A jar upgrade must never run silently against last month's images; checked before any
     // resource exists. bundleMismatch has the refuse-versus-warn reasoning.
     bundleMismatch(image, bundledSourceId("ko-agent-sandbox"), imageLabel).foreach: mismatch =>
-      if env("KO_AGENT_SANDBOX_IMAGE").isDefined then System.err.println(s"warning: $mismatch")
+      if env("KO_AGENT_SANDBOX_IMAGE").isDefined then warn(mismatch)
       else fail(s"error: $mismatch")
 
     // -----------------------------------------------------------------------
@@ -1881,7 +1881,7 @@ object AgentSandboxLauncher:
     bundleMismatch(proxyImage, bundledSourceId("ko-agent-egress-proxy"), proxyImageLabel).foreach:
       mismatch =>
         if env("KO_AGENT_SANDBOX_PROXY_IMAGE").isDefined then
-          System.err.println(s"warning: $mismatch")
+          warn(mismatch)
         else fail(s"error: $mismatch")
 
     // -----------------------------------------------------------------------
@@ -1910,8 +1910,8 @@ object AgentSandboxLauncher:
     // from its resolution.
     val provider = commandProvider(command.headOption)
     if egressProfile == "deny-unless-model" && provider.isEmpty then
-      System.err.println(
-        s"warning: '${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
+      warn(
+        s"'${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
           "so deny-unless-model selects no model provider and admits no host; " +
           "the default --egress=deny-unless-allowed admits the project's allowed policy instead",
       )
@@ -2362,23 +2362,27 @@ object AgentSandboxLauncher:
     // guard=none is said every session it happens: it is the weaker boundary, and silence about
     // it is how a user forgets which one they are running under — the relabel notice included,
     // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
+    // Each line tints the mode it states; a branch weaker than the default is tinted whole
+    // instead, in the severity hue, so no line ever carries two colours.
     System.err.println((writeMode, filteredWorkspace) match
-      case ("reject", _) => "workspace: REJECT; /workspace is read-only this session"
+      case ("reject", _) => s"workspace: ${statedMode("reject")}; /workspace is read-only this session"
       case (_, Some(mount)) =>
-        s"workspace: LIVE; ${koAgentFsLabel(os)}, " +
-          (if mount.joined then "joined the mount" else "mounted") +
-          " shared by this project's live sessions"
+        s"workspace: ${statedMode("live")}; ${koAgentFsLabel(os)}, " +
+          (if mount.joined then "reusing the mount shared by sessions in the same project directory" else "mounted")
       case (_, None) =>
-        s"workspace: LIVE; guard NONE by $WorkspaceGuardVariable — /workspace bound directly, " +
-          s"$RawWorkspaceBoundary; mount pins can fall through when the host replaces " +
-          "their source" +
-          (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
-           else ""))
+        caution(
+          s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
+            s"$RawWorkspaceBoundary; mount pins can fall through when the host replaces " +
+            "their source" +
+            (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
+             else ""),
+        ))
     if policyFiles.nonEmpty then
       policyFiles.foreach: (name, text) =>
         System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
-    System.err.println(egressBanner(policyResolvedText))
-    if policyWarnings.nonEmpty then System.err.println(policyWarnings)
+    val egressLine = egressBanner(policyResolvedText)
+    System.err.println(if permissiveProfile(policyResolvedText) then caution(egressLine) else egressLine)
+    if policyWarnings.nonEmpty then System.err.println(emphasized(policyWarnings))
     if inspectedHosts.isEmpty then
       System.err.println("egress tls inspection: this policy inspects no hosts; no leaf minted")
     System.err.println(s"egress log: $hostLogFile")
@@ -2478,12 +2482,10 @@ object AgentSandboxLauncher:
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
-      System.err.println(
-        "warning: podman info reports no machine memory; the sandbox runs without a memory ceiling",
-      )
+      warn("podman info reports no machine memory; the sandbox runs without a memory ceiling")
     machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
-      System.err.println(
-        s"warning: podman runs on ${gib(total)} of memory; builds in the sandbox OOM below about 4 GiB\n" +
+      warn(
+        s"podman runs on ${gib(total)} of memory; builds in the sandbox OOM below about 4 GiB\n" +
           "  on a podman machine, raise it with `podman machine set --memory` (machine stopped)",
       )
     val memoryArgs = memoryArguments(explicitMemory, machineMemory, availableMemory)

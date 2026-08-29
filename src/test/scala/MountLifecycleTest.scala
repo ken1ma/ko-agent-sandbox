@@ -82,7 +82,9 @@ class MountLifecycleTest extends munit.FunSuite:
 
       val b = launch(project.resolve("b.log"))
       assert(
-        Files.readString(project.resolve("b.log")).contains("joined the mount shared by this project's live sessions"),
+        Files
+          .readString(project.resolve("b.log"))
+          .contains("reusing the mount shared by sessions in the same project directory"),
         s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
@@ -130,7 +132,9 @@ class MountLifecycleTest extends munit.FunSuite:
       vm(s"""touch -d '20 minutes ago' "$$HOME/$Mounts/$id/sessions/$planted"""")
       val c = launch(project.resolve("c.log"))
       assert(
-        Files.readString(project.resolve("c.log")).contains("joined the mount shared by this project's live sessions"),
+        Files
+          .readString(project.resolve("c.log"))
+          .contains("reusing the mount shared by sessions in the same project directory"),
         "the surviving mount was not reusable",
       )
 

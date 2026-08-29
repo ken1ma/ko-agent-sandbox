@@ -79,7 +79,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
   private def guardedSession(project: Path): Session =
     val session = launch(project, project.resolve("session.log"), GuardOff)
     assert(
-      session.output.contains("workspace: LIVE; guard NONE"),
+      session.output.contains("workspace: live; guard none"),
       s"this session is not running with the guard off:\n${session.output}",
     )
     session

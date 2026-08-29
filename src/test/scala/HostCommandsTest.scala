@@ -1,11 +1,12 @@
 // How the launcher runs host executables and what its scripts may resolve: trusted-path lookup,
 // and the fixed PATH every generated script declares before anything else. Then how it writes the
 // state files those runs mount: the mode they are never briefly without, and the name they are
-// never briefly missing.
+// never briefly missing. Then how its own lines carry severity: one label, one place it is
+// spelled, and colour only where a terminal will render it.
 
 package agentsandbox.launcher
 
-import java.nio.file.Files
+import java.nio.file.{Files, Paths}
 import java.nio.file.attribute.PosixFilePermissions
 import scala.jdk.CollectionConverters.*
 
@@ -14,6 +15,40 @@ import KoAgentFs.*
 import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
+
+  test("colour is for a terminal that will render it, and for no one else"):
+    assertEquals(colorAllowed(Os.Linux, None, Some("xterm-256color")), true)
+    assertEquals(colorAllowed(Os.Mac, None, None), true)
+    assertEquals(colorAllowed(Os.Windows, None, Some("xterm-256color")), false)
+    assertEquals(colorAllowed(Os.Linux, Some("1"), Some("xterm-256color")), false)
+    assertEquals(colorAllowed(Os.Linux, None, Some("dumb")), false)
+
+  test("emphasis tints the severity label and leaves every other word as it was written"):
+    val warning = "warning: podman runs on 3 GiB of memory\n  raise it with `podman machine set`"
+    assertEquals(emphasized(warning, color = false), warning)
+    assertEquals(
+      emphasized(warning, color = true),
+      "\u001b[33mwarning:\u001b[0m podman runs on 3 GiB of memory\n  raise it with `podman machine set`",
+    )
+    // A block carries a label per line, and a line that has none keeps its own spelling.
+    assertEquals(
+      emphasized("error: no\nplain\nwarning: yes", color = true),
+      "\u001b[31merror:\u001b[0m no\nplain\n\u001b[33mwarning:\u001b[0m yes",
+    )
+    // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
+    assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
+
+  test("every warning and refusal the launcher writes goes through the one label"):
+    // warn and fail are where the label is spelled and tinted; a println of its own prints it
+    // plain on a terminal and drifts the day the rule changes.
+    val printedLabel = """System\.err\.println\(\s*s?"(warning|error):""".r
+    val offenders =
+      for
+        file <- Files.list(Paths.get("src", "main", "scala")).toList.asScala.toVector
+        if file.getFileName.toString != "HostCommands.scala"
+        hit <- printedLabel.findFirstIn(Files.readString(file))
+      yield s"${file.getFileName}: $hit"
+    assertEquals(offenders, Vector.empty)
 
   test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
     // Concurrent launches of one project under different authority selections write the policy

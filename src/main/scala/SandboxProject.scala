@@ -2,7 +2,7 @@
 // about it before any resource exists: the real path it resolves to, the directories refused as
 // projects outright, the identity its path hashes to (which names every per-project resource), and
 // the mount guards that pin or refuse its .git and .ko-agent-sandbox shapes. The session's
-// configuration variables are deliberately NOT here — they describe a launch, not the project,
+// configuration variables are deliberately not here — they describe a launch, not the project,
 // and live beside the --help text they must stay in step with.
 
 package agentsandbox.launcher

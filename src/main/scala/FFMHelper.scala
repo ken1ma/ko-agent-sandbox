@@ -8,6 +8,25 @@ object FFMHelper:
 
   object libc:
 
+    /** `isatty`. The launcher asks it about stderr, where its own lines go and which a reader
+      * redirects to keep them, so `System.console()` — which answers for stdin — is a different
+      * question. Restricted, as execvp below.
+      *
+      * Every failure answers "not a terminal": the first caller is `fail`, and a platform without
+      * the symbol, or one that denies the call, must lose the colour rather than the refusal text.
+      */
+    def isatty(fd: Int): Boolean =
+      try
+        val linker = Linker.nativeLinker()
+        val handle = linker.downcallHandle(
+          linker.defaultLookup().find("isatty").orElseThrow(),
+          FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT),
+        )
+        // The ascription is load-bearing for the same reason as in execvp below.
+        val answer: Int = handle.invokeExact(fd)
+        answer != 0
+      catch case _: Throwable => false
+
     /** A restricted method — the build bakes `--enable-native-access=ALL-UNNAMED` into the
       * manifest and run task. Returns only by throwing (SandboxLifecycle.handOver has the fallback).
       */

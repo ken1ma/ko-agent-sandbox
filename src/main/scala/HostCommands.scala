@@ -29,11 +29,71 @@ object HostCommands:
     * these lines are consent or refusal text a reader must be able to trust
     * verbatim. */
   def fail(message: String, code: Int = 1): Nothing =
-    System.err.println(message)
+    System.err.println(emphasized(message))
     sys.exit(code)
 
   def env(name: String): Option[String] =
     Option(System.getenv(name)).filter(_.nonEmpty)
+
+  // -------------------------------------------------------------------------
+  // Emphasis
+  // -------------------------------------------------------------------------
+
+  /**
+   * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
+   * `deny-unless-allowed` — so the banner, `--egress-effective` and the policy file read and grep
+   * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
+   * severity label, a boundary weaker than the default, or the mode an authority line states, and
+   * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
+   * alone, and this follows them. A mode takes a hue of its own so it is never read as a severity:
+   * yellow and red stay warning and error.
+   *
+   * Colour carries nothing of its own. These lines are read back from a redirected stream, from a
+   * pasted transcript, and — for the two authority lines — from the instructions the agent is
+   * handed, where an escape would be noise: the words have to hold in all three.
+   */
+  def caution(text: String, color: Boolean = colorStderr): String = tinted("33", text, color)
+
+  /** A refusal, which in this launcher is only ever the `error:` label. */
+  def alarm(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
+
+  /** The mode an authority line states — `live`, `deny-unless-allowed`. Orange is not among
+    * ANSI's eight, so this is the 256-colour cube's. */
+  def statedMode(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
+
+  /** Each line's leading severity label tinted. Line by line, because a block carries a label on
+    * some lines and not others — the proxy's policy warnings, a warning's continuation. */
+  def emphasized(text: String, color: Boolean = colorStderr): String =
+    text.linesIterator
+      .map: line =>
+        if line.startsWith(ErrorLabel) then alarm(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
+        else if line.startsWith(WarningLabel) then caution(WarningLabel, color) + line.stripPrefix(WarningLabel)
+        else line
+      .mkString("\n")
+
+  /** Every warning the launcher writes itself, so the label is spelled and tinted in one place. */
+  def warn(message: String): Unit = System.err.println(emphasized(s"$WarningLabel $message"))
+
+  private val WarningLabel = "warning:"
+  private val ErrorLabel = "error:"
+  private val Esc = 27.toChar
+
+  private def tinted(code: String, text: String, color: Boolean): String =
+    if color then s"$Esc[${code}m$text$Esc[0m" else text
+
+  /**
+   * `isatty(2)` and not `System.console()`, which answers for stdin: stderr is where these lines
+   * go, and the stream a reader redirects to keep them. Windows stays plain — `fail` has why its
+   * console text is ASCII, and a console without virtual-terminal processing prints the escape
+   * itself.
+   */
+  lazy val colorStderr: Boolean =
+    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
+
+  /** `NO_COLOR` and `TERM=dumb` are what a tool is expected to honour; the launcher adds no
+    * variable of its own. */
+  def colorAllowed(os: Os, noColor: Option[String], term: Option[String]): Boolean =
+    os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
 
   // -------------------------------------------------------------------------
   // Subprocess plumbing

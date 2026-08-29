@@ -35,6 +35,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       "+host a.example; -host b.example",
     )
 
+  // The profile reads as the policy spells it; case is not emphasis (HostCommands, "Emphasis").
   test("the launch banner names the profile and the counts, never the host names"):
     assertEquals(
       egressBanner(
@@ -42,41 +43,89 @@ class EgressProxyPolicyTest extends munit.FunSuite:
           "restricted hosts (2): github.com secret.example\n" +
           "unrestricted hosts (3): a.example b.example c.example\n" +
           "denied rules (0):",
+        color = false,
       ),
-      "egress: DENY-UNLESS-ALLOWED; 5 effective hosts",
+      "egress: deny-unless-allowed; 5 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\n" +
           "restricted hosts (0):\nunrestricted hosts (3): a b c\ndenied rules (0):",
+        color = false,
       ),
-      "egress: DENY-UNLESS-MODEL; model provider anthropic; 3 effective hosts",
+      "egress: deny-unless-model; model provider anthropic; 3 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: none\n" +
           "restricted hosts (0):\nunrestricted hosts (0):\ndenied rules (0):",
+        color = false,
       ),
-      "egress: DENY-UNLESS-MODEL; no provider selected; 0 effective hosts",
+      "egress: deny-unless-model; no provider selected; 0 effective hosts",
     )
     assertEquals(
       egressBanner(
         "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
           "restricted hosts (2): a b\ndenied rules (4): w x y z",
+        color = false,
       ),
-      "egress: ALLOW-UNLESS-DENIED; public HTTPS; 2 restricted, 4 denied",
+      "egress: allow-unless-denied; public HTTPS; 2 restricted, 4 denied",
     )
     assertEquals(
-      egressBanner("egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x"),
-      "egress: DENY-ALL; 0 effective hosts",
+      egressBanner(
+        "egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x",
+        color = false,
+      ),
+      "egress: deny-all; 0 effective hosts",
     )
-    assertEquals(egressBanner("some reason instead"), "egress: some reason instead")
+    assertEquals(egressBanner("some reason instead", color = false), "egress: some reason instead")
     // Whatever the proxy says, no hostname survives into the banner.
     assert(
       !egressBanner(
         "egress profile: deny-all\nrestricted hosts (1): secret.example\ndenied rules (0):",
+        color = false,
       ).contains("secret.example"),
     )
+
+  test("a terminal reads the profile as the mode it is, and never in the severity hue"):
+    assertEquals(
+      egressBanner(
+        "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):",
+        color = true,
+      ),
+      "egress: \u001b[38;5;208mdeny-unless-allowed\u001b[0m; 1 effective hosts",
+    )
+    // The counts are what the profile resolved to, not a mode of their own.
+    assertEquals(
+      egressBanner(
+        "egress profile: deny-unless-model; model provider: anthropic\n" +
+          "restricted hosts (0):\nunrestricted hosts (1): a\ndenied rules (0):",
+        color = true,
+      ),
+      "egress: \u001b[38;5;208mdeny-unless-model\u001b[0m; model provider anthropic; 1 effective hosts",
+    )
+    // The permissive line is tinted whole by the caller, so nothing inside it ends that colour.
+    assertEquals(
+      egressBanner(
+        "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
+          "restricted hosts (0):\ndenied rules (0):",
+        color = true,
+      ),
+      "egress: allow-unless-denied; public HTTPS; 0 restricted, 0 denied",
+    )
+
+  test("the permissive profile is the one the banner tints, whatever follows it on the line"):
+    assert(
+      permissiveProfile(
+        "egress profile: allow-unless-denied; default: public HTTPS unrestricted\nrestricted hosts (0):",
+      ),
+    )
+    assert(!permissiveProfile("egress profile: deny-unless-allowed\nrestricted hosts (0):"))
+    assert(!permissiveProfile("egress profile: deny-all"))
+    assert(!permissiveProfile("some reason instead"))
+    assert(!permissiveProfile(""))
+    // Only the head line decides; a hostname further down cannot make a strict profile read weak.
+    assert(!permissiveProfile("egress profile: deny-all\nrestricted hosts (1): allow-unless-denied.example"))
 
   test("only the basename of a recognized agent command selects a provider"):
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))

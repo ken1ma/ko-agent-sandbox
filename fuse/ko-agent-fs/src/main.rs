@@ -92,11 +92,11 @@ fn self_test() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(SelfTestFailure::Venue(why)) => {
-            eprintln!("ko-agent-fs self-test FAILED, and the venue is why: {why}");
+            eprintln!("ko-agent-fs self-test failed, and the venue is why: {why}");
             ExitCode::from(SELF_TEST_VENUE_EXIT)
         }
         Err(SelfTestFailure::Defect(why)) => {
-            eprintln!("ko-agent-fs self-test FAILED: {why}");
+            eprintln!("ko-agent-fs self-test failed: {why}");
             ExitCode::FAILURE
         }
     }
@@ -315,8 +315,8 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                let by_read = if read_path == NEW { "fresh" } else { "STALE" };
-                let by_mmap = if seen == NEW { "fresh" } else { "STALE" };
+                let by_read = if read_path == NEW { "fresh" } else { "stale" };
+                let by_mmap = if seen == NEW { "fresh" } else { "stale" };
                 return Err(format!(
                     "a host write stayed invisible for 5 s: read() {by_read}, mmap {by_mmap}\n\
                      Its mtime did move on the backing, so AUTO_INVAL_DATA was negotiated and is\n\
