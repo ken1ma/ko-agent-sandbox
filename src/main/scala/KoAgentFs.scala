@@ -1,6 +1,6 @@
 // Everything the launcher does about ko-agent-fs, the workspace FUSE filter: digesting the source it
 // bundles, building and installing the binary, proving the installed one is that source's build, and
-// the per-project mount lifecycle every session runs through.
+// the per-project mount lifecycle every session that mounts it runs through.
 //
 // It is a separate program with its own source tree, docs, tests and version contract
 // (fuse/ko-agent-fs/), and it reaches the launch through exactly two calls — workspaceGuard and

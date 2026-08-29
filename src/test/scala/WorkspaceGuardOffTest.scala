@@ -12,8 +12,8 @@
 // now.
 //
 // It survives mutations that keep the file's inode. It does not survive one that replaces it, which
-// the second test pins along with the delay before the bypass shows; SECURITY.md ("The opted-out
-// mode's `.git` pins") has what that costs.
+// the second test pins along with the delay before the bypass shows; SECURITY.md ("The `.git` pins
+// of `WORKSPACE_GUARD=none`") has what that costs.
 //
 // That second measurement is per host family, and the test expects each family's own answer: the
 // macOS machine's share follows the replacement within seconds, the Windows machine's held against

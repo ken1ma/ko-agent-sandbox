@@ -100,11 +100,11 @@ a shortcut would be tempting:
   directories the read-only guard mounts of `WORKSPACE_GUARD=none` require and both confined to it.
   An empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
   exist — without it its writable raw tree would let a session write the egress policy governing
-  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own empty
-  directory read-only over that name (so a sandbox cannot fabricate a repository for host git to
-  discover), and the container runtime creates the mount target it needs in the project. The filter
-  denies creating either name itself and needs no mount target, and reject's tree is read-only
-  whole, so those two modes write nothing;
+  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own
+  empty directory read-only over that name (so a sandbox cannot fabricate a repository for host git
+  to discover), and the container runtime creates the mount target it needs in the project. The
+  filter denies creating either name itself and needs no mount target, and reject's tree is
+  read-only whole, so those two modes write nothing;
 - the **project tree's SELinux labels**: on an enforcing host, the raw bind of
   `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the checkout
   recursively — a host-metadata write, said in that mode's `workspace:` line every session it
@@ -274,8 +274,8 @@ Its name rule is verified on macOS against both APFS variants and on Windows aga
 volume, its coherency on macOS and — with the share-lock cost "The project checkout" notes — on
 Windows, each through the whole production stack
 (`fuse/ko-agent-fs/doc/verification-log.md` has the runs). The rest is what the README's status
-line means: on Linux the guarantees are reasoned rather than measured, while the filter is every
-session's enforcement on every platform.
+line means: on Linux the guarantees are reasoned rather than measured, while the filter is the
+enforcement of every `--write=live` session under `WORKSPACE_GUARD=fuse`, on every platform.
 
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the mount pins instead, the next entry. The two
 are alternatives, never a stack: the filter's policy is a strict superset of the pins', and

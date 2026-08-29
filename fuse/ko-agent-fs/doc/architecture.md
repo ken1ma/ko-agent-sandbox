@@ -225,10 +225,11 @@ code: `KoAgentFs.koAgentFsSourceId`.
 
 **All five steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
-session** (unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD` says otherwise — exactly `fuse` or `none`, so
-an unclear value is a refused launch, never a silently weaker boundary): each launch gates on the
-installed binary's identity and self-test, then mounts the project through a per-project daemon
-shared by its sessions and binds the mountpoint at `/workspace`. The lifecycle's shape and reasoning
+`--write=live` session under `KO_AGENT_SANDBOX_WORKSPACE_GUARD=fuse`** (`--write=reject` binds the
+tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear value is a refused
+launch, never a silently weaker boundary): each launch gates on the installed binary's identity
+and self-test, then mounts the project through a per-project daemon shared by its sessions and
+binds the mountpoint at `/workspace`. The lifecycle's shape and reasoning
 live with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid

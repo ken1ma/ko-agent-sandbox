@@ -60,7 +60,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # developer's machine (`doc/testing.md`) and, on any machine with podman, in
 # the ko-agent-self-test image the launcher's `--self-test` builds. What is
 # per-machine has a per-machine gate: the filter binary's own `--self-test`,
-# at install and before every session.
+# at install and before every session that mounts it.
 #
 # The cache mounts carry cargo's target directory and registry between builds.
 # The source id is compiled in (`option_env!`), so every change to it busts the

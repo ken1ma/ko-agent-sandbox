@@ -125,12 +125,12 @@ What the suites cover and how to run them, the self-test image and the privilege
 
 ## P1 — Performance (the measurements say the target workload would hurt)
 
-The filter is every session's enforcement, so this cost is not chosen by whoever sets a variable —
-it is what the sandbox is. `probe/perf-probe.py` is the measurement: it
-builds its own corpus, so two runs are comparable across machines, and reports per-entry times for
-the five shapes below. Run it once in a filtered session and once with the guard off — the ratio
-between the columns is the answer, and the control is the half that matters, since the raw bind is
-fast for precisely the reason the invariant forbids.
+The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
+the sandbox's own. `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
+`probe/perf-probe.py` is the measurement: it builds its own corpus, so two runs are comparable
+across machines, and reports per-entry times for the five shapes below. Run it once in a filtered
+session and once with the guard off — the ratio between the columns is the answer, and the control
+is the half that matters, since the raw bind is fast for precisely the reason the invariant forbids.
 
 Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
 virtiofs, against the same corpus over a plain bind mount:

@@ -216,13 +216,15 @@ checkout — [Development](#development).
        `/etc/fuse.conf.ko-agent-sandbox.orig`, and declining prints the script to run yourself.
        One-time until the machine is recreated. Your native Linux host is never touched or
        prompted for.
-    1. Every session mounts through it unless `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above)
-       selects the mount pins, and a session that does says so on its `workspace:` line.
+    1. Every `--write=live` session mounts through it unless
+       `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above) selects the mount pins, and a session that
+       does says so on its `workspace:` line; `--write=reject` binds the tree read-only and needs
+       neither.
     1. One filter daemon per project, shared by that project's concurrent sessions and
-       never across projects ("ko-agent-fs filter in the podman machine: reusing the existing
-       mount"; "on the host" on Linux); when the project's last session ends, it is unmounted
-       and exits. A crashed launcher can leave one running — the next session's end, or
-       `--reset`, collects it.
+       never across projects ("workspace: LIVE; ko-agent-fs filter in the podman machine, joined
+       the mount shared by this project's live sessions"; "on the host" on Linux); when the
+       project's last session ends, it is unmounted and exits. A crashed launcher can leave one
+       running — the next session's end, or `--reset`, collects it.
     1. To remove: `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs`
        (plain `rm` on Linux).
     1. When something looks wrong: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.

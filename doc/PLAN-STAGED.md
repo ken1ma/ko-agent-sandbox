@@ -243,8 +243,8 @@ applied.
    only where another mount still needs one; and update the surfaces that document the pin mode
    and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
    pins of `WORKSPACE_GUARD=none`"), `doc/DESIGN.md` — in the same change. Persistent stages
-   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never opened;
-   launcher comments, help, README and SECURITY must point to explicit stage discard. Remove
+   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
+   opened; launcher comments, help, README and SECURITY must point to explicit stage discard. Remove
    completed TODO rows rather than retaining a change history.
 
 ## Verification

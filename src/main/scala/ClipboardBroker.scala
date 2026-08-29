@@ -181,8 +181,8 @@ object ClipboardBroker:
 
   /**
    * The resident twin's loop, the shell twin's `while` in Java: wait for the sandbox to run,
-   * serve until the exec ends, and go round while the sandbox still runs. The first wait is bounded like the reaper's, for a launcher that
-   * never reaches the start.
+   * serve until the exec ends, and go round while the sandbox still runs. The first wait is bounded
+   * like the reaper's, for a launcher that never reaches the start.
    */
   private def serve(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     def running(): Boolean =
