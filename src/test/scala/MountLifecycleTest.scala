@@ -73,7 +73,7 @@ class MountLifecycleTest extends munit.FunSuite:
     try
       val a = launch(project.resolve("a.log"))
       assert(
-        Files.readString(project.resolve("a.log")).contains("workspace FUSE filter: mounted"),
+        Files.readString(project.resolve("a.log")).contains("ko-agent-fs filter on the host: mounted"),
         s"session A did not create the mount — another session of $id already holds one",
       )
       assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")

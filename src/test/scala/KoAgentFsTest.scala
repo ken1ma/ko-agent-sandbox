@@ -100,11 +100,11 @@ class KoAgentFsTest extends munit.FunSuite:
       "fusermount3 -uz",
       "is not empty; refusing",
       "--source \"$backing\" --mount \"$mnt\" --foreground",
-      "fuse*) echo \"workspace FUSE filter: mounted\"; exit 0",
+      "fuse*) echo \"mounted\"; exit 0",
       "mounts/app-abc123def456",
       "d" * 64,
       // The user must not have to infer "reused" from silence.
-      "echo \"workspace FUSE filter: reusing the existing mount\"",
+      "echo \"reusing the existing mount\"",
       // The previous daemon's log is the post-mortem after a crash: rotated, never deleted.
       "mv -f \"$dir/daemon.log\" \"$dir/daemon.log.1\"",
     ).foreach(step => assert(script.contains(step), s"script missing '$step':\n$script"))

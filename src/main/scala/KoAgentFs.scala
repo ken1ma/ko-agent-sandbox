@@ -335,7 +335,7 @@ object KoAgentFs:
        |if mountpoint -q "$$mnt"; then
        |  if [ "$$(cat "$$dir/source-id" 2>/dev/null || true)" = "$sourceId" ] \\
        |      && ls "$$mnt" >/dev/null 2>&1; then
-       |    echo "workspace FUSE filter: reusing the existing mount"
+       |    echo "reusing the existing mount"
        |    exit 0
        |  fi
        |  fusermount3 -uz "$$mnt"
@@ -354,7 +354,7 @@ object KoAgentFs:
        |i=0
        |while [ $$i -lt 100 ]; do
        |  case "$$(stat -f -c %T "$$mnt" 2>/dev/null || true)" in
-       |    fuse*) echo "workspace FUSE filter: mounted"; exit 0 ;;
+       |    fuse*) echo "mounted"; exit 0 ;;
        |  esac
        |  i=$$((i+1))
        |  sleep 0.1
@@ -435,6 +435,16 @@ object KoAgentFs:
     os match
       case Os.Linux => podman
       case Os.Mac | Os.Windows => "podman"
+
+  /**
+   * How launcher output names the filter: its binary name, which is also what `findmnt` shows,
+   * with what it is and where its daemon runs — which is not the host on macOS and Windows.
+   */
+  def koAgentFsLabel(os: Os): String =
+    val venue = os match
+      case Os.Linux => "on the host"
+      case Os.Mac | Os.Windows => "in the podman machine"
+    s"ko-agent-fs filter $venue"
 
   /** Where the reaper must run the reap script: inside the VM, or on this host. */
   def koAgentFsTeardownMode(os: Os): String =
@@ -539,7 +549,7 @@ object KoAgentFs:
     val script = koAgentFsMountScript(backing, projectId, expected, sandboxContainer)
     val mount = run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
-      fail(s"error: mounting the workspace FUSE filter failed:\n${mount.err}", mount.exit)
+      fail(s"error: mounting the ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
     // Which branch the script took — the user should not have to infer "reused" from silence.
-    System.err.println(mount.text)
+    System.err.println(s"${koAgentFsLabel(os)}: ${mount.text}")
     s"$home/${koAgentFsMountDir(projectId)}/workspace"

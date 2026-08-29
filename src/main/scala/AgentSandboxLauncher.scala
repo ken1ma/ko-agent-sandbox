@@ -1194,7 +1194,7 @@ object AgentSandboxLauncher:
 
     // The project's filter daemon and mountpoint, where the feature has been used. Best effort by
     // design: with no machine running there is nothing mounted to tear down.
-    System.err.println("unmounting the workspace FUSE filter, if mounted")
+    System.err.println(s"unmounting the ${koAgentFsLabel(os)}, if mounted")
     if !runOk(koAgentFsScriptCommand(podman, os, koAgentFsUnmountScript(id))*) then
       System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
 
@@ -1257,7 +1257,7 @@ object AgentSandboxLauncher:
     deleteRecursively(logs)
 
     // Every project's filter mount. Best effort, as in the per-project reset.
-    System.err.println("unmounting all workspace FUSE filters, if mounted")
+    System.err.println(s"unmounting every project's ${koAgentFsLabel(os)}, if mounted")
     if !runOk(koAgentFsScriptCommand(podman, os, koAgentFsUnmountAllScript)*) then
       System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
 

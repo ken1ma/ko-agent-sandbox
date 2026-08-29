@@ -219,9 +219,10 @@ which is undecided. Until then the jar is built from a checkout — [Development
     1. Every session mounts through it; `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above) is the
        opt-out, and a session that takes it says so on its first line.
     1. One filter daemon per project, shared by that project's concurrent sessions and
-       never across projects ("workspace FUSE filter: reusing the existing mount"); when the
-       project's last session ends, it is unmounted and exits. A crashed
-       launcher can leave one running — the next session's end, or `--reset`, collects it.
+       never across projects ("ko-agent-fs filter in the podman machine: reusing the existing
+       mount"; "on the host" on Linux); when the project's last session ends, it is unmounted
+       and exits. A crashed launcher can leave one running — the next session's end, or
+       `--reset`, collects it.
     1. To remove: `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs`
        (plain `rm` on Linux).
     1. When something looks wrong: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.
