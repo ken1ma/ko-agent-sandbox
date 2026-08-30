@@ -12,18 +12,16 @@
 # A shell. Everything in the launcher chain starts here.
 x /bin
 
-# The launcher chain's binaries, named individually rather than granting /usr/bin: `narrow` can
-# only drop whole lines, so a tree it cannot split would keep every binary in it forever. Each of
-# these appears in the cs wrapper or the inner sbt script (probe/sbt-exec-chain.sh).
-x /usr/bin/env
-x /usr/bin/uname
-x /usr/bin/dirname
-x /usr/bin/basename
-x /usr/bin/readlink
-x /usr/bin/expr
-x /usr/bin/sed
-x /usr/bin/grep
-x /usr/bin/tr
+# The system tool directories. The launcher chain itself needs nine binaries from /usr/bin (env,
+# uname, dirname, basename, readlink, expr, sed, grep, tr — probe/sbt-exec-chain.sh), but a
+# build's own scripts call whatever they like: this repository's suite needs find and mount, and
+# a profile that names tools one by one fails every project's tests differently. These are
+# Apple-signed binaries whose effects on files and sockets are bounded by this same profile, so
+# running them adds nothing the JVM could not do — except through Mach services, which is
+# PLAN-SBT-ON-HOST.md §17's mach-lookup item, not a reason to name tools.
+x /usr/bin
+x /sbin
+x /usr/sbin
 
 # Not granted, deliberately: /private/var/select/sh, which /bin/sh consults to choose its
 # personality. The denial prints "Error opening" and the shell runs anyway, so it is not authority

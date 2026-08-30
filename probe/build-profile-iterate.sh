@@ -15,9 +15,9 @@
 #   sh probe/build-profile-iterate.sh ops "<command>"    # which operations does it need?
 #   sh probe/build-profile-iterate.sh paths          # what does /bin/sh need?
 #   sh probe/build-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
-#   sh probe/build-profile-iterate.sh run            # does the current grant set work?
-#   sh probe/build-profile-iterate.sh run compile    # ... with a different sbt command
 #   sh probe/build-profile-iterate.sh narrow         # drop every grant that is not needed
+#
+# Whether the current grant set builds is probe/build-profile-gate.sh's question, not this one's.
 #
 # Runtime authority accumulates in probe/runtime-authority.txt, which you edit by hand: a line
 # added because a build failed once is a grant that outlives every later build, so each belongs
@@ -25,7 +25,7 @@
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; fi
 
-mode=${1:-run}
+mode=${1:-floor}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-build-profile
 authority=probe/runtime-authority.txt
@@ -46,14 +46,17 @@ emit() {
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # session temp with everything else.
+# The environment is the build's contract (PLAN-SBT-ON-HOST.md §4): COURSIER_CACHE routes to the
+# agent cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
+# the two socket directories keep sbt inside the session temp.
 build() {
     . "$work/build.env"
+    PATH="$JAVA_HOME/bin:$PATH" \
+    COURSIER_CACHE=$(sed -n 's/^agent cache: //p' "$work/emit.log") \
+    XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
+    JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP -Dsbt.global.base=$SESSION_TMP/sbt-global" \
     /usr/bin/sandbox-exec -f "$work/build.sb" \
-        sbt -batch -java-home "$JAVA_HOME" \
-            -Djava.io.tmpdir="$SESSION_TMP" \
-            -Djava.util.prefs.userRoot="$SESSION_TMP" \
-            -Dsbt.global.base="$SESSION_TMP/sbt-global" \
-            "$command" >"$1" 2>&1
+        sbt --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
 }
 
 # A profile sandbox-exec cannot compile fails exactly as a missing grant does: the child dies
@@ -155,35 +158,6 @@ ops)
     printf '%s\n' "$keep" > probe/runtime-operations.txt
     echo "written to probe/runtime-operations.txt, which 'paths' uses as its base"
     ;;
-bisect)
-    # /bin/sh aborts under the generated profile while (allow default) works, so something between
-    # the two is required and reasoning has not found it. Each row below is one profile running the
-    # same trivial command; the first PASS says whether the gap is an operation or a path, and the
-    # rows after it narrow which.
-    try() {
-        label=$1; shift
-        printf '(version 1)\n%s\n' "$*" > "$work/bisect.sb"
-        if /usr/bin/sandbox-exec -f "$work/bisect.sb" /bin/sh -c 'echo ok' >/dev/null 2>&1
-        then printf '  PASS  %s\n' "$label"
-        else printf '  fail  %s\n' "$label"; fi
-    }
-    echo "each row runs: /bin/sh -c 'echo ok'"
-    try "allow default (sanity: must pass)" '(allow default)'
-    try "read+map+exec on everything, nothing else" \
-        '(deny default)(allow file-read* file-map-executable process-exec* (subpath "/"))'
-    try "  + process-fork sysctl-read mach-lookup" \
-        '(deny default)(allow process-fork sysctl-read mach-lookup)(allow file-read* file-map-executable process-exec* (subpath "/"))'
-    try "  + ipc-posix-shm" \
-        '(deny default)(allow process-fork sysctl-read mach-lookup ipc-posix-shm)(allow file-read* file-map-executable process-exec* (subpath "/"))'
-    try "  + signal, process-info" \
-        '(deny default)(allow process-fork sysctl-read mach-lookup ipc-posix-shm signal process-info*)(allow file-read* file-map-executable process-exec* (subpath "/"))'
-    try "everything but files (are paths the gap?)" \
-        '(allow default)(deny file-read* file-map-executable)(allow file-read* file-map-executable process-exec* (subpath "/usr") (subpath "/bin") (subpath "/System"))'
-    try "full ops, only /usr /bin /System /private/var/db" \
-        '(deny default)(allow process-fork sysctl-read mach-lookup ipc-posix-shm signal process-info*)(allow file-read* file-map-executable process-exec* (subpath "/usr") (subpath "/bin") (subpath "/System") (subpath "/private/var/db"))'
-    echo
-    echo "profiles left in $work/bisect.sb (last one only)"
-    ;;
 paths)
     # The minimal set of trees /bin/sh needs, by cumulative removal.
     #
@@ -212,26 +186,26 @@ paths)
         | while IFS= read -r t; do [ -e "$t" ] && printf '%s\n' "$t"; done > "$keep"
 
     profile_from() {
-        printf '(version 1)\n(debug deny)\n%s\n' "$base" > "$work/bisect.sb"
+        printf '(version 1)\n(debug deny)\n%s\n' "$base" > "$work/paths.sb"
         filtered=""
         for family in $ops; do
             if path_family "$family"
             then filtered="$filtered $family"
-            else printf '(allow %s)\n' "$family" >> "$work/bisect.sb"
+            else printf '(allow %s)\n' "$family" >> "$work/paths.sb"
             fi
         done
-        printf '(allow%s%s' "$filtered" "$granted" >> "$work/bisect.sb"
+        printf '(allow%s%s' "$filtered" "$granted" >> "$work/paths.sb"
         while IFS= read -r t; do
             case "$t" in
-                "L "*) printf ' (literal "%s")' "${t#L }" >> "$work/bisect.sb" ;;
-                *)     printf ' (subpath "%s")' "$t" >> "$work/bisect.sb" ;;
+                "L "*) printf ' (literal "%s")' "${t#L }" >> "$work/paths.sb" ;;
+                *)     printf ' (subpath "%s")' "$t" >> "$work/paths.sb" ;;
             esac
         done < "$1"
-        printf ')\n' >> "$work/bisect.sb"
+        printf ')\n' >> "$work/paths.sb"
     }
     passes() {
         profile_from "$1"
-        attempt_profile "$work/bisect.sb" "$probe_command"
+        attempt_profile "$work/paths.sb" "$probe_command"
     }
 
     # (subpath "/") passes while the union of every (subpath "/child") fails, so what is missing is
@@ -265,7 +239,7 @@ paths)
     if [ -z "$root_grant" ]; then
         base='(deny default)'
         echo "no grant on \"/\" alone rescues the union — the gap is not a path." >&2
-        dump_profile "$work/bisect.sb"
+        dump_profile "$work/paths.sb"
         exit 1
     fi
     echo "all root entries: PASS. Removing cumulatively:"
@@ -319,7 +293,7 @@ paths)
     sed 's/^/  /' "$keep"
     # Regenerate: the last profile written was a failed attempt, not the answer.
     profile_from "$keep"
-    dump_profile "$work/bisect.sb"
+    dump_profile "$work/paths.sb"
     echo
     ;;
 floor)
@@ -347,44 +321,12 @@ floor)
     rung "the JDK"                                       "$JAVA_HOME/bin/java" -version
     rung "the sbt wrapper, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every rung passed; 'run' should work now"
-    ;;
-run)
-    emit "$authority" || exit 1
-    grep -E '^(profile|session temp|agent cache|warning):' "$work/emit.log" || true
-    echo
-    echo "running: sbt $command under $work/build.sb"
-    build "$work/run.log"
-    status=$?
-    echo "sbt exit: $status"
-    if [ "$status" -ne 0 ]; then
-        echo
-        if [ -s "$work/run.log" ]; then
-            echo "=== last 30 lines; sbt usually names the file it could not reach ==="
-            tail -30 "$work/run.log"
-        else
-            # Nothing on stderr means the process died before it had one. dyld terminates through
-            # abort_with_payload, whose reason reaches the crash report rather than the terminal.
-            echo "=== the log is empty: it died before stderr existed ==="
-            report=$(ls -t "$HOME/Library/Logs/DiagnosticReports"/*.ips 2>/dev/null | head -1)
-            if [ -n "$report" ]; then
-                echo "newest crash report: $report"
-                grep -o '"termination":{[^}]*}' "$report" 2>/dev/null | head -1
-                grep -oE '(dyld|Library not loaded|no such file)[^"]{0,160}' "$report" 2>/dev/null | head -5
-            else
-                echo "no crash report found; run 'floor' to find which layer fails:"
-            fi
-            echo
-            echo "  sh $0 floor"
-        fi
-    fi
-    echo
-    echo "full log: $work/run.log"
+    echo "every rung passed; the gate is next: sh probe/build-profile-gate.sh quick"
     ;;
 narrow)
     emit "$authority" || exit 1
     if ! build "$work/base.log"; then
-        echo "the current grant set does not build; fix that with 'run' before narrowing." >&2
+        echo "the current grant set does not build; fix that with the gate before narrowing." >&2
         exit 1
     fi
     echo "baseline builds. Removing one grant at a time."
@@ -403,5 +345,5 @@ narrow)
     echo "review it, then replace the body of $authority with it."
     ;;
 *)
-    echo "usage: $0 [floor|ops|paths|run|narrow|bisect] [command]" >&2; exit 2 ;;
+    echo "usage: $0 [floor|ops|paths|narrow] [command]" >&2; exit 2 ;;
 esac
