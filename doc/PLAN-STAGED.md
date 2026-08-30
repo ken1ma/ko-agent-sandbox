@@ -280,3 +280,12 @@ host-wide boundary.
 
 Deferred staged work is `TODO.md` ("staged-workspace extensions and hardening"); the optional
 no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/TODO.md`.
+
+## Unresolved: a staged workspace under `--run-on-host`
+
+`PLAN-SBT-ON-HOST.md` runs an agent's build natively against the host project directory. A staged
+session's agent sees the merged mount, so the two disagree about what the project contains: the
+build compiles the host tree, not what the session staged, and writes its output where no stage
+records it. Which of the three answers holds — refuse the combination, stage the build's writes
+too, or define the host tree as the build's view and say so — is undecided, and belongs with
+whichever of the two features lands second.

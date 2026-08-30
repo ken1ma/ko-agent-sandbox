@@ -27,7 +27,8 @@ appended authority section says when the weaker raw bind is in force instead.
 
 The host's own symlinks are served as they are, so one with an absolute target dangles in here.
 sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
-`find target -xtype l -delete` removes just the dead links.
+Dead links can occur in any `target` tree, the meta-build's `project/target` and each subproject's
+included: `find . -type d -name target -exec find {} -xtype l -delete \;` removes just those.
 
 
 ## Use what is already installed

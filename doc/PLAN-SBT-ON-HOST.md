@@ -1,87 +1,194 @@
 # Native sbt / Mill Build Sandbox — Implementation Plan
 
-**Target platforms:** macOS 26.4+, Linux, Windows  
-**Build tools:** sbt, Mill  
-**Primary goal:** Run Scala builds natively while granting only the filesystem and network access required for the build.
+**Target platform:** macOS 26.4+
+**Build tools:** sbt, Mill
+**Primary goal:** run the sandboxed agent's Scala builds natively — at host speed, on host memory —
+granting only the filesystem and network access the build requires.
 
 ---
 
 ## 1. Scope
 
-Implement a small native build-sandbox layer with a common policy and platform-specific enforcement:
+A native build sandbox, and the channel that lets the agent inside the container reach it:
 
-| Platform | Filesystem / process mechanism | Network containment |
-|---|---|---|
-| macOS 26.4+ | Seatbelt via `sandbox-exec` | Seatbelt permits only the egress proxy |
-| Linux | bubblewrap (`bwrap`) | isolated network namespace; proxy is the only egress path |
-| Windows | AppContainer — prototype first | AppContainer/WFP or equivalent permits only the egress proxy |
+| Concern | Mechanism |
+|---|---|
+| Filesystem and process | Seatbelt via `sandbox-exec` |
+| Network containment | Seatbelt permits only the build's own egress proxy |
+| Invocation from the sandbox | `sandbox-run-on-host`, behind the `--run-on-host` launch option |
 
-The sandbox is intentionally narrower than a general AI-agent sandbox. It supports only sbt and Mill builds under documented prerequisites.
+The sandbox is deliberately narrower than the agent container. It supports sbt and Mill builds under
+documented prerequisites, and nothing else.
 
-Out of scope initially:
+Out of scope:
 
-- arbitrary build tools;
-- arbitrary globally installed JVMs;
-- Homebrew/SDKMAN/asdf JVMs;
+- arbitrary build tools — `scala-cli`, `scalafmt` and ad-hoc `scala` stay in the container;
+- arbitrary globally installed JVMs; Homebrew, SDKMAN and asdf JVMs;
 - direct Internet access from the build;
-- automatic expansion of permissions when a build fails;
-- implicit access to `~/.m2`, `~/.ivy2`, user Git credentials, SSH credentials, or unrelated home-directory state.
+- automatic expansion of permissions when a build fails, and any fallback to another venue;
+- implicit access to `~/.m2`, `~/.ivy2`, user Git credentials, SSH credentials, or unrelated
+  home-directory state;
+- stdin: `sbt console`, `sbt shell` and `sbtn`'s interactive modes;
+- mounting the container's workspace at its host path (§9 records what that costs).
+
+The container keeps its Scala toolchain. The host venue is the fast path, not a replacement: `sbt`
+in the container still runs, and is what a session without `--run-on-host` uses.
+
+The measurement behind this: on macOS, an `sbt test` of this project takes about 2 GB inside the
+podman machine, whose total is fixed when the machine is created and shared with every other
+session on it. §1.1 is why the same 2 GB costs nothing comparable on Linux.
+
+### 1.1 Linux is excluded
+
+Two independent reasons, either sufficient.
+
+**No payoff.** There is no VM: `podman info` reports the host's memory, the container's ceiling is
+the host total less 1 GiB (`AgentSandboxLauncher.memoryCeiling`), and a build's heap is ordinary
+host memory in a cgroup, reclaimed on exit exactly as a host-native build's would be. The container
+filesystem is native too, so a container build already runs at host speed. What remains is a warm
+Coursier cache, which `PLAN-COURSIER.md`'s overlay buys for a fraction of this plan's cost.
+
+**bubblewrap cannot express §2.1's guard either.** What it does better than Seatbelt is the
+positive half: it starts with nothing mounted and builds up, so the table holds by construction
+rather than by enumerating what to hide, and `--unshare-all` removes the network namespace outright
+so proxy bypass is impossible rather than merely denied. But its mounts are established once at
+start. Covering `.git` at any depth means binding over each one found then, and a `.git` created
+during the build has no mount over it. Landlock is no better: its ruleset is fixed at creation over
+paths opened then. Neither evaluates a name at access time, which is what the rule needs.
+
+What Linux keeps that this plan gives up: the cgroup ceiling means a runaway build is killed inside
+the sandbox rather than taking the machine down with it. A host-native build has no such bound.
+
+### 1.2 Windows is excluded
+
+AppContainer expresses §2.1's *grants* perfectly well, and a design for them already exists: a
+per-user profile with a derived SID, inheritable ACEs on named roots for the project, the cache,
+`~\.sbt\boot` and the launcher, its own private profile storage, and network confinement by
+capability plus a Windows Filtering Platform rule restricted to the proxy endpoint. Even §4's
+session directory has an answer there — the lock cannot live in the AppContainer's own storage or
+in a project-local `.sandbox\tmp`, because the build writes both, so it belongs in the same
+wrapper-owned per-user root macOS uses.
+
+What it cannot express is the *denies*. Windows ACL inheritance has no name-pattern matching, so no
+ACE on the project root means "deny `.git` at any depth"; the rule can only be an enumerated set of
+explicit deny ACEs placed by a launch-time scan, and a `.git` created *during* the build — a
+`git init` in a subdirectory, an unpacked fixture repository — inherits the project's allow with no
+deny. That is a race, not an invariant, and the guard is the reason this feature can exist at all.
+
+Seatbelt expresses it because SBPL path filters are evaluated at access time, so a directory that
+appears mid-build is covered by the same rule. A Windows backend needs an equivalent — a filesystem
+minifilter, or a design that does not put the guard in ACLs at all — before it is worth
+reconsidering.
 
 ---
 
-## 2. Common security contract
+## 2. Security contract
 
-The platform implementations should expose the same effective policy.
+### 2.0 Who invokes this
+
+The default caller is the agent in the sandbox container, through `sandbox-run-on-host` (§6). A
+person may run the wrapper directly, and the same policy applies.
+
+Every grant below is read as *a grant to code the agent chose*. sbt executes the build definition,
+task arguments, source generators and test code, all of which a sandboxed agent can author or
+supply on the command line — `sbt 'set …'` and `sbt 'runMain …'` reach arbitrary Scala without
+touching `build.sbt`. Nothing here routes through a build tool's own API, so "the build can only
+write the cache through Coursier" is not a constraint that holds.
 
 ### 2.1 Filesystem
 
 ```text
-PROJECT/**                         read-write
+PROJECT/**                          read-write
+PROJECT/**/.git/**                  inaccessible
+PROJECT/**/.ko-agent-sandbox/**     inaccessible
 
-Coursier cache root/**             read-only
-Coursier cache root/v1/**          read-write
+user Coursier JVM root/**           read/execute       # the managed JVM, never written
+agent Coursier cache root/v1/**     read-write         # §5
 
-~/.sbt/boot/**                     read-only          # sbt only
+~/.sbt/boot/**                      read-only          # sbt only
+Coursier-installed sbt launcher     read/execute       # sbt only
 
-Coursier-installed sbt launcher    read/execute       # sbt only
+session temporary directory         read-write         # fresh per session
 
-session temporary directory        read-write         # fresh per session
-
-everything else user-owned         inaccessible
+everything else user-owned          inaccessible
 ```
 
-Every backend is deny-by-default: nothing outside this table is visible to the build. A runtime path a toolchain requires — the loader, libc, the CA bundle — is added narrowly, read-only, and only where testing proves the read is stable. That is runtime authority, and it is never a way to reach a user path.
+The profile is deny-by-default: nothing outside this table is visible to the build. A runtime path
+a toolchain requires — the loader, libc, the CA bundle — is added narrowly, read-only, and only
+where testing proves the read is stable. That is runtime authority, and it is never a way to reach
+a user path.
 
-`$HOME` resolves to an empty read-only directory with the entries above mounted into it: a build cannot create `$HOME/.netrc`, a Coursier mirror file, or any other configuration a later step in the same session would read.
+Seatbelt has no mount namespace, so `$HOME` cannot be replaced with an empty directory. The profile
+denies it and permits only the paths above; a build cannot create `$HOME/.netrc`, a Coursier mirror
+file, or any other configuration a later step in the same session would read, because the write is
+denied rather than because the directory is bare.
 
-The temporary directory is the only unnamed writable space, and it is session-scoped: it starts empty, no session ever sees another's, and nothing may rely on it persisting. What holds is that no build reads temporary state left by another, which is not the same as an orderly exit always happening: a killed build can leave a directory on disk, and the next start reclaims it rather than reuses it (§4).
+**The two deny rows are the whole reason this is safe to invoke from a sandbox.** They reproduce
+what `ko-agent-fs` enforces on `/workspace`, and they defend the property
+`fuse/ko-agent-fs/doc/git-metadata.md` states: the sandbox can never alter repository state that
+causes a later *host-side* `git` command to run a program the sandbox chose. A build that writes
+`.git/hooks/post-checkout` or `core.fsmonitor` is perfectly contained and entirely beside the
+point — the payload runs on the user's next `git status`, outside every sandbox, with their full
+authority. `.ko-agent-sandbox` is frozen for the reason `policy.rs` gives: the *next* launch reads
+it, so a build writing `apps/web/.ko-agent-sandbox/egress/allowed` authors a later session's
+boundary.
 
-The Coursier-managed JVM is inside the Coursier cache hierarchy and is therefore covered by the read-only Coursier rule.
+Both rows fold case. APFS is case-insensitive by default, so `.GIT` and `.Git` reach the same
+directory, and `policy.rs`'s `folds_to` already folds on the filter's side; two guards over one
+tree that disagree about a name are one guard.
+
+Both rows also deny link creation, not only writes. On the host, the project and its `.git` are one
+filesystem, so `link(PROJECT/.git/config, PROJECT/x)` succeeds and a later write to `x` reaches
+`.git/config` by a path no write rule matches. `SECURITY.md` dismisses hardlinks for the container
+because `/workspace` and the container root are different filesystems and `link` is `EXDEV` in both
+directions; that argument does not transfer here.
+
+The residue `SECURITY.md` records for the filter stays: a *bare layout* the agent assembles from
+ordinary names anywhere in the writable tree is not a `.git` directory and neither guard refuses
+it. Running host `git` inside a directory the agent created is running the agent's output.
+
+The temporary directory is the only unnamed writable space, and it is session-scoped: it starts
+empty, no session ever sees another's, and nothing may rely on it persisting. What holds is that no
+build reads temporary state left by another, which is not the same as an orderly exit always
+happening: a killed build can leave a directory on disk, and the next start reclaims it rather than
+reuses it (§4).
 
 ### 2.2 Network
 
 ```text
 direct network                     denied
-egress proxy                       allowed
+build egress proxy                 allowed
 
-egress proxy policy:
-    explicitly allowed Maven repositories   allowed
-    everything else                         denied
+build egress proxy policy:
+    explicitly allowed artifact repositories   allowed
+    everything else                            denied
 ```
 
 Initial repository allowlist:
 
 ```text
-repo.maven.apache.org:443
+repo1.maven.org:443
 ```
+
+That host, not `repo.maven.apache.org`. Coursier's and sbt's default Maven Central URL is
+`repo1.maven.org/maven2`; the apache.org spelling is an alias almost nothing resolves against by
+default. This project's own proxy baseline admits both
+(`container/ko-agent-egress-proxy/app/src/main/resources/baseline/host`).
+
+`repo.scala-sbt.org` is deliberately absent. It hosts the Ivy-style `sbt-plugin-releases`
+repository and is not part of sbt's bootstrap — an uncached version named in
+`project/build.properties` resolves from Maven Central. The same baseline admits `www.scala-sbt.org`
+for documentation and not `repo.scala-sbt.org`, and this repository's sbt 2 build needs nothing
+more. A build that depends on an old Ivy-published plugin adds it explicitly (§11).
 
 Additional repositories must be explicitly configured. Do not infer or silently permit them.
 
 ### 2.3 Failure policy
 
-Missing prerequisites or denied accesses should fail clearly rather than expanding authority automatically.
-
-Examples:
+Missing prerequisites or denied accesses fail clearly. Nothing expands authority, and **nothing
+falls back to another venue**: a host build that cannot run is reported to the user, never re-run
+in the container. This is the same stance the egress refusal takes — name what was refused and
+stop, rather than looking for another route.
 
 ```text
 Coursier JVM missing               -> fail before entering sandbox
@@ -90,6 +197,7 @@ sbt bootstrap artifacts missing    -> build fails; report ~/.sbt/boot is read-on
 Mill bootstrap absent              -> fail before entering sandbox
 repository not allowlisted         -> proxy denial; report requested host
 filesystem path not allowed        -> sandbox denial; report path when observable
+backend unavailable                -> fail; report; do not run in the container
 ```
 
 ---
@@ -98,19 +206,20 @@ filesystem path not allowed        -> sandbox denial; report path when observabl
 
 ### 3.1 JVM
 
-Only Coursier-managed JVMs are supported.
+Only Coursier-managed JVMs are supported, and the wrapper resolves one before entering the sandbox
+so the profile can name it and `JAVA_HOME` can point at it.
 
-Validate the resolved JVM before entering the sandbox.
-
-Expected managed JVM roots:
+Expected managed JVM root:
 
 ```text
-macOS:   ~/Library/Caches/Coursier/jvm/
-Linux:   ~/.cache/coursier/jvm/
-Windows: %LOCALAPPDATA%\Coursier\Cache\jvm\
+~/Library/Caches/Coursier/jvm/
 ```
 
-The wrapper should resolve symlinks/canonical paths and reject a JVM outside the configured Coursier JVM root.
+This is the *user's* Coursier cache, not the agent cache root of §5. A managed JVM is read-only to
+the build, so sharing it exposes no write path, and duplicating a JDK per project would cost
+hundreds of megabytes for nothing.
+
+Resolve symlinks and canonical paths, and reject a JVM outside that root.
 
 Do not support:
 
@@ -118,7 +227,6 @@ Do not support:
 /Library/Java/JavaVirtualMachines/**
 /opt/homebrew/**
 SDKMAN JVMs
-system-wide Windows JVM installations
 other arbitrary JAVA_HOME locations
 ```
 
@@ -130,13 +238,12 @@ Require:
 cs install sbt
 ```
 
-The wrapper must resolve the `sbt` launcher and verify that it belongs to the configured Coursier application-install directory.
-
-Do not accept an arbitrary `sbt` from `PATH`.
+Resolve the `sbt` launcher and verify it belongs to the Coursier application-install directory. Do
+not accept an arbitrary `sbt` from `PATH`.
 
 `~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
 
-Prefer disabling sbt server state outside the project:
+Disable sbt server state outside the project:
 
 ```text
 -Dsbt.server.autostart=false
@@ -156,173 +263,248 @@ Require a project-local bootstrap script:
 
 ```text
 <PROJECT>/mill
-<PROJECT>/mill.bat
 ```
-
-At least the platform-appropriate bootstrap script must exist. Repositories should normally commit both.
 
 Do not support a globally installed Mill.
 
+Mill's own bootstrap download has no row in §2.1 yet — see §17.
+
 ---
 
-## 4. Common wrapper design
+## 4. Wrapper design
 
-Implement one front-end command, for example:
+One front-end command:
 
 ```text
 ko-agent-build-sandbox sbt [args...]
 ko-agent-build-sandbox mill [args...]
 ```
 
-or integrate the functionality into the existing `ko-agent-sandbox` CLI.
+or the same functionality inside the existing `ko-agent-sandbox` CLI. §6 is how the agent reaches
+it; a person runs it directly.
 
 The wrapper performs these steps:
 
 ```text
  1. canonicalize project root
  2. detect requested build tool
- 3. locate Coursier cache roots
- 4. validate Coursier-managed JVM
- 5. validate build-tool prerequisite
- 6. create the session temporary directory, empty
- 7. construct platform policy
- 8. configure proxy environment / JVM proxy properties
- 9. launch build under platform sandbox
-10. remove the session temporary directory
-11. preserve child exit code
-12. provide actionable diagnostics for known denials
+ 3. locate the user Coursier JVM root and this project's agent cache root
+ 4. validate the Coursier-managed JVM
+ 5. validate the build-tool prerequisite
+ 6. publish the session directory, empty, and take its lock
+ 7. start this build's egress proxy (§8), bound to that lock
+ 8. construct the Seatbelt policy
+ 9. configure proxy environment / JVM proxy properties
+10. launch the build under sandbox-exec
+11. stop the proxy and remove the session directory
+12. preserve child exit code
+13. provide actionable diagnostics for known denials
 ```
 
-Step 6 creates a fresh, uniquely named directory under a wrapper-owned root and never adopts an existing one; step 10 removes it on every exit the wrapper survives to see, error and handled signal included. `SIGKILL`, a crashed wrapper and a lost machine defeat any handler, so a start also scavenges the root. Each session owns a directory there, holds its lock for the life of the build, and grants the build a writable child of it and nothing more:
+Step 6 creates a fresh, uniquely named directory under a wrapper-owned root and never adopts an
+existing one; step 11 removes it on every exit the wrapper survives to see, error and handled
+signal included. `SIGKILL`, a crashed wrapper and a lost machine defeat any handler, so a start
+also scavenges the root. Each session owns a directory there, holds its lock for the life of the
+build, and grants the build a writable child of it and nothing more:
 
 ```text
-<wrapper root>/<session>/lock     wrapper-owned; named in no backend's policy
+<wrapper root>/<session>/lock     wrapper-owned; named in no policy rule
 <wrapper root>/<session>/tmp      SESSION_TMP; the only part the build can write
 ```
 
-The lock has to sit outside the build's authority. A lock inside `SESSION_TMP` is one the build can unlink and replace — deliberately, or by clearing its own temporary directory — leaving the wrapper holding a lock on an inode with no name; the next start would then lock the replacement, read a live session as stale, and delete a running build's working directory.
+The lock has to sit outside the build's authority. A lock inside `SESSION_TMP` is one the build can
+unlink and replace — deliberately, or by clearing its own temporary directory — leaving the wrapper
+holding a lock on an inode with no name; the next start would then lock the replacement, read a
+live session as stale, and delete a running build's working directory.
 
-A session directory whose lock is free belongs to no live session and is removed whole. Liveness, not age — concurrent builds are ordinary, and a slow build must not have its temporary state collected out from under it.
+A session directory whose lock is free belongs to no live session and is removed whole. Liveness,
+not age — concurrent builds are ordinary, and a slow build must not have its temporary state
+collected out from under it.
 
-That test is only sound if a directory reaches the scanned namespace already locked, so a session is published rather than built in place: the wrapper creates its directory in a staging area the scan does not visit, takes the lock there, and renames it into the root. A rename keeps the inode, and with it the lock, so no scanned entry is ever one whose session is still starting. Staging and root share a filesystem, which is what makes the rename atomic. On Windows the equivalents are a handle opened without `FILE_SHARE_DELETE` and a move within one volume.
+That test is only sound if a directory reaches the scanned namespace already locked, so a session
+is published rather than built in place: the wrapper creates its directory in a staging area the
+scan does not visit, takes the lock there, and renames it into the root. A rename keeps the inode,
+and with it the lock, so no scanned entry is ever one whose session is still starting. Staging and
+root share a filesystem, which is what makes the rename atomic.
 
-A wrapper killed between creating its staging directory and renaming it leaves an entry there, so the scavenger clears staging too — and that is what a root lock is for: publication holds it from creating the staging directory through taking the lock to the rename, and staging cleanup holds it to remove what a kill left. A scavenger free to delete a directory whose creator has not locked it yet does not collect litter; it fails an ordinary start, whose rename then has nothing to move.
+A wrapper killed between creating its staging directory and renaming it leaves an entry there, so
+the scavenger clears staging too — and that is what a root lock is for: publication holds it from
+creating the staging directory through taking the lock to the rename, and staging cleanup holds it
+to remove what a kill left. A scavenger free to delete a directory whose creator has not locked it
+yet does not collect litter; it fails an ordinary start, whose rename then has nothing to move.
 
-Nothing expensive runs inside that lock. A staging entry is a directory no build has written to, and the removal of published directories — where the bytes are — needs no root lock at all, since every published directory is locked by construction.
+Nothing expensive runs inside that lock. A staging entry is a directory no build has written to,
+and the removal of published directories — where the bytes are — needs no root lock at all, since
+every published directory is locked by construction.
 
-Where the platform already guarantees the property, both steps are no-ops: a Linux tmpfs is discarded with the mount namespace, whatever kills the process.
+The session lock is also what the build's proxy binds to (§8), so the answer does not change when
+an sbt server outlives a single invocation.
 
-A JVM writes a preference store under `$HOME` on first use. Point that store and `java.io.tmpdir` at the session temporary directory (`-Djava.util.prefs.userRoot`, `-Djava.io.tmpdir`), so a read-only home costs no diagnostics.
+A JVM writes a preference store under `$HOME` on first use. Point that store and `java.io.tmpdir`
+at the session temporary directory (`-Djava.util.prefs.userRoot`, `-Djava.io.tmpdir`), so a
+read-only home costs no diagnostics.
 
-All paths passed to the sandbox backend must be canonicalized before policy construction.
-
-Reject paths that cannot be canonicalized.
+All paths passed to the sandbox backend are canonicalized before policy construction. Reject paths
+that cannot be canonicalized.
 
 ---
 
 ## 5. Coursier cache policy
 
-Coursier's normal artifact cache is `v1`.
-
-Platform defaults:
-
-```text
-macOS:
-  root = ~/Library/Caches/Coursier
-  v1   = ~/Library/Caches/Coursier/v1
-
-Linux:
-  root = ~/.cache/coursier
-  v1   = ~/.cache/coursier/v1
-
-Windows:
-  root = %LOCALAPPDATA%\Coursier\Cache
-  v1   = %LOCALAPPDATA%\Coursier\Cache\v1
-```
-
-Permissions:
+Agent-invoked builds get their **own cache root, per project**. The user's artifact cache is not
+granted, not mounted and not read.
 
 ```text
-root/**       RO
-v1/**         RW
+$XDG_CACHE_HOME/ko-agent-sandbox/cache/<projectId>/coursier/v1/
 ```
 
-Rationale:
+Grouping by project inside the kind directory makes one project's caches one directory: a
+per-project cache reset is a single removal, and `cache/<projectId>/sbt/` or `.../ivy2/` can join
+later without moving anything.
 
-- managed JVMs and other provisioned Coursier state may be consumed;
-- builds may download/update ordinary dependency artifacts in `v1`;
-- builds may not modify managed JVMs or other Coursier state.
+Permissions, against §2.1:
 
-Do not grant broader write access unless a concrete supported build operation proves it necessary.
+```text
+agent cache root/v1/**       RW      artifacts the build downloads
+user Coursier JVM root/**    RX      §3.1
+user Coursier v1/**          absent  not granted at all
+```
+
+### 5.1 Why not the user's cache
+
+`v1` is a machine-wide directory every project on the host resolves against, and a grant to write
+it is a grant to code the agent chose (§2.0). A build that writes an artifact and a matching
+checksum under a coordinate some *other* project resolves poisons a later ordinary host build of
+that project — no agent, no sandbox, no review, and no expiry, because a cached release artifact is
+treated as immutable.
+
+`PLAN-COURSIER.md` forbids exactly this for the container, and reaches it differently: a Podman `:O`
+upper layer keeps the host cache readable and unwritable. Seatbelt has no mount namespace, so no
+overlay is available here and separation has to be by root. The two documents agree on the
+property and differ only in mechanism.
+
+The cost is a cold cache on a project's first agent build. It is warm from the second onwards,
+shared by every agent build of that project, and the blast radius of poisoning it is later builds
+of the same project, which are themselves sandboxed.
+
+### 5.2 Why not the launcher state root
+
+`AgentSandboxLauncher.scala` keeps the state root kind-first — `tls/<projectId>`, `log/<projectId>`,
+`policy/<projectId>` — and says why at `logStateRoot`: the proxy writes its audit log there, and
+"must not sit beside the CA key". A project-first layout would put a granted cache directory back
+beside `ca.key` and beside `policy/<projectId>/agents.md`, the assembled agent instructions the
+launcher reuses on a stamp match.
+
+That adjacency matters more here than it would in the container. In the container the CA key is out
+of reach because it is never mounted; on the host the build runs as the user's own uid, which owns
+the key, so file permissions protect nothing and the Seatbelt profile is the only thing standing
+there. A separate root makes the profile's job structural: no path the build sandbox is ever
+granted has a sensitive ancestor or sibling.
+
+`XDG_CACHE_HOME` is also where a reconstructible cache belongs, and it makes `--reset-cache` a
+whole-directory operation with nothing to be careful about.
+
+The cache root gets the same treatment `requireStateRootOutside` gives the state root: refuse when
+it resolves inside the project.
 
 ---
 
-# 6. macOS implementation
+## 6. The sandbox → host channel
 
-## 6.1 Backend
-
-Use:
+### 6.1 The command
 
 ```text
-sandbox-exec
+sandbox-run-on-host sbt [args...]
+sandbox-run-on-host mill [args...]
 ```
 
-with one parameterized Seatbelt profile shared by sbt and Mill.
+A named command, a sibling of `sandbox-apt-get` and `sandbox-jdk-use-proxy`, rather than a shim
+shadowing `sbt` on `PATH`. The venue is then visible in the transcript the user reads.
 
-The wrapper supplies parameters such as:
+It does not inherit `sandbox-apt-get`'s discoverability. `apt-get install` fails in the sandbox, so
+the plain name teaches the agent to look for the prefixed one; `sbt test` in the container
+*succeeds*, in the slower venue against a different cache, and nothing prompts a reconsideration. So
+the authority section carries the instruction instead (§9.2), and container `sbt` stays reachable
+and unshadowed.
+
+That makes the venue a norm rather than an enforcement: an agent that ignores the instruction gets
+a slower build, not a refusal. This is a deliberate difference from the egress rule, where the proxy
+actually refuses.
+
+### 6.2 Transport
+
+The shape `ClipboardBroker` already uses: FIFOs under the sandbox's `/tmp`, made by the host side's
+first exec, so a session without the channel has none and the command fails at once. The host side
+holds one long-lived `podman exec` reading requests, and answers each through a short one, so the
+sandbox opens nothing outward and the host runs nothing it did not start.
+
+A build is a larger protocol than a clipboard request: streamed stdout and stderr, an exit code, and
+a working directory. Stdin is excluded (§1), which removes the interactive modes and the
+half-closed cases with them.
+
+The launcher injects the host project path so the shim can translate its own working directory from
+`/workspace/<sub>`. The container therefore learns the host path — the disclosure §9.3 records —
+whether or not same-path mounting is ever adopted.
+
+### 6.3 Availability
+
+The channel exists only when `--run-on-host` names the tool (§9.1). Without it the command is
+absent, and its absence is what the agent sees.
+
+Teardown is unresolved: §17.
+
+---
+
+## 7. macOS implementation
+
+### 7.1 Backend
+
+`sandbox-exec` with one parameterized Seatbelt profile shared by sbt and Mill.
+
+The wrapper supplies:
 
 ```text
 PROJECT
-COURSIER_ROOT
-COURSIER_V1
+COURSIER_JVM_ROOT
+AGENT_CACHE_V1
 TOOL
 SBT_BOOT
 SESSION_TMP
 PROXY endpoint
 ```
 
-For Mill, `TOOL` points inside `PROJECT`.
+For Mill, `TOOL` points inside `PROJECT`. For sbt, it points to the Coursier-installed launcher, and
+the sbt-specific boot path can be omitted when conditional profile generation is easier than
+supplying a dummy path.
 
-For sbt, `TOOL` points to the Coursier-installed sbt launcher.
-
-For Mill, the sbt-specific boot path can be omitted if separate conditional profile generation is easier than supplying a dummy path.
-
-## 6.2 Filesystem policy
+### 7.2 Filesystem policy
 
 Each §2.1 row as the profile parameter that carries it:
 
 ```text
 PROJECT                           RW
-COURSIER_ROOT                     RO
-COURSIER_V1                       RW
+PROJECT/**/.git                   deny read, write and link, case-folded
+PROJECT/**/.ko-agent-sandbox      deny read, write and link, case-folded
+COURSIER_JVM_ROOT                 RX
+AGENT_CACHE_V1                    RW
 SBT_BOOT                          RO     # sbt
 TOOL                              RX
 SESSION_TMP                       RW
 ```
 
-Seatbelt has no mount namespace to build a home out of, so the profile denies `$HOME` itself and permits only the paths above. `SESSION_TMP` is the writable child of the wrapper's per-session directory (§4), not the user's `TMPDIR`, and the session directory holding the lock is named in no rule.
+`SESSION_TMP` is the writable child of the wrapper's per-session directory (§4), not the user's
+`TMPDIR`, and the session directory holding the lock is named in no rule.
 
-Do not pre-authorize broad paths such as:
+Do not pre-authorize broad paths such as `/System/**`, `/usr/**` or `/opt/homebrew/**` unless
+testing proves a specific stable runtime read is required, and then add the narrowest rule that
+testing justifies.
 
-```text
-/System/**
-/usr/**
-/opt/homebrew/**
-```
+### 7.3 Network
 
-unless testing proves a specific stable runtime read is required.
+Seatbelt permits connections only to this build's proxy ingress endpoint (§8).
 
-If a macOS/JVM runtime path is required, add the narrowest stable read-only rule justified by testing.
-
-## 6.3 Network
-
-Do not let the build make arbitrary outbound connections.
-
-Seatbelt should permit connections only to the local/native egress-proxy ingress endpoint.
-
-The JVM/Coursier configuration should also point at the proxy, but proxy settings are not the security boundary: Seatbelt must prevent bypass via direct sockets.
-
-Configure JVM proxy properties as appropriate, e.g.:
+The JVM and Coursier are configured to use it, but proxy settings are not the security boundary:
+Seatbelt must prevent bypass via direct sockets.
 
 ```text
 -Dhttps.proxyHost=...
@@ -331,11 +513,7 @@ Configure JVM proxy properties as appropriate, e.g.:
 -Dhttp.proxyPort=...
 ```
 
-If the proxy is available through a local Unix socket rather than TCP, prefer that if it produces a cleaner Seatbelt rule and the bridge can be kept outside the sandbox.
-
-## 6.4 macOS test gate
-
-Before declaring the backend complete, verify at least:
+### 7.4 Test gate
 
 ```text
 java -version
@@ -352,223 +530,73 @@ Negative tests:
 ```text
 read ~/Documents/...                         denied
 read ~/.ssh/...                              denied
+read the launcher state root                 denied
 write Coursier/jvm/...                       denied
 write ~/.sbt/boot/...                        denied
 write the Coursier-installed sbt launcher    denied
-write Coursier/v1/...                        allowed
+write PROJECT/.git/config                    denied
+write PROJECT/sub/nested/.git/hooks/x        denied
+write PROJECT/.GIT/config                    denied
+create PROJECT/.git during the build         denied
+link PROJECT/x -> PROJECT/.git/config        denied
+write via PROJECT/link -> PROJECT/.git       denied
+write PROJECT/.ko-agent-sandbox/...          denied
+write the user's Coursier v1                 denied
+write agent cache v1/...                     allowed
 write PROJECT/...                            allowed
 write session temporary directory            allowed
 connect directly to arbitrary Internet host  denied
-fetch allowed Maven artifact via proxy        allowed
-fetch non-allowlisted host via proxy           denied
+fetch allowed Maven artifact via proxy       allowed
+fetch non-allowlisted host via proxy         denied
 ```
+
+The four `.git` rows after the first are the ones that decide the design rather than the code: they
+test access-time evaluation, case folding, link creation and symlink canonicalization. §17 records
+them as unanswered until this gate runs.
 
 ---
 
-# 7. Linux implementation
+## 8. Egress-proxy integration
 
-## 7.1 Backend
+Each build runs **its own proxy process**, from the same codebase as the container's.
 
-Use `bubblewrap` rather than Landlock.
+### 8.1 Why not the session's proxy
 
-Filesystem mappings should use read-only/read-write bind mounts, built up from an empty tree rather than pared down from the host's: bubblewrap starts with nothing mounted, which is how §2.1 holds here by construction rather than by enumeration of what to hide.
+The session's proxy is per run, on a network created `--internal`, and lives inside the podman
+machine. There is no host route to it; reaching it would mean either publishing it — which hands
+any host process the session's full `--egress` allowlist, `api.anthropic.com` and forges included —
+or relaying each connection through `podman exec` into the VM, which pays the VM round trip on
+exactly the path the build was moved out of the VM to avoid, ties the build's lifetime to a live
+session, and gives the build a path into the sandbox container.
 
-`$HOME` gets an empty tmpfs of its own — sbt, Coursier and the JVM all resolve it — remounted read-only once the named paths are in place, so it holds those paths and nothing the build can add.
+A JVM proxy client speaks TCP, so a loopback listener is unavoidable either way. What is worth
+controlling is the policy behind it, and a proxy admitting one artifact repository is a prize barely
+worth stealing.
 
-Mount ordering carries the authority: the `v1` writable bind sits over the read-only Coursier parent, and the Coursier tree, `~/.sbt/boot` and the project all sit over the `$HOME` tmpfs. `--remount-ro` comes last of all — bubblewrap creates a bind's mountpoint as it goes, and a read-only tmpfs has nowhere to create one; remounting the parent afterwards leaves the writable children writable.
+### 8.2 Lifetime
 
-## 7.2 Example mount concept
+Bind the proxy to the §4 session lock, not to one invocation. With `-Dsbt.server.autostart=false`
+(§3.2) a session is one build and the two are the same; when a persistent sbt server is later
+enabled for warm builds, the proxy must outlive each thin-client invocation and exit with the
+server, or the server's next resolve fails against a proxy that has gone. Binding to the lock gives
+one answer for both.
 
-Conceptually:
+Enabling a server also makes a session a server's lifetime rather than a single build. §4's
+guarantee — no session sees another's temporary state — still holds; the sentence that a session is
+one build does not.
 
-```text
---unshare-all --die-with-parent
---proc /proc --dev /dev
---ro-bind /usr /usr                      # with the distro's /bin, /lib, /lib64 symlinks
---ro-bind /etc/ssl /etc/ssl              # the proxy's CA
+### 8.3 Artifact
 
---tmpfs   /tmp                           # the session temporary directory
---tmpfs   $HOME
---ro-bind COURSIER_ROOT COURSIER_ROOT
---bind    COURSIER_V1   COURSIER_V1
---ro-bind SBT_BOOT      SBT_BOOT
---bind    PROJECT       PROJECT
---remount-ro $HOME
-```
+The container's proxy is a GraalVM native image built for Linux inside `debian-coursier`. On macOS,
+run `target/dist/agent-egress-proxy.jar` on the wrapper's own JVM — `sbt dist` already produces
+it — or add a macOS native-image build later. §3.1's Coursier-managed-JVM requirement is about the
+build, not about the wrapper's own process.
 
-The first block is runtime authority — a JVM does not start without the loader and libc — and distributions differ in it. The second is §2.1, path for path.
+Bind on an ephemeral port on `127.0.0.1`.
 
-## 7.3 Network
+### 8.4 Policy semantics
 
-`--unshare-all` above includes the network namespace, so the build has no direct host or Internet path.
-
-Expose only the egress proxy through an explicit bridge.
-
-Preferred architecture:
-
-```text
-sandbox network namespace
-        |
-        | Unix-domain socket mounted into sandbox
-        v
-host-side bridge / proxy ingress
-        |
-        v
-ko-agent egress proxy
-```
-
-If a bridge such as `socat` is used, it runs outside the sandbox's isolated network namespace.
-
-The build should have no route that permits it to bypass the proxy.
-
-## 7.4 Linux test gate
-
-Run the same positive and negative tests as macOS.
-
-Additionally verify:
-
-```text
-raw TCP connection to public IP             impossible
-DNS query outside proxy path                impossible/unnecessary
-Unix socket to approved proxy bridge        works
-```
-
-Test on at least:
-
-```text
-Debian 13
-```
-
-Add other supported distros only after their required runtime mount differences are understood.
-
----
-
-# 8. Windows implementation
-
-## 8.1 Status
-
-Treat AppContainer as a **feasibility-gated backend**, not yet as a committed final architecture.
-
-The narrow sbt/Mill workload is a better fit for AppContainer than a general-purpose coding agent, but actual Java/sbt/Mill compatibility must be demonstrated.
-
-## 8.2 Prototype
-
-Create a per-user AppContainer profile, e.g.:
-
-```text
-KoAgentScalaBuild
-```
-
-Obtain/derive its AppContainer SID.
-
-Grant inheritable ACL entries to that SID:
-
-```text
-PROJECT                            Modify / RX as required
-Coursier root                      Read + Execute
-Coursier\v1                        Modify
-~\.sbt\boot                        Read + Execute
-Coursier-installed sbt launcher    Read + Execute
-session temporary directory        Modify
-```
-
-Do not recursively rewrite every child ACL if a directory-root inheritable ACE is sufficient.
-
-Track exactly which ACL entries the tool adds so they can be removed deterministically.
-
-## 8.3 AppContainer profile storage
-
-Windows automatically gives an AppContainer its own profile storage and redirects `TEMP`/`TMP` into accessible AppContainer storage.
-
-Neither that storage nor a project-local `PROJECT\.sandbox\tmp` can hold §4's lock, and for the same reason: the build writes both — the AppContainer storage is its own, and it holds Modify on all of `PROJECT`. A lock in either is a lock the build can replace.
-
-So the session directory sits in the wrapper-owned per-user root, as on macOS, and `TEMP`/`TMP` are redirected to its writable child (§8.2's `session temporary directory` entry). Neither the AppContainer's own storage nor the project tree then carries temporary state a later session would have to reason about.
-
-## 8.4 Network
-
-Do not simply grant broad Internet capability and rely on Java proxy configuration.
-
-The Windows backend needs an enforceable path where the AppContainer can reach the egress proxy but cannot reach arbitrary destinations directly.
-
-Prototype candidates:
-
-1. AppContainer capability + Windows Filtering Platform / firewall rule restricted to proxy endpoint.
-2. Loopback/proxy endpoint with explicit AppContainer exemption plus WFP restriction.
-3. A local IPC bridge to a host-side proxy endpoint if that provides stronger confinement.
-
-Choose only after testing actual Windows AppContainer networking behavior.
-
-## 8.5 Windows feasibility gate
-
-The backend passes only if all of these work without granting broad user-data access:
-
-```text
-Coursier-managed java -version
-cs-installed sbt --version
-sbt compile
-sbt test
-project-local mill.bat --version
-mill.bat __.compile
-mill.bat __.test
-dependency download through egress proxy
-forked JVM/test process
-```
-
-And all negative tests pass:
-
-```text
-unrelated user files                   inaccessible
-~\.ssh                                 inaccessible
-Coursier JVM state                     not writable
-sbt boot                               not writable
-sbt launcher                           not writable
-Coursier\v1                            writable
-project                                writable
-session temporary directory            writable
-direct Internet connection             denied
-non-allowlisted proxy destination      denied
-```
-
-### Decision point
-
-If AppContainer requires broad capabilities or compatibility exceptions that materially weaken the common policy, stop and evaluate:
-
-```text
-restricted token + dedicated SID + ACLs + WFP
-```
-
-Do not silently broaden AppContainer privileges just to make the prototype pass.
-
----
-
-# 9. Egress-proxy integration
-
-Reuse the existing ko-agent egress proxy as the single destination-policy authority.
-
-## 9.1 Build-specific allowlist
-
-Start with:
-
-```text
-repo.maven.apache.org:443
-```
-
-Allow additional repositories only through explicit configuration.
-
-Examples that may be needed by some projects, but are **not enabled by default**:
-
-```text
-repo.scala-sbt.org
-repo1.maven.org
-corporate Maven repository
-GitHub release/download endpoints
-JitPack
-Sonatype snapshot repositories
-```
-
-## 9.2 Policy semantics
-
-The proxy should log denied destination requests with enough information for the wrapper to produce:
+The proxy logs denied destinations with enough information for the wrapper to produce:
 
 ```text
 Build requested network access to:
@@ -579,23 +607,100 @@ This host is not permitted by the Scala build sandbox.
 
 Do not automatically add it.
 
-## 9.3 HTTPS
+### 8.5 HTTPS
 
-Prefer ordinary HTTP CONNECT tunneling where possible.
-
-The proxy should enforce destination host/port at CONNECT time.
-
-If the existing proxy performs TLS interception, keep trust-store handling explicit and separate from filesystem sandboxing.
-
-The filesystem policy must not require granting access to arbitrary host certificate stores if the Coursier-managed JDK's configured trust store suffices.
+Prefer ordinary HTTP CONNECT tunnelling, with the destination host and port enforced at CONNECT
+time. Then the build needs no additional trust material, and the Coursier-managed JDK's own trust
+store suffices — which matters here because §2.1 makes that JDK read-only, so a merged truststore
+cannot be written into it the way `JdkTrust.scala` does for the container image. If inspection is
+ever wanted, point the JVM at a wrapper-owned store with `-Djavax.net.ssl.trustStore` rather than
+touching the JDK.
 
 ---
 
-# 10. Diagnostics
+## 9. Launcher surface
 
-Good denial diagnostics are part of the product.
+### 9.1 `--run-on-host`
 
-Define stable error categories:
+```text
+--run-on-host=sbt,mill
+```
+
+Launch authority, like `--egress` and `--write`: rejected by management verbs, refused when given
+twice, and refusing an unknown tool name. Absent, the channel does not exist.
+
+Available on macOS only (§1.1, §1.2).
+
+It composes with `--write=live` and `--write=reject`. That composition is not an escape — both are
+authority the user typed — but under `reject` it does mean the project is no longer read-only to
+the session, since a build writes `target/` and, through `sbt 'set …'`, anything else §2.1 permits.
+
+It refuses a staged workspace. `PLAN-STAGED.md` ("Unresolved: a staged workspace under
+`--run-on-host`") has the three candidate semantics and no chosen one; until one is chosen, a
+staged session's agent would see the merged mount while its build compiled and wrote the host tree.
+Whichever of the two features lands second implements the refusal and owns the choice.
+
+### 9.2 What the session says
+
+`authoritySection` gains a paragraph when the option is in force, in the same act mode as the
+workspace and egress paragraphs. It states:
+
+- `sandbox-run-on-host sbt …` as the command, and that it runs on the host at host speed;
+- that container `sbt` still exists and runs in the container, over the **same** `target/` — one
+  directory, seen from both sides. The two venues compile with different JVMs against different
+  Coursier caches, so what one leaves there may not be usable by the other: a venue switch can cost
+  a rebuild, and can need cleanup before a build succeeds (`AGENTS-SANDBOX.md`, "The host's own
+  symlinks");
+- that a failed host build is reported to the user, never re-run in the container (§2.3);
+- what the host build may write: the project, minus git control state and `.ko-agent-sandbox`.
+
+The existing `--write=reject` paragraph needs correcting for this composition: its instruction to
+"put results under `~` or `/tmp` and tell the user, who relaunches with `--write=live`" is false
+once a host build can write the project.
+
+### 9.3 Same-path mounting
+
+Deferred, and its own launch option when it arrives. It aligns source paths and nothing else — the
+host build's JVM is a macOS binary and the container's is Linux, and their Coursier cache roots
+differ — so it does not establish compatibility between the venues' build state. That leaves
+legible paths in build output as the benefit, which did not carry the increment.
+
+The host path reaches the container regardless, because §6.2 injects it. `SECURITY.md`'s
+low-bandwidth list is where that belongs.
+
+### 9.4 `--stats`
+
+A read-only report, because a size seen only while resetting is seen too late.
+
+- projects by bytes across the state and cache roots, largest first, with the containing
+  filesystem's free space, and a flag on any project whose cache exceeds 1% of that free space —
+  the threshold exists so the report says which project to `--reset-cache`, rather than leaving a
+  column of numbers to compare by eye;
+- live sessions, from `podman stats --no-stream`.
+
+Three constraints. Skip the live section when the podman machine is stopped rather than starting
+it — a read-only report has no side effects. Degrade gracefully when `podman stats` fails. Walk the
+directories last: a real Coursier cache is millions of inodes, and that walk is why this is a verb
+and not a line printed at every launch.
+
+### 9.5 Reset inventory
+
+Three verbs now touch the cache root, and each needs its own answer and its own test:
+
+| verb | cache root |
+|---|---|
+| `--reset` | untouched |
+| `--reset-cache` | this project's cache directory, removed |
+| `--reset-all` | the whole cache root, with everything else |
+
+`--reset` leaves the cache alone because resetting is about a stuck session; silently discarding a
+warm cache would cost a full re-download nobody asked for.
+
+---
+
+## 10. Diagnostics
+
+Stable error categories:
 
 ```text
 PREREQ_JVM_NOT_COURSIER
@@ -605,320 +710,319 @@ PREREQ_SBT_BOOT_MISSING
 
 FS_READ_DENIED
 FS_WRITE_DENIED
+FS_GUARD_DENIED          # .git or .ko-agent-sandbox
 
 NET_DIRECT_DENIED
 NET_PROXY_HOST_DENIED
 
 BACKEND_UNAVAILABLE
 BACKEND_SETUP_FAILED
+CHANNEL_UNAVAILABLE
 ```
 
-Where the underlying platform exposes sufficient information, include the denied path/endpoint.
+Where the platform exposes enough information, include the denied path or endpoint. Never turn a
+denial into a retry with broader permissions.
 
-Do not turn a denial into an automatic retry with broader permissions.
-
----
-
-# 11. Configuration
-
-Use one platform-independent logical configuration.
-
-Example:
-
-```toml
-[build-sandbox]
-enabled = true
-
-[build-sandbox.repositories]
-allowed = [
-  "repo.maven.apache.org:443"
-]
-```
-
-Avoid exposing platform-specific filesystem paths unless an override is genuinely necessary.
-
-Derived platform defaults should come from Coursier conventions and environment APIs.
-
-Possible advanced overrides:
-
-```toml
-[build-sandbox.coursier]
-cache-root = "..."
-jvm-root = "..."
-install-root = "..."
-```
-
-Do not add these until needed.
+`FS_GUARD_DENIED` is separate from `FS_WRITE_DENIED` because its remedy is different: the path is
+not one the user can grant.
 
 ---
 
-# 12. Implementation phases
+## 11. Configuration
 
-## Phase 1 — Common policy and prerequisite validator
-
-Implement:
-
-- project canonicalization;
-- Coursier root discovery;
-- Coursier-managed JVM validation;
-- sbt launcher validation;
-- Mill bootstrap validation;
-- common policy model;
-- structured diagnostics.
-
-No sandbox backend yet.
-
-**Exit criterion:** unit tests prove that supported and unsupported layouts are classified correctly.
-
----
-
-## Phase 2 — macOS backend
-
-Implement Seatbelt profile generation / parameterization and proxy-only network rules.
-
-Test on macOS 26.4+.
-
-**Exit criterion:** complete positive/negative filesystem and network matrix passes.
-
-This should be the first production backend because the macOS design is already well understood.
-
----
-
-## Phase 3 — Linux backend
-
-Implement bubblewrap filesystem mapping and isolated-network proxy bridge.
-
-Target Debian 13 first.
-
-**Exit criterion:** same common test matrix passes without platform-specific weakening of the policy.
-
----
-
-## Phase 4 — Windows AppContainer prototype
-
-Implement:
-
-- profile creation/lookup;
-- SID derivation;
-- ACL setup/removal;
-- AppContainer process launch;
-- child-process tests;
-- proxy-only network experiment.
-
-**Exit criterion:** feasibility report plus automated test results.
-
-Do not call Windows production-ready at the end of this phase.
-
----
-
-## Phase 5 — Windows backend decision
-
-If AppContainer passes cleanly:
+The build's repository allowlist is a project file, in the directory that already holds reviewed
+boundary configuration:
 
 ```text
-promote AppContainer backend
+.ko-agent-sandbox/host-command/sbt/egress/allowed
 ```
 
-Otherwise:
+It inherits that directory's properties: the filter freezes it at any depth, the launcher reads it
+on the host, and it is reviewed in a pull request like any other file. It is a separate list from
+`egress/allowed` deliberately — the small prize behind the loopback port is the argument for
+binding one at all (§8.1).
+
+Adding `host-command/` extends a **closed namespace**. `SECURITY.md` refuses a launch on an entry
+the launcher does not read, so that a typo'd `egres/` cannot sit as ignored config; the rule cannot
+tell a typo from a name a newer launcher owns, so a project carrying this file is refused outright
+by an older launcher — no session at all, for every agent and every write mode. The remedy is to
+update the launcher and the image, and the refusal message must say so, since a reader who is told
+only "unknown entry" has nothing to check but spelling:
 
 ```text
-prototype restricted-token + SID/ACL + WFP backend
+a typo, or a policy file a newer launcher reads; update the launcher and image
 ```
 
-Compare only against the same common security contract.
+The namespace rule and its tests change in the same commit as the new path.
+
+Derived paths come from Coursier conventions and environment APIs. Advanced overrides
+(`cache-root`, `jvm-root`, `install-root`) are not added until needed.
 
 ---
 
-## Phase 6 — Hardening
+## 12. Documentation
 
-Add:
+This feature adds a host-side execution path to a product whose documents currently describe the
+container as the whole boundary. Update each claim at its binding site; each row lands in the phase
+that makes its claim true.
 
-- denial telemetry;
-- cleanup/recovery after interrupted Windows ACL setup;
-- symlink/junction/reparse-point tests;
-- path race tests;
-- proxy bypass tests;
-- forked-process tests;
-- snapshot dependency tests;
-- malicious `build.sbt` / `build.mill` fixtures;
-- CI coverage for each backend.
+| claim | canonical site | dependent site |
+| --- | --- | --- |
+| option and verb syntax, and each one's venue | README Reference / `--help` | parser tests |
+| the complete boundary, host side included | launcher diagram | README diagram, `SECURITY.md` |
+| what the container→host channel grants | `SECURITY.md` | §6, README option warning |
+| cache poisoning and its blast radius | `SECURITY.md` | §5.1 |
+| the host project path reaching the container | `SECURITY.md`, low-bandwidth | §6.2, §9.3 |
+| what a host build may write, and which venue to use | `authoritySection` | §2.1, §2.3, §9.2 |
+| the build allowlist file and its namespace | `SECURITY.md`, closed namespace | §11, its tests |
+| venue-switch cost and stale-artifact cleanup | `AGENTS-SANDBOX.md` | §9.2 |
+
+### 12.1 The README's opening claim becomes mode-dependent
+
+The README states that the sandbox reaches no user files except the project. With `--run-on-host`
+that is a default-mode claim: the option adds host-native execution reaching the Coursier JVM root,
+this project's agent cache root, and the build's own proxy. The opening names the exception, and the
+diagram shows the host-side path as a branch that exists only under the option and only on macOS.
+The threat analysis is not repeated there; it points to `SECURITY.md`.
+
+### 12.2 `SECURITY.md` needs a section, not a line
+
+The launcher's own diagram (`AgentSandboxLauncher.scala`, "This file is the canonical description of
+what the boundary is made of") gains the same branch, and `SECURITY.md` gains the argument behind
+it:
+
+- the channel is a container→host **execution** path, and what bounds it is §2.1 as Seatbelt
+  enforces it — not the container, which the build is not in;
+- the payload that matters is not code running inside the build sandbox but code the *host user*
+  runs later. This is the property `fuse/ko-agent-fs/doc/git-metadata.md` already defends, restated
+  for a second producer: `ko-agent-fs` guards it for writes through `/workspace`, the Seatbelt
+  profile guards it for writes by the build, and both must be named where the property is stated;
+- cache poisoning, with its blast radius drawn precisely: a poisoned agent cache reaches later
+  agent builds *of the same project*, which are themselves sandboxed; it does not reach the user's
+  own cache or any other project, because the separation is by root. `PLAN-COURSIER.md` reaches the
+  same property for the container by a Podman `:O` upper, and the two mechanisms differ only
+  because Seatbelt has no mount namespace;
+- the host project path, in the low-bandwidth channel list, since §6.2 injects it whether or not
+  same-path mounting is ever adopted;
+- that under `--write=reject` plus `--run-on-host` the project is no longer read-only to the
+  session, and why that is composition rather than escape.
 
 ---
 
-# 13. Security-focused test suite
+## 13. Implementation phases
 
-Maintain a deliberately hostile sample Scala project.
+### Phase 1 — Common policy and prerequisite validator
 
-Its build definition should attempt:
+Project canonicalization; Coursier JVM-root discovery and validation; agent cache-root construction
+and its outside-the-project check; sbt launcher validation; Mill bootstrap validation; the policy
+model; structured diagnostics.
 
-### Filesystem reads
+No backend yet.
+
+**Exit criterion:** unit tests classify supported and unsupported layouts correctly.
+
+### Phase 2 — Seatbelt backend
+
+Profile generation, the §7.2 guard rules, and proxy-only network rules.
+
+**Exit criterion:** §7.4 passes complete — including the four rows that test access-time evaluation,
+case folding, link creation and symlink canonicalization. A negative result there changes the
+design, not the code.
+
+### Phase 3 — Build egress proxy
+
+The wrapper-owned proxy, its allowlist file, and its binding to the session lock.
+
+**Exit criterion:** an allowed artifact resolves; a non-allowlisted host is refused with the
+wrapper's diagnostic; the proxy exits with its session under normal exit, error and kill.
+
+### Phase 4 — The channel
+
+`sandbox-run-on-host`, the host-side broker, `--run-on-host`, and the authority-section paragraph.
+
+**Exit criterion:** an agent-invoked `sbt test` runs on the host and returns its exit code; the
+teardown cases of §17 have answers with tests; `SECURITY.md`'s section, the launcher boundary
+diagram and the README opening and diagram (§12.1, §12.2) describe the path this phase creates.
+
+### Phase 5 — Launcher surface and hardening
+
+`--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race tests;
+proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures; the venue
+script of §14.7, and the coherence probes of §14.6.
+
+Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
+adds.
+
+---
+
+## 14. Security-focused test suite
+
+A deliberately hostile sample Scala project, whose build definition attempts each of the following.
+
+### 14.1 Filesystem reads
 
 ```text
 $HOME/.ssh/*
 $HOME/.aws/*
 $HOME/.gitconfig
+the launcher state root
 arbitrary sibling repository
 ```
 
 Expected: denied.
 
-### Filesystem writes
+### 14.2 Filesystem writes
 
 ```text
+PROJECT/.git/config and .git/hooks/*, at the root and nested
+PROJECT/.ko-agent-sandbox/egress/allowed, at any depth
 Coursier/jvm/*
 ~/.sbt/boot/*
-Coursier-installed sbt launcher
+the Coursier-installed sbt launcher
+the user's Coursier v1
 arbitrary $HOME path
 ```
 
 Expected: denied.
 
-### Allowed writes
+### 14.3 Allowed writes
 
 ```text
 PROJECT/*
-Coursier/v1/*
+agent cache v1/*
 session temporary directory/*
 ```
 
 Expected: allowed.
 
-### Process inheritance
+### 14.4 Process inheritance
 
-Have sbt/Mill launch:
+sbt and Mill launch a forked JVM, a shell command and a test process. Verify children retain
+containment — in particular that the §7.2 guard rules apply to them.
 
-```text
-forked JVM
-shell command
-test process
-```
-
-Verify children retain containment.
-
-### Network bypass
-
-Attempt:
+### 14.5 Network bypass
 
 ```text
-raw TCP to public IP
-HTTPS request ignoring proxy variables
-DNS/direct socket access
-allowed Maven request through proxy
-denied host through proxy
+raw TCP to public IP                    denied
+HTTPS request ignoring proxy variables  denied
+DNS/direct socket access                denied
+allowed Maven request through proxy     succeeds
+denied host through proxy               proxy-denied
 ```
 
-Expected:
+### 14.6 Workspace coherence
 
-```text
-direct paths                denied
-allowed proxy request       succeeds
-denied proxy request        proxy-denied
-```
+A host build writes `target/` on the host and the agent reads it back through `ko-agent-fs`. That
+is the host-writer/session-reader axis, and `--run-on-host` turns it from an occasional human edit
+into every build.
+
+`TODO.md` ("`--self-test`'s share rows") defers exactly this: `probe/coherency-probe.py` and
+`probe/lower-probe.py` are the only rows that reach the share, and they are hand-run. Fold them
+into `--self-test` as part of this work, under the constraints recorded there — a scratch lower in
+the host project directory, the host side driven by the launcher, the full venue recorded, the work
+directory gone on success and kept on failure, `.git` and `.ko-agent-sandbox` untouched.
+
+They are **not** gated on `--run-on-host`: the axis exists under `--write=live` whenever anyone
+edits on the host, an editor or a `git checkout` included, and the probes would be right to fold in
+even if this feature never shipped. What is gated on the flag is one further row — run a build
+through the channel, then read `target/` back from the container.
+
+### 14.7 Venue record
+
+The suite is a script CI runs, run by hand on macOS until CI exists. `TODO.md` sets the standard it
+must meet: a run with no venue recorded is not evidence for the next release. So it records macOS
+version, podman version and machine provider, the Coursier JDK, sbt and Mill versions, and the
+project filesystem's case sensitivity — the last because §2.1's fold rule depends on it.
 
 ---
 
-# 14. Symlink / path-escape requirements
+## 15. Symlink and path-escape requirements
 
-Do not rely only on textual path prefixes.
+Do not rely on textual path prefixes. Before passing roots to the backend, canonicalize the project
+root, the Coursier roots and the tool/JVM locations, and reject unexpected ancestor relationships.
 
-Before passing important roots to a backend:
+Tests must cover symlinks from inside the project to `$HOME`, `/`, Coursier read-only state, another
+repository, and — because §2.1's guard depends on it — to `.git` and `.ko-agent-sandbox` within the
+project itself.
 
-- canonicalize the project root;
-- canonicalize Coursier roots;
-- canonicalize tool/JVM locations;
-- reject unexpected ancestor relationships.
-
-Tests must cover symlinks from inside the project to:
-
-```text
-$HOME
-/
-Coursier read-only state
-another repository
-```
-
-The expected behavior is that a symlink must not provide authority beyond the sandbox's underlying filesystem policy.
-
-On Windows, add equivalent junction/reparse-point tests.
+A symlink must not provide authority beyond the underlying filesystem policy.
 
 ---
 
-# 15. Definition of done
+## 16. Definition of done
 
-A platform backend is complete only when:
-
-1. sbt and Mill compile/test normal Scala projects.
-2. Missing dependencies can be downloaded into Coursier `v1`.
+1. sbt and Mill compile and test normal Scala projects.
+2. Missing dependencies download into the project's agent Coursier cache.
 3. The build cannot modify Coursier-managed JVMs.
 4. The build cannot modify `~/.sbt/boot`.
-5. The build cannot access unrelated user data.
-6. Child processes inherit containment.
-7. Direct network access is impossible.
-8. The only egress path is the ko-agent egress proxy.
-9. The proxy can restrict Maven destination hosts.
-10. Denials fail closed and produce useful diagnostics.
-11. No backend broadens permissions automatically after failure.
-12. The common security contract is identical across platforms except for documented platform necessities.
+5. The build cannot modify the user's own Coursier cache.
+6. The build cannot read or write git control state or `.ko-agent-sandbox`, at any depth, in any
+   case, through a write, a link or a symlink.
+7. The build cannot access unrelated user data, the launcher state root included.
+8. Child processes inherit containment.
+9. Direct network access is impossible; the build's own proxy is the only egress path.
+10. The proxy restricts destination hosts, and exits with its session.
+11. Denials fail closed, produce useful diagnostics, and never fall back to another venue.
+12. The agent reaches the build through `sandbox-run-on-host`, and the session says so.
+13. `--stats`, `--reset-cache` and the reset inventory hold.
+14. Every §12 row is written at its canonical site, and no dependent site restates it.
 
 ---
 
-# 16. Open questions to resolve during implementation
+## 17. Open questions
 
-### macOS
+These are implementation experiments, not reasons to broaden the policy in advance. The first four
+change the design if they answer badly, and §7.4 is where they are answered.
 
-- Exact minimum non-user-data Seatbelt runtime allowances required by the selected Coursier JVM on macOS 26.4+.
-- Best local proxy transport: TCP loopback vs Unix socket/bridge.
+### Seatbelt semantics
 
-### Linux
+- Does SBPL canonicalize before matching? If a `file-write*` regex sees the path as given rather
+  than as resolved, then `PROJECT/x -> .git` followed by a write to `x/config` walks through the
+  `.git` deny, and §2.1's guard is not enforced.
+- Can an SBPL regex fold case, to match `policy.rs`'s `folds_to` on a case-insensitive APFS volume?
+- Is `file-link` the operation that covers a hardlink whose *target* is under a denied path?
+- What is the minimum set of non-user-data runtime reads the Coursier JVM needs on macOS 26.4+?
 
-- Exact minimal `/proc`, `/dev`, and other runtime mounts needed for JVM/sbt/Mill under bubblewrap.
-- Preferred Unix-socket proxy bridge implementation.
+### The channel
 
-### Windows
+- What kills a running host build when the user interrupts the agent, and what happens to it when
+  the sandbox container dies? An orphaned sbt on the host is a plausible failure mode, and §4's
+  scavenger reclaims directories, not processes.
 
-- Whether current Coursier JVM + sbt + Mill operate cleanly in a normal AppContainer.
-- Exact AppContainer network/WFP configuration required to make the proxy the sole egress path.
-- Whether inheritable root ACL entries are sufficient for all supported project/cache layouts without recursive ACL churn.
+### Mill
 
-These are implementation experiments, not reasons to broaden the common policy in advance.
+- Where Mill's bootstrap script downloads Mill itself, and which §2.1 row covers it. "sbt and Mill
+  together" is not deliverable until that row exists.
+
+### Claims to confirm rather than assume
+
+- Coursier's cache layout, and whether a self-consistent artifact and checksum pair is accepted
+  without revalidation. §5.1's decision does not depend on the details, but its text should not
+  assert them.
+- Whether zinc invalidates on JDK identity, and so whether a venue switch causes a rebuild, a
+  failed build, or neither. §9.2 and §9.3 are worded to hold whichever it is; the measured answer
+  sharpens them.
+- Whether anything in the image reads `.bsp/sbt.json`. A host build writes one naming a host
+  launcher, but with no BSP client installed nothing in the container acts on it, so it stays out
+  of `AGENTS-SANDBOX.md` until one exists. §12's `AGENTS-SANDBOX.md` row is where that lands.
 
 ---
 
-# 17. Source references
+## 18. Source references
 
-These references support the implementation assumptions used above:
-
-- Coursier managed JVMs and platform JVM-cache locations:  
+- Coursier managed JVMs and platform JVM-cache locations:
   https://get-coursier.io/docs/cli-java
-- Coursier artifact cache and platform `v1` locations:  
+- Coursier artifact cache and platform `v1` locations:
   https://get-coursier.io/upcoming/features-cache/
-- Coursier installation/application directory behavior:  
+- Coursier installation/application directory behavior:
   https://get-coursier.io/docs/cli-installation
-- Mill project-local bootstrap scripts (`mill` / `mill.bat`) and recommendation:  
+- Mill project-local bootstrap scripts:
   https://mill-build.org/mill/cli/installation-ide.html
-- bubblewrap bind mounts and `--ro-bind`:  
-  https://manpages.debian.org/unstable/bubblewrap/bwrap.1.en.html
-- Microsoft AppContainer launch/profile model:  
-  https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer
-- Microsoft `CreateAppContainerProfile`:  
-  https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile
 
----
+Same-path workspace mounting (§9.3), for whoever revisits it — both mount the project at its host
+path, for path legibility rather than for shared build state:
 
-## Recommended implementation order
-
-```text
-common validator/model
-        ↓
-macOS Seatbelt
-        ↓
-Linux bubblewrap
-        ↓
-Windows AppContainer feasibility prototype
-        ↓
-Windows backend decision
-        ↓
-cross-platform hardening
-```
-
-The principal design constraint is **fail closed rather than generalize**: support only the paths, repositories, JVM installation method, and build-tool installation method explicitly included in this contract.
+- Gemini CLI sandboxing:
+  https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
+- Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
+  https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/

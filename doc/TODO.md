@@ -71,6 +71,9 @@ is the axis they cannot reach, because their backing tree is the container's own
 (`DESIGN.md`). The rows that do reach it are hand-run probes with a host terminal beside them, and
 they are the same host-writer/session-reader shape the verb would have to take.
 
+`PLAN-SBT-ON-HOST.md` §14.6 schedules this work, because a host-native build makes that axis
+routine rather than occasional. The two rows below stay here as the standard it must meet.
+
 - [ ] Fold `probe/coherency-probe.py` and `probe/lower-probe.py` into `--self-test`: a scratch lower
   in the host project directory so the share is in the path, the host side driven by the launcher
   rather than by a person, and the full venue record — OS, podman version, machine provider, kernel,

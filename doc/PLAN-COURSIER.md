@@ -1,5 +1,15 @@
 # Plan: optional Coursier cache overlay
 
+`--run-on-host` (`PLAN-SBT-ON-HOST.md`) meets part of this plan's goal: an agent's sbt and Mill
+builds run on the host against a per-project cache of their own, so they neither warm nor need the
+container's. What this plan still carries is the container's own Scala tooling — the venue for
+`scala-cli`, `scalafmt`, `cs install` and for sbt when the host channel is not in force — and the
+image-home relocation that removes the copy-up cost.
+
+Both plans hold one property for the user's own Coursier cache — a sandboxed build never changes
+it — and reach it differently. Here a Podman `:O` upper keeps it readable and unwritable. The host
+build sandbox has no mount namespace to overlay with, so it separates by root instead.
+
 ## Outcome
 
 Add a repeatable opt-in `--cache-overlay` launch option whose kinds are a closed set.
