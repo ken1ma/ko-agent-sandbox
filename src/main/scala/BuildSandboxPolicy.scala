@@ -34,6 +34,7 @@ object BuildSandboxPolicy:
     case PrereqSbtBootMissing
     case CacheRootUnusable(reason: String)
     case WorkingDirectoryOutsideProject(requested: String)
+    case SessionTmpTooLong(path: Path, max: Int)
 
   /** Everything settled before a build is asked for; every path canonical. */
   case class BuildPolicy(
@@ -253,6 +254,28 @@ object BuildSandboxPolicy:
     env("HOME").filter(_.nonEmpty).flatMap(parsePath).map(_.resolve(".sbt/boot")) match
       case Some(boot) if isDirectory(boot) => Right(boot)
       case _                               => Left(Refusal.PrereqSbtBootMissing)
+
+  // ---------------------------------------------------------------------------
+  // The session temporary directory
+  // ---------------------------------------------------------------------------
+
+  /**
+   * How long SESSION_TMP may be. sbt's boot socket lives at
+   * `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<farmHash>/sbt-load.sock` (sbt's
+   * BootServerSocket.java), 50 characters past the directory once the hash is a signed 64-bit
+   * value, against the 104-byte `sun_path` a macOS UNIX-domain socket allows, NUL included. The
+   * server side refuses a longer path with a message; the client's JNI connect has no such check and
+   * dies in memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
+   *
+   * The wrapper points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
+   * directory, so this is the budget for all three.
+   */
+  val SessionTmpMaxLength: Int = 104 - 1 - "/.sbt/sbt-socket".length - "-9223372036854775808".length -
+    "/sbt-load.sock".length
+
+  def sessionTmpFits(path: Path): Either[Refusal, Path] =
+    if path.toString.length <= SessionTmpMaxLength then Right(path)
+    else Left(Refusal.SessionTmpTooLong(path, SessionTmpMaxLength))
 
   // ---------------------------------------------------------------------------
   // The channel's working directory

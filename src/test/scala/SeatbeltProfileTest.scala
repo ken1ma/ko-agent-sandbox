@@ -87,10 +87,18 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // The guard
   // --------------------------------------------------------------------------
 
-  test("both guarded names are denied at any depth, with their dots escaped"):
+  test("both guarded names are denied at any depth under the project, with their dots escaped"):
     val text = rendered()
-    assert(clue(text).contains("""(deny file-write* file-read* file-link (regex #"/\.git(/|$)"))"""))
-    assert(text.contains("""(deny file-write* file-read* file-link (regex #"/\.ko-agent-sandbox(/|$)"))"""))
+    val scope = "(deny file-write* file-read* file-link (require-all (subpath \"" + project + "\") "
+    assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
+    assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
+
+  test("the guard does not reach the session temp: a test's throwaway .git lives there"):
+    // The project path is the only path in the guard, and it is a subpath filter, never part of
+    // the regex.
+    val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
+    assert(guard.forall(_.contains(s"""(subpath "$project")""")))
+    assert(guard.forall(line => !line.contains("/tmp/")))
 
   test("the guard is the only regex; every wrapper-supplied path is a subpath literal"):
     val regexLines = rendered().linesIterator.filter(_.contains("(regex")).toSeq
@@ -126,25 +134,47 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("coursier/v1")))
     assert(writable.exists(_.contains("/tmp/")))
 
-  test("every ancestor of a granted path is a literal read"):
+  test("writable implies executable for the project and the session temp, never for the cache"):
+    // A child inherits the profile, so running what the build wrote adds no authority, and a
+    // suite's stubs live in the temp directory; the cache holds artifacts nothing runs.
+    val writable = rendered().linesIterator
+      .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
+      .toSeq
+    val executable = writable.filter(_.contains("process-exec*"))
+    assertEquals(executable.size, 2)
+    assert(executable.exists(_.contains(project.toString)))
+    assert(executable.exists(_.contains("/tmp/")))
+    assert(!writable.filter(_.contains("coursier/v1")).exists(_.contains("process-exec*")))
+
+  test("every ancestor of a granted path is a literal metadata read, never a listing"):
     // Measured: a subpath grant covers what is under it, never the directories above, and without
-    // the chain the JVM dies in the loader.
+    // the chain the JVM dies in the loader; and file-read* on the chain lists every ancestor.
     val text = rendered()
     for ancestor <- Seq("/Users", "/Users/kenichi", "/Users/kenichi/Library/Caches") do
-      assert(clue(text).contains(s"""(allow file-read* file-test-existence (literal "$ancestor"))"""), ancestor)
+      assert(clue(text).contains(s"""(allow file-read-metadata file-test-existence (literal "$ancestor"))"""), ancestor)
+    val literalReads = text.linesIterator.filter(line => line.contains("(literal") && line.contains("file-read*")).toSeq
+    assertEquals(literalReads, Seq(RootComponent, Devices))
     // The root is its own line and not repeated in the chain.
     assertEquals(text.linesIterator.count(_.contains("""(literal "/")""")), 1)
 
   test("/dev is in the ancestor chain, or SecureRandom cannot open /dev/urandom"):
-    assert(clue(rendered()).contains("""(allow file-read* file-test-existence (literal "/dev"))"""))
+    assert(clue(rendered()).contains("""(allow file-read-metadata file-test-existence (literal "/dev"))"""))
 
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
 
-  test("the proxy is the only outbound destination"):
+  test("the proxy is the only TCP destination, and UNIX sockets are confined to the session temp"):
     val text = rendered()
-    val outbound = text.linesIterator.filter(_.contains("network")).toSeq
-    assertEquals(outbound, Seq("""(allow network-outbound (remote tcp "localhost:51234"))"""))
+    val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      network,
+      Seq(
+        """(allow network-outbound (remote tcp "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")))""",
+      ),
+    )
 
   // --------------------------------------------------------------------------
   // The sbt launcher's second half
@@ -178,13 +208,22 @@ class SeatbeltProfileTest extends munit.FunSuite:
     )
     assert(rendered().contains(s"(subpath \"$distribution\")"))
 
-  test("Mill renders without the sbt-only paths"):
-    val mill = policy.copy(
-      tool = Tool.Mill,
-      launcher = project.resolve("mill"),
-      sbtBoot = None,
-    )
-    val text = render(inputs().copy(policy = mill, sbtDistribution = None))
+  private val millPolicy = policy.copy(
+    tool = Tool.Mill,
+    launcher = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
+    sbtBoot = None,
+  )
+
+  private def millText: String =
+    render(inputs().copy(policy = millPolicy, sbtDistribution = None))
       .fold(reason => fail(reason), identity)
+
+  test("Mill renders without the sbt-only paths"):
+    val text = millText
     assert(!clue(text).contains(".sbt/boot"))
-    assert(text.contains(project.resolve("mill").toString))
+    assert(text.contains(millPolicy.launcher.toString))
+
+  test("Mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):
+    val text = millText
+    assert(!clue(text).contains(project.resolve("mill").toString))
+    assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$project"))"""))

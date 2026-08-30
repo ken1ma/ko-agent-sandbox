@@ -99,7 +99,7 @@ write the cache through Coursier" is not a constraint that holds.
 ### 2.1 Filesystem
 
 ```text
-PROJECT/**                          read-write
+PROJECT/**                          read-write-execute
 PROJECT/**/.git/**                  inaccessible
 PROJECT/**/.ko-agent-sandbox/**     inaccessible
 
@@ -110,10 +110,15 @@ agent cache root/coursier/v1/**     read-write         # §5
 Coursier-installed sbt launcher     read/execute       # sbt only, two parts — §3.2
 user Mill download folder/**        read/execute       # Mill only
 
-session temporary directory         read-write         # fresh per session
+session temporary directory         read-write-execute # fresh per session
 
 everything else user-owned          inaccessible
 ```
+
+Writable implies executable for the project and the session temporary directory, and for nothing
+else. A child inherits the profile, so a build running what it wrote gains no authority it did not
+have — and a build's tests routinely write and run stubs, as this repository's own do. The agent
+cache is writable and not executable: it holds artifacts the JVM reads, and nothing there is run.
 
 The profile is deny-by-default: nothing outside this table is visible to the build. A runtime path
 a toolchain requires — the loader, libc, the CA bundle — is added narrowly, read-only, and only
@@ -289,8 +294,11 @@ every archive Coursier has ever extracted.
 
 **The inner launcher is `bash`, and resolves `java` from `PATH`.** It declares `java_cmd=java`, so
 left alone it would reach `/usr/bin/java` — a path the profile does not grant, and the stub §3.1
-rejects. The wrapper must force the resolved JDK, by `-java-home` or by putting its `bin` first on
-`PATH`; which of those sbt 2 honours is a §7.4 row, not an assumption.
+rejects. `-java-home` reaches the client JVM alone: the client starts the server by re-running the
+script (`-Dsbt.script=…`), without it, so the server's JVM is whatever `PATH` yields. Measured on a
+host with fifty orphaned servers, every one on `/usr/bin/java`; under the profile that fork dies
+silently and the client waits forever. The wrapper puts the resolved JDK's `bin` first on `PATH`
+(§4), and §7.4's "server runs the granted JDK" row is what holds it there.
 
 `~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
 
@@ -308,9 +316,22 @@ enabled" is not a later refinement but the normal path from the first build, so 
 server's lifetime rather than one build's; and the wrapper must end that server rather than leave it
 running when the session's lock is released.
 
-The client is the open half. sbt 2 defaults to `sbtn`, a native binary in the distribution, and
-`--jvm-client` selects a JVM client instead — which matters here because every JVM in the chain is
-already known to start under this profile while the native client is unproven.
+**One sbt server per project at a time.** A thin client attaches to whatever server
+`project/target/active.json` names, and the command then runs with *that server's* environment —
+its cache, its JVM, its confinement or lack of it. A client that cannot connect deletes the
+portfile and starts its own (`NetworkClient`). Both directions were measured: a sandboxed client
+found the user's server and was refused by §7.3's socket rule, which is the refusal that keeps a
+sandboxed build out of an unconfined JVM; and an unsandboxed warm-up attached to a host server and
+resolved into the wrong cache. The path is fixed and nothing in sbt makes a client ignore it, so
+the wrapper refuses to start while a live host server holds the portfile — the diagnostic says
+`sbt shutdown` — and the session's own server is gone, portfile included, before the lock is
+released. This is what "sbt on the host and in the sandbox at once" means for sbt 2, and it is
+a launch-time refusal rather than a coexistence.
+
+**The wrapper passes `--jvm-client`.** sbt 2 defaults to `sbtn`, a native binary in the
+distribution; under the profile it prints that it is starting the server and returns with no build
+run and nothing in its log, and no server is left to shut down. The JVM client completes the same
+commands, and is what every other JVM in the chain already proves.
 
 If a global sbt base is needed, redirect it into the project:
 
@@ -338,8 +359,8 @@ Also require a **pinned version** and a launcher the user has already provisione
 
 The sandbox does not fetch the launcher. Mill 1.x publishes native launchers — a real host's
 download folder holds entries like `1.1.8-native-mac-aarch64` beside older jars — so fetching it
-would need a writable *and* executable directory, the only one anywhere in §2.1. Provisioning it
-instead makes Mill follow sbt's rule rather than its own.
+would put an executable the sandbox chose into a directory the user's own `./mill` runs from,
+outside any sandbox. Provisioning it instead makes Mill follow sbt's rule rather than its own.
 
 That rule, stated once because it explains both tools: **the user provisions the launcher; the
 sandbox fetches only artifacts.** sbt's launcher comes from `cs install sbt` and everything else it
@@ -448,9 +469,32 @@ every published directory is locked by construction.
 The session lock is also what the build's proxy binds to (§8), so the answer does not change when
 an sbt server outlives a single invocation.
 
-A JVM writes a preference store under `$HOME` on first use. Point that store and `java.io.tmpdir`
-at the session temporary directory (`-Djava.util.prefs.userRoot`, `-Djava.io.tmpdir`), so a
-read-only home costs no diagnostics.
+**The wrapper root is `/private/tmp/ko-agent-<uid>`, and it is short on purpose.** sbt's boot
+socket is `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<hash>/sbt-load.sock`, 50 characters
+past the directory, against the 104-byte `sun_path` of a UNIX-domain socket; the server refuses a
+longer path with a message, the client's JNI connect has no check and dies in `memcpy`. Measured:
+52 characters run, 56 trap. The macOS per-user temporary directory is 49 before anything is added,
+so no session directory under it can fit, and `~/.cache/ko-agent-sandbox/…` fits only for a short
+user name. `BuildSandboxPolicy.SessionTmpMaxLength` is that budget, and the wrapper refuses a
+session directory over it. `/tmp` is shared and sticky, so the root is checked the way an XDG
+runtime directory is — this user's, mode 0700, not a symlink — and refused otherwise.
+
+**The build's environment is the contract, not its command line.** sbt 2's client forks the server
+with its own arguments, so a `-D` flag given to the client never reaches the server; the JVM
+settings travel in `JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and inherits:
+
+```text
+PATH                   COURSIER_JDK_HOME/bin first   the server's JVM, §3.2
+JAVA_TOOL_OPTIONS      -Djava.io.tmpdir=SESSION_TMP -Djava.util.prefs.userRoot=SESSION_TMP
+                       -Dsbt.global.base=SESSION_TMP/sbt-global
+XDG_RUNTIME_DIR        SESSION_TMP      sbt's boot socket
+SBT_GLOBAL_SERVER_DIR  SESSION_TMP      sbt's server socket
+COURSIER_CACHE         the agent v1     §5
+```
+
+`java.io.tmpdir` is set because on macOS a JVM takes it from `confstr(_CS_DARWIN_USER_TEMP_DIR)`,
+never from `TMPDIR`, and the preference store because a JVM writes one under `$HOME` on first use;
+both would otherwise be denials in a place the build cannot name.
 
 All paths passed to the sandbox backend are canonicalized before policy construction. Reject paths
 that cannot be canonicalized.
@@ -476,6 +520,12 @@ the two answer alike on one machine: `XDG_CACHE_HOME` when it is set and absolut
 the exception, so the fallback is tested first and a literal unexpanded value is never a path. A
 relative override is refused with its own message, as `stateRootOf` refuses one: a relative value
 resolves against the current directory, which is the repository being sandboxed.
+
+The build reaches it through one variable: the wrapper sets `COURSIER_CACHE` to the `v1` directory
+in the build's environment, which the sbt 2 launcher, sbt's own resolution and Coursier all honour.
+Nothing else routes it — with the variable unset the launcher resolves into the user's `v1`, which
+the profile denies, and dies in `createDirectories` with `FileAlreadyExistsException` on a directory
+it cannot see (§7.4's gate measured exactly that).
 
 Permissions, against §2.1:
 
@@ -619,7 +669,7 @@ supplying a dummy path.
 Each §2.1 row as the profile parameter that carries it:
 
 ```text
-PROJECT                           RW
+PROJECT                           RWX
 PROJECT/**/.git                   deny read, write and link, case-folded
 PROJECT/**/.ko-agent-sandbox      deny read, write and link, case-folded
 COURSIER_JDK_HOME                 RX
@@ -627,7 +677,7 @@ AGENT_CACHE_V1                    RW
 MILL_DOWNLOAD                     RX     # Mill
 SBT_BOOT                          RO     # sbt
 TOOL                              RX
-SESSION_TMP                       RW
+SESSION_TMP                       RWX
 ```
 
 `SESSION_TMP` is the writable child of the wrapper's per-session directory (§4), not the user's
@@ -641,10 +691,13 @@ direction rather than the safe one.
 
 **Every wrapper-supplied path is a literal, never interpolated into a regex.** `(subpath …)` and
 `(literal …)` for the parameters above; `(regex …)` only for the two name-pattern denies, which are
-patterns by intent. The paths in play are not regex-safe — the Coursier JDK home carries a
-percent-encoded `+`, a literal `+` and dots (§3.1), and the sbt install directory contains a
-space — and a path interpolated into a pattern matches more than itself, silently and in the
-permissive direction. `(subpath)` itself handles both characters correctly.
+patterns by intent — and scoped to the project with `(require-all (subpath PROJECT) (regex …))`,
+so even the guard's own scope is a literal. The scope is §2.1's: a `.git` a test builds in the
+session temp is reclaimed with the session and no host git runs there, and this repository's
+own suite makes such fixtures. The paths in play are not regex-safe — the Coursier JDK home
+carries a percent-encoded `+`, a literal `+` and dots (§3.1), and the sbt install directory
+contains a space — and a path interpolated into a pattern matches more than itself, silently and
+in the permissive direction. `(subpath)` itself handles both characters correctly.
 
 ### 7.2.1 What SBPL actually does
 
@@ -673,6 +726,9 @@ measurements; `system.sb` is the profile worth reading first.
 - **Every ancestor directory needs its own literal** — the same rule one level down. A deep
   `(subpath …)` with no chain above it denies everything, `/dev` included, which is how
   `SecureRandom` fails as "NativePRNG not available" rather than as a path.
+- **A literal `file-read*` on a directory is its listing.** The chain carries `file-read-metadata`
+  and `file-test-existence`; granted as `file-read*` it listed all of `~/Library/Caches` (§7.4's
+  gate). Only the root entry needs the wider read.
 - **`(subpath "/")` is not the union of `(subpath "/child")`.** The difference is the root entry,
   and reaching for `(subpath "/")` because only it appears to work grants the whole disk.
 - **A rule naming a non-canonical path grants rather than denies.** `/tmp` against `/private/tmp`
@@ -714,7 +770,7 @@ obvious simplification when the whitelist will not start.
 
 `(debug deny)` is worth taking. It makes denials visible from inside the profile, without the
 unified log's redaction or `(trace)`'s unavailability, and Bazel puts it at the top of every
-generated profile. `probe/build-profile-iterate.sh` now does the same.
+generated profile. `probe/build-profile-iterate.sh` does the same.
 
 The fold is a property of canonicalization, not of the regex: an SBPL pattern does not fold case by
 itself, so a rule written to rely on that would not fold on a case-sensitive volume where it
@@ -734,7 +790,12 @@ starts, not where it ends.
 
 ### 7.3 Network
 
-Seatbelt permits connections only to this build's proxy ingress endpoint (§8).
+Seatbelt permits connections only to this build's proxy ingress endpoint (§8), and UNIX-domain
+sockets only inside `SESSION_TMP`. The second rule exists because Seatbelt counts a local socket as
+network: without it sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits
+for it forever, which is how the gate first met it. `(local unix-socket (subpath …))` and
+`(remote unix-socket (subpath …))` are the measured spelling, and a socket outside the subpath
+stays denied; `system-socket` plays no part.
 
 The JVM and Coursier are configured to use it, but proxy settings are not the security boundary:
 Seatbelt must prevent bypass via direct sockets.
@@ -786,9 +847,22 @@ fetch allowed Maven artifact via proxy       allowed
 fetch non-allowlisted host via proxy         denied
 ```
 
-The four `.git` rows after the first are the ones that decide the design rather than the code: they
-test access-time evaluation, case folding, link creation and symlink canonicalization. §17 records
-them as unanswered until this gate runs.
+`probe/build-profile-gate.sh` runs this matrix under the profile `EmitBuildProfile` generates for
+the checkout it runs in, one row per line above, and reports PASS, FAIL or SKIP with what it saw.
+The proxy rows are SKIP until Phase 3 exists; the Mill rows run only in a checkout with a bootstrap.
+A "write" there is an open for append that writes nothing, and every marker it creates lives in a
+scratch tree it removes, so the matrix can run against a real repository.
+
+The four `.git` rows after the first re-run under the real profile what `seatbelt-semantics.sh`
+measured in isolation — access-time evaluation, case folding, link creation and symlink
+canonicalization. Their answers are known (§7.2.1); what this gate adds is that the generated
+profile, with every grant a build needs beside the guard, still gives them.
+
+Two rows measure the ancestor chain: "list an ancestor of a granted path" and "read another
+project's agent cache", whose parent is an ancestor of the granted `v1`. `file-read*` on a
+directory is its listing, and the gate showed a chain granted that way listing all of
+`~/Library/Caches`; the chain is `file-read-metadata`, and only the root entry carries the wider
+read (§7.2.1).
 
 ---
 
@@ -1067,16 +1141,19 @@ No backend yet.
 
 Profile generation, the §7.2 guard rules, and proxy-only network rules.
 
-**Exit criterion:** §7.4 passes complete — including the four rows that test access-time evaluation,
-case folding, link creation and symlink canonicalization. A negative result there changes the
-design, not the code.
+**Exit criterion:** `probe/build-profile-gate.sh` reports no FAIL, with only the Phase 3 proxy rows
+and — in a checkout without a bootstrap — the Mill rows as SKIP; the client sbt 2 runs under the
+profile is decided and §3.2 says which; `probe/runtime-authority.txt` holds every grant the gate
+needed and nothing else. A negative result on the four `.git` rows changes the design, not the
+code.
 
 ### Phase 3 — Build egress proxy
 
 The wrapper-owned proxy, its allowlist file, and its binding to the session lock.
 
-**Exit criterion:** an allowed artifact resolves; a non-allowlisted host is refused with the
-wrapper's diagnostic; the proxy exits with its session under normal exit, error and kill.
+**Exit criterion:** §7.4's two proxy rows turn from SKIP to PASS — an allowed artifact resolves and
+a non-allowlisted host is refused with the wrapper's diagnostic; the proxy exits with its session
+under normal exit, error and kill.
 
 ### Phase 4 — The channel
 
@@ -1183,7 +1260,7 @@ through the channel, then read `target/` back from the container.
 
 ### 14.8 The probes, and when to run them
 
-Three hand-run instruments under `probe/`, each with a distinct trigger, each carrying it in its own
+Hand-run instruments under `probe/`, each with a distinct trigger, each carrying it in its own
 header. They are not tests: a test that fails is a defect in this repository, while a probe that
 answers differently is a finding about the host.
 
@@ -1192,6 +1269,8 @@ answers differently is a finding about the host.
 | `host-layout.sh` | a new machine, or Coursier or the JDK is upgraded |
 | `sbt-exec-chain.sh` | sbt is upgraded or reinstalled — the distribution path moves with it |
 | `seatbelt-semantics.sh` | each new macOS release |
+| `build-profile-iterate.sh` | a build stops under the profile and nothing names the missing grant |
+| `build-profile-gate.sh` | the profile generator changes, and before each release: it is §7.4 |
 
 `seatbelt-semantics.sh` is the one with teeth. §7.2's table is what it measured, and the guard is
 built on those answers; if E3, E4 or E5 stops answering DENIED, the profile no longer enforces what
@@ -1255,18 +1334,23 @@ Canonicalization, case folding, access-time evaluation and hardlinks are measure
 answers. What remains:
 
 - What is the minimum set of non-user-data runtime reads the Coursier JVM needs on macOS 26.4+?
-- Which paths sbt 2's `sbtn` native client needs, or whether the wrapper should pin `--jvm-client`
-  and stay in JVMs the profile is known to start (§3.2). The server starts under the profile; the
-  client is where a run currently stops, with nothing written to its own log.
-- Why the JVM running sbt reported itself as `java.base@23.0.2` when `-java-home` named a 25.0.4
-  JDK and `java -version` under the same profile agreed it was 25.0.4. If a build can run a JVM the
-  wrapper never validated, §3.1 is a statement the profile does not enforce.
+- What `sbtn` needs under the profile. Not a blocker — §3.2 pins `--jvm-client` — but a gate row
+  keeps measuring it, and if it starts passing the pin becomes a choice.
+
+- `mach-lookup` is granted unfiltered, and the system tool directories are executable (a build's
+  scripts need `find`, `mount` and whatever else; `probe/runtime-authority.txt`). Together those
+  let a build reach any Mach service — `open` through LaunchServices would start an application
+  outside the profile. Measure the services a build actually needs, as `ops` measures operation
+  families, and filter to them (`(allow mach-lookup (global-name …))`, the shape Apple's profiles
+  use); §14.5's process-inheritance rows are where the answer is checked.
 
 ### The channel
 
 - What kills a running host build when the user interrupts the agent, and what happens to it when
-  the sandbox container dies? An orphaned sbt on the host is a plausible failure mode, and §4's
-  scavenger reclaims directories, not processes.
+  the sandbox container dies? An orphaned sbt on the host is not plausible but measured: the
+  probes left fifty servers running, some for two weeks, because `sbt shutdown` reaches only a
+  server whose socket it can find. §4's scavenger reclaims directories, not processes; the wrapper
+  has to end the server it started by pid, and the gate does so at exit.
 
 ### Claims to confirm rather than assume
 
@@ -1292,6 +1376,8 @@ answers. What remains:
   https://get-coursier.io/docs/cli-installation
 - Mill project-local bootstrap scripts:
   https://mill-build.org/mill/cli/installation-ide.html
+- sbt server: domain-socket and TCP modes, the port file, discovery and the token (§3.2, §7.3):
+  https://www.scala-sbt.org/1.x/docs/sbt-server.html
 
 Same-path workspace mounting (§9.3), for whoever revisits it — both mount the project at its host
 path, for path legibility rather than for shared build state:

@@ -15,6 +15,10 @@ Preserve the boundaries, such as scope and ownership, including how work is sepa
 If completing the request requires changing or crossing a boundary, name it and its consequence
 and ask.
 
+Before reasoning, designing, or experimenting about how anything works, read what already states
+it — the official documentation, the source, the issue tracker, this repository's own documents.
+Experiments and reasoning are for what those leave open, never a substitute for reading them.
+
 
 # Writing style
 

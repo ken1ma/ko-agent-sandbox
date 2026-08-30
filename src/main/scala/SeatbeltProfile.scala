@@ -17,14 +17,16 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import BuildSandboxPolicy.{BuildPolicy, Tool}
+import BuildSandboxPolicy.BuildPolicy
 
 object SeatbeltProfile:
 
   /**
-   * `.git` and `.ko-agent-sandbox` at any depth. A pattern by intent, and the only regex in the
-   * profile: everything else is a wrapper-supplied path, which a regex would mangle — the Coursier
-   * JDK home alone carries a percent-encoded `+`, a literal `+` and dots.
+   * `.git` and `.ko-agent-sandbox` at any depth under the project. A pattern by intent, and the
+   * only regex in the profile: everything else is a wrapper-supplied path, which a regex would
+   * mangle — the Coursier JDK home alone carries a percent-encoded `+`, a literal `+` and dots.
+   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
+   * conjoins a literal filter with the name pattern.
    *
    * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. Case is not folded
    * here and does not need to be: SBPL canonicalizes the accessed path, and on a case-insensitive
@@ -51,13 +53,15 @@ object SeatbeltProfile:
   val RootComponent: String = """(allow file-read* file-test-existence (literal "/"))"""
 
   /**
-   * Every directory between `/` and a granted path, as a literal read plus `file-test-existence`.
+   * Every directory between `/` and a granted path, as a literal `file-read-metadata` plus
+   * `file-test-existence`.
    *
    * Resolving a path authorizes each component, and a `(subpath …)` grant covers what is *under*
    * it, never the directories above. Measured: with only the deep grants, `java -version` dies in
    * the loader; with the chain present it runs, and the chain is what a coarse `/Users` grant was
-   * standing in for. A literal names the directory entry, not its contents, so the chain reveals
-   * nothing but the existence of directories whose names the profile already contains.
+   * standing in for. Metadata and not `file-read*`, because on a directory `file-read*` is its
+   * listing: probe/build-profile-gate.sh showed a chain granted that way listing all of
+   * `~/Library/Caches`. Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with
    * `file-test-existence` (`/System/Library/Sandbox/Profiles/dyld-support.sb`), and gives the
@@ -99,8 +103,13 @@ object SeatbeltProfile:
   def render(inputs: ProfileInputs): Either[String, String] =
     val policy = inputs.policy
     val readOnly = Seq(policy.jdkHome) ++ policy.sbtBoot ++ inputs.sbtDistribution ++ Seq(policy.launcher)
-    val readWrite = Seq(policy.project, policy.coursierV1, inputs.sessionTmp)
-    val everyPath = readOnly ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
+    // Writable implies executable for the project and the session temp, never for the cache:
+    // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
+    // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
+    // JVM reads, and nothing there is run.
+    val readWriteExec = Seq(policy.project, inputs.sessionTmp)
+    val readWrite = Seq(policy.coursierV1)
+    val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     everyPath.find(path => !usable(path)) match
       case Some(bad) => Left(nonCanonicalReason(bad))
@@ -120,9 +129,9 @@ object SeatbeltProfile:
         // the JVM cannot open /dev/urandom — SecureRandom then fails with "NativePRNG not
         // available", which names the algorithm rather than the path.
         (ancestorLiterals(
-          readOnly ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths,
+          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths,
         ))
-          .foreach(path => lines += s"(allow file-read* file-test-existence ${literal(path)})")
+          .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
         lines += ";; A process at all: not filesystem authority, and none of it reaches user data."
         lines += "(allow process-fork sysctl-read mach-lookup)"
@@ -136,20 +145,28 @@ object SeatbeltProfile:
         lines += ";; The build's own tools, never writable by it."
         readOnly.foreach(path => lines += s"(allow process-exec* file-read* ${subpath(path)})")
         lines += ""
-        lines += ";; What the build may change."
+        lines += ";; What the build may change, and run: a child inherits this profile."
+        readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
+        lines += ";; What the build may change but never runs."
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
         lines += ";; The build's own proxy, and no other destination."
         lines += s"""(allow network-outbound (remote tcp "localhost:${inputs.proxyPort}"))"""
+        // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
+        // from bind() on its boot socket and the client waits for it forever. Confined to the
+        // session temp, where §4 points XDG_RUNTIME_DIR and SBT_GLOBAL_SERVER_DIR; measured that a
+        // socket outside the subpath stays denied.
+        lines += ";; sbt's boot and server sockets, inside the session temp and nowhere else."
+        lines += "(allow network-bind network-inbound network-outbound " +
+          s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
         lines += ""
         lines += ";; The guard, last. §2.1: repository state a later host git command would execute,"
-        lines += ";; and the boundary configuration a later launch would read."
+        lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
+        lines += ";; a .git a test builds in the session temp is reclaimed with the session, and no"
+        lines += ";; host git ever runs there."
         GuardedNames.foreach: name =>
-          lines += s"(deny file-write* file-read* file-link ${anyDepth(name)})"
+          lines += s"(deny file-write* file-read* file-link (require-all ${subpath(policy.project)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
-
-  /** The tool this profile is for, which decides whether the sbt-only paths are present. */
-  def toolOf(policy: BuildPolicy): Tool = policy.tool
 
   /**
    * The second half of the sbt launcher: what the `cs`-installed wrapper execs, which is an

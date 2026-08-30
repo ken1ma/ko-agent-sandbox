@@ -3,9 +3,9 @@
 //
 // Test scope on purpose. The durable answer is a management verb, which belongs with the rest of
 // the launcher surface in Phase 5; until then a profile emitter in the shipped jar would be a
-// command nobody documented. probe/build-profile-iterate.sh is its caller.
+// command nobody documented. probe/build-profile-gate.sh and probe/build-profile-iterate.sh are its callers.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [runtime-authority-file]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill]"
 //
 // The runtime-authority file is one absolute path per line, `#` comments allowed, `x ` prefix for
 // a path that must also be executable. It starts empty: PLAN-SBT-ON-HOST.md §2.1 admits a runtime
@@ -24,7 +24,7 @@ object EmitBuildProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitBuildProfile <out.sb> [runtime-authority-file]")
+      Console.err.println("usage: EmitBuildProfile <out.sb> [authority-file] [sbt|mill]")
       sys.exit(2)
 
     val os = Os.Mac
@@ -35,24 +35,41 @@ object EmitBuildProfile:
       Console.err.println(s"refused: $reason")
       sys.exit(1)
 
+    val tool = args.lift(2).map(_.toLowerCase) match
+      case None | Some("sbt") => Tool.Sbt
+      case Some("mill")       => Tool.Mill
+      case Some(other)        => fail(s"unknown tool $other")
+
     val coursierCache = coursierCacheRoot(os, env).getOrElse(fail("no Coursier cache root"))
     val jdk = resolveJdkHome(env, coursierCache, realPath, os).fold(fail, identity)
-    val installDir = coursierInstallDir(os, env).getOrElse(fail("no Coursier install directory"))
-    val launcher = validateSbtLauncher(installDir.resolve("sbt"), installDir, realPath, os).fold(fail, identity)
 
-    val distribution = SeatbeltProfile
-      // ISO-8859-1, not UTF-8: cs appends a jar to its launchers, so the file is not text.
-      // Every byte maps to a char, which leaves the ASCII path this searches for intact.
-      .sbtDistribution(String(Files.readAllBytes(launcher), ISO_8859_1), coursierCache)
-      .map(SeatbeltProfile.distributionHome)
-      .flatMap(realPath)
+    // The launcher each tool is started through, and the sbt-only paths that go with it: §3.2's
+    // two-part launcher and ~/.sbt/boot for sbt, §3.3's provisioned native launcher for Mill.
+    val (launcher, distribution, boot) = tool match
+      case Tool.Sbt =>
+        val installDir = coursierInstallDir(os, env).getOrElse(fail("no Coursier install directory"))
+        val sbt = validateSbtLauncher(installDir.resolve("sbt"), installDir, realPath, os).fold(fail, identity)
+        val home = SeatbeltProfile
+          // ISO-8859-1, not UTF-8: cs appends a jar to its launchers, so the file is not text.
+          // Every byte maps to a char, which leaves the ASCII path this searches for intact.
+          .sbtDistribution(String(Files.readAllBytes(sbt), ISO_8859_1), coursierCache)
+          .map(SeatbeltProfile.distributionHome)
+          .flatMap(realPath)
+        (sbt, home, sbtBoot(env, Files.isDirectory(_)).toOption)
+      case Tool.Mill =>
+        validateMillBootstrap(project, path => Files.isExecutable(path) && Files.isRegularFile(path))
+          .fold(fail, identity)
+        val version = millVersion(project, env, readLines).fold(fail, identity)
+        val downloads = millDownloadDir(env).getOrElse(fail("no Mill download folder"))
+        val provisioned = millLauncher(downloads, version, entriesOf).fold(fail, identity)
+        (realPath(provisioned).getOrElse(fail(s"$provisioned vanished")), None, None)
 
     val cacheRoot = cacheRootOf(os, env).fold(fail, identity)
     cacheRootOutsideProject(cacheRoot, project, os).fold(fail, identity)
     val v1 = agentCoursierV1(cacheRoot, projectIdOf(project, os))
     Files.createDirectories(v1)
 
-    val sessionTmp = Files.createTempDirectory("ko-agent-build-").toRealPath()
+    val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
 
     val (reads, executes) = args.lift(1).map(Paths.get(_)) match
       case None => (Seq.empty[Path], Seq.empty[Path])
@@ -68,9 +85,9 @@ object EmitBuildProfile:
         project = project,
         jdkHome = jdk,
         coursierV1 = v1.toRealPath(),
-        tool = Tool.Sbt,
+        tool = tool,
         launcher = launcher,
-        sbtBoot = sbtBoot(env, Files.isDirectory(_)).toOption,
+        sbtBoot = boot,
       ),
       sessionTmp = sessionTmp,
       sbtDistribution = distribution,
@@ -80,11 +97,48 @@ object EmitBuildProfile:
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
     Files.writeString(Paths.get(args(0)), profile)
-    // The driver needs the session temp: the profile grants it, and without -Djava.io.tmpdir the
-    // JVM writes to $TMPDIR instead, which it does not grant.
+    // The driver needs the session temp: the profile grants it, and the JVM otherwise writes to the
+    // per-user temporary directory, which it does not grant.
     Files.writeString(Paths.get(args(0) + ".env"), s"SESSION_TMP=$sessionTmp\n")
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
     Console.err.println(s"session temp: $sessionTmp")
     Console.err.println(s"agent cache: $v1")
-    if distribution.isEmpty then Console.err.println("warning: no sbt distribution found in the launcher")
+    Console.err.println(s"tool: $tool")
+    if tool == Tool.Sbt && distribution.isEmpty then
+      Console.err.println("warning: no sbt distribution found in the launcher")
+
+  /**
+   * `/private/tmp/ko-agent-<uid>/<session>/tmp`: short enough for SessionTmpMaxLength where the
+   * per-user temporary directory is not, and checked the way an XDG runtime directory is — owned by
+   * this user, mode 0700, no symlink — because /tmp is shared and sticky and anyone can pre-create
+   * a name there.
+   */
+  private def newSessionTmp(): Path =
+    import java.nio.file.attribute.PosixFilePermissions
+    val uid = com.sun.security.auth.module.UnixSystem().getUid
+    val root = Paths.get(s"/private/tmp/ko-agent-$uid")
+    val ownerOnly = PosixFilePermissions.fromString("rwx------")
+    if !Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS) then
+      Files.createDirectory(root, PosixFilePermissions.asFileAttribute(ownerOnly))
+    val me = root.getFileSystem.getUserPrincipalLookupService.lookupPrincipalByName(System.getProperty("user.name"))
+    if Files.isSymbolicLink(root) || !Files.isDirectory(root) then
+      Console.err.println(s"refused: $root is not a directory"); sys.exit(1)
+    if Files.getOwner(root) != me || Files.getPosixFilePermissions(root) != ownerOnly then
+      Console.err.println(s"refused: $root is not this user's, mode 0700"); sys.exit(1)
+    val session = java.util.HexFormat.of().toHexDigits(java.security.SecureRandom().nextInt()).take(6)
+    val tmp = root.resolve(session).resolve("tmp")
+    Files.createDirectories(tmp, PosixFilePermissions.asFileAttribute(ownerOnly))
+    tmp.toRealPath()
+
+  private def readLines(path: Path): Option[Seq[String]] =
+    Option.when(Files.isReadable(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
+
+  private def entriesOf(dir: Path): Seq[String] =
+    if !Files.isDirectory(dir) then Seq.empty
+    else
+      val stream = Files.list(dir)
+      try
+        import scala.jdk.CollectionConverters.*
+        stream.iterator().asScala.map(_.getFileName.toString).toSeq
+      finally stream.close()
