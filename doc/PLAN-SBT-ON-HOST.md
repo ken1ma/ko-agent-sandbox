@@ -102,12 +102,12 @@ PROJECT/**                          read-write
 PROJECT/**/.git/**                  inaccessible
 PROJECT/**/.ko-agent-sandbox/**     inaccessible
 
-user Coursier JVM root/**           read/execute       # the managed JVM, never written
+resolved Coursier JDK home/**       read/execute       # §3.1, one home, never a root
 agent cache root/coursier/v1/**     read-write         # §5
-agent cache root/mill/download/**   read-write         # §5, Mill only
 
 ~/.sbt/boot/**                      read-only          # sbt only
 Coursier-installed sbt launcher     read/execute       # sbt only
+user Mill download folder/**        read/execute       # Mill only
 
 session temporary directory         read-write         # fresh per session
 
@@ -196,6 +196,8 @@ Coursier JVM missing               -> fail before entering sandbox
 sbt not installed by cs            -> fail before entering sandbox
 sbt bootstrap artifacts missing    -> build fails; report ~/.sbt/boot is read-only
 Mill bootstrap absent              -> fail before entering sandbox
+Mill version unpinned              -> fail before entering sandbox
+Mill launcher not provisioned      -> fail before entering sandbox; ask the user to run ./mill
 repository not allowlisted         -> proxy denial; report requested host
 filesystem path not allowed        -> sandbox denial; report path when observable
 backend unavailable                -> fail; report; do not run in the container
@@ -207,29 +209,41 @@ backend unavailable                -> fail; report; do not run in the container
 
 ### 3.1 JVM
 
-Only Coursier-managed JVMs are supported, and the wrapper resolves one before entering the sandbox
-so the profile can name it and `JAVA_HOME` can point at it.
+Only Coursier-managed JVMs are supported. The wrapper resolves one before entering the sandbox and
+the profile grants that **one canonical JDK home**, not a root directory containing JDKs.
 
-Expected managed JVM root:
+`JAVA_HOME` is the only source. `java` on `PATH` is `/usr/bin/java`, a macOS stub that resolves
+through `JAVA_HOME` or `/usr/libexec/java_home`; it reports the right JVM while being the wrong
+path, so validating the binary establishes nothing. Validate what it redirects to.
+
+There is no `jvm/` directory to name. A current Coursier unpacks a JDK into its archive cache, and
+the resulting home is a URL-derived path:
 
 ```text
-~/Library/Caches/Coursier/jvm/
+~/Library/Caches/Coursier/arc/https/github.com/adoptium/temurin25-binaries/releases/
+  download/jdk-25.0.4%252B7/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.4_7.tar.gz/
+  jdk-25.0.4+7/Contents/Home
 ```
 
-This is the *user's* Coursier cache, not the agent cache root of §5. A managed JVM is read-only to
-the build, so sharing it exposes no write path, and duplicating a JDK per project would cost
-hundreds of megabytes for nothing.
+Granting the `arc` root instead would hand the build every archive Coursier has ever extracted —
+gigabytes of unrelated content — so the grant is the resolved home and the check is that it
+canonicalizes to somewhere under the user's Coursier cache root.
 
-Resolve symlinks and canonical paths, and reject a JVM outside that root.
+That path shape is also why §7.2 forbids building a path rule by interpolation into a regex: it
+carries a percent-encoded `+`, a literal `+`, dots, and a directory named like an archive.
 
-Do not support:
+Reject:
 
 ```text
+/usr/bin/java                       the stub; it is a redirector, not a JDK
 /Library/Java/JavaVirtualMachines/**
 /opt/homebrew/**
 SDKMAN JVMs
-other arbitrary JAVA_HOME locations
+JAVA_HOME unset, or resolving outside the Coursier cache root
 ```
+
+The JDK is read-only to the build, so sharing the user's copy exposes no write path, and
+duplicating one per project would cost hundreds of megabytes for nothing.
 
 ### 3.2 sbt
 
@@ -240,7 +254,14 @@ cs install sbt
 ```
 
 Resolve the `sbt` launcher and verify it belongs to the Coursier application-install directory. Do
-not accept an arbitrary `sbt` from `PATH`.
+not accept an arbitrary `sbt` from `PATH`. On macOS that directory is
+
+```text
+~/Library/Application Support/Coursier/bin
+```
+
+not the XDG spelling the container image uses — and it contains a space, which every path this
+plan hands to a profile, a process or the channel has to survive.
 
 `~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
 
@@ -268,15 +289,52 @@ Require a project-local bootstrap script:
 
 Do not support a globally installed Mill.
 
-The script downloads the Mill launcher itself, and where it puts it is settled by the script rather
-than inferred: `MILL_USER_CACHE_DIR` defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/mill`, and the
-download folder is `$MILL_USER_CACHE_DIR/download` unless `MILL_FINAL_DOWNLOAD_FOLDER` names
-another. That default is a machine-wide directory the user's own Mill runs read, so §5.1's argument
-applies unchanged and the wrapper sets `MILL_FINAL_DOWNLOAD_FOLDER` into this project's agent cache
-root instead.
+Also require a **pinned version** and a launcher the user has already provisioned:
 
-The script also stages its download at `${MILL_OUTPUT_DIR:-out}/mill-temp-download`, inside the
-project, which `PROJECT` already covers. It needs no row of its own.
+```text
+./mill --version        # once, in a host terminal, whenever the pinned version changes
+```
+
+The sandbox does not fetch the launcher. Mill 1.x publishes native launchers — a real host's
+download folder holds entries like `1.1.8-native-mac-aarch64` beside older jars — so fetching it
+would need a writable *and* executable directory, the only one anywhere in §2.1. Provisioning it
+instead makes Mill follow sbt's rule rather than its own.
+
+That rule, stated once because it explains both tools: **the user provisions the launcher; the
+sandbox fetches only artifacts.** sbt's launcher comes from `cs install sbt` and everything else it
+needs is a jar the JDK reads, fetched into the writable agent cache through the proxy. Mill's
+launcher *is* the fetched thing, and it is an executable. Provisioned, it is read/execute like
+sbt's, out of `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download` — or wherever
+`MILL_FINAL_DOWNLOAD_FOLDER` or `MILL_USER_CACHE_DIR` redirects it.
+
+Two consequences worth having: the build needs no GitHub release CDN, since only the bootstrap's
+own download ever used one (§11); and a version bump becomes an explicit host step rather than
+something a build definition performs on itself.
+
+### Detecting that the host step is needed
+
+Before entering the sandbox, resolve the pinned version the way the bootstrap does — four file
+reads, in its order — and look for a download-folder entry whose name *starts with* it:
+
+```text
+MILL_VERSION → .mill-version → .config/mill-version
+             → build.mill.yaml (mill-version:) → build.mill (//| mill-version:)
+```
+
+Prefix matching is what keeps this reliable: it never replicates `ARTIFACT_SUFFIX`'s per-platform,
+per-version case logic, which is the half Mill changes between releases.
+
+Unpinned is a refusal rather than a fallback. The bootstrap's own fallback is a
+`DEFAULT_MILL_VERSION` assignment inside the committed script, and grepping project-controlled
+shell source to decide which host executable to grant is the wrong shape.
+
+The script's `MILL_TEST_DRY_RUN_LAUNCHER_SCRIPT=1` mode prints the exact launcher path without
+downloading, which would remove the prefix match — and it is not used. Reading the version is a
+read; asking the script is executing agent-authored shell on the host with full user authority,
+which is what §2.1 exists to prevent.
+
+The script stages a download at `${MILL_OUTPUT_DIR:-out}/mill-temp-download`, inside the project,
+which `PROJECT` already covers. It needs no row of its own.
 
 ---
 
@@ -365,7 +423,6 @@ not granted, not mounted and not read.
 
 ```text
 <cache root>/ko-agent-sandbox/cache/<projectId>/coursier/v1/       sbt, scala, Coursier
-<cache root>/ko-agent-sandbox/cache/<projectId>/mill/download/     MILL_FINAL_DOWNLOAD_FOLDER
 ```
 
 Grouping by project inside the kind directory makes one project's caches one directory: a
@@ -383,10 +440,10 @@ Permissions, against §2.1:
 
 ```text
 agent cache root/coursier/v1/**   RW      artifacts the build downloads
-agent cache root/mill/download/** RW      the Mill launcher the bootstrap fetches
-user Coursier JVM root/**         RX      §3.1
+resolved Coursier JDK home/**     RX      §3.1
+user Mill download folder/**      RX      §3.3, provisioned rather than fetched
 user Coursier v1/**               absent  not granted at all
-user Mill cache/**                absent  not granted at all
+user Mill cache, except download/ absent  not granted at all
 ```
 
 ### 5.1 Why not the user's cache
@@ -499,9 +556,9 @@ The wrapper supplies:
 
 ```text
 PROJECT
-COURSIER_JVM_ROOT
+COURSIER_JDK_HOME
 AGENT_CACHE_V1
-AGENT_MILL_DOWNLOAD
+MILL_DOWNLOAD
 TOOL
 SBT_BOOT
 SESSION_TMP
@@ -524,9 +581,9 @@ Each §2.1 row as the profile parameter that carries it:
 PROJECT                           RW
 PROJECT/**/.git                   deny read, write and link, case-folded
 PROJECT/**/.ko-agent-sandbox      deny read, write and link, case-folded
-COURSIER_JVM_ROOT                 RX
+COURSIER_JDK_HOME                 RX
 AGENT_CACHE_V1                    RW
-AGENT_MILL_DOWNLOAD               RW     # Mill
+MILL_DOWNLOAD                     RX     # Mill
 SBT_BOOT                          RO     # sbt
 TOOL                              RX
 SESSION_TMP                       RW
@@ -534,6 +591,13 @@ SESSION_TMP                       RW
 
 `SESSION_TMP` is the writable child of the wrapper's per-session directory (§4), not the user's
 `TMPDIR`, and the session directory holding the lock is named in no rule.
+
+**Every wrapper-supplied path is a literal, never interpolated into a regex.** `(subpath …)` and
+`(literal …)` for the parameters above; `(regex …)` only for the two name-pattern denies, which are
+patterns by intent. The paths in play are not regex-safe — the Coursier JDK home carries a
+percent-encoded `+`, a literal `+` and dots (§3.1), and the sbt install directory contains a
+space — and a path interpolated into a pattern matches more than itself, silently and in the
+permissive direction.
 
 Do not pre-authorize broad paths such as `/System/**`, `/usr/**` or `/opt/homebrew/**` unless
 testing proves a specific stable runtime read is required, and then add the narrowest rule that
@@ -560,7 +624,7 @@ java -version
 sbt --version
 sbt compile
 sbt test
-./mill --version          # with an empty agent cache, so the bootstrap fetch is exercised
+./mill --version          # with the launcher provisioned, which is the supported state
 ./mill __.compile
 ./mill __.test
 ```
@@ -571,6 +635,7 @@ Negative tests:
 read ~/Documents/...                         denied
 read ~/.ssh/...                              denied
 read the launcher state root                 denied
+read the user's other Coursier arc entries   denied
 write Coursier/jvm/...                       denied
 write ~/.sbt/boot/...                        denied
 write the Coursier-installed sbt launcher    denied
@@ -582,9 +647,9 @@ link PROJECT/x -> PROJECT/.git/config        denied
 write via PROJECT/link -> PROJECT/.git       denied
 write PROJECT/.ko-agent-sandbox/...          denied
 write the user's Coursier v1                 denied
-write the user's Mill download cache         denied
+write the user's Mill download folder        denied
+read and execute the Mill launcher           allowed
 write agent cache coursier/v1/...            allowed
-write agent cache mill/download/...          allowed
 write PROJECT/...                            allowed
 write session temporary directory            allowed
 connect directly to arbitrary Internet host  denied
@@ -748,6 +813,8 @@ Stable error categories:
 PREREQ_JVM_NOT_COURSIER
 PREREQ_SBT_NOT_COURSIER
 PREREQ_MILL_BOOTSTRAP_MISSING
+PREREQ_MILL_VERSION_UNPINNED
+PREREQ_MILL_LAUNCHER_MISSING
 PREREQ_SBT_BOOT_MISSING
 
 FS_READ_DENIED
@@ -779,9 +846,9 @@ boundary configuration:
 .ko-agent-sandbox/host-command/<tool>/egress/allowed
 ```
 
-One list per tool, because they do not fetch from the same places: sbt resolves from Maven Central,
-while Mill's bootstrap fetches its own launcher from either Maven Central or a GitHub release CDN
-depending on the version, so a Mill project's list is the one that may need GitHub hosts.
+One list per tool, so a repository that builds with both grants each only what it resolves. Neither
+needs a GitHub release CDN: the only fetch that used one is the Mill bootstrap's own launcher
+download, which §3.3 provisions on the host instead.
 
 Each inherits that directory's properties: the filter freezes it at any depth, the launcher reads it
 on the host, and it is reviewed in a pull request like any other file. It is a separate list from
@@ -859,9 +926,9 @@ it:
 
 ### Phase 1 — Common policy and prerequisite validator
 
-Project canonicalization; Coursier JVM-root discovery and validation; agent cache-root construction
-and its outside-the-project check; sbt launcher validation; Mill bootstrap validation; the policy
-model; structured diagnostics.
+Project canonicalization; Coursier JDK-home resolution and validation; agent cache-root
+construction and its outside-the-project check; sbt launcher validation; Mill bootstrap, pinned
+version and provisioned launcher validation; the policy model; structured diagnostics.
 
 No backend yet.
 
@@ -937,7 +1004,7 @@ Coursier/jvm/*
 ~/.sbt/boot/*
 the Coursier-installed sbt launcher
 the user's Coursier v1
-the user's Mill download cache
+the user's Mill download folder
 arbitrary $HOME path
 ```
 
@@ -948,7 +1015,6 @@ Expected: denied.
 ```text
 PROJECT/*
 agent cache coursier/v1/*
-agent cache mill/download/*     with an empty cache, so the bootstrap actually writes
 session temporary directory/*
 ```
 
