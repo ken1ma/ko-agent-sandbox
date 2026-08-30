@@ -31,7 +31,7 @@ object BuildSandboxPolicy:
     case PrereqMillBootstrapMissing
     case PrereqMillVersionUnpinned
     case PrereqMillLauncherMissing(version: String, downloadDir: Path)
-    case PrereqSbtBootMissing
+    case PrereqMillJvmNotSystem(found: Option[String])
     case CacheRootUnusable(reason: String)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
@@ -43,7 +43,6 @@ object BuildSandboxPolicy:
     coursierV1: Path,
     tool: Tool,
     launcher: Path,
-    sbtBoot: Option[Path],
   )
 
   // ---------------------------------------------------------------------------
@@ -94,10 +93,29 @@ object BuildSandboxPolicy:
    * [[AgentSandboxLauncher.requireStateRootOutside]] makes for the state root: a cache the
    * workspace can reach is a cache the sandbox can rewrite between builds.
    */
-  def cacheRootOutsideProject(cacheRoot: Path, project: Path, os: Os): Either[Refusal, Path] =
-    if overlaps(cacheRoot, project, os) then
-      Left(Refusal.CacheRootUnusable(s"$cacheRoot overlaps the project directory $project"))
-    else Right(cacheRoot)
+  def cacheRootOutsideProject(
+    cacheRoot: Path,
+    project: Path,
+    os: Os,
+    canonicalize: Path => Either[String, Path],
+  ): Either[Refusal, Path] =
+    // Canonical before the overlap check: XDG_CACHE_HOME can be a symlink whose text is outside the
+    // project and whose target is inside it, and the lexical answer would pass it.
+    // Under the macOS data-volume spellings too: a firmlink is not a symlink, so canonicalization
+    // leaves `/System/Volumes/Data/...` and `/...` as two names of one directory
+    // (SandboxProject.withMacDataVolumeAliases). The canonical root is the answer, and every path
+    // derived from it must come from that answer, not from the spelling that was checked.
+    def spellings(path: Path): Seq[Path] =
+      if os == Os.Mac then SandboxProject.withMacDataVolumeAliases(Seq(path)) else Seq(path)
+    canonicalize(cacheRoot) match
+      case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
+      case Right(root) =>
+        // Exact, both being canonical: folding would refuse a case-different sibling that a
+        // case-sensitive volume keeps distinct.
+        def overlapsExactly(left: Path, right: Path) = left.startsWith(right) || right.startsWith(left)
+        if spellings(root).exists(r => spellings(project).exists(p => overlapsExactly(r, p))) then
+          Left(Refusal.CacheRootUnusable(s"$root overlaps the project directory $project"))
+        else Right(root)
 
   /** The user's Coursier cache root — read for the JDK, never granted whole (§3.1, §5.1). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
@@ -131,13 +149,18 @@ object BuildSandboxPolicy:
    * `arc` tree — granting that would hand the build every archive Coursier ever extracted.
    *
    * `canonicalize` resolves symlinks; None means the path does not exist, which is itself a
-   * refusal rather than a reason to fall back.
+   * refusal rather than a reason to fall back. Both sides canonical, the comparison is exact:
+   * canonicalization returns the on-disk spelling on a folding volume, and on a case-sensitive
+   * one `coursier` and `Coursier` are different directories that folding would conflate.
+   *
+   * Inside the cache is necessary, not sufficient: the cache root, `arc` and `v1` are inside it
+   * too, and each would be granted read/execute whole. A JDK home is what holds `bin/java`.
    */
   def resolveJdkHome(
     env: String => Option[String],
     cacheRoot: Path,
     canonicalize: Path => Option[Path],
-    os: Os,
+    isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     env("JAVA_HOME").filter(_.nonEmpty) match
       case None => Left(Refusal.PrereqJvmNotCoursier("JAVA_HOME is not set"))
@@ -145,9 +168,17 @@ object BuildSandboxPolicy:
         parsePath(value).flatMap(canonicalize) match
           case None => Left(Refusal.PrereqJvmNotCoursier(value))
           case Some(home) =>
+            // bin/java canonical and still under the home: a symlink out of it would run a JVM the
+            // profile never granted.
+            val java = canonicalize(home.resolve("bin").resolve("java"))
             canonicalize(cacheRoot) match
-              case Some(root) if startsWith(home, root, os) => Right(home)
-              case _                                        => Left(Refusal.PrereqJvmNotCoursier(value))
+              case Some(root)
+                if home.startsWith(root)
+                  && home != root
+                  && home.getParent != root
+                  && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary)) =>
+                Right(home)
+              case _ => Left(Refusal.PrereqJvmNotCoursier(value))
 
   /**
    * The `sbt` the build runs, which must be the one `cs install sbt` produced. A launcher found on
@@ -158,12 +189,37 @@ object BuildSandboxPolicy:
     candidate: Path,
     installDir: Path,
     canonicalize: Path => Option[Path],
-    os: Os,
+    isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     (canonicalize(candidate), canonicalize(installDir)) match
-      case (Some(launcher), Some(dir)) if startsWith(launcher, dir, os) => Right(launcher)
-      case (Some(launcher), _)                                          => Left(Refusal.PrereqSbtNotCoursier(launcher))
-      case _                                                            => Left(Refusal.PrereqSbtNotCoursier(candidate))
+      case (Some(launcher), Some(dir)) if launcher.startsWith(dir) && isExecutableFile(launcher) =>
+        Right(launcher)
+      case (Some(launcher), _) => Left(Refusal.PrereqSbtNotCoursier(launcher))
+      case _                   => Left(Refusal.PrereqSbtNotCoursier(candidate))
+
+  /**
+   * The sbt distribution home to grant, from the inner launcher the wrapper execs
+   * (SeatbeltProfile.sbtDistribution names it). The executable is checked as the wrapper itself is —
+   * canonical, an executable file, still inside the cache once symlinks are followed — and its
+   * shape is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
+   * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
+   * or a `v1` entry: the shape is what keeps a grant a distribution.
+   */
+  def validateSbtDistribution(
+    inner: Path,
+    coursierCache: Path,
+    canonicalize: Path => Option[Path],
+    isExecutableFile: Path => Boolean,
+  ): Either[Refusal, Path] =
+    (canonicalize(inner), canonicalize(coursierCache)) match
+      case (Some(executable), Some(cache)) if isExecutableFile(executable) =>
+        val arc = cache.resolve("arc")
+        val home = Option(executable.getParent).flatMap(bin => Option(bin.getParent))
+          .filter(_ => executable.getFileName.toString == "sbt" && executable.getParent.getFileName.toString == "bin")
+          .filter(home => home.startsWith(arc) && home != arc)
+        home.toRight(Refusal.PrereqSbtNotCoursier(executable))
+      case (Some(executable), _) => Left(Refusal.PrereqSbtNotCoursier(executable))
+      case _                     => Left(Refusal.PrereqSbtNotCoursier(inner))
 
   /**
    * Mill's bootstrap, which is the project's own file rather than an installed command: a global
@@ -179,64 +235,158 @@ object BuildSandboxPolicy:
     else Left(Refusal.PrereqMillBootstrapMissing)
 
   /**
-   * Where a provisioned Mill launcher lives, in the bootstrap's own order of overrides. No platform
-   * branch: the script spells its fallback `${XDG_CACHE_HOME:-$HOME/.cache}/mill` everywhere, which
-   * is why a macOS host keeps Mill's cache under ~/.cache while Coursier's is under ~/Library.
+   * Where a provisioned Mill launcher lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
+   * if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`. `MILL_USER_CACHE_DIR` is not an
+   * input — the script assigns it and never reads it. No platform branch: the fallback is spelled
+   * the same everywhere, which is why a macOS host keeps Mill's cache under ~/.cache while
+   * Coursier's is under ~/Library.
    */
   def millDownloadDir(env: String => Option[String]): Option[Path] =
     def fromEnv(name: String) = env(name).filter(_.nonEmpty).flatMap(parsePath).map(_.normalize())
-    fromEnv("MILL_FINAL_DOWNLOAD_FOLDER")
-      .orElse(fromEnv("MILL_USER_CACHE_DIR").map(_.resolve("download")))
-      .orElse:
-        val base = env("XDG_CACHE_HOME").filter(_.nonEmpty).flatMap(parsePath)
-          .orElse(env("HOME").filter(_.nonEmpty).flatMap(parsePath).map(_.resolve(".cache")))
-        base.map(_.resolve("mill").resolve("download"))
+    fromEnv("MILL_FINAL_DOWNLOAD_FOLDER").orElse:
+      val base = fromEnv("XDG_CACHE_HOME")
+        .orElse(fromEnv("HOME").map(_.resolve(".cache")))
+      base.map(_.resolve("mill").resolve("download"))
 
   /**
-   * The pinned Mill version, read the way the bootstrap reads it — and only *read*. The script's
-   * own dry-run mode would report the launcher path exactly, but running the project's script is
+   * The Mill version, read the way the bootstrap reads it — and only *read*. The script's own
+   * dry-run mode would report the launcher path exactly, but running the project's script is
    * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
    *
-   * Unpinned is a refusal rather than the bootstrap's fallback: that fallback is a
-   * DEFAULT_MILL_VERSION assignment inside the committed script, and grepping project-controlled
-   * shell source to choose which host executable to grant is the wrong shape.
+   * The fallback is the bootstrap's: `DEFAULT_MILL_VERSION` from the environment, else the
+   * assignment at the top of the script, which Mill documents as the recommended way to manage
+   * the version (`./mill updateMillScripts`). The file sources are all project files and the two
+   * environment overrides are the wrapper's; whichever names the version, what is granted is a
+   * launcher the user provisioned.
    */
   def millVersion(
     project: Path,
     env: String => Option[String],
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, String] =
-    def firstLine(name: String): Option[String] =
-      readLines(project.resolve(name)).flatMap(_.headOption).map(_.trim).filter(_.nonEmpty)
-    def tagged(name: String, marker: String): Option[String] =
-      readLines(project.resolve(name))
-        .flatMap(_.find(line => line.contains("mill-version") && line.contains(marker)))
-        .map(trimValue)
-        .filter(_.nonEmpty)
+    // The script's `elif` chain: the first file that *exists* decides, and what it yields is the
+    // answer even when empty — there is no fall-through to the next file. A version file gives
+    // its first line as is; a marker file gives every matching line, trimmed, so two markers give
+    // a value with a newline in it, which is no version.
+    def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
+    def versionFile(name: String): Option[Option[String]] = lines(name).map(_.headOption)
+    def markerFile(name: String, marker: String => Boolean): Option[Option[String]] =
+      lines(name).map(all => Some(all.filter(marker).map(trimValue).mkString("\n")))
+    val buildScript = Seq("build.mill", "build.mill.scala", "build.sc").find(name => lines(name).isDefined)
 
-    val found = env("MILL_VERSION").filter(_.nonEmpty)
-      .orElse(firstLine(".mill-version"))
-      .orElse(firstLine(".config/mill-version"))
-      .orElse(tagged("build.mill.yaml", "mill-version:"))
-      .orElse(tagged("build.mill", "//|"))
-      .orElse(tagged("build.mill.scala", "//|"))
+    def scriptDefault: Option[String] =
+      lines("mill").flatMap(_.collectFirst { case DefaultAssignment(version) => version })
+
+    val found: Option[String] = env("MILL_VERSION").filter(_.nonEmpty)
+      .orElse:
+        versionFile(".mill-version")
+          .orElse(versionFile(".config/mill-version"))
+          .orElse(markerFile("build.mill.yaml", _.contains("mill-version:")))
+          .orElse(buildScript.flatMap(markerFile(_, ScriptMarker.matches)))
+          .flatten
+          .filter(_.nonEmpty)
+      .orElse(env("DEFAULT_MILL_VERSION").filter(_.nonEmpty))
+      .orElse(scriptDefault)
     found.filter(plausibleVersion) match
       case Some(version) => Right(version)
       case None          => Left(Refusal.PrereqMillVersionUnpinned)
 
   /**
-   * The launcher for that version, matched on its *prefix*. The bootstrap appends a per-platform,
-   * per-version suffix (`-native-mac-aarch64` and others); replicating that case logic is the half
-   * that breaks when Mill changes it, and a prefix match never has to.
+   * The file the bootstrap will run for a pinned version, as it derives it (the `case
+   * "$MILL_VERSION"` block of the official `mill` script): a `-native` suffix is stripped and the
+   * platform suffix applied; a `-jvm` suffix is stripped and nothing applied; otherwise the
+   * platform suffix applies to every version past 0.12, and none to 0.1–0.12, which were jars.
+   * `arch` is `uname -m`'s answer: `arm64` on Apple silicon, `x86_64` otherwise. macOS only, as
+   * the feature is.
    */
+  def millLauncherName(version: String, arch: String): String =
+    val native = if arch == "arm64" then "-native-mac-aarch64" else "-native-mac-amd64"
+    val jarEra = raw"0\.([1-9]|1[0-2])\..*".r
+    if version.endsWith("-native") then version.stripSuffix("-native") + native
+    else if version.endsWith("-jvm") then version.stripSuffix("-jvm")
+    else if jarEra.matches(version) then version
+    else version + native
+
+  /**
+   * `mill-jvm-version` must be `system` (§3.3): Mill otherwise provisions a JVM through Coursier's
+   * index, a JDK fetched by the build, where `system` takes `java` from the PATH the wrapper sets.
+   *
+   * Read as the launcher reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
+   * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
+   * not blank or a `#` comment, compared as written, so `" system "` is not `system` — else the
+   * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
+   * then `build.mill` (the initial run of `//| ` lines only), where the key is a top-level YAML
+   * key. The first source that exists is authoritative, empty or not; anything but `system` is a
+   * refusal, absent included, since absent means Mill's own default.
+   */
+  def millJvmIsSystem(
+    project: Path,
+    readLines: Path => Option[Seq[String]],
+  ): Either[Refusal, Unit] =
+    def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
+    // No environment interpolation, though Mill's reader does it: a value that needs the
+    // environment to become `system` is not literally `system`, and refusing it fails closed.
+    def optsFile(name: String): Option[Option[String]] =
+      lines(name).map(_.find(line => line.trim.nonEmpty && !line.trim.startsWith("#")))
+    // A recognizer, not a YAML parser: the only question is "is this exactly `system`?", so the
+    // accepted spellings are enumerated — plain or quoted, an optional comment after whitespace,
+    // as YAML requires — and every other value, `system#x` and an unmatched quote included, is
+    // returned as found and refused below. Conservative false rejects fail closed; a parser that
+    // guessed would fail open.
+    def topLevel(all: Seq[String]): Option[String] =
+      // Mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
+      // and a key there would be recognized here and ignored there. Refused, carried as the value.
+      if all.exists(line => DocumentMarker.matches(line)) then Some("multi-document YAML")
+      else all.collect { case TopLevelJvmKey(value) => value } match
+        case Seq()      => None
+        case Seq(value) => Some(if SystemSpelling.matches(value) then "system" else value.trim)
+        // Which one Mill's parsed map keeps is its parser's business; two keys are never `system`.
+        case _ => Some("duplicate mill-jvm-version keys")
+    // The //| lines as readBuildHeader takes them: `//|` alone is an empty line, `//| ...` is
+    // data, anything else starting `//|` is an error, and so is a `//|` line after the initial
+    // run — it scans the whole file. An error there is a refusal here, carried as the value.
+    def header(name: String): Option[Option[String]] =
+      lines(name).map: all =>
+        val run = if name.endsWith(".yaml") then Right(all)
+          else
+            val (initial, rest) = all.span(_.startsWith("//|"))
+            if initial.exists(line => line != "//|" && !line.startsWith("//| ")) then Left("malformed //| header")
+            else if rest.exists(_.startsWith("//|")) then Left("stray //| line after the header")
+            else Right(initial.map(line => if line == "//|" then "" else line.drop(4)))
+        run.fold(reason => Some(reason), topLevel)
+    val found: Option[String] =
+      optsFile(".mill-jvm-version")
+        .orElse(optsFile(".config/mill-jvm-version"))
+        .orElse(header("build.mill.yaml"))
+        .orElse(header("build.mill"))
+        .flatten
+    if found.contains("system") then Right(()) else Left(Refusal.PrereqMillJvmNotSystem(found))
+
+  /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
+    * territory Mill's single-document parse never reads. */
+  private val DocumentMarker = raw"""(?:---|\.\.\.)(?:\s.*)?""".r
+
+  /** The colon must be followed by whitespace or end the line: YAML's `key:value` is one scalar,
+    * not a mapping, and Mill would not see the key. */
+  private val TopLevelJvmKey = raw"""mill-jvm-version:((?:\s.*)?)""".r
+  private val SystemSpelling = raw"""\s*(?:system|"system"|'system')(?:\s+#.*)?\s*""".r
+
+  /** That file, provisioned: present and executable, or a refusal naming what `./mill` would fix. */
   def millLauncher(
     downloadDir: Path,
     version: String,
-    entries: Path => Seq[String],
+    arch: String,
+    isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
-    entries(downloadDir).filter(_.startsWith(version)).sorted.headOption match
-      case Some(name) => Right(downloadDir.resolve(name))
-      case None       => Left(Refusal.PrereqMillLauncherMissing(version, downloadDir))
+    val launcher = downloadDir.resolve(millLauncherName(version, arch))
+    if isExecutableFile(launcher) then Right(launcher)
+    else Left(Refusal.PrereqMillLauncherMissing(version, downloadDir))
+
+  /** `DEFAULT_MILL_VERSION="1.1.8"` as the bootstrap spells it, inside its `if [ -z … ]` guard. */
+  private val DefaultAssignment = raw""".*\bDEFAULT_MILL_VERSION="([^"]+)".*""".r
+
+  /** The bootstrap's `grep -E "//\\|.*mill-version"`: the marker, then the key, in that order. */
+  private val ScriptMarker = raw".*//\|.*mill-version.*".r
 
   /** The bootstrap's own trim: everything past the last colon, comments and quotes removed. */
   private def trimValue(line: String): String =
@@ -248,12 +398,6 @@ object BuildSandboxPolicy:
   /** A version names a directory entry, so anything with a separator or space is not one. */
   private def plausibleVersion(value: String): Boolean =
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
-
-  /** sbt's boot directory, read-only to the build and never provisioned by the sandbox. */
-  def sbtBoot(env: String => Option[String], isDirectory: Path => Boolean): Either[Refusal, Path] =
-    env("HOME").filter(_.nonEmpty).flatMap(parsePath).map(_.resolve(".sbt/boot")) match
-      case Some(boot) if isDirectory(boot) => Right(boot)
-      case _                               => Left(Refusal.PrereqSbtBootMissing)
 
   // ---------------------------------------------------------------------------
   // The session temporary directory
@@ -319,7 +463,10 @@ object BuildSandboxPolicy:
             if !startsWith(joined, project, os) then refuse
             else
               canonicalize(joined) match
-                case Some(real) if startsWith(real, project, os) => Right(real)
+                // Exact: `real` and `project` are both canonical, so their spellings are the
+                // volume's own, and folding would admit a case-different sibling on a
+                // case-sensitive volume.
+                case Some(real) if real.startsWith(project) => Right(real)
                 case _                                           => refuse
           case None => refuse
 

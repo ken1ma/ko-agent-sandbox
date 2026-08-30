@@ -5,7 +5,9 @@
 // the launcher surface in Phase 5; until then a profile emitter in the shipped jar would be a
 // command nobody documented. probe/build-profile-gate.sh and probe/build-profile-iterate.sh are its callers.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
+//
+// The project defaults to the working directory; the gate's Mill rows name probe/mill-fixture.
 //
 // The runtime-authority file is one absolute path per line, `#` comments allowed, `x ` prefix for
 // a path that must also be executable. It starts empty: PLAN-SBT-ON-HOST.md §2.1 admits a runtime
@@ -24,12 +26,12 @@ object EmitBuildProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitBuildProfile <out.sb> [authority-file] [sbt|mill]")
+      Console.err.println("usage: EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]")
       sys.exit(2)
 
     val os = Os.Mac
     val env: String => Option[String] = name => Option(System.getenv(name))
-    val project = Paths.get("").toAbsolutePath.toRealPath()
+    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
 
     def fail(reason: Any): Nothing =
       Console.err.println(s"refused: $reason")
@@ -40,32 +42,39 @@ object EmitBuildProfile:
       case Some("mill")       => Tool.Mill
       case Some(other)        => fail(s"unknown tool $other")
 
-    val coursierCache = coursierCacheRoot(os, env).getOrElse(fail("no Coursier cache root"))
-    val jdk = resolveJdkHome(env, coursierCache, realPath, os).fold(fail, identity)
+    def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
-    // The launcher each tool is started through, and the sbt-only paths that go with it: §3.2's
-    // two-part launcher and ~/.sbt/boot for sbt, §3.3's provisioned native launcher for Mill.
-    val (launcher, distribution, boot) = tool match
+    val coursierCache = coursierCacheRoot(os, env).getOrElse(fail("no Coursier cache root"))
+    val jdk = resolveJdkHome(env, coursierCache, realPath, isExecutableFile).fold(fail, identity)
+
+    // The launcher each tool is started through: §3.2's two-part launcher for sbt, §3.3's
+    // provisioned native launcher for Mill. Both halves of sbt's are required — a profile without
+    // the distribution starts a build that cannot find its launcher jar.
+    val (launcher, distribution) = tool match
       case Tool.Sbt =>
         val installDir = coursierInstallDir(os, env).getOrElse(fail("no Coursier install directory"))
-        val sbt = validateSbtLauncher(installDir.resolve("sbt"), installDir, realPath, os).fold(fail, identity)
-        val home = SeatbeltProfile
+        val sbt = validateSbtLauncher(installDir.resolve("sbt"), installDir, realPath, isExecutableFile)
+          .fold(fail, identity)
+        val inner = SeatbeltProfile
           // ISO-8859-1, not UTF-8: cs appends a jar to its launchers, so the file is not text.
           // Every byte maps to a char, which leaves the ASCII path this searches for intact.
           .sbtDistribution(String(Files.readAllBytes(sbt), ISO_8859_1), coursierCache)
-          .map(SeatbeltProfile.distributionHome)
-          .flatMap(realPath)
-        (sbt, home, sbtBoot(env, Files.isDirectory(_)).toOption)
+          .getOrElse(fail(s"$sbt names no distribution inside $coursierCache"))
+        val home = validateSbtDistribution(inner, coursierCache, realPath, isExecutableFile).fold(fail, identity)
+        (sbt, Some(home))
       case Tool.Mill =>
-        validateMillBootstrap(project, path => Files.isExecutable(path) && Files.isRegularFile(path))
-          .fold(fail, identity)
+        validateMillBootstrap(project, isExecutableFile).fold(fail, identity)
+        millJvmIsSystem(project, readLines).fold(fail, identity)
         val version = millVersion(project, env, readLines).fold(fail, identity)
         val downloads = millDownloadDir(env).getOrElse(fail("no Mill download folder"))
-        val provisioned = millLauncher(downloads, version, entriesOf).fold(fail, identity)
-        (realPath(provisioned).getOrElse(fail(s"$provisioned vanished")), None, None)
+        val arch = System.getProperty("os.arch") match
+          case "aarch64" => "arm64"
+          case other     => other
+        val provisioned = millLauncher(downloads, version, arch, isExecutableFile).fold(fail, identity)
+        (realPath(provisioned).getOrElse(fail(s"$provisioned vanished")), None)
 
-    val cacheRoot = cacheRootOf(os, env).fold(fail, identity)
-    cacheRootOutsideProject(cacheRoot, project, os).fold(fail, identity)
+    val cacheRoot = cacheRootOutsideProject(cacheRootOf(os, env).fold(fail, identity), project, os,
+      HostCommands.canonicalizedFuturePath).fold(fail, identity)
     val v1 = agentCoursierV1(cacheRoot, projectIdOf(project, os))
     Files.createDirectories(v1)
 
@@ -87,7 +96,6 @@ object EmitBuildProfile:
         coursierV1 = v1.toRealPath(),
         tool = tool,
         launcher = launcher,
-        sbtBoot = boot,
       ),
       sessionTmp = sessionTmp,
       sbtDistribution = distribution,
@@ -105,8 +113,7 @@ object EmitBuildProfile:
     Console.err.println(s"session temp: $sessionTmp")
     Console.err.println(s"agent cache: $v1")
     Console.err.println(s"tool: $tool")
-    if tool == Tool.Sbt && distribution.isEmpty then
-      Console.err.println("warning: no sbt distribution found in the launcher")
+    Console.err.println(s"launcher: $launcher")
 
   /**
    * `/private/tmp/ko-agent-<uid>/<session>/tmp`: short enough for SessionTmpMaxLength where the
@@ -131,14 +138,7 @@ object EmitBuildProfile:
     Files.createDirectories(tmp, PosixFilePermissions.asFileAttribute(ownerOnly))
     tmp.toRealPath()
 
+  /** Absent is None; existing-but-unreadable throws and fails the emit, never falls to the next
+    * source — Mill would select the file and then fail reading it. */
   private def readLines(path: Path): Option[Seq[String]] =
-    Option.when(Files.isReadable(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
-
-  private def entriesOf(dir: Path): Seq[String] =
-    if !Files.isDirectory(dir) then Seq.empty
-    else
-      val stream = Files.list(dir)
-      try
-        import scala.jdk.CollectionConverters.*
-        stream.iterator().asScala.map(_.getFileName.toString).toSeq
-      finally stream.close()
+    Option.when(Files.exists(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)

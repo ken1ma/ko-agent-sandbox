@@ -1,0 +1,6 @@
+# The Mill project PLAN-SBT-ON-HOST.md §7.4's gate runs its Mill rows in: one module, one test,
+# nothing to build but the contract. `system` is the JVM the wrapper puts first on PATH (§4);
+# Mill's default provisions its own through Coursier's index, which the profile denies.
+mill-jvm-version: system
+extends: ScalaModule
+scalaVersion: 3.8.4

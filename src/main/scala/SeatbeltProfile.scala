@@ -17,7 +17,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import BuildSandboxPolicy.BuildPolicy
+import BuildSandboxPolicy.{BuildPolicy, Tool}
 
 object SeatbeltProfile:
 
@@ -35,11 +35,6 @@ object SeatbeltProfile:
    */
   val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
-  /**
-   * The character devices a JVM opens before it runs anything. Named literally rather than left to
-   * the measured runtime set: `/dev` also holds the disks, and a subpath grant there would be a
-   * read of every volume on the machine.
-   */
   /**
    * The root directory entry. `(subpath "/")` is not the union of `(subpath "/child")` over every
    * child — resolving `/bin/sh` authorizes `/` first, and no grant on a child covers it. Measured
@@ -77,11 +72,16 @@ object SeatbeltProfile:
       .filterNot(_.toString == "/")
       .sortBy(_.toString)
 
-  val DevicePaths: Seq[Path] =
-    Seq("/dev/null", "/dev/random", "/dev/urandom", "/dev/tty").map(Path.of(_))
+  /**
+   * The character devices a JVM opens before it runs anything. No `/dev/tty`: closing the child's
+   * stdin does not detach its controlling terminal, and a build that can open the terminal can
+   * read what the user types. The random devices are read-only.
+   */
+  val DevicePaths: Seq[Path] = Seq("/dev/null", "/dev/random", "/dev/urandom").map(Path.of(_))
 
   val Devices: String =
-    DevicePaths.map(path => literal(path)).mkString("(allow file-read* file-write-data ", " ", ")")
+    """(allow file-read* file-write-data (literal "/dev/null"))""" + "\n" +
+      """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
   /** What the build may reach, beyond the policy's own paths, to start a JVM at all. Discovered by
     * running a real build under this profile and reading the denials, never guessed: §2.1 admits a
@@ -102,7 +102,7 @@ object SeatbeltProfile:
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val policy = inputs.policy
-    val readOnly = Seq(policy.jdkHome) ++ policy.sbtBoot ++ inputs.sbtDistribution ++ Seq(policy.launcher)
+    val readOnly = Seq(policy.jdkHome) ++ inputs.sbtDistribution ++ Seq(policy.launcher)
     // Writable implies executable for the project and the session temp, never for the cache:
     // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
@@ -112,6 +112,10 @@ object SeatbeltProfile:
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     everyPath.find(path => !usable(path)) match
+      case _ if policy.tool == Tool.Sbt && inputs.sbtDistribution.isEmpty =>
+        Left("an sbt profile needs the distribution the wrapper execs; without it the build cannot find sbt-launch.jar")
+      case _ if policy.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
+        Left("a Mill profile has no sbt distribution to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
@@ -190,19 +194,6 @@ object SeatbeltProfile:
     candidates.toSeq.sortBy(-_.length).headOption
       .map(text => Path.of(text).normalize())
       .filter(_.startsWith(coursierCacheRoot))
-
-  /**
-   * The distribution root to grant, from the path the wrapper execs. The inner launcher resolves
-   * `sbt_home` as the parent of its own `bin` directory and reads `sbt-launch.jar`, `conf/` and the
-   * `sbtn` binaries from there, so a grant on the executable alone starts a build that cannot find
-   * its own launcher jar.
-   */
-  def distributionHome(executable: Path): Path =
-    val parent = executable.getParent
-    if parent != null && parent.getFileName != null && parent.getFileName.toString == "bin" then
-      Option(parent.getParent).getOrElse(parent)
-    else if parent != null then parent
-    else executable
 
   private def indexesOf(line: String, needle: String): Seq[Int] =
     Iterator

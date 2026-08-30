@@ -106,9 +106,8 @@ PROJECT/**/.ko-agent-sandbox/**     inaccessible
 resolved Coursier JDK home/**       read/execute       # §3.1, one home, never a root
 agent cache root/coursier/v1/**     read-write         # §5
 
-~/.sbt/boot/**                      read-only          # sbt only
 Coursier-installed sbt launcher     read/execute       # sbt only, two parts — §3.2
-user Mill download folder/**        read/execute       # Mill only
+provisioned Mill launcher           read/execute       # Mill only, one file — §3.3
 
 session temporary directory         read-write-execute # fresh per session
 
@@ -200,10 +199,10 @@ stop, rather than looking for another route.
 ```text
 Coursier JVM missing               -> fail before entering sandbox
 sbt not installed by cs            -> fail before entering sandbox
-sbt bootstrap artifacts missing    -> build fails; report ~/.sbt/boot is read-only
 Mill bootstrap absent              -> fail before entering sandbox
-Mill version unpinned              -> fail before entering sandbox
+Mill version unpinned (no default) -> fail before entering sandbox
 Mill launcher not provisioned      -> fail before entering sandbox; ask the user to run ./mill
+Mill JVM not `system`              -> fail before entering sandbox; name the header key (§3.3)
 repository not allowlisted         -> proxy denial; report requested host
 filesystem path not allowed        -> sandbox denial; report path when observable
 backend unavailable                -> fail; report; do not run in the container
@@ -216,7 +215,9 @@ backend unavailable                -> fail; report; do not run in the container
 ### 3.1 JVM
 
 Only Coursier-managed JVMs are supported. The wrapper resolves one before entering the sandbox and
-the profile grants that **one canonical JDK home**, not a root directory containing JDKs.
+the profile grants that **one canonical JDK home**, not a root directory containing JDKs. Inside
+the cache is necessary and not sufficient — the cache root, `arc` and `v1` are inside it too —
+and a home is what holds `bin/java`.
 
 `JAVA_HOME` is the only source. `java` on `PATH` is `/usr/bin/java`, a macOS stub that resolves
 through `JAVA_HOME` or `/usr/libexec/java_home`; it reports the right JVM while being the wrong
@@ -300,7 +301,10 @@ host with fifty orphaned servers, every one on `/usr/bin/java`; under the profil
 silently and the client waits forever. The wrapper puts the resolved JDK's `bin` first on `PATH`
 (§4), and §7.4's "server runs the granted JDK" row is what holds it there.
 
-`~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
+`~/.sbt/boot` is not granted and has no consumer: with `sbt.global.base` in the session temp the
+launcher boots into `sbt-global/boot` there, from the agent Coursier cache, every session (§7.4's
+gate with the grant removed). A warm boot directory in the agent cache is a Phase 5 performance
+item.
 
 **sbt 2 has no one-shot mode, and `-Dsbt.server.autostart=false` guarantees failure rather than
 avoiding a server.** Its own `--no-server` is documented in the launcher as "run sbtn, and fail if
@@ -351,7 +355,7 @@ Require a project-local bootstrap script:
 
 Do not support a globally installed Mill.
 
-Also require a **pinned version** and a launcher the user has already provisioned:
+Also require a launcher the user has already provisioned, for the version the bootstrap resolves:
 
 ```text
 ./mill --version        # once, in a host terminal, whenever the pinned version changes
@@ -366,8 +370,8 @@ That rule, stated once because it explains both tools: **the user provisions the
 sandbox fetches only artifacts.** sbt's launcher comes from `cs install sbt` and everything else it
 needs is a jar the JDK reads, fetched into the writable agent cache through the proxy. Mill's
 launcher *is* the fetched thing, and it is an executable. Provisioned, it is read/execute like
-sbt's, out of `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download` — or wherever
-`MILL_FINAL_DOWNLOAD_FOLDER` or `MILL_USER_CACHE_DIR` redirects it.
+sbt's — that one file, not the download folder around it, which holds every launcher the user ever
+ran. The folder is `MILL_FINAL_DOWNLOAD_FOLDER` or `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`.
 
 Two consequences worth having: the build needs no GitHub release CDN, since only the bootstrap's
 own download ever used one (§11); and a version bump becomes an explicit host step rather than
@@ -375,28 +379,62 @@ something a build definition performs on itself.
 
 ### Detecting that the host step is needed
 
-Before entering the sandbox, resolve the pinned version the way the bootstrap does — four file
-reads, in its order — and look for a download-folder entry whose name *starts with* it:
+Before entering the sandbox, resolve the version the way the bootstrap does — its file reads, in
+its order, then its own default — and derive the file it will run the way the bootstrap does:
 
 ```text
-MILL_VERSION → .mill-version → .config/mill-version
-             → build.mill.yaml (mill-version:) → build.mill (//| mill-version:)
+MILL_VERSION → .mill-version → .config/mill-version → build.mill.yaml (mill-version:)
+             → the build script (//| … mill-version): build.mill, else build.mill.scala,
+               else build.sc
 ```
 
-Prefix matching is what keeps this reliable: it never replicates `ARTIFACT_SUFFIX`'s per-platform,
-per-version case logic, which is the half Mill changes between releases.
+The first file that exists decides, even when what it yields is empty: the script's `elif` chain
+has no fall-through. What the chain leaves empty falls to `DEFAULT_MILL_VERSION` — the
+environment, else the assignment at the top of the bootstrap — which is Mill's recommended way to
+manage the version (`./mill updateMillScripts`); `.mill-version` and the header are overrides.
+Only a script with no default at all is unpinned.
 
-Unpinned is a refusal rather than a fallback. The bootstrap's own fallback is a
-`DEFAULT_MILL_VERSION` assignment inside the committed script, and grepping project-controlled
-shell source to decide which host executable to grant is the wrong shape.
+The file is `<download folder>/<version><suffix>`, from the script's `case "$MILL_VERSION"`: a
+`-native` suffix is stripped and the platform suffix applied; `-jvm` is stripped and none applied;
+otherwise every version past 0.12 takes the platform suffix and 0.1–0.12, the jar era, none. The
+platform suffix is `-native-mac-aarch64` or `-native-mac-amd64` by `uname -m`. That file must be
+present and executable; a prefix match would accept a neighbour, and `1.1.8-jvm` names `1.1.8`,
+which no prefix of the pinned text finds. The download folder is `MILL_FINAL_DOWNLOAD_FOLDER` or
+`${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`; `MILL_USER_CACHE_DIR` is assigned by the script,
+never read.
+
+The file sources are all project files, the bootstrap included; `MILL_VERSION` and
+`DEFAULT_MILL_VERSION` in the environment are the wrapper's, not the build's. Whichever names the
+version, what is granted is one launcher the user provisioned; a version the user never ran
+`./mill` for is a refusal naming the file to run.
 
 The script's `MILL_TEST_DRY_RUN_LAUNCHER_SCRIPT=1` mode prints the exact launcher path without
-downloading, which would remove the prefix match — and it is not used. Reading the version is a
+downloading, and it is not used. Reading the version is a
 read; asking the script is executing agent-authored shell on the host with full user authority,
 which is what §2.1 exists to prevent.
 
 The script stages a download at `${MILL_OUTPUT_DIR:-out}/mill-temp-download`, inside the project,
 which `PROJECT` already covers. It needs no row of its own.
+
+**Three more things Mill needs, each measured by §7.4's gate against `probe/mill-fixture`:**
+
+- **`mill-jvm-version: system` in the build header.** Mill provisions its own JVM through
+  Coursier's index by default (`zulu:25`, "regardless of what is installed"), which is a JDK
+  fetched by the build into a writable, executable place — what §3.1 refuses for sbt. `system`
+  takes `java` from `PATH`, which §4 makes the granted JDK. The key lives in the project — a
+  `.mill-jvm-version` file, else `.config/mill-jvm-version`, else the header of `build.mill.yaml`
+  or `build.mill`, the first existing source authoritative — so it is a prerequisite of the
+  project, read at preflight like the version.
+- **`--no-daemon`.** The launcher and the daemon talk over a loopback TCP socket
+  (`out/mill-daemon/socketPort`), which the profile grants to nothing: loopback is every local
+  service. Without the daemon there is no socket. Mill's counterpart of sbt's `--jvm-client`,
+  measured the same way — the daemon form stays a gate row.
+- **`out/mill-daemon/` is cleared at session start.** The launcher memoizes its resolved
+  daemon classpath and JVM home under `out/mill-daemon/cache` and reuses them while the files they
+  name exist (`runner/launcher/src/mill/launcher/CoursierClient.scala`); a memo from a run against
+  the user's cache names paths the profile denies, and a redirected `COURSIER_CACHE` never takes
+  effect. The daemon's `processId` and `socketPort` beside it are believed alive or not. A memo,
+  safe to drop.
 
 ---
 
@@ -532,7 +570,7 @@ Permissions, against §2.1:
 ```text
 agent cache root/coursier/v1/**   RW      artifacts the build downloads
 resolved Coursier JDK home/**     RX      §3.1
-user Mill download folder/**      RX      §3.3, provisioned rather than fetched
+provisioned Mill launcher         RX      §3.3, one file, provisioned rather than fetched
 user Coursier v1/**               absent  not granted at all
 user Mill cache, except download/ absent  not granted at all
 ```
@@ -649,9 +687,8 @@ The wrapper supplies:
 PROJECT
 COURSIER_JDK_HOME
 AGENT_CACHE_V1
-MILL_DOWNLOAD
 TOOL
-SBT_BOOT
+SBT_DISTRIBUTION
 SESSION_TMP
 WORKING_DIRECTORY
 PROXY endpoint
@@ -660,9 +697,10 @@ PROXY endpoint
 `WORKING_DIRECTORY` carries no grant of its own: it is inside `PROJECT`, which already has one, and
 it reaches the backend as the child's cwd rather than as a rule (§6.2).
 
-For Mill, `TOOL` points inside `PROJECT`. For sbt, it points to the Coursier-installed launcher, and
-the sbt-specific boot path can be omitted when conditional profile generation is easier than
-supplying a dummy path.
+`TOOL` is the launcher the build starts through: for sbt the Coursier-installed wrapper, with
+`SBT_DISTRIBUTION` the home of the inner launcher it execs (§3.2, both required); for Mill the one
+provisioned launcher file (§3.3), and no `SBT_DISTRIBUTION`. The bootstrap `PROJECT/mill` needs no
+parameter: it is a project file, and the project runs.
 
 ### 7.2 Filesystem policy
 
@@ -674,8 +712,6 @@ PROJECT/**/.git                   deny read, write and link, case-folded
 PROJECT/**/.ko-agent-sandbox      deny read, write and link, case-folded
 COURSIER_JDK_HOME                 RX
 AGENT_CACHE_V1                    RW
-MILL_DOWNLOAD                     RX     # Mill
-SBT_BOOT                          RO     # sbt
 TOOL                              RX
 SESSION_TMP                       RWX
 ```
@@ -726,6 +762,8 @@ measurements; `system.sb` is the profile worth reading first.
 - **Every ancestor directory needs its own literal** — the same rule one level down. A deep
   `(subpath …)` with no chain above it denies everything, `/dev` included, which is how
   `SecureRandom` fails as "NativePRNG not available" rather than as a path.
+- **`/dev/tty` is the terminal, whatever stdin is.** Closing the child's stdin does not detach
+  its controlling terminal; the profile grants `/dev/null` and the random devices only.
 - **A literal `file-read*` on a directory is its listing.** The chain carries `file-read-metadata`
   and `file-test-existence`; granted as `file-read*` it listed all of `~/Library/Caches` (§7.4's
   gate). Only the root entry needs the wider read.
@@ -847,9 +885,11 @@ fetch allowed Maven artifact via proxy       allowed
 fetch non-allowlisted host via proxy         denied
 ```
 
-`probe/build-profile-gate.sh` runs this matrix under the profile `EmitBuildProfile` generates for
-the checkout it runs in, one row per line above, and reports PASS, FAIL or SKIP with what it saw.
-The proxy rows are SKIP until Phase 3 exists; the Mill rows run only in a checkout with a bootstrap.
+`probe/build-profile-gate.sh [sbt|mill|all] [quick]` runs this matrix under the profile
+`EmitBuildProfile` generates, one row per line above, and reports PASS, FAIL or SKIP with what it
+saw. The sbt rows build this repository; the Mill rows build `probe/mill-fixture`, a one-module
+Mill project that exists for them, since a Mill build of the launcher itself would be a second
+build definition rather than a measurement. The proxy rows are SKIP until Phase 3 exists.
 A "write" there is an open for append that writes nothing, and every marker it creates lives in a
 scratch tree it removes, so the matrix can run against a real repository.
 
@@ -1018,7 +1058,7 @@ PREREQ_SBT_NOT_COURSIER
 PREREQ_MILL_BOOTSTRAP_MISSING
 PREREQ_MILL_VERSION_UNPINNED
 PREREQ_MILL_LAUNCHER_MISSING
-PREREQ_SBT_BOOT_MISSING
+PREREQ_MILL_JVM_NOT_SYSTEM
 
 FS_READ_DENIED
 FS_WRITE_DENIED
@@ -1141,11 +1181,11 @@ No backend yet.
 
 Profile generation, the §7.2 guard rules, and proxy-only network rules.
 
-**Exit criterion:** `probe/build-profile-gate.sh` reports no FAIL, with only the Phase 3 proxy rows
-and — in a checkout without a bootstrap — the Mill rows as SKIP; the client sbt 2 runs under the
-profile is decided and §3.2 says which; `probe/runtime-authority.txt` holds every grant the gate
-needed and nothing else. A negative result on the four `.git` rows changes the design, not the
-code.
+**Exit criterion:** `probe/build-profile-gate.sh` reports no FAIL for both tools — sbt on this
+repository, Mill on `probe/mill-fixture` — with only the Phase 3 proxy rows as SKIP; the client
+sbt 2 runs under the profile is decided and §3.2 says which, as §3.3 says `--no-daemon` for Mill;
+`probe/runtime-authority.txt` holds every grant the gate needed and nothing else. A negative
+result on the four `.git` rows changes the design, not the code.
 
 ### Phase 3 — Build egress proxy
 
@@ -1270,7 +1310,7 @@ answers differently is a finding about the host.
 | `sbt-exec-chain.sh` | sbt is upgraded or reinstalled — the distribution path moves with it |
 | `seatbelt-semantics.sh` | each new macOS release |
 | `build-profile-iterate.sh` | a build stops under the profile and nothing names the missing grant |
-| `build-profile-gate.sh` | the profile generator changes, and before each release: it is §7.4 |
+| `build-profile-gate.sh` | the generator changes, and before each release: it is §7.4, both tools |
 
 `seatbelt-semantics.sh` is the one with teeth. §7.2's table is what it measured, and the guard is
 built on those answers; if E3, E4 or E5 stops answering DENIED, the profile no longer enforces what

@@ -37,3 +37,27 @@ from whichever side sees the path first.
 
 **Related:** #3932 (`SBT_GLOBAL_SERVER_DIR` for long server-socket paths), #6887 / #6907
 (`XDG_RUNTIME_DIR` for the boot socket).
+
+## sbtn exits 0 with nothing run when it cannot start its server
+
+**Title:** sbtn reports success and runs nothing when the server fork dies
+
+**Versions:** sbt 2.0.7, Temurin 25.0.4, macOS 26 on Apple silicon.
+
+**Reproducer:** run `sbt -batch compile` (sbtn, the default client) in an environment where the
+forked server cannot start — a `sandbox-exec` profile that denies the `java` the re-invoked sbt
+script resolves from `PATH` reproduces it deterministically:
+
+```text
+[info] entering thin client - BEEP WHIRR
+[info] starting sbt server in the background
+[info] use 'sbt shutdown' to shutdown the server
+[info]
+```
+
+The client then exits 0. Nothing was compiled, nothing more is printed, no server log exists, and
+`sbt --jvm-client -batch shutdown` afterwards says no server is running.
+
+**Expected:** a nonzero exit and a message naming the failed server start. `--jvm-client` in the
+same environment either completes the command or fails with output; success with no work is the
+one behaviour automation cannot detect.
