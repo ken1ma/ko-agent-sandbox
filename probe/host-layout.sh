@@ -1,9 +1,11 @@
 #!/bin/sh
-# The layout facts PLAN-SBT-ON-HOST.md's Phase 1 validators must match, read off a real macOS
-# host. Run from the project directory. Read-only but for one temporary directory it removes.
+# What is installed on this host and where — the layout BuildSandboxPolicy encodes.
 #
-# Paste the whole output when asking for the validators: every "MISSING" line is a case the
-# prerequisite classifier has to name, not a gap to fill in silently.
+# Run it on a new machine, and after upgrading Coursier or the JDK. Every "MISSING" line is a
+# case the prerequisite classifier has to name, not a gap to fill in silently; a line that
+# disagrees with BuildSandboxPolicyTest's fixtures is a finding, not a test to relax.
+#
+# Run from the project directory. Read-only but for one temporary directory it removes.
 
 set -u
 
@@ -93,6 +95,7 @@ say "download folder" "$([ -d "$mill_cache/download" ] && ls -1 "$mill_cache/dow
 echo
 echo "=== what a Seatbelt profile would name ==="
 say "PROJECT" "$project"
-say "COURSIER_JVM_ROOT" "$cache_root/jvm"
+say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"
+say "MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/mill/download"
 say "AGENT_CACHE_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
-say "AGENT_MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/mill/download"
+printf '\nThe sbt distribution is the other half of TOOL; probe/sbt-exec-chain.sh finds it.\n'
