@@ -1,0 +1,34 @@
+# PLAN-SBT-ON-HOST.md §2.1's runtime authority: paths the toolchain needs that are not the
+# policy's own. One absolute path per line; prefix with "x " if it must also be executable.
+#
+# Measured by `sh probe/build-profile-iterate.sh paths`, which grants every root entry and then
+# removes them cumulatively — a tree stays only if the set without it stops working. Nothing here
+# is reasoned about: an earlier list containing /usr/lib, /System/Library and the dyld cryptexes
+# was wrong in every entry, because the shared cache is mapped without any filesystem access.
+#
+# Grow it by running `floor`, which climbs from a shell to a real build and stops at the first
+# rung that fails; the layer that failed names what to measure next.
+
+# A shell. Everything in the launcher chain starts here.
+x /bin
+
+# The launcher chain's binaries, named individually rather than granting /usr/bin: `narrow` can
+# only drop whole lines, so a tree it cannot split would keep every binary in it forever. Each of
+# these appears in the cs wrapper or the inner sbt script (probe/sbt-exec-chain.sh).
+x /usr/bin/env
+x /usr/bin/uname
+x /usr/bin/dirname
+x /usr/bin/basename
+x /usr/bin/readlink
+x /usr/bin/expr
+x /usr/bin/sed
+x /usr/bin/grep
+x /usr/bin/tr
+
+# Not granted, deliberately: /private/var/select/sh, which /bin/sh consults to choose its
+# personality. The denial prints "Error opening" and the shell runs anyway, so it is not authority
+# this needs — a line added to silence a message is a grant that outlives every build.
+
+# The JVM reads the OS version from here; without it java refuses to start with
+# "os.version malformed: -1.0". Measured by `paths`, which descended /System to this one file.
+/System/Library/CoreServices/SystemVersion.plist

@@ -61,6 +61,33 @@ Windows measures fresh-when-unheld with host writes to session-held files refuse
 
 - [ ] Re-run it on Linux, and after a podman or macOS upgrade.
 
+### A path that survives deletion and refuses every child (unexplained)
+
+Observed 2026-08-30 on macOS 26.4.1, in a live-mode session, after `rm -rf` of a directory an sbt
+server still held open. One path became unusable while remaining visible:
+
+```sh
+mkdir -p target/out  && mkdir target/out/anything    # ENOENT
+mkdir -p target/out3 && mkdir target/out3/anything   # ok
+```
+
+`ENOENT`, not `EPERM`, so no policy rule is involved, and `out` is no reserved name. `ls` and
+`stat` both showed an ordinary empty directory. `rmdir` succeeded, and recreating the directory at
+the same path reproduced the failure, so it is not a stale entry for that inode — the path itself
+stayed poisoned, for every child name, while a sibling created moments later behaved normally. It
+persisted across the rest of the session.
+
+- [ ] Reproduce deliberately: delete a directory through the mount while a process holds it open,
+  then recreate it. If it reproduces, this belongs in `probe/coherency-probe.py`, whose axis it
+  already is — a host-shared tree mutated under a live reader.
+A fresh container and mount cleared it: the same path accepted children again with no host-side
+repair. So it is state in this layer rather than anything reaching the backing share, and a session
+that hits it can be told to relaunch — which is worth an entry in `troubleshooting.md` once the
+trigger is understood well enough to name.
+
+`PLAN-SBT-ON-HOST.md` raises the stakes: `--run-on-host` makes a host process writing the shared
+`target/` the ordinary case rather than an occasional one.
+
 ### What the staged lower can do, per share
 
 A stage's lower is the host project directory as it arrives inside the machine, and it is where the

@@ -76,7 +76,8 @@ explicit deny ACEs placed by a launch-time scan, and a `.git` created *during* t
 deny. That is a race, not an invariant, and the guard is the reason this feature can exist at all.
 
 Seatbelt expresses it because SBPL path filters are evaluated at access time, so a directory that
-appears mid-build is covered by the same rule. A Windows backend needs an equivalent — a filesystem
+appears mid-build is covered by the same rule — measured, not assumed (§7.2). A Windows backend
+needs an equivalent — a filesystem
 minifilter, or a design that does not put the guard in ACLs at all — before it is worth
 reconsidering.
 
@@ -106,7 +107,7 @@ resolved Coursier JDK home/**       read/execute       # §3.1, one home, never 
 agent cache root/coursier/v1/**     read-write         # §5
 
 ~/.sbt/boot/**                      read-only          # sbt only
-Coursier-installed sbt launcher     read/execute       # sbt only
+Coursier-installed sbt launcher     read/execute       # sbt only, two parts — §3.2
 user Mill download folder/**        read/execute       # Mill only
 
 session temporary directory         read-write         # fresh per session
@@ -263,13 +264,53 @@ not accept an arbitrary `sbt` from `PATH`. On macOS that directory is
 not the XDG spelling the container image uses — and it contains a space, which every path this
 plan hands to a profile, a process or the channel has to survive.
 
-`~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
-
-Disable sbt server state outside the project:
+**The launcher is two files, not one.** What `cs install sbt` puts on `PATH` is a 1.2 KB shell
+wrapper; it execs a second `sbt` inside an unpacked distribution in the Coursier archive cache:
 
 ```text
--Dsbt.server.autostart=false
+~/Library/Application Support/Coursier/bin/sbt          the wrapper, #!/usr/bin/env sh
+~/Library/Caches/Coursier/arc/https/github.com/sbt/sbt/
+  releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt    what it runs
 ```
+
+So `TOOL` is two grants. The second cannot be derived from a convention — it encodes the download
+URL of whichever sbt version Coursier installed, independent of the version
+`project/build.properties` pins. It also cannot be found by running the wrapper, for §3.3's reason.
+Reading the wrapper and taking the Coursier-cache path it names is a read, and is what
+`SeatbeltProfile.sbtDistribution` does.
+
+**The grant is the distribution's home, not the file the wrapper execs.** The inner launcher
+resolves `sbt_home` as the parent of its own `bin` directory and reads `sbt-launch.jar`, `conf/`
+and the `sbtn` binaries from there, so a grant on `…/sbt/bin/sbt` alone starts a build that cannot
+find its own launcher jar.
+
+Granting the enclosing `arc` tree instead is refused for the same reason §3.1 refuses it: that is
+every archive Coursier has ever extracted.
+
+**The inner launcher is `bash`, and resolves `java` from `PATH`.** It declares `java_cmd=java`, so
+left alone it would reach `/usr/bin/java` — a path the profile does not grant, and the stub §3.1
+rejects. The wrapper must force the resolved JDK, by `-java-home` or by putting its `bin` first on
+`PATH`; which of those sbt 2 honours is a §7.4 row, not an assumption.
+
+`~/.sbt/boot` is read-only. The sandbox does not provision missing sbt/Scala bootstrap state.
+
+**sbt 2 has no one-shot mode, and `-Dsbt.server.autostart=false` guarantees failure rather than
+avoiding a server.** Its own `--no-server` is documented in the launcher as "run sbtn, and fail if
+it cannot connect to a server", and sets that same property; passing it yields
+`[error] no sbt server is running`. sbt 2 is client/server by construction.
+
+So the server starts *inside* the sandbox, and its state follows `-Dsbt.global.base` into the
+session temporary directory — where it writes a content-addressed store and a process registry
+(`cache/v2/{cas,ac,proc}`), all inside a path the profile already grants.
+
+Two consequences the rest of this plan has to absorb: §8.2's "when a persistent sbt server is later
+enabled" is not a later refinement but the normal path from the first build, so §4's session is a
+server's lifetime rather than one build's; and the wrapper must end that server rather than leave it
+running when the session's lock is released.
+
+The client is the open half. sbt 2 defaults to `sbtn`, a native binary in the distribution, and
+`--jvm-client` selects a JVM client instead — which matters here because every JVM in the chain is
+already known to start under this profile while the native client is unproven.
 
 If a global sbt base is needed, redirect it into the project:
 
@@ -592,16 +633,104 @@ SESSION_TMP                       RW
 `SESSION_TMP` is the writable child of the wrapper's per-session directory (§4), not the user's
 `TMPDIR`, and the session directory holding the lock is named in no rule.
 
+**Every path in a rule is canonical.** SBPL resolves the path being *accessed* but matches the rule
+as written, so a rule naming a non-canonical path matches nothing — and therefore **grants**. On
+macOS `/tmp` is a symlink to `/private/tmp`, which is enough to make a whole deny silently
+decorative. §4 requires canonicalization; this is why forgetting it fails in the permissive
+direction rather than the safe one.
+
 **Every wrapper-supplied path is a literal, never interpolated into a regex.** `(subpath …)` and
 `(literal …)` for the parameters above; `(regex …)` only for the two name-pattern denies, which are
 patterns by intent. The paths in play are not regex-safe — the Coursier JDK home carries a
 percent-encoded `+`, a literal `+` and dots (§3.1), and the sbt install directory contains a
 space — and a path interpolated into a pattern matches more than itself, silently and in the
-permissive direction.
+permissive direction. `(subpath)` itself handles both characters correctly.
+
+### 7.2.1 What SBPL actually does
+
+Apple does not document the profile language for third-party use: `sandbox-exec` compiles it through
+private `sandbox_compile_*` entry points, and the published write-ups are reverse-engineered and
+date from 2011. Two sources are therefore authoritative here — measurement, and Apple's own shipped
+profiles under `/System/Library/Sandbox/Profiles/`, which are current and were written against the
+implementation. `probe/seatbelt-semantics.sh` and `probe/build-profile-iterate.sh` are the
+measurements; `system.sb` is the profile worth reading first.
+
+**What the guard rests on** (`probe/seatbelt-semantics.sh`):
+
+| behaviour | consequence |
+| --- | --- |
+| the accessed path is canonicalized | `link -> .git`, then a write through the link, is denied |
+| canonicalization normalizes case where the volume does | `.GIT` folds before matching |
+| rules are evaluated at access time | a `.git` created *during* the build is covered |
+| one regex spans every depth | `.git` at any nesting is one rule, not an enumeration |
+| `file-write*` already refuses a hardlink to a denied target | the link clause is redundancy |
+
+**What a profile must contain to start anything at all**
+(`probe/build-profile-iterate.sh`, and `system.sb` where noted):
+
+- **`(literal "/")` is required.** `(subpath "/x")` grants what is *under* `/x`; resolution
+  authorizes `/` first and nothing covers it. `system.sb` grants it too.
+- **Every ancestor directory needs its own literal** — the same rule one level down. A deep
+  `(subpath …)` with no chain above it denies everything, `/dev` included, which is how
+  `SecureRandom` fails as "NativePRNG not available" rather than as a path.
+- **`(subpath "/")` is not the union of `(subpath "/child")`.** The difference is the root entry,
+  and reaching for `(subpath "/")` because only it appears to work grants the whole disk.
+- **A rule naming a non-canonical path grants rather than denies.** `/tmp` against `/private/tmp`
+  is enough to disable an entire deny, silently.
+- **An invalid profile fails exactly like a denial.** `sandbox-exec` aborts the child either way;
+  the difference is only on its own stderr, so a search that discards it chases missing grants that
+  were never missing.
+
+**What this toolchain needs, measured per layer.** The JDK needs `sysctl-read`, the JDK home, and
+`/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to start
+with `os.version malformed: -1.0`. It does **not** need `file-map-executable`, which Apple's
+profiles do use for system frameworks; a JDK outside those paths loads without it.
+
+`system.sb` also carries two things worth adopting rather than re-deriving: `file-test-existence`,
+a narrower operation than `file-read*` for the ancestor chain, where only existence is in question;
+and `(import "dyld-support.sb")`, Apple's own statement of what a process needs from the loader.
+
+### 7.2.2 Prior art, and why this profile is shaped differently
+
+Bazel sandboxes build actions on macOS with `sandbox-exec`, which is this feature's problem exactly.
+Its generated profile is worth reading and worth *not* copying:
+
+```text
+(version 1)
+(debug deny)
+(allow default)
+(deny file-write*)
+(allow file-write* (subpath "…/execroot/__main__"))
+(deny network*) …
+```
+
+It is a blacklist: everything is permitted, then writes and network are taken away. That is why
+Bazel never meets §7.2.1's findings — with nothing denied by default, path resolution cannot fail,
+so the root entry and the ancestor chain never arise. It is also why that shape cannot serve here:
+a build under it reads the whole filesystem, and §2.1's "everything else user-owned inaccessible"
+is the property this feature exists to provide. The difficulty of deny-by-default is the price of
+that row, not evidence of a wrong turn — which is worth stating because the blacklist form is the
+obvious simplification when the whitelist will not start.
+
+`(debug deny)` is worth taking. It makes denials visible from inside the profile, without the
+unified log's redaction or `(trace)`'s unavailability, and Bazel puts it at the top of every
+generated profile. `probe/build-profile-iterate.sh` now does the same.
+
+The fold is a property of canonicalization, not of the regex: an SBPL pattern does not fold case by
+itself, so a rule written to rely on that would not fold on a case-sensitive volume where it
+happens to matter. `(deny file-link …)` is kept beside the write deny even though `file-write*`
+covers it, because the guard is the reason this feature is safe to invoke from a sandbox and the
+membership of a wildcard operation family is Apple's to change.
 
 Do not pre-authorize broad paths such as `/System/**`, `/usr/**` or `/opt/homebrew/**` unless
 testing proves a specific stable runtime read is required, and then add the narrowest rule that
 testing justifies.
+
+Runtime authority is discovered by running a real build under a deny-default profile and reading
+the denials, never by listing what a host happens to have. The chain begins `#!/usr/bin/env sh` and
+continues `#!/usr/bin/env bash`, so `bash` is in it as well as `sh`, alongside the `uname`,
+`dirname`, `basename` and `readlink` the inner launcher calls — but that list is where the search
+starts, not where it ends.
 
 ### 7.3 Network
 
@@ -961,7 +1090,7 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 
 `--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race tests;
 proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures; the venue
-script of §14.8, and the coherence probes of §14.7.
+script of §14.9, and the coherence probes of §14.7.
 
 Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
 adds.
@@ -1052,7 +1181,23 @@ edits on the host, an editor or a `git checkout` included, and the probes would 
 even if this feature never shipped. What is gated on the flag is one further row — run a build
 through the channel, then read `target/` back from the container.
 
-### 14.8 Venue record
+### 14.8 The probes, and when to run them
+
+Three hand-run instruments under `probe/`, each with a distinct trigger, each carrying it in its own
+header. They are not tests: a test that fails is a defect in this repository, while a probe that
+answers differently is a finding about the host.
+
+| probe | run it when |
+| --- | --- |
+| `host-layout.sh` | a new machine, or Coursier or the JDK is upgraded |
+| `sbt-exec-chain.sh` | sbt is upgraded or reinstalled — the distribution path moves with it |
+| `seatbelt-semantics.sh` | each new macOS release |
+
+`seatbelt-semantics.sh` is the one with teeth. §7.2's table is what it measured, and the guard is
+built on those answers; if E3, E4 or E5 stops answering DENIED, the profile no longer enforces what
+§2.1 claims. That is a release blocker, not a probe to update.
+
+### 14.9 Venue record
 
 The suite is a script CI runs, run by hand on macOS until CI exists. `TODO.md` sets the standard it
 must meet: a run with no venue recorded is not evidence for the next release. So it records macOS
@@ -1106,12 +1251,16 @@ change the design if they answer badly, and §7.4 is where they are answered.
 
 ### Seatbelt semantics
 
-- Does SBPL canonicalize before matching? If a `file-write*` regex sees the path as given rather
-  than as resolved, then `PROJECT/x -> .git` followed by a write to `x/config` walks through the
-  `.git` deny, and §2.1's guard is not enforced.
-- Can an SBPL regex fold case, to match `policy.rs`'s `folds_to` on a case-insensitive APFS volume?
-- Is `file-link` the operation that covers a hardlink whose *target* is under a denied path?
+Canonicalization, case folding, access-time evaluation and hardlinks are measured; §7.2 carries the
+answers. What remains:
+
 - What is the minimum set of non-user-data runtime reads the Coursier JVM needs on macOS 26.4+?
+- Which paths sbt 2's `sbtn` native client needs, or whether the wrapper should pin `--jvm-client`
+  and stay in JVMs the profile is known to start (§3.2). The server starts under the profile; the
+  client is where a run currently stops, with nothing written to its own log.
+- Why the JVM running sbt reported itself as `java.base@23.0.2` when `-java-home` named a 25.0.4
+  JDK and `java -version` under the same profile agreed it was 25.0.4. If a build can run a JVM the
+  wrapper never validated, §3.1 is a statement the profile does not enforce.
 
 ### The channel
 
