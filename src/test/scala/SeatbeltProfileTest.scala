@@ -21,7 +21,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val launcher = Paths.get(s"$home/Library/Application Support/Coursier/bin/sbt")
   private val distributionExec =
     cacheRoot.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
-  private val distribution = distributionHome(distributionExec)
+  private val distribution = distributionExec.getParent.getParent
 
   private val policy = BuildPolicy(
     project = project,
@@ -29,7 +29,6 @@ class SeatbeltProfileTest extends munit.FunSuite:
     coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/coursier/v1"),
     tool = Tool.Sbt,
     launcher = launcher,
-    sbtBoot = Some(Paths.get(s"$home/.sbt/boot")),
   )
 
   private def inputs(
@@ -60,6 +59,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("the refusal explains why it grants rather than denies"):
     val reason = render(inputs(tmp = Paths.get("relative/tmp"))).left.getOrElse("")
     assert(clue(reason).contains("grant"))
+
+  test("the tool and the distribution agree: sbt needs it, Mill has none"):
+    assert(render(inputs().copy(sbtDistribution = None)).isLeft)
+    assert(render(inputs().copy(policy = millPolicy)).isLeft)
 
   test("a port outside the range is refused"):
     assert(render(inputs(port = 0)).isLeft)
@@ -153,9 +156,15 @@ class SeatbeltProfileTest extends munit.FunSuite:
     for ancestor <- Seq("/Users", "/Users/kenichi", "/Users/kenichi/Library/Caches") do
       assert(clue(text).contains(s"""(allow file-read-metadata file-test-existence (literal "$ancestor"))"""), ancestor)
     val literalReads = text.linesIterator.filter(line => line.contains("(literal") && line.contains("file-read*")).toSeq
-    assertEquals(literalReads, Seq(RootComponent, Devices))
+    assertEquals(literalReads, RootComponent +: Devices.linesIterator.toSeq)
     // The root is its own line and not repeated in the chain.
     assertEquals(text.linesIterator.count(_.contains("""(literal "/")""")), 1)
+
+  test("no /dev/tty: a closed stdin does not detach the controlling terminal; random devices read-only"):
+    val text = rendered()
+    assert(!clue(text).contains("/dev/tty"))
+    assert(text.contains("""(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""))
+    assert(text.contains("""(allow file-read* file-write-data (literal "/dev/null"))"""))
 
   test("/dev is in the ancestor chain, or SecureRandom cannot open /dev/urandom"):
     assert(clue(rendered()).contains("""(allow file-read-metadata file-test-existence (literal "/dev"))"""))
@@ -202,25 +211,21 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", cacheRoot), None)
 
   test("the distribution grant is its home, not the executable: sbt-launch.jar lives beside it"):
-    assertEquals(
-      distributionHome(distributionExec),
-      cacheRoot.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt"),
-    )
     assert(rendered().contains(s"(subpath \"$distribution\")"))
+    assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
 
   private val millPolicy = policy.copy(
     tool = Tool.Mill,
     launcher = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
-    sbtBoot = None,
   )
 
   private def millText: String =
     render(inputs().copy(policy = millPolicy, sbtDistribution = None))
       .fold(reason => fail(reason), identity)
 
-  test("Mill renders without the sbt-only paths"):
+  test("Mill renders without the sbt distribution"):
     val text = millText
-    assert(!clue(text).contains(".sbt/boot"))
+    assert(!clue(text).contains("sbt-2.0.4.zip"))
     assert(text.contains(millPolicy.launcher.toString))
 
   test("Mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):

@@ -65,14 +65,14 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
 
   test("a cache root inside the project is refused"):
     val inside = project.resolve(".cache/ko-agent-sandbox")
-    assert(cacheRootOutsideProject(inside, project, Os.Mac).isLeft)
+    assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
 
   test("a cache root containing the project is refused"):
-    assert(cacheRootOutsideProject(Paths.get(home), project, Os.Mac).isLeft)
+    assert(cacheRootOutsideProject(Paths.get(home), project, Os.Mac, Right(_)).isLeft)
 
   test("the ordinary cache root is accepted beside the project"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(cacheRootOutsideProject(root, project, Os.Mac), Right(root))
+    assertEquals(cacheRootOutsideProject(root, project, Os.Mac, Right(_)), Right(root))
 
   test("the project's caches sit under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
@@ -107,19 +107,63 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
       Some(Paths.get("/opt/cs/bin")),
     )
 
+  test("a cache root whose symlink lands inside the project is refused on its canonical path"):
+    val alias = Paths.get("/opt/cache/ko-agent-sandbox")
+    val canonical: Path => Either[String, Path] =
+      path => Right(if path == alias then project.resolve(".cache") else path)
+    assert(cacheRootOutsideProject(alias, project, Os.Mac, canonical).isLeft)
+    assert(cacheRootOutsideProject(alias, project, Os.Mac, _ => Left("cannot inspect")).isLeft)
+
+  test("the data-volume spelling of the project is the project"):
+    val inside = Paths.get("/System/Volumes/Data" + project.toString + "/.cache/ko-agent-sandbox")
+    assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
+
   // --------------------------------------------------------------------------
   // JDK
   // --------------------------------------------------------------------------
 
+  private val javaBinary = jdkHome.resolve("bin/java")
+
   test("a Coursier-unpacked JDK home is accepted through its URL-derived path"):
     assertEquals(
-      resolveJdkHome(env("JAVA_HOME" -> jdkHome.toString), coursierCache, exists(jdkHome, coursierCache), Os.Mac),
+      resolveJdkHome(
+        env("JAVA_HOME" -> jdkHome.toString),
+        coursierCache,
+        exists(jdkHome, javaBinary, coursierCache),
+        _ == javaBinary,
+      ),
       Right(jdkHome),
     )
 
+  test("bin/java must be an executable file under the home, not a symlink out of it"):
+    val elsewhere = Paths.get("/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java")
+    val escaping: Path => Option[Path] =
+      path => if path == javaBinary then Some(elsewhere) else exists(jdkHome, coursierCache, elsewhere)(path)
+    assert(resolveJdkHome(env("JAVA_HOME" -> jdkHome.toString), coursierCache, escaping, _ => true).isLeft)
+    assert(
+      resolveJdkHome(
+        env("JAVA_HOME" -> jdkHome.toString),
+        coursierCache,
+        exists(jdkHome, javaBinary, coursierCache),
+        _ => false,
+      ).isLeft,
+    )
+
+  test("inside the cache is not enough: the cache root, arc, v1 and a home without bin/java are refused"):
+    val arc = coursierCache.resolve("arc")
+    val v1 = coursierCache.resolve("v1")
+    for candidate <- Seq(coursierCache, arc, v1, jdkHome) do
+      val known = Seq(coursierCache, arc, v1, jdkHome, arc.resolve("bin/java"), v1.resolve("bin/java"),
+        coursierCache.resolve("bin/java"))
+      assert(
+        resolveJdkHome(env("JAVA_HOME" -> candidate.toString), coursierCache, exists(known*), _ => true).isLeft,
+        clue(candidate),
+      )
+
   test("/usr/bin/java is refused: the stub is a redirector, not a JDK"):
     val stub = Paths.get("/usr/bin/java")
-    assert(resolveJdkHome(env("JAVA_HOME" -> stub.toString), coursierCache, exists(stub, coursierCache), Os.Mac).isLeft)
+    val known = exists(stub, coursierCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> stub.toString), coursierCache, known, _ => true).isLeft)
 
   test("a system or Homebrew JDK is refused"):
     for candidate <- Seq(
@@ -130,16 +174,18 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
     do
       val path = Paths.get(candidate)
       assert(
-        resolveJdkHome(env("JAVA_HOME" -> candidate), coursierCache, exists(path, coursierCache), Os.Mac).isLeft,
+        resolveJdkHome(env("JAVA_HOME" -> candidate), coursierCache, exists(path, coursierCache), _ => true)
+          .isLeft,
         clue(candidate),
       )
 
   test("JAVA_HOME unset is a prerequisite refusal, not a fallback to PATH"):
-    assert(resolveJdkHome(env(), coursierCache, exists(coursierCache), Os.Mac).isLeft)
+    assert(resolveJdkHome(env(), coursierCache, exists(coursierCache), _ => true).isLeft)
 
   test("a JAVA_HOME that does not exist is refused rather than assumed"):
     val absent = coursierCache.resolve("arc/gone/Contents/Home")
-    assert(resolveJdkHome(env("JAVA_HOME" -> absent.toString), coursierCache, exists(coursierCache), Os.Mac).isLeft)
+    val known = exists(coursierCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> absent.toString), coursierCache, known, _ => true).isLeft)
 
   // --------------------------------------------------------------------------
   // sbt and Mill
@@ -147,18 +193,35 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
 
   test("an sbt launcher inside the install directory is accepted"):
     val launcher = installDir.resolve("sbt")
-    assertEquals(validateSbtLauncher(launcher, installDir, exists(launcher, installDir), Os.Mac), Right(launcher))
+    val known = exists(launcher, installDir)
+    assertEquals(validateSbtLauncher(launcher, installDir, known, _ => true), Right(launcher))
+    assert(validateSbtLauncher(launcher, installDir, exists(launcher, installDir), _ => false).isLeft)
 
   test("a PATH symlink resolving into the install directory is accepted"):
     val linked = Paths.get("/usr/local/bin/sbt")
     val real = installDir.resolve("sbt")
     val canonical: Path => Option[Path] =
       path => if path == linked then Some(real) else exists(real, installDir)(path)
-    assertEquals(validateSbtLauncher(linked, installDir, canonical, Os.Mac), Right(real))
+    assertEquals(validateSbtLauncher(linked, installDir, canonical, _ => true), Right(real))
 
   test("an sbt from anywhere else is refused"):
     val other = Paths.get("/usr/local/bin/sbt")
-    assert(validateSbtLauncher(other, installDir, exists(other, installDir), Os.Mac).isLeft)
+    assert(validateSbtLauncher(other, installDir, exists(other, installDir), _ => true).isLeft)
+
+  test("the inner sbt launcher yields its home: <home>/bin/sbt, strictly inside arc"):
+    val home = coursierCache.resolve("arc/sbt-2.0.4.zip/sbt")
+    val inner = home.resolve("bin/sbt")
+    val known = exists(inner, coursierCache)
+    assertEquals(validateSbtDistribution(inner, coursierCache, known, _ => true), Right(home))
+    assert(validateSbtDistribution(inner, coursierCache, known, _ => false).isLeft)
+    val escaping: Path => Option[Path] =
+      path => if path == inner then Some(Paths.get("/opt/sbt/bin/sbt")) else known(path)
+    assert(validateSbtDistribution(inner, coursierCache, escaping, _ => true).isLeft)
+
+  test("a launcher whose home would be the cache root, arc, a v1 entry or a non-bin path is refused"):
+    for bad <- Seq("bin/sbt", "arc/bin/sbt", "v1/x/bin/sbt", "arc/sbt-2.0.4.zip/sbt/sbt", "arc/x/bin/sbtn") do
+      val inner = coursierCache.resolve(bad)
+      assert(validateSbtDistribution(inner, coursierCache, exists(inner, coursierCache), _ => true).isLeft, clue(bad))
 
   test("Mill needs the project's own bootstrap; a global Mill is not a fallback"):
     val bootstrap = project.resolve("mill")
@@ -174,14 +237,15 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
   test("the Mill download folder follows the bootstrap's own fallback"):
     assertEquals(millDownloadDir(env("HOME" -> home)), Some(millDownload))
 
-  test("MILL_FINAL_DOWNLOAD_FOLDER and MILL_USER_CACHE_DIR override it, in that order"):
+  test("MILL_FINAL_DOWNLOAD_FOLDER overrides it; MILL_USER_CACHE_DIR is assigned by the script, never read"):
     assertEquals(
       millDownloadDir(env("HOME" -> home, "MILL_FINAL_DOWNLOAD_FOLDER" -> "/opt/mill/dl")),
       Some(Paths.get("/opt/mill/dl")),
     )
+    assertEquals(millDownloadDir(env("HOME" -> home, "MILL_USER_CACHE_DIR" -> "/opt/mill")), Some(millDownload))
     assertEquals(
-      millDownloadDir(env("HOME" -> home, "MILL_USER_CACHE_DIR" -> "/opt/mill")),
-      Some(Paths.get("/opt/mill/download")),
+      millDownloadDir(env("HOME" -> home, "XDG_CACHE_HOME" -> "/opt/xdg")),
+      Some(Paths.get("/opt/xdg/mill/download")),
     )
 
   test("the pinned version is read from each place the bootstrap reads, in its order"):
@@ -210,40 +274,167 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
       Right("1.1.8"),
     )
 
-  test("an unpinned version is refused, not taken from the committed script's default"):
+  test("mill-jvm-version must be system, wherever Mill would read it"):
+    assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: system"))), Right(()))
+    assertEquals(millJvmIsSystem(project, files("build.mill" -> Seq("//| mill-jvm-version: system"))), Right(()))
+    assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq("system"))), Right(()))
+    assertEquals(
+      millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))),
+      Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))),
+    )
+    // Absent is Mill's own default, a JVM fetched by the build.
+    assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
+      Left(Refusal.PrereqMillJvmNotSystem(None)))
+
+  test("the JVM source is the launcher's loadMillConfig order, the first existing file authoritative"):
+    assertEquals(millJvmIsSystem(project, files(".config/mill-jvm-version" -> Seq("system"))), Right(()))
+    // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer.
+    val dotBeatsConfig = files(".mill-jvm-version" -> Seq("temurin:25"), ".config/mill-jvm-version" -> Seq("system"))
+    assertEquals(millJvmIsSystem(project, dotBeatsConfig), Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))))
+    val emptyFirst = files(".mill-jvm-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-jvm-version: system"))
+    assertEquals(millJvmIsSystem(project, emptyFirst), Left(Refusal.PrereqMillJvmNotSystem(None)))
+    // Compared as written: Mill keeps the opts-file line untrimmed and tests equality.
+    assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq(" system "))),
+      Left(Refusal.PrereqMillJvmNotSystem(Some(" system "))))
+    assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq("# comment", "", "system"))), Right(()))
+    // A nested YAML key is not the key; a //| line after the header is not the header.
+    assertEquals(
+      millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-build:", "  mill-jvm-version: system"))),
+      Left(Refusal.PrereqMillJvmNotSystem(None)),
+    )
+    // Refused as a stray //| line: readBuildHeader scans the whole file and errors on it.
+    assert(millJvmIsSystem(project, files("build.mill" -> Seq("package build", "//| mill-jvm-version: system"))).isLeft)
+    val quoted = files("build.mill.yaml" -> Seq("mill-jvm-version: \"system\" # x"))
+    assertEquals(millJvmIsSystem(project, quoted), Right(()))
+    // Not system, whatever a lax reader would strip: a YAML comment needs whitespace before its
+    // #, and an unmatched quote is not the plain scalar.
+    for bad <- Seq("mill-jvm-version: system#other", "mill-jvm-version: \"system", "mill-jvm-version: system'") do
+      assert(millJvmIsSystem(project, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
+    // YAML's `key:value` is one scalar, not a mapping: Mill never sees the key.
+    assertEquals(
+      millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))),
+      Left(Refusal.PrereqMillJvmNotSystem(None)),
+    )
+    // A malformed //| line is an error in Mill's readBuildHeader, and a refusal here; so is a
+    // stray //| after the header, and so are two keys, whichever Mill's map would keep.
+    assert(millJvmIsSystem(project, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
+    val stray = files("build.mill" -> Seq("//| mill-jvm-version: system", "package build", "//| x"))
+    assert(millJvmIsSystem(project, stray).isLeft)
+    // A second YAML document is territory Mill never reads; a marker anywhere is a refusal.
+    val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
+    assertEquals(millJvmIsSystem(project, secondDoc), Left(Refusal.PrereqMillJvmNotSystem(Some("multi-document YAML"))))
+    val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
+    assert(millJvmIsSystem(project, headerDoc).isLeft)
+    // A commented marker is still a marker; an indented or embedded one is not.
+    val commented = files("build.mill.yaml" -> Seq("--- # next", "mill-jvm-version: system"))
+    assertEquals(millJvmIsSystem(project, commented), Left(Refusal.PrereqMillJvmNotSystem(Some("multi-document YAML"))))
+    val dashesInValue = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "x: --- y"))
+    assertEquals(millJvmIsSystem(project, dashesInValue), Right(()))
+    val doubled = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "mill-jvm-version: temurin:25"))
+    assertEquals(millJvmIsSystem(project, doubled),
+      Left(Refusal.PrereqMillJvmNotSystem(Some("duplicate mill-jvm-version keys"))))
+    // build.mill.yaml is consulted before build.mill, and one existing root file ends the search.
+    val yamlFirst =
+      files("build.mill.yaml" -> Seq("extends: ScalaModule"), "build.mill" -> Seq("//| mill-jvm-version: system"))
+    assertEquals(millJvmIsSystem(project, yamlFirst), Left(Refusal.PrereqMillJvmNotSystem(None)))
+
+  test("no version anywhere is a refusal"):
     assertEquals(millVersion(project, env(), files()), Left(Refusal.PrereqMillVersionUnpinned))
     assertEquals(
       millVersion(project, env(), files(".mill-version" -> Seq(""))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
+  private val bootstrap = Seq(
+    "#!/usr/bin/env sh",
+    """if [ -z "${DEFAULT_MILL_VERSION}" ] ; then DEFAULT_MILL_VERSION="1.1.8"; fi""",
+  )
+
+  test("with nothing else pinned, the version is the bootstrap's own DEFAULT_MILL_VERSION"):
+    assertEquals(millVersion(project, env(), files("mill" -> bootstrap)), Right("1.1.8"))
+    val fromEnv = env("DEFAULT_MILL_VERSION" -> "1.1.9")
+    assertEquals(millVersion(project, fromEnv, files("mill" -> bootstrap)), Right("1.1.9"))
+    // A pin anywhere in the chain wins over the default, as in the script.
+    val pinned = files("mill" -> bootstrap, ".mill-version" -> Seq("1.1.7"))
+    assertEquals(millVersion(project, env(), pinned), Right("1.1.7"))
+    val noDefault = files("mill" -> Seq("#!/bin/sh"))
+    assertEquals(millVersion(project, env(), noDefault), Left(Refusal.PrereqMillVersionUnpinned))
+
+  test("the first existing file decides, empty or not: the bootstrap's elif chain has no fall-through"):
+    assertEquals(
+      millVersion(project, env(), files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
+      Left(Refusal.PrereqMillVersionUnpinned),
+    )
+    // An empty chain result falls to the default, as the script's `if [ -z "$MILL_VERSION" ]` does.
+    assertEquals(
+      millVersion(project, env(), files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
+      Right("1.1.8"),
+    )
+    // build.mill exists and carries no marker: build.mill.scala is never consulted.
+    assertEquals(
+      millVersion(
+        project,
+        env(),
+        files("build.mill" -> Seq("package build"), "build.mill.scala" -> Seq("//| mill-version: 1.1.8")),
+      ),
+      Left(Refusal.PrereqMillVersionUnpinned),
+    )
+    assertEquals(millVersion(project, env(), files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
+    // grep's `//\|.*mill-version`: the marker before the key, never after it.
+    assertEquals(
+      millVersion(project, env(), files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
+      Left(Refusal.PrereqMillVersionUnpinned),
+    )
+
+  test("canonical paths compare exactly: a case-sensitive volume keeps coursier and Coursier apart"):
+    val sibling = Paths.get(s"$home/Library/Caches/coursier/arc/jdk/Contents/Home")
+    val binary = sibling.resolve("bin/java")
+    val known = exists(sibling, binary, coursierCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> sibling.toString), coursierCache, known, _ => true).isLeft)
+
+  test("two markers are no version, and a version file's whitespace is kept as the script keeps it"):
+    assertEquals(
+      millVersion(project, env(), files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-version: 1.1.9"))),
+      Left(Refusal.PrereqMillVersionUnpinned),
+    )
+    assertEquals(
+      millVersion(project, env(), files(".mill-version" -> Seq("1.1.8 "))),
+      Left(Refusal.PrereqMillVersionUnpinned),
+    )
+
   test("a version that could name something other than a directory entry is refused"):
     for bad <- Seq("../../etc", "a/b", "1.1.8 --flag") do
-      assertEquals(millVersion(project, env("MILL_VERSION" -> bad), files()), Left(Refusal.PrereqMillVersionUnpinned), clue(bad))
+      assertEquals(
+        millVersion(project, env("MILL_VERSION" -> bad), files()),
+        Left(Refusal.PrereqMillVersionUnpinned),
+        clue(bad),
+      )
 
-  test("the launcher is matched on its prefix, so the platform suffix is never replicated"):
-    val entries = Seq("1.1.6-native-mac-aarch64", "1.1.8-native-mac-aarch64", "0.11.5")
-    assertEquals(
-      millLauncher(millDownload, "1.1.8", _ => entries),
-      Right(millDownload.resolve("1.1.8-native-mac-aarch64")),
-    )
-    // A jar-era version with no suffix at all matches the same way.
-    assertEquals(millLauncher(millDownload, "0.11.5", _ => entries), Right(millDownload.resolve("0.11.5")))
+  test("the launcher name is the bootstrap's own derivation, suffix rules included"):
+    // The `case "$MILL_VERSION"` block of the official script, one row per branch.
+    assertEquals(millLauncherName("1.1.8", "arm64"), "1.1.8-native-mac-aarch64")
+    assertEquals(millLauncherName("1.1.8", "x86_64"), "1.1.8-native-mac-amd64")
+    assertEquals(millLauncherName("1.1.8-jvm", "arm64"), "1.1.8")
+    assertEquals(millLauncherName("1.1.8-native", "arm64"), "1.1.8-native-mac-aarch64")
+    assertEquals(millLauncherName("0.11.5", "arm64"), "0.11.5")
+    assertEquals(millLauncherName("0.12.14", "arm64"), "0.12.14")
+    assertEquals(millLauncherName("0.13.0-M1", "arm64"), "0.13.0-M1-native-mac-aarch64")
+    assertEquals(millLauncherName("1.1.6-104-5bbe1e", "arm64"), "1.1.6-104-5bbe1e-native-mac-aarch64")
 
-  test("an unprovisioned launcher is a refusal naming the version and the folder to fix"):
+  test("a provisioned launcher is that exact file, present and executable"):
+    val launcher = millDownload.resolve("1.1.8-native-mac-aarch64")
+    assertEquals(millLauncher(millDownload, "1.1.8", "arm64", _ == launcher), Right(launcher))
+    // A similarly prefixed neighbour is not it.
     assertEquals(
-      millLauncher(millDownload, "1.2.0", _ => Seq("1.1.8-native-mac-aarch64")),
-      Left(Refusal.PrereqMillLauncherMissing("1.2.0", millDownload)),
-    )
-    assertEquals(
-      millLauncher(millDownload, "1.1.8", _ => Seq.empty),
+      millLauncher(millDownload, "1.1.8", "arm64", _ == millDownload.resolve("1.1.8-native-mac-aarch64.part")),
       Left(Refusal.PrereqMillLauncherMissing("1.1.8", millDownload)),
     )
 
-  test("sbt boot must exist; the sandbox does not provision it"):
-    val boot = Paths.get(s"$home/.sbt/boot")
-    assertEquals(sbtBoot(env("HOME" -> home), _ == boot), Right(boot))
-    assertEquals(sbtBoot(env("HOME" -> home), _ => false), Left(Refusal.PrereqSbtBootMissing))
+  test("an unprovisioned launcher is a refusal naming the version and the folder to fix"):
+    assertEquals(
+      millLauncher(millDownload, "1.2.0", "arm64", _ => false),
+      Left(Refusal.PrereqMillLauncherMissing("1.2.0", millDownload)),
+    )
 
   // --------------------------------------------------------------------------
   // The channel's working directory
@@ -272,6 +463,20 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
     val canonical: Path => Option[Path] =
       path => if path == escaping then Some(Paths.get("/etc")) else Some(path.normalize())
     assert(cwd("/workspace/link", canonical).isLeft)
+
+  test("a canonical case-different sibling is outside the project; a lexical one still folds"):
+    // Canonical spellings are the volume's own: on a case-sensitive volume `Ko-Agent-Sandbox` is
+    // another directory. The lexical check before canonicalization keeps folding, since a request
+    // on a folding volume may arrive in either case.
+    val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/sub")
+    assert(cwd("/workspace/sub", _ => Some(sibling)).isLeft)
+    // Lexically a case-different spelling of the project itself, which the real filesystem folds.
+    val folded = cwd("/workspace/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
+    assertEquals(folded, Right(project.resolve("sub")))
+
+  test("a canonical case-different sibling of the project is a safe cache root"):
+    val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/.cache")
+    assertEquals(cacheRootOutsideProject(sibling, project, Os.Mac, Right(_)), Right(sibling))
 
   test("a working directory that does not exist is refused"):
     assert(cwd("/workspace/gone", _ => None).isLeft)

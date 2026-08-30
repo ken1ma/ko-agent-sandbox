@@ -84,7 +84,6 @@ if [ -n "$sbt_path" ]; then
 else
     absent "sbt on PATH" "cs install sbt"
 fi
-say "~/.sbt/boot" "$([ -d "$HOME/.sbt/boot" ] && echo present || echo MISSING)"
 
 echo
 echo "=== mill ==="
