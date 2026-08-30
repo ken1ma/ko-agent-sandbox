@@ -103,7 +103,8 @@ PROJECT/**/.git/**                  inaccessible
 PROJECT/**/.ko-agent-sandbox/**     inaccessible
 
 user Coursier JVM root/**           read/execute       # the managed JVM, never written
-agent Coursier cache root/v1/**     read-write         # §5
+agent cache root/coursier/v1/**     read-write         # §5
+agent cache root/mill/download/**   read-write         # §5, Mill only
 
 ~/.sbt/boot/**                      read-only          # sbt only
 Coursier-installed sbt launcher     read/execute       # sbt only
@@ -267,7 +268,15 @@ Require a project-local bootstrap script:
 
 Do not support a globally installed Mill.
 
-Mill's own bootstrap download has no row in §2.1 yet — see §17.
+The script downloads the Mill launcher itself, and where it puts it is settled by the script rather
+than inferred: `MILL_USER_CACHE_DIR` defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/mill`, and the
+download folder is `$MILL_USER_CACHE_DIR/download` unless `MILL_FINAL_DOWNLOAD_FOLDER` names
+another. That default is a machine-wide directory the user's own Mill runs read, so §5.1's argument
+applies unchanged and the wrapper sets `MILL_FINAL_DOWNLOAD_FOLDER` into this project's agent cache
+root instead.
+
+The script also stages its download at `${MILL_OUTPUT_DIR:-out}/mill-temp-download`, inside the
+project, which `PROJECT` already covers. It needs no row of its own.
 
 ---
 
@@ -351,23 +360,33 @@ that cannot be canonicalized.
 
 ## 5. Coursier cache policy
 
-Agent-invoked builds get their **own cache root, per project**. The user's artifact cache is not
-granted, not mounted and not read.
+Agent-invoked builds get their **own build-cache root, per project**. The user's artifact cache is
+not granted, not mounted and not read.
 
 ```text
-$XDG_CACHE_HOME/ko-agent-sandbox/cache/<projectId>/coursier/v1/
+<cache root>/ko-agent-sandbox/cache/<projectId>/coursier/v1/       sbt, scala, Coursier
+<cache root>/ko-agent-sandbox/cache/<projectId>/mill/download/     MILL_FINAL_DOWNLOAD_FOLDER
 ```
 
 Grouping by project inside the kind directory makes one project's caches one directory: a
-per-project cache reset is a single removal, and `cache/<projectId>/sbt/` or `.../ivy2/` can join
-later without moving anything.
+per-project cache reset is a single removal, and `cache/<projectId>/ivy2/` can join later without
+moving anything.
+
+`<cache root>` is discovered the way `AgentSandboxLauncher.stateRootOf` discovers the state root, so
+the two answer alike on one machine: `XDG_CACHE_HOME` when it is set and absolute, otherwise
+`$HOME/.cache`. `XDG_CACHE_HOME` is normally unset on macOS, which is the ordinary case rather than
+the exception, so the fallback is tested first and a literal unexpanded value is never a path. A
+relative override is refused with its own message, as `stateRootOf` refuses one: a relative value
+resolves against the current directory, which is the repository being sandboxed.
 
 Permissions, against §2.1:
 
 ```text
-agent cache root/v1/**       RW      artifacts the build downloads
-user Coursier JVM root/**    RX      §3.1
-user Coursier v1/**          absent  not granted at all
+agent cache root/coursier/v1/**   RW      artifacts the build downloads
+agent cache root/mill/download/** RW      the Mill launcher the bootstrap fetches
+user Coursier JVM root/**         RX      §3.1
+user Coursier v1/**               absent  not granted at all
+user Mill cache/**                absent  not granted at all
 ```
 
 ### 5.1 Why not the user's cache
@@ -446,6 +465,21 @@ The launcher injects the host project path so the shim can translate its own wor
 `/workspace/<sub>`. The container therefore learns the host path — the disclosure §9.3 records —
 whether or not same-path mounting is ever adopted.
 
+**The working directory is attacker-supplied, and it never becomes a profile grant.** `PROJECT` is
+always the launcher's canonical project root, resolved at §4 step 1 from the launch and not from any
+request. The translated path becomes a separate `WORKING_DIRECTORY`, used only as the child
+process's cwd.
+
+Keeping the two apart is a correctness rule before it is a security one. Deriving `PROJECT` from the
+request would *shrink* the grant whenever the agent invokes from a subdirectory, and sbt and Mill
+both walk upward to discover their build root and write sibling modules' output; the build would
+fail on denials that look like a broken profile.
+
+`WORKING_DIRECTORY` is still validated, because a request choosing a path outside the project would
+otherwise produce a confusing wall of denials rather than one answer. The broker resolves it
+canonically and refuses it unless it is `PROJECT` or beneath it, with `CHANNEL_UNAVAILABLE` and the
+path — never a silent fall back to the root. §14.1 and §15 carry the hostile cases.
+
 ### 6.3 Availability
 
 The channel exists only when `--run-on-host` names the tool (§9.1). Without it the command is
@@ -467,11 +501,16 @@ The wrapper supplies:
 PROJECT
 COURSIER_JVM_ROOT
 AGENT_CACHE_V1
+AGENT_MILL_DOWNLOAD
 TOOL
 SBT_BOOT
 SESSION_TMP
+WORKING_DIRECTORY
 PROXY endpoint
 ```
+
+`WORKING_DIRECTORY` carries no grant of its own: it is inside `PROJECT`, which already has one, and
+it reaches the backend as the child's cwd rather than as a rule (§6.2).
 
 For Mill, `TOOL` points inside `PROJECT`. For sbt, it points to the Coursier-installed launcher, and
 the sbt-specific boot path can be omitted when conditional profile generation is easier than
@@ -487,6 +526,7 @@ PROJECT/**/.git                   deny read, write and link, case-folded
 PROJECT/**/.ko-agent-sandbox      deny read, write and link, case-folded
 COURSIER_JVM_ROOT                 RX
 AGENT_CACHE_V1                    RW
+AGENT_MILL_DOWNLOAD               RW     # Mill
 SBT_BOOT                          RO     # sbt
 TOOL                              RX
 SESSION_TMP                       RW
@@ -520,7 +560,7 @@ java -version
 sbt --version
 sbt compile
 sbt test
-./mill --version
+./mill --version          # with an empty agent cache, so the bootstrap fetch is exercised
 ./mill __.compile
 ./mill __.test
 ```
@@ -542,7 +582,9 @@ link PROJECT/x -> PROJECT/.git/config        denied
 write via PROJECT/link -> PROJECT/.git       denied
 write PROJECT/.ko-agent-sandbox/...          denied
 write the user's Coursier v1                 denied
-write agent cache v1/...                     allowed
+write the user's Mill download cache         denied
+write agent cache coursier/v1/...            allowed
+write agent cache mill/download/...          allowed
 write PROJECT/...                            allowed
 write session temporary directory            allowed
 connect directly to arbitrary Internet host  denied
@@ -734,10 +776,14 @@ The build's repository allowlist is a project file, in the directory that alread
 boundary configuration:
 
 ```text
-.ko-agent-sandbox/host-command/sbt/egress/allowed
+.ko-agent-sandbox/host-command/<tool>/egress/allowed
 ```
 
-It inherits that directory's properties: the filter freezes it at any depth, the launcher reads it
+One list per tool, because they do not fetch from the same places: sbt resolves from Maven Central,
+while Mill's bootstrap fetches its own launcher from either Maven Central or a GitHub release CDN
+depending on the version, so a Mill project's list is the one that may need GitHub hosts.
+
+Each inherits that directory's properties: the filter freezes it at any depth, the launcher reads it
 on the host, and it is reviewed in a pull request like any other file. It is a separate list from
 `egress/allowed` deliberately — the small prize behind the loopback port is the argument for
 binding one at all (§8.1).
@@ -848,7 +894,7 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 
 `--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race tests;
 proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures; the venue
-script of §14.7, and the coherence probes of §14.6.
+script of §14.8, and the coherence probes of §14.7.
 
 Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
 adds.
@@ -859,7 +905,18 @@ adds.
 
 A deliberately hostile sample Scala project, whose build definition attempts each of the following.
 
-### 14.1 Filesystem reads
+### 14.1 Channel requests
+
+The working directory arrives from inside the sandbox (§6.2). Each of these must be refused before
+any profile parameter is derived from it:
+
+```text
+working directory ../../..                        refused
+working directory through a symlinked component   refused
+working directory naming an unrelated host path   refused
+```
+
+### 14.2 Filesystem reads
 
 ```text
 $HOME/.ssh/*
@@ -871,7 +928,7 @@ arbitrary sibling repository
 
 Expected: denied.
 
-### 14.2 Filesystem writes
+### 14.3 Filesystem writes
 
 ```text
 PROJECT/.git/config and .git/hooks/*, at the root and nested
@@ -880,27 +937,29 @@ Coursier/jvm/*
 ~/.sbt/boot/*
 the Coursier-installed sbt launcher
 the user's Coursier v1
+the user's Mill download cache
 arbitrary $HOME path
 ```
 
 Expected: denied.
 
-### 14.3 Allowed writes
+### 14.4 Allowed writes
 
 ```text
 PROJECT/*
-agent cache v1/*
+agent cache coursier/v1/*
+agent cache mill/download/*     with an empty cache, so the bootstrap actually writes
 session temporary directory/*
 ```
 
 Expected: allowed.
 
-### 14.4 Process inheritance
+### 14.5 Process inheritance
 
 sbt and Mill launch a forked JVM, a shell command and a test process. Verify children retain
 containment — in particular that the §7.2 guard rules apply to them.
 
-### 14.5 Network bypass
+### 14.6 Network bypass
 
 ```text
 raw TCP to public IP                    denied
@@ -910,7 +969,7 @@ allowed Maven request through proxy     succeeds
 denied host through proxy               proxy-denied
 ```
 
-### 14.6 Workspace coherence
+### 14.7 Workspace coherence
 
 A host build writes `target/` on the host and the agent reads it back through `ko-agent-fs`. That
 is the host-writer/session-reader axis, and `--run-on-host` turns it from an occasional human edit
@@ -927,7 +986,7 @@ edits on the host, an editor or a `git checkout` included, and the probes would 
 even if this feature never shipped. What is gated on the flag is one further row — run a build
 through the channel, then read `target/` back from the container.
 
-### 14.7 Venue record
+### 14.8 Venue record
 
 The suite is a script CI runs, run by hand on macOS until CI exists. `TODO.md` sets the standard it
 must meet: a run with no venue recorded is not evidence for the next release. So it records macOS
@@ -945,6 +1004,10 @@ Tests must cover symlinks from inside the project to `$HOME`, `/`, Coursier read
 repository, and — because §2.1's guard depends on it — to `.git` and `.ko-agent-sandbox` within the
 project itself.
 
+The channel's working directory (§6.2) is the one path arriving from inside the sandbox rather than
+from the launcher, so it is canonicalized and proven to be the project root or beneath it before any
+profile parameter is derived from it.
+
 A symlink must not provide authority beyond the underlying filesystem policy.
 
 ---
@@ -955,7 +1018,7 @@ A symlink must not provide authority beyond the underlying filesystem policy.
 2. Missing dependencies download into the project's agent Coursier cache.
 3. The build cannot modify Coursier-managed JVMs.
 4. The build cannot modify `~/.sbt/boot`.
-5. The build cannot modify the user's own Coursier cache.
+5. The build cannot modify the user's own Coursier cache or Mill download cache.
 6. The build cannot read or write git control state or `.ko-agent-sandbox`, at any depth, in any
    case, through a write, a link or a symlink.
 7. The build cannot access unrelated user data, the launcher state root included.
@@ -963,7 +1026,8 @@ A symlink must not provide authority beyond the underlying filesystem policy.
 9. Direct network access is impossible; the build's own proxy is the only egress path.
 10. The proxy restricts destination hosts, and exits with its session.
 11. Denials fail closed, produce useful diagnostics, and never fall back to another venue.
-12. The agent reaches the build through `sandbox-run-on-host`, and the session says so.
+12. The agent reaches the build through `sandbox-run-on-host`, the session says so, and no working
+    directory the sandbox supplies changes the profile's `PROJECT` grant.
 13. `--stats`, `--reset-cache` and the reset inventory hold.
 14. Every §12 row is written at its canonical site, and no dependent site restates it.
 
@@ -988,11 +1052,6 @@ change the design if they answer badly, and §7.4 is where they are answered.
 - What kills a running host build when the user interrupts the agent, and what happens to it when
   the sandbox container dies? An orphaned sbt on the host is a plausible failure mode, and §4's
   scavenger reclaims directories, not processes.
-
-### Mill
-
-- Where Mill's bootstrap script downloads Mill itself, and which §2.1 row covers it. "sbt and Mill
-  together" is not deliverable until that row exists.
 
 ### Claims to confirm rather than assume
 
