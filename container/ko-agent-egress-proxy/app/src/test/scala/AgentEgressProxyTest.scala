@@ -148,10 +148,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a provider group's forge endpoints stay restricted in the baseline, tags merged"):
     // github.com is in the catalog (allow=git-fetch) and in the github group (allow=github-login-device): the
-    // baseline carries both, and the group's untagged api.github.com does not strip the
-    // catalog's allow=git-fetch from it.
+    // baseline carries both tags, the group's merging with the catalog's rather than replacing
+    // it; api.github.com sits untagged in both.
     assertEquals(BaselineHosts("github.com"), Treatment.Restricted(Set("git-fetch", "github-login-device")))
-    assertEquals(BaselineHosts("api.github.com"), Treatment.Restricted(Set("git-fetch")))
+    assertEquals(BaselineHosts("api.github.com"), Treatment.Restricted(Set.empty))
     assertEquals(BaselineHosts("api.githubcopilot.com"), Treatment.Unrestricted)
     ModelProviderHosts.values.flatten.foreach: (host, treatment) =>
       if treatment == Treatment.Unrestricted then
@@ -414,7 +414,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // allow=git-fetch host, the model hosts go.
     val withoutGithub = policyOf(allowed = "-model-provider github")
     assertEquals(withoutGithub.restricted.get("github.com"), Some(Set("git-fetch")))
-    assertEquals(withoutGithub.restricted.get("api.github.com"), Some(Set("git-fetch")))
+    assertEquals(withoutGithub.restricted.get("api.github.com"), Some(Set.empty[String]))
     assert(!withoutGithub.hosts.contains("api.githubcopilot.com"))
     // Denying the github group takes its forge hosts with it, catalog membership notwithstanding:
     // a denial wins over both treatments.
@@ -488,9 +488,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val gitHosts = CuratedRestrictedHosts.collect { case (host, tags) if tags("git-fetch") => host }.toVector.sorted
     assertEquals(lines(2), s"restricted allow=git-fetch (${gitHosts.size}):" + gitHosts.map(" " + _).mkString)
     assertEquals(lines(3), "restricted allow=github-login-device (1): github.com")
-    assertEquals(lines(4), "restricted allow=npm-audit (1): registry.npmjs.org")
-    assert(lines(5).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(5))
-    assertEquals(lines(6), "denied rules (0):")
+    // No allow=npm-audit line: the baseline ships that allowance disabled, so it is not in force.
+    assert(lines(4).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(4))
+    assertEquals(lines(5), "denied rules (0):")
 
   test("an empty policy prints zero counts, parseable like any other"):
     val lines = policyLines(policyOf(profile = "deny-unless-model"))
@@ -1028,14 +1028,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
         )),
       ),
     )
-    assertEquals(
-      builtinGitHosts,
-      Set(
-        "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
-        "codeload.github.com", "api.github.com", "codeberg.org", "gitlab.com",
-      ),
-    )
-    assertEquals(baselinePolicy.tagged("npm-audit"), Set("registry.npmjs.org"))
+    assertEquals(builtinGitHosts, Set("github.com", "codeberg.org", "gitlab.com"))
+    // Disabled by default; a project re-enables it with `+host registry.npmjs.org allow=npm-audit`.
+    assertEquals(baselinePolicy.tagged("npm-audit"), Set.empty[String])
     assertEquals(baselinePolicy.tagged("github-login-device"), Set("github.com"))
 
   test("the leaf must name exactly the inspected hosts, in either direction"):

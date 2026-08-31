@@ -344,9 +344,9 @@ running an unfamiliar project is the user's job, exactly like reading its build 
 `unrestricted` additions most of all, since every such host is an opaque tunnel.
 
 **The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the agent's
-request are trusted as they arrive. npm's install-time audit does work (the `allow=npm-audit`
-allowance, "Reading without being able to write" below), but its warnings are advisory: nothing
-gates on them.
+request are trusted as they arrive. npm's install-time audit is off by default (the
+`allow=npm-audit` allowance, "Reading without being able to write" below); where a project
+enables it, its warnings are advisory: nothing gates on them.
 
 **Container, runtime and kernel escape.** On Linux the boundary ultimately rests on rootless Podman,
 the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to contain a
@@ -462,20 +462,16 @@ a constant.
 ### Reading without being able to write
 
 1. `github.com`
-1. `raw.githubusercontent.com`
-1. `objects.githubusercontent.com`
-1. `codeload.github.com`
-1. `api.github.com`
 1. `codeberg.org`
 1. `gitlab.com`
 
-are the `allow=git-fetch` entries of the curated restricted catalog, in the baseline because
-agents genuinely need to read them: issues, release notes, upstream sources, `git clone`. An
-opaque tunnel to those hosts is also the shortest path out for the contents of `/workspace`,
-since the same tunnel carries `git push`.
+are the `allow=git-fetch` entries of the curated restricted catalog: the forges `git clone` and
+`git fetch` speak to. An opaque tunnel to those hosts is also the shortest path out for the
+contents of `/workspace`, since the same tunnel carries `git push`.
 
 The rest of the catalog carries no allowance — `GET` and `HEAD` with no body, and no POST at
-all: the documentation and reference sites, the content CDNs, and the container-image pull hosts.
+all: the GitHub content hosts, the documentation and reference sites, the content CDNs, and the
+container-image pull hosts.
 An allowance's POST exception must not reach a host without it: on a content host whose paths
 are anyone's to choose, a path that mimics `git-upload-pack` would ride the git rule through. The
 proxy image's `baseline/host` file is the canonical built-in membership, allowances included, with
@@ -497,13 +493,13 @@ request inside it:
   client id, a scope, a device code — so no project data rides on it. Any session can begin a
   device login for any GitHub OAuth app; none can complete one without a person entering the
   code in a browser, on a page that names the app and its scopes
-- on the `allow=npm-audit` entry alone (`registry.npmjs.org`), `POST` to the one audit endpoint
-  the image's npm was measured to use at install time, so dependency-vulnerability warnings keep
-  working; an older npm's audit endpoint is refused and logged, non-fatally. The body is the
-  accepted price: the dependency graph — package names and versions — including names the
-  registry's own `GET`s never carried, such as a lockfile entry from a private registry or a git
-  dependency. A project whose dependency names are themselves secrets restates the entry
-  without it (`+host registry.npmjs.org` in `egress/allowed`) and gives up the warnings
+- on an `allow=npm-audit` entry — `registry.npmjs.org` is the one host that serves it — `POST`
+  to the one audit endpoint the image's npm was measured to use at install time; an older npm's
+  audit endpoint is refused and logged, non-fatally. The baseline ships the entry without this
+  allowance, because the body is the package/version inventory — not dependency edges —
+  including names the registry's own `GET`s never carried, such as a lockfile entry from a private
+  registry or a git dependency. A project that wants install-time vulnerability warnings buys
+  them at that price with `+host registry.npmjs.org allow=npm-audit` in `egress/allowed`
 - Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery — a
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`

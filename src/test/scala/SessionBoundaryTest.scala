@@ -196,10 +196,11 @@ class SessionBoundaryTest extends munit.FunSuite:
     )
     assertEquals(status("-X", "POST", "https://api.github.com/graphql"), "403")
     assertEquals(status("-X", "POST", "https://github.com/o/r.git/info/lfs/objects/batch"), "403")
+    // allow=npm-audit ships disabled, so even the audit endpoint is a POST like any other.
     assertEquals(
       status("-X", "POST", "-H", "Content-Type: application/json", "-d", "{}",
-             "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"), "200",
-      "npm's audit endpoint",
+             "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"), "403",
+      "npm's audit endpoint, its allowance off by default",
     )
     assertEquals(status("-X", "POST", "-d", "{}", "https://registry.npmjs.org/lodash"), "403")
 

@@ -14,6 +14,7 @@ import HostCommands.Os
 import ContainerfileSources.*
 import LauncherImages.*
 import KoAgentFs.bundledSourceId
+import agentsandbox.egress.AgentEgressProxy.resolvePolicy
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
 
@@ -999,6 +1000,32 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     val gitHosts = "(?m)^\\+host (\\S+)\\s+allow=git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
+
+  test("every egress-policy example is a complete policy the production parser accepts"):
+    def entries(directory: java.nio.file.Path) =
+      val stream = Files.list(directory)
+      try stream.iterator.asScala.toVector
+      finally stream.close()
+
+    val root = Paths.get("doc/egress-policy-examples")
+    val examples = entries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
+    assert(examples.nonEmpty, "no egress-policy examples found")
+
+    examples.foreach: directory =>
+      val files = entries(directory)
+      val names = files.map(_.getFileName.toString).toSet
+      assert(names.nonEmpty, s"$directory is empty")
+      assertEquals(names -- Set("allowed", "denied"), Set.empty[String], directory.toString)
+
+      def contents(name: String) =
+        files.find(_.getFileName.toString == name).map(Files.readString(_))
+
+      resolvePolicy(
+        Some("deny-unless-allowed"),
+        None,
+        contents("allowed"),
+        contents("denied"),
+      )
 
   test("agent egress instructions use the proxy's allowance vocabulary without denying its exceptions"):
     // The launcher writes this prose; the proxy owns the vocabulary. An agent following a tag the
