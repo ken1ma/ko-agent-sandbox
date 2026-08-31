@@ -7,17 +7,19 @@
 #   sh probe/build-profile-gate.sh [sbt|mill|all] [quick]
 #
 # The tool selects the positive rows; the negative matrix and the network rows run under every
-# selected profile. `quick` leaves the test rows out. Emitting a profile goes through
-# `sbt Test/runMain`, the launcher's own tooling until Phase 5's verb exists, whichever tool is
-# selected; the sbt *build* rows run only for sbt.
+# selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
+# negative matrix come from `sbt Test/runMain EmitBuildProfile`; the build rows run through
+# RunOnHost — the §4 wrapper — as plain java on the classpath emit printed, never through
+# `sbt Test/runMain`, whose own server would hold this project's portfile against the wrapper
+# (§3.2). Each wrapper row scavenges, publishes a session, starts the build's own proxy, builds
+# under the profile and ends what it started, so the rows measure the lifecycle as well as the
+# profile; there is no warm-up block, and a cold agent cache resolves through the proxy inside
+# the profile, which is the measurement.
 #
 # The sbt rows build this repository. The Mill rows build probe/mill-fixture, a one-module Mill
 # project that exists for them: this repository is sbt-built, and a Mill build of it would be a
-# second build definition rather than a measurement.
-#
-# What it does not cover, and why: the two proxy rows need the build's own proxy, which is Phase
-# 3. They are reported as SKIP rather than omitted, so a clean run is one with no FAIL and every
-# SKIP accounted for.
+# second build definition rather than a measurement. probe/deny-fixture exists for the
+# non-allowlisted-host row: its resolution must reach a host the proxy refuses.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker lives in a scratch tree this script makes and
@@ -79,7 +81,7 @@ emit() { # tool
 #
 # The JVM settings travel in JAVA_TOOL_OPTIONS, which the server sbt's client forks inherits; the
 # same -D flags on the command line reach the client alone. XDG_RUNTIME_DIR and
-# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the session temp (BuildSandboxPolicy.
+# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the session temp (RunOnHostPolicy.
 # SessionTmpMaxLength says why its length matters).
 #
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
@@ -90,7 +92,7 @@ build_env() { # agent-v1 command...
     PATH="$JAVA_HOME/bin:$PATH" \
     COURSIER_CACHE=$cache XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
     JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=$SESSION_TMP/sbt-global" \
+-Dsbt.global.base=${sbt_global:-$SESSION_TMP/sbt-global} -Djava.net.preferIPv4Stack=true" \
     "$@"
 }
 # A hang is a FAIL, not a stalled run: a client whose server never came up waits forever.
@@ -111,6 +113,19 @@ run_sbt() { # client command...
     client=$1; shift
     sandboxed sbt sbt $client -batch -java-home "$JAVA_HOME" "$@"
 }
+
+# A build through the §4 wrapper: RunOnHost scavenges, publishes a session, starts the build
+# proxy, runs the tool under the generated profile, ends its server and proxy, and preserves the
+# exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
+# `Build requested network access ...` — which several rows read. $test_cp is captured from emit.
+wrapper() { # tool project command...
+    wrapper_tool=$1; wrapper_project=$2; shift 2
+    with_timeout "${GATE_ROW_TIMEOUT:-900}" "$JAVA_HOME/bin/java" -cp "$test_cp" \
+        agentsandbox.launcher.RunOnHost "$wrapper_tool" "$wrapper_project" \
+        probe/runtime-authority.txt -- "$@"
+}
+deny_project=$project/probe/deny-fixture
+session_root=/private/tmp/ko-agent-$(id -u)
 
 # A shell command under a profile, so a row runs exactly what a build's script would.
 sb() { /usr/bin/sandbox-exec -f "$work/gate-$1.sb" /bin/sh -c "$2" >/dev/null 2>"$work/row.err"; }
@@ -146,8 +161,12 @@ with_cwd() { # pattern dir exact|under
 }
 # An sbt server's cwd is its project, exactly: a nested project's server is another project's.
 project_servers() { with_cwd '-Dsbt.script=' "$project" exact; }
+deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 # A Mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
+# A build proxy a timed-out or killed wrapper left: the wrapper's own scavenger ends these at its
+# next start, but the gate must not leave them when it exits before running one.
+stray_proxies() { pgrep -f -- '--serve-proxy-on-host' 2>/dev/null; }
 # §3.2: one sbt server per project at a time. A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
 # deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
@@ -169,7 +188,9 @@ fi
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
     for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done
+    for pid in $(deny_servers); do kill "$pid" 2>/dev/null && echo "ended deny-fixture server $pid"; done
     for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended Mill daemon $pid"; done
+    for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray build proxy $pid"; done
 }
 trap end_project_servers EXIT
 
@@ -186,18 +207,23 @@ if want mill; then
     emit mill || exit 1
     profiles="$profiles mill"
 fi
-# `emit`'s own sbt server goes before any build_env client runs, for §3.2's reason above.
+# `emit`'s own sbt server goes before any wrapper or build_env client runs, for §3.2's reason
+# above: the wrapper would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
 profiles=${profiles# }
 first=${profiles%% *}
+test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
+[ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
 # Each profile has its own session temp and agent cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
 use_profile() { # tool
     . "$work/gate-$1.env"
     agent_v1=$(sed -n 's/^agent cache: //p' "$work/emit-$1.log")
+    sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
     cache_root=${agent_v1%/cache/*}
     safe_path "SESSION_TMP" "$SESSION_TMP"
     safe_path "the agent cache" "$agent_v1"
+    safe_path "the sbt global base" "$sbt_global"
 }
 for p in $profiles; do
     echo "$p: $(grep -E '^(session temp|agent cache):' "$work/emit-$p.log" | tr '\n' ' ')"
@@ -207,7 +233,7 @@ state_root=${XDG_STATE_HOME:-$HOME/.local/state}/ko-agent-sandbox
 user_v1=${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}/v1
 user_arc=${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}/arc
 sbt_launcher=${COURSIER_BIN_DIR:-$HOME/Library/Application Support/Coursier/bin}/sbt
-# As the bootstrap derives it (BuildSandboxPolicy.millDownloadDir): MILL_USER_CACHE_DIR is not an input.
+# As the bootstrap derives it (RunOnHostPolicy.millDownloadDir): MILL_USER_CACHE_DIR is not an input.
 mill_downloads=${MILL_FINAL_DOWNLOAD_FOLDER:-${XDG_CACHE_HOME:-$HOME/.cache}/mill/download}
 # The concrete derived paths, after every environment override has had its say.
 safe_path "the launcher state root" "$state_root"
@@ -242,36 +268,10 @@ for p in $profiles; do
     ln -s sub/nested/.git "$scratch/link"
 done
 
-# --- warm-up ------------------------------------------------------------------------------------
-
-# The profile's only egress is the build proxy, which is Phase 3. Until it exists the agent cache
-# is warmed here, outside the profile, so the positive rows measure containment and not the
-# absence of a network. Once Phase 3 lands this block goes and the proxy rows take its place.
-# Unconditional: a partly warm cache is the common state, and a warm one costs one load.
-echo
-echo "warming the agent cache outside the profile (no build proxy until Phase 3)"
-if want sbt; then
-    use_profile sbt
-    build_env "$agent_v1" sbt --jvm-client -batch -java-home "$JAVA_HOME" "Test/compile" >"$work/warm.log" 2>&1 \
-        || { echo "sbt warm-up failed:"; tail -20 "$work/warm.log"; exit 1; }
-    build_env "$agent_v1" sbt --jvm-client -batch shutdown >/dev/null 2>&1
-fi
-if want mill; then
-    use_profile mill
-    # Mill's launcher memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
-    # and reuses them while the files they name exist (CoursierClient.scala). Written by a run
-    # against the user's cache, they name paths the profile denies; the memo goes, so the
-    # redirected COURSIER_CACHE takes effect. out/mill-daemon's processId and socketPort are a
-    # daemon's, alive or not, and a launcher believes them.
-    end_project_servers
-    rm -rf "$mill_project/out/mill-daemon"
-    # __.test, not --version: the daemon classpath, the build's dependencies and the test
-    # runner's are resolved separately, and the profile's rows need all three warm.
-    ( cd "$mill_project" && build_env "$agent_v1" ./mill --no-daemon __.test ) >"$work/mill-warm.log" 2>&1 \
-        || { echo "Mill warm-up failed:"; tail -20 "$work/mill-warm.log"; exit 1; }
-fi
-
 # --- positive rows ------------------------------------------------------------------------------
+#
+# The wrapper rows come first: a cold agent cache resolves through the build proxy inside the
+# profile, warming what the emit-profile rows after them read.
 
 echo
 echo "positive rows"
@@ -281,47 +281,56 @@ else report FAIL "java -version" "$(tail -1 "$work/java.log")"; fi
 
 if want sbt; then
     use_profile sbt
-    # Both clients run so §3.2's pin stays measured. The server's java.home is checked against
-    # the JDK the profile granted: the server is forked by the client, so nothing about the
-    # client's own JVM proves which one the build runs in.
+    for command in compile test; do
+        [ "$command" = test ] && [ "$quick" = 1 ] && { report SKIP "sbt test" "quick mode"; continue; }
+        if wrapper sbt "$project" "$command" >"$work/$command.log" 2>&1
+        then report PASS "sbt $command (wrapper)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
+        else report FAIL "sbt $command (wrapper)" \
+            "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70)"; fi
+    done
+
+    # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
+    # the agent cache through it. Both clients run so §3.2's pin stays measured. The server's
+    # java.home is checked against the JDK the profile granted: the server is forked by the
+    # client, so nothing about the client's own JVM proves which one the build runs in.
     for client in "--jvm-client" ""; do
         label="sbt --version (${client:-sbtn})"
         if run_sbt "$client" --version >"$work/version.log" 2>&1
-        then report PASS "$label" "$(grep -m1 'sbt' "$work/version.log" | cut -c1-40)"
-        else report FAIL "$label" "$(tail -1 "$work/version.log" | cut -c1-70)"; fi
+        then report PASS "$label" "$(grep -m1 'version:' "$work/version.log" | cut -c1-40)"
+        else report FAIL "$label" "$(grep -v '^$' "$work/version.log" | tail -1 | cut -c1-70)"; fi
     done
     if run_sbt --jvm-client 'eval System.getProperty("java.home")' >"$work/jvm.log" 2>&1; then
         if grep -qF "$JAVA_HOME" "$work/jvm.log"
         then report PASS "server runs the granted JDK"
         else report FAIL "server runs the granted JDK" "$(grep -m1 'ans:' "$work/jvm.log" | cut -c1-70)"; fi
     else report FAIL "server runs the granted JDK" "$(tail -1 "$work/jvm.log" | cut -c1-70)"; fi
-
-    for command in compile test; do
-        [ "$command" = test ] && [ "$quick" = 1 ] && { report SKIP "sbt test" "quick mode"; continue; }
-        if run_sbt --jvm-client "$command" >"$work/$command.log" 2>&1
-        then report PASS "sbt $command" "$(grep -m1 '^\[success\]' "$work/$command.log")"
-        else report FAIL "sbt $command" "$(grep -m1 '^\[error\]' "$work/$command.log" | cut -c1-70)"; fi
-    done
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 
     # §3.2 pins --jvm-client because sbtn returns with nothing built; §17 keeps asking whether
     # that changes. A build's success is the measure — sbtn's --version passes and proves nothing.
     if run_sbt "" compile >"$work/sbtn.log" 2>&1 && grep -q '^\[success\]' "$work/sbtn.log"
     then report INFO "sbtn compile" "passes: §3.2's pin is now a choice"
-    else report INFO "sbtn compile" "no build: $(tail -1 "$work/sbtn.log" | cut -c1-50)"; fi
+    else report INFO "sbtn compile" "no build: $(grep -v '^$' "$work/sbtn.log" | tail -1 | cut -c1-50)"; fi
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 fi
 
 if want mill; then
     use_profile mill
+    # Mill's launcher memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
+    # and reuses them while the files they name exist (CoursierClient.scala). Written by a run
+    # against the user's cache, they name paths the profile denies; the memo goes, so the
+    # wrapper's COURSIER_CACHE takes effect.
+    rm -rf "$mill_project/out/mill-daemon"
     # --no-daemon: the launcher and the daemon talk over a loopback TCP socket
     # (out/mill-daemon/socketPort), which the profile grants to nothing, since loopback is every
     # local service. Without the daemon there is no socket — Mill's --jvm-client.
     for command in --version __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
-        if ( cd "$mill_project" && sandboxed mill ./mill --no-daemon "$command" ) >"$work/mill.log" 2>&1
-        then report PASS "./mill $command" "$(grep -m1 -i 'mill\|compiling\|passed' "$work/mill.log" | cut -c1-40)"
-        else report FAIL "./mill $command" "$(grep -v 'Picked up' "$work/mill.log" | tail -1 | cut -c1-70)"; fi
+        if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
+        then report PASS "./mill $command (wrapper)" \
+            "$(grep -m1 -i 'mill\|compiling\|passed' "$work/mill.log" | cut -c1-40)"
+        else report FAIL "./mill $command (wrapper)" \
+            "$(grep -v 'Picked up' "$work/mill.log" | tail -1 | cut -c1-70)"; fi
     done
     # The daemon form stays measured, as sbtn does for sbt: if it starts passing, the flag
     # becomes a choice.
@@ -396,8 +405,123 @@ for p in $profiles; do
     then report FAIL "connect directly to arbitrary Internet host" "connected"
     else report PASS "connect directly to arbitrary Internet host" "denied: $(head -1 "$work/row.err" | cut -c1-50)"; fi
 done
-report SKIP "fetch allowed Maven artifact via proxy" "Phase 3: no build proxy yet"
-report SKIP "fetch non-allowlisted host via proxy" "Phase 3: no build proxy yet"
+# --- the build proxy ----------------------------------------------------------------------------
+
+echo
+echo "the build proxy"
+if ! want sbt; then
+    report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
+    report SKIP "fetch non-allowlisted host via proxy" "sbt rows not selected"
+else
+    use_profile sbt
+    # Made cold on purpose: with the artifact gone from the agent cache, a successful compile can
+    # only have fetched it — and the direct-connect row already showed the profile's only route is
+    # the proxy.
+    rm -rf "$agent_v1/https/repo1.maven.org/maven2/org/scalameta"
+    if wrapper sbt "$project" Test/compile >"$work/refetch.log" 2>&1
+    then report PASS "fetch allowed Maven artifact via proxy" "munit re-fetched, Test/compile ok"
+    else report FAIL "fetch allowed Maven artifact via proxy" \
+        "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/refetch.log" | cut -c1-70)"; fi
+
+    # deny-fixture's resolution reaches a refused host; the build must fail and the wrapper must
+    # say which host, §8.4's diagnostic.
+    if wrapper sbt "$deny_project" update >"$work/deny.log" 2>&1
+    then report FAIL "fetch non-allowlisted host via proxy" "the build succeeded"
+    elif grep -q 'Build requested network access' "$work/deny.log" \
+        && grep -q 'denied.example.com' "$work/deny.log"
+    then report PASS "fetch non-allowlisted host via proxy" "refused; wrapper named denied.example.com"
+    else report FAIL "fetch non-allowlisted host via proxy" \
+        "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
+fi
+
+# --- the session lifecycle ----------------------------------------------------------------------
+
+echo
+echo "the session lifecycle"
+sessions_now() { ls "$session_root" 2>/dev/null | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$'; }
+if [ "$quick" = 1 ]; then
+    report SKIP "two concurrent sessions" "quick mode"
+    report SKIP "SIGKILL: next start condemns and collects" "quick mode"
+    report SKIP "orphan server ended by portfile attribution" "quick mode"
+elif [ "$tool" != all ]; then
+    report SKIP "two concurrent sessions" "needs both tools"
+    report SKIP "SIGKILL: next start condemns and collects" "needs both tools"
+    report SKIP "orphan server ended by portfile attribution" "needs both tools"
+else
+    # Concurrency: one sbt and one Mill session overlap, each with its own directory and proxy.
+    wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
+    wrapper mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
+    peak=0; tries=0
+    while [ "$tries" -lt 600 ]; do
+        now=$(sessions_now); [ "$now" -gt "$peak" ] && peak=$now
+        kill -0 "$conc_sbt" 2>/dev/null || kill -0 "$conc_mill" 2>/dev/null || break
+        tries=$((tries + 1)); sleep 0.5
+    done
+    wait "$conc_sbt"; conc_a=$?
+    wait "$conc_mill"; conc_b=$?
+    if [ "$conc_a" -eq 0 ] && [ "$conc_b" -eq 0 ]
+    then report PASS "two concurrent sessions" "both built; peak concurrent session dirs: $peak"
+    else report FAIL "two concurrent sessions" "sbt exit $conc_a, mill exit $conc_b"; fi
+
+    # SIGKILL of the wrapper alone, mid-session. The client then finishes its command cleanly and
+    # its leader exits with it, and a cleanly-left server survives (session-recovery.sh M3) —
+    # the true orphan: proxy recorded and ended, client group leaderless and refused, server
+    # alive behind the portfile for attribution (§4). Killing any of the client's processes
+    # stages the wrong state: a server whose client dies mid-exec dies with it — measured, as
+    # was the completed deny-fixture variant whose server was gone before recovery.
+    "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
+        sbt "$project" probe/runtime-authority.txt -- compile >"$work/killed.log" 2>&1 & victim=$!
+    tries=0; client_record=""
+    while [ "$tries" -lt 600 ]; do
+        for record in "$session_root"/*/records/client; do
+            [ -f "$record" ] && client_record=$record
+        done
+        [ -n "$client_record" ] && [ -f "$project/project/target/active.json" ] && break
+        kill -0 "$victim" 2>/dev/null || break
+        tries=$((tries + 1)); sleep 0.5
+    done
+    if [ -z "$client_record" ] || [ ! -f "$project/project/target/active.json" ]; then
+        report FAIL "SIGKILL: next start condemns and collects" \
+            "no client record or portfile appeared: $(tail -1 "$work/killed.log" | cut -c1-50)"
+        report SKIP "orphan server ended by portfile attribution" "no orphan was staged"
+        kill -9 "$victim" 2>/dev/null
+    else
+        client_pgid=$(awk '{print $1}' "$client_record")
+        kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+        # The client finishes on its own; its leader's exit is the staging cue.
+        tries=0
+        while kill -0 "$client_pgid" 2>/dev/null && [ "$tries" -lt 600 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        sleep 1
+        # The recovery run's own build is beside the point (and --version is the cheap one);
+        # its stderr carries the scavenge of the victim's session.
+        wrapper sbt "$project" --version >"$work/recover.log" 2>&1
+        if grep -q 'scavenged' "$work/recover.log"
+        then report PASS "SIGKILL: next start condemns and collects" \
+            "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"
+        else report FAIL "SIGKILL: next start condemns and collects" \
+            "$(tail -1 "$work/recover.log" | cut -c1-70)"; fi
+        if grep -q 'ServerShutDown' "$work/recover.log"
+        then report PASS "orphan server ended by portfile attribution" \
+            "$(grep -m1 -o 'ServerShutDown([^)]*)' "$work/recover.log" | cut -c1-70)"
+        else report FAIL "orphan server ended by portfile attribution" \
+            "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"; fi
+        # The leaderless client group is the one §4 refuses to signal; it exits with its server
+        # gone, and the gate does not leave it to linger.
+        pkill -9 -g "$client_pgid" 2>/dev/null
+    fi
+fi
+
+# After every wrapper row: nothing of any session outlives it.
+leftover=""
+[ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
+[ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"
+[ -n "$(stray_proxies)" ] && leftover="$leftover proxy: $(stray_proxies | tr '\n' ' ')"
+[ "$(sessions_now)" -gt 0 ] && leftover="$leftover session dirs: $(sessions_now)"
+if [ -z "$leftover" ]
+then report PASS "no proxy or sbt server survives its session"
+else report FAIL "no proxy or sbt server survives its session" "$leftover"; fi
 
 echo
 echo "PASS $pass  FAIL $fail  SKIP $skip"

@@ -500,7 +500,7 @@ The per-project CA lives on the host, under
     sbt dist
     cd target/dist
     native-image --enable-native-access=ALL-UNNAMED \
-      -H:IncludeResources='sandbox-build/.*' \
+      -H:IncludeResources='sandbox-build/.*|baseline/.*' \
       -o ko-agent-sandbox -jar ko-agent-sandbox.jar
 
 1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting

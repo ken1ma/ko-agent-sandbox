@@ -16,7 +16,7 @@ import java.util.Locale
 
 import HostCommands.Os
 
-object BuildSandboxPolicy:
+object RunOnHostPolicy:
 
   enum Tool:
     case Sbt, Mill
@@ -35,6 +35,7 @@ object BuildSandboxPolicy:
     case CacheRootUnusable(reason: String)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
+    case AllowlistEntryOutsideGrammar(entry: String)
 
   /** Everything settled before a build is asked for; every path canonical. */
   case class BuildPolicy(
@@ -79,14 +80,25 @@ object BuildSandboxPolicy:
    * This project's build caches, under one directory so `--reset-cache` for a project is a single
    * removal and a further cache kind can join without moving anything.
    *
-   * Only Coursier's for now. Mill's launcher is provisioned by the user rather than fetched here,
-   * so it has no writable home (BuildSandboxPolicy.millLauncher).
+   * Coursier's, and sbt's global base. Mill's launcher is provisioned by the user rather than
+   * fetched here, so it has no writable home (RunOnHostPolicy.millLauncher).
    */
   def agentCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
 
   def agentCoursierV1(cacheRoot: Path, projectId: String): Path =
     agentCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
+
+  /**
+   * The confined build's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
+   * session temp: sbt 2 writes a content-addressed store under its global base
+   * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
+   * host, where a build against a session-temporary base would have its own outputs dangle the
+   * moment the session directory is removed. Beside the Coursier cache, it shares §5.1's poison
+   * scope (later builds of the same project, themselves sandboxed) and `--reset-cache`'s removal.
+   */
+  def agentSbtGlobal(cacheRoot: Path, projectId: String): Path =
+    agentCacheDir(cacheRoot, projectId).resolve("sbt-global")
 
   /**
    * Refused when the cache root would sit inside the project, the check
@@ -420,6 +432,47 @@ object BuildSandboxPolicy:
   def sessionTmpFits(path: Path): Either[Refusal, Path] =
     if path.toString.length <= SessionTmpMaxLength then Right(path)
     else Left(Refusal.SessionTmpTooLong(path, SessionTmpMaxLength))
+
+  // ---------------------------------------------------------------------------
+  // The build's egress allowlist
+  // ---------------------------------------------------------------------------
+
+  /** §2.2's initial repository allowlist: Coursier's and sbt's default Maven Central host. */
+  val BuildBaselineHosts: Vector[String] = Vector("repo1.maven.org")
+
+  def buildAllowlistPath(project: Path, tool: Tool): Path =
+    project.resolve(".ko-agent-sandbox").resolve("host-command")
+      .resolve(tool.toString.toLowerCase(java.util.Locale.ROOT)).resolve("egress").resolve("allowed")
+
+  /**
+   * The build allowlist file's grammar: `+host <host>` entries and `#` comments, nothing else —
+   * no tags, no treatment words, no providers, no removals. The proxy's full `allowed` grammar
+   * would let one `+model-provider` line expand into endpoints that are no artifact repository,
+   * and its treatment words mean nothing to a proxy running without inspection; anything outside
+   * the subset is refused here, never passed through for the proxy to interpret. Tokenization
+   * mirrors the proxy's `policyEntries` — strip from `#`, split on whitespace — so an entry read
+   * here is the entry the proxy would read.
+   */
+  def buildAllowlist(text: String): Either[Refusal, Vector[String]] =
+    val entries = text.linesIterator
+      .map(_.takeWhile(_ != '#'))
+      .map(_.split("\\s+").toVector.filter(_.nonEmpty))
+      .filter(_.nonEmpty)
+      .toVector
+    entries.find {
+      case Vector("+host", host) => host.startsWith("+") || host.startsWith("-")
+      case _                     => true
+    } match
+      case Some(outside) => Left(Refusal.AllowlistEntryOutsideGrammar(outside.mkString(" ")))
+      case None          => Right(entries.map(_(1)).distinct)
+
+  /**
+   * The proxy's `allowed` input for a build: a complete replacement — `-**`, then the baseline,
+   * then the file's entries — so the container's host catalog contributes nothing. Deduplicated,
+   * because the proxy refuses a host added twice.
+   */
+  def egressAllowedText(fileHosts: Vector[String]): String =
+    ("-**" +: (BuildBaselineHosts ++ fileHosts).distinct.map("+host " + _)).mkString("\n")
 
   // ---------------------------------------------------------------------------
   // The channel's working directory

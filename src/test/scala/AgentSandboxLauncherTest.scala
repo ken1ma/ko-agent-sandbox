@@ -230,6 +230,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
 
+  test("this build carries the proxy for --serve-proxy-on-host: resources load, spellings agree"):
+    // Class initialization reads /baseline eagerly, so nonEmpty proves the resources are on this
+    // classpath — the same classpath the assembled jar packages.
+    assert(agentsandbox.egress.AgentEgressProxy.CuratedRestrictedHosts.nonEmpty)
+    assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
+
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
     // is also why the pair lives beside UsageText rather than in HostCommands, whose contract is

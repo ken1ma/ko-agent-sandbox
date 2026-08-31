@@ -26,8 +26,11 @@ object AgentEgressProxy:
   /** Printed after `bind` and before any policy line, so a reader that saw it has a proxy
     * accepting connections; every refusal made before then ends the process instead. The
     * launcher gates the sandbox on this spelling, after the stamp every line here carries
-    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together. */
-  val ReadyLine = s"agent-egress-proxy listening on :$ListenPort"
+    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
+    * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
+    * its ephemeral port from this line. */
+  def readyLine(port: Int) = s"agent-egress-proxy listening on :$port"
+  val ReadyLine = readyLine(ListenPort)
 
   val ConnectTimeoutMillis = 10_000
   val HandshakeTimeoutMillis = 10_000
@@ -161,6 +164,7 @@ object AgentEgressProxy:
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
   val LogFileVariable = "EGRESS_LOG_FILE"
+  val BindVariable = "EGRESS_BIND"
 
   val executor = Executors.newVirtualThreadPerTaskExecutor()
   val connectionSlots = Semaphore(MaxConcurrentConnections)
@@ -316,6 +320,35 @@ object AgentEgressProxy:
       read(DeniedVariable),
     )
 
+  /**
+   * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an
+   * ephemeral one read back from the ready line. Unset is the wildcard on ListenPort, which the
+   * container's own network namespace makes safe. A hostname is refused: this is a bind address,
+   * and a name would make where the proxy listens depend on the environment's resolver.
+   */
+  def parseBind(value: Option[String]): InetSocketAddress =
+    value.filter(_.nonEmpty) match
+      case None => InetSocketAddress(ListenPort)
+      case Some(spelled) =>
+        def refuse(): Nothing = throw IllegalArgumentException(
+          s"$BindVariable is '$spelled'; the form is <ip-literal>:<port>, IPv6 in brackets, port 0 for ephemeral",
+        )
+        val (address, portText) = spelled match
+          case s if s.startsWith("[") =>
+            s.indexOf("]:") match
+              case -1 => refuse()
+              case i  => (s.substring(1, i), s.substring(i + 2))
+          case s =>
+            s.lastIndexOf(':') match
+              case -1                       => refuse()
+              case i if s.indexOf(':') != i => refuse() // an unbracketed IPv6 literal
+              case i                        => (s.substring(0, i), s.substring(i + 1))
+        val port = portText.toIntOption.filter(p => 0 <= p && p <= 65535).getOrElse(refuse())
+        val literal =
+          try InetAddress.ofLiteral(address)
+          catch case _: IllegalArgumentException => refuse()
+        InetSocketAddress(literal, port)
+
   def serve(): Unit =
     /*
      * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to
@@ -329,17 +362,17 @@ object AgentEgressProxy:
     System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
-     * Resolved before binding the port: a malformed policy is a container
-     * that fails to start, with the one-line reason — a stack trace would
-     * read as a proxy bug. Launches never get here (the launcher dry-runs
-     * the same variables first); this is the standalone-image path, or
-     * inspection material that cannot be read or names a set other than
+     * Resolved before binding the port: a malformed policy or bind address is
+     * a container that fails to start, with the one-line reason — a stack
+     * trace would read as a proxy bug. Launches never get here (the launcher
+     * dry-runs the same variables first); this is the standalone-image path,
+     * or inspection material that cannot be read or names a set other than
      * the one this policy inspects.
      */
-    val policy =
+    val (policy, bind) =
       try
         val resolved = configuredPolicy()
-        EgressPolicy(resolved, loadInspection(resolved))
+        (EgressPolicy(resolved, loadInspection(resolved)), parseBind(Option(System.getenv(BindVariable))))
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -352,9 +385,9 @@ object AgentEgressProxy:
 
     val server = ServerSocket()
     server.setReuseAddress(true)
-    server.bind(InetSocketAddress(ListenPort))
+    server.bind(bind)
 
-    System.err.println(ReadyLine)
+    System.err.println(readyLine(server.getLocalPort))
     val lines = policyLines(policy.resolved)
     lines.foreach(System.err.println)
     // The digest gives the audit log one stable, grep-able line naming which policy this run

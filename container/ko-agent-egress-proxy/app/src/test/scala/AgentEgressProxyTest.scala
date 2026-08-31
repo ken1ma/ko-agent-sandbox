@@ -1452,6 +1452,41 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(a.toByteArray.toVector, b.toByteArray.toVector)
     assert(String(a.toByteArray, StandardCharsets.US_ASCII).startsWith("allow github.com"))
 
+  test("EGRESS_BIND unset or empty is the wildcard on the fixed port"):
+    for value <- Seq(None, Some("")) do
+      val bind = parseBind(value)
+      assertEquals(bind.getPort, ListenPort)
+      assert(bind.getAddress.isAnyLocalAddress)
+
+  test("EGRESS_BIND accepts an IPv4 literal with an ephemeral port"):
+    val bind = parseBind(Some("127.0.0.1:0"))
+    assertEquals(bind.getAddress, InetAddress.getByName("127.0.0.1"))
+    assertEquals(bind.getPort, 0)
+
+  test("EGRESS_BIND accepts a bracketed IPv6 literal"):
+    val bind = parseBind(Some("[::1]:3129"))
+    assertEquals(bind.getAddress, InetAddress.getByName("::1"))
+    assertEquals(bind.getPort, 3129)
+
+  test("EGRESS_BIND refuses every shape that is not <ip-literal>:<port>"):
+    for
+      value <- Seq(
+        "127.0.0.1",       // no port
+        "localhost:3128",  // a hostname needs a resolver
+        "::1:3128",        // IPv6 without brackets: the port is ambiguous
+        "[::1]3128",       // brackets without the separating colon
+        "127.0.0.1:x",     // not a port
+        "127.0.0.1:65536", // past the port range
+        "127.0.0.1:-1",    // negative
+      )
+    do
+      val ex = intercept[IllegalArgumentException](parseBind(Some(value)))
+      assert(ex.getMessage.contains(BindVariable), clue = ex.getMessage)
+
+  test("the ready line spells the bound port, and the fixed-port form is the launcher's"):
+    assertEquals(readyLine(51234), "agent-egress-proxy listening on :51234")
+    assertEquals(ReadyLine, readyLine(ListenPort))
+
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
