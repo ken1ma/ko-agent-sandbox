@@ -301,10 +301,9 @@ host with fifty orphaned servers, every one on `/usr/bin/java`; under the profil
 silently and the client waits forever. The wrapper puts the resolved JDK's `bin` first on `PATH`
 (§4), and §7.4's "server runs the granted JDK" row is what holds it there.
 
-`~/.sbt/boot` is not granted and has no consumer: with `sbt.global.base` in the session temp the
-launcher boots into `sbt-global/boot` there, from the agent Coursier cache, every session (§7.4's
-gate with the grant removed). A warm boot directory in the agent cache is a Phase 5 performance
-item.
+`~/.sbt/boot` is not granted and has no consumer: with `sbt.global.base` under the agent cache the
+launcher boots into `sbt-global/boot` there, from the agent Coursier cache, warm across sessions
+(§7.4's gate with the grant removed).
 
 **sbt 2 has no one-shot mode, and `-Dsbt.server.autostart=false` guarantees failure rather than
 avoiding a server.** Its own `--no-server` is documented in the launcher as "run sbtn, and fail if
@@ -312,8 +311,15 @@ it cannot connect to a server", and sets that same property; passing it yields
 `[error] no sbt server is running`. sbt 2 is client/server by construction.
 
 So the server starts *inside* the sandbox, and its state follows `-Dsbt.global.base` into the
-session temporary directory — where it writes a content-addressed store and a process registry
-(`cache/v2/{cas,ac,proc}`), all inside a path the profile already grants.
+project's agent cache (`RunOnHostPolicy.agentSbtGlobal`, granted read-write beside the Coursier
+one) — where it writes a content-addressed store and a process registry (`cache/v2/{cas,ac,proc}`).
+The base must be persistent, not session-temporary: sbt 2 leaves `target/` outputs as *symlinks
+into that store* (measured on this host, against the user's own `~/Library/Caches/sbt/v2/cas`), so
+a base removed with the session would dangle the build's own outputs at step 11. The same fact
+cuts the other way at entry: a tree the user's unconfined sbt built links into a store the profile
+denies, and zinc fails on the unreadable state rather than starting cold, so the wrapper removes
+`target/` symlinks that resolve outside the granted roots before each build (§9.2's venue cost,
+automated; the artifacts survive in the store of the venue that linked them).
 
 Two consequences: §4's session is a server's lifetime rather than one build's, which is why the
 build's proxy binds to the session lock (§8.2); and the wrapper must end that server rather than
@@ -335,12 +341,6 @@ a launch-time refusal rather than a coexistence.
 distribution; under the profile it prints that it is starting the server and returns with no build
 run and nothing in its log, and no server is left to shut down. The JVM client completes the same
 commands, and is what every other JVM in the chain already proves.
-
-If a global sbt base is needed, redirect it into the project:
-
-```text
--Dsbt.global.base=<PROJECT>/.sandbox/sbt-global
-```
 
 Do not grant `~/.sbt/1.0`, `~/.sbt/2.0`, `~/.ivy2`, or `~/.m2` by default.
 
@@ -534,8 +534,11 @@ and its portfile carries no token (`Defaults.serverAuthentication` is TCP-only),
 `shutdown` and a bounded wait for the process to end. Never through sbt's own client, which
 answers a dead socket by deleting the portfile and starting its own server (§3.2) — here, an
 unconfined one. A server that answers nothing past the bound is reported, never guessed at by
-group id. A process that leaves its group by `setsid` escapes the scavenger, not the sandbox:
-reach here is lifecycle, §2.1 is authority.
+group id. Measured, for when attribution meets what: a server outlives a client that exits
+cleanly, and dies with one killed mid-exec — so a live orphan follows a completed command, and a
+kill usually leaves only a refused connect, which is itself the definitive answer. A process that
+leaves its group by `setsid` escapes the scavenger, not the sandbox: reach here is lifecycle,
+§2.1 is authority.
 
 The session lock is also what the build's proxy binds to (§8.2).
 
@@ -545,7 +548,7 @@ past the directory, against the 104-byte `sun_path` of a UNIX-domain socket; the
 longer path with a message, the client's JNI connect has no check and dies in `memcpy`. Measured:
 52 characters run, 56 trap. The macOS per-user temporary directory is 49 before anything is added,
 so no session directory under it can fit, and `~/.cache/ko-agent-sandbox/…` fits only for a short
-user name. `BuildSandboxPolicy.SessionTmpMaxLength` is that budget, and the wrapper refuses a
+user name. `RunOnHostPolicy.SessionTmpMaxLength` is that budget, and the wrapper refuses a
 session directory over it. `/tmp` is shared and sticky, so the root is checked the way an XDG
 runtime directory is — this user's, mode 0700, not a symlink — and refused otherwise.
 
@@ -556,7 +559,8 @@ settings travel in `JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and i
 ```text
 PATH                   COURSIER_JDK_HOME/bin first   the server's JVM, §3.2
 JAVA_TOOL_OPTIONS      -Djava.io.tmpdir=SESSION_TMP -Djava.util.prefs.userRoot=SESSION_TMP
-                       -Dsbt.global.base=SESSION_TMP/sbt-global
+                       -Dsbt.global.base=<agent cache>/sbt-global   §3.2: target/ links into it
+                       -Djava.net.preferIPv4Stack=true              §7.3: the proxy connect
 XDG_RUNTIME_DIR        SESSION_TMP      sbt's boot socket
 SBT_GLOBAL_SERVER_DIR  SESSION_TMP      sbt's server socket
 COURSIER_CACHE         the agent v1     §5
@@ -861,11 +865,18 @@ starts, not where it ends.
 ### 7.3 Network
 
 Seatbelt permits connections only to this build's proxy ingress endpoint (§8), and UNIX-domain
-sockets only inside `SESSION_TMP`. The second rule exists because Seatbelt counts a local socket as
-network: without it sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits
-for it forever, which is how the gate first met it. `(local unix-socket (subpath …))` and
-`(remote unix-socket (subpath …))` are the measured spelling, and a socket outside the subpath
-stays denied; `system-socket` plays no part.
+sockets only inside `SESSION_TMP`. The proxy rule is `(remote ip "localhost:<port>")` — Bazel's
+loopback spelling (`DarwinSandboxedSpawnRunner`, bazel#14828); an ip-literal host is refused by
+the compiler ("host must be * or localhost"). The "localhost" class covers native `127.0.0.1` and
+`::1` but not a JVM's dual-stack connect, which reaches `127.0.0.1` as v4-mapped
+`::ffff:127.0.0.1` and dies with `EPERM`; §4's contract pins `-Djava.net.preferIPv4Stack=true`
+for exactly this, all three measured by `probe/jvm-proxy-rule.sh` and `probe/loopback-rule.sh`.
+The
+UNIX-socket rule exists because Seatbelt counts a local socket as network: without it sbt's server
+gets `EPERM` from `bind()` on its boot socket and its client waits for it forever, which is how
+the gate first met it. `(local unix-socket (subpath …))` and `(remote unix-socket (subpath …))`
+are the measured spelling, and a socket outside the subpath stays denied; `system-socket` plays no
+part.
 
 The JVM and Coursier are configured to use it, but proxy settings are not the security boundary:
 Seatbelt must prevent bypass via direct sockets.
@@ -915,15 +926,26 @@ write session temporary directory            allowed
 connect directly to arbitrary Internet host  denied
 fetch allowed Maven artifact via proxy       allowed
 fetch non-allowlisted host via proxy         denied
+
+two concurrent sessions                      both build, distinct directories
+SIGKILL mid-session                          next start condemns and collects
+orphan server                                ended by portfile attribution
+after every wrapper row                      no proxy, server or session directory survives
 ```
 
-`probe/build-profile-gate.sh [sbt|mill|all] [quick]` runs this matrix under the profile
-`EmitBuildProfile` generates, one row per line above, and reports PASS, FAIL or SKIP with what it
-saw. The sbt rows build this repository; the Mill rows build `probe/mill-fixture`, a one-module
-Mill project that exists for them, since a Mill build of the launcher itself would be a second
-build definition rather than a measurement. The proxy rows are SKIP until Phase 3 exists.
-A "write" there is an open for append that writes nothing, and every marker it creates lives in a
-scratch tree it removes, so the matrix can run against a real repository.
+`probe/build-profile-gate.sh [sbt|mill|all] [quick]` runs this matrix and reports PASS, FAIL or
+SKIP with what it saw. The build rows run through the §4 wrapper (`RunOnHost`), which
+scavenges, publishes a session, starts the build's proxy and ends what it started — driven as
+plain java on the emitted classpath, because an `sbt Test/runMain` wrapper would find its own
+server holding the project's portfile (§3.2). The negative matrix runs under the profile
+`EmitBuildProfile` generates. There is no warm-up: a cold agent cache resolves through the proxy
+inside the profile, and the allowed-fetch row makes itself cold by deleting an artifact first.
+The sbt rows build this repository; the Mill rows build `probe/mill-fixture`, a one-module Mill
+project that exists for them, since a Mill build of the launcher itself would be a second build
+definition rather than a measurement; `probe/deny-fixture` exists for the non-allowlisted row,
+whose resolution must reach a refused host and be reported by §8.4's diagnostic.
+A "write" in the negative rows is an open for append that writes nothing, and every marker it
+creates lives in a scratch tree it removes, so the matrix can run against a real repository.
 
 The four `.git` rows after the first re-run under the real profile what `seatbelt-semantics.sh`
 measured in isolation — access-time evaluation, case folding, link creation and symlink
@@ -978,6 +1000,15 @@ wrapper starts the proxy by re-invoking whichever vehicle it is running in — `
 native binary — under a private verb, so one spelling serves both and neither needs a JVM the
 wrapper does not already have. §3.1's Coursier-managed-JVM requirement is about the build, not
 about the wrapper's own process.
+
+The host proxy runs unconfined, unlike the container's hardened copy of the same codebase — and
+it is the one process that parses hostile bytes from the thing being sandboxed, holding the uid
+whose files the build profile exists to deny. Its own small Seatbelt profile is Phase 5
+hardening: read-only JDK and launcher jar, writes to its log alone, no `process-exec*`,
+unrestricted `network-outbound` (host filtering is the proxy's own job, and SBPL cannot filter by
+name) plus its loopback listener. Defense in depth for the enforcement point, not a §2.1 hole:
+a JVM parse bug is an exception, the listener is loopback-only, and `HostileInputTest` covers the
+surface — which is why it can wait for Phase 5.
 
 Bind on an ephemeral port on `127.0.0.1`. That is proxy work, not launch configuration: the
 codebase binds the wildcard address on the fixed port 3128 — safe in the container's own network
@@ -1047,7 +1078,7 @@ workspace and egress paragraphs. It states:
   directory, seen from both sides. The two venues compile with different JVMs against different
   Coursier caches, so what one leaves there may not be usable by the other: a venue switch can cost
   a rebuild, and can need cleanup before a build succeeds (`AGENTS-SANDBOX.md`, "The host's own
-  symlinks");
+  symlinks"; the host wrapper does its own entry sweep, §3.2);
 - that a failed host build is reported to the user, never re-run in the container (§2.3);
 - what the host build may write: the project, minus git control state and `.ko-agent-sandbox`.
 
@@ -1271,10 +1302,9 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 
 ### Phase 5 — Launcher surface and hardening
 
-`--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race tests;
-proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures; the venue
-script of §14.9, and the coherence probes of §14.7. Performance: the warm sbt boot directory in the
-agent cache (§3.2).
+`--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; the proxy's own Seatbelt
+profile (§8.3); symlink and path-race tests; proxy bypass tests; forked-process tests; malicious
+`build.sbt` / `build.mill` fixtures; the venue script of §14.9, and the coherence probes of §14.7.
 
 Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
 adds.
@@ -1378,6 +1408,9 @@ answers differently is a finding about the host.
 | `seatbelt-semantics.sh` | each new macOS release |
 | `build-profile-iterate.sh` | a build stops under the profile and nothing names the missing grant |
 | `build-profile-gate.sh` | the generator changes, and before each release: it is §7.4, both tools |
+| `session-recovery.sh` | before Phase 3 encodes §4's recovery; when sbt or the proxy changes |
+| `loopback-rule.sh` | each new macOS release: the §7.3 proxy rule's spellings and controls |
+| `jvm-proxy-rule.sh` | each new macOS or JDK: the JVM's path to the proxy under the profile |
 
 `seatbelt-semantics.sh` is the one with teeth. §7.2's table is what it measured, and the guard is
 built on those answers; if E3, E4 or E5 stops answering DENIED, the profile no longer enforces what

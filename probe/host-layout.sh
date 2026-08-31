@@ -1,9 +1,9 @@
 #!/bin/sh
-# What is installed on this host and where — the layout BuildSandboxPolicy encodes.
+# What is installed on this host and where — the layout RunOnHostPolicy encodes.
 #
 # Run it on a new machine, and after upgrading Coursier or the JDK. Every "MISSING" line is a
 # case the prerequisite classifier has to name, not a gap to fill in silently; a line that
-# disagrees with BuildSandboxPolicyTest's fixtures is a finding, not a test to relax.
+# disagrees with RunOnHostPolicyTest's fixtures is a finding, not a test to relax.
 #
 # Run from the project directory. Read-only but for one temporary directory it removes.
 

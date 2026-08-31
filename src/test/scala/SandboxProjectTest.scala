@@ -303,13 +303,26 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The second tenant is admitted by name, and a symlink of it refused like egress.
+    // The other tenants are admitted by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
+    Files.createDirectory(dir.resolve("host-command"))
     assertEquals(policyDirError(dir), None)
+    Files.delete(dir.resolve("host-command"))
+    Files.createSymbolicLink(dir.resolve("host-command"), dir.resolve("egress"))
+    val linkedTenant = policyDirError(dir)
+    assert(linkedTenant.exists(_.contains("host-command")), linkedTenant.toString)
+    Files.delete(dir.resolve("host-command"))
     Files.delete(dir.resolve("agent"))
     Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
     val linked = policyDirError(dir)
     assert(linked.exists(_.contains("agent")), linked.toString)
+
+  test("a stray entry's refusal says it may be a newer launcher's file, not only a typo"):
+    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+    Files.createDirectory(dir)
+    Files.createDirectory(dir.resolve("future-policy"))
+    val refused = policyDirError(dir)
+    assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
   test("agent/ holds one file, with the shapes egress/ refuses refused for the same reasons"):
     val parent = Files.createTempDirectory("agent-shapes")

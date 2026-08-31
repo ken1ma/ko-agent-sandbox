@@ -334,8 +334,9 @@ object SandboxProject:
    * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
    * agent/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles,
-   * readAgentInstructions). An absent directory is empty policy input, never a directory to
-   * materialize.
+   * readAgentInstructions), and host-command/ where the host build wrapper reads it
+   * (RunOnHostPolicy.buildAllowlist). An absent directory is empty policy input, never a
+   * directory to materialize.
    */
   def policyDirError(policyDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
@@ -357,8 +358,9 @@ object SandboxProject:
           Some(
             s"""error: $policyDir contains ${stray.mkString(", ")}, which this launcher does not read
                |The directory is boundary configuration and holds only:
-               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name (a typo'd
-               |egress, notes, a backup) must fail the launch, never sit as ignored config.""".stripMargin
+               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
+               |launch, never sit as ignored config — and it is either a typo or a policy file a
+               |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
           )
 
   /**
@@ -374,7 +376,7 @@ object SandboxProject:
     if !Files.exists(policyDir) then Files.createDirectory(policyDir)
     s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
 
-  val PolicyDirEntries: Set[String] = Set("egress", "agent")
+  val PolicyDirEntries: Set[String] = Set("egress", "agent", "host-command")
 
   /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
   val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"

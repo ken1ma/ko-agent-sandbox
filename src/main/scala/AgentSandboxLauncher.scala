@@ -1542,6 +1542,15 @@ object AgentSandboxLauncher:
       + agentInstructions.fold("image")(sha256Hex)
 
   def main(args: Array[String]): Unit =
+    // The host build wrapper re-invokes its own vehicle — jar or native image — under this
+    // private verb to host the build's egress proxy, configured by the EGRESS_* environment as
+    // in the container. Before the ordinary parse, and in no usage text: it is not launch
+    // surface, and nothing outside the wrapper spells it.
+    if args.sameElements(Array("--serve-proxy-on-host")) then
+      agentsandbox.egress.AgentEgressProxy.serve()
+    else launcherMain(args)
+
+  private def launcherMain(args: Array[String]): Unit =
     unknownSandboxVariables(System.getenv().keySet().asScala).foreach: name =>
       warn(s"$name is not a variable this launcher reads; a misspelling configures nothing")
 

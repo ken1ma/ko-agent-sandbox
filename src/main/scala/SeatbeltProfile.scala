@@ -6,7 +6,7 @@
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
 //     non-canonical path therefore matches nothing, which grants rather than denies. Every path
-//     that reaches `render` is refused unless it is absolute and normalized, and BuildSandboxPolicy
+//     that reaches `render` is refused unless it is absolute and normalized, and RunOnHostPolicy
 //     resolves symlinks before it gets here.
 //   - Rules are last-match-wins, so the guard denies are emitted after every allow. A generator
 //     that appended a grant later would silently reopen the guard, which is why nothing here takes
@@ -17,7 +17,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import BuildSandboxPolicy.{BuildPolicy, Tool}
+import RunOnHostPolicy.{BuildPolicy, Tool}
 
 object SeatbeltProfile:
 
@@ -92,6 +92,7 @@ object SeatbeltProfile:
     policy: BuildPolicy,
     sessionTmp: Path,
     sbtDistribution: Option[Path],
+    sbtGlobal: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
   )
@@ -108,14 +109,21 @@ object SeatbeltProfile:
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
     // JVM reads, and nothing there is run.
     val readWriteExec = Seq(policy.project, inputs.sessionTmp)
-    val readWrite = Seq(policy.coursierV1)
+    // The sbt global base is a cache like the Coursier one — artifacts the JVM reads, nothing
+    // run — and persistent for the same reason target/ links into it (RunOnHostPolicy.
+    // agentSbtGlobal).
+    val readWrite = Seq(policy.coursierV1) ++ inputs.sbtGlobal
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     everyPath.find(path => !usable(path)) match
       case _ if policy.tool == Tool.Sbt && inputs.sbtDistribution.isEmpty =>
         Left("an sbt profile needs the distribution the wrapper execs; without it the build cannot find sbt-launch.jar")
+      case _ if policy.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
+        Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
       case _ if policy.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
         Left("a Mill profile has no sbt distribution to grant")
+      case _ if policy.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
+        Left("a Mill profile has no sbt global base to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
@@ -155,7 +163,11 @@ object SeatbeltProfile:
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
         lines += ";; The build's own proxy, and no other destination."
-        lines += s"""(allow network-outbound (remote tcp "localhost:${inputs.proxyPort}"))"""
+        // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
+        // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
+        // ::1 — not a dual-stack JVM's v4-mapped connect, which is why §4's contract pins
+        // preferIPv4Stack (probe/jvm-proxy-rule.sh measured all of this).
+        lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
         // session temp, where §4 points XDG_RUNTIME_DIR and SBT_GLOBAL_SERVER_DIR; measured that a
@@ -203,7 +215,7 @@ object SeatbeltProfile:
           case index => Some((index, index + 1))
       .toSeq
 
-  /** Absolute and already normalized. Symlink resolution happens before this, in BuildSandboxPolicy:
+  /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPolicy:
     * it needs the filesystem, and this stays pure. */
   private def usable(path: Path): Boolean =
     path.isAbsolute && path.normalize() == path

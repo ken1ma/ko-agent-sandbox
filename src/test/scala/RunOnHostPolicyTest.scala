@@ -7,10 +7,10 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path, Paths}
 
-import BuildSandboxPolicy.*
+import RunOnHostPolicy.*
 import HostCommands.Os
 
-class BuildSandboxPolicyTest extends munit.FunSuite:
+class RunOnHostPolicyTest extends munit.FunSuite:
 
   private val home = "/Users/kenichi"
   private val project = Paths.get(s"$home/ko-agent-sandbox")
@@ -515,6 +515,87 @@ class BuildSandboxPolicyTest extends munit.FunSuite:
   test("overlap is symmetric"):
     assert(overlaps(project, project.resolve("sub"), Os.Mac))
     assert(overlaps(project.resolve("sub"), project, Os.Mac))
+
+  // --------------------------------------------------------------------------
+  // The build's egress allowlist
+  // --------------------------------------------------------------------------
+
+  test("the allowlist accepts +host entries, comments and blank lines, in file order, once each"):
+    val text =
+      """# artifact repositories this build resolves from
+        |+host repo.example.org
+        |
+        |+host mirror.example.org  # inline comment
+        |+host repo.example.org
+        |""".stripMargin
+    assertEquals(
+      buildAllowlist(text),
+      Right(Vector("repo.example.org", "mirror.example.org")),
+    )
+
+  test("an empty or comment-only allowlist is valid and contributes nothing"):
+    for text <- Seq("", "\n\n", "# nothing yet\n") do
+      assertEquals(buildAllowlist(text), Right(Vector.empty))
+
+  test("every entry of the proxy's wider grammar is outside the file's"):
+    for
+      entry <- Seq(
+        "-**",
+        "+model-provider openai",
+        "-model-provider openai",
+        "+host repo.example.org allow=git-fetch",
+        "+host repo.example.org unrestricted",
+        "+host repo.example.org restricted",
+        "-host repo.example.org",
+        "repo.example.org",
+        "+host",
+        "+host -**",
+        "+host +evil",
+      )
+    do
+      buildAllowlist(entry) match
+        case Left(Refusal.AllowlistEntryOutsideGrammar(seen)) => assertEquals(seen, entry)
+        case other => fail(s"'$entry' -> $other")
+
+  test("a refused entry names itself even after a comment is stripped"):
+    assertEquals(
+      buildAllowlist("-host x # a removal\n"),
+      Left(Refusal.AllowlistEntryOutsideGrammar("-host x")),
+    )
+
+  test("the composed allowed input is a complete replacement: -**, baseline, then the file"):
+    assertEquals(
+      egressAllowedText(Vector("repo.example.org")),
+      "-**\n+host repo1.maven.org\n+host repo.example.org",
+    )
+
+  test("a file restating the baseline host composes it once"):
+    assertEquals(
+      egressAllowedText(Vector("repo1.maven.org")),
+      "-**\n+host repo1.maven.org",
+    )
+
+  test("the sbt global base sits beside the project's Coursier cache, one --reset-cache removal"):
+    val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
+    assertEquals(
+      agentSbtGlobal(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
+    )
+    assertEquals(
+      agentSbtGlobal(cacheRoot, "proj-abc123").getParent,
+      agentCoursierV1(cacheRoot, "proj-abc123").getParent.getParent,
+    )
+
+  test("the allowlist path is per tool under the frozen boundary directory"):
+    val project = Paths.get("/Users/u/proj")
+    assertEquals(
+      buildAllowlistPath(project, Tool.Sbt),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/allowed"),
+    )
+    assertEquals(
+      buildAllowlistPath(project, Tool.Mill),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/allowed"),
+    )
 
   // --------------------------------------------------------------------------
   // Against the running host

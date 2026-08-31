@@ -24,6 +24,16 @@ scalacOptions ++= Seq(
 // serial costs almost nothing and removes the whole class of interference.
 Test / parallelExecution := false
 
+// --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject, compiled into
+// this jar from the same sources so an installed launcher carries it — the Scala sources, and the
+// /baseline resources their class initialization loads eagerly. The subproject's own build still
+// exists for the container image, which builds a native image from the bundled context; its
+// tests run there.
+Compile / unmanagedSourceDirectories +=
+  baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "scala"
+Compile / unmanagedResourceDirectories +=
+  baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "resources"
+
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 Compile / run / javaOptions += "--enable-native-access=ALL-UNNAMED"
 Compile / run / fork := true

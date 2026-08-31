@@ -6,7 +6,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Path, Paths}
 
-import BuildSandboxPolicy.{BuildPolicy, Tool}
+import RunOnHostPolicy.{BuildPolicy, Tool}
 import SeatbeltProfile.*
 
 class SeatbeltProfileTest extends munit.FunSuite:
@@ -31,11 +31,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
     launcher = launcher,
   )
 
+  private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/sbt-global")
+
   private def inputs(
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
-  ) = ProfileInputs(policy, tmp, Some(distribution), port, runtime)
+  ) = ProfileInputs(policy, tmp, Some(distribution), Some(sbtGlobal), port, runtime)
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
@@ -63,6 +65,15 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("the tool and the distribution agree: sbt needs it, Mill has none"):
     assert(render(inputs().copy(sbtDistribution = None)).isLeft)
     assert(render(inputs().copy(policy = millPolicy)).isLeft)
+
+  test("the tool and the global base agree the same way"):
+    assert(render(inputs().copy(sbtGlobal = None)).isLeft)
+    assert(render(inputs().copy(policy = millPolicy, sbtDistribution = None)).isLeft)
+
+  test("the sbt global base is granted read-write and, like the Coursier cache, never exec"):
+    val text = rendered()
+    assert(text.contains(s"""(allow file-read* file-write* (subpath "$sbtGlobal"))"""), text)
+    assert(!text.contains(s"""process-exec* (subpath "$sbtGlobal")"""), text)
 
   test("a port outside the range is refused"):
     assert(render(inputs(port = 0)).isLeft)
@@ -128,13 +139,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!writable.contains(distribution.toString))
     assert(!writable.contains(jdkHome.toString))
 
-  test("only the project, its Coursier cache and the session temp are writable"):
+  test("only the project, its caches and the session temp are writable"):
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
-    assertEquals(writable.size, 3)
+    assertEquals(writable.size, 4)
     assert(writable.exists(_.contains(project.toString)))
     assert(writable.exists(_.contains("coursier/v1")))
+    assert(writable.exists(_.contains("sbt-global")))
     assert(writable.exists(_.contains("/tmp/")))
 
   test("writable implies executable for the project and the session temp, never for the cache"):
@@ -178,7 +190,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assertEquals(
       network,
       Seq(
-        """(allow network-outbound (remote tcp "localhost:51234"))""",
+        """(allow network-outbound (remote ip "localhost:51234"))""",
         """(allow network-bind network-inbound network-outbound """ +
           """(local unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")) """ +
           """(remote unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")))""",
@@ -220,7 +232,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   )
 
   private def millText: String =
-    render(inputs().copy(policy = millPolicy, sbtDistribution = None))
+    render(inputs().copy(policy = millPolicy, sbtDistribution = None, sbtGlobal = None))
       .fold(reason => fail(reason), identity)
 
   test("Mill renders without the sbt distribution"):
