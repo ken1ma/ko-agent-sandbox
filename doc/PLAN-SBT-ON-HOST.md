@@ -462,16 +462,19 @@ The wrapper performs these steps:
  8. construct the Seatbelt policy
  9. configure proxy environment / JVM proxy properties
 10. launch the build under sandbox-exec
-11. end the sbt server it started, stop the proxy, and remove the session directory
+11. condemn its own session and collect it: groups ended, server accounted, directory removed
 12. preserve child exit code
 13. provide actionable diagnostics for known denials
 ```
 
 Step 6 creates a fresh, uniquely named directory under a wrapper-owned root and never adopts an
 existing one; step 11 removes it on every exit the wrapper survives to see, error and handled
-signal included. `SIGKILL`, a crashed wrapper and a lost machine defeat any handler, so a start
-also scavenges the root. Each session owns a directory there, holds its lock for the life of the
-build, and grants the build a writable child of it and nothing more:
+signal included — handled means a shutdown hook, because `SIGINT` and `SIGTERM` end a JVM through
+its hooks, never by unwinding to `finally`, and the spawned groups sit outside the terminal's own
+group, so nothing but the hook would end them on a Ctrl-C. `SIGKILL`, a crashed wrapper and a
+lost machine defeat any handler, so a start also scavenges the root. Each session owns a
+directory there, holds its lock for the life of the build, and grants the build a writable child
+of it and nothing more:
 
 ```text
 <wrapper root>/<session>/lock     wrapper-owned; named in no policy rule
@@ -506,39 +509,64 @@ every published directory is locked by construction.
 A `SIGKILL`ed wrapper leaves its processes running with the lock free, and a scavenger that
 removed only the directory would leave an orphaned server holding the project's portfile against
 the next start (§3.2). The lock states only the wrapper's liveness; the children's is owned by
-records. Everything the wrapper spawns becomes its own process group's leader and publishes that
-group and its start time the way the session itself was published — written beside, renamed into
-place — before it execs, aborting if the rename fails; a record is complete or absent, never a
-partial read through a descriptor that outlived a rename. The sbt server needs no record of its
-own: the client forks it without `setsid`, so it stays in the client's registered group — which is
-also what covers it between fork and its first bind.
+records. Everything the wrapper spawns runs behind a shim that becomes its own process group's
+leader and publishes that group and its start time the way the session itself was published —
+written beside, renamed into place — before it runs the command, aborting if the rename fails; a
+record is complete or absent, never a partial read through a descriptor that outlived a rename.
+When the command ends, the shim publishes its exit status the same way, as `<record>.exit`, and
+stays until the group is ended: a record proves its group only behind a live leader, and a build
+can fork a helper and return, so ownership must not expire with the command — the wrapper reads
+the exit from the file, and its teardown always finds a leader to prove the group by, unless the
+shim itself was killed. The sbt server needs no record of its own: the client forks it without
+`setsid`, so it stays in the client's registered group — which is also what covers it between
+fork and its first bind.
 
 The scavenger condemns before it reads: the publication rename run backwards moves the directory
 into `<wrapper root>/condemned`, which every start processes before anything else — recorded
-groups ended, then deleted — so a scavenger killed mid-collection leaves work the next start
-finds, not a directory no scan visits. Staging needs no such pass: nothing is spawned before
+groups ended, then deleted, except the unanswered-server case below — so a scavenger killed
+mid-collection leaves work the next start finds, not a directory no scan visits. A condemned
+entry is collected only under its own lock, which travelled with the rename: two starts, or a
+start and the wrapper's own step 11 — which condemns its session still holding that lock — never
+signal or delete the same entry concurrently. Deletion unlinks the lock last and never creates a
+missing one, so the pathname cannot be re-taken while a held inode still guards a half-deleted
+tree; an entry found without its lock is that deletion's residue — removed, nothing signalled.
+Staging needs no such pass: nothing is spawned before
 publication, so a staging entry never has processes. Every interleaving of a kill lands somewhere
 accounted for — a child caught before registering finds its directory gone, fails its rename and
 exits; a registered one is in the condemned directory's records and is ended.
 
 A record identifies its group only while the leader lives: the leader's pid and start time are the
 check, and a group whose members have all exited frees its id for strangers, so the scavenger
-signals nothing on a dead or mismatched leader. The one process of ours built to outlive its
-leader is the sbt server, and it is ended by attribution instead: the session records its project
-root, and a portfile there whose socket lies under this session's directory names our server and
-no other. The wrapper speaks the shutdown itself, the sequence the pinned client implements
+signals nothing on a dead or mismatched leader — with the shim as leader, a dead one means the
+shim itself was killed. A provable group ends whole, the server inside it too — TERM is its clean
+end, flushing the portfile — so asking a server to stop is the leaderless orphan's tool alone.
+What a leaderless group can still hold is the sbt server, and it is ended by attribution: the
+session records its project root, and a portfile there whose socket lies under this session's
+directory names our server and no other. The portfile is the build's to write, so that claim is
+proven before anything is spoken: the socket is addressed only at its canonical pathname, and
+only when that resolves inside the session directory — no `..` spelling and no symlink beneath
+the session can point the unconfined wrapper at somebody else's socket. And the proof cannot go
+stale, because collection always follows condemnation — the wrapper's own step 11 condemns its
+session through the same machinery — and after the rename the build's grants, which name the
+original pathname, reach nothing: what canonicalization proved stays true through the connect.
+The wrapper speaks the shutdown itself, the sequence the pinned client implements
 (`NetworkClient`): connect at the socket's current pathname — condemnation moved it with the
 directory, and the portfile's spelling goes stale at the moment it matters — send the `initialize`
 handshake, tokenless and with `skipAnalysis`, because a local-mode server authenticates nothing
 and its portfile carries no token (`Defaults.serverAuthentication` is TCP-only), then `sbt/exec`
 `shutdown` and a bounded wait for the process to end. Never through sbt's own client, which
 answers a dead socket by deleting the portfile and starting its own server (§3.2) — here, an
-unconfined one. A server that answers nothing past the bound is reported, never guessed at by
-group id. Measured, for when attribution meets what: a server outlives a client that exits
-cleanly, and dies with one killed mid-exec — so a live orphan follows a completed command, and a
-kill usually leaves only a refused connect, which is itself the definitive answer. A process that
-leaves its group by `setsid` escapes the scavenger, not the sandbox: reach here is lifecycle,
-§2.1 is authority.
+unconfined one. A server that accepted the connect but answers nothing past the bound is
+reported and kept reachable, never guessed at by group id: its condemned directory — records,
+socket and all — stays for the next start to retry, because deleting it would strand a live
+server nothing can reach. A refused connect or a socket proven absent is the definitive answer —
+nothing lives behind it — and releases the directory; any other connect failure may hide a live
+server and is retried like an unanswered one.
+Measured, for when attribution meets what: a server outlives
+a client that exits cleanly, and dies with one killed mid-exec — so a live orphan follows a
+completed command whose shim was also killed, and a mid-exec kill usually leaves only the refused
+connect. A process that leaves its group by `setsid` escapes the scavenger, not the sandbox:
+reach here is lifecycle, §2.1 is authority.
 
 The session lock is also what the build's proxy binds to (§8.2).
 
@@ -928,8 +956,10 @@ fetch allowed Maven artifact via proxy       allowed
 fetch non-allowlisted host via proxy         denied
 
 two concurrent sessions                      both build, distinct directories
-SIGKILL mid-session                          next start condemns and collects
-orphan server                                ended by portfile attribution
+SIGTERM mid-build                            the wrapper's own hook cleans everything up
+SIGKILL mid-build                            next start ends the running group provably
+SIGKILL, then shim killed after a clean exit next start condemns; orphan server ended by
+                                             portfile attribution
 after every wrapper row                      no proxy, server or session directory survives
 ```
 
@@ -1003,12 +1033,9 @@ about the wrapper's own process.
 
 The host proxy runs unconfined, unlike the container's hardened copy of the same codebase — and
 it is the one process that parses hostile bytes from the thing being sandboxed, holding the uid
-whose files the build profile exists to deny. Its own small Seatbelt profile is Phase 5
-hardening: read-only JDK and launcher jar, writes to its log alone, no `process-exec*`,
-unrestricted `network-outbound` (host filtering is the proxy's own job, and SBPL cannot filter by
-name) plus its loopback listener. Defense in depth for the enforcement point, not a §2.1 hole:
-a JVM parse bug is an exception, the listener is loopback-only, and `HostileInputTest` covers the
-surface — which is why it can wait for Phase 5.
+whose files the build profile exists to deny. Accepted, not a §2.1 hole: a JVM parse bug is an
+exception, the listener is loopback-only, and `HostileInputTest` covers the surface. A Seatbelt
+profile of the proxy's own is low-value defense in depth, deferred to `TODO.md`.
 
 Bind on an ephemeral port on `127.0.0.1`. That is proxy work, not launch configuration: the
 codebase binds the wildcard address on the fixed port 3128 — safe in the container's own network
@@ -1302,9 +1329,9 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 
 ### Phase 5 — Launcher surface and hardening
 
-`--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; the proxy's own Seatbelt
-profile (§8.3); symlink and path-race tests; proxy bypass tests; forked-process tests; malicious
-`build.sbt` / `build.mill` fixtures; the venue script of §14.9, and the coherence probes of §14.7.
+`--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race
+tests; proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures;
+the venue script of §14.9, and the coherence probes of §14.7.
 
 Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
 adds.

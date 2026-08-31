@@ -96,8 +96,10 @@ object RunOnHostSandbox:
   /**
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
    * applies (SandboxProject.policyDirError): the tools this wrapper serves, egress/ inside each,
-   * allowed inside that — a stray name or a symlinked component refuses the build, never sits as
-   * ignored config.
+   * allowed inside that — a stray name, a symlinked component, or a component of the wrong type
+   * refuses the build, never sits as ignored config. The type rule has teeth of its own: a file
+   * where a directory belongs would read as absent configuration, and a FIFO where the file
+   * belongs would block the read forever.
    */
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
@@ -114,13 +116,19 @@ object RunOnHostSandbox:
 
     if !Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) then None
     else
-      val components = dir +: tools.flatMap: name =>
-        Vector(dir.resolve(name), dir.resolve(name).resolve("egress"),
-          dir.resolve(name).resolve("egress").resolve("allowed"))
-      components.find(Files.isSymbolicLink) match
-        case Some(link) =>
-          Some(s"$link is a symlink; boundary configuration is read plainly or not at all")
-        case None =>
+      val directories = dir +: tools.flatMap: name =>
+        Vector(dir.resolve(name), dir.resolve(name).resolve("egress"))
+      val allowedFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
+      def wrongType(path: Path, directory: Boolean): Boolean =
+        Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+          (if directory then !Files.isDirectory(path) else !Files.isRegularFile(path))
+      (directories ++ allowedFiles).find(Files.isSymbolicLink)
+        .map(link => s"$link is a symlink; boundary configuration is read plainly or not at all")
+        .orElse(directories.find(wrongType(_, directory = true))
+          .map(p => s"$p is not a directory; boundary configuration is read plainly or not at all"))
+        .orElse(allowedFiles.find(wrongType(_, directory = false))
+          .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
+        .orElse:
           val stray = strays(dir, tools.toSet) ++ tools.flatMap: name =>
             strays(dir.resolve(name), Set("egress")) ++
               strays(dir.resolve(name).resolve("egress"), Set("allowed"))
@@ -194,7 +202,9 @@ object RunOnHostSandbox:
    * §3.2's launch refusal: one server per project. A live server reached through the project's
    * portfile belongs to someone — the user's shell, another session — and a build that attached
    * to it would run outside this profile. Live means connectable; a stale portfile is left for
-   * sbt, which replaces it.
+   * sbt, which replaces it. The socket here is wherever the portfile points, uncontained on
+   * purpose — the user's own server lives outside any session — and the probe only connects and
+   * closes, speaking nothing at what it reaches.
    */
   def livePortfileServer(project: Path): Option[Path] =
     val portfile = project.resolve("project").resolve("target").resolve("active.json")
@@ -261,14 +271,32 @@ object RunOnHostSandbox:
             log(s"refused: $reason")
             2
           case Right(session) =>
+            // Also on a shutdown hook: SIGINT and SIGTERM end a JVM through its hooks, never by
+            // unwinding to `finally` — and the registered groups sit outside the terminal's own,
+            // so nothing but this would end them on a Ctrl-C. Synchronized, not merely once: the
+            // JVM halts when its hooks return, so the losing caller must block until the whole
+            // cleanup is done, never return early into a halting JVM.
+            object teardown:
+              private var done = false
+              def apply(): Unit = synchronized:
+                if !done then
+                  done = true
+                  RunOnHostSession
+                    .endSession(root, session, RunOnHostSession.HostProcesses,
+                      SbtServerShutdown.shutdown(_))
+                    .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
+                    .foreach(kept => log(s"kept for the next start to retry: $kept"))
+            val hook = Thread(() => teardown())
+            Runtime.getRuntime.addShutdownHook(hook)
             val outcome =
               try
                 sessionTmpFits(session.tmp) match
                   case Left(reason) => Left(reason.toString)
                   case Right(_) => runInSession(session, assembled, fileHosts, buildArgs, runtime, log)
               finally
-                RunOnHostSession.endRecordedGroups(session.records, RunOnHostSession.HostProcesses)
-                RunOnHostSession.remove(session)
+                teardown()
+                try Runtime.getRuntime.removeShutdownHook(hook)
+                catch case _: IllegalStateException => () // already shutting down; the hook ran
             outcome match
               case Left(reason) =>
                 log(s"refused: $reason")
@@ -303,7 +331,6 @@ object RunOnHostSandbox:
       exit <- runBuild(session, assembled, profile, port, buildArgs)
     yield
       reportDenied(session.directory.resolve("proxy.log"), assembled.policy.tool, log)
-      if assembled.policy.tool == Tool.Sbt then shutdownSessionServer(session, assembled.policy, log)
       exit
 
   private def startProxy(session: Session, fileHosts: Vector[String]): Either[String, Process] =
@@ -336,8 +363,9 @@ object RunOnHostSandbox:
       case Tool.Mill =>
         Seq(policy.project.resolve("mill").toString, "--no-daemon") ++ buildArgs
 
+    val record = session.records.resolve("client")
     val command = RunOnHostSession.registeredSpawn(
-      session.records.resolve("client"),
+      record,
       Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ toolCommand,
     )
     val builder = ProcessBuilder(command*)
@@ -361,7 +389,9 @@ object RunOnHostSandbox:
     environment.put("SBT_GLOBAL_SERVER_DIR", session.tmp.toString)
     environment.put("COURSIER_CACHE", policy.coursierV1.toString)
 
-    try Right(builder.start().waitFor())
+    // The shim publishes the build's exit status and then stays as the group's provable leader
+    // (§4), so the answer is the exit file, never the shim's own end.
+    try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
 
   /**
@@ -415,16 +445,3 @@ object RunOnHostSandbox:
       log((("Build requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the Scala build sandbox. If the build should reach it, add a" +
           s" `+host` line to .ko-agent-sandbox/host-command/$toolName/egress/allowed.")).mkString("\n"))
-
-  /** Step 11's server half: this session's server, found through the portfile it owns and asked
-    * to stop; the group ending in `run`'s finally is the belt behind it. */
-  private def shutdownSessionServer(session: Session, policy: BuildPolicy, log: String => Unit): Unit =
-    val portfile = policy.project.resolve("project").resolve("target").resolve("active.json")
-    if Files.isRegularFile(portfile) then
-      try
-        RunOnHostSession.portfileSocket(Files.readString(portfile, UTF_8))
-          .filter(_.startsWith(session.tmp))
-          .foreach: socket =>
-            SbtServerShutdown.shutdown(socket).left.foreach: reason =>
-              log(s"the session's sbt server did not answer shutdown: $reason")
-      catch case ex: IOException => log(s"reading $portfile: ${ex.getMessage}")

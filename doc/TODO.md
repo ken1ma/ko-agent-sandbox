@@ -122,6 +122,16 @@ channel — however narrow — should exist for a convenience. One constraint on
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
 
+## Deferred — extra hardening, low value
+
+- [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
+  which runs unconfined while parsing hostile bytes as the user's uid
+  (`PLAN-SBT-ON-HOST.md` §8.3, where the acceptance argument binds:
+  loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
+  surface). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
+  log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
+  own job, and SBPL cannot filter by name — plus its loopback listener.
+
 ## Before the first release — continuous integration
 
 There is no CI. The README's developer commands run the launcher, proxy and filter suites;
