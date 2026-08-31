@@ -168,8 +168,7 @@ object KoAgentFs:
           "then re-run --build",
       )
     console.printf("Apply it now? [y/N] ")
-    val answer = Option(console.readLine()).map(_.trim.toLowerCase(java.util.Locale.ROOT)).getOrElse("")
-    if answer != "y" && answer != "yes" then
+    if !consented(Option(console.readLine())) then
       fail("error: not applied; run the script above via `podman machine ssh` yourself, then re-run --build")
     val enable = run(koAgentFsFuseConfEnableCommand(podman)*)
     if !enable.ok then fail(s"error: enabling user_allow_other failed: ${enable.err}", enable.exit)

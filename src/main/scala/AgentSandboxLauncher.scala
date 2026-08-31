@@ -369,6 +369,47 @@ object AgentSandboxLauncher:
       .map(_ * 1024)
 
   /**
+   * Warn before the image builds when the machine has less than this available. The threshold
+   * sits below the cold-build peak the warning quotes on purpose: a default 4 GiB machine idles
+   * near 3.3–3.6 GiB available, and a threshold the supported default trips at idle is a
+   * warning users learn to ignore. 3 GiB tells the two machine states apart — quiet on an idle
+   * default machine, loud once running sessions hold real memory, the state in which a build
+   * degrades every session on the machine. The answer is the user's, not the launcher's — a
+   * `[y/N]` prompt, not a refusal: the builder's own heap is pinned (the proxy Containerfile),
+   * so proceeding risks a slow or OOM-killed build rather than a frozen machine, a price the
+   * one at the console may accept; No stays the default because the sessions at stake may not
+   * be theirs to spend. With no console there is nobody to ask, and the build proceeds warned —
+   * one instant of MemAvailable is too noisy to stop automation on.
+   */
+  val BuildMemoryWarnThreshold: Long = 3L << 30
+
+  def buildMemoryWarning(available: Option[Long]): Option[String] =
+    available.filter(_ < BuildMemoryWarnThreshold).map: bytes =>
+      s"the machine has ${gib(bytes)} of memory available; a cold image build peaks near 3.3 GiB\n" +
+        "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
+
+  /** After requirePodman's gate, every podman verb says the machine's headroom once, beside the
+    * `using:` line — the figure the memory ceiling and the build gate act on, visible before
+    * they act. A figure the machine cannot give prints nothing. */
+  def machineMemoryLine(os: Os, total: Option[Long], available: Option[Long]): Option[String] =
+    val label = if os == Os.Linux then "memory" else "podman machine memory"
+    for
+      totalBytes <- total
+      availableBytes <- available
+    yield s"$label: ${gibNumber(availableBytes)} / ${gibNumber(totalBytes)} GiB available"
+
+  /**
+   * MemAvailable of the machine the image builds run on: this host on native Linux, the VM
+   * through `podman machine ssh` elsewhere — the one route to a machine figure, since `podman
+   * info` offers only MemFree (hostMemoryAvailable has why that reads meaningless). None — no
+   * field, ssh refused — skips the warning rather than blocking a build.
+   */
+  def machineMemoryAvailable(os: Os, meminfo: => String, machineSsh: => HostCommands.Run): Option[Long] =
+    os match
+      case Os.Linux => memoryAvailable(meminfo)
+      case _        => Some(machineSsh).filter(_.ok).flatMap(answer => memoryAvailable(answer.text))
+
+  /**
    * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a ceiling exists to
    * prevent, and podman's default of twice the memory in swap is the wrong side of that. An
    * explicit ceiling gets the same treatment, for the same reason.
@@ -384,7 +425,9 @@ object AgentSandboxLauncher:
         machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
-  def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
+  def gib(bytes: Long): String = s"${gibNumber(bytes)} GiB"
+
+  private def gibNumber(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f"
 
   /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_POLICY and
@@ -506,6 +549,27 @@ object AgentSandboxLauncher:
                  |Initialize it once, for example:
                  |  podman machine init""".stripMargin
             )
+    machineMemoryLine(
+      os,
+      memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}")),
+      probedMachineAvailable(os),
+    ).foreach(System.err.println)
+
+  def probedMachineAvailable(os: Os): Option[Long] =
+    machineMemoryAvailable(
+      os,
+      readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""),
+      run(podman, "machine", "ssh", "cat /proc/meminfo"),
+    )
+
+  /** Both build verbs run this after requirePodman: --update rebuilds the leaves through the
+    * same unceilinged `podman build`, so it shares --build's gate. */
+  def confirmMemoryForBuilds(os: Os): Unit =
+    buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
+      warn(message)
+      Option(System.console()).foreach: console =>
+        console.printf("Continue anyway? [y/N] ")
+        if !consented(Option(console.readLine())) then fail("error: build not started")
 
   /**
    * The build context is bundled into the jar (build.sbt) so --build works
@@ -1574,6 +1638,7 @@ object AgentSandboxLauncher:
         noAuthorityOptions("--build")
         if rest.nonEmpty then fail("error: --build takes no further arguments")
         requirePodman(currentOs)
+        confirmMemoryForBuilds(currentOs)
         withImageBuildLock(currentOs): journal =>
           val context = unpackBuildContext()
           val fsSourceId = koAgentFsSourceId(context)
@@ -1620,6 +1685,7 @@ object AgentSandboxLauncher:
         noAuthorityOptions("--update")
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman(currentOs)
+        confirmMemoryForBuilds(currentOs)
         withImageBuildLock(currentOs): journal =>
           val context = unpackBuildContext()
           val fsSourceId = koAgentFsSourceId(context)

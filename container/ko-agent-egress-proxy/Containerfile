@@ -60,8 +60,16 @@ WORKDIR /build/app
 
 RUN set -euxo pipefail; \
     sbt -batch dist; \
+    # -J-Xmx pins the builder, whose in-container default budgets 85% of the machine's *total* \
+    # memory — sized past what exists on a machine whose free memory running sandbox sessions \
+    # hold, which every session then pays for. Deliberately tight over the measured heap peak \
+    # (1.39 GiB, aarch64; x64 compiles different code and trips first if it grows): the context \
+    # ships bundled in the launcher jar, so users compile only sources a developer already \
+    # built, and growth fails the developer's own build — a tripwire, where a roomier cap \
+    # would hide growth in GC time nobody reads. \
     # Bodies pass through fixed buffers instead of accumulating in the managed heap. \
     native-image \
+        -J-Xmx1536m \
         -R:MaxHeapSize=64m \
         -o /build/agent-egress-proxy \
         -jar target/dist/agent-egress-proxy.jar
