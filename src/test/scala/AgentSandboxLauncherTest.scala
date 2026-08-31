@@ -58,6 +58,43 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
 
+  test("build verbs ask first only below what a default machine idles at, read from the machine's own meminfo"):
+    assertEquals(buildMemoryWarning(None), None)
+    assertEquals(buildMemoryWarning(Some(3L << 30)), None)
+    val warning = buildMemoryWarning(Some((3L << 30) - 1))
+    assert(warning.exists(_.contains("podman machine set --memory")), warning)
+    // Each OS consults exactly its own route: /proc/meminfo is this host's only on native Linux,
+    // and the machine ssh is a subprocess native Linux must not spawn.
+    val meminfo = "MemAvailable:   2000000 kB\n"
+    assertEquals(
+      machineMemoryAvailable(Os.Linux, meminfo, throw AssertionError("native Linux asks no machine ssh")),
+      Some(2000000L * 1024),
+    )
+    assertEquals(
+      machineMemoryAvailable(
+        Os.Mac,
+        throw AssertionError("a VM host reads no host meminfo"),
+        HostCommands.Run(0, meminfo.getBytes, ""),
+      ),
+      Some(2000000L * 1024),
+    )
+    val sshRefused = HostCommands.Run(255, Array.emptyByteArray, "no machine")
+    assertEquals(machineMemoryAvailable(Os.Windows, "", sshRefused), None)
+    assertEquals(machineMemoryAvailable(Os.Mac, "", HostCommands.Run(0, "MemTotal: 1 kB\n".getBytes, "")), None)
+
+  test("every podman verb says the machine's headroom, when the machine can say it"):
+    assertEquals(
+      machineMemoryLine(Os.Mac, Some(8L << 30), Some((46L << 30) / 10)),
+      Some("podman machine memory: 4.6 / 8.0 GiB available"),
+    )
+    // Native Linux has no podman machine: the figures are this host's, and the label says no more.
+    assertEquals(
+      machineMemoryLine(Os.Linux, Some(8L << 30), Some((46L << 30) / 10)),
+      Some("memory: 4.6 / 8.0 GiB available"),
+    )
+    assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30)), None)
+    assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None), None)
+
   test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
     // The same fail-closed contract as the workspace guard, through the same closedChoice.
     assertEquals(nestingMode(None), Right("none"))

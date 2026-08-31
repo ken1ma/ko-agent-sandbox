@@ -74,6 +74,11 @@ object HostCommands:
   /** Every warning the launcher writes itself, so the label is spelled and tinted in one place. */
   def warn(message: String): Unit = System.err.println(emphasized(s"$WarningLabel $message"))
 
+  /** The `[y/N]` convention, stated once for every prompt: only an explicit yes is consent —
+    * EOF and everything else decline. */
+  def consented(answer: Option[String]): Boolean =
+    answer.map(_.trim.toLowerCase(java.util.Locale.ROOT)).exists(a => a == "y" || a == "yes")
+
   private val WarningLabel = "warning:"
   private val ErrorLabel = "error:"
   private val Esc = 27.toChar

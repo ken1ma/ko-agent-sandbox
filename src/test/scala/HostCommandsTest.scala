@@ -16,6 +16,15 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  test("only an explicit yes is consent"):
+    assert(consented(Some("y")))
+    assert(consented(Some("Y")))
+    assert(consented(Some(" YES ")))
+    assert(!consented(Some("")))
+    assert(!consented(Some("n")))
+    assert(!consented(Some("yeah")))
+    assert(!consented(None))
+
   test("colour is for a terminal that will render it, and for no one else"):
     assertEquals(colorAllowed(Os.Linux, None, Some("xterm-256color")), true)
     assertEquals(colorAllowed(Os.Mac, None, None), true)
