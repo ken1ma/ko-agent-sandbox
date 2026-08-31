@@ -315,10 +315,9 @@ So the server starts *inside* the sandbox, and its state follows `-Dsbt.global.b
 session temporary directory — where it writes a content-addressed store and a process registry
 (`cache/v2/{cas,ac,proc}`), all inside a path the profile already grants.
 
-Two consequences the rest of this plan has to absorb: §8.2's "when a persistent sbt server is later
-enabled" is not a later refinement but the normal path from the first build, so §4's session is a
-server's lifetime rather than one build's; and the wrapper must end that server rather than leave it
-running when the session's lock is released.
+Two consequences: §4's session is a server's lifetime rather than one build's, which is why the
+build's proxy binds to the session lock (§8.2); and the wrapper must end that server rather than
+leave it running when the session's lock is released.
 
 **One sbt server per project at a time.** A thin client attaches to whatever server
 `project/target/active.json` names, and the command then runs with *that server's* environment —
@@ -463,7 +462,7 @@ The wrapper performs these steps:
  8. construct the Seatbelt policy
  9. configure proxy environment / JVM proxy properties
 10. launch the build under sandbox-exec
-11. stop the proxy and remove the session directory
+11. end the sbt server it started, stop the proxy, and remove the session directory
 12. preserve child exit code
 13. provide actionable diagnostics for known denials
 ```
@@ -504,8 +503,41 @@ Nothing expensive runs inside that lock. A staging entry is a directory no build
 and the removal of published directories — where the bytes are — needs no root lock at all, since
 every published directory is locked by construction.
 
-The session lock is also what the build's proxy binds to (§8), so the answer does not change when
-an sbt server outlives a single invocation.
+A `SIGKILL`ed wrapper leaves its processes running with the lock free, and a scavenger that
+removed only the directory would leave an orphaned server holding the project's portfile against
+the next start (§3.2). The lock states only the wrapper's liveness; the children's is owned by
+records. Everything the wrapper spawns becomes its own process group's leader and publishes that
+group and its start time the way the session itself was published — written beside, renamed into
+place — before it execs, aborting if the rename fails; a record is complete or absent, never a
+partial read through a descriptor that outlived a rename. The sbt server needs no record of its
+own: the client forks it without `setsid`, so it stays in the client's registered group — which is
+also what covers it between fork and its first bind.
+
+The scavenger condemns before it reads: the publication rename run backwards moves the directory
+into `<wrapper root>/condemned`, which every start processes before anything else — recorded
+groups ended, then deleted — so a scavenger killed mid-collection leaves work the next start
+finds, not a directory no scan visits. Staging needs no such pass: nothing is spawned before
+publication, so a staging entry never has processes. Every interleaving of a kill lands somewhere
+accounted for — a child caught before registering finds its directory gone, fails its rename and
+exits; a registered one is in the condemned directory's records and is ended.
+
+A record identifies its group only while the leader lives: the leader's pid and start time are the
+check, and a group whose members have all exited frees its id for strangers, so the scavenger
+signals nothing on a dead or mismatched leader. The one process of ours built to outlive its
+leader is the sbt server, and it is ended by attribution instead: the session records its project
+root, and a portfile there whose socket lies under this session's directory names our server and
+no other. The wrapper speaks the shutdown itself, the sequence the pinned client implements
+(`NetworkClient`): connect at the socket's current pathname — condemnation moved it with the
+directory, and the portfile's spelling goes stale at the moment it matters — send the `initialize`
+handshake, tokenless and with `skipAnalysis`, because a local-mode server authenticates nothing
+and its portfile carries no token (`Defaults.serverAuthentication` is TCP-only), then `sbt/exec`
+`shutdown` and a bounded wait for the process to end. Never through sbt's own client, which
+answers a dead socket by deleting the portfile and starting its own server (§3.2) — here, an
+unconfined one. A server that answers nothing past the bound is reported, never guessed at by
+group id. A process that leaves its group by `setsid` escapes the scavenger, not the sandbox:
+reach here is lifecycle, §2.1 is authority.
+
+The session lock is also what the build's proxy binds to (§8.2).
 
 **The wrapper root is `/private/tmp/ko-agent-<uid>`, and it is short on purpose.** sbt's boot
 socket is `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<hash>/sbt-load.sock`, 50 characters
@@ -925,28 +957,43 @@ worth stealing.
 
 ### 8.2 Lifetime
 
-Bind the proxy to the §4 session lock, not to one invocation. With `-Dsbt.server.autostart=false`
-(§3.2) a session is one build and the two are the same; when a persistent sbt server is later
-enabled for warm builds, the proxy must outlive each thin-client invocation and exit with the
-server, or the server's next resolve fails against a proxy that has gone. Binding to the lock gives
-one answer for both.
-
-Enabling a server also makes a session a server's lifetime rather than a single build. §4's
-guarantee — no session sees another's temporary state — still holds; the sentence that a session is
-one build does not.
+Bind the proxy to the §4 session lock, not to the client process. A session is one wrapper
+command — §3.2 ends the server before the lock is released, so no server spans invocations — but
+the client is not its extent: the server the client forks is what resolves, and it lives past the
+client until the wrapper ends it. The lock states the wrapper's liveness and the §4 records own
+the children's; binding the proxy to the lock's session keeps the answer unchanged if a warm
+server spanning invocations is ever added. Mill under `--no-daemon` (§3.3) needs only the
+invocation, which the session also covers.
 
 ### 8.3 Artifact
 
-The container's proxy is a GraalVM native image built for Linux inside `debian-coursier`. On macOS,
-run `target/dist/agent-egress-proxy.jar` on the wrapper's own JVM — `sbt dist` already produces
-it — or add a macOS native-image build later. §3.1's Coursier-managed-JVM requirement is about the
-build, not about the wrapper's own process.
+The container's proxy is a GraalVM native image built for Linux inside `debian-coursier`; an
+installed launcher is one self-contained jar or the README's native image of it, and the nested
+proxy build's `target/dist` exists only in a checkout that has run it. So the proxy rides in the
+launcher's own artifact: its sources share the launcher's Scala version and import nothing past
+the JDK and the Scala library, and `dist` compiles them in beside their `/baseline` resources —
+which load eagerly at class initialization even under `-**`, so what the tests must start is the
+assembled artifact, and the native-image recipe's `-H:IncludeResources` widens to carry them. The
+wrapper starts the proxy by re-invoking whichever vehicle it is running in — `java -jar` or the
+native binary — under a private verb, so one spelling serves both and neither needs a JVM the
+wrapper does not already have. §3.1's Coursier-managed-JVM requirement is about the build, not
+about the wrapper's own process.
 
-Bind on an ephemeral port on `127.0.0.1`.
+Bind on an ephemeral port on `127.0.0.1`. That is proxy work, not launch configuration: the
+codebase binds the wildcard address on the fixed port 3128 — safe in the container's own network
+namespace, and wrong twice on the host, where it is reachable beyond loopback and collides between
+the concurrent sessions §4 calls ordinary. The ready line already names the bound port, and the
+container launcher gates on its exact spelling (`isProxyReadyLine`), so a bind option keeps 3128 as
+the default and the wrapper reads the ephemeral port from the same line the container gates on.
 
 ### 8.4 Policy semantics
 
-The proxy logs denied destinations with enough information for the wrapper to produce:
+The wrapper selects `deny-unless-allowed` and composes the proxy's `allowed` input as `-**`, the
+§2.2 baseline, then the project file's entries, validated first against §11's grammar — a complete
+replacement, so the container's host catalog contributes nothing.
+
+A denied CONNECT is an audit line naming the host — stderr, and with `EGRESS_LOG_FILE` a file the
+wrapper reads — from which the wrapper produces:
 
 ```text
 Build requested network access to:
@@ -959,12 +1006,12 @@ Do not automatically add it.
 
 ### 8.5 HTTPS
 
-Prefer ordinary HTTP CONNECT tunnelling, with the destination host and port enforced at CONNECT
-time. Then the build needs no additional trust material, and the Coursier-managed JDK's own trust
-store suffices — which matters here because §2.1 makes that JDK read-only, so a merged truststore
-cannot be written into it the way `JdkTrust.scala` does for the container image. If inspection is
-ever wanted, point the JVM at a wrapper-owned store with `-Djavax.net.ssl.trustStore` rather than
-touching the JDK.
+Run the proxy without inspection material: its no-material mode enforces the destination host and
+port at CONNECT time and tunnels opaquely. Then the build needs no additional trust material, and
+the Coursier-managed JDK's own trust store suffices — which matters here because §2.1 makes that
+JDK read-only, so a merged truststore cannot be written into it the way `JdkTrust.scala` does for
+the container image. If inspection is ever wanted, point the JVM at a wrapper-owned store with
+`-Djavax.net.ssl.trustStore` rather than touching the JDK.
 
 ---
 
@@ -1093,6 +1140,13 @@ One list per tool, so a repository that builds with both grants each only what i
 needs a GitHub release CDN: the only fetch that used one is the Mill bootstrap's own launcher
 download, which §3.3 provisions on the host instead.
 
+The file's grammar is its own, narrower than any the proxy has: `+host <host>` entries and
+comments, nothing else — no tags, no treatment words, no providers, no removals — refused at
+validation rather than passed through (§8.4), and tested as its own accepted subset. The full
+`allowed` grammar would let one `+model-provider` line expand into endpoints that are no artifact
+repository, against §2.2's explicit-repositories contract, and its allowances and treatment words
+mean nothing to a proxy running without inspection (§8.5).
+
 Each inherits that directory's properties: the filter freezes it at any depth, the launcher reads it
 on the host, and it is reviewed in a pull request like any other file. It is a separate list from
 `egress/allowed` deliberately — the small prize behind the loopback port is the argument for
@@ -1187,13 +1241,25 @@ sbt 2 runs under the profile is decided and §3.2 says which, as §3.3 says `--n
 `probe/runtime-authority.txt` holds every grant the gate needed and nothing else. A negative
 result on the four `.git` rows changes the design, not the code.
 
-### Phase 3 — Build egress proxy
+### Phase 3 — Session lifecycle and build egress proxy
 
-The wrapper-owned proxy, its allowlist file, and its binding to the session lock.
+The §4 wrapper: the session directory lifecycle — publish, lock, scavenge — the proxy on its
+ephemeral loopback port (§8.3) bound to the session lock, the allowlist file with §11's
+closed-namespace rule, and the environment contract handed to the build. Phase 2 left only the
+emit harness's session temporary directory; every lock-dependent claim of §4 becomes code here,
+because the proxy's lifetime and the exit criterion's concurrency both stand on it.
 
-**Exit criterion:** §7.4's two proxy rows turn from SKIP to PASS — an allowed artifact resolves and
-a non-allowlisted host is refused with the wrapper's diagnostic; the proxy exits with its session
-under normal exit, error and kill.
+**Exit criterion:** §7.4's two proxy rows turn from SKIP to PASS — an allowed artifact resolves
+through the proxy and a non-allowlisted host is refused with the wrapper's diagnostic — and the
+gate's warm-up block goes with them, so resolution under the profile is what the positive rows
+measure. Two concurrent sessions run with distinct ports and session directories; the scavenger
+removes a stale session and leaves a live one; no proxy or sbt server survives its session under
+normal exit, error and a handled signal; and with `SIGKILL` injected at each lifecycle
+transition — the scavenger's own condemnation and termination steps included — the next start ends
+every recorded group and the portfile-attributed server before removing anything, while a child
+caught before registration exits on its failed record rename (§4). One row binds a live server,
+condemns its session, and recovers — the shutdown reaches the socket at its moved pathname, is
+accepted through the tokenless handshake, and ends in a confirmed server exit.
 
 ### Phase 4 — The channel
 
@@ -1207,7 +1273,8 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 
 `--stats`, `--reset-cache`, the reset inventory, and: denial telemetry; symlink and path-race tests;
 proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures; the venue
-script of §14.9, and the coherence probes of §14.7.
+script of §14.9, and the coherence probes of §14.7. Performance: the warm sbt boot directory in the
+agent cache (§3.2).
 
 Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
 adds.
@@ -1389,8 +1456,8 @@ answers. What remains:
 - What kills a running host build when the user interrupts the agent, and what happens to it when
   the sandbox container dies? An orphaned sbt on the host is not plausible but measured: the
   probes left fifty servers running, some for two weeks, because `sbt shutdown` reaches only a
-  server whose socket it can find. §4's scavenger reclaims directories, not processes; the wrapper
-  has to end the server it started by pid, and the gate does so at exit.
+  server whose socket it can find. §4 ends by pid what it started and scavenges what a kill left;
+  what remains open is who sends the signal when the interrupt arrives from inside the container.
 
 ### Claims to confirm rather than assume
 
