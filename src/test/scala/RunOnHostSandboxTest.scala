@@ -54,6 +54,24 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val refused = hostCommandStray(project)
     assert(refused.exists(_.contains("symlink")), refused.toString)
 
+  test("a file where a directory belongs refuses instead of reading as absent config"):
+    val project = Files.createTempDirectory("host-command")
+    val dir = project.resolve(".ko-agent-sandbox/host-command")
+    Files.createDirectories(dir)
+    Files.writeString(dir.resolve("sbt"), "")
+    val refused = hostCommandStray(project)
+    assert(refused.exists(r => r.contains("sbt") && r.contains("not a directory")), refused.toString)
+
+  test("a non-regular file where allowed belongs refuses instead of being read"):
+    val project = Files.createTempDirectory("host-command")
+    val egress = project.resolve(".ko-agent-sandbox/host-command/sbt/egress")
+    Files.createDirectories(egress.resolve("allowed")) // a directory; a FIFO would block a read
+    val refused = hostCommandStray(project)
+    assert(
+      refused.exists(r => r.contains("allowed") && r.contains("not a regular file")),
+      refused.toString,
+    )
+
   test("readAllowlist reads the tool's file, refuses its strays, and defaults to nothing"):
     val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed")
     Files.writeString(

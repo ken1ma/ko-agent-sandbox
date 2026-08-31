@@ -87,13 +87,16 @@ emit() { # tool
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub §3.1 rejects and the
 # profile denies. Mill's `mill-jvm-version: system` takes `java` from PATH the same way.
+# exec, because with_timeout backgrounds this function and kills $!: without it that pid is a
+# subshell and the timeout kill would orphan the build instead of ending it. The exports are
+# contained in that subshell.
 build_env() { # agent-v1 command...
     cache=$1; shift
-    PATH="$JAVA_HOME/bin:$PATH" \
-    COURSIER_CACHE=$cache XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
-    JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=${sbt_global:-$SESSION_TMP/sbt-global} -Djava.net.preferIPv4Stack=true" \
-    "$@"
+    export PATH="$JAVA_HOME/bin:$PATH" \
+        COURSIER_CACHE="$cache" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
+        JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
+-Dsbt.global.base=${sbt_global:-$SESSION_TMP/sbt-global} -Djava.net.preferIPv4Stack=true"
+    exec "$@"
 }
 # A hang is a FAIL, not a stalled run: a client whose server never came up waits forever.
 with_timeout() { # seconds command...
@@ -165,8 +168,15 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 # A Mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
 # A build proxy a timed-out or killed wrapper left: the wrapper's own scavenger ends these at its
-# next start, but the gate must not leave them when it exits before running one.
-stray_proxies() { pgrep -f -- '--serve-proxy-on-host' 2>/dev/null; }
+# next start, but the gate must not leave them when it exits before running one. Only this run's:
+# its wrappers run on the run's scratch classpath, which the proxy re-invokes on its own command
+# line — a concurrent gate's or a real build's proxy carries a different path and is not this
+# gate's to end.
+stray_proxies() {
+    for pid in $(pgrep -f -- '--serve-proxy-on-host' 2>/dev/null); do
+        ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$work" && printf '%s\n' "$pid"
+    done
+}
 # §3.2: one sbt server per project at a time. A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
 # deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
@@ -193,6 +203,10 @@ end_project_servers() {
     for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray build proxy $pid"; done
 }
 trap end_project_servers EXIT
+# Through `exit`, so Ctrl-C still runs the EXIT trap: an untrapped INT ends the shell without
+# it, and a gate interrupted after `emit` would leave emit's server holding the portfile.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- profiles -----------------------------------------------------------------------------------
 
@@ -439,14 +453,47 @@ fi
 echo
 echo "the session lifecycle"
 sessions_now() { ls "$session_root" 2>/dev/null | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$'; }
+lifecycle_rows="two concurrent sessions
+SIGTERM: the wrapper cleans up behind itself
+SIGKILL mid-build: the running group is ended provably
+SIGKILL: next start condemns and collects
+orphan server ended by portfile attribution"
+# A here-doc, not a pipe: report counts, and a pipeline would count in a subshell.
+skip_lifecycle() {
+    while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
+$lifecycle_rows
+EOF
+}
+# The victim's own client record, bound to it directly: the recorded shim is spawned by the
+# wrapper, so its parent pid is the victim's, and the recorded start time must match the live
+# process — the same pid-plus-start proof the wrapper's own scavenger uses, so a stale record
+# whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
+# first.
+await_client_record() { # victim-pid
+    tries=0
+    while [ "$tries" -lt 600 ]; do
+        for record in "$session_root"/*/records/client; do
+            [ -f "$record" ] || continue
+            read -r pgid start < "$record" || continue
+            [ "$(ps -o ppid= -p "$pgid" 2>/dev/null | tr -d ' ')" = "$1" ] || continue
+            [ "$(ps -o lstart= -p "$pgid" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$start" ] || continue
+            printf '%s\n' "$record"; return 0
+        done
+        kill -0 "$1" 2>/dev/null || return 0
+        tries=$((tries + 1)); sleep 0.5
+    done
+}
+# Always launched with `&`, and exec so $! IS the wrapper JVM: without it the background pid is
+# the subshell running this function, java is its child, and every staged kill — and the shim's
+# parent-pid check above — would land on or look at the wrong process.
+victim_wrapper() { # log-name
+    exec "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
+        sbt "$project" probe/runtime-authority.txt -- compile >"$work/$1" 2>&1
+}
 if [ "$quick" = 1 ]; then
-    report SKIP "two concurrent sessions" "quick mode"
-    report SKIP "SIGKILL: next start condemns and collects" "quick mode"
-    report SKIP "orphan server ended by portfile attribution" "quick mode"
+    skip_lifecycle "quick mode"
 elif [ "$tool" != all ]; then
-    report SKIP "two concurrent sessions" "needs both tools"
-    report SKIP "SIGKILL: next start condemns and collects" "needs both tools"
-    report SKIP "orphan server ended by portfile attribution" "needs both tools"
+    skip_lifecycle "needs both tools"
 else
     # Concurrency: one sbt and one Mill session overlap, each with its own directory and proxy.
     wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
@@ -463,53 +510,86 @@ else
     then report PASS "two concurrent sessions" "both built; peak concurrent session dirs: $peak"
     else report FAIL "two concurrent sessions" "sbt exit $conc_a, mill exit $conc_b"; fi
 
-    # SIGKILL of the wrapper alone, mid-session. The client then finishes its command cleanly and
-    # its leader exits with it, and a cleanly-left server survives (session-recovery.sh M3) —
-    # the true orphan: proxy recorded and ended, client group leaderless and refused, server
-    # alive behind the portfile for attribution (§4). Killing any of the client's processes
-    # stages the wrong state: a server whose client dies mid-exec dies with it — measured, as
-    # was the completed deny-fixture variant whose server was gone before recovery.
-    "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
-        sbt "$project" probe/runtime-authority.txt -- compile >"$work/killed.log" 2>&1 & victim=$!
-    tries=0; client_record=""
-    while [ "$tries" -lt 600 ]; do
-        for record in "$session_root"/*/records/client; do
-            [ -f "$record" ] && client_record=$record
-        done
-        [ -n "$client_record" ] && [ -f "$project/project/target/active.json" ] && break
-        kill -0 "$victim" 2>/dev/null || break
-        tries=$((tries + 1)); sleep 0.5
-    done
-    if [ -z "$client_record" ] || [ ! -f "$project/project/target/active.json" ]; then
+    # SIGTERM mid-build: the wrapper's shutdown hook — a JVM's `finally` never runs on a signal —
+    # ends the groups and removes the session before the JVM exits (§4).
+    victim_wrapper sigterm.log & victim=$!
+    client_record=$(await_client_record "$victim")
+    if [ -z "$client_record" ]; then
+        report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+            "no client record appeared: $(tail -1 "$work/sigterm.log" | cut -c1-50)"
+    else
+        kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+        sleep 1
+        # The victim's own session directory, not a root-wide count: a concurrent legitimate
+        # session is not this row's to judge.
+        victim_session=${client_record%/records/client}
+        if [ ! -d "$victim_session" ] && [ ! -d "$session_root/condemned/${victim_session##*/}" ] \
+            && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ]
+        then report PASS "SIGTERM: the wrapper cleans up behind itself"
+        else report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+            "left: $(ls -d "$victim_session" 2>/dev/null) \
+$(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
+        fi
+    fi
+
+    # SIGKILL mid-build: the shim leader survives the wrapper, so the next start ends the whole
+    # running group provably instead of refusing a leaderless one.
+    victim_wrapper killed-mid.log & victim=$!
+    client_record=$(await_client_record "$victim")
+    if [ -z "$client_record" ]; then
+        report FAIL "SIGKILL mid-build: the running group is ended provably" \
+            "no client record appeared: $(tail -1 "$work/killed-mid.log" | cut -c1-50)"
+    else
+        kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+        wrapper sbt "$project" --version >"$work/recover-mid.log" 2>&1
+        if grep -q 'GroupEnded' "$work/recover-mid.log"
+        then report PASS "SIGKILL mid-build: the running group is ended provably" \
+            "$(grep -m1 'scavenged' "$work/recover-mid.log" | cut -c1-70)"
+        else report FAIL "SIGKILL mid-build: the running group is ended provably" \
+            "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
+    fi
+
+    # The true orphan needs the shim gone too: SIGKILL the wrapper mid-build, let the client
+    # finish its command cleanly — the shim publishes its exit beside the record, and a
+    # cleanly-left server survives (session-recovery.sh M3) — then SIGKILL the shim alone.
+    # Proxy recorded and ended, client group leaderless and refused, server alive behind the
+    # portfile for attribution (§4). Killing any of the client's processes instead stages the
+    # wrong state: a server whose client dies mid-exec dies with it — measured, as was the
+    # completed deny-fixture variant whose server was gone before recovery.
+    victim_wrapper killed.log & victim=$!
+    client_record=$(await_client_record "$victim")
+    if [ -z "$client_record" ]; then
         report FAIL "SIGKILL: next start condemns and collects" \
-            "no client record or portfile appeared: $(tail -1 "$work/killed.log" | cut -c1-50)"
+            "no client record appeared: $(tail -1 "$work/killed.log" | cut -c1-50)"
         report SKIP "orphan server ended by portfile attribution" "no orphan was staged"
-        kill -9 "$victim" 2>/dev/null
     else
         client_pgid=$(awk '{print $1}' "$client_record")
         kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
-        # The client finishes on its own; its leader's exit is the staging cue.
         tries=0
-        while kill -0 "$client_pgid" 2>/dev/null && [ "$tries" -lt 600 ]; do
+        while [ ! -f "$client_record.exit" ] && [ "$tries" -lt 600 ]; do
             tries=$((tries + 1)); sleep 0.5
         done
-        sleep 1
-        # The recovery run's own build is beside the point (and --version is the cheap one);
-        # its stderr carries the scavenge of the victim's session.
-        wrapper sbt "$project" --version >"$work/recover.log" 2>&1
-        if grep -q 'scavenged' "$work/recover.log"
-        then report PASS "SIGKILL: next start condemns and collects" \
-            "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"
-        else report FAIL "SIGKILL: next start condemns and collects" \
-            "$(tail -1 "$work/recover.log" | cut -c1-70)"; fi
-        if grep -q 'ServerShutDown' "$work/recover.log"
-        then report PASS "orphan server ended by portfile attribution" \
-            "$(grep -m1 -o 'ServerShutDown([^)]*)' "$work/recover.log" | cut -c1-70)"
-        else report FAIL "orphan server ended by portfile attribution" \
-            "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"; fi
-        # The leaderless client group is the one §4 refuses to signal; it exits with its server
-        # gone, and the gate does not leave it to linger.
-        pkill -9 -g "$client_pgid" 2>/dev/null
+        if [ ! -f "$client_record.exit" ]; then
+            report FAIL "SIGKILL: next start condemns and collects" "the client never finished"
+            report SKIP "orphan server ended by portfile attribution" "no orphan was staged"
+            pkill -9 -g "$client_pgid" 2>/dev/null
+        else
+            kill -9 "$client_pgid" 2>/dev/null   # the shim alone: the build is done, the server stays
+            sleep 1
+            # The recovery run's own build is beside the point (and --version is the cheap one);
+            # its stderr carries the scavenge of the victim's session.
+            wrapper sbt "$project" --version >"$work/recover.log" 2>&1
+            if grep -q 'scavenged' "$work/recover.log"
+            then report PASS "SIGKILL: next start condemns and collects" \
+                "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"
+            else report FAIL "SIGKILL: next start condemns and collects" \
+                "$(tail -1 "$work/recover.log" | cut -c1-70)"; fi
+            if grep -q 'ServerShutDown' "$work/recover.log"
+            then report PASS "orphan server ended by portfile attribution" \
+                "$(grep -m1 -o 'ServerShutDown([^)]*)' "$work/recover.log" | cut -c1-70)"
+            else report FAIL "orphan server ended by portfile attribution" \
+                "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"; fi
+        fi
     fi
 fi
 

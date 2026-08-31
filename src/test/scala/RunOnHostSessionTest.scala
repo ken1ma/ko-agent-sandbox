@@ -68,7 +68,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   def freshRoot(): Path =
-    val root = Files.createTempDirectory("build-session").resolve("root")
+    // Canonical, so the moved-socket pathnames the tests predict match what containment proves.
+    val root = Files.createTempDirectory("build-session").toRealPath().resolve("root")
     ensureRoot(root, uid).toOption.get
 
   test("publish yields a locked session with tmp, records and the project on file"):
@@ -85,7 +86,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   test("a live session is left alone by the scavenger"):
     val root = freshRoot()
     val session = publish(root, Path.of("/p")).toOption.get
-    val results = scavenge(root, processes(), _ => Right(()))
+    val results = scavenge(root, processes(), _ => ServerAnswer.ShutDown)
     assertEquals(results, Vector.empty)
     assert(Files.isDirectory(session.directory))
     remove(session)
@@ -113,7 +114,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val dead = die(session)
 
     val fakes = processes(7L -> "START-A")
-    val results = scavenge(root, fakes, _ => Right(()))
+    val results = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, List(7L))
     assert(!Files.exists(dead))
     assert(!Files.exists(root.resolve(CondemnedDir).resolve(dead.getFileName)))
@@ -130,7 +131,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     die(session)
 
     val fakes = processes(7L -> "SOMEONE-ELSE") // 8 is gone entirely
-    val results = scavenge(root, fakes, _ => Right(()))
+    val results = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, Nil)
     val skipped = results.flatMap(_(1)).collect { case Collected.GroupSkipped(g, _) => g }
     assertEquals(skipped.sorted, Vector(7L, 8L))
@@ -145,7 +146,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
     die(session)
     val fakes = processes(9L -> "START-C")
-    scavenge(root, fakes, _ => Right(()))
+    scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, List(9L))
 
   test("a condemned directory an earlier killed scavenger left is processed first"):
@@ -158,16 +159,95 @@ class RunOnHostSessionTest extends munit.FunSuite:
     Files.move(dead, condemned.resolve(dead.getFileName))
 
     val fakes = processes(5L -> "START-E")
-    scavenge(root, fakes, _ => Right(()))
+    scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, List(5L))
     assertEquals(listNames(condemned), Vector.empty)
+
+  test("a condemned entry another collector holds is left to it"):
+    import java.nio.channels.FileChannel
+    import java.nio.file.StandardOpenOption
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("x"), renderRecord(Record(6, "START-F")), UTF_8)
+    val dead = die(session)
+    val condemnedDir = Files.createDirectories(root.resolve(CondemnedDir))
+    val entry = condemnedDir.resolve(dead.getFileName)
+    Files.move(dead, entry)
+    val holder = FileChannel.open(entry.resolve(LockFile), StandardOpenOption.WRITE)
+    val held = holder.tryLock()
+    try
+      val fakes = processes(6L -> "START-F")
+      assertEquals(scavenge(root, fakes, _ => ServerAnswer.ShutDown), Vector.empty)
+      assertEquals(fakes.ended.toList, Nil, "nothing is signalled twice")
+      assert(Files.isDirectory(entry), "the entry stays for its holder")
+    finally
+      held.release()
+      holder.close()
+    val fakes = processes(6L -> "START-F")
+    scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(6L), "released, the entry is anyone's to collect")
+    assert(!Files.exists(entry))
+
+  test("a condemned entry without its lock is deletion residue: removed, nothing signalled"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("x"), renderRecord(Record(11, "START-G")), UTF_8)
+    val dead = die(session)
+    val entry = Files.createDirectories(root.resolve(CondemnedDir)).resolve(dead.getFileName)
+    Files.move(dead, entry)
+    Files.delete(entry.resolve(LockFile))
+    val fakes = processes(11L -> "START-G")
+    assertEquals(scavenge(root, fakes, _ => ServerAnswer.ShutDown), Vector.empty)
+    assertEquals(fakes.ended.toList, Nil, "only the lock chain proves the authority to signal")
+    assert(!Files.exists(entry), "the husk is removed")
+
+  test("a child that will not delete keeps the entry locked, never a lockless non-husk"):
+    import java.nio.file.attribute.PosixFilePermissions
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    val stubborn = Files.createDirectory(session.tmp.resolve("stubborn"))
+    Files.writeString(stubborn.resolve("x"), "x", UTF_8)
+    Files.setPosixFilePermissions(stubborn, PosixFilePermissions.fromString("---------"))
+    val dead = die(session)
+    val entry = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    val moved = entry.resolve(TmpDir).resolve("stubborn")
+    try
+      scavenge(root, processes(), _ => ServerAnswer.ShutDown)
+      assert(Files.exists(entry.resolve(LockFile)), "the lock outlives every surviving child")
+    finally
+      if Files.exists(moved) then
+        Files.setPosixFilePermissions(moved, PosixFilePermissions.fromString("rwx------"))
+    scavenge(root, processes(), _ => ServerAnswer.ShutDown)
+    assert(!Files.exists(entry), "deletable again, the retry collects the entry whole")
+
+  test("a session being ended by its wrapper is left alone by a concurrent scavenger"):
+    val root = freshRoot()
+    val project = Files.createTempDirectory("proj")
+    val session = publish(root, project).toOption.get
+    val socket = session.tmp.resolve("sock")
+    Files.createFile(socket)
+    Files.createDirectories(project.resolve("project/target"))
+    Files.writeString(
+      project.resolve("project/target/active.json"),
+      s"""{"uri":"local://$socket"}""",
+      UTF_8,
+    )
+    val actions = endSession(root, session, processes(), _ =>
+      assertEquals(
+        scavenge(root, processes(), _ => ServerAnswer.ShutDown),
+        Vector.empty,
+        "mid-collection, the condemned entry is its owner's",
+      )
+      ServerAnswer.ShutDown)
+    assert(actions.exists(_.isInstanceOf[Collected.ServerShutDown]), clue = actions)
+    assert(!Files.exists(session.directory))
 
   test("staging litter is cleared, published live sessions are not"):
     val root = freshRoot()
     val live = publish(root, Path.of("/p")).toOption.get
     val litter = Files.createDirectories(root.resolve(StagingDir).resolve("s-half-made"))
     Files.writeString(litter.resolve("junk"), "x", UTF_8)
-    scavenge(root, processes(), _ => Right(()))
+    scavenge(root, processes(), _ => ServerAnswer.ShutDown)
     assertEquals(listNames(root.resolve(StagingDir)), Vector.empty)
     assert(Files.isDirectory(live.directory))
     remove(live)
@@ -189,6 +269,11 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val session = publish(root, project).toOption.get
     val dead = die(session)
     val socket = socketUnder(dead)
+    // The socket exists on disk like a real server's; containment canonicalizes it. Only inside
+    // the session — a foreign spelling stays a spelling.
+    if socket.normalize.startsWith(dead) then
+      Files.createDirectories(socket.getParent)
+      Files.createFile(socket)
     Files.createDirectories(project.resolve("project/target"))
     Files.writeString(
       project.resolve("project/target/active.json"),
@@ -201,7 +286,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val root = freshRoot()
     val (dead, _) = deadSessionWithServer(root, _.resolve(TmpDir).resolve("srv/sock"))
     val spoken = ListBuffer[Path]()
-    val results = scavenge(root, processes(), path => { spoken += path; Right(()) })
+    val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
     val moved = root.resolve(CondemnedDir).resolve(dead.getFileName).resolve("tmp/srv/sock")
     assertEquals(spoken.toList, List(moved))
     assertEquals(
@@ -213,18 +298,74 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val root = freshRoot()
     val (_, _) = deadSessionWithServer(root, _ => Path.of("/somewhere/else/sock"))
     val spoken = ListBuffer[Path]()
-    val results = scavenge(root, processes(), path => { spoken += path; Right(()) })
+    val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
     assertEquals(spoken.toList, Nil)
     val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
     assert(skips.exists(_.contains("not this session's")), clue = skips)
 
-  test("a server that does not answer is reported, and collection still completes"):
+  test("a socket spelled through the session but resolving outside it is never spoken at"):
+    val root = freshRoot()
+    val outside = Files.createTempDirectory("outside").toRealPath()
+    Files.createFile(outside.resolve("sock"))
+    deadSessionWithServer(root, dead =>
+      val ups = Iterator.fill(dead.getNameCount + 1)("..").mkString("/")
+      Path.of(s"$dead/tmp/$ups$outside/sock"))
+    val spoken = ListBuffer[Path]()
+    val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
+    assertEquals(spoken.toList, Nil)
+    val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
+    assert(skips.exists(_.contains("does not resolve inside")), clue = skips)
+
+  test("a symlink beneath the session cannot point the shutdown outside it"):
+    val root = freshRoot()
+    val outside = Files.createTempDirectory("outside").toRealPath()
+    Files.createFile(outside.resolve("sock"))
+    val (dead, socket) = deadSessionWithServer(root, _.resolve(TmpDir).resolve("srv").resolve("sock"))
+    Files.delete(socket)
+    Files.delete(socket.getParent)
+    Files.createSymbolicLink(dead.resolve(TmpDir).resolve("srv"), outside)
+    val spoken = ListBuffer[Path]()
+    val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
+    assertEquals(spoken.toList, Nil)
+    val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
+    assert(skips.exists(_.contains("does not resolve inside")), clue = skips)
+
+  test("endSession condemns before it collects, so the socket is spoken at the condemned pathname"):
+    val root = freshRoot()
+    val project = Files.createTempDirectory("proj")
+    val session = publish(root, project).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(4, "START-D")), UTF_8)
+    val socket = session.tmp.resolve("sock")
+    Files.createFile(socket)
+    Files.createDirectories(project.resolve("project/target"))
+    Files.writeString(
+      project.resolve("project/target/active.json"),
+      s"""{"uri":"local://$socket"}""",
+      UTF_8,
+    )
+    val fakes = processes(4L -> "START-D")
+    val spoken = ListBuffer[Path]()
+    val actions = endSession(root, session, fakes, path => { spoken += path; ServerAnswer.ShutDown })
+    assertEquals(fakes.ended.toList, List(4L), "the recorded group is ended behind its live leader")
+    val condemned = root.resolve(CondemnedDir).resolve(session.directory.getFileName)
+    assertEquals(spoken.toList, List(condemned.resolve("tmp/sock")))
+    assert(actions.exists(_.isInstanceOf[Collected.ServerShutDown]), clue = actions)
+    assert(!Files.exists(session.directory), "the original pathname is gone before anything spoke")
+    assert(!Files.exists(condemned), "collection deleted the condemned directory")
+
+  test("an unanswered server keeps its condemned directory for the next start to retry"):
     val root = freshRoot()
     val (dead, _) = deadSessionWithServer(root, _.resolve(TmpDir).resolve("sock"))
-    val results = scavenge(root, processes(), _ => Left("timed out"))
-    val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
-    assert(skips.exists(_.contains("timed out")), clue = skips)
-    assert(!Files.exists(root.resolve(CondemnedDir).resolve(dead.getFileName)))
+    val kept = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    val first = scavenge(root, processes(), _ => ServerAnswer.Unanswered("timed out"))
+    val unanswered =
+      first.flatMap(_(1)).collect { case Collected.ServerUnanswered(_, reason) => reason }
+    assert(unanswered.exists(_.contains("timed out")), clue = first)
+    assert(Files.isDirectory(kept), "the directory, records and socket stay for the retry")
+    val second = scavenge(root, processes(), _ => ServerAnswer.Unreachable("connect refused"))
+    val skips = second.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
+    assert(skips.exists(_.contains("gone")), clue = second)
+    assert(!Files.exists(kept), "a gone server releases the directory")
 
   // --------------------------------------------------------------------------
   // The registered spawn, against real processes
@@ -239,7 +380,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       "the registration spawn never runs under the profile",
     )
 
-  test("a spawned process registers pgid and start time by rename before exec"):
+  test("a spawned process registers pgid and start time by rename before its command runs"):
     notUnderBuildProfile()
     val dir = Files.createTempDirectory("spawn")
     val record = dir.resolve("record")
@@ -250,9 +391,35 @@ class RunOnHostSessionTest extends munit.FunSuite:
       while !Files.exists(record) && System.nanoTime < deadline do Thread.sleep(20)
       val parsed = parseRecord(Files.readString(record, UTF_8))
       assert(parsed.isDefined, "the record was published")
-      assertEquals(parsed.get.pgid, process.pid, "exec keeps the registering pid")
+      assertEquals(parsed.get.pgid, process.pid, "the shim is the leader it registers")
       assertEquals(HostProcesses.startOf(process.pid), Some(parsed.get.leaderStart))
     finally process.destroyForcibly().waitFor()
+
+  test("the command's exit status is published beside the record, and the leader stays"):
+    notUnderBuildProfile()
+    val record = Files.createTempDirectory("spawn").resolve("record")
+    val process =
+      java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sh", "-c", "exit 7"))*).start()
+    try
+      assertEquals(awaitExit(exitRecord(record), process), Right(7))
+      assert(process.isAlive, "the leader outlives its command, keeping the group provable")
+    finally process.destroyForcibly().waitFor()
+
+  test("a command's signal death is published as the shell's 128+signal"):
+    notUnderBuildProfile()
+    val record = Files.createTempDirectory("spawn").resolve("record")
+    val process = java.lang.ProcessBuilder(
+      registeredSpawn(record, Seq("/bin/sh", "-c", "kill -KILL $$"))*).start()
+    try assertEquals(awaitExit(exitRecord(record), process), Right(137))
+    finally process.destroyForcibly().waitFor()
+
+  test("a shim gone without an exit status is a Left, not a hang"):
+    notUnderBuildProfile()
+    val record = Files.createTempDirectory("spawn").resolve("record")
+    val process =
+      java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
+    process.destroyForcibly().waitFor()
+    assert(awaitExit(exitRecord(record), process).isLeft)
 
   test("a spawned process whose record cannot be published ends itself with 71"):
     notUnderBuildProfile()
@@ -284,24 +451,47 @@ class RunOnHostSessionTest extends munit.FunSuite:
     thread.start()
     val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 10_000)
     thread.join(10_000)
-    assertEquals(result, Right(()))
+    assertEquals(result, ServerAnswer.ShutDown)
     assert(received(0).contains("\"method\": \"initialize\""), clue = received)
     assert(received(0).contains("\"skipAnalysis\":true"), clue = received)
     assert(received(1).contains("\"sbt/exec\""), clue = received)
     assert(received(1).contains("\"shutdown\""), clue = received)
 
-  test("a silent server is a bounded Left, not a hang"):
+  test("a silent server is a bounded Unanswered — kept retryable — not a hang"):
     val socket = shortSocketPath()
     val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     server.bind(UnixDomainSocketAddress.of(socket))
     val thread = Thread(() => { val c = server.accept(); Thread.sleep(3_000); c.close() })
     thread.start()
     val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
-    assert(result.isLeft)
+    assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     thread.join(10_000)
 
-  test("an absent socket is a Left naming the failure"):
-    assert(SbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500).isLeft)
+  test("an absent socket is Unreachable: nothing lives behind it"):
+    val result = SbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
+    assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
+
+  test("a socket file whose listener is gone is Unreachable: the connect is refused"):
+    val socket = shortSocketPath()
+    val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    server.bind(UnixDomainSocketAddress.of(socket))
+    server.close() // the file stays; nothing listens
+    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+    assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
+
+  test("a connect failure that is no refusal stays retryable: a live server may hide behind it"):
+    import java.nio.file.attribute.PosixFilePermissions
+    val dir = Files.createTempDirectory("deny")
+    val socket = dir.resolve("s")
+    val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    server.bind(UnixDomainSocketAddress.of(socket))
+    try
+      Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("---------"))
+      val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+      assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
+    finally
+      Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
+      server.close()
 
   private def frame(json: String): Array[Byte] = SbtServerShutdown.frame(json)
 
