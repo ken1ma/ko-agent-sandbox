@@ -759,7 +759,17 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live
   server holds the portfile, starts the build's server inside the profile, and ends it, portfile
   included, before the session ends. The cost is that no warm daemon spans builds: sbt's server
-  lives for one `sandbox-run-on-host` command, and `mill` runs `--no-daemon`.
+  lives for one `sandbox-run-on-host` command, and `mill` runs `--no-daemon`. Under
+  `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server first instead of
+  refusing — authority the user typed at launch, and logged into the build's transcript. The
+  shutdown is spoken only at the socket the wrapper derives from the project path as sbt derives
+  it, never at one the portfile names: the portfile is workspace content, so honouring its
+  spelling would let the project aim an unconfined write-and-parse at any socket this uid
+  reaches. The derived path is therefore authorization, and refused when a build could have
+  planted it: resolving it one link at a time, no step may land in the project or in the
+  per-project caches that outlive a session, so an environment placing sbt's server directory
+  inside either — and a chain that passes through one on its way somewhere innocent — leaves the
+  refusal standing instead.
 - **The payload that matters runs later, as you.** A build that writes `.git/hooks/post-checkout`
   is perfectly contained and entirely beside the point: the payload would run on your next
   `git status`, outside every sandbox. That property has two producers now — the workspace filter

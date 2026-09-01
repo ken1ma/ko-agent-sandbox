@@ -155,9 +155,7 @@ session_root=/private/tmp/ko-agent-$(id -u)
 # A shell command under a profile, so a row runs exactly what a build's script would.
 sb() { /usr/bin/sandbox-exec -f "$work/gate-$1.sb" /bin/sh -c "$2" >/dev/null 2>"$work/row.err"; }
 
-# /bin/sh reports /private/var/select/sh on every run (runtime-authority.txt), so the first line
-# of stderr is never the denial.
-first_error() { grep -v 'var/select/sh' "$work/row.err" | head -1 | cut -c1-70; }
+first_error() { head -1 "$work/row.err" | cut -c1-70; }
 expect_denied() { # tool label command
     if sb "$1" "$3"; then report FAIL "$2" "allowed"
     else report PASS "$2" "denied: $(first_error)"; fi

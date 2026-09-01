@@ -427,13 +427,16 @@ object RunOnHostChannel:
     project: Path,
     tools: Seq[String],
     logFile: Path,
+    autoShutdownForeignSbt: Boolean = false,
   ): Boolean =
     try
       val builder = ProcessBuilder(
         (Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-broker")
           ++ RunOnHostSandbox.selfInvocation(
-            "--serve-run-on-host", podman, container, project.toString,
-            tools.mkString(","), logFile.toString,
+            (Seq(
+              "--serve-run-on-host", podman, container, project.toString,
+              tools.mkString(","), logFile.toString,
+            ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption))*,
           ))*,
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
@@ -443,12 +446,16 @@ object RunOnHostChannel:
       true
     catch case _: IOException => false
 
-  /** `--serve-run-on-host <podman> <container> <project> <tools-csv> <log-file> [mount]`: spawned
-    * by the launcher before it hands over to podman, detached like the reaper. The trailing mount
-    * override is the gate's, whose shim runs at the project's own path rather than /workspace. */
+  /** `--serve-run-on-host <podman> <container> <project> <tools-csv> <log-file>
+    * [--auto-shutdown-foreign-sbt-on-host] [mount]`: spawned by the launcher before it hands over
+    * to podman, detached like the reaper. The trailing mount override is the gate's, whose shim
+    * runs at the project's own path rather than /workspace. */
   def serveMain(args: Seq[String]): Unit =
     args match
-      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*) if rest.sizeIs <= 1 =>
+      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*)
+          if rest.filterNot(_ == RunOnHostSandbox.AutoShutdownForeignSbtOption).sizeIs <= 1 =>
+        val autoShutdownForeignSbt = rest.contains(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+        val trailing = rest.filterNot(_ == RunOnHostSandbox.AutoShutdownForeignSbtOption)
         val logPath = Path.of(logFile)
         def log(line: String): Unit =
           try
@@ -480,10 +487,12 @@ object RunOnHostChannel:
           tools = toolsCsv.split(",").toSet,
           buildCommand = (tool, workingDirectory, arguments) =>
             RunOnHostSandbox.selfInvocation(
-              "--run-build-on-host", tool, project.toString, workingDirectory.toString, "--",
+              (Seq("--run-build-on-host", tool, project.toString, workingDirectory.toString)
+                ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+                ++ Seq("--"))*,
             ) ++ arguments,
           os = Os.Mac,
-          mount = rest.headOption.getOrElse(WorkspaceMount),
+          mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
         log(s"serving $toolsCsv for $project in $container")
         serve(endpoint, service, log)

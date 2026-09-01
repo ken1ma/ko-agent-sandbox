@@ -281,7 +281,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
     // The ones the launcher sets rather than reads are documented where their reader is — the
-    // agent instructions, and for RUN_ON_HOST the image's shim.
+    // agent instructions, and for RUN_ON_HOST also the image's shim.
     assertEquals(
       KnownSandboxVariables -- documented,
       Set(
@@ -1124,12 +1124,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(hostBuilds.contains("sandbox-run-on-host mill"), hostBuilds)
     assert(hostBuilds.contains("starts and ends its own sbt server"), hostBuilds)
     assert(hostBuilds.contains("never re-run in the container"), hostBuilds)
+    assert(hostBuilds.contains(RunOnHostChannel.RunOnHostVariable), hostBuilds)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)
     val discoverable =
       authoritySection("live", "fuse", resolution, Vector.empty, hostBuildsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
+    assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host build can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
     val rejectWithBuilds = authoritySection("reject", "fuse", resolution, Vector("sbt"))
@@ -1203,6 +1205,27 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--run-on-host=sbt")).map(_.runOnHost), Right(None))
+
+  test("option parsing: --auto-shutdown-foreign-sbt-on-host needs sbt on the host, selected once"):
+    val option = RunOnHostSandbox.AutoShutdownForeignSbtOption
+    assertEquals(
+      parseCommandLine(List("--run-on-host=sbt", option, "claude")).map(_.autoShutdownForeignSbt),
+      Right(true),
+    )
+    assertEquals(
+      parseCommandLine(List("--run-on-host=sbt", "claude")).map(_.autoShutdownForeignSbt),
+      Right(false),
+    )
+    assert(parseCommandLine(List(option, "claude")).swap.exists(_.contains("--run-on-host")))
+    assert(parseCommandLine(List("--run-on-host=mill", option)).swap.exists(_.contains("name sbt")))
+    assert(
+      parseCommandLine(List("--run-on-host=sbt", option, option)).swap.exists(_.contains("twice")),
+    )
+    // After the command, it is the command's — and then no consent was typed.
+    assertEquals(
+      parseCommandLine(List("claude", option)).map(_.autoShutdownForeignSbt),
+      Right(false),
+    )
 
   test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
     assertEquals(

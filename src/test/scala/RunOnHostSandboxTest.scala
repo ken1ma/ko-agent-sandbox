@@ -228,3 +228,179 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(authority.reads.map(_.getFileName.toString), Seq("readable"))
     assertEquals(authority.executes.map(_.getFileName.toString), Seq("executable"))
     assertEquals(readRuntimeAuthority(None).reads, Seq.empty)
+
+  // --------------------------------------------------------------------------
+  // The foreign server: derived socket, consented shutdown
+  // --------------------------------------------------------------------------
+
+  test("sbtServerSocket reproduces a live server's derivation, recorded from a real portfile"):
+    // Recorded: sbt 2.0.7 served /Users/kenichi/ko-agent-sandbox from this hash directory.
+    assertEquals(
+      sbtServerSocket(Path.of("/Users/kenichi/ko-agent-sandbox"), _ => None, Path.of("/Users/kenichi")),
+      Path.of("/Users/kenichi/.config/sbt/2/server/d5fe918c85e40c5548a2/sock"),
+    )
+
+  test("sbtServerSocket takes each serverDir source as sbt takes it, not as it reads better"):
+    val project = Path.of("/Users/kenichi/ko-agent-sandbox")
+    def serverDir(env: (String, String)*) =
+      sbtServerSocket(project, env.toMap.get, Path.of("/u")).getParent.getParent
+    assertEquals(serverDir("SBT_GLOBAL_SERVER_DIR" -> "/srv"), Path.of("/srv"))
+    assertEquals(serverDir("SBT_CONFIG_HOME" -> "/cfg"), Path.of("/cfg/2/server"))
+    assertEquals(serverDir("XDG_CONFIG_HOME" -> "/x"), Path.of("/x/sbt/2/server"))
+    assertEquals(serverDir(), Path.of("/u/.config/sbt/2/server"))
+    // SBT_GLOBAL_SERVER_DIR is sbt's `sys.env get … map file`: present-but-empty is a value, and
+    // java.io.File resolves an empty parent against the root rather than staying relative.
+    assertEquals(serverDir("SBT_GLOBAL_SERVER_DIR" -> ""), Path.of("/"))
+    // The global base's own sources are sbt's `.filter(_.nonEmpty).map(p => file(p.trim))`.
+    assertEquals(serverDir("SBT_CONFIG_HOME" -> ""), Path.of("/u/.config/sbt/2/server"))
+    assertEquals(serverDir("SBT_CONFIG_HOME" -> " /cfg "), Path.of("/cfg/2/server"))
+    // $HOME is not an input: sbt reads the user.home property, and the two can differ.
+    assertEquals(serverDir("HOME" -> "/elsewhere"), Path.of("/u/.config/sbt/2/server"))
+
+  private def writePortfile(project: Path, socket: Path): Unit =
+    Files.createDirectories(project.resolve("project").resolve("target"))
+    Files.writeString(
+      project.resolve("project").resolve("target").resolve("active.json"),
+      s"""{"uri":"local://$socket"}""",
+      UTF_8,
+    )
+
+  test("autoShutdownForeignServer refuses a portfile socket that is not the derived one"):
+    val project = Files.createTempDirectory("foreign")
+    val result = autoShutdownForeignServer(
+      project, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
+    )
+    assert(result.swap.exists(_.contains("does not apply")), result)
+    assert(result.swap.exists(_.contains("run `sbt shutdown` there and retry")), result)
+
+  test("autoShutdownForeignServer refuses a derived socket the project itself could have planted"):
+    // The whole defence of speaking only at the derived socket is that the project cannot choose
+    // it. An environment that puts sbt's server directory inside the project takes that away.
+    val project = Files.createTempDirectory("foreign")
+    val env = Map("SBT_GLOBAL_SERVER_DIR" -> project.resolve("srv").toString).get
+    val derived = sbtServerSocket(project, env, Path.of("/u"))
+    Files.createDirectories(derived.getParent)
+    val log = collection.mutable.Buffer[String]()
+    val result =
+      autoShutdownForeignServer(project, derived, env, log.append(_), userHome = Path.of("/u"))
+    assert(result.swap.exists(_.contains("reachable through what a build writes")), result)
+    assertEquals(log.toList, Nil)
+
+  test("autoShutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
+    val home = Files.createTempDirectory("home")
+    val project = Files.createTempDirectory("foreign")
+    val derived = sbtServerSocket(project, _ => None, home)
+    writePortfile(project, derived)
+    val log = collection.mutable.Buffer[String]()
+    assertEquals(
+      autoShutdownForeignServer(project, derived, _ => None, log.append(_), userHome = home),
+      Right(()),
+    )
+    assert(log.exists(_.contains("shutting down the foreign sbt server")), log)
+
+  test("autoShutdownForeignServer refuses when the server never answers the shutdown"):
+    // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
+    val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
+    val project = Files.createTempDirectory("f")
+    val derived = sbtServerSocket(project, env, Path.of("/u"))
+    Files.createDirectories(derived.getParent)
+    val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    listener.bind(UnixDomainSocketAddress.of(derived))
+    try
+      val result = autoShutdownForeignServer(
+        project, derived, env, _ => (), shutdownDeadlineMillis = 300,
+      )
+      assert(result.swap.exists(_.contains("went unanswered")), result)
+    finally listener.close()
+
+  test("autoShutdownForeignServer refuses when the portfile outlives an answered shutdown"):
+    // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
+    val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
+    val project = Files.createTempDirectory("f")
+    val derived = sbtServerSocket(project, env, Path.of("/u"))
+    Files.createDirectories(derived.getParent)
+    writePortfile(project, derived)
+    // A listener that answers initialize and closes — a shutdown that "succeeds" — but lives on,
+    // so the portfile it holds keeps naming a connectable socket.
+    val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    listener.bind(UnixDomainSocketAddress.of(derived))
+    @volatile var serving = true
+    val server = Thread(() =>
+      while serving do
+        try
+          val client = listener.accept()
+          try
+            val buffer = java.nio.ByteBuffer.allocate(4096)
+            client.read(buffer) // initialize
+            client.write(java.nio.ByteBuffer.wrap("ok".getBytes(UTF_8)))
+            buffer.clear()
+            client.read(buffer) // the shutdown exec; the close after it is the "completed" answer
+          finally client.close()
+        catch case _: Exception => (),
+    )
+    server.start()
+    try
+      val result = autoShutdownForeignServer(
+        project, derived, env, _ => (),
+        shutdownDeadlineMillis = 2_000, releaseDeadlineMillis = 300,
+      )
+      assert(result.swap.exists(_.contains("still holds the portfile")), result)
+    finally
+      serving = false
+      listener.close()
+      server.join(2_000)
+
+  test("reachableThroughBuildWritable answers by what the walk enters, not by where it ends"):
+    val project = Files.createTempDirectory("p")
+    val outside = Files.createTempDirectory("o")
+    def reachable(target: Path) = reachableThroughBuildWritable(target, project, Seq.empty)
+    assert(reachable(project.resolve("srv/h/sock")))
+    assert(!reachable(outside.resolve("srv/h/sock")))
+    // The planting this exists to catch, in both shapes a link can take: the endpoint tells
+    // nothing, because the link inside the project is what chose it.
+    val dangling = project.resolve("dangling.sock")
+    Files.createSymbolicLink(dangling, outside.resolve("never-created"))
+    assert(reachable(dangling))
+    val existing = Files.writeString(outside.resolve("real.sock"), "")
+    Files.createSymbolicLink(project.resolve("planted.sock"), existing)
+    assert(reachable(project.resolve("planted.sock")))
+    // The same escape one directory up: an ancestor link inside the project redirects the rest.
+    Files.createSymbolicLink(project.resolve("srv"), outside)
+    assert(reachable(project.resolve("srv/real.sock")))
+    // Outside -> project -> outside: every hop but the middle one looks innocent, and only the
+    // middle one is writable. Resolving the chain in one step would report the far end and clear it.
+    val relay = project.resolve("relay")
+    Files.createSymbolicLink(relay, existing)
+    val entry = outside.resolve("entry")
+    Files.createSymbolicLink(entry, relay)
+    assert(reachable(entry))
+    // A relative path resolves against a working directory this process does not control.
+    assert(reachable(Path.of("srv/h/sock")))
+    // An unanswerable question is reachable: a project that does not resolve cannot clear anything.
+    assert(reachableThroughBuildWritable(outside.resolve("sock"), project.resolve("gone"), Seq.empty))
+
+  test("reachableThroughBuildWritable covers the caches a build writes, not the project alone"):
+    val project = Files.createTempDirectory("p")
+    val cache = Files.createTempDirectory("c")
+    val outside = Files.createTempDirectory("o")
+    val planted = cache.resolve("h/sock")
+    Files.createDirectories(planted.getParent)
+    Files.writeString(planted, "")
+    // A socket an earlier agent's build left in a persistent cache is as planted as one in the
+    // project — and invisible while the project is the only root.
+    assert(!reachableThroughBuildWritable(planted, project, Seq.empty))
+    assert(reachableThroughBuildWritable(planted, project, Seq(cache)))
+    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache)))
+    // A cache that does not exist yet holds nothing, and must not refuse every shutdown.
+    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache.resolve("gone"))))
+
+  test("reachableThroughBuildWritable knows both firmlink spellings of every writable root"):
+    // macOS serves the writable volume at / and at /System/Volumes/Data alike, and toRealPath
+    // collapses neither, so the alternate spelling would otherwise walk past every root.
+    val project = Files.createTempDirectory("p")
+    val cache = Files.createTempDirectory("c")
+    val outside = Files.createTempDirectory("o")
+    def aliased(root: Path) = Path.of(s"/System/Volumes/Data${root.toRealPath()}/h/sock")
+    assert(reachableThroughBuildWritable(aliased(project), project, Seq.empty))
+    assert(reachableThroughBuildWritable(aliased(cache), project, Seq(cache)))
+    assert(!reachableThroughBuildWritable(aliased(outside), project, Seq(cache)))
