@@ -1,7 +1,8 @@
 # Issues to report upstream to sbt/sbt
 
-Found while measuring PLAN-SBT-ON-HOST.md, each written as the report to submit. What this
-project does about each is in the plan; the row here is only what upstream needs.
+Found while measuring the `--run-on-host` build sandbox, each written as the report to submit.
+What this project does about each is in `RUN-ON-HOST.md` and the code it points to; the row here
+is only what upstream needs.
 
 ## The JVM thin client crashes instead of reporting a long boot-socket path
 

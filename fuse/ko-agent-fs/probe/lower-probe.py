@@ -21,7 +21,7 @@ share's: an inode number the filter minted per name looks exactly like a share t
 
 Results are printed here, the host's observations folded in; the host half needs python3 and nothing
 else. The rendezvous travels through the share, so a hang is a coherency failure before it is
-anything else, and `coherency-probe.py` is what settles that.
+anything else, and the launcher's `--self-test` share rows are what settles that.
 """
 
 import contextlib
@@ -54,8 +54,8 @@ def record(name: str, *observations: str) -> None:
 
 def stack() -> str:
     """Filtered or not, by the property that separates the filter from the launcher's mount pin:
-    `.git` is refused at any depth. `coherency-probe.py`'s copy of this carries the full reasoning;
-    each probe is copied into a scratch project on its own, so they do not share a module."""
+    `.git` is refused at any depth — probing inside a fresh subdirectory is what makes that answer
+    in a tree that already has a `.git`."""
     probe = tempfile.mkdtemp(prefix=".lower-probe-stack-", dir=".")
     try:
         os.mkdir(os.path.join(probe, ".git"))

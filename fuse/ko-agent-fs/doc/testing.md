@@ -34,6 +34,13 @@ self-test output and compile-cache tags and removes images they replace. `--incl
 this is the venue where *both* halves run, on macOS and Windows as readily as on Linux. It needs
 `--build` to have happened; it does not run one.
 
+Without a case filter, the launcher then runs its share rows (`SelfTestShare.scala`): a scratch
+lower inside the current directory, mounted through the installed filter, with a container reading
+the launcher's host writes back through the real share — the host-writer/session-reader axis the
+container suites cannot reach, because their backing tree is the container's own storage
+(`doc/TODO.md`, "End-to-end coherency through the real host share"). The scratch is removed on
+success and kept on failure.
+
 This is the venue for proving the filter on a machine. The rig below is the loop for changing it.
 
 

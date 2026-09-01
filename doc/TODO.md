@@ -63,29 +63,22 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
   encoding, resource limits, management-command selection, project-wide apply serialization and
   migration from the sole unnamed stage before exposing it.
 
-## Deferred — `--self-test`'s share rows
+## Deferred — `--self-test`'s remaining share rows
 
-`--self-test` builds the self-test image and runs the crate's suites in it
-(`../fuse/ko-agent-fs/doc/testing.md`). Those settle the code's own logic and the kernel; the share
-is the axis they cannot reach, because their backing tree is the container's own storage
-(`DESIGN.md`). The rows that do reach it are hand-run probes with a host terminal beside them, and
-they are the same host-writer/session-reader shape the verb would have to take.
+`--self-test` runs share rows after the crate's suites (`SelfTestShare.scala`,
+`../fuse/ko-agent-fs/doc/testing.md`): the share is the axis the container suites cannot reach,
+and the coherency rows now cross it launcher-driven and venue-recorded, the scratch gone on
+success and kept on failure — its files are how a row that measured a refusal is told apart from a
+row where the probe broke — with a killed run leaving nothing outside the mounts/ sweep,
+`--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
 
-`PLAN-SBT-ON-HOST.md` §14.7 schedules this work, because a host-native build makes that axis
-routine rather than occasional. The two rows below stay here as the standard it must meet.
-
-- [ ] Fold `probe/coherency-probe.py` and `probe/lower-probe.py` into `--self-test`: a scratch lower
-  in the host project directory so the share is in the path, the host side driven by the launcher
-  rather than by a person, and the full venue record — OS, podman version, machine provider, kernel,
-  the lower's filesystem type and case behaviour, the upper volume's filesystem. A run with no venue
-  recorded is not evidence for the next release (`../fuse/ko-agent-fs/doc/TODO.md`, "P1").
-- [ ] Keep those rows non-destructive, which the container run gets for free and a share row does
-  not: the work directory goes away on success and survives a failure, since its files are how a row
-  that measured a refusal is told apart from a row where the probe broke; `.git` and
-  `.ko-agent-sandbox` stay untouched at any depth; podman machine configuration is unchanged. Test
-  that a second run rebuilds no image, creates no second container or volume, and leaves the
-  project directory byte-identical, and that a killed run leaves nothing the reset sweep does not
-  match.
+- [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
+  folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
+  halves are deleted when their rows land. Their venue record adds the upper volume's filesystem,
+  which is what the staged design needs the answers for (`PLAN-STAGED.md`).
+- [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
+  the container — a host-native build turns the host-writer axis from an occasional human edit
+  into every build.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
 
@@ -126,11 +119,31 @@ on podman-less machines and kills the test JVM.
 
 - [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
   which runs unconfined while parsing hostile bytes as the user's uid
-  (`PLAN-SBT-ON-HOST.md` §8.3, where the acceptance argument binds:
+  (`RUN-ON-HOST.md` "The build's egress proxy", where the acceptance argument binds:
   loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
   surface). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
   log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
   own job, and SBPL cannot filter by name — plus its loopback listener.
+- [ ] Filter `mach-lookup` in the host build profile. It is granted unfiltered, and the system tool
+  directories are executable (a build's scripts need `find`, `mount` and whatever else;
+  `runtime-authority.txt`); together those let a build reach any Mach service — `open` through
+  LaunchServices would start an application outside the profile. Measure the services a build
+  actually needs, as `ops` measures operation families, and filter to them
+  (`(allow mach-lookup (global-name …))`, the shape Apple's profiles use); the gate's
+  forked-process rows are where the answer is checked.
+
+## Deferred — same-path workspace mounting under `--run-on-host`
+
+Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's
+JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
+does not establish compatibility between the venues' build state. That leaves legible paths in
+build output as the benefit, which did not carry the increment. The host path reaches the
+container regardless: the build's streamed output names it (`SECURITY.md`, "Run on host"). Prior
+art, both mounting the project at its host path for path legibility rather than shared state:
+
+- Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
+- Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
+  https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/
 
 ## Before the first release — continuous integration
 

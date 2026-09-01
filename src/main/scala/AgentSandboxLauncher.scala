@@ -72,8 +72,8 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths, StandardCopyOption}
-import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.{FileVisitResult, Files, Path, Paths, SimpleFileVisitor, StandardCopyOption}
+import java.nio.file.attribute.{BasicFileAttributes, PosixFilePermissions}
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
@@ -1043,10 +1043,17 @@ object AgentSandboxLauncher:
       writeImageCleanupJournal(journal, remaining)
 
     System.err.println(s"venue: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
+    // After the container suites, the share rows — the axis those suites cannot reach
+    // (SelfTestShare). Skipped under a filter: it selects crate cases, and the one-case loop
+    // stays fast.
+    def finish(suiteExit: Int): Nothing =
+      if suiteExit != 0 || filter.isDefined then sys.exit(suiteExit)
+      sys.exit(SelfTestShare.shareRows(podman, os, resolveProjectDir()))
+
     val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
     echoCommand(unprivileged)
     val exit = ProcessBuilder(unprivileged*).inheritIO().start().waitFor()
-    if exit != SelfTestVenueExit then sys.exit(exit)
+    if exit != SelfTestVenueExit then finish(exit)
 
     System.err.println(
       "note: the filter's self-test failed at the venue rather than at a check; retrying as\n" +
@@ -1057,7 +1064,7 @@ object AgentSandboxLauncher:
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
     echoCommand(privileged)
-    sys.exit(ProcessBuilder(privileged*).inheritIO().start().waitFor())
+    finish(ProcessBuilder(privileged*).inheritIO().start().waitFor())
 
   /** The podman build the venue record names, so a run is evidence rather than an outcome. */
   def podmanVersion(): String =
@@ -1266,9 +1273,13 @@ object AgentSandboxLauncher:
    * it names no image the launcher can safely remove.
    */
   def resetAll(os: Os): Nothing =
-    // The workstation-wide deletions below run wherever the state root points; checked against
-    // the current directory before any of them, like every other verb that touches it.
-    requireStateRootOutside(os, resolveProjectDir())
+    // The workstation-wide deletions below run wherever the state and cache roots point; both
+    // roots are resolved and checked against the current directory before the first of them.
+    val project = resolveProjectDir()
+    requireStateRootOutside(os, project)
+    // The whole build-cache root, removed last: every project's host-build caches go with
+    // everything else.
+    val caches = buildCacheRoot(os, project)
     val imageState = stateRoot(os).resolve("image-build")
     val cleanupJournal = imageState.resolve("cleanup.ids")
     if Files.exists(cleanupJournal) then
@@ -1287,7 +1298,8 @@ object AgentSandboxLauncher:
     def remove(command: String*): Unit = if !stepOk(command*) then failures += 1
 
     val containers = listed(podman, "ps", "-a", "--format", "{{.Names}}")
-    (proxyContainers(containers) ++ sandboxRunContainers(containers))
+    (proxyContainers(containers) ++ sandboxRunContainers(containers) ++
+      SelfTestShare.probeContainers(containers))
       .foreach(name => remove(podman, "rm", "--force", name))
 
     persistentVolumes(listed(podman, "volume", "ls", "--format", "{{.Name}}"))
@@ -1313,8 +1325,161 @@ object AgentSandboxLauncher:
     if !runOk(koAgentFsScriptCommand(podman, os, koAgentFsUnmountAllScript)*) then
       System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
 
+    echoCommand(Vector("rm", "-rf", caches.toString))
+    deleteRecursively(caches)
+
     if failures > 0 then fail(s"error: $failures reset steps failed")
     sys.exit(0)
+
+  /**
+   * The build-cache root, refused when it would sit inside the project — the check every verb
+   * that deletes under it makes, as [[requireStateRootOutside]] does for the state root and with
+   * the same [[couldBeAProject]] exemption; from an exempt directory only the root's own
+   * resolution can refuse. The canonical answer either way, since deletion follows it.
+   */
+  private def buildCacheRoot(os: Os, project: Path): Path =
+    RunOnHostPolicy
+      .cacheRootOf(os, env)
+      .flatMap: root =>
+        if couldBeAProject(os, project) then
+          RunOnHostPolicy.cacheRootOutsideProject(root, project, os, canonicalizedFuturePath)
+        else
+          canonicalizedFuturePath(root).left.map(RunOnHostPolicy.Refusal.CacheRootUnusable(_))
+      .fold(
+        refusal =>
+          val reason = refusal match
+            case RunOnHostPolicy.Refusal.CacheRootUnusable(text) => text
+            case other                                           => other.toString
+          fail(s"error: cache root: $reason"),
+        identity,
+      )
+
+  /**
+   * This project's build caches — what its host builds resolved — removed as one directory;
+   * sessions, volume and state stay. `--reset` leaves these caches alone deliberately: resetting
+   * is about a stuck session, and silently discarding a warm cache would cost a full re-download
+   * nobody asked for.
+   */
+  def resetCache(os: Os): Nothing =
+    val project = resolveProjectDir()
+    val caches = RunOnHostPolicy.agentCacheDir(buildCacheRoot(os, project), projectIdOf(project, os))
+    echoCommand(Vector("rm", "-rf", caches.toString))
+    deleteRecursively(caches)
+    sys.exit(0)
+
+  /** One project's disk use across the launcher's state and build-cache roots. */
+  final case class ProjectUsage(id: String, stateBytes: Long, cacheBytes: Long)
+
+  /**
+   * A read-only report, because a size seen only while resetting is seen too late. The live
+   * section is answered first and skipped when the podman machine is stopped — a report starts
+   * nothing — and the directory walk is last: a real Coursier cache is millions of inodes, which
+   * is why this is a verb and not a line printed at every launch.
+   */
+  def stats(os: Os): Nothing =
+    System.out.print(liveSessionsSection(os))
+    val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), policyStateRoot(os))
+    val cacheDir = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
+    val ids = (stateDirs ++ cacheDir.toVector).flatMap(childNames).distinct.sorted
+    val usages = ids.toVector.map: id =>
+      ProjectUsage(
+        id,
+        stateDirs.map(dir => directoryBytes(dir.resolve(id))).sum,
+        cacheDir.map(dir => directoryBytes(dir.resolve(id))).getOrElse(0L),
+      )
+    System.out.print(statsReport(usages, freeSpace(cacheDir.getOrElse(stateRoot(os)))))
+    sys.exit(0)
+
+  /**
+   * Pure for the tests. The flag threshold is 1% of the cache filesystem's free space, so the
+   * report says which project to `--reset-cache` rather than leaving a column of numbers to
+   * compare by eye.
+   */
+  def statsReport(usages: Vector[ProjectUsage], cacheFreeBytes: Long): String =
+    val footer = s"free space where the caches live: ${humanBytes(cacheFreeBytes)}\n"
+    if usages.isEmpty then "projects: none\n" + footer
+    else
+      val header = f"""  ${"total"}%10s  ${"state"}%10s  ${"cache"}%10s  project"""
+      val rows = usages.sortBy(usage => -(usage.stateBytes + usage.cacheBytes)).map: usage =>
+        val flag =
+          if usage.cacheBytes * 100 > cacheFreeBytes then
+            "  <- cache over 1% of free space; a --reset-cache candidate"
+          else ""
+        f"  ${humanBytes(usage.stateBytes + usage.cacheBytes)}%10s  ${humanBytes(usage.stateBytes)}%10s" +
+          f"  ${humanBytes(usage.cacheBytes)}%10s  ${usage.id}$flag"
+      ("projects by size, largest first:\n" + (header +: rows).mkString("", "\n", "\n") + footer)
+
+  /**
+   * Sizes from bytes to TiB in one column: a Coursier cache is gigabytes while a policy cache is
+   * kilobytes, and one fixed unit would flatten one of them.
+   */
+  def humanBytes(bytes: Long): String =
+    val units = Vector("B", "KiB", "MiB", "GiB", "TiB")
+    var value = bytes.toDouble
+    var index = 0
+    while value >= 1024 && index < units.size - 1 do
+      value /= 1024
+      index += 1
+    if index == 0 then s"$bytes B" else f"$value%.1f ${units(index)}"
+
+  /** Sessions running now, from `podman stats`; a missing podman or a stopped machine is a note,
+    * never a start. */
+  private def liveSessionsSection(os: Os): String =
+    findOnPath("podman", env("PATH").getOrElse(""), os).map(_.toString) match
+      case None => "live sessions: not queried; podman is not on PATH\n"
+      case Some(found) =>
+        val machineDown = os != Os.Linux && {
+          val machines = run(found, "machine", "list", "--format", "{{.Running}}")
+          !machines.ok || !machines.text.linesIterator.map(_.trim).contains("true")
+        }
+        if machineDown then "live sessions: not queried; the podman machine is not running\n"
+        else
+          val result =
+            run(found, "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}} {{.CPUPerc}}")
+          if !result.ok then
+            val reason = result.err.linesIterator.nextOption().getOrElse("").trim
+            s"live sessions: podman stats failed: $reason\n"
+          else
+            liveSessionRows(result.text.linesIterator.toVector) match
+              case Vector() => "live sessions: none\n"
+              case rows     => rows.mkString("live sessions:\n  ", "\n  ", "\n")
+
+  /** Only this launcher's containers: another workload on the same machine is not the report's. */
+  def liveSessionRows(lines: Vector[String]): Vector[String] =
+    lines.filter: line =>
+      val name = line.takeWhile(_ != ' ')
+      proxyContainers(Seq(name)).nonEmpty || sandboxRunContainers(Seq(name)).nonEmpty
+
+  /** Continues past races and permission holes: sizing must not fail on a tree a session is
+    * changing. */
+  def directoryBytes(root: Path): Long =
+    if !Files.exists(root) then 0L
+    else
+      var total = 0L
+      Files.walkFileTree(
+        root,
+        new SimpleFileVisitor[Path]:
+          override def visitFile(file: Path, attrs: BasicFileAttributes) =
+            if attrs.isRegularFile then total += attrs.size()
+            FileVisitResult.CONTINUE
+          override def visitFileFailed(file: Path, exc: IOException) = FileVisitResult.CONTINUE,
+      )
+      total
+
+  private def childNames(dir: Path): Vector[String] =
+    if !Files.isDirectory(dir) then Vector.empty
+    else
+      val stream = Files.list(dir)
+      try stream.iterator().asScala.map(_.getFileName.toString).toVector
+      finally stream.close()
+
+  /** Of the filesystem holding `path`, read at its nearest existing ancestor: the cache root does
+    * not exist before the first host build. */
+  private def freeSpace(path: Path): Long =
+    var probe = path.toAbsolutePath
+    while !Files.exists(probe) && probe.getParent != null do probe = probe.getParent
+    try Files.getFileStore(probe).getUsableSpace
+    catch case _: IOException => 0L
 
   /**
    * Per-user state, outside any project directory: nothing in it is the
@@ -1372,18 +1537,25 @@ object AgentSandboxLauncher:
     )
 
   /**
+   * Whether a launch could accept `dir` as this project — the exemption the containment checks
+   * ([[requireStateRootOutside]], [[buildCacheRoot]]) share: a directory a launch itself refuses,
+   * a home or a filesystem root, cannot be a project, and the default state and cache layouts
+   * (`~/.local/state`, `~/.cache`) sit inside a home as the normal case, not a breach. An
+   * unanswerable home discovery keeps the checks, the fail-closed side.
+   */
+  private def couldBeAProject(os: Os, dir: Path): Boolean =
+    protectedHomeDirectories(os, env) match
+      case Right(protection) => forbiddenProjectDirReason(dir, protection).isEmpty
+      case Left(_)           => true
+
+  /**
    * The containment check for the verbs run *from* a directory: refuse when the state root lies
-   * inside what a launch would accept as this project. Directories a launch itself refuses — a
-   * home, a filesystem root — are exempt, because the default state layout (`~/.local/state`)
-   * sits inside a home and is the normal case, not a breach; an unanswerable home discovery keeps
-   * the check, the fail-closed side. Every caller that deletes or reads under the state root
-   * calls this before touching it.
+   * inside what a launch would accept as this project. Every caller that deletes or reads under
+   * the state root calls this before touching it.
    */
   def requireStateRootOutside(os: Os, projectDir: Path): Unit =
-    val couldBeAProject = protectedHomeDirectories(os, env) match
-      case Right(protection) => forbiddenProjectDirReason(projectDir, protection).isEmpty
-      case Left(_)           => true
-    if couldBeAProject then forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
+    if couldBeAProject(os, projectDir) then
+      forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
 
   /**
    * Every project's inspection CA: the agent can neither read the signing key nor replace it for the next session.
@@ -1418,7 +1590,7 @@ object AgentSandboxLauncher:
     Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
   val DefaultEgressProfile = "deny-unless-allowed"
 
-  /** The tools `--run-on-host` can name (PLAN-SBT-ON-HOST.md §9.1). Available on macOS only, which
+  /** The tools `--run-on-host` can name. Available on macOS only, which
     * launch() enforces: the parser stays pure over the arguments. */
   val RunOnHostTools = Vector("sbt", "mill")
 
@@ -1486,8 +1658,8 @@ object AgentSandboxLauncher:
 
   val ManagementVerbs: Set[String] =
     Set(
-      "--help", "--build", "--update", "--reset", "--reset-all", "--proxy-log",
-      "--egress-effective", "--self-test",
+      "--help", "--build", "--update", "--reset", "--reset-cache", "--reset-all", "--stats",
+      "--proxy-log", "--egress-effective", "--self-test",
     )
 
   /**
@@ -1601,7 +1773,7 @@ object AgentSandboxLauncher:
     val indented = resolved.linesIterator.map("    " + _).mkString("\n")
     val workspace = (writeMode, workspaceGuard) match
       // The plain reject instruction would be false under --run-on-host: a host build writes the
-      // project (PLAN-SBT-ON-HOST.md §9.1's composition).
+      // project (SECURITY.md "Run on host", the --write=reject composition).
       case ("reject", _) if runOnHost.nonEmpty =>
         """`/workspace` is read-only to this session's own writes; only builds through
           |`sandbox-run-on-host` write the project, on the host. For anything a build does not
@@ -1813,11 +1985,23 @@ object AgentSandboxLauncher:
         requirePodman(currentOs)
         resetProject(currentOs)
 
+      case Some(("--reset-cache", rest)) =>
+        noAuthorityOptions("--reset-cache")
+        if rest.nonEmpty then fail("error: --reset-cache takes no further arguments")
+        resetCache(currentOs)
+
       case Some(("--reset-all", rest)) =>
         noAuthorityOptions("--reset-all")
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
         requirePodman(currentOs)
         resetAll(currentOs)
+
+      // No requirePodman(): the report is read-only and reads host directories either way; the
+      // live section degrades to a note when podman or its machine is not there to answer.
+      case Some(("--stats", rest)) =>
+        noAuthorityOptions("--stats")
+        if rest.nonEmpty then fail("error: --stats takes no further arguments")
+        stats(currentOs)
 
       // No requirePodman() here: with no arguments this reads host files only, and the retained
       // logs are documented as readable after every container is gone. proxyLog asks for podman on
@@ -1910,7 +2094,7 @@ object AgentSandboxLauncher:
     // launcher's own settings and wrong here, where set-but-empty is a value to forward.
     val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
 
-    // macOS only (PLAN-SBT-ON-HOST.md §1.1, §1.2): elsewhere there is no Seatbelt backend, and a
+    // macOS only (RUN-ON-HOST.md "Why only macOS"): elsewhere there is no Seatbelt backend, and a
     // container build already runs at host speed on host memory.
     val runOnHost = parsed.runOnHost.getOrElse(Vector.empty)
     if runOnHost.nonEmpty && os != Os.Mac then

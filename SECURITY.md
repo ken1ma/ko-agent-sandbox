@@ -123,7 +123,8 @@ What the launcher does write, it owns: its images, containers, networks and name
 per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
 objects, ownership is a name contract: `--reset-all` force-removes every container, network and
 volume matching the generated shapes — `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in the
-twelve-hex path hash and, for per-run resources, the eight-hex run suffix. Those shapes are
+twelve-hex path hash and, for per-run resources, the eight-hex run suffix, and the self-test
+probe container `ko-agent-self-test-share-` followed by that suffix alone. Those shapes are
 reserved: an object created by hand inside one is removed like the launcher's own, and a
 `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
 
@@ -724,7 +725,7 @@ else refuses the launch, like the workspace guard) opens a channel with these pr
 Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`) is a container→host
 **execution** path — the one place this design runs code the agent chose outside the container —
 and what bounds it is a Seatbelt profile, not the container the build is no longer in.
-`doc/PLAN-SBT-ON-HOST.md` is the full contract; the properties, priced:
+`doc/RUN-ON-HOST.md` is the reference; the properties, priced:
 
 - **macOS only, structurally, not by neglect.** On Linux there is no VM between the sandbox and
   the hardware: a container build already runs at host speed on host memory, so the venue would

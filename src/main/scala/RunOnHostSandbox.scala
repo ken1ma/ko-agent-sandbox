@@ -1,4 +1,4 @@
-// The §4 wrapper: from a project and a tool to a confined build's exit code, through the thirteen
+// The wrapper: from a project and a tool to a confined build's exit code, through the thirteen
 // steps — validate, scavenge, publish, proxy, profile, run, end what was started, remove. macOS
 // only, like everything it drives; the assembly and refusal logic lives in RunOnHostPolicy and
 // is unit-tested there, so this file is choreography plus the host observations no Linux test can
@@ -32,7 +32,7 @@ object RunOnHostSandbox:
   private def readLines(path: Path): Option[Seq[String]] =
     Option.when(Files.exists(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
 
-  /** Steps 1–5: everything §2.1 derives authority from, decided before anything runs. */
+  /** Steps 1–5: everything the profile derives authority from, decided before anything runs. */
   def assemble(project: Path, tool: Tool, env: String => Option[String]): Either[String, Assembled] =
     val os = Os.Mac
     def context[A](step: String)(value: Either[Any, A]): Either[String, A] =
@@ -136,7 +136,8 @@ object RunOnHostSandbox:
             s"${stray.mkString(", ")}: not configuration this launcher reads — " +
               "a typo, or a newer launcher's file; check the spelling or update the launcher"
 
-  /** The project file's hosts, validated to §11's grammar; an absent file contributes nothing. */
+  /** The project file's hosts, validated to the allowlist grammar (RUN-ON-HOST.md
+    * "Configuration"); an absent file contributes nothing. */
   def readAllowlist(project: Path, tool: Tool): Either[String, Vector[String]] =
     hostCommandStray(project).toLeft(()).flatMap: _ =>
       val file = buildAllowlistPath(project, tool)
@@ -151,7 +152,7 @@ object RunOnHostSandbox:
 
   /**
    * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
-   * path that must also be executable. §2.1 admits a runtime path only where testing proves the
+   * path that must also be executable. A runtime path is admitted only where testing proves the
    * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
    * probe/build-profile-iterate.sh is how it grows.
    */
@@ -191,7 +192,7 @@ object RunOnHostSandbox:
       ) ++ verbAndArguments
 
   /** `--run-build-on-host <tool> <project> <cwd> -- <args...>`: one channel request as a process
-    * of its own, so the broker's cancel is a SIGTERM whose answer is the §4 shutdown hook. */
+    * of its own, so the broker's cancel is a SIGTERM whose answer is this wrapper's shutdown hook. */
   def runBuildMain(args: Seq[String]): Unit =
     args.toList match
       case toolName :: project :: workingDirectory :: "--" :: buildArgs =>
@@ -233,7 +234,8 @@ object RunOnHostSandbox:
       s"the build proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
 
   /**
-   * §3.2's launch refusal: one server per project. A live server reached through the project's
+   * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
+   * server reached through the project's
    * portfile belongs to someone — the user's shell, another session — and a build that attached
    * to it would run outside this profile. Live means connectable; a stale portfile is left for
    * sbt, which replaces it. The socket here is wherever the portfile points, uncontained on
@@ -269,7 +271,7 @@ object RunOnHostSandbox:
     runtime: SeatbeltProfile.RuntimeAuthority,
     uid: Int,
     log: String => Unit,
-    // The channel's validated WORKING_DIRECTORY (§6.2): only the child's cwd, never a grant.
+    // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
     workingDirectory: Option[Path] = None,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
@@ -430,12 +432,12 @@ object RunOnHostSandbox:
     environment.put("COURSIER_CACHE", policy.coursierV1.toString)
 
     // The shim publishes the build's exit status and then stays as the group's provable leader
-    // (§4), so the answer is the exit file, never the shim's own end.
+    // (RunOnHostSession), so the answer is the exit file, never the shim's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
 
   /**
-   * §9.2's venue cost, automated at the confined venue's door. sbt 2 leaves `target/` outputs as
+   * The venue-switch cost, automated at the confined venue's door. sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
@@ -477,7 +479,7 @@ object RunOnHostSandbox:
       Files.readString(proxyLog, UTF_8).linesIterator
         .collect { case Deny(host) => host }.toVector.distinct
 
-  /** §8.4's report, once per refused host, after the build — never an automatic addition. */
+  /** The denied-host report, once per refused host, after the build — never an automatic addition. */
   private def reportDenied(proxyLog: Path, tool: Tool, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog)
     if hosts.nonEmpty then

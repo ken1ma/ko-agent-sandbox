@@ -1,21 +1,22 @@
 #!/bin/sh
-# PLAN-SBT-ON-HOST.md §7.4, run by hand on macOS: the exit criteria of Phases 2 through 4. One
-# row per line of the plan's matrix, each run under the generated profile, each reporting PASS,
-# FAIL or SKIP with what it observed. Everything else in probe/ finds out what a profile needs;
-# this one finds out whether the profile that resulted enforces what §2.1 claims — and, in the
-# channel rows, whether §6's channel carries a build and tears down with its requester.
+# The security gate, run by hand on macOS before each release, and when the profile generator,
+# the wrapper or the channel changes. One row per contract claim, each run under the generated
+# profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in probe/
+# finds out what a profile needs; this one finds out whether the profile that resulted enforces
+# what the contract claims — and, in the channel rows, whether the channel carries a build and
+# tears down with its requester.
 #
 #   sh probe/build-profile-gate.sh [sbt|mill|all] [quick]
 #
 # The tool selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
 # negative matrix come from `sbt Test/runMain EmitBuildProfile`; the build rows run through
-# RunOnHost — the §4 wrapper — as plain java on the classpath emit printed, never through
-# `sbt Test/runMain`, whose own server would hold this project's portfile against the wrapper
-# (§3.2). Each wrapper row scavenges, publishes a session, starts the build's own proxy, builds
-# under the profile and ends what it started, so the rows measure the lifecycle as well as the
-# profile; there is no warm-up block, and a cold agent cache resolves through the proxy inside
-# the profile, which is the measurement.
+# RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
+# through `sbt Test/runMain`, whose own server would hold this project's portfile against the
+# wrapper (one server per project). Each wrapper row scavenges, publishes a session, starts the
+# build's own proxy, builds under the profile and ends what it started, so the rows measure the
+# lifecycle as well as the profile; there is no warm-up block, and a cold agent cache resolves
+# through the proxy inside the profile, which is the measurement.
 #
 # The sbt rows build this repository. The mill rows build probe/mill-fixture, a one-module mill
 # project that exists for them: this repository is sbt-built, and a mill build of it would be a
@@ -68,6 +69,26 @@ report() { # status label detail
 mill_project=$project/probe/mill-fixture
 project_of() { if [ "$1" = mill ]; then printf '%s\n' "$mill_project"; else printf '%s\n' "$project"; fi; }
 
+# The venue, before any row: a run with no venue recorded is not evidence for the next release.
+echo "venue"
+venue() { printf '  %s\n' "$1"; }
+venue "macOS $(sw_vers -productVersion), $(uname -m)"
+if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]
+then venue "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
+else venue "JAVA_HOME does not name a JDK"; fi
+venue "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
+venue "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+if command -v podman >/dev/null 2>&1
+then provider=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || echo unknown)
+    venue "$(podman --version), machine provider: $provider"
+else venue "podman: absent"; fi
+# The guard's fold rule depends on which answer the project's volume gives.
+case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
+: > "$case_probe/a"
+if [ -e "$case_probe/A" ]; then venue "project filesystem: case-folding"
+else venue "project filesystem: case-sensitive"; fi
+rm -rf "$case_probe"
+
 emit() { # tool
     rm -f "$work/gate-$1.env"
     # Each path quoted for sbt's own command parser: a checkout with a space in its path would
@@ -78,7 +99,7 @@ emit() { # tool
     mv "$work/gate-$1.sb.env" "$work/gate-$1.env"
 }
 
-# --- the environment contract (§4) ----------------------------------------------------------------
+# --- the environment contract (RunOnHostSandbox) ------------------------------------------------
 #
 # The JVM settings travel in JAVA_TOOL_OPTIONS, which the server sbt's client forks inherits; the
 # same -D flags on the command line reach the client alone. XDG_RUNTIME_DIR and
@@ -86,7 +107,7 @@ emit() { # tool
 # SessionTmpMaxLength says why its length matters).
 #
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
-# the sbt script, which takes `java` from PATH — /usr/bin/java, the stub §3.1 rejects and the
+# the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # exec, because with_timeout backgrounds this function and kills $!: without it that pid is a
 # subshell and the timeout kill would orphan the build instead of ending it. The exports are
@@ -118,7 +139,7 @@ run_sbt() { # client command...
     sandboxed sbt sbt $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
-# A build through the §4 wrapper: RunOnHost scavenges, publishes a session, starts the build
+# A build through the wrapper: RunOnHost scavenges, publishes a session, starts the build
 # proxy, runs the tool under the generated profile, ends its server and proxy, and preserves the
 # exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
 # `Build requested network access ...` — which several rows read. $test_cp is captured from emit.
@@ -178,7 +199,7 @@ stray_proxies() {
         ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$work" && printf '%s\n' "$pid"
     done
 }
-# §3.2: one sbt server per project at a time. A thin client attaches to whatever server the
+# One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
 # deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
 existing=$(project_servers | tr '\n' ' ')
@@ -222,7 +243,7 @@ if want mill; then
     emit mill || exit 1
     profiles="$profiles mill"
 fi
-# `emit`'s own sbt server goes before any wrapper or build_env client runs, for §3.2's reason
+# `emit`'s own sbt server goes before any wrapper or build_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
 profiles=${profiles# }
@@ -263,11 +284,12 @@ mill_launcher=$(sed -n 's/^launcher: //p' "$work/emit-mill.log" 2>/dev/null)
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""
+scratch_sbt=""; scratch_mill=""; sibling_repo=""
 marker=gate-marker.${work##*.}
 cleanup() {
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
+    [ -n "$sibling_repo" ] && rm -rf "$sibling_repo"
     for p in $profiles; do use_profile "$p"; rm -f "$agent_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
     rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" 2>/dev/null
     # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
@@ -281,6 +303,10 @@ cleanup() {
 }
 trap cleanup EXIT
 scratch_of() { if [ "$1" = mill ]; then printf '%s\n' "$scratch_mill"; else printf '%s\n' "$scratch_sbt"; fi; }
+# An unrelated repository outside the project, target of the symlink-escape rows.
+sibling_repo=$(mktemp -d "${TMPDIR:-/tmp}/gate-sibling.XXXXXX") || exit 1
+mkdir "$sibling_repo/.git"
+printf 'fixture\n' > "$sibling_repo/.git/config"
 for p in $profiles; do
     scratch=$(mktemp -d "$(project_of "$p")/gate-scratch.XXXXXX") || exit 1
     if [ "$p" = mill ]; then scratch_mill=$scratch; else scratch_sbt=$scratch; fi
@@ -288,6 +314,11 @@ for p in $profiles; do
     printf 'fixture\n' > "$scratch/sub/nested/.git/config"
     printf 'fixture\n' > "$scratch/.ko-agent-sandbox/egress/allowed"
     ln -s sub/nested/.git "$scratch/link"
+    # The escapes, made on the host: a symlink must add no authority over its target.
+    ln -s "$HOME" "$scratch/esc-home"
+    ln -s / "$scratch/esc-root"
+    ln -s "$user_v1" "$scratch/esc-user-v1"
+    ln -s "$sibling_repo" "$scratch/esc-repo"
 done
 
 # --- positive rows ------------------------------------------------------------------------------
@@ -312,7 +343,7 @@ if want sbt; then
     done
 
     # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
-    # the agent cache through it. Both clients run so §3.2's pin stays measured. The server's
+    # the agent cache through it. Both clients run so the --jvm-client pin stays measured. The server's
     # java.home is checked against the JDK the profile granted: the server is forked by the
     # client, so nothing about the client's own JVM proves which one the build runs in.
     for client in "--jvm-client" ""; do
@@ -326,12 +357,28 @@ if want sbt; then
         then report PASS "server runs the granted JDK"
         else report FAIL "server runs the granted JDK" "$(grep -m1 'ans:' "$work/jvm.log" | cut -c1-70)"; fi
     else report FAIL "server runs the granted JDK" "$(tail -1 "$work/jvm.log" | cut -c1-70)"; fi
+    # Processes the build itself starts must retain containment, guard rows included. The server
+    # is already the client's forked JVM, so each eval measures a child of a child; run once,
+    # under the sbt profile — inheritance across fork and exec is the kernel's behavior, not the
+    # profile's, and the per-profile rows below cover both profiles' own grants.
+    fork_row() { # label eval-expression
+        if run_sbt --jvm-client "$2" >"$work/fork.log" 2>&1 && grep -q 'forked-exit=' "$work/fork.log"; then
+            if grep -q 'forked-exit=0' "$work/fork.log"
+            then report FAIL "$1" "the forked process succeeded"
+            else report PASS "$1" "$(grep -m1 -o 'forked-exit=[0-9]*' "$work/fork.log")"; fi
+        else report FAIL "$1" "$(tail -1 "$work/fork.log" | cut -c1-60)"; fi
+    }
+    fork_row "a process forked by the build cannot read ~" \
+        'eval { val code = scala.sys.process.Process(Seq("/bin/ls", sys.env("HOME"))).!; "forked-exit=" + code }'
+    fork_row "a process forked by the build cannot write PROJECT/.git" \
+        'eval { val code = scala.sys.process.Process(
+            Seq("/usr/bin/touch", "'"$project"'/.git/'"$marker"'")).!; "forked-exit=" + code }'
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 
-    # §3.2 pins --jvm-client because sbtn returns with nothing built; §17 keeps asking whether
+    # --jvm-client is pinned because sbtn returns with nothing built; this row keeps asking whether
     # that changes. A build's success is the measure — sbtn's --version passes and proves nothing.
     if run_sbt "" compile >"$work/sbtn.log" 2>&1 && grep -q '^\[success\]' "$work/sbtn.log"
-    then report INFO "sbtn compile" "passes: §3.2's pin is now a choice"
+    then report INFO "sbtn compile" "passes: the --jvm-client pin is now a choice"
     else report INFO "sbtn compile" "no build: $(grep -v '^$' "$work/sbtn.log" | tail -1 | cut -c1-50)"; fi
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 fi
@@ -378,17 +425,28 @@ for p in $profiles; do
     present_or_skip "read the launcher state root" "$state_root" \
         && expect_denied "$p" "read the launcher state root" "ls '$state_root'"
     expect_denied "$p" "read another project's agent cache" "ls '$cache_root/cache'"
+    expect_denied "$p" "read the user's Coursier v1" "ls '$user_v1/'"
     expect_denied "$p" "read the user's other Coursier arc entries" "ls '$user_arc'"
-    # §7.2's ancestor chain is file-read-metadata: a listing would reveal sibling names.
+    # The profile's ancestor chain is file-read-metadata: a listing would reveal sibling names.
     expect_denied "$p" "list an ancestor of a granted path" "ls '$HOME/Library/Caches'"
     expect_denied "$p" "read PROJECT/.git" "cat '$project/.git/HEAD'"   # the repository's, under both
     expect_denied "$p" "read a nested .git" "cat '$scratch/sub/nested/.git/config'"
+    expect_denied "$p" "read via PROJECT/link -> PROJECT/.git" "cat '$scratch/link/config'"
+    # The trailing slash on each ls'd symlink forces resolution into the target: ls on a link
+    # whose target cannot even be stat'ed prints the link's own name and succeeds, exactly like a
+    # broken link, and a denial so complete it covers the stat would otherwise read as a grant.
+    expect_denied "$p" "read ~ via a project symlink" "ls '$scratch/esc-home/'"
+    expect_denied "$p" "read /Users via a project symlink to /" "ls '$scratch/esc-root/Users'"
+    expect_denied "$p" "read the user's Coursier v1 via a project symlink" "ls '$scratch/esc-user-v1/'"
+    expect_denied "$p" "read another repository via a project symlink" "cat '$scratch/esc-repo/.git/config'"
+    expect_denied "$p" "write another repository via a project symlink" ": >> '$scratch/esc-repo/.git/config'"
 
     echo
     echo "writes, under the $p profile"
     jvm_dir=${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}/jvm
     if [ -e "$jvm_dir" ]; then expect_denied "$p" "write Coursier/jvm" ": > '$jvm_dir/$marker'"
-    else expect_denied "$p" "write the Coursier JDK home (no jvm/ exists, §3.1)" ": > '$JAVA_HOME/$marker'"; fi
+    else expect_denied "$p" "write the Coursier JDK home (no jvm/; the home is in arc/)" \
+        ": > '$JAVA_HOME/$marker'"; fi
     expect_denied "$p" "write ~/.sbt/boot" ": > '$HOME/.sbt/boot/$marker'"
     expect_denied "$p" "write the Coursier-installed sbt launcher" ": >> '$sbt_launcher'"
     expect_denied "$p" "write PROJECT/.git/config" ": >> '$project/.git/config'"
@@ -426,6 +484,11 @@ for p in $profiles; do
     if /usr/bin/sandbox-exec -f "$work/gate-$p.sb" /bin/bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>"$work/row.err"
     then report FAIL "connect directly to arbitrary Internet host" "connected"
     else report PASS "connect directly to arbitrary Internet host" "denied: $(head -1 "$work/row.err" | cut -c1-50)"; fi
+    # `sb` exports no proxy variables, so curl here is the build that ignores them; either the
+    # resolution or the connect must die on the profile, never on a slow timeout.
+    expect_denied "$p" "HTTPS around the proxy (curl, direct)" \
+        "/usr/bin/curl --max-time 5 -sS https://repo1.maven.org/maven2/"
+    expect_denied "$p" "DNS resolution (direct socket)" "/usr/bin/nslookup -timeout=3 example.com"
 done
 # --- the build proxy ----------------------------------------------------------------------------
 
@@ -446,7 +509,7 @@ else
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/refetch.log" | cut -c1-70)"; fi
 
     # deny-fixture's resolution reaches a refused host; the build must fail and the wrapper must
-    # say which host, §8.4's diagnostic.
+    # say which host — the wrapper's denied-host report.
     if wrapper sbt "$deny_project" update >"$work/deny.log" 2>&1
     then report FAIL "fetch non-allowlisted host via proxy" "the build succeeded"
     elif grep -q 'Build requested network access' "$work/deny.log" \
@@ -519,7 +582,7 @@ else
     else report FAIL "two concurrent sessions" "sbt exit $conc_a, mill exit $conc_b"; fi
 
     # SIGTERM mid-build: the wrapper's shutdown hook — a JVM's `finally` never runs on a signal —
-    # ends the groups and removes the session before the JVM exits (§4).
+    # ends the groups and removes the session before the JVM exits (RunOnHostSession).
     victim_wrapper sigterm.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
@@ -561,7 +624,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
     # finish its command cleanly — the shim publishes its exit beside the record, and a
     # cleanly-left server survives (session-recovery.sh M3) — then SIGKILL the shim alone.
     # Proxy recorded and ended, client group leaderless and refused, server alive behind the
-    # portfile for attribution (§4). Killing any of the client's processes instead stages the
+    # portfile for attribution (RunOnHostSession). Killing any of the client's processes instead stages the
     # wrong state: a server whose client dies mid-exec dies with it — measured, as was the
     # completed deny-fixture variant whose server was gone before recovery.
     victim_wrapper killed.log & victim=$!
@@ -601,12 +664,12 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
     fi
 fi
 
-# --- the channel (§6) ---------------------------------------------------------------------------
+# --- the channel ---------------------------------------------------------------------------
 #
 # The real shim against the real broker, the `podman exec` transport a local script and the
-# sandbox this host: Phase 4's exit criterion. The wrapper behind it is the same one the rows
-# above measured; what these add is the channel — framing, streamed output and the build's own
-# exit code, the working-directory boundary, and teardown by descriptor lifetime.
+# sandbox this host. The wrapper behind it is the same one the rows above measured; what these
+# add is the channel — framing, streamed output and the build's own exit code, the
+# working-directory boundary, and teardown by descriptor lifetime.
 
 echo
 echo "the channel"

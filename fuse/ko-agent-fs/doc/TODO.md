@@ -54,12 +54,14 @@ one end to end. What is left:
 ### End-to-end coherency through the real host share
 
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
-writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
-travel, `read()` and an established `mmap`, across the whole stack. macOS 26.4.1 passes, and
-Windows measures fresh-when-unheld with host writes to session-held files refused by a share lock;
-`verification-log.md` records both, and why the premise is behavioural rather than declarative.
+writes promptly (`architecture.md`). The launcher's `--self-test` share rows measure both paths a
+write can travel, `read()` and an established `mmap`, across the whole stack, launcher-driven and
+venue-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
+session-held files refused by a share lock; `verification-log.md` records both, and why the
+premise is behavioural rather than declarative.
 
-- [ ] Re-run it on Linux, and after a podman or macOS upgrade.
+- [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade — the measurement, not the
+  mount table, is what notices a changed hypervisor default.
 
 ### A path that survives deletion and refuses every child (unexplained)
 
@@ -78,14 +80,14 @@ stayed poisoned, for every child name, while a sibling created moments later beh
 persisted across the rest of the session.
 
 - [ ] Reproduce deliberately: delete a directory through the mount while a process holds it open,
-  then recreate it. If it reproduces, this belongs in `probe/coherency-probe.py`, whose axis it
-  already is — a host-shared tree mutated under a live reader.
+  then recreate it. If it reproduces, this belongs in the launcher's `--self-test` share rows,
+  whose axis it already is — a host-shared tree mutated under a live reader.
 A fresh container and mount cleared it: the same path accepted children again with no host-side
 repair. So it is state in this layer rather than anything reaching the backing share, and a session
 that hits it can be told to relaunch — which is worth an entry in `troubleshooting.md` once the
 trigger is understood well enough to name.
 
-`PLAN-SBT-ON-HOST.md` raises the stakes: `--run-on-host` makes a host process writing the shared
+The launcher's `--run-on-host` raises the stakes: it makes a host process writing the shared
 `target/` the ordinary case rather than an occasional one.
 
 ### What the staged lower can do, per share

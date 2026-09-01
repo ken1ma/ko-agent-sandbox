@@ -1,7 +1,7 @@
 // What a host build is allowed to touch, decided before any of it runs: where this project's
 // disposable build caches live, which JDK and launcher are the Coursier-managed ones, and which
-// directory a request from inside the sandbox may name as a working directory. PLAN-SBT-ON-HOST.md
-// is the contract; this file is its prerequisite half, and holds no backend.
+// directory a request from inside the sandbox may name as a working directory. RUN-ON-HOST.md is
+// the reference; this file is the contract's prerequisite half, and holds no backend.
 //
 // Everything here is pure over (Os, environment, filesystem shape), so the macOS answers are
 // testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
@@ -22,7 +22,7 @@ object RunOnHostPolicy:
     case Sbt, Mill
 
   /**
-   * Why a build cannot run, in the categories PLAN-SBT-ON-HOST.md §10 names. A value, not a
+   * Why a build cannot run, one case per category (RUN-ON-HOST.md "Failure policy"). A value, not a
    * message: the wrapper prints one wording, the channel another, and the tests match on neither.
    */
   enum Refusal:
@@ -94,7 +94,7 @@ object RunOnHostPolicy:
    * session temp: sbt 2 writes a content-addressed store under its global base
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
    * host, where a build against a session-temporary base would have its own outputs dangle the
-   * moment the session directory is removed. Beside the Coursier cache, it shares §5.1's poison
+   * moment the session directory is removed. Beside the Coursier cache, it shares the Coursier cache's poison
    * scope (later builds of the same project, themselves sandboxed) and `--reset-cache`'s removal.
    */
   def agentSbtGlobal(cacheRoot: Path, projectId: String): Path =
@@ -129,7 +129,8 @@ object RunOnHostPolicy:
           Left(Refusal.CacheRootUnusable(s"$root overlaps the project directory $project"))
         else Right(root)
 
-  /** The user's Coursier cache root — read for the JDK, never granted whole (§3.1, §5.1). */
+  /** The user's Coursier cache root — read for the JDK, never granted whole
+    * (RUN-ON-HOST.md "The JVM", "The build cache"). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
       env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
@@ -320,7 +321,7 @@ object RunOnHostPolicy:
     else version + native
 
   /**
-   * `mill-jvm-version` must be `system` (§3.3): mill otherwise provisions a JVM through Coursier's
+   * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
    * index, a JDK fetched by the build, where `system` takes `java` from the PATH the wrapper sets.
    *
    * Read as the launcher reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
@@ -437,7 +438,7 @@ object RunOnHostPolicy:
   // The build's egress allowlist
   // ---------------------------------------------------------------------------
 
-  /** §2.2's initial repository allowlist: Coursier's and sbt's default Maven Central host. */
+  /** The baseline repository allowlist: Coursier's and sbt's default Maven Central host. */
   val BuildBaselineHosts: Vector[String] = Vector("repo1.maven.org")
 
   def buildAllowlistPath(project: Path, tool: Tool): Path =

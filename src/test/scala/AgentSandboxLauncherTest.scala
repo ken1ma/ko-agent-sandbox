@@ -1130,7 +1130,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
-    // reject's instruction flips when a host build can write the project (the §9.1 composition):
+    // reject's instruction flips when a host build can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
     val rejectWithBuilds = authoritySection("reject", "fuse", resolution, Vector("sbt"))
     assert(rejectWithBuilds.contains("session's own writes"), rejectWithBuilds)
@@ -1458,6 +1458,43 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The reset filters must sweep each through its own filter and never through the other's.
     assertEquals(proxyContainers(Seq(sandbox, proxy)), Seq(proxy))
     assertEquals(sandboxRunContainers(Seq(sandbox, proxy)), Seq(sandbox))
+
+  test("stats orders projects largest first and flags only a cache over 1% of free space"):
+    val report = statsReport(
+      Vector(
+        ProjectUsage("small-000000000000", 1024, 10 * 1024),
+        ProjectUsage("big-000000000000", 0, 2L << 30),
+      ),
+      100L << 30,
+    )
+    assert(report.indexOf("big-") < report.indexOf("small-"), report)
+    val bigRow = report.linesIterator.find(_.contains("big-")).get
+    val smallRow = report.linesIterator.find(_.contains("small-")).get
+    assert(bigRow.contains("--reset-cache"), bigRow)
+    assert(!smallRow.contains("--reset-cache"), smallRow)
+
+  test("a cache at exactly 1% is not flagged, and an empty machine still reports"):
+    assert(!statsReport(Vector(ProjectUsage("p-0", 0, 1L << 30)), 100L << 30).contains("--reset-cache"))
+    assert(statsReport(Vector.empty, 5L << 30).contains("none"))
+
+  test("sizes carry the unit that keeps them legible"):
+    assertEquals(humanBytes(0), "0 B")
+    assertEquals(humanBytes(1023), "1023 B")
+    assertEquals(humanBytes(1024), "1.0 KiB")
+    assertEquals(humanBytes(1536), "1.5 KiB")
+    assertEquals(humanBytes(2L << 30), "2.0 GiB")
+
+  test("the live-session rows are this launcher's containers only"):
+    val id = "app-0123456789ab"
+    val rows = liveSessionRows(
+      Vector(
+        s"ko-agent-sandbox-run-$id-1a2b3c4d 1.2GB / 8GB 3.4%",
+        s"ko-agent-egress-proxy-$id-1a2b3c4d 60MB / 8GB 0.1%",
+        "some-other-container 1MB / 8GB 0%",
+      ),
+    )
+    assertEquals(rows.size, 2)
+    assert(rows.forall(_.contains(id)))
 
   test("TZ is a tzdata name or a POSIX offset, whose sign is the reverse of ISO's"):
     assertEquals(posixTz(ZoneId.of("Asia/Tokyo")), "Asia/Tokyo")

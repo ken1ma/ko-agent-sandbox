@@ -1,4 +1,4 @@
-// The host build's session lifecycle: PLAN-SBT-ON-HOST.md §4 as code. A session is one wrapper
+// The host build's session lifecycle. A session is one wrapper
 // command; its directory is published by rename so it is never seen half-made, its lock states the
 // wrapper's liveness, and its records own the children's. Everything here is choreography over an
 // injected filesystem-and-processes surface, so the kill interleavings are unit tests rather than
@@ -145,7 +145,7 @@ object RunOnHostSession:
     catch case ex: IOException => Left(s"publishing a session under $root: ${ex.getMessage}")
 
   /** Remove this session's directory. The lock is released by deletion's end; nothing here needs
-    * the root lock (§4). */
+    * the root lock. */
   def remove(session: Session): Unit =
     deleteSessionTree(session.directory)
     session.close()
@@ -232,7 +232,7 @@ object RunOnHostSession:
    * and did not answer: then the directory, records and socket stay for the next start to retry,
    * because deleting them would strand a live server nothing can reach. A group is signalled only
    * while its recorded leader is alive with the recorded start time: a dead or mismatched leader
-   * frees the pgid for strangers (§4), so those groups are skipped and only the portfile-attributed
+   * frees the pgid for strangers, so those groups are skipped and only the portfile-attributed
    * server is ended, by asking it.
    */
   def collect(root: Path, condemned: Path, processes: Processes,
@@ -259,7 +259,7 @@ object RunOnHostSession:
           Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
 
   /**
-   * The portfile attribution of §4: the session's recorded project names
+   * The portfile attribution: the session's recorded project names
    * `project/target/active.json`; a `local://` socket under the session's *original* path is our
    * server and no other. The socket moved with the condemnation rename, so the portfile's
    * spelling is remapped before the shutdown is spoken at it — and spoken only at a pathname
@@ -316,13 +316,13 @@ object RunOnHostSession:
   // ---------------------------------------------------------------------------
 
   /**
-   * The registration of §4, as the command the wrapper spawns. perl — present on every macOS —
+   * The registration, as the command the wrapper spawns. perl — present on every macOS —
    * makes itself its own group's leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
    * instead, which is the shim ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
    * the same way as `<record>.exit`, and the shim stays until its group is ended: a group is
-   * signalled only behind a live leader (§4), and a build can fork a helper and return, so
+   * signalled only behind a live leader, and a build can fork a helper and return, so
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
