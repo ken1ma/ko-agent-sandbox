@@ -19,7 +19,7 @@
 #
 # Whether the current grant set builds is probe/build-profile-gate.sh's question, not this one's.
 #
-# Runtime authority accumulates in probe/runtime-authority.txt, which you edit by hand: a line
+# Runtime authority accumulates in src/main/resources/agentsandbox/runtime-authority.txt, which you edit by hand: a line
 # added because a build failed once is a grant that outlives every later build, so each belongs
 # there only if it is a stable runtime read and not a path into user data.
 set -u
@@ -28,7 +28,7 @@ if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; 
 mode=${1:-floor}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-build-profile
-authority=probe/runtime-authority.txt
+authority=src/main/resources/agentsandbox/runtime-authority.txt
 mkdir -p "$work"
 [ -f "$authority" ] || printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
 

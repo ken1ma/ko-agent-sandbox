@@ -447,7 +447,8 @@ RUN set -euxo pipefail; \
 # Each script's own header says what it is for; they ship because an agent would otherwise retype
 # them from the instructions.
 COPY --chmod=0755 \
-    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman ko-agent-clipboard \
+    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman sandbox-run-on-host \
+    ko-agent-clipboard \
     sandbox-entrypoint \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done

@@ -28,7 +28,7 @@ object RunOnHostSandbox:
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
   /** Absent is None; existing-but-unreadable throws and fails the assembly, never falls to the
-    * next source — Mill would select the file and then fail reading it. */
+    * next source — mill would select the file and then fail reading it. */
   private def readLines(path: Path): Option[Seq[String]] =
     Option.when(Files.exists(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
 
@@ -62,7 +62,7 @@ object RunOnHostSandbox:
             _ <- context("mill bootstrap")(validateMillBootstrap(project, isExecutableFile))
             _ <- context("mill jvm")(millJvmIsSystem(project, readLines))
             version <- context("mill version")(millVersion(project, env, readLines))
-            downloads <- millDownloadDir(env).toRight("no Mill download folder")
+            downloads <- millDownloadDir(env).toRight("no mill download folder")
             arch = System.getProperty("os.arch") match
               case "aarch64" => "arm64"
               case other     => other
@@ -150,33 +150,67 @@ object RunOnHostSandbox:
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
-   * The runtime-authority file: one absolute path per line, `#` comments, `x ` prefix for a path
-   * that must also be executable. It starts empty — §2.1 admits a runtime path only where testing
-   * proves the read is stable, and probe/build-profile-gate.sh discovers them.
+   * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
+   * path that must also be executable. §2.1 admits a runtime path only where testing proves the
+   * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
+   * probe/build-profile-iterate.sh is how it grows.
    */
+  def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
+    val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
+    val executes = lines.filter(_.startsWith("x ")).map(line => Path.of(line.drop(2).trim))
+    val reads = lines.filterNot(_.startsWith("x ")).map(Path.of(_))
+    SeatbeltProfile.RuntimeAuthority(reads.flatMap(realPath), executes.flatMap(realPath))
+
   def readRuntimeAuthority(file: Option[Path]): SeatbeltProfile.RuntimeAuthority =
     file match
       case None => SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
       case Some(path) =>
-        val lines = Files.readAllLines(path).toArray(Array.empty[String]).toSeq
-          .map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
-        val executes = lines.filter(_.startsWith("x ")).map(line => Path.of(line.drop(2).trim))
-        val reads = lines.filterNot(_.startsWith("x ")).map(Path.of(_))
-        SeatbeltProfile.RuntimeAuthority(reads.flatMap(realPath), executes.flatMap(realPath))
+        parseRuntimeAuthority(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
 
-  /** How the wrapper re-invokes its own vehicle for --serve-proxy-on-host: the running JVM and
-    * classpath, or the native image binary itself. */
-  def selfInvocation(): Seq[String] =
+  def bundledRuntimeAuthority(): SeatbeltProfile.RuntimeAuthority =
+    val stream = getClass.getResourceAsStream("/agentsandbox/runtime-authority.txt")
+    if stream == null then
+      throw IllegalStateException("this jar bundles no runtime-authority.txt; rebuild it")
+    val text =
+      try String(stream.readAllBytes(), UTF_8)
+      finally stream.close()
+    parseRuntimeAuthority(text.linesIterator.toSeq)
+
+  /** How the wrapper re-invokes its own vehicle — the running JVM and classpath, or the native
+    * image binary itself — under one of the launcher's private verbs. */
+  def selfInvocation(verbAndArguments: String*): Seq[String] =
     if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
       val self = ProcessHandle.current().info().command()
-      Seq(self.orElseThrow(() => IllegalStateException("the native image cannot name itself")),
-        "--serve-proxy-on-host")
+      self.orElseThrow(() => IllegalStateException("the native image cannot name itself"))
+        +: verbAndArguments
     else
       Seq(
         Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString,
         "-cp", System.getProperty("java.class.path"),
-        "agentsandbox.launcher.AgentSandboxLauncher", "--serve-proxy-on-host",
-      )
+        "agentsandbox.launcher.AgentSandboxLauncher",
+      ) ++ verbAndArguments
+
+  /** `--run-build-on-host <tool> <project> <cwd> -- <args...>`: one channel request as a process
+    * of its own, so the broker's cancel is a SIGTERM whose answer is the §4 shutdown hook. */
+  def runBuildMain(args: Seq[String]): Unit =
+    args.toList match
+      case toolName :: project :: workingDirectory :: "--" :: buildArgs =>
+        val tool = toolName match
+          case "sbt"  => Tool.Sbt
+          case "mill" => Tool.Mill
+          case other =>
+            Console.err.println(s"--run-build-on-host: unknown tool $other")
+            sys.exit(2)
+        val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+        sys.exit(
+          run(
+            Path.of(project), tool, buildArgs, bundledRuntimeAuthority(), uid,
+            Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
+          ),
+        )
+      case other =>
+        Console.err.println(s"--run-build-on-host: unexpected arguments: ${other.mkString(" ")}")
+        sys.exit(2)
 
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is the tee
     * of its stderr, so the line lands where this polls. */
@@ -235,6 +269,8 @@ object RunOnHostSandbox:
     runtime: SeatbeltProfile.RuntimeAuthority,
     uid: Int,
     log: String => Unit,
+    // The channel's validated WORKING_DIRECTORY (§6.2): only the child's cwd, never a grant.
+    workingDirectory: Option[Path] = None,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = Path.of(s"/private/tmp/ko-agent-$uid")
@@ -292,7 +328,8 @@ object RunOnHostSandbox:
               try
                 sessionTmpFits(session.tmp) match
                   case Left(reason) => Left(reason.toString)
-                  case Right(_) => runInSession(session, assembled, fileHosts, buildArgs, runtime, log)
+                  case Right(_) =>
+                    runInSession(session, assembled, fileHosts, buildArgs, runtime, workingDirectory, log)
               finally
                 teardown()
                 try Runtime.getRuntime.removeShutdownHook(hook)
@@ -309,6 +346,7 @@ object RunOnHostSandbox:
     fileHosts: Vector[String],
     buildArgs: Seq[String],
     runtime: SeatbeltProfile.RuntimeAuthority,
+    workingDirectory: Option[Path],
     log: String => Unit,
   ): Either[String, Int] =
     assembled.sbtGlobal.foreach: sbtGlobal =>
@@ -328,13 +366,14 @@ object RunOnHostSandbox:
           runtime = runtime,
         ),
       )
-      exit <- runBuild(session, assembled, profile, port, buildArgs)
+      exit <- runBuild(session, assembled, profile, port, buildArgs, workingDirectory)
     yield
       reportDenied(session.directory.resolve("proxy.log"), assembled.policy.tool, log)
       exit
 
   private def startProxy(session: Session, fileHosts: Vector[String]): Either[String, Process] =
-    val command = RunOnHostSession.registeredSpawn(session.records.resolve("proxy"), selfInvocation())
+    val command = RunOnHostSession
+      .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
     builder.environment.put("EGRESS_ALLOWED", egressAllowedText(fileHosts))
@@ -351,6 +390,7 @@ object RunOnHostSandbox:
     profile: String,
     proxyPort: Int,
     buildArgs: Seq[String],
+    workingDirectory: Option[Path],
   ): Either[String, Int] =
     val policy = assembled.policy
     val profileFile = session.directory.resolve("profile.sb")
@@ -369,7 +409,7 @@ object RunOnHostSandbox:
       Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ toolCommand,
     )
     val builder = ProcessBuilder(command*)
-    builder.directory(policy.project.toFile)
+    builder.directory(workingDirectory.getOrElse(policy.project).toFile)
     builder.inheritIO()
     val environment = builder.environment
     environment.put("PATH",

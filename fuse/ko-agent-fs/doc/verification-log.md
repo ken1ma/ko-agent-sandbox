@@ -159,7 +159,7 @@ nothing in exchange support, symlink round-tripping, case behaviour or the reach
 
 ### Measured: a container needs `CAP_SYS_ADMIN`, setuid notwithstanding (podman 6.0.2; 2026-08-22)
 
-In a Podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
+In a podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
 `--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the venue probe, before a test runs:
 
     Error: Custom { kind: Other, error: "fusermount3: mount failed: Operation not permitted\n" }
@@ -178,7 +178,7 @@ platform.
 ### Measured: a non-root container user keeps the bounding set (podman 6.0.2; 2026-08-22)
 
 `--self-test` mounts and passes every suite as the sandbox image's `nonroot` (uid 65532), in a
-container given `--cap-add SYS_ADMIN`, in a Podman machine on macOS. So podman keeps the capability
+container given `--cap-add SYS_ADMIN`, in a podman machine on macOS. So podman keeps the capability
 in the *bounding* set for a container whose `USER` is not root, and the setuid `fusermount3` reaches
 it: an unprivileged uid holds no effective `CAP_SYS_ADMIN` and cannot `mount(2)`, and the mount
 succeeds anyway.

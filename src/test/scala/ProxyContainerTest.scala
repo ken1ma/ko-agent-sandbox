@@ -28,7 +28,7 @@ class ProxyContainerTest extends munit.FunSuite:
       // The effective set, not the `--cap-drop` flag: podman expands `ALL` into the concrete list
       // it dropped, so asserting the flag's spelling would be asserting how the request was phrased
       // rather than what the container ended up with — the distinction doc/TODO.md's "test the
-      // resulting boundary, not merely the code that asks Podman to create it" is about.
+      // resulting boundary, not merely the code that asks podman to create it" is about.
       assertEquals(inspect(proxy, "{{.EffectiveCaps}}"), "[]", "effective capabilities")
       assert(
         inspect(proxy, "{{.HostConfig.SecurityOpt}}").contains("no-new-privileges"),
@@ -40,7 +40,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assertEquals(inspect(proxy, "{{json .HostConfig.Tmpfs}}"), "{}", "explicit tmpfs mounts")
       assert(
         inspect(proxy, "{{json .Config.CreateCommand}}").contains("\"--read-only-tmpfs=false\""),
-        "Podman's implicit writable temporary filesystems are not disabled",
+        "podman's implicit writable temporary filesystems are not disabled",
       )
       assertEquals(
         inspect(proxy, "{{json .Config.Entrypoint}}"),

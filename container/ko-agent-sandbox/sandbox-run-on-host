@@ -1,0 +1,65 @@
+#!/bin/sh
+# Run one of this project's builds on the host, inside a sandbox of its own:
+# SECURITY.md "Run on host" has the channel and its limits. The channel exists only when the
+# session was launched with --run-on-host naming the tool; the launcher's broker makes `req`.
+#
+# One transaction, serialized by the lock: hand the broker this pid, then send the request over
+# `ctl.$$` and hold it open — the request travels on the liveness descriptor, so the broker ends
+# the build the moment this process dies, Ctrl-C included, and no request is ever runnable
+# without its liveness. The data FIFOs are this transaction's own, so no later invocation can
+# attach to another's streams. RunOnHostChannel.scala is the other side and documents the framing.
+set -eu
+
+usage() { echo "usage: sandbox-run-on-host <sbt|mill> [args...]" >&2; exit 64; }
+[ "$#" -ge 1 ] || usage
+tool=$1
+shift
+case "$tool" in sbt|mill) ;; *) usage ;; esac
+
+dir=/tmp/ko-agent-sandbox/host-command
+if [ -n "${KO_AGENT_SANDBOX_RUN_ON_HOST:-}" ]; then
+  i=0
+  while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
+fi
+[ -p "$dir/req" ] || {
+  echo "sandbox-run-on-host: this session has no host build channel; it exists only when the" \
+    "launcher runs with --run-on-host=$tool, on macOS" >&2
+  exit 1
+}
+
+# One build at a time; a later invocation waits here until the running one finishes.
+exec 9> "$dir/lock"
+flock 9
+
+# This transaction's own FIFOs, fresh inodes under this pid — a killed predecessor's leftovers
+# with a reused pid are removed, never adopted. The trap is best effort; the broker copes with
+# litter a kill leaves.
+id=$$
+fifos="$dir/ctl.$id $dir/out.$id $dir/err.$id $dir/exit.$id"
+trap 'rm -f $fifos' EXIT
+rm -f $fifos
+mkfifo -m 600 $fifos
+
+printf '%s\n' "$id" > "$dir/req"
+
+# The broker opens ctl's reading side once it has the handshake; dying before this open leaves a
+# transaction the broker declares stillborn on its own deadline, with no build started.
+exec 8> "$dir/ctl.$id"
+{ printf '%s %s\n' "$tool" "$#"; printf '%s\0' "$PWD" "$@"; } >&8
+
+# 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell, and holding its ctl or
+# lock descriptor would stall the cancel, or the next build, until the broker ends them.
+cat "$dir/out.$id" 8>&- 9>&- &
+cat "$dir/err.$id" >&2 8>&- 9>&- &
+wait
+# Bounded because in every live-broker flow the exit code follows the drained output within
+# milliseconds; only a broker that died mid-build leaves this FIFO unwritten, and hanging on it
+# would turn that death into a command that never returns.
+# `|| true`: a timed-out substitution would otherwise trip set -e before the diagnostic below.
+code=$(timeout 30 cat "$dir/exit.$id" 8>&- 9>&- || true)
+[ -n "$code" ] || {
+  echo "sandbox-run-on-host: the host side stopped answering; the build may still be running —" \
+    "report this to the user" >&2
+  exit 70
+}
+exit "$code"

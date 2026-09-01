@@ -214,14 +214,14 @@ object EgressProxyPolicy:
       val variable = PolicyFiles.find(_(0) == name).fold(fail(s"error: no policy file $name"))(_(1))
       s"--env=$variable=$text"
 
-  def retainedLogs(logDir: Path): Vector[Path] =
+  def retainedLogs(logDir: Path, prefix: String = "proxy-"): Vector[Path] =
     if !Files.isDirectory(logDir) then Vector.empty
     else
       Files
         .list(logDir)
         .iterator()
         .asScala
-        .filter(p => p.getFileName.toString.startsWith("proxy-"))
+        .filter(p => p.getFileName.toString.startsWith(prefix))
         .filter(p => p.getFileName.toString.endsWith(".log"))
         .toVector
         .sortBy(_.getFileName.toString)

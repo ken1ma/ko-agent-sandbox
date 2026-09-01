@@ -93,7 +93,7 @@ dns                      optional
 
 An unknown entry refuses the launch. Every named entry must be a regular file, not a symlink,
 device, socket or directory. Read all entries and copy the needed bytes into a private per-run
-directory before creating either container. Podman mounts only those copies.
+directory before creating either container. podman mounts only those copies.
 
 Enumerate and read the complete directory twice through its opened canonical directory, without
 following a child symlink. Require the same names, types, identities, sizes, modification times,
@@ -180,7 +180,7 @@ the trusted computing base and requires a separate security-model decision.
 Support corporate DNS because a corporate proxy name and public origins may resolve only while a
 VPN or enterprise resolver is in use. The feature does not grant access to corporate origins.
 
-When `dns` is absent, the proxy and `--egress-check` use the same Podman-provided resolver path they
+When `dns` is absent, the proxy and `--egress-check` use the same podman-provided resolver path they
 use without an upstream profile. When present, give only the egress-proxy container and the
 one-shot check container the exact nameservers and an empty search domain. The sandbox retains
 `--dns=none`.
@@ -197,7 +197,7 @@ an intranet to untrusted repository code; if required, design exact host-and-add
 separate host-owned feature rather than treating corporate DNS as permission.
 
 The resolver list is fixed per run. A failed query may try the next configured resolver according
-to the system resolver, but it never falls back to Podman, the host, a public resolver or DoH. DNS
+to the system resolver, but it never falls back to podman, the host, a public resolver or DoH. DNS
 answers carry no authority of their own: policy admission happens by hostname and address admission
 happens through `resolvePublic` after every lookup.
 
@@ -271,7 +271,7 @@ and are removed by normal cleanup, failed launch cleanup, `--reset` and `--reset
 reserved run name already owned by the launcher; no profile directory is ever removed or changed.
 
 The corporate endpoint connection leaves through the proxy container's egress network. Rootless
-Podman provides no portable destination firewall on that network, so "only the corporate endpoint"
+podman provides no portable destination firewall on that network, so "only the corporate endpoint"
 is enforced by the trusted proxy process, as destination policy already is. No agent-controlled
 code runs in that container.
 
@@ -325,7 +325,7 @@ DNS over TLS, DNS over QUIC and SOCKS remote resolution remain excluded under th
 - **Private origin addresses and internal services:** the corporate endpoint and resolver are
   transport dependencies, not permission for untrusted project code to reach the intranet.
 - **Standalone resolver override:** corporate DNS belongs to the selected corporate transport in
-  this increment. Direct mode retains Podman's resolver until a separate requirement exists.
+  this increment. Direct mode retains podman's resolver until a separate requirement exists.
 - **Dynamic reload:** policy, resolver, endpoint, credentials and trust remain one immutable launch
   snapshot whose audit meaning does not change mid-run.
 
@@ -350,7 +350,7 @@ References:
 - Test empty, malformed, mixed and private-key-bearing CA files and distinct endpoint versus origin
   trust scopes.
 - Test zero, one, three and excessive resolver entries; IPv4, IPv6, hostname, port and search-domain
-  inputs; and the exact Podman DNS arguments on the proxy and check containers only.
+  inputs; and the exact podman DNS arguments on the proxy and check containers only.
 - Test option parsing before and after the sandbox command, management-verb rejection and concurrent
   launches reading different coherent snapshots of a changing profile.
 
@@ -379,11 +379,11 @@ References:
 - Use controlled DNS and CONNECT-proxy fixtures to prove the production proxy container, internal
   network, egress network, resolver file and audit mount together.
 - Prove unsetting sandbox proxy variables still restores no route, the sandbox cannot query either
-  corporate or Podman DNS, and only the proxy container reaches the configured resolver.
+  corporate or podman DNS, and only the proxy container reaches the configured resolver.
 - Prove a private corporate endpoint works while the same address remains forbidden as an origin.
 - Prove profile deletion and replacement after launch do not affect the run, and normal exit,
   Ctrl-C, failed create/start and both resets remove every per-run copy and runtime resource.
-- Run the matrix on native Linux and in the macOS and Windows Podman machines. Record whether each
+- Run the matrix on native Linux and in the macOS and Windows podman machines. Record whether each
   venue can route to VPN/private resolver and proxy addresses; a venue that cannot must fail launch,
   never bypass the upstream.
 

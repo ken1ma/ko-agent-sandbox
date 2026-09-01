@@ -129,7 +129,7 @@ art:
 
 A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a file
 inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
-`readAgentInstructions`, tested). Podman resolves mount sources on the host, so mounting through a
+`readAgentInstructions`, tested). podman resolves mount sources on the host, so mounting through a
 repository-controlled link would expose its target into the sandbox, and following the link to pin
 its resolved target would make the pinned surface depend on where the link points at launch time.
 The refusal is loud, names the path, and comes before the launcher creates anything, so setup writes
@@ -167,7 +167,7 @@ user's to keep out, and a forge token there is answered by denying the forge in 
 
 ### No gVisor or microVM isolation layer
 
-Rootless Podman is the chosen portability/security trade-off. Revisit only if
+Rootless podman is the chosen portability/security trade-off. Revisit only if
 host-kernel/container-runtime exploitation enters the threat model.
 
 The gVisor issue history also shows that stronger runtime isolation brings additional
@@ -184,7 +184,7 @@ Conflating them is what makes verification look larger than it is.
 
 - **The code's own logic** depends on neither of the others. The privileged dev rig settles it once,
   on whichever host a developer has (`../fuse/ko-agent-fs/doc/testing.md`).
-- **The kernel** is not one kernel: every Podman machine carries its own — Fedora CoreOS on macOS, a
+- **The kernel** is not one kernel: every podman machine carries its own — Fedora CoreOS on macOS, a
   Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on what
   a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
   (`../fuse/ko-agent-fs/doc/architecture.md`).

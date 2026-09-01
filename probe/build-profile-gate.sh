@@ -1,8 +1,9 @@
 #!/bin/sh
-# PLAN-SBT-ON-HOST.md §7.4, run by hand on macOS: Phase 2's exit criterion. One row per line of
-# the plan's matrix, each run under the generated profile, each reporting PASS, FAIL or SKIP with
-# what it observed. Everything else in probe/ finds out what a profile needs; this one finds out
-# whether the profile that resulted enforces what §2.1 claims.
+# PLAN-SBT-ON-HOST.md §7.4, run by hand on macOS: the exit criteria of Phases 2 through 4. One
+# row per line of the plan's matrix, each run under the generated profile, each reporting PASS,
+# FAIL or SKIP with what it observed. Everything else in probe/ finds out what a profile needs;
+# this one finds out whether the profile that resulted enforces what §2.1 claims — and, in the
+# channel rows, whether §6's channel carries a build and tears down with its requester.
 #
 #   sh probe/build-profile-gate.sh [sbt|mill|all] [quick]
 #
@@ -16,8 +17,8 @@
 # profile; there is no warm-up block, and a cold agent cache resolves through the proxy inside
 # the profile, which is the measurement.
 #
-# The sbt rows build this repository. The Mill rows build probe/mill-fixture, a one-module Mill
-# project that exists for them: this repository is sbt-built, and a Mill build of it would be a
+# The sbt rows build this repository. The mill rows build probe/mill-fixture, a one-module mill
+# project that exists for them: this repository is sbt-built, and a mill build of it would be a
 # second build definition rather than a measurement. probe/deny-fixture exists for the
 # non-allowlisted-host row: its resolution must reach a host the proxy refuses.
 #
@@ -71,7 +72,7 @@ emit() { # tool
     rm -f "$work/gate-$1.env"
     # Each path quoted for sbt's own command parser: a checkout with a space in its path would
     # otherwise split into two arguments.
-    args="\"$work/gate-$1.sb\" probe/runtime-authority.txt $1 \"$(project_of "$1")\""
+    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/runtime-authority.txt $1 \"$(project_of "$1")\""
     sbt -batch "Test/runMain agentsandbox.launcher.EmitBuildProfile $args" >"$work/emit-$1.log" 2>&1 \
         || { echo "emit failed for $1:"; tail -20 "$work/emit-$1.log"; return 1; }
     mv "$work/gate-$1.sb.env" "$work/gate-$1.env"
@@ -86,7 +87,7 @@ emit() { # tool
 #
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub §3.1 rejects and the
-# profile denies. Mill's `mill-jvm-version: system` takes `java` from PATH the same way.
+# profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # exec, because with_timeout backgrounds this function and kills $!: without it that pid is a
 # subshell and the timeout kill would orphan the build instead of ending it. The exports are
 # contained in that subshell.
@@ -125,7 +126,7 @@ wrapper() { # tool project command...
     wrapper_tool=$1; wrapper_project=$2; shift 2
     with_timeout "${GATE_ROW_TIMEOUT:-900}" "$JAVA_HOME/bin/java" -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$wrapper_tool" "$wrapper_project" \
-        probe/runtime-authority.txt -- "$@"
+        src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
 }
 deny_project=$project/probe/deny-fixture
 session_root=/private/tmp/ko-agent-$(id -u)
@@ -154,7 +155,7 @@ present_or_skip() { # label path
 # --- servers and daemons ------------------------------------------------------------------------
 
 # Processes whose working directory is this project: the gate never learns the pid of a server
-# sbt's client forks or the daemon Mill's launcher starts, but each belongs to the project it
+# sbt's client forks or the daemon mill's launcher starts, but each belongs to the project it
 # runs in.
 with_cwd() { # pattern dir exact|under
     for pid in $(pgrep -f -- "$1" 2>/dev/null); do
@@ -165,7 +166,7 @@ with_cwd() { # pattern dir exact|under
 # An sbt server's cwd is its project, exactly: a nested project's server is another project's.
 project_servers() { with_cwd '-Dsbt.script=' "$project" exact; }
 deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
-# A Mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
+# A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
 # A build proxy a timed-out or killed wrapper left: the wrapper's own scavenger ends these at its
 # next start, but the gate must not leave them when it exits before running one. Only this run's:
@@ -188,18 +189,18 @@ if [ -n "$existing" ]; then
 fi
 existing=$(mill_daemons | tr '\n' ' ')
 if want mill && [ -n "$existing" ]; then
-    echo "a Mill daemon is already running for $mill_project (pid $existing): run './mill shutdown' there," >&2
+    echo "a mill daemon is already running for $mill_project (pid $existing): run './mill shutdown' there," >&2
     echo "or kill it" >&2
     exit 1
 fi
 # Every server or daemon this run starts — `emit`'s included — is ended at exit, whether or not
-# `shutdown` could reach it: a server whose client hung is one `shutdown` cannot find. Mill's
+# `shutdown` could reach it: a server whose client hung is one `shutdown` cannot find. mill's
 # daemon holds out/mill-daemon/daemonLock and a loopback port that a launcher under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
     for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done
     for pid in $(deny_servers); do kill "$pid" 2>/dev/null && echo "ended deny-fixture server $pid"; done
-    for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended Mill daemon $pid"; done
+    for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended mill daemon $pid"; done
     for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray build proxy $pid"; done
 }
 trap end_project_servers EXIT
@@ -217,7 +218,7 @@ if want sbt; then
     profiles="sbt"
 fi
 if want mill; then
-    echo "emitting the Mill profile, for $mill_project"
+    echo "emitting the mill profile, for $mill_project"
     emit mill || exit 1
     profiles="$profiles mill"
 fi
@@ -253,7 +254,7 @@ mill_downloads=${MILL_FINAL_DOWNLOAD_FOLDER:-${XDG_CACHE_HOME:-$HOME/.cache}/mil
 safe_path "the launcher state root" "$state_root"
 safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}"
 safe_path "the sbt launcher path" "$sbt_launcher"
-safe_path "the Mill download folder" "$mill_downloads"
+safe_path "the mill download folder" "$mill_downloads"
 mill_launcher=$(sed -n 's/^launcher: //p' "$work/emit-mill.log" 2>/dev/null)
 
 # A scratch tree per profile, inside that profile's project, standing in for a project with
@@ -269,6 +270,13 @@ cleanup() {
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     for p in $profiles; do use_profile "$p"; rm -f "$agent_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
     rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" 2>/dev/null
+    # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
+    # session's live inside its container.
+    if [ -n "${channel_broker:-}" ]; then
+        kill "$channel_broker" 2>/dev/null
+        kill_channel_execs
+        rm -rf /tmp/ko-agent-sandbox/host-command
+    fi
     end_project_servers
 }
 trap cleanup EXIT
@@ -330,14 +338,14 @@ fi
 
 if want mill; then
     use_profile mill
-    # Mill's launcher memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
+    # mill's launcher memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
     # and reuses them while the files they name exist (CoursierClient.scala). Written by a run
     # against the user's cache, they name paths the profile denies; the memo goes, so the
     # wrapper's COURSIER_CACHE takes effect.
     rm -rf "$mill_project/out/mill-daemon"
     # --no-daemon: the launcher and the daemon talk over a loopback TCP socket
     # (out/mill-daemon/socketPort), which the profile grants to nothing, since loopback is every
-    # local service. Without the daemon there is no socket — Mill's --jvm-client.
+    # local service. Without the daemon there is no socket — mill's --jvm-client.
     for command in --version __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
@@ -392,14 +400,14 @@ for p in $profiles; do
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
     expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/allowed'"
     expect_denied "$p" "write the user's Coursier v1" ": > '$user_v1/$marker'"
-    present_or_skip "write the user's Mill download folder" "$mill_downloads" \
-        && expect_denied "$p" "write the user's Mill download folder" ": > '$mill_downloads/$marker'"
+    present_or_skip "write the user's mill download folder" "$mill_downloads" \
+        && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"
     if [ "$p" = mill ]; then
         # The one provisioned file is executable; its neighbours in the download folder are not.
         if ( cd "$mill_project" && sandboxed mill "$mill_launcher" --no-daemon --version ) >/dev/null 2>"$work/row.err"
-        then report PASS "read and execute the Mill launcher"
-        else report FAIL "read and execute the Mill launcher" "$(first_error)"; fi
-        expect_denied mill "list the Mill download folder" "ls '$mill_downloads'"
+        then report PASS "read and execute the mill launcher"
+        else report FAIL "read and execute the mill launcher" "$(first_error)"; fi
+        expect_denied mill "list the mill download folder" "ls '$mill_downloads'"
     fi
 
     echo
@@ -488,14 +496,14 @@ await_client_record() { # victim-pid
 # parent-pid check above — would land on or look at the wrong process.
 victim_wrapper() { # log-name
     exec "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
-        sbt "$project" probe/runtime-authority.txt -- compile >"$work/$1" 2>&1
+        sbt "$project" src/main/resources/agentsandbox/runtime-authority.txt -- compile >"$work/$1" 2>&1
 }
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
 elif [ "$tool" != all ]; then
     skip_lifecycle "needs both tools"
 else
-    # Concurrency: one sbt and one Mill session overlap, each with its own directory and proxy.
+    # Concurrency: one sbt and one mill session overlap, each with its own directory and proxy.
     wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
     wrapper mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
     peak=0; tries=0
@@ -590,6 +598,147 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             else report FAIL "orphan server ended by portfile attribution" \
                 "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"; fi
         fi
+    fi
+fi
+
+# --- the channel (§6) ---------------------------------------------------------------------------
+#
+# The real shim against the real broker, the `podman exec` transport a local script and the
+# sandbox this host: Phase 4's exit criterion. The wrapper behind it is the same one the rows
+# above measured; what these add is the channel — framing, streamed output and the build's own
+# exit code, the working-directory boundary, and teardown by descriptor lifetime.
+
+echo
+echo "the channel"
+channel_dir=/tmp/ko-agent-sandbox/host-command
+channel_rows="channel: sbt test returns the build's own exit code
+channel: a working directory outside the project is refused
+channel: a dead shim ends the running build
+channel: a dead sandbox ends the channel and its build"
+skip_channel() {
+    while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
+$channel_rows
+EOF
+}
+# Only processes the stub podman recorded, proven by the same pid-plus-start identity the
+# wrapper's scavenger uses — never a pattern kill, which would match a real session's own
+# `podman exec` command lines, and never by pid alone, which a recycled pid defeats. Each owned
+# tree goes descendants-first, while the parent still holds them: the shell behind an exec may
+# have forked its command, and a surviving orphan keeps the FIFO and pipe open (the measured
+# behavior RunOnHostChannel.end answers on the broker's side). Every signal is proved
+# immediately before it fires — a descendant by its link to the live, owned parent, which is
+# killed after its children and spawns nothing new, so a recycled pid cannot re-enter the tree;
+# the recorded root by its start time once more.
+parent_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
+kill_owned_children() { # parent-pid
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        [ "$(parent_of "$child")" = "$1" ] || continue
+        kill_owned_children "$child"
+        [ "$(parent_of "$child")" = "$1" ] && kill -9 "$child" 2>/dev/null
+    done
+}
+kill_channel_execs() {
+    [ -f "$work/exec.pids" ] || return 0
+    while IFS='|' read -r pid start; do
+        [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] || continue
+        ps -o command= -p "$pid" 2>/dev/null | grep -qF "$channel_dir" || continue
+        kill_owned_children "$pid"
+        [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] && kill -9 "$pid" 2>/dev/null
+    done < "$work/exec.pids"
+}
+# `exec` for the same reason as victim_wrapper: the staged kills must land on the shim itself.
+channel_shim() { # log cwd args...
+    chan_log=$1; chan_cwd=$2; shift 2
+    cd "$chan_cwd" || exit 1
+    PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/sandbox-run-on-host" "$@" \
+        >"$work/$chan_log" 2>"$work/$chan_log.err"
+}
+channel_settled() { # await the broker between rows: no session, no server, no build proxy
+    tries=0
+    while { [ "$(sessions_now)" -gt 0 ] || [ -n "$(project_servers)" ] || [ -n "$(stray_proxies)" ]; } \
+        && [ "$tries" -lt 240 ]; do tries=$((tries + 1)); sleep 0.5; done
+}
+if [ "$quick" = 1 ]; then
+    skip_channel "quick mode"
+elif ! want sbt; then
+    skip_channel "needs sbt"
+else
+    # macOS has neither flock(1) nor timeout(1): the shim's serialization is stubbed out — the
+    # rows are serial — and its exit-read bound runs unbounded, which only a broker dying
+    # mid-build would notice.
+    mkdir -p "$work/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$work/bin/flock"; chmod +x "$work/bin/flock"
+    printf '#!/bin/sh\nshift\nexec "$@"\n' > "$work/bin/timeout"; chmod +x "$work/bin/timeout"
+    # `podman exec -i C sh -c S` runs S here, and container liveness is a file this gate flips.
+    # Each exec records its pid — which survives the exec — so "the container died, taking every
+    # exec with it" can be staged, and cleaned up, against exactly this gate's processes: a
+    # pattern kill would match every live session's own `podman exec` command lines too.
+    cat > "$work/podman" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+    "exec -i")
+        echo "\$\$|\$(ps -o lstart= -p \$\$)" >> "$work/exec.pids"
+        shift 3; exec "\$@" ;;
+    "container inspect") cat "$work/running" ;;
+esac
+EOF
+    chmod +x "$work/podman"
+    echo true > "$work/running"
+    rm -rf "$channel_dir"
+    "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
+        --serve-run-on-host "$work/podman" C "$project" sbt "$work/channel.log" "$project" \
+        >/dev/null 2>&1 & channel_broker=$!
+    tries=0
+    while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
+    if [ ! -p "$channel_dir/req" ]; then
+        skip_channel "the broker made no FIFOs: $(tail -1 "$work/channel.log" 2>/dev/null | cut -c1-50)"
+    else
+        # The exit criterion's row: an agent-invoked `sbt test`, its exit code the build's own.
+        with_timeout 1800 channel_shim chan-test.log "$project" sbt test; status=$?
+        if [ "$status" -eq 0 ] && grep -q '^\[success\]' "$work/chan-test.log"
+        then report PASS "channel: sbt test returns the build's own exit code" \
+            "$(grep -m1 '^\[success\]' "$work/chan-test.log")"
+        else report FAIL "channel: sbt test returns the build's own exit code" \
+            "exit $status: $(tail -1 "$work/chan-test.log.err" | cut -c1-60)"; fi
+        channel_settled
+
+        with_timeout 120 channel_shim chan-refused.log /private/tmp sbt --version; status=$?
+        if [ "$status" -eq 2 ] && grep -q 'CHANNEL_UNAVAILABLE' "$work/chan-refused.log.err"
+        then report PASS "channel: a working directory outside the project is refused"
+        else report FAIL "channel: a working directory outside the project is refused" \
+            "exit $status: $(tail -1 "$work/chan-refused.log.err" | cut -c1-60)"; fi
+
+        # The shim dies; the broker sees the descriptor close and TERMs the wrapper, whose hook
+        # is the SIGTERM row's measured teardown.
+        channel_shim chan-kill.log "$project" sbt compile & shim=$!
+        tries=0
+        while [ "$(sessions_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
+        channel_settled
+        broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
+        if [ "$(sessions_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
+            && [ "$broker_state" = alive ]
+        then report PASS "channel: a dead shim ends the running build"
+        else report FAIL "channel: a dead shim ends the running build" \
+            "sessions: $(sessions_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state"; fi
+
+        # The sandbox dies: every exec dies with it, the shim included; the broker ends the build
+        # and, with the container gone, itself.
+        channel_shim chan-dead.log "$project" sbt compile & shim=$!
+        tries=0
+        while [ "$(sessions_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        echo false > "$work/running"
+        kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
+        kill_channel_execs
+        channel_settled
+        tries=0
+        while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
+        broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
+        if [ "$(sessions_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ]
+        then report PASS "channel: a dead sandbox ends the channel and its build"
+        else report FAIL "channel: a dead sandbox ends the channel and its build" \
+            "sessions: $(sessions_now), broker $broker_state"; fi
+        rm -rf "$channel_dir"
     fi
 fi
 

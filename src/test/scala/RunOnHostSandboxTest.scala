@@ -10,6 +10,10 @@ import RunOnHostPolicy.Tool
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
+  test("the measured runtime authority rides in the artifact, and parses"):
+    val authority = RunOnHostSandbox.bundledRuntimeAuthority()
+    assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
+
   // --------------------------------------------------------------------------
   // host-command/, the closed namespace inside the closed namespace
   // --------------------------------------------------------------------------
@@ -123,11 +127,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(classpath.exists(carries), classpath.take(8).toString)
 
   test("selfInvocation on a JVM re-runs this classpath under the private verb"):
-    val command = selfInvocation()
+    val command = selfInvocation("--serve-proxy-on-host")
     assert(command.head.endsWith("/bin/java"), command.toString)
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
+    assertEquals(
+      selfInvocation("--run-build-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
+      Seq("--run-build-on-host", "sbt", "/p", "/p/sub", "--"),
+    )
 
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")

@@ -29,11 +29,11 @@ locks and caches coherent across 20–30 collaborating sessions. One process and
 project's attached staged sessions, rather than one per session.
 
 Implement the merged view in `ko-agent-fs`. Kernel OverlayFS is not a candidate: changing a mounted
-lower tree is outside its defined contract, while live host changes are a requirement. A Podman
+lower tree is outside its defined contract, while live host changes are a requirement. A podman
 volume may hold upper data, but raw upper layers, whiteouts, baselines, manifests, journals and
 control sockets are never mounted into the sandbox. Only the merged FUSE view is reachable.
 
-Before exposing staged mode, prove the engine on native Linux and in the macOS and Windows Podman
+Before exposing staged mode, prove the engine on native Linux and in the macOS and Windows podman
 machines ("Proving the engine per platform" below carries the contract and where each item is
 settled). Failure aborts staged launch; there is no detached-copy or live-write fallback.
 
@@ -268,7 +268,7 @@ its private Git metadata cannot be applied.
   expose raw stage storage inside the sandbox.
 - Exercise 32 concurrent sessions and smoke-test 64, including Git locks, append, rename, mmap,
   host-side writes, daemon failure and journal ordering.
-- Run every row of the table above on native Linux and in the macOS and Windows Podman machines,
+- Run every row of the table above on native Linux and in the macOS and Windows podman machines,
   and record each run with its venue.
 
 ## Deliberate exclusions

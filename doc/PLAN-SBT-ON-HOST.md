@@ -1,9 +1,10 @@
-# Native sbt / Mill Build Sandbox — Implementation Plan
+# Native sbt / `mill` Build Sandbox — Implementation Plan
 
 **Target platform:** macOS 26.4+
-**Build tools:** sbt, Mill
-**Primary goal:** run the sandboxed agent's Scala builds natively — at host speed, on host memory —
-granting only the filesystem and network access the build requires.
+**Build tools:** sbt, `mill`
+**Primary goal:** run the sandboxed agent's Scala builds natively — on host memory, reclaimed when
+the build exits, and at host speed — granting only the filesystem and network access the build
+requires.
 
 ---
 
@@ -17,8 +18,8 @@ A native build sandbox, and the channel that lets the agent inside the container
 | Network containment | Seatbelt permits only the build's own egress proxy |
 | Invocation from the sandbox | `sandbox-run-on-host`, behind the `--run-on-host` launch option |
 
-The sandbox is deliberately narrower than the agent container. It supports sbt and Mill builds under
-documented prerequisites, and nothing else.
+The sandbox is deliberately narrower than the agent container. It supports sbt and `mill` builds
+under documented prerequisites, and nothing else.
 
 Out of scope:
 
@@ -36,7 +37,8 @@ in the container still runs, and is what a session without `--run-on-host` uses.
 
 The measurement behind this: on macOS, an `sbt test` of this project takes about 2 GB inside the
 podman machine, whose total is fixed when the machine is created and shared with every other
-session on it. §1.1 is why the same 2 GB costs nothing comparable on Linux.
+session on it — and whose footprint, once grown to hold a build, macOS never gets back. §1.1 is
+why the same 2 GB costs nothing comparable on Linux.
 
 ### 1.1 Linux is excluded
 
@@ -107,7 +109,7 @@ resolved Coursier JDK home/**       read/execute       # §3.1, one home, never 
 agent cache root/coursier/v1/**     read-write         # §5
 
 Coursier-installed sbt launcher     read/execute       # sbt only, two parts — §3.2
-provisioned Mill launcher           read/execute       # Mill only, one file — §3.3
+provisioned mill launcher           read/execute       # mill only, one file — §3.3
 
 session temporary directory         read-write-execute # fresh per session
 
@@ -199,10 +201,10 @@ stop, rather than looking for another route.
 ```text
 Coursier JVM missing               -> fail before entering sandbox
 sbt not installed by cs            -> fail before entering sandbox
-Mill bootstrap absent              -> fail before entering sandbox
-Mill version unpinned (no default) -> fail before entering sandbox
-Mill launcher not provisioned      -> fail before entering sandbox; ask the user to run ./mill
-Mill JVM not `system`              -> fail before entering sandbox; name the header key (§3.3)
+mill bootstrap absent              -> fail before entering sandbox
+mill version unpinned (no default) -> fail before entering sandbox
+mill launcher not provisioned      -> fail before entering sandbox; ask the user to run ./mill
+mill JVM not `system`              -> fail before entering sandbox; name the header key (§3.3)
 repository not allowlisted         -> proxy denial; report requested host
 filesystem path not allowed        -> sandbox denial; report path when observable
 backend unavailable                -> fail; report; do not run in the container
@@ -344,7 +346,7 @@ commands, and is what every other JVM in the chain already proves.
 
 Do not grant `~/.sbt/1.0`, `~/.sbt/2.0`, `~/.ivy2`, or `~/.m2` by default.
 
-### 3.3 Mill
+### 3.3 `mill`
 
 Require a project-local bootstrap script:
 
@@ -352,7 +354,7 @@ Require a project-local bootstrap script:
 <PROJECT>/mill
 ```
 
-Do not support a globally installed Mill.
+Do not support a globally installed `mill`.
 
 Also require a launcher the user has already provisioned, for the version the bootstrap resolves:
 
@@ -360,14 +362,14 @@ Also require a launcher the user has already provisioned, for the version the bo
 ./mill --version        # once, in a host terminal, whenever the pinned version changes
 ```
 
-The sandbox does not fetch the launcher. Mill 1.x publishes native launchers — a real host's
+The sandbox does not fetch the launcher. `mill` 1.x publishes native launchers — a real host's
 download folder holds entries like `1.1.8-native-mac-aarch64` beside older jars — so fetching it
 would put an executable the sandbox chose into a directory the user's own `./mill` runs from,
-outside any sandbox. Provisioning it instead makes Mill follow sbt's rule rather than its own.
+outside any sandbox. Provisioning it instead makes `mill` follow sbt's rule rather than its own.
 
 That rule, stated once because it explains both tools: **the user provisions the launcher; the
 sandbox fetches only artifacts.** sbt's launcher comes from `cs install sbt` and everything else it
-needs is a jar the JDK reads, fetched into the writable agent cache through the proxy. Mill's
+needs is a jar the JDK reads, fetched into the writable agent cache through the proxy. `mill`'s
 launcher *is* the fetched thing, and it is an executable. Provisioned, it is read/execute like
 sbt's — that one file, not the download folder around it, which holds every launcher the user ever
 ran. The folder is `MILL_FINAL_DOWNLOAD_FOLDER` or `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`.
@@ -389,7 +391,7 @@ MILL_VERSION → .mill-version → .config/mill-version → build.mill.yaml (mil
 
 The first file that exists decides, even when what it yields is empty: the script's `elif` chain
 has no fall-through. What the chain leaves empty falls to `DEFAULT_MILL_VERSION` — the
-environment, else the assignment at the top of the bootstrap — which is Mill's recommended way to
+environment, else the assignment at the top of the bootstrap — which is `mill`'s recommended way to
 manage the version (`./mill updateMillScripts`); `.mill-version` and the header are overrides.
 Only a script with no default at all is unpinned.
 
@@ -415,9 +417,9 @@ which is what §2.1 exists to prevent.
 The script stages a download at `${MILL_OUTPUT_DIR:-out}/mill-temp-download`, inside the project,
 which `PROJECT` already covers. It needs no row of its own.
 
-**Three more things Mill needs, each measured by §7.4's gate against `probe/mill-fixture`:**
+**Three more things `mill` needs, each measured by §7.4's gate against `probe/mill-fixture`:**
 
-- **`mill-jvm-version: system` in the build header.** Mill provisions its own JVM through
+- **`mill-jvm-version: system` in the build header.** `mill` provisions its own JVM through
   Coursier's index by default (`zulu:25`, "regardless of what is installed"), which is a JDK
   fetched by the build into a writable, executable place — what §3.1 refuses for sbt. `system`
   takes `java` from `PATH`, which §4 makes the granted JDK. The key lives in the project — a
@@ -426,7 +428,7 @@ which `PROJECT` already covers. It needs no row of its own.
   project, read at preflight like the version.
 - **`--no-daemon`.** The launcher and the daemon talk over a loopback TCP socket
   (`out/mill-daemon/socketPort`), which the profile grants to nothing: loopback is every local
-  service. Without the daemon there is no socket. Mill's counterpart of sbt's `--jvm-client`,
+  service. Without the daemon there is no socket. `mill`'s counterpart of sbt's `--jvm-client`,
   measured the same way — the daemon form stays a gate row.
 - **`out/mill-daemon/` is cleared at session start.** The launcher memoizes its resolved
   daemon classpath and JVM home under `out/mill-daemon/cache` and reuses them while the files they
@@ -634,9 +636,9 @@ Permissions, against §2.1:
 ```text
 agent cache root/coursier/v1/**   RW      artifacts the build downloads
 resolved Coursier JDK home/**     RX      §3.1
-provisioned Mill launcher         RX      §3.3, one file, provisioned rather than fetched
+provisioned mill launcher         RX      §3.3, one file, provisioned rather than fetched
 user Coursier v1/**               absent  not granted at all
-user Mill cache, except download/ absent  not granted at all
+user mill cache, except download/ absent  not granted at all
 ```
 
 ### 5.1 Why not the user's cache
@@ -647,7 +649,7 @@ checksum under a coordinate some *other* project resolves poisons a later ordina
 that project — no agent, no sandbox, no review, and no expiry, because a cached release artifact is
 treated as immutable.
 
-`PLAN-COURSIER.md` forbids exactly this for the container, and reaches it differently: a Podman `:O`
+`PLAN-COURSIER.md` forbids exactly this for the container, and reaches it differently: a podman `:O`
 upper layer keeps the host cache readable and unwritable. Seatbelt has no mount namespace, so no
 overlay is available here and separation has to be by root. The two documents agree on the
 property and differ only in mechanism.
@@ -694,7 +696,10 @@ It does not inherit `sandbox-apt-get`'s discoverability. `apt-get install` fails
 the plain name teaches the agent to look for the prefixed one; `sbt test` in the container
 *succeeds*, in the slower venue against a different cache, and nothing prompts a reconsideration. So
 the authority section carries the instruction instead (§9.2), and container `sbt` stays reachable
-and unshadowed.
+and unshadowed. Discoverability is the launcher's, not the image's, because only the launcher
+knows the platform: a macOS session launched *without* the option gets one discovery line — the
+command is absent, and relaunching with `--run-on-host` is what adds it — while Linux and Windows
+sessions hear nothing about a command they can never have.
 
 That makes the venue a norm rather than an enforcement: an agent that ignores the instruction gets
 a slower build, not a refusal. This is a deliberate difference from the egress rule, where the proxy
@@ -702,40 +707,62 @@ actually refuses.
 
 ### 6.2 Transport
 
-The shape `ClipboardBroker` already uses: FIFOs under the sandbox's `/tmp`, made by the host side's
-first exec, so a session without the channel has none and the command fails at once. The host side
-holds one long-lived `podman exec` reading requests, and answers each through a short one, so the
-sandbox opens nothing outward and the host runs nothing it did not start.
+The shape `ClipboardBroker` already uses, sized up to a build: FIFOs under the sandbox's `/tmp`,
+made by the host side's first exec, so a session without the channel has none and the command fails
+at once. The host side holds one long-lived `podman exec` reading requests, so the sandbox opens
+nothing outward and the host runs nothing it did not start.
 
-A build is a larger protocol than a clipboard request: streamed stdout and stderr, an exit code, and
-a working directory. Stdin is excluded (§1), which removes the interactive modes and the
-half-closed cases with them.
+A build is a larger protocol than a clipboard request. One request carries the tool, the working
+directory and the arguments; the answer is the build's stdout and stderr, streamed back through two
+more execs for as long as the build runs, then its exit code. Stdin is excluded (§1), which removes
+the interactive modes and the half-closed cases with them. One build at a time: the shim serializes
+requests under a lock, as the clipboard shim does, and the broker reads them sequentially. Serial
+is the friendlier answer, not a shortcut — §3.2 admits one sbt server per project, so a concurrent
+second sbt request would be *refused* where a queued one simply runs next, and `mill` contends on
+`out/` the same way; what queuing costs is only the two-tools-at-once case. The per-transaction
+FIFOs leave a concurrent broker open as an increment if a tool ever makes it worth having.
 
-The launcher injects the host project path so the shim can translate its own working directory from
-`/workspace/<sub>`. The container therefore learns the host path — the disclosure §9.3 records —
-whether or not same-path mounting is ever adopted.
+The broker runs each request as a child process — the wrapper under a private verb of its own
+vehicle, §8.3's rule — rather than on a thread of its own JVM: teardown is then a signal to a
+process whose shutdown hook is already the measured §4 cleanup, and a cancelled build cannot take
+the broker with it.
 
-**The working directory is attacker-supplied, and it never becomes a profile grant.** `PROJECT` is
-always the launcher's canonical project root, resolved at §4 step 1 from the launch and not from any
-request. The translated path becomes a separate `WORKING_DIRECTORY`, used only as the child
-process's cwd.
+**Teardown follows descriptor lifetime, not forwarded signals.** The shim holds one FIFO open for
+writing for the life of its request, and the request travels on that same descriptor — so no
+instant exists where a request is runnable without its liveness, and a handshake whose stream
+never completes is stillborn on a deadline with no build started. The other FIFOs are the
+transaction's own, created by the shim under its pid, so a later invocation — the lock frees when
+its holder dies — can never attach to a predecessor's streams. The broker acts on EOF alone. An
+interrupted command, a killed shim and a dead sandbox container all end the same way — the kernel
+closes the descriptor — so the broker needs no cooperation from inside the sandbox to learn the
+reader is gone: it sends `SIGTERM` to the wrapper child, whose hook ends the recorded groups, the
+server and the session (§4, the gate's SIGTERM row). A broker killed outright leaves the wrapper
+to finish and tear its session down alone, and a kill of both leaves recorded groups the next
+start's scavenger ends. The broker itself lives while the sandbox container runs, as the
+clipboard broker does.
+
+**The working directory is attacker-supplied, and it never becomes a profile grant.** It travels in
+its container spelling, `/workspace/<sub>`, and the broker translates and validates it
+(`RunOnHostPolicy.workingDirectory`): resolved canonically, and refused unless it is `PROJECT` or
+beneath it, with `CHANNEL_UNAVAILABLE` and the path — never a silent fall back to the root, and
+never left for the profile to answer as a confusing wall of denials. No host
+path is injected into the container for a shim-side translation, which would only hand the boundary
+a value the broker must re-derive to trust. `PROJECT` is always the launcher's canonical project
+root, resolved at §4 step 1 from the launch and not from any request. The translated path becomes a
+separate `WORKING_DIRECTORY`, used only as the child process's cwd.
 
 Keeping the two apart is a correctness rule before it is a security one. Deriving `PROJECT` from the
-request would *shrink* the grant whenever the agent invokes from a subdirectory, and sbt and Mill
+request would *shrink* the grant whenever the agent invokes from a subdirectory, and sbt and `mill`
 both walk upward to discover their build root and write sibling modules' output; the build would
-fail on denials that look like a broken profile.
+fail on denials that look like a broken profile. §14.1 and §15 carry the hostile cases.
 
-`WORKING_DIRECTORY` is still validated, because a request choosing a path outside the project would
-otherwise produce a confusing wall of denials rather than one answer. The broker resolves it
-canonically and refuses it unless it is `PROJECT` or beneath it, with `CHANNEL_UNAVAILABLE` and the
-path — never a silent fall back to the root. §14.1 and §15 carry the hostile cases.
+The arguments are not validated beyond their framing: they are input to code the agent already
+chooses (§2.0), and the Seatbelt profile, not the command line, is the boundary.
 
 ### 6.3 Availability
 
-The channel exists only when `--run-on-host` names the tool (§9.1). Without it the command is
-absent, and its absence is what the agent sees.
-
-Teardown is unresolved: §17.
+The channel exists only when `--run-on-host` names the tool (§9.1). Without it the FIFOs are never
+made, and the command fails at once naming the launch option — which is what the agent sees.
 
 ---
 
@@ -743,7 +770,7 @@ Teardown is unresolved: §17.
 
 ### 7.1 Backend
 
-`sandbox-exec` with one parameterized Seatbelt profile shared by sbt and Mill.
+`sandbox-exec` with one parameterized Seatbelt profile shared by sbt and `mill`.
 
 The wrapper supplies:
 
@@ -762,7 +789,7 @@ PROXY endpoint
 it reaches the backend as the child's cwd rather than as a rule (§6.2).
 
 `TOOL` is the launcher the build starts through: for sbt the Coursier-installed wrapper, with
-`SBT_DISTRIBUTION` the home of the inner launcher it execs (§3.2, both required); for Mill the one
+`SBT_DISTRIBUTION` the home of the inner launcher it execs (§3.2, both required); for `mill` the one
 provisioned launcher file (§3.3), and no `SBT_DISTRIBUTION`. The bootstrap `PROJECT/mill` needs no
 parameter: it is a project file, and the project runs.
 
@@ -890,6 +917,11 @@ continues `#!/usr/bin/env bash`, so `bash` is in it as well as `sh`, alongside t
 `dirname`, `basename` and `readlink` the inner launcher calls — but that list is where the search
 starts, not where it ends.
 
+The measured set is one file, a resource of the launcher's own artifact
+(`src/main/resources/agentsandbox/runtime-authority.txt`): what the production wrapper grants is
+what the probes measured, and the gate and a session run one authority rather than two copies
+that can drift. `probe/build-profile-iterate.sh` is how the file grows.
+
 ### 7.3 Network
 
 Seatbelt permits connections only to this build's proxy ingress endpoint (§8), and UNIX-domain
@@ -946,8 +978,8 @@ link PROJECT/x -> PROJECT/.git/config        denied
 write via PROJECT/link -> PROJECT/.git       denied
 write PROJECT/.ko-agent-sandbox/...          denied
 write the user's Coursier v1                 denied
-write the user's Mill download folder        denied
-read and execute the Mill launcher           allowed
+write the user's mill download folder        denied
+read and execute the mill launcher           allowed
 write agent cache coursier/v1/...            allowed
 write PROJECT/...                            allowed
 write session temporary directory            allowed
@@ -960,6 +992,12 @@ SIGTERM mid-build                            the wrapper's own hook cleans every
 SIGKILL mid-build                            next start ends the running group provably
 SIGKILL, then shim killed after a clean exit next start condemns; orphan server ended by
                                              portfile attribution
+
+sbt test through the channel                 the build's own exit code, output streamed
+channel working directory outside project    refused with CHANNEL_UNAVAILABLE
+shim killed mid-build                        the broker ends the build; the session collected
+sandbox dead mid-build                       every exec gone; build ended; the broker exits
+
 after every wrapper row                      no proxy, server or session directory survives
 ```
 
@@ -970,12 +1008,14 @@ plain java on the emitted classpath, because an `sbt Test/runMain` wrapper would
 server holding the project's portfile (§3.2). The negative matrix runs under the profile
 `EmitBuildProfile` generates. There is no warm-up: a cold agent cache resolves through the proxy
 inside the profile, and the allowed-fetch row makes itself cold by deleting an artifact first.
-The sbt rows build this repository; the Mill rows build `probe/mill-fixture`, a one-module Mill
-project that exists for them, since a Mill build of the launcher itself would be a second build
+The sbt rows build this repository; the `mill` rows build `probe/mill-fixture`, a one-module `mill`
+project that exists for them, since a `mill` build of the launcher itself would be a second build
 definition rather than a measurement; `probe/deny-fixture` exists for the non-allowlisted row,
 whose resolution must reach a refused host and be reported by §8.4's diagnostic.
 A "write" in the negative rows is an open for append that writes nothing, and every marker it
 creates lives in a scratch tree it removes, so the matrix can run against a real repository.
+The channel rows run the image's shim against the launcher's broker with the `podman exec`
+transport stubbed to this host — the transport is what the stub replaces, never the protocol.
 
 The four `.git` rows after the first re-run under the real profile what `seatbelt-semantics.sh`
 measured in isolation — access-time evaluation, case folding, link creation and symlink
@@ -1014,7 +1054,7 @@ command — §3.2 ends the server before the lock is released, so no server span
 the client is not its extent: the server the client forks is what resolves, and it lives past the
 client until the wrapper ends it. The lock states the wrapper's liveness and the §4 records own
 the children's; binding the proxy to the lock's session keeps the answer unchanged if a warm
-server spanning invocations is ever added. Mill under `--no-daemon` (§3.3) needs only the
+server spanning invocations is ever added. `mill` under `--no-daemon` (§3.3) needs only the
 invocation, which the session also covers.
 
 ### 8.3 Artifact
@@ -1100,7 +1140,8 @@ Whichever of the two features lands second implements the refusal and owns the c
 `authoritySection` gains a paragraph when the option is in force, in the same act mode as the
 workspace and egress paragraphs. It states:
 
-- `sandbox-run-on-host sbt …` as the command, and that it runs on the host at host speed;
+- `sandbox-run-on-host sbt …` as the command, and that it runs on the host, on host memory
+  reclaimed on exit and at host speed;
 - that container `sbt` still exists and runs in the container, over the **same** `target/` — one
   directory, seen from both sides. The two venues compile with different JVMs against different
   Coursier caches, so what one leaves there may not be usable by the other: a venue switch can cost
@@ -1120,8 +1161,9 @@ host build's JVM is a macOS binary and the container's is Linux, and their Cours
 differ — so it does not establish compatibility between the venues' build state. That leaves
 legible paths in build output as the benefit, which did not carry the increment.
 
-The host path reaches the container regardless, because §6.2 injects it. `SECURITY.md`'s
-low-bandwidth list is where that belongs.
+The host path reaches the container regardless: the build's streamed output names it, as every
+compiler and launcher message carrying an absolute path does. `SECURITY.md`'s channel section is
+where that belongs.
 
 ### 9.4 `--stats`
 
@@ -1195,7 +1237,7 @@ boundary configuration:
 ```
 
 One list per tool, so a repository that builds with both grants each only what it resolves. Neither
-needs a GitHub release CDN: the only fetch that used one is the Mill bootstrap's own launcher
+needs a GitHub release CDN: the only fetch that used one is the `mill` bootstrap's own launcher
 download, which §3.3 provisions on the host instead.
 
 The file's grammar is its own, narrower than any the proxy has: `+host <host>` entries and
@@ -1240,18 +1282,18 @@ that makes its claim true.
 | the complete boundary, host side included | launcher diagram | README diagram, `SECURITY.md` |
 | what the container→host channel grants | `SECURITY.md` | §6, README option warning |
 | cache poisoning and its blast radius | `SECURITY.md` | §5.1 |
-| the host project path reaching the container | `SECURITY.md`, low-bandwidth | §6.2, §9.3 |
+| the host project path reaching the container | `SECURITY.md`, the channel section | §6.2, §9.3 |
 | what a host build may write, and which venue to use | `authoritySection` | §2.1, §2.3, §9.2 |
 | the build allowlist file and its namespace | `SECURITY.md`, closed namespace | §11, its tests |
 | venue-switch cost and stale-artifact cleanup | `AGENTS-SANDBOX.md` | §9.2 |
 
-### 12.1 The README's opening claim becomes mode-dependent
+### 12.1 The README's opening claim stays the default mode's
 
 The README states that the sandbox reaches no user files except the project. With `--run-on-host`
-that is a default-mode claim: the option adds host-native execution reaching the Coursier JVM root,
-this project's agent cache root, and the build's own proxy. The opening names the exception, and the
-diagram shows the host-side path as a branch that exists only under the option and only on macOS.
-The threat analysis is not repeated there; it points to `SECURITY.md`.
+that is a default-mode claim, and the opening keeps it: the option is an opt-in the reader meets
+after the overview — in the Reference entry that introduces it, and in the diagram as a brief
+branch that exists only under the option and only on macOS. The threat analysis is not repeated in
+either place; both point to `SECURITY.md`.
 
 ### 12.2 `SECURITY.md` needs a section, not a line
 
@@ -1268,10 +1310,10 @@ it:
 - cache poisoning, with its blast radius drawn precisely: a poisoned agent cache reaches later
   agent builds *of the same project*, which are themselves sandboxed; it does not reach the user's
   own cache or any other project, because the separation is by root. `PLAN-COURSIER.md` reaches the
-  same property for the container by a Podman `:O` upper, and the two mechanisms differ only
+  same property for the container by a podman `:O` upper, and the two mechanisms differ only
   because Seatbelt has no mount namespace;
-- the host project path, in the low-bandwidth channel list, since §6.2 injects it whether or not
-  same-path mounting is ever adopted;
+- the host project path, which the build's streamed output names whether or not same-path mounting
+  is ever adopted;
 - that under `--write=reject` plus `--run-on-host` the project is no longer read-only to the
   session, and why that is composition rather than escape.
 
@@ -1282,7 +1324,7 @@ it:
 ### Phase 1 — Common policy and prerequisite validator
 
 Project canonicalization; Coursier JDK-home resolution and validation; agent cache-root
-construction and its outside-the-project check; sbt launcher validation; Mill bootstrap, pinned
+construction and its outside-the-project check; sbt launcher validation; `mill` bootstrap, pinned
 version and provisioned launcher validation; the policy model; structured diagnostics.
 
 No backend yet.
@@ -1294,9 +1336,9 @@ No backend yet.
 Profile generation, the §7.2 guard rules, and proxy-only network rules.
 
 **Exit criterion:** `probe/build-profile-gate.sh` reports no FAIL for both tools — sbt on this
-repository, Mill on `probe/mill-fixture` — with only the Phase 3 proxy rows as SKIP; the client
-sbt 2 runs under the profile is decided and §3.2 says which, as §3.3 says `--no-daemon` for Mill;
-`probe/runtime-authority.txt` holds every grant the gate needed and nothing else. A negative
+repository, `mill` on `probe/mill-fixture` — with only the Phase 3 proxy rows as SKIP; the client
+sbt 2 runs under the profile is decided and §3.2 says which, as §3.3 says `--no-daemon` for `mill`;
+`runtime-authority.txt` (§7.2.2) holds every grant the gate needed and nothing else. A negative
 result on the four `.git` rows changes the design, not the code.
 
 ### Phase 3 — Session lifecycle and build egress proxy
@@ -1323,9 +1365,11 @@ accepted through the tokenless handshake, and ends in a confirmed server exit.
 
 `sandbox-run-on-host`, the host-side broker, `--run-on-host`, and the authority-section paragraph.
 
-**Exit criterion:** an agent-invoked `sbt test` runs on the host and returns its exit code; the
-teardown cases of §17 have answers with tests; `SECURITY.md`'s section, the launcher boundary
-diagram and the README opening and diagram (§12.1, §12.2) describe the path this phase creates.
+**Exit criterion:** an agent-invoked `sbt test` runs on the host and returns its exit code; §6.2's
+teardown — an interrupted command, a killed shim, a dead sandbox container — holds under test, the
+`podman exec` transport stubbed so the gate needs no podman machine; `SECURITY.md`'s section, the
+launcher boundary diagram and the README opening and diagram (§12.1, §12.2) describe the path this
+phase creates.
 
 ### Phase 5 — Launcher surface and hardening
 
@@ -1333,8 +1377,8 @@ diagram and the README opening and diagram (§12.1, §12.2) describe the path th
 tests; proxy bypass tests; forked-process tests; malicious `build.sbt` / `build.mill` fixtures;
 the venue script of §14.9, and the coherence probes of §14.7.
 
-Documentation: the README Reference and `--help` rows of §12, for every option and verb this plan
-adds.
+Documentation: the README Reference and `--help` rows of §12 for the verbs this phase adds —
+`--run-on-host`'s row landed with Phase 4, the phase that made its claim true.
 
 ---
 
@@ -1374,7 +1418,7 @@ Coursier/jvm/*
 ~/.sbt/boot/*
 the Coursier-installed sbt launcher
 the user's Coursier v1
-the user's Mill download folder
+the user's mill download folder
 arbitrary $HOME path
 ```
 
@@ -1392,7 +1436,7 @@ Expected: allowed.
 
 ### 14.5 Process inheritance
 
-sbt and Mill launch a forked JVM, a shell command and a test process. Verify children retain
+sbt and `mill` launch a forked JVM, a shell command and a test process. Verify children retain
 containment — in particular that the §7.2 guard rules apply to them.
 
 ### 14.6 Network bypass
@@ -1447,7 +1491,7 @@ built on those answers; if E3, E4 or E5 stops answering DENIED, the profile no l
 
 The suite is a script CI runs, run by hand on macOS until CI exists. `TODO.md` sets the standard it
 must meet: a run with no venue recorded is not evidence for the next release. So it records macOS
-version, podman version and machine provider, the Coursier JDK, sbt and Mill versions, and the
+version, podman version and machine provider, the Coursier JDK, sbt and `mill` versions, and the
 project filesystem's case sensitivity — the last because §2.1's fold rule depends on it.
 
 ---
@@ -1471,11 +1515,11 @@ A symlink must not provide authority beyond the underlying filesystem policy.
 
 ## 16. Definition of done
 
-1. sbt and Mill compile and test normal Scala projects.
+1. sbt and `mill` compile and test normal Scala projects.
 2. Missing dependencies download into the project's agent Coursier cache.
 3. The build cannot modify Coursier-managed JVMs.
 4. The build cannot modify `~/.sbt/boot`.
-5. The build cannot modify the user's own Coursier cache or Mill download cache.
+5. The build cannot modify the user's own Coursier cache or `mill` download cache.
 6. The build cannot read or write git control state or `.ko-agent-sandbox`, at any depth, in any
    case, through a write, a link or a symlink.
 7. The build cannot access unrelated user data, the launcher state root included.
@@ -1492,32 +1536,23 @@ A symlink must not provide authority beyond the underlying filesystem policy.
 
 ## 17. Open questions
 
-These are implementation experiments, not reasons to broaden the policy in advance. The first four
-change the design if they answer badly, and §7.4 is where they are answered.
+These are implementation experiments, not reasons to broaden the policy in advance. The two under
+Seatbelt semantics change the design if they answer badly, and §7.4 is where they are answered.
 
 ### Seatbelt semantics
 
-Canonicalization, case folding, access-time evaluation and hardlinks are measured; §7.2 carries the
-answers. What remains:
+Canonicalization, case folding, access-time evaluation and hardlinks are measured, and the runtime
+reads the toolchain needs are the measured file §7.2.2 bundles; §7.2 carries the answers. What
+remains:
 
-- What is the minimum set of non-user-data runtime reads the Coursier JVM needs on macOS 26.4+?
 - What `sbtn` needs under the profile. Not a blocker — §3.2 pins `--jvm-client` — but a gate row
   keeps measuring it, and if it starts passing the pin becomes a choice.
-
 - `mach-lookup` is granted unfiltered, and the system tool directories are executable (a build's
-  scripts need `find`, `mount` and whatever else; `probe/runtime-authority.txt`). Together those
+  scripts need `find`, `mount` and whatever else; `runtime-authority.txt`). Together those
   let a build reach any Mach service — `open` through LaunchServices would start an application
   outside the profile. Measure the services a build actually needs, as `ops` measures operation
   families, and filter to them (`(allow mach-lookup (global-name …))`, the shape Apple's profiles
   use); §14.5's process-inheritance rows are where the answer is checked.
-
-### The channel
-
-- What kills a running host build when the user interrupts the agent, and what happens to it when
-  the sandbox container dies? An orphaned sbt on the host is not plausible but measured: the
-  probes left fifty servers running, some for two weeks, because `sbt shutdown` reaches only a
-  server whose socket it can find. §4 ends by pid what it started and scavenges what a kill left;
-  what remains open is who sends the signal when the interrupt arrives from inside the container.
 
 ### Claims to confirm rather than assume
 
@@ -1541,7 +1576,7 @@ answers. What remains:
   https://get-coursier.io/upcoming/features-cache/
 - Coursier installation/application directory behavior:
   https://get-coursier.io/docs/cli-installation
-- Mill project-local bootstrap scripts:
+- `mill` project-local bootstrap scripts:
   https://mill-build.org/mill/cli/installation-ide.html
 - sbt server: domain-socket and TCP modes, the port file, discovery and the token (§3.2, §7.3):
   https://www.scala-sbt.org/1.x/docs/sbt-server.html

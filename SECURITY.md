@@ -85,12 +85,17 @@ This is the default, with qualifications under Not defended: a session that sets
 ("The `.git` pins of `WORKSPACE_GUARD=none`"); and on some platforms the filter has no measured
 evidence ("The workspace filter, on the platforms where it is unverified").
 
+Under `--run-on-host` the tree gains a second producer the filter never sees: the host build,
+writing the host tree directly. The Seatbelt profile's deny rows guard the same property there —
+`.git` and `.ko-agent-sandbox` unreachable at any depth, case folded, links included ("Run on
+host", below).
+
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own — a security property, not politeness: a change you were not conscious of is one you
 cannot account for when reasoning about your own system. Enumerated, because each entry is a place
 a shortcut would be tempting:
 
-- the Podman **machine's** `/etc/fuse.conf` gains `user_allow_other` only after `--build` shows the
+- the podman **machine's** `/etc/fuse.conf` gains `user_allow_other` only after `--build` shows the
   change as a diff of the actual file plus the exact script, and you consent; the original is saved
   to `/etc/fuse.conf.ko-agent-sandbox.orig` first, and declining prints the script for you to run
   yourself;
@@ -264,7 +269,7 @@ What an auditor trusts, and how each link is checked:
 - **The installed binary's identity.** The launcher digests the bundled source, passes the digest
   into the image build, and requires the installed binary's `--version` to echo it back; a binary
   that is not the one this launcher's source builds fails `--build` rather than being trusted.
-- **No new privilege.** Installed into the Podman machine's user home on macOS and Windows, the
+- **No new privilege.** Installed into the podman machine's user home on macOS and Windows, the
   host user's on native Linux (the README names the path), it mounts as an ordinary user through
   the setuid `fusermount3`: no root, no capabilities, no system daemon. The one root-assisted
   step — `user_allow_other` in the machine's `/etc/fuse.conf`, required for a cross-uid FUSE
@@ -293,7 +298,7 @@ repository the agent creates deeper in the tree is unpinned there, the residue "
 directory" describes.
 
 They also hold only while the file each one pinned keeps its inode, because a pin is a mount and a
-mount cannot follow the file out from under it. On a macOS Podman machine, once the host gives
+mount cannot follow the file out from under it. On a macOS podman machine, once the host gives
 `.git/config` or `.git/hooks` a new inode while the session runs — a rename over it, or a rename
 away and a fresh object at the path, which is how `git config` and most editors write — the sandbox
 is writing the host's current file within about two seconds, through the writable parent. It is
@@ -348,7 +353,7 @@ request are trusted as they arrive. npm's install-time audit is off by default (
 `allow=npm-audit` allowance, "Reading without being able to write" below); where a project
 enables it, its warnings are advisory: nothing gates on them.
 
-**Container, runtime and kernel escape.** On Linux the boundary ultimately rests on rootless Podman,
+**Container, runtime and kernel escape.** On Linux the boundary ultimately rests on rootless podman,
 the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to contain a
 working kernel or container-runtime exploit; if that enters the threat model, the answer is a
 stronger isolation layer (gVisor, a microVM), bought at its compatibility cost, not more flags here.
@@ -713,6 +718,69 @@ else refuses the launch, like the workspace guard) opens a channel with these pr
 - **Nothing outlives the session.** The FIFOs are on the container's tmpfs; the broker ends with
   the sandbox, and a broker that dies leaves the shim failing within its own bound, never the TUI
   blocked.
+
+## Run on host
+
+Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`) is a container→host
+**execution** path — the one place this design runs code the agent chose outside the container —
+and what bounds it is a Seatbelt profile, not the container the build is no longer in.
+`doc/PLAN-SBT-ON-HOST.md` is the full contract; the properties, priced:
+
+- **macOS only, structurally, not by neglect.** On Linux there is no VM between the sandbox and
+  the hardware: a container build already runs at host speed on host memory, so the venue would
+  buy nothing — and neither bubblewrap nor Landlock can express the guard rows below, whose
+  name-pattern denies are evaluated at access time (a `.git` created *mid-build* is covered),
+  while their mounts and rulesets are fixed at start. Windows AppContainers express the grants
+  but not the denies: ACL inheritance has no name patterns, so a mid-build `.git` inherits the
+  project's allow — a race where an invariant is required. Seatbelt's access-time path filters
+  are what make the guard an invariant, and the feature exists only where that holds.
+
+- **The sandbox asks; the host answers.** The clipboard channel's shape, sized up to a build: a
+  broker the launcher spawns holds one `podman exec` reading a FIFO under the sandbox's `/tmp`,
+  runs each request as a child of its own, streams the build's output back, and hands over the
+  build's exit code. No host listener, no port, and nothing runs that the host did not start
+  (`RunOnHostChannel`, the image's `sandbox-run-on-host` shim).
+- **The profile is the boundary; the request is not.** A request carries a tool, a working
+  directory and arguments. The tool must be one the launch named. The working directory — the one
+  value arriving from inside the sandbox — is canonicalized and proven inside the project before
+  anything derives from it, and never changes the profile's project grant. The arguments are
+  deliberately not vetted: they select code the agent already chooses (`sbt 'set …'` reaches
+  arbitrary Scala without touching `build.sbt`), and the profile confines whatever they select.
+  What a build reaches, in whole: the project read-write minus git control state and
+  `.ko-agent-sandbox` — denied at any depth, case folded, link creation included — its own
+  per-project build caches, one Coursier-managed JDK read-only, a session temporary directory,
+  and loopback to its own egress proxy, which admits the artifact repositories
+  `.ko-agent-sandbox/host-command/<tool>/egress/allowed` names (`+host` lines only, a closed
+  namespace like its parent) plus Maven Central. Everything else user-owned is invisible — the
+  launcher state root and the user's own caches included.
+- **One sbt server per project, and only this session's own.** A thin sbt client attaches to
+  whatever server the project's portfile names and then runs with *that server's* environment —
+  its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live
+  server holds the portfile, starts the build's server inside the profile, and ends it, portfile
+  included, before the session ends. The cost is that no warm daemon spans builds: sbt's server
+  lives for one `sandbox-run-on-host` command, and `mill` runs `--no-daemon`.
+- **The payload that matters runs later, as you.** A build that writes `.git/hooks/post-checkout`
+  is perfectly contained and entirely beside the point: the payload would run on your next
+  `git status`, outside every sandbox. That property has two producers now — the workspace filter
+  for writes through `/workspace`, this profile's deny rows for writes by the build — and both are
+  named where it is stated ("The host's git executing what the sandbox wrote", above).
+- **Cache poisoning stops at the project.** The build writes its own per-project Coursier cache,
+  never yours: a poisoned artifact reaches later agent builds of the same project, which are
+  themselves sandboxed, and no other project and no unsandboxed build. The separation is by root,
+  because Seatbelt has no mount namespace to overlay with (`PLAN-COURSIER.md` reaches the same
+  property for the container by a podman `:O` upper).
+- **The build's output names host paths.** Every compiler message carrying an absolute path tells
+  the container where the project lives on the host. Disclosure, not authority.
+- **`--write=reject` composes, and the project is then no longer read-only to the session.** A
+  host build writes `target/` and whatever else the profile's project grant admits. Composition
+  rather than escape — both are authority the user typed — but a reject session wanted as
+  evidence-grade read-only should not carry `--run-on-host`.
+- **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
+  request, and the request itself travels on it, so no build starts without its liveness; an
+  interrupted command, a killed shim and a dead sandbox container all close it, and
+  the broker ends the build with SIGTERM — the wrapper's own hook teardown, which ends the build's
+  process groups, its sbt server and its proxy, and removes the session directory. A kill nothing
+  survives leaves recorded groups the next start's scavenger ends by proof, never by guess.
 
 ## No containers inside the sandbox by default
 

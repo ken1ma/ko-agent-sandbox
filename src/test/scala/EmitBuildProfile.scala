@@ -7,7 +7,7 @@
 //
 //   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
 //
-// The project defaults to the working directory; the gate's Mill rows name probe/mill-fixture.
+// The project defaults to the working directory; the gate's mill rows name probe/mill-fixture.
 // The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's.
 
 package agentsandbox.launcher

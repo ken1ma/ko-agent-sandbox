@@ -121,9 +121,9 @@ object SeatbeltProfile:
       case _ if policy.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
       case _ if policy.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
-        Left("a Mill profile has no sbt distribution to grant")
+        Left("a mill profile has no sbt distribution to grant")
       case _ if policy.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
-        Left("a Mill profile has no sbt global base to grant")
+        Left("a mill profile has no sbt global base to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
