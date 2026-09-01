@@ -62,3 +62,25 @@ The client then exits 0. Nothing was compiled, nothing more is printed, no serve
 **Expected:** a nonzero exit and a message naming the failed server start. `--jvm-client` in the
 same environment either completes the command or fails with output; success with no work is the
 one behaviour automation cannot detect.
+
+## No one-shot mode: every invocation is a server rendezvous
+
+**Title:** Feature: a one-shot mode that runs the build in-process and touches no server
+
+**Versions:** sbt 2.0.7.
+
+**Context:** a wrapper that confines builds (CI sandbox, `sandbox-exec` profile) cannot safely
+build a project whose portfile is held by a developer's live server: the thin client attaches to
+whatever server `project/target/active.json` names and the build then runs with *that* server's
+environment, outside the wrapper's confinement. The rendezvous cannot be relocated — the build
+directory is always the working directory, `project/target/active.json` is fixed
+(`NetworkClient.scala`, `CommandExchange.scala`), and `--no-server` still requires a server to
+connect to — so the wrapper's only safe options are refusing the build or shutting the
+developer's server down.
+
+**Ask:** a mode that runs the command queue in-process, holds the project exclusively for the
+duration, and writes no portfile — the property `mill --no-daemon` provides. Confining wrappers
+could then coexist with a developer's live server instead of ending it.
+
+**Related:** #8030 (a one-shot-style `sbt "show scalaVersion"` leaving a hanging server
+surprises users; a true one-shot mode would answer it too).

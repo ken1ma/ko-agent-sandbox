@@ -13,7 +13,7 @@ import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 
 import RunOnHostPolicy.*
-import RunOnHostSession.Session
+import RunOnHostSession.{ServerAnswer, Session}
 import HostCommands.Os
 import SandboxProject.{isMetadataEntry, projectIdOf}
 
@@ -191,24 +191,36 @@ object RunOnHostSandbox:
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ verbAndArguments
 
-  /** `--run-build-on-host <tool> <project> <cwd> -- <args...>`: one channel request as a process
-    * of its own, so the broker's cancel is a SIGTERM whose answer is this wrapper's shutdown hook. */
+  /** `--run-build-on-host <tool> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] --
+    * <args...>`: one channel request as a process of its own, so the broker's cancel is a
+    * SIGTERM whose answer is this wrapper's shutdown hook. */
   def runBuildMain(args: Seq[String]): Unit =
+    def start(
+      toolName: String,
+      project: String,
+      workingDirectory: String,
+      autoShutdown: Boolean,
+      buildArgs: List[String],
+    ): Unit =
+      val tool = toolName match
+        case "sbt"  => Tool.Sbt
+        case "mill" => Tool.Mill
+        case other =>
+          Console.err.println(s"--run-build-on-host: unknown tool $other")
+          sys.exit(2)
+      val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+      sys.exit(
+        run(
+          Path.of(project), tool, buildArgs, bundledRuntimeAuthority(), uid,
+          Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
+          autoShutdownForeignSbt = autoShutdown,
+        ),
+      )
     args.toList match
       case toolName :: project :: workingDirectory :: "--" :: buildArgs =>
-        val tool = toolName match
-          case "sbt"  => Tool.Sbt
-          case "mill" => Tool.Mill
-          case other =>
-            Console.err.println(s"--run-build-on-host: unknown tool $other")
-            sys.exit(2)
-        val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
-        sys.exit(
-          run(
-            Path.of(project), tool, buildArgs, bundledRuntimeAuthority(), uid,
-            Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
-          ),
-        )
+        start(toolName, project, workingDirectory, autoShutdown = false, buildArgs)
+      case toolName :: project :: workingDirectory :: AutoShutdownForeignSbtOption :: "--" :: buildArgs =>
+        start(toolName, project, workingDirectory, autoShutdown = true, buildArgs)
       case other =>
         Console.err.println(s"--run-build-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
@@ -260,6 +272,153 @@ object RunOnHostSandbox:
       finally channel.close()
     catch case _: IOException => false
 
+  val AutoShutdownForeignSbtOption = "--auto-shutdown-foreign-sbt-on-host"
+
+  def foreignServerRefusal(socket: Path): String =
+    s"a live sbt server holds this project's portfile (socket $socket); " +
+      "run `sbt shutdown` there and retry"
+
+  /**
+   * Where the user's own sbt 2 keeps this project's server socket:
+   * `<serverDir>/<half SHA-1 hex of the portfile path's Path.toUri spelling>/sock`, with
+   * serverDir `$SBT_GLOBAL_SERVER_DIR`, else the global base versioned `/2`, then `/server`.
+   * Each input is taken as sbt takes it, because a divergence here is a divergence in what gets
+   * shut down: `SBT_GLOBAL_SERVER_DIR` verbatim, present-but-empty included
+   * (`CommandExchange.scala`), while the global base's own sources are trimmed and empty-filtered
+   * — `SBT_CONFIG_HOME`, else `XDG_CONFIG_HOME/sbt`, else `user.home/.config/sbt`
+   * (`SysProp.defaultGlobalBaseDirectory`). `user.home`, not `$HOME`: sbt reads the property, and
+   * the two can differ. `-Dsbt.global.base`, first in sbt's order, lives in the user's JVM and is
+   * invisible from this process, so a server launched with it derives elsewhere and is never
+   * found at this socket — the refusal below, not a wrong shutdown.
+   */
+  def sbtServerSocket(project: Path, env: String => Option[String], userHome: Path): Path =
+    // java.io.File joins throughout, as sbt's `/` does: an empty parent resolves against the
+    // root, where Path.resolve would keep the result relative.
+    def file(value: String) = java.io.File(value)
+    extension (parent: java.io.File) def /(child: String) = java.io.File(parent, child)
+    def trimmed(name: String): Option[java.io.File] =
+      env(name).filter(_.nonEmpty).map(value => file(value.trim))
+    val uri = project.resolve("project").resolve("target").resolve("active.json").toUri.toString
+    val digest = java.security.MessageDigest.getInstance("SHA-1").digest(uri.getBytes(UTF_8))
+    val hash = digest.map(byte => f"$byte%02x").mkString.take(20)
+    val globalBase =
+      trimmed("SBT_CONFIG_HOME")
+        .orElse(trimmed("XDG_CONFIG_HOME").map(_ / "sbt"))
+        .getOrElse(file(userHome.toString) / ".config" / "sbt")
+        .getAbsoluteFile
+    val serverDir = env("SBT_GLOBAL_SERVER_DIR").map(file).getOrElse(globalBase / "2" / "server")
+    (serverDir / hash / "sock").toPath
+
+  /** A chain longer than this is a cycle or an attempt at one; either way, unanswerable. */
+  private val MaxSymlinkHops = 40
+
+  /**
+   * Whether a path the wrapper is about to speak at could have been planted by a build. The
+   * question is not where the path ends but whether resolving it ever *enters* somewhere a build
+   * writes: from the first component inside, the build chooses what every later component means,
+   * and a link there can send the rest anywhere — including straight back out, which is why the
+   * fully resolved endpoint answers nothing. So the walk follows one hop at a time, checking
+   * where each link *sits* before reading where it points, and answers yes the moment a step
+   * lands in a writable root — the leaf included, since the socket itself may be the planted
+   * link. It stops at the first component absent even as a link: nothing exists beneath it, and
+   * creating it would need a write to the last resolved prefix, outside every writable root by
+   * then.
+   *
+   * The roots are the profile's writable set (`SeatbeltProfile.render`): the project, and the
+   * per-project caches that persist across sessions, so a socket an *earlier* agent's build
+   * planted in a cache is caught as well. Each is compared in both of its macOS spellings, the
+   * firmlink invariant every containment check here shares
+   * (`SandboxProject.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
+   * is skipped; the project is mandatory, so its silence, a relative target, and any unanswerable
+   * walk all count as reachable. A target already lexically inside a root is reachable whatever
+   * the filesystem currently shows, so that is answered before the walk begins.
+   */
+  def reachableThroughBuildWritable(target: Path, project: Path, caches: Seq[Path]): Boolean =
+    def real(path: Path): Option[Path] =
+      try Some(path.toRealPath())
+      catch case _: IOException => None
+    real(project) match
+      case None => true
+      case Some(projectRoot) =>
+        val roots =
+          SandboxProject.withMacDataVolumeAliases(projectRoot +: caches.flatMap(real))
+        def inside(path: Path) = roots.exists(path.normalize.startsWith)
+        if target.getRoot == null || inside(target) then true
+        else
+          try
+            var resolved = target.getRoot
+            var pending = target.iterator.asScala.map(_.toString).toList
+            var hops = 0
+            var reachable = false
+            var absent = false
+            while pending.nonEmpty && !reachable && !absent do
+              val name = pending.head
+              pending = pending.tail
+              if name == "." then ()
+              else if name == ".." then Option(resolved.getParent).foreach(resolved = _)
+              else
+                val step = resolved.resolve(name)
+                if inside(step) then reachable = true
+                else if !Files.exists(step, java.nio.file.LinkOption.NOFOLLOW_LINKS) then
+                  absent = true
+                else if Files.isSymbolicLink(step) then
+                  hops += 1
+                  if hops > MaxSymlinkHops then reachable = true
+                  else
+                    // One hop only: its target's own components are walked, and checked, next.
+                    val link = Files.readSymbolicLink(step)
+                    if link.isAbsolute then resolved = link.getRoot
+                    pending = link.iterator.asScala.map(_.toString).toList ++ pending
+                else resolved = step
+            reachable
+          catch case _: IOException => true
+
+  /**
+   * The consented resolution: under the launch option, end the foreign server instead of
+   * refusing. The socket spoken to is derived from the project path the way sbt derives it,
+   * never read from the portfile, and the portfile's word is only compared against it: workspace
+   * content must not choose where an unconfined write-and-parse lands. The derivation is
+   * authorization, so it is checked as well as computed — a derived socket the project could
+   * have planted is refused, since the project chooses its own content and would then be
+   * choosing the target. Every doubt falls back to the refusal, naming what stopped the shutdown.
+   */
+  def autoShutdownForeignServer(
+    project: Path,
+    portfileSocket: Path,
+    env: String => Option[String],
+    log: String => Unit,
+    buildCaches: Seq[Path] = Seq.empty,
+    userHome: Path = Path.of(System.getProperty("user.home")),
+    shutdownDeadlineMillis: Long = 120_000,
+    releaseDeadlineMillis: Long = 10_000,
+  ): Either[String, Unit] =
+    def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} — $cause")
+    val derived = sbtServerSocket(project, env, userHome)
+    if reachableThroughBuildWritable(derived, project, buildCaches) then
+      refused(
+        s"the socket sbt derives for this project ($derived) is reachable through what a build " +
+          s"writes, so $AutoShutdownForeignSbtOption does not apply",
+      )
+    else if !samePath(derived, portfileSocket) then
+      refused(
+        s"its socket is not the one sbt derives for this project ($derived), " +
+          s"so $AutoShutdownForeignSbtOption does not apply",
+      )
+    else
+      log(s"shutting down the foreign sbt server at $derived ($AutoShutdownForeignSbtOption)")
+      SbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
+        case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
+        // Unreachable is the server gone between the liveness probe and now — the outcome sought.
+        case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
+          val deadline = System.nanoTime + releaseDeadlineMillis * 1_000_000
+          while livePortfileServer(project).isDefined && System.nanoTime < deadline do
+            Thread.sleep(50)
+          if livePortfileServer(project).isEmpty then Right(())
+          else refused("the server answered the shutdown but still holds the portfile")
+
+  private def samePath(a: Path, b: Path): Boolean =
+    a == b || (try a.toRealPath() == b.toRealPath() catch case _: IOException => false)
+
   // ---------------------------------------------------------------------------
   // The thirteen steps
   // ---------------------------------------------------------------------------
@@ -273,6 +432,8 @@ object RunOnHostSandbox:
     log: String => Unit,
     // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
     workingDirectory: Option[Path] = None,
+    // Launch-typed consent, never a request's: the channel forwards what the user launched with.
+    autoShutdownForeignSbt: Boolean = false,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = Path.of(s"/private/tmp/ko-agent-$uid")
@@ -294,9 +455,17 @@ object RunOnHostSandbox:
         _ <-
           if tool != Tool.Sbt then Right(())
           else
-            livePortfileServer(project).toLeft(()).left.map: socket =>
-              s"a live sbt server holds this project's portfile (socket $socket); " +
-                "run `sbt shutdown` there and retry"
+            livePortfileServer(project) match
+              case None => Right(())
+              case Some(socket) if autoShutdownForeignSbt =>
+                // The profile's own persistent writable set, so a socket an earlier build planted
+                // in a cache is no more a shutdown target than one planted in the project.
+                autoShutdownForeignServer(
+                  project, socket, env, log,
+                  buildCaches = Seq(assembled.policy.coursierV1) ++ assembled.sbtGlobal,
+                )
+              case Some(socket) =>
+                Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
       yield (assembled, fileHosts)
 
     prepared match

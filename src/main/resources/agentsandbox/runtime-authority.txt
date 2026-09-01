@@ -1,6 +1,7 @@
 # The runtime authority (RUN-ON-HOST.md "The Seatbelt profile"): paths the toolchain needs that
 # are not the policy's own. One absolute path per line; prefix with "x " if it must also be
-# executable.
+# executable. Entries resolve through realPath, so a symlink entry becomes a grant on its target;
+# list a symlink's directory instead.
 #
 # Measured by `sh probe/build-profile-iterate.sh paths`, which grants every root entry and then
 # removes them cumulatively — a tree stays only if the set without it stops working. Nothing here
@@ -24,9 +25,12 @@ x /usr/bin
 x /sbin
 x /usr/sbin
 
-# Not granted, deliberately: /private/var/select/sh, which /bin/sh consults to choose its
-# personality. The denial prints "Error opening" and the shell runs anyway, so it is not authority
-# this needs — a line added to silence a message is a grant that outlives every build.
+# /private/var/select, whose one entry is the `sh` symlink /bin/sh consults to choose its
+# personality. The shell runs without the read, so this row buys silence, not function: denied,
+# every /bin/sh in the launcher chain complains "Error opening /private/var/select/sh" on stderr,
+# and a benign line repeated on every build teaches readers to skip the stream where the real
+# denials land. What it grants is one world-readable symlink naming the shell flavor.
+/private/var/select
 
 # The JVM reads the OS version from here; without it java refuses to start with
 # "os.version malformed: -1.0". Measured by `paths`, which descended /System to this one file.

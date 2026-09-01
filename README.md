@@ -153,6 +153,15 @@ checkout — [Development](#development).
                          sweeps stale foreign links itself. Host builds
                          write the project even under --write=reject.
                          SECURITY.md "Run on host" prices it
+      --auto-shutdown-foreign-sbt-on-host
+                         with --run-on-host naming sbt: when your own live
+                         sbt server holds the project, a host build shuts
+                         it down and proceeds — one transcript line names
+                         the socket — instead of refusing until you run
+                         `sbt shutdown` there. Only the socket sbt derives
+                         for this project is ever spoken to. Your warm
+                         server dies with whatever clients it had; your
+                         next sbt command starts a fresh one
       --env=<name>[=<value>]
                          forward the host's <name>, which must be set, into
                          the sandbox — or with <value>, set it to that

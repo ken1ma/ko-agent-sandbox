@@ -1,6 +1,6 @@
 #!/bin/sh
 # What the wrapper's orphan recovery and proxy hosting assume, measured before the wrapper encodes
-# them. Four measurements:
+# them. Five measurements:
 #
 #   M1  the egress proxy runs on macOS from its dist jars, admits repo1.maven.org through a
 #       replacement policy (-** plus one +host), refuses everything else, and binds where the
@@ -9,6 +9,9 @@
 #   M3  the sbt server stays in the client's process group after the client exits
 #   M4  the tokenless initialize + sbt/exec shutdown handshake, spoken at the socket's pathname
 #       after its directory is renamed, ends the server
+#   M5  the server's socket is <serverDir>/<half-sha1 of the portfile path's file:// URI>/sock —
+#       the derivation the wrapper's auto-shutdown speaks at (RunOnHostSandbox.sbtServerSocket).
+#       It runs after M2 in the script, because M4 ends the server and takes the portfile with it
 #
 # Run it on the Mac, from this repository's root, when sbt or the proxy changes. It builds the
 # proxy dist if absent, boots one sbt 2.0.7 server in a scratch project under /private/tmp, and
@@ -122,6 +125,24 @@ if grep -q 'token' "$portfile"; then
     report FAIL "M2 local portfile carries no token" "$(cat "$portfile")"
 else
     report PASS "M2 local portfile carries no token" "$(cat "$portfile")"
+fi
+
+# --- M5: the server socket derives from the portfile path's URI (before M4 ends the server) ----
+
+derived=$(python3 - "$portfile" "$work/srv" <<'PY'
+import hashlib, sys
+portfile, srv = sys.argv[1:3]
+uri = "file://" + portfile   # java Path.toUri spelling for an absolute file: file:///private/...
+print(f"{srv}/{hashlib.sha1(uri.encode()).hexdigest()[:20]}/sock")
+PY
+)
+actual=$(python3 -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["uri"].removeprefix("local://"))' \
+    "$portfile")
+if [ "$derived" = "$actual" ]; then
+    report PASS "M5 socket derives from the portfile URI" "$actual"
+else
+    report FAIL "M5 socket derives from the portfile URI" "derived $derived, portfile $actual"
 fi
 
 # --- M3: the server survives in the client's process group -------------------------------------

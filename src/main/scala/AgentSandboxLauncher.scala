@@ -1652,6 +1652,7 @@ object AgentSandboxLauncher:
     command: List[String],
     env: Vector[EnvForward] = Vector.empty,
     runOnHost: Option[Vector[String]] = None,
+    autoShutdownForeignSbt: Boolean = false,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -1680,25 +1681,33 @@ object AgentSandboxLauncher:
       egress: Option[String],
       env: Vector[EnvForward],
       runOnHost: Option[Vector[String]],
+      autoShutdown: Boolean,
     ): Either[String, ParsedCommandLine] =
       rest match
-        case Nil             => Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost))
-        case "--" :: command => Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
+        case Nil =>
+          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost, autoShutdown))
+        case "--" :: command =>
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
-            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost))
+            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost, autoShutdown))
 
         case arg :: tail if arg.startsWith("--egress=") =>
           if egress.isDefined then Left("error: --egress is given twice")
           else choose("--egress", arg.stripPrefix("--egress="), EgressProfiles)
-            .flatMap(value => loop(tail, write, Some(value), env, runOnHost))
+            .flatMap(value => loop(tail, write, Some(value), env, runOnHost, autoShutdown))
 
         case arg :: tail if arg.startsWith("--run-on-host=") =>
           if runOnHost.isDefined then Left("error: --run-on-host is given twice")
           else parseRunOnHost(arg.stripPrefix("--run-on-host="))
-            .flatMap(tools => loop(tail, write, egress, env, Some(tools)))
+            .flatMap(tools => loop(tail, write, egress, env, Some(tools), autoShutdown))
+
+        case RunOnHostSandbox.AutoShutdownForeignSbtOption :: tail =>
+          if autoShutdown then
+            Left(s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} is given twice")
+          else loop(tail, write, egress, env, runOnHost, true)
 
         case arg :: tail if arg.startsWith("--env=") =>
           val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
@@ -1709,6 +1718,7 @@ object AgentSandboxLauncher:
             loop(
               tail, write, egress,
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
+              autoShutdown,
             )
 
         case ("--write" | "--egress" | "--env" | "--run-on-host") :: _ =>
@@ -1722,19 +1732,25 @@ object AgentSandboxLauncher:
             ParsedCommandLine(
               write, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
-              Nil, env, runOnHost,
+              Nil, env, runOnHost, autoShutdown,
             ),
           )
 
         case verb :: tail if ManagementVerbs(verb) =>
-          Right(ParsedCommandLine(write, egress, Some((verb, tail)), Nil, env, runOnHost))
+          Right(ParsedCommandLine(write, egress, Some((verb, tail)), Nil, env, runOnHost, autoShutdown))
 
         case arg :: _ if arg.startsWith("--") =>
           Left(s"error: unknown option $arg\nRun --help for the launcher verbs.")
 
-        case command => Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
+        case command =>
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
 
-    loop(args, None, None, Vector.empty, None)
+    loop(args, None, None, Vector.empty, None, false).flatMap: parsed =>
+      if parsed.autoShutdownForeignSbt && !parsed.runOnHost.exists(_.contains("sbt")) then
+        Left(
+          s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} needs --run-on-host to name sbt",
+        )
+      else Right(parsed)
 
   // -------------------------------------------------------------------------
   // Main
@@ -1809,7 +1825,8 @@ object AgentSandboxLauncher:
            |`target/` — the venues compile with different JVMs against different caches, so a
            |venue switch can cost a rebuild or need cleanup first ("The
            |host's own symlinks"). A host build that fails or is refused is reported to the user,
-           |never re-run in the container.
+           |never re-run in the container. The environment variable
+           |`${RunOnHostChannel.RunOnHostVariable}` carries this tool list.
            |""".stripMargin
       else if hostBuildsAvailable then
         s"""
@@ -2818,7 +2835,11 @@ object AgentSandboxLauncher:
       else
         System.err.println(
           s"run on host: ${runOnHost.mkString(", ")} by --run-on-host; sandbox-run-on-host " +
-            "relays builds to a Seatbelt-confined wrapper on this host",
+            "relays builds to a Seatbelt-confined wrapper on this host" +
+            (if parsed.autoShutdownForeignSbt
+             then s"; your own live sbt server is ended when it holds the project, by ${
+                 RunOnHostSandbox.AutoShutdownForeignSbtOption}"
+             else ""),
         )
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
@@ -2963,7 +2984,10 @@ object AgentSandboxLauncher:
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
       val channelLogFile = logDir.resolve(s"channel-$logStamp-$runSuffix.log")
-      if !RunOnHostChannel.spawnBroker(podman, sandboxContainer, projectDir, runOnHost, channelLogFile)
+      if !RunOnHostChannel.spawnBroker(
+          podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
+          autoShutdownForeignSbt = parsed.autoShutdownForeignSbt,
+        )
       then fail("error: could not spawn the build broker, which serves --run-on-host")
       System.err.println(s"host build log: $channelLogFile")
 

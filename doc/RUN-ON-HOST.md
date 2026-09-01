@@ -223,7 +223,19 @@ The transport, its framing and its teardown are `RunOnHostChannel.scala`'s heade
 own comments. One build runs at a time, serial by design rather than as a shortcut: one sbt server
 per project means a concurrent second sbt request would be *refused* where a queued one simply runs
 next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
-broker open as an increment if a tool ever makes it worth having.
+broker open as an increment if a tool ever makes it worth having. A *foreign* live server — the
+user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
+launch carried `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
+socket it derives itself (SECURITY.md "One sbt server per project" has the security argument).
+
+Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
+one-server-per-project exclusivity is also the lock over `target/`. A second rendezvous on the
+same tree — a shadow base directory, a relocated portfile — would put two unsynchronized
+compilers in one content-addressed store, which is why the venues coexist on the source and never
+on the outputs. Nor can an invocation opt out: sbt's build directory is always its working
+directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either attaches to
+the portfile's server or contends for it. `mill` needs none of this, running `--no-daemon`; the
+upstream ask that would retire the option is in `SBT-ISSUES.md`.
 
 ## The Seatbelt profile
 
