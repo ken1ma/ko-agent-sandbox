@@ -218,7 +218,7 @@ object SandboxProject:
           else None
 
   /**
-   * Podman accepts [a-zA-Z0-9][a-zA-Z0-9_.-]* only, so fold anything else out.
+   * podman accepts [a-zA-Z0-9][a-zA-Z0-9_.-]* only, so fold anything else out.
    */
   def slugOf(directoryName: String): String =
     val folded = directoryName.map: c =>

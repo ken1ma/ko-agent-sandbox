@@ -82,7 +82,7 @@ routine rather than occasional. The two rows below stay here as the standard it 
 - [ ] Keep those rows non-destructive, which the container run gets for free and a share row does
   not: the work directory goes away on success and survives a failure, since its files are how a row
   that measured a refusal is told apart from a row where the probe broke; `.git` and
-  `.ko-agent-sandbox` stay untouched at any depth; Podman machine configuration is unchanged. Test
+  `.ko-agent-sandbox` stay untouched at any depth; podman machine configuration is unchanged. Test
   that a second run rebuilds no image, creates no second container or volume, and leaves the
   project directory byte-identical, and that a killed run leaves nothing the reset sweep does not
   match.

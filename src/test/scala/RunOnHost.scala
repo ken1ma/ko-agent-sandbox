@@ -1,5 +1,6 @@
-// Phase 3 scaffolding, EmitBuildProfile's sibling: the §4 wrapper runnable before any launcher
-// verb exists. probe/build-profile-gate.sh is its caller; the durable front-end is Phase 4's.
+// The gate's wrapper driver, EmitBuildProfile's sibling: the §4 wrapper with the authority file
+// as an argument, where the durable front-end — the launcher's --run-build-on-host verb, behind
+// the channel — reads the bundled copy. probe/build-profile-gate.sh is its caller.
 //
 //   java -cp <the classpath EmitBuildProfile prints> \
 //     agentsandbox.launcher.RunOnHost <sbt|mill> <project> [authority-file] -- <args...>

@@ -105,7 +105,7 @@ object BouncyCastleHelper:
     BigInteger(1, bytes)
 
   /**
-   * Backdated five minutes: the certificate is verified inside a Podman
+   * Backdated five minutes: the certificate is verified inside a podman
    * Machine VM whose clock can sit slightly behind the host's, and a
    * notBefore in the future fails there as an unexplained TLS error.
    */

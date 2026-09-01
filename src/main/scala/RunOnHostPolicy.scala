@@ -53,7 +53,7 @@ object RunOnHostPolicy:
   /**
    * The build-cache root, discovered exactly as [[AgentSandboxLauncher.stateRootOf]] discovers the
    * state root so the two answer alike on one machine: XDG_CACHE_HOME when set and absolute,
-   * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — Mill's
+   * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — mill's
    * own bootstrap takes the same fallback there — so the fallback is the path most runs use.
    */
   def cacheRootOf(os: Os, env: String => Option[String]): Either[Refusal, Path] =
@@ -80,7 +80,7 @@ object RunOnHostPolicy:
    * This project's build caches, under one directory so `--reset-cache` for a project is a single
    * removal and a further cache kind can join without moving anything.
    *
-   * Coursier's, and sbt's global base. Mill's launcher is provisioned by the user rather than
+   * Coursier's, and sbt's global base. mill's launcher is provisioned by the user rather than
    * fetched here, so it has no writable home (RunOnHostPolicy.millLauncher).
    */
   def agentCacheDir(cacheRoot: Path, projectId: String): Path =
@@ -234,8 +234,8 @@ object RunOnHostPolicy:
       case _                     => Left(Refusal.PrereqSbtNotCoursier(inner))
 
   /**
-   * Mill's bootstrap, which is the project's own file rather than an installed command: a global
-   * Mill is not supported, so its absence is a prerequisite failure and not a reason to look
+   * mill's bootstrap, which is the project's own file rather than an installed command: a global
+   * mill is not supported, so its absence is a prerequisite failure and not a reason to look
    * elsewhere.
    */
   def validateMillBootstrap(
@@ -247,10 +247,10 @@ object RunOnHostPolicy:
     else Left(Refusal.PrereqMillBootstrapMissing)
 
   /**
-   * Where a provisioned Mill launcher lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
+   * Where a provisioned mill launcher lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
    * if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`. `MILL_USER_CACHE_DIR` is not an
    * input — the script assigns it and never reads it. No platform branch: the fallback is spelled
-   * the same everywhere, which is why a macOS host keeps Mill's cache under ~/.cache while
+   * the same everywhere, which is why a macOS host keeps mill's cache under ~/.cache while
    * Coursier's is under ~/Library.
    */
   def millDownloadDir(env: String => Option[String]): Option[Path] =
@@ -261,12 +261,12 @@ object RunOnHostPolicy:
       base.map(_.resolve("mill").resolve("download"))
 
   /**
-   * The Mill version, read the way the bootstrap reads it — and only *read*. The script's own
+   * The mill version, read the way the bootstrap reads it — and only *read*. The script's own
    * dry-run mode would report the launcher path exactly, but running the project's script is
    * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
    *
    * The fallback is the bootstrap's: `DEFAULT_MILL_VERSION` from the environment, else the
-   * assignment at the top of the script, which Mill documents as the recommended way to manage
+   * assignment at the top of the script, which mill documents as the recommended way to manage
    * the version (`./mill updateMillScripts`). The file sources are all project files and the two
    * environment overrides are the wrapper's; whichever names the version, what is granted is a
    * launcher the user provisioned.
@@ -320,7 +320,7 @@ object RunOnHostPolicy:
     else version + native
 
   /**
-   * `mill-jvm-version` must be `system` (§3.3): Mill otherwise provisions a JVM through Coursier's
+   * `mill-jvm-version` must be `system` (§3.3): mill otherwise provisions a JVM through Coursier's
    * index, a JDK fetched by the build, where `system` takes `java` from the PATH the wrapper sets.
    *
    * Read as the launcher reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
@@ -329,14 +329,14 @@ object RunOnHostPolicy:
    * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
    * then `build.mill` (the initial run of `//| ` lines only), where the key is a top-level YAML
    * key. The first source that exists is authoritative, empty or not; anything but `system` is a
-   * refusal, absent included, since absent means Mill's own default.
+   * refusal, absent included, since absent means mill's own default.
    */
   def millJvmIsSystem(
     project: Path,
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, Unit] =
     def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
-    // No environment interpolation, though Mill's reader does it: a value that needs the
+    // No environment interpolation, though mill's reader does it: a value that needs the
     // environment to become `system` is not literally `system`, and refusing it fails closed.
     def optsFile(name: String): Option[Option[String]] =
       lines(name).map(_.find(line => line.trim.nonEmpty && !line.trim.startsWith("#")))
@@ -346,13 +346,13 @@ object RunOnHostPolicy:
     // returned as found and refused below. Conservative false rejects fail closed; a parser that
     // guessed would fail open.
     def topLevel(all: Seq[String]): Option[String] =
-      // Mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
+      // mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
       // and a key there would be recognized here and ignored there. Refused, carried as the value.
       if all.exists(line => DocumentMarker.matches(line)) then Some("multi-document YAML")
       else all.collect { case TopLevelJvmKey(value) => value } match
         case Seq()      => None
         case Seq(value) => Some(if SystemSpelling.matches(value) then "system" else value.trim)
-        // Which one Mill's parsed map keeps is its parser's business; two keys are never `system`.
+        // Which one mill's parsed map keeps is its parser's business; two keys are never `system`.
         case _ => Some("duplicate mill-jvm-version keys")
     // The //| lines as readBuildHeader takes them: `//|` alone is an empty line, `//| ...` is
     // data, anything else starting `//|` is an error, and so is a `//|` line after the initial
@@ -375,11 +375,11 @@ object RunOnHostPolicy:
     if found.contains("system") then Right(()) else Left(Refusal.PrereqMillJvmNotSystem(found))
 
   /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
-    * territory Mill's single-document parse never reads. */
+    * territory mill's single-document parse never reads. */
   private val DocumentMarker = raw"""(?:---|\.\.\.)(?:\s.*)?""".r
 
   /** The colon must be followed by whitespace or end the line: YAML's `key:value` is one scalar,
-    * not a mapping, and Mill would not see the key. */
+    * not a mapping, and mill would not see the key. */
   private val TopLevelJvmKey = raw"""mill-jvm-version:((?:\s.*)?)""".r
   private val SystemSpelling = raw"""\s*(?:system|"system"|'system')(?:\s+#.*)?\s*""".r
 

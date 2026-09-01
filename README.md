@@ -2,10 +2,10 @@
 
 Status: Beta on macOS, alpha on Linux and Windows
 
-The AI agents in this sandbox
+The AI agents in this sandbox, by default,
 
 1. reach no user files except the project directory (current directory)
-1. reach, by default, no network except the launcher-owned baseline:
+1. reach no network except the launcher-owned baseline:
     1. the model providers of the agents
     1. a curated set of sites, limited to reads and named operations, such as `git clone`/`pull`,
        shaped per project by `.ko-agent-sandbox/egress/`
@@ -42,6 +42,11 @@ How it is put together:
     │  the containers and networks are created  │  every allow and refusal; │      │
     │  per run, and when the sandbox exits      │  outlives the run         │      │
     │  they are all removed (not reused)        └───────────────────────────┘      │
+    │                                                                              │
+    │                                                                              │
+    │  ┌─ macOS only: --run-on-host sandbox for heavy workloads ──────────────┐    │
+    │  │  sbt/mill relayed to the host under Seatbelt — SECURITY.md           │    │
+    │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 
 1. The intended workflow:
@@ -123,6 +128,31 @@ checkout — [Development](#development).
                          admits every public host on port 443, the
                          restricted catalog staying inspected; deny-all
                          admits none
+      --run-on-host=<tools>
+                         macOS only: sbt, mill, or sbt,mill. This buys
+                         nothing on Linux, and cannot be securely
+                         implemented on Windows — SECURITY.md "Run on
+                         host" has why. Adds the
+                         sandbox-run-on-host command, which runs those
+                         build tools OUTSIDE the container — on this
+                         host, confined by a Seatbelt profile to the
+                         project (its git control state and
+                         .ko-agent-sandbox unreachable), per-project
+                         build caches (its own Coursier cache, never
+                         yours), and the build's own egress proxy.
+                         The point is memory even more than speed: podman
+                         machine memory a build touches is never returned
+                         to macOS, while a host build's is reclaimed when
+                         it exits. Each invocation starts and ends its
+                         own sbt server; no warm daemon spans builds. For
+                         sbt this is target/ coherence as well: a
+                         container build leaves target/ symlinks that
+                         dangle on the host and vice versa, each venue
+                         deleting the other's, while a host build leaves
+                         a tree your own sbt can read, and the wrapper
+                         sweeps stale foreign links itself. Host builds
+                         write the project even under --write=reject.
+                         SECURITY.md "Run on host" prices it
       --env=<name>[=<value>]
                          forward the host's <name>, which must be set, into
                          the sandbox — or with <value>, set it to that
@@ -141,7 +171,7 @@ checkout — [Development](#development).
                          remote updates; builds the self-test image on top of the
                          sandbox image, mounted cases included; <filter> selects
                          one case or family. Removes self-test images it replaces;
-                         leaves no bind mount or volume and does not change Podman
+                         leaves no bind mount or volume and does not change podman
                          machine configuration
 
       --reset            remove this project's containers (ending any live
@@ -218,7 +248,7 @@ checkout — [Development](#development).
        local workloads may use them. `--update` performs the same launcher-image cleanup.
 1. Also compiles `ko-agent-fs`, the workspace filter,
    from bundled source and installs the binary at `~/.local/share/ko-agent-sandbox/ko-agent-fs` —
-   inside the Podman machine on macOS and Windows, in your home on native Linux.
+   inside the podman machine on macOS and Windows, in your home on native Linux.
     1. Ends with the filter's self-test: an unprivileged mount over a scratch tree, with the
        `.git` policy and live host-write visibility both proven on the installed binary.
     1. The filter's `allow_other` mount needs `user_allow_other` in the machine's
@@ -500,15 +530,15 @@ The per-project CA lives on the host, under
     sbt dist
     cd target/dist
     native-image --enable-native-access=ALL-UNNAMED \
-      -H:IncludeResources='sandbox-build/.*|baseline/.*' \
+      -H:IncludeResources='sandbox-build/.*|baseline/.*|agentsandbox/.*' \
       -o ko-agent-sandbox -jar ko-agent-sandbox.jar
 
 1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting
    `ko-agent-sandbox` binary on PATH.
 1. Requires GraalVM (JDK 25) with `native-image` and a C toolchain.
-1. `-H:IncludeResources` embeds the bundled build context into the binary; without it `--build` and
-   `--update` would find nothing to unpack, since native-image drops resources that are not
-   explicitly requested.
+1. `-H:IncludeResources` embeds the bundled build context, the proxy's baseline policy, and the
+   launcher's own resources (the `--help` text, the measured Seatbelt runtime authority) into the
+   binary; native-image drops resources that are not explicitly requested.
 1. The FFM `execvp` handoff is supported by native-image on recent GraalVM releases (linux/macOS,
    amd64/arm64). If a given version refuses it, the launcher still works: it falls back to staying
    resident and waiting on podman — the model native Windows always uses.

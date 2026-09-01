@@ -62,7 +62,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val reason = render(inputs(tmp = Paths.get("relative/tmp"))).left.getOrElse("")
     assert(clue(reason).contains("grant"))
 
-  test("the tool and the distribution agree: sbt needs it, Mill has none"):
+  test("the tool and the distribution agree: sbt needs it, mill has none"):
     assert(render(inputs().copy(sbtDistribution = None)).isLeft)
     assert(render(inputs().copy(policy = millPolicy)).isLeft)
 
@@ -235,12 +235,12 @@ class SeatbeltProfileTest extends munit.FunSuite:
     render(inputs().copy(policy = millPolicy, sbtDistribution = None, sbtGlobal = None))
       .fold(reason => fail(reason), identity)
 
-  test("Mill renders without the sbt distribution"):
+  test("mill renders without the sbt distribution"):
     val text = millText
     assert(!clue(text).contains("sbt-2.0.4.zip"))
     assert(text.contains(millPolicy.launcher.toString))
 
-  test("Mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):
+  test("mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):
     val text = millText
     assert(!clue(text).contains(project.resolve("mill").toString))
     assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$project"))"""))

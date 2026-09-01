@@ -136,7 +136,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     // is already gone.
     //
     // Asserted rather than left failing: no mount over a path closes this, so a red suite would
-    // report the same thing every run, while an assertion turns a Podman release that changes it
+    // report the same thing every run, while an assertion turns a podman release that changes it
     // into the one result worth hearing about.
     val project = repository()
     val config = project.resolve(".git").resolve("config")

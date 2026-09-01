@@ -280,11 +280,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // to know nothing of the sandbox.
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
-    // The two the launcher sets rather than reads are documented where their reader is — the
-    // agent instructions.
+    // The ones the launcher sets rather than reads are documented where their reader is — the
+    // agent instructions, and for RUN_ON_HOST the image's shim.
     assertEquals(
       KnownSandboxVariables -- documented,
-      Set("KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_JAVA_OPTS"),
+      Set(
+        "KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_JAVA_OPTS",
+        RunOnHostChannel.RunOnHostVariable,
+      ),
     )
 
   test("the proxy address is read for the right network only"):
@@ -693,7 +696,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(expanded.swap.exists(_.contains("unsupported stage alias")), expanded.toString)
 
   test("remote image parsing refuses a shape it does not resolve"):
-    // Every one of these is a Containerfile Podman accepts. Approximating them is what would let a
+    // Every one of these is a Containerfile podman accepts. Approximating them is what would let a
     // refresh be skipped without a word, so each has to stop the verb instead.
     Vector(
       "FROM example.invalid/base:${UNSET}\n" -> "no value for build-image variable ${UNSET}",
@@ -726,7 +729,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         case _ => ()
 
   test("a build argument reaches only the references declared before it"):
-    // Podman expands an ARG that no earlier declaration named to the empty string; refusing is the
+    // podman expands an ARG that no earlier declaration named to the empty string; refusing is the
     // half of that trade that cannot build a broken reference.
     val early = remoteImagesInContainerfile(
       "Containerfile",
@@ -874,7 +877,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     edges.foreach: (child, parent) =>
       assert(precedes(declared, parent, child), s"$parent must be declared before $child")
 
-    // Every cleanup list removes the child first, whatever order Podman lists the images in.
+    // Every cleanup list removes the child first, whatever order podman lists the images in.
     def id(index: Int): String = f"sha256:$index%064x"
     val listing = declared.zipWithIndex.map((tag, index) => TaggedImage(s"localhost/$tag", id(index))).reverse
     val ids = listing.map(image => image.tag.stripPrefix("localhost/") -> image.id).toMap
@@ -902,7 +905,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!note.contains("Error:"), note)
 
     val unexpected = supersededImageRetentionNote(imageId, "Error: storage is unavailable")
-    assert(unexpected.contains("Podman did not remove it"), unexpected)
+    assert(unexpected.contains("podman did not remove it"), unexpected)
     assert(unexpected.contains("Error: storage is unavailable"), unexpected)
 
   test("every internal multi-stage build has one named compile-cache target"):
@@ -1113,6 +1116,26 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/allowed"), section)
       assert(section.contains("deny-unless-allowed"), section)
+    // --run-on-host adds the venue instruction, naming each served tool's command. Without the
+    // option, a macOS session gets one discovery line — only the launcher knows the platform —
+    // and other platforms hear nothing about a command they can never have.
+    val hostBuilds = authoritySection("live", "fuse", resolution, Vector("sbt", "mill"))
+    assert(hostBuilds.contains("sandbox-run-on-host sbt"), hostBuilds)
+    assert(hostBuilds.contains("sandbox-run-on-host mill"), hostBuilds)
+    assert(hostBuilds.contains("starts and ends its own sbt server"), hostBuilds)
+    assert(hostBuilds.contains("never re-run in the container"), hostBuilds)
+    assert(!filtered.contains("sandbox-run-on-host"), filtered)
+    val discoverable =
+      authoritySection("live", "fuse", resolution, Vector.empty, hostBuildsAvailable = true)
+    assert(discoverable.contains("absent from this session"), discoverable)
+    assert(discoverable.contains("--run-on-host=sbt,mill"), discoverable)
+    assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
+    // reject's instruction flips when a host build can write the project (the §9.1 composition):
+    // the blanket "do not attempt writes" would be false.
+    val rejectWithBuilds = authoritySection("reject", "fuse", resolution, Vector("sbt"))
+    assert(rejectWithBuilds.contains("session's own writes"), rejectWithBuilds)
+    assert(rejectWithBuilds.contains("sandbox-run-on-host"), rejectWithBuilds)
+    assert(rejectWithBuilds.contains("--write=live"), rejectWithBuilds)
 
   test("the generated agent document cache varies with every authority input"):
     def stamp(
@@ -1121,7 +1144,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       guard: String = "fuse",
       policy: String = "policy-a",
       instructions: Option[String] = None,
-    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions)
+      runOnHost: Vector[String] = Vector.empty,
+    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions, runOnHost)
 
     val variants = Vector(
       stamp(),
@@ -1130,6 +1154,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(guard = "none"),
       stamp(policy = "policy-b"),
       stamp(instructions = Some("project instructions")),
+      stamp(runOnHost = Vector("sbt")),
+      stamp(runOnHost = Vector("sbt", "mill")),
     )
     assertEquals(variants.distinct.size, variants.size)
 
@@ -1158,6 +1184,25 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--write=live", "--write=reject")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
+
+  test("option parsing: --run-on-host names tools from a closed set, each once, selected once"):
+    assertEquals(
+      parseCommandLine(List("--run-on-host=sbt,mill", "claude")).map(_.runOnHost),
+      Right(Some(Vector("sbt", "mill"))),
+    )
+    assertEquals(parseCommandLine(List("claude")).map(_.runOnHost), Right(None))
+    assert(parseCommandLine(List("--run-on-host=gradle")).swap.exists(_.contains("sbt, mill")))
+    assert(parseCommandLine(List("--run-on-host=")).isLeft)
+    assert(parseCommandLine(List("--run-on-host=sbt,sbt")).swap.exists(_.contains("twice")))
+    assert(
+      parseCommandLine(List("--run-on-host=sbt", "--run-on-host=mill")).swap
+        .exists(_.contains("twice")),
+    )
+    assert(
+      parseCommandLine(List("--run-on-host", "sbt")).swap.exists(_.contains("--run-on-host=<tools>")),
+    )
+    // After the command, it is the command's.
+    assertEquals(parseCommandLine(List("claude", "--run-on-host=sbt")).map(_.runOnHost), Right(None))
 
   test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
     assertEquals(

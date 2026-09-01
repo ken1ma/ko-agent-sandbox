@@ -1,13 +1,13 @@
 # Plan: optional Coursier cache overlay
 
-`--run-on-host` (`PLAN-SBT-ON-HOST.md`) meets part of this plan's goal: an agent's sbt and Mill
+`--run-on-host` (`PLAN-SBT-ON-HOST.md`) meets part of this plan's goal: an agent's sbt and `mill`
 builds run on the host against a per-project cache of their own, so they neither warm nor need the
 container's. What this plan still carries is the container's own Scala tooling — the venue for
 `scala-cli`, `scalafmt`, `cs install` and for sbt when the host channel is not in force — and the
 image-home relocation that removes the copy-up cost.
 
 Both plans hold one property for the user's own Coursier cache — a sandboxed build never changes
-it — and reach it differently. Here a Podman `:O` upper keeps it readable and unwritable. The host
+it — and reach it differently. Here a podman `:O` upper keeps it readable and unwritable. The host
 build sandbox has no mount namespace to overlay with, so it separates by root instead.
 
 ## Outcome
@@ -19,7 +19,7 @@ destination, path validation and concurrency contract; this is not an arbitrary 
 Without the option, Coursier and Scala tools use a new writable cache in the session's anonymous
 home volume. Downloads disappear with the session. With it, the selected host Coursier `v1`
 artifact cache is the readable lower layer at `~/.cache/coursier/v1`; sandbox writes go to a
-Podman `:O` upper layer that disappears with the sandbox container. Extracted archives and JVMs
+podman `:O` upper layer that disappears with the sandbox container. Extracted archives and JVMs
 remain session-local because their cache entries can be host-OS-specific.
 
 Keep the installed Coursier launchers in the image, outside `$HOME`.
@@ -37,7 +37,7 @@ The image has 1.1 GB and 3,259 files under `/home/nonroot`:
 - 228 MB under `.local/share/coursier/bin`;
 - the remaining agent-state seeds, shell files and other tool state.
 
-A new volume mounted at `/home/nonroot` takes about 2.2 to 2.5 seconds to start because Podman
+A new volume mounted at `/home/nonroot` takes about 2.2 to 2.5 seconds to start because podman
 copies the image directory into it. The same image starts in about 0.2 seconds with `nocopy`.
 Mounting the 25 GB macOS host Coursier cache root with `:O` takes 0.225 to 0.274 seconds and a
 sandbox write is absent from the host after exit.
@@ -77,7 +77,7 @@ this plan.
    reading the lower are outside this claim.
 6. The overlay upper is private to one sandbox run. It is removed on normal exit, create/start
    failure, Ctrl-C and `--reset`; no new named volume or launcher state is introduced.
-7. One project cannot name a cache path overlapping its workspace, launcher-owned state, Podman
+7. One project cannot name a cache path overlapping its workspace, launcher-owned state, podman
    storage or an over-broad host directory and thereby create a second path around an existing
    boundary.
 8. The option works with `KO_AGENT_SANDBOX_IMAGE`: it changes the mount, not the selected image.
@@ -107,7 +107,7 @@ future reviewed cache kinds do not require a comma-list grammar.
 - Refuse an absent or unknown kind, an empty directory, a relative path and a duplicate kind.
   Different recognized kinds may repeat the option.
 - Resolve symlinks and aliases to the canonical existing directory before boundary checks and
-  before constructing the Podman argument. This follows a path the user explicitly supplied as
+  before constructing the podman argument. This follows a path the user explicitly supplied as
   launch authority, like project-directory canonicalization; it does not follow a
   repository-controlled symlink while discovering sandbox policy. Any overlap with the canonical
   project is refused below.
@@ -115,7 +115,7 @@ future reviewed cache kinds do not require a comma-list grammar.
   consume.
 - Once the sandbox command starts, a token with the same spelling is passed to that command rather
   than parsed by the launcher.
-- Do not accept `src:dst` or any caller-selected container destination. Podman's volume shorthand
+- Do not accept `src:dst` or any caller-selected container destination. podman's volume shorthand
   has Windows drive-colon ambiguity, and an arbitrary destination could shadow managed settings,
   `/workspace`, installed tools or persistent agent state.
 
@@ -146,13 +146,13 @@ for each path relationship after canonicalization:
 - refuse any overlap with the launcher's install directory in either direction;
 - refuse overlap with host-visible rootless storage configured in `storage.conf`, under
   `$XDG_DATA_HOME/containers`, or under `~/.local/share/containers`;
-- on native Linux, ask Podman for its active graph root, run root and volume path before creating
+- on native Linux, ask podman for its active graph root, run root and volume path before creating
   any resource and refuse overlap with each in either direction. Refuse the overlay if those roots
-  cannot be determined. A Podman machine keeps its graph in the VM rather than the client path
+  cannot be determined. A podman machine keeps its graph in the VM rather than the client path
   namespace; reject the client-side storage paths above, and do not compare unrelated path
   spellings from the two namespaces;
 - on macOS, compare both data-volume spellings as `SandboxProject` already does;
-- on Windows, reject UNC paths unless the existing Podman-volume path handling has an independently
+- on Windows, reject UNC paths unless the existing podman-volume path handling has an independently
   tested mapping; do not guess one;
 - accept a narrower directory inside the user's home, including each default above, only after all
   protected-root checks pass;
@@ -216,7 +216,7 @@ type=volume,src=<persistent>,dst=/home/nonroot/persistent-volume
 ```
 
 The exact ordering and nested-mount behavior must be proven with the full mount set. The
-small home copy-up includes `.cache/coursier`; Podman creates only the nested `v1` mountpoint. The
+small home copy-up includes `.cache/coursier`; podman creates only the nested `v1` mountpoint. The
 copy-up must also provide:
 
 - `.claude -> persistent-volume/claude`;
@@ -227,7 +227,7 @@ copy-up must also provide:
 - a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and other session-created paths.
 
 Construct the overlay as exactly one `--volume` value ending in `:O`. Do not combine `O` with `U`,
-`z`, `Z`, `ro` or another volume option; Podman documents `O` as conflicting with the other volume
+`z`, `Z`, `ro` or another volume option; podman documents `O` as conflicting with the other volume
 options. Never chown or relabel the host cache to make the feature work.
 
 Resolve and validate the cache path before creating networks, containers or reapers. Only an
@@ -238,27 +238,27 @@ Cache overlay: coursier; host cache <path> is readable; sandbox writes are disca
 ```
 
 Do not create a capability-probe container before the hold. After Enter, `podman create` is the
-canonical enforcement point. If Podman rejects `:O`, fail with its error and preserve the existing
+canonical enforcement point. If podman rejects `:O`, fail with its error and preserve the existing
 cleanup path. Ctrl-C at the hold creates nothing; Ctrl-C after create remains covered by the
 existing reaper or resident Windows cleanup.
 
 ## Platform contract
 
-Podman implements `:O` in the Linux engine. Host-path availability is a separate machine-provider
+podman implements `:O` in the Linux engine. Host-path availability is a separate machine-provider
 contract.
 
 - macOS/libkrun: require the exact `$HOME/Library/Caches/Coursier/v1` topology. The recorded
   parent-cache-root probe establishes `:O` support, but not the final nested target.
 - Native Linux without enforcing SELinux: require the same read/write/discard and timing probes.
 - SELinux-enforcing Linux: record labels, ownership, modes and timestamps before and after normal
-  exit and forced cleanup. If Podman changes host metadata or requires disabling container labels,
+  exit and forced cleanup. If podman changes host metadata or requires disabling container labels,
   refuse the option on that host. Do not weaken SELinux separation for a cache optimization.
 - Windows/WSL2: translate or pass the source through the same tested path mechanism as existing
-  Podman bind mounts, then run the probe against `%LOCALAPPDATA%\Coursier\Cache\v1` on NTFS
+  podman bind mounts, then run the probe against `%LOCALAPPDATA%\Coursier\Cache\v1` on NTFS
   through `/mnt/<drive>`. Do not claim Windows support until it passes.
-- Other remote Podman connections: the source is a server path, not necessarily a client path.
+- Other remote podman connections: the source is a server path, not necessarily a client path.
   Refuse automatic discovery unless the launcher can prove the discovered client directory is the
-  directory Podman will mount. An explicit server-visible directory may be supported later under a
+  directory podman will mount. An explicit server-visible directory may be supported later under a
   separately stated contract.
 
 ## Security model
@@ -269,7 +269,7 @@ egress profile permits a destination. State that at the option and in `SECURITY.
 
 The sandbox cannot poison the lower through the cache mount: all cache-path writes enter its
 private upper. Preserve that claim with a host-observed integration test, not only an argument
-test. The host can change the lower while a session runs; `:O` is not a snapshot, and Podman warns
+test. The host can change the lower while a session runs; `:O` is not a snapshot, and podman warns
 against lower mutation. The accepted behavior is:
 
 - redundant downloads and inconsistent cache misses are acceptable;
@@ -305,7 +305,7 @@ inline command that can omit or reorder it.
 - prove every management verb rejects the launch-only option;
 - test `COURSIER_CACHE` precedence and default `v1` discovery for Linux, macOS and Windows without
   depending on the test host;
-- test canonical path overlap against project, launcher state and install directories, Podman
+- test canonical path overlap against project, launcher state and install directories, podman
   storage, filesystem roots, home and macOS aliases;
 - test that an explicit cache outside home is accepted when it overlaps no protected root;
 - assert the complete create command has one anonymous home, one persistent volume, and exactly
@@ -378,7 +378,7 @@ At the existing `cs install TOOL` instruction, `AGENTS-SANDBOX.md` should tell a
 session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed
 launchers under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that
 a missing Scala artifact is downloaded into disposable session state and that a narrow egress
-profile can prevent the download. It does not need to teach Podman overlay mechanics.
+profile can prevent the download. It does not need to teach podman overlay mechanics.
 
 ## Acceptance checklist
 
@@ -390,7 +390,7 @@ profile can prevent the download. It does not need to teach Podman overlay mecha
 - [ ] Overlay writes, including rename and deletion, leave the host cache and metadata unchanged.
 - [ ] Normal exit, Ctrl-C, forced removal and reset leave no upper layer or new named volume.
 - [ ] Concurrent sessions share only the readable lower and never one another's upper.
-- [ ] Workspace, launcher state and Podman-storage overlap is refused before any resource is
+- [ ] Workspace, launcher state and podman-storage overlap is refused before any resource is
       created; a safe explicit cache outside home is accepted.
 - [ ] SELinux support either preserves host metadata without weakening labels or refuses clearly.
 - [ ] macOS, native Linux and Windows claims match completed platform probes.
@@ -411,8 +411,8 @@ profile can prevent the download. It does not need to teach Podman overlay mecha
 
 ## References
 
-- [Podman volume semantics](https://docs.podman.io/en/latest/markdown/podman-create.1.html)
-- [Podman Machine](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
+- [podman volume semantics](https://docs.podman.io/en/latest/markdown/podman-create.1.html)
+- [podman Machine](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
 - [Coursier cache locations and overrides](https://get-coursier.io/docs/cache)
 - [Coursier setup options](https://get-coursier.io/docs/cli-setup)
 - [Coursier install-directory behavior](https://get-coursier.io/docs/cli-install)

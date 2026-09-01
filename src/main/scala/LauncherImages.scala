@@ -66,7 +66,7 @@ object LauncherImages:
 
   case class TaggedImage(tag: String, id: String)
 
-  // Podman distinguishes these by case: `.Id` is the full SHA, while `.ID` is truncated.
+  // podman distinguishes these by case: `.Id` is the full SHA, while `.ID` is truncated.
   def imageListCommand(podman: String): Vector[String] =
     Vector(podman, "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}\t{{.Id}}")
 
@@ -90,7 +90,7 @@ object LauncherImages:
   /**
    * Only the launcher-owned base repositories carry versioned tags. Fixed leaf and cache tags are
    * deliberately excluded: a supported custom sandbox or proxy image may use another tag in the
-   * same repository. Leaves precede bases. `localhost/` is Podman's display form for the unqualified
+   * same repository. Leaves precede bases. `localhost/` is podman's display form for the unqualified
    * names the launcher passes to `build -t`.
    */
   def staleVersionedBaseImageTags(
@@ -108,7 +108,7 @@ object LauncherImages:
 
   /**
    * The self-test images a listing holds, in removal order: SelfTestImageTags reversed, leaves
-   * before bases like every other cleanup list. Podman's listing order is not a dependency order,
+   * before bases like every other cleanup list. podman's listing order is not a dependency order,
    * so it is never inherited.
    */
   def selfTestCleanupOrder(existing: Vector[TaggedImage]): Vector[TaggedImage] =
@@ -247,7 +247,7 @@ object LauncherImages:
         s"note: keeping superseded image ${shortId(imageId)} while container ${shortId(matched.group(1))}"
           + " still uses it;\n  a later --build, --update, or --self-test will retry once that container is gone"
       case None =>
-        s"note: keeping superseded image ${shortId(imageId)}; Podman did not remove it\n${error.trim}"
+        s"note: keeping superseded image ${shortId(imageId)}; podman did not remove it\n${error.trim}"
 
   def removeSupersededImages(
     podman: String,

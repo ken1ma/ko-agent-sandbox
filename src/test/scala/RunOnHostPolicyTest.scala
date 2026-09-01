@@ -38,7 +38,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("cache root falls back to $HOME/.cache when XDG_CACHE_HOME is unset"):
-    // The ordinary case on macOS, not the exception; Mill's own bootstrap takes the same fallback.
+    // The ordinary case on macOS, not the exception; mill's own bootstrap takes the same fallback.
     assertEquals(
       cacheRootOf(Os.Mac, env("HOME" -> home)),
       Right(Paths.get(s"$home/.cache/ko-agent-sandbox")),
@@ -188,7 +188,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     assert(resolveJdkHome(env("JAVA_HOME" -> absent.toString), coursierCache, known, _ => true).isLeft)
 
   // --------------------------------------------------------------------------
-  // sbt and Mill
+  // sbt and mill
   // --------------------------------------------------------------------------
 
   test("an sbt launcher inside the install directory is accepted"):
@@ -223,7 +223,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       val inner = coursierCache.resolve(bad)
       assert(validateSbtDistribution(inner, coursierCache, exists(inner, coursierCache), _ => true).isLeft, clue(bad))
 
-  test("Mill needs the project's own bootstrap; a global Mill is not a fallback"):
+  test("mill needs the project's own bootstrap; a global mill is not a fallback"):
     val bootstrap = project.resolve("mill")
     assertEquals(validateMillBootstrap(project, _ == bootstrap), Right(bootstrap))
     assertEquals(validateMillBootstrap(project, _ => false), Left(Refusal.PrereqMillBootstrapMissing))
@@ -234,7 +234,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     val map = pairs.toMap
     path => map.get(project.relativize(path).toString)
 
-  test("the Mill download folder follows the bootstrap's own fallback"):
+  test("the mill download folder follows the bootstrap's own fallback"):
     assertEquals(millDownloadDir(env("HOME" -> home)), Some(millDownload))
 
   test("MILL_FINAL_DOWNLOAD_FOLDER overrides it; MILL_USER_CACHE_DIR is assigned by the script, never read"):
@@ -274,7 +274,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       Right("1.1.8"),
     )
 
-  test("mill-jvm-version must be system, wherever Mill would read it"):
+  test("mill-jvm-version must be system, wherever mill would read it"):
     assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: system"))), Right(()))
     assertEquals(millJvmIsSystem(project, files("build.mill" -> Seq("//| mill-jvm-version: system"))), Right(()))
     assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq("system"))), Right(()))
@@ -282,7 +282,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))),
       Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))),
     )
-    // Absent is Mill's own default, a JVM fetched by the build.
+    // Absent is mill's own default, a JVM fetched by the build.
     assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
       Left(Refusal.PrereqMillJvmNotSystem(None)))
 
@@ -293,7 +293,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     assertEquals(millJvmIsSystem(project, dotBeatsConfig), Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))))
     val emptyFirst = files(".mill-jvm-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-jvm-version: system"))
     assertEquals(millJvmIsSystem(project, emptyFirst), Left(Refusal.PrereqMillJvmNotSystem(None)))
-    // Compared as written: Mill keeps the opts-file line untrimmed and tests equality.
+    // Compared as written: mill keeps the opts-file line untrimmed and tests equality.
     assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq(" system "))),
       Left(Refusal.PrereqMillJvmNotSystem(Some(" system "))))
     assertEquals(millJvmIsSystem(project, files(".mill-jvm-version" -> Seq("# comment", "", "system"))), Right(()))
@@ -310,17 +310,17 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     // #, and an unmatched quote is not the plain scalar.
     for bad <- Seq("mill-jvm-version: system#other", "mill-jvm-version: \"system", "mill-jvm-version: system'") do
       assert(millJvmIsSystem(project, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
-    // YAML's `key:value` is one scalar, not a mapping: Mill never sees the key.
+    // YAML's `key:value` is one scalar, not a mapping: mill never sees the key.
     assertEquals(
       millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))),
       Left(Refusal.PrereqMillJvmNotSystem(None)),
     )
-    // A malformed //| line is an error in Mill's readBuildHeader, and a refusal here; so is a
-    // stray //| after the header, and so are two keys, whichever Mill's map would keep.
+    // A malformed //| line is an error in mill's readBuildHeader, and a refusal here; so is a
+    // stray //| after the header, and so are two keys, whichever mill's map would keep.
     assert(millJvmIsSystem(project, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
     val stray = files("build.mill" -> Seq("//| mill-jvm-version: system", "package build", "//| x"))
     assert(millJvmIsSystem(project, stray).isLeft)
-    // A second YAML document is territory Mill never reads; a marker anywhere is a refusal.
+    // A second YAML document is territory mill never reads; a marker anywhere is a refusal.
     val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
     assertEquals(millJvmIsSystem(project, secondDoc), Left(Refusal.PrereqMillJvmNotSystem(Some("multi-document YAML"))))
     val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
