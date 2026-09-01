@@ -1,9 +1,10 @@
 #!/bin/sh
-# Whether SBPL still behaves the way §2.1's guard depends on. The answers are recorded in §7.2;
+# Whether SBPL still behaves the way the guard depends on. The answers are recorded in
+# RUN-ON-HOST.md "The Seatbelt profile" and encoded in SeatbeltProfile.scala;
 # this is what measured them, and what re-measures them.
 #
 # Run it on each new macOS release. If E3, E4 or E5 stops answering DENIED, the guard has
-# silently weakened and the profile no longer enforces what §2.1 claims — a release blocker,
+# silently weakened and the profile no longer enforces what SECURITY.md claims — a release blocker,
 # not a test to update.
 #
 # Each experiment isolates one variable: the profile is `(allow default)` plus the single deny
@@ -56,7 +57,7 @@ SB
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/.git/config'")
 report "E1 subpath deny, path with a space and a '+'" \
     "does (subpath) deny a write to the named directory?" "$r" \
-    "DENIED: literal paths work, spaces and '+' included. ALLOWED: §7.2 needs another form."
+    "DENIED: literal paths work, spaces and '+' included. ALLOWED: the profile needs another form."
 
 # ---------------------------------------------------------------------------
 profile <<'SB'
@@ -67,26 +68,26 @@ SB
 r=$(attempt "$proj/sub/nested/.git/config" "echo probe > '$proj/sub/nested/.git/config'")
 report "E2 regex deny at any depth" \
     "does one regex cover a .git nested several levels down?" "$r" \
-    "DENIED: §2.1's at-any-depth rule is one rule. ALLOWED: it must be an enumeration."
+    "DENIED: the at-any-depth rule is one rule. ALLOWED: it must be an enumeration."
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/late/.git/config" \
     "mkdir -p '$proj/late/.git' && echo probe > '$proj/late/.git/config'")
 report "E3 access-time evaluation" \
     "is a .git created *during* the run covered by the same rule?" "$r" \
-    "DENIED: the guard is an invariant, and §1.2's Windows exclusion stands. ALLOWED: it is a scan."
+    "DENIED: the guard is an invariant, and the Windows exclusion stands. ALLOWED: it is a scan."
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/link/config'")
 report "E4 symlink canonicalization" \
     "does the rule see through 'link -> .git'?" "$r" \
-    "DENIED: SBPL canonicalizes; §17's first question is answered yes. ALLOWED: the guard is bypassable."
+    "DENIED: SBPL canonicalizes the accessed path. ALLOWED: the guard is bypassable."
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/.GIT/config'")
 report "E5 case folding" \
     "does a lowercase rule catch an uppercase spelling on this insensitive volume?" "$r" \
-    "DENIED: folding is free. ALLOWED: §2.1's fold rule needs an explicit case-insensitive pattern."
+    "DENIED: folding is free. ALLOWED: the fold rule needs an explicit case-insensitive pattern."
 
 # ---------------------------------------------------------------------------
 profile <<'SB'
@@ -111,7 +112,7 @@ rm -f "$proj/plain/hard2"
 r=$(attempt "" "ln '$proj/.git/config' '$proj/plain/hard2'")
 report "E7 explicit file-link deny" \
     "does (deny file-link) refuse a hardlink whose *target* is denied?" "$r" \
-    "DENIED: §2.1's link clause is enforceable as written. ALLOWED: it needs a different mechanism."
+    "DENIED: the link clause is enforceable as written. ALLOWED: it needs a different mechanism."
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------

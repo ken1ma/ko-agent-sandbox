@@ -216,8 +216,8 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
 /// moves: on a filesystem stamping whole seconds there is nothing for the kernel to notice inside
 /// a tick, and reporting that as an incoherent kernel would abort every launch on a true
 /// statement about the clock. This runs over the local scratch tree, so what it proves is what
-/// the *kernel* does; the virtiofs share under a real session is `probe/coherency-probe.py`'s to
-/// measure, per `doc/TODO.md`.
+/// the *kernel* does; the virtiofs share under a real session is the launcher's `--self-test`
+/// share rows' to measure, per `doc/TODO.md`.
 fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
@@ -321,8 +321,8 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
                     "a host write stayed invisible for 5 s: read() {by_read}, mmap {by_mmap}\n\
                      Its mtime did move on the backing, so AUTO_INVAL_DATA was negotiated and is\n\
                      not invalidating; this kernel cannot serve the workspace coherently\n\
-                     (doc/architecture.md, \"Coherency\"; probe/coherency-probe.py measures the\n\
-                     same read and mmap behavior across the host share)"
+                     (doc/architecture.md, \"Coherency\"; the launcher's --self-test share rows\n\
+                     measure the same read and mmap behavior across the host share)"
                 ));
             }
             std::thread::sleep(Duration::from_millis(10));

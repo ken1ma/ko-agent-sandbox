@@ -1,6 +1,8 @@
 #!/bin/sh
-# Discover PLAN-SBT-ON-HOST.md §2.1's runtime authority the only way it admits — by running a real
-# build and reading what it actually needs, never by listing what the host happens to have.
+# Discover the profile's runtime authority (RUN-ON-HOST.md "The Seatbelt profile") the only way
+# it admits — by running a real build and reading what it actually needs, never by listing what
+# the host happens to have. Run it when a build stops under the profile and nothing names the
+# missing grant.
 #
 # `(debug deny)` makes denials visible, which is what Bazel's darwin-sandbox puts at the top of
 # every generated profile. `(trace)` — the other obvious instrument — is restricted on macOS 26 and
@@ -42,11 +44,11 @@ emit() {
 # -java-home because the sbt launcher declares `java_cmd=java` and would otherwise resolve
 # /usr/bin/java from PATH, which the profile does not grant.
 #
-# No -Dsbt.server.autostart=false, which §3.2 asks for and sbt 2 cannot honour: its own --no-server
+# No -Dsbt.server.autostart=false, which sbt 2 cannot honour: its own --no-server
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # session temp with everything else.
-# The environment is the build's contract (PLAN-SBT-ON-HOST.md §4): COURSIER_CACHE routes to the
+# The environment is the build's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
 # agent cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the session temp.
 build() {

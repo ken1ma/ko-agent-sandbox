@@ -65,9 +65,17 @@ The virtiofs premise, as observed on the same machine: the host shares (`/Users`
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
-and the guest-layer measurement below. Re-run `coherency-probe.py` after a podman or macOS upgrade
-— it, not the mount table, is what notices a changed default. (The `nfs_t` SELinux context is also
-why the launcher never applies `:Z` relabeling to machine-shared sources.)
+and the guest-layer measurement below. Re-run the measurement — the launcher's `--self-test` share
+rows — after a podman or macOS upgrade: it, not the mount table, is what notices a changed
+default. (The `nfs_t` SELinux context is also why the launcher never applies `:Z` relabeling to
+machine-shared sources.)
+
+### Verified: the same coherency, launcher-driven (same machine, libkrun, fc44 kernel; 2026-09-01)
+
+The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
+with the launcher playing the host writer over a scratch lower in the project directory: the guard
+bit through the whole stack, the host write was visible to `read()` 1 ms after it landed, and the
+established mmap showed it 0 ms behind `read()`. This is the form every later re-run takes.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
@@ -96,7 +104,7 @@ measured with host-side ground truth at every step:
   and the write succeeds the moment the hold ends.
 
 Together they close the mmap question by construction: a mapped file cannot go stale under a host
-write, because the write is refused while the mapping holds — `probe/coherency-probe.py`'s mmap
+write, because the write is refused while the mapping holds — the coherency measurement's mmap
 half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
 ("The project directory") carries it: a host editor's save is refused while a session holds that
 file open.

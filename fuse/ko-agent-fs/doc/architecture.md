@@ -122,8 +122,8 @@ itself. Therefore, as invariants and not tunables:
   a file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
   host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when it sees mtime change — which
   the zero-TTL getattrs surface — so data stays coherent while shared `mmap` keeps working.
-  Negotiating it is not the same as it working: `--self-test` measures the invalidation itself, and
-  `probe/coherency-probe.py` measures it across the real host share.
+  Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
+  the container venue, and its share rows measure it across the real host share.
 
 The invariant has a measured price: with entry TTL 0, every path component of every syscall is a
 fresh LOOKUP round trip.

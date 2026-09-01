@@ -1,7 +1,9 @@
 #!/bin/sh
 # Which SBPL spelling admits a TCP connect to the loopback proxy port — measured with must-fail
-# controls before SeatbeltProfile encodes one. Phase 2 never exercised the rule (no proxy to
-# reach), and the gate showed EPERM on the way to it. Run on the Mac; ~10 seconds.
+# controls, the answers SeatbeltProfile's proxy rule encodes.
+#
+# Run it on the Mac, on each new macOS release: the spelling and its controls are SBPL behavior
+# a release can change. ~10 seconds.
 set -u
 port=45071
 python3 - "$port" <<'PY' &

@@ -1,5 +1,5 @@
 // The sandbox → host build channel: the FIFO protocol both sides speak, and the host-side broker
-// that serves it (PLAN-SBT-ON-HOST.md §6). The sandbox side is the image's sandbox-run-on-host
+// that serves it. The sandbox side is the image's sandbox-run-on-host
 // shim; the broker is a detached process of the launcher's own vehicle, spawned per session under
 // --run-on-host. SECURITY.md "Run on host" has what the channel grants and withholds.
 
@@ -28,7 +28,7 @@ object RunOnHostChannel:
    * The request travels on the liveness descriptor, so no request is ever runnable without its
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running build is ended with SIGTERM, the
-   * wrapper's own measured teardown (§4). A handshake whose `ctl` never opens, or whose request
+   * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
    * never completes, is declared stillborn on a deadline with no build started. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
@@ -391,7 +391,7 @@ object RunOnHostChannel:
     thread.start()
     thread
 
-  /** §6.2's boundary work: the tool must be one the launch named, and the working directory —
+  /** The channel's boundary work: the tool must be one the launch named, and the working directory —
     * the one value arriving from inside the sandbox — is translated and proven inside the
     * project before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =

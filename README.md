@@ -170,16 +170,26 @@ checkout — [Development](#development).
                          run the workspace filter's own suites, always pulling
                          remote updates; builds the self-test image on top of the
                          sandbox image, mounted cases included; <filter> selects
-                         one case or family. Removes self-test images it replaces;
-                         leaves no bind mount or volume and does not change podman
+                         one case or family. Without a filter, then runs the
+                         share rows: a scratch lower inside the current
+                         directory, mounted through the filter, a container
+                         reading the launcher's host writes back through the
+                         real share — removed on success, kept on failure.
+                         Removes self-test images it replaces; leaves no bind
+                         mount or volume behind and does not change podman
                          machine configuration
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
                          TLS inspection CA, cached policy resolution, logs,
-                         and workspace-filter mount; images and any shared
-                         volume are left untouched
-      --reset-all        the same, for every project
+                         and workspace-filter mount; images, any shared
+                         volume and the host-build caches are left
+                         untouched
+      --reset-cache      remove this project's host-build caches — what
+                         --run-on-host builds resolved; a warm cache
+                         --reset deliberately keeps
+      --reset-all        the same as --reset, for every project, and the
+                         whole build-cache root with them
 
       --egress-effective [--] [<command> [args...]]
                          print the policy the accompanying --egress=<profile>
@@ -193,6 +203,11 @@ checkout — [Development](#development).
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
+      --stats            report live sessions and per-project disk use
+                         across the launcher's state and build-cache
+                         roots, flagging any cache worth a --reset-cache;
+                         read-only — a stopped podman machine is not
+                         started
 
       --help             this text
 

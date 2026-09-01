@@ -1,4 +1,4 @@
-// PLAN-SBT-ON-HOST.md Phase 1's exit criterion: supported and unsupported layouts are classified
+// The prerequisite validator's exit criterion: supported and unsupported layouts are classified
 // correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
 // carries a percent-encoded '+', a literal '+' and a directory named like an archive, and the
 // install directory contains a space, which is exactly the shape a quoting or regex bug eats.

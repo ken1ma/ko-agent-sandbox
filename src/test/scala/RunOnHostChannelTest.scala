@@ -1,6 +1,6 @@
 // The build channel, end to end on one host: the real broker against the image's real shim, with
 // `podman exec` replaced by a script and the wrapper by scripts the tests choose — the transport
-// and the build stubbed, never the protocol. What it holds is §6.2's contract: framing under
+// and the build stubbed, never the protocol. What it holds is the channel's contract: framing under
 // bounds, the working-directory boundary, streamed output carried whole with the build's own exit
 // code, and teardown by descriptor lifetime — a dead shim ends the running build, a handshake
 // whose requester died is stillborn with no build started, and a competing shim waits its turn

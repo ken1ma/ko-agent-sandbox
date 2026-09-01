@@ -1,4 +1,4 @@
-// The gate's wrapper driver, EmitBuildProfile's sibling: the §4 wrapper with the authority file
+// The gate's wrapper driver, EmitBuildProfile's sibling: the RunOnHostSandbox wrapper with the authority file
 // as an argument, where the durable front-end — the launcher's --run-build-on-host verb, behind
 // the channel — reads the bundled copy. probe/build-profile-gate.sh is its caller.
 //
@@ -6,7 +6,7 @@
 //     agentsandbox.launcher.RunOnHost <sbt|mill> <project> [authority-file] -- <args...>
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
-// server holds the target project's portfile — the §3.2 refusal — and whose exit is sys.exit's.
+// server holds the target project's portfile — the one-server-per-project refusal — and whose exit is sys.exit's.
 // Exits with the build's code; a refusal is 2, on stderr.
 
 package agentsandbox.launcher

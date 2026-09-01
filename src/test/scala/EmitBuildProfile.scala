@@ -1,9 +1,8 @@
-// Phase 2 scaffolding: the generated Seatbelt profile for the project this runs in, so a real
-// build can be driven under it before any launcher verb exists to print one.
+// The generated Seatbelt profile for the project this runs in, so a real build can be driven
+// under it by hand.
 //
-// Test scope on purpose. The durable answer is a management verb, which belongs with the rest of
-// the launcher surface in Phase 5; until then a profile emitter in the shipped jar would be a
-// command nobody documented. probe/build-profile-gate.sh and probe/build-profile-iterate.sh are its callers.
+// Test scope on purpose: probe/build-profile-gate.sh and probe/build-profile-iterate.sh are its
+// only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
 //   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
 //
@@ -62,7 +61,7 @@ object EmitBuildProfile:
     assembled.sbtGlobal.foreach(base => Console.err.println(s"sbt global base: $base"))
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
-    // portfile and refuse (§3.2). Walked from the class loaders, not java.class.path — runMain ran
+    // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran
     // this inside the build JVM, whose own classpath is sbt's — and copied beside the profile,
     // because the walk answers `target/bg-jobs/` jars sbt removes with its server (measured: the
     // gate's java -cp found none of them).

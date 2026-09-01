@@ -1,4 +1,4 @@
-// The Seatbelt profile a host build runs under: PLAN-SBT-ON-HOST.md §7.2 as text. Pure — a
+// The Seatbelt profile a host build runs under (RUN-ON-HOST.md "The Seatbelt profile"). Pure — a
 // BuildPolicy in, SBPL out — so what the profile says is a unit test rather than something only a
 // Mac can check.
 //
@@ -84,7 +84,7 @@ object SeatbeltProfile:
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
   /** What the build may reach, beyond the policy's own paths, to start a JVM at all. Discovered by
-    * running a real build under this profile and reading the denials, never guessed: §2.1 admits a
+    * running a real build under this profile and reading the denials, never guessed: the contract admits a
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
@@ -165,18 +165,19 @@ object SeatbeltProfile:
         lines += ";; The build's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
         // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
-        // ::1 — not a dual-stack JVM's v4-mapped connect, which is why §4's contract pins
+        // ::1 — not a dual-stack JVM's v4-mapped connect, which is why the environment contract pins
         // preferIPv4Stack (probe/jvm-proxy-rule.sh measured all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
-        // session temp, where §4 points XDG_RUNTIME_DIR and SBT_GLOBAL_SERVER_DIR; measured that a
+        // session temp, where the environment contract points XDG_RUNTIME_DIR and
+        // SBT_GLOBAL_SERVER_DIR; measured that a
         // socket outside the subpath stays denied.
         lines += ";; sbt's boot and server sockets, inside the session temp and nowhere else."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
         lines += ""
-        lines += ";; The guard, last. §2.1: repository state a later host git command would execute,"
+        lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
         lines += ";; a .git a test builds in the session temp is reclaimed with the session, and no"
         lines += ";; host git ever runs there."
@@ -188,7 +189,7 @@ object SeatbeltProfile:
    * The second half of the sbt launcher: what the `cs`-installed wrapper execs, which is an
    * unpacked distribution inside the Coursier archive cache. Its path encodes the download URL of
    * whichever sbt Coursier installed, so it is read out of the wrapper rather than derived — and
-   * read rather than obtained by running it, for §3.3's reason.
+   * read rather than obtained by running it: running the wrapper is executing on the host, unconfined.
    *
    * The longest cache path the wrapper names, because a shorter one is a prefix of the real answer
    * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.

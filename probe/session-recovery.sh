@@ -1,19 +1,18 @@
 #!/bin/sh
-# What §4's orphan recovery and §8's proxy hosting assume, measured before the wrapper encodes
+# What the wrapper's orphan recovery and proxy hosting assume, measured before the wrapper encodes
 # them. Four measurements:
 #
 #   M1  the egress proxy runs on macOS from its dist jars, admits repo1.maven.org through a
 #       replacement policy (-** plus one +host), refuses everything else, and binds where the
-#       codebase says — wildcard :3128, the fact §8.3's bind option exists to change
+#       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
 #   M4  the tokenless initialize + sbt/exec shutdown handshake, spoken at the socket's pathname
 #       after its directory is renamed, ends the server
 #
-# Run it on the Mac, from this repository's root, before implementing Phase 3 and again when sbt
-# or the proxy changes. It builds the proxy dist if absent, boots one sbt 2.0.7 server in a
-# scratch project under /private/tmp, and ends what it started; on a FAIL it keeps the scratch
-# tree and names it.
+# Run it on the Mac, from this repository's root, when sbt or the proxy changes. It builds the
+# proxy dist if absent, boots one sbt 2.0.7 server in a scratch project under /private/tmp, and
+# ends what it started; on a FAIL it keeps the scratch tree and names it.
 
 set -u
 
