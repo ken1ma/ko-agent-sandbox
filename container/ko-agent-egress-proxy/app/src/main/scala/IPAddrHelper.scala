@@ -54,16 +54,19 @@ object IPAddrHelper:
    * name being used to smuggle a destination, not a name with a stale record.
    */
   def resolvePublic(host: String): Vector[InetAddress] =
-    val addresses = InetAddress.getAllByName(host).toVector
+    requirePublic(InetAddress.getAllByName(host).toVector)
 
+  /** The vetting half of resolvePublic, apart from the lookup so a test can hand it addresses. */
+  def requirePublic(addresses: Vector[InetAddress]): Vector[InetAddress] =
     if addresses.isEmpty then
-      throw PolicyViolation("resolved to no addresses")
+      throw PolicyViolation("resolved to no addresses", RefusalAdvice.nonPublicAddress)
 
     addresses.filterNot(isPublicDestination) match
       case Vector() => addresses
       case rejected =>
         throw PolicyViolation(
           s"resolved to non-public address ${rejected.head.getHostAddress}",
+          RefusalAdvice.nonPublicAddress,
         )
 
   /**

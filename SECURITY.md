@@ -390,7 +390,9 @@ container's lifetime. Every connection has to pass all of this, in order:
 
 Steps 8-11 are what stops `CONNECT allowed.example:443` from being used to speak TLS to something
 else behind the same address. They happen after the `200`, so a failure there closes the connection
-rather than answering with a status the client would no longer accept.
+rather than answering with a status the client would no longer accept. A refusal at steps 1-6 is a
+`403` to the `CONNECT`, its body the reason and the next step — which no client shows, so the
+sandbox image's `sandbox-egress-check <host>` reads it (README, `--egress-check`).
 
 ### The audit line grammar
 
@@ -456,6 +458,10 @@ line is routine, not an incident: pooled clients open spare connections and disc
 nothing was asked, so nothing was refused — an `error`, never a `deny`. A connection dying inside
 a half-sent header is a `deny`: a half request is an anomaly, not weather.
 
+A refused request's `403` body is the agent's copy of `<why>`, with the next step under it
+(`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
+for the person who has this document.
+
 The startup lines precede these and sit outside the grammar: the listening port, the resolved
 policy (the `--print-policy` lines), its digest — one stable line naming which policy this run
 enforced, comparable across runs — any warnings, and the inspection summary. There is no
@@ -507,9 +513,9 @@ request inside it:
   `GET`, refused anyway so that `git push` fails at its first request rather than its second. `PUT`,
   `PATCH` and `DELETE` are refused, and so is every other `POST`
 
-The refusal is a `403` inside the tunnel with the reason in it, and a `deny` line in the audit
-log ("The audit line grammar", above). That log is the other half of what this buys: what an
-agent asked a forge to do is recorded, not merely whether it opened a connection.
+The refusal is a `403` inside the tunnel with the reason and the next step in it, and a `deny`
+line in the audit log ("The audit line grammar", above). That log is the other half of what this
+buys: what an agent asked a forge to do is recorded, not merely whether it opened a connection.
 
 Consequences:
 

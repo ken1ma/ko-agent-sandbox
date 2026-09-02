@@ -4,7 +4,6 @@ import java.io.{ByteArrayOutputStream, EOFException, IOException, InputStream, O
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import javax.net.ssl.SSLSocket
 import scala.annotation.tailrec
 
 import IPAddrHelper.normalizeHost
@@ -604,38 +603,44 @@ object HTTPHelper:
 
     loop(false)
 
-  /** The refusal as curl and git see it: a reason inside the tunnel beats a
-    * dropped connection. */
+  /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
+    * the policy's (PolicyViolation.advice). One line each, so a client that prints the body —
+    * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
+  def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
+    (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))
+      .getBytes(StandardCharsets.UTF_8)
+
+  /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
+    * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. */
   def respondInsideTls(
-    socket: SSLSocket,
+    socket: Socket,
     status: Int,
     reason: String,
     detail: String,
+    advice: Option[String] = None,
   ): Unit =
-    try
-      val body = s"ko-agent-egress-proxy: $detail\n".getBytes(StandardCharsets.UTF_8)
+    respondQuietly(socket, status, reason, refusalBody(detail, advice))
 
-      val out = socket.getOutputStream
-      writeAscii(
-        out,
-        s"HTTP/1.1 $status $reason\r\n" +
-          "Content-Type: text/plain; charset=utf-8\r\n" +
-          s"Content-Length: ${body.length}\r\n" +
-          "Connection: close\r\n\r\n",
-      )
-      out.write(body)
-      out.flush()
+  def respondQuietly(
+    client: Socket,
+    status: Int,
+    reason: String,
+    body: Array[Byte] = Array.emptyByteArray,
+  ): Unit =
+    try respond(client, status, reason, body)
     catch case _: IOException => ()
 
-  def respondQuietly(client: Socket, status: Int, reason: String): Unit =
-    try respond(client, status, reason)
-    catch case _: IOException => ()
-
-  def respond(client: Socket, status: Int, reason: String): Unit =
+  def respond(client: Socket, status: Int, reason: String, body: Array[Byte]): Unit =
+    val out = client.getOutputStream
     writeAscii(
-      client.getOutputStream,
-      s"HTTP/1.1 $status $reason\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      out,
+      s"HTTP/1.1 $status $reason\r\n" +
+        (if body.isEmpty then "" else "Content-Type: text/plain; charset=utf-8\r\n") +
+        s"Content-Length: ${body.length}\r\n" +
+        "Connection: close\r\n\r\n",
     )
+    out.write(body)
+    out.flush()
 
   def writeAscii(out: OutputStream, value: String): Unit =
     out.write(value.getBytes(StandardCharsets.US_ASCII))

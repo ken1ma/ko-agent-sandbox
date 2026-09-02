@@ -178,6 +178,25 @@ design; it means the additional boundary should be purchased only when the threa
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
 
+### No approve-on-miss prompt for a refused host
+
+Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
+a prompt to widen the policy. A prompt is a prompt-injection target, and a grant made through one
+is un-auditable afterwards. Authority here stays launch-only: a refusal's `403` body names the
+step (`RefusalAdvice` in the proxy), and the user widens `.ko-agent-sandbox/egress/allowed` on
+the host and relaunches.
+
+- https://github.com/openai/codex/issues/22387 — no DNS inside the sandbox surprised users
+- https://github.com/google-gemini/gemini-cli/issues/23875 — network off by default read as
+  "sandbox unusable"
+
+### No per-agent violations channel
+
+sandbox-runtime annotates the agent's context with a `<sandbox_violations>` block; Copilot's
+coding-agent firewall reports a blocked request with the address and the command that made it.
+Each needs integration per CLI release. The `403` body already lands in the tool output every
+agent reads, at the enforcement point, so nothing is integrated.
+
 ## The axes verification has to separate
 
 Conflating them is what makes verification look larger than it is.
@@ -221,6 +240,12 @@ are linked inline where that decision is recorded; these are the broader sources
   https://github.com/anthropic-experimental/sandbox-runtime/issues/88
 - Agent sandbox/proxy comparisons, including credential brokering:
   https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
+- Refusal reasons handed to the agent — sandbox-runtime's `deniedDomainReasons`, Codex's
+  `codex.network_proxy.policy_decision` reasons, Copilot's firewall report; here fixed and
+  launcher-owned, since the policy admits hosts, not patterns:
+  https://github.com/anthropic-experimental/sandbox-runtime
+  https://github.com/openai/codex/tree/main/codex-rs/network-proxy
+  https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall
 
 ## Naming
 

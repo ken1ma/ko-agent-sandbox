@@ -73,7 +73,7 @@ object GitHelper:
    */
   def requireUnambiguousPath(path: String): Unit =
     if path.contains('%') then
-      throw PolicyViolation("percent-encoding is not allowed in this path")
+      throw PolicyViolation("percent-encoding is not allowed in this path", RefusalAdvice.ambiguousPath)
 
     if path.split("/", -1).exists(segment => segment == "." || segment == "..") then
-      throw PolicyViolation("dot segments are not allowed in this path")
+      throw PolicyViolation("dot segments are not allowed in this path", RefusalAdvice.ambiguousPath)

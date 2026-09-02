@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""
+Ask this session's egress proxy about one host, from inside the sandbox: the in-session twin of
+the launcher's --egress-check=<host>, answering the running proxy instead of a one-shot one.
+
+    sandbox-egress-check <host>
+
+One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the
+next step, and every client swallows a failed CONNECT's body, which is why this exists: it prints
+the body and exits 1. An admitted host gets one HEAD / inside TLS, trusting $SSL_CERT_FILE; the
+origin's status line is printed and the exit is 0. A host the policy admitted but the network
+failed — a 502 from the proxy, a TLS failure — prints what happened and exits 2.
+
+Each run leaves in the audit log exactly the line the agent's own tool would have: one deny, or
+one allow. Python rather than openssl or curl because its ssl module wraps a socket already
+holding the tunnel, which `openssl s_client` cannot, and curl never shows a failed CONNECT's body.
+"""
+
+import os
+import socket
+import ssl
+import sys
+
+NAME = "sandbox-egress-check"
+MAX_HEAD_BYTES = 16 * 1024
+
+
+def fail(message, code=2):
+    print(f"{NAME}: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def proxy_address():
+    url = os.environ.get("HTTPS_PROXY", "")
+    if not url.startswith("http://"):
+        fail("HTTPS_PROXY is not an http:// URL, so there is no proxy to ask")
+    host, _, port = url[len("http://"):].rstrip("/").rpartition(":")
+    if not host or not port.isdigit():
+        fail(f"HTTPS_PROXY={url} names no host:port")
+    return host, int(port)
+
+
+def read_head(sock):
+    """The response head, to its CRLF CRLF; bounded like the proxy's own reader."""
+    head = b""
+    while not head.endswith(b"\r\n\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise EOFError("connection closed before the response head completed")
+        head += chunk
+        if len(head) > MAX_HEAD_BYTES:
+            raise ValueError(f"response head exceeds {MAX_HEAD_BYTES} bytes")
+    lines = head.decode("iso-8859-1").split("\r\n")
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        if name:
+            headers[name.strip().lower()] = value.strip()
+    return lines[0], headers
+
+
+def read_body(sock, headers):
+    wanted = int(headers.get("content-length", "0") or "0")
+    body = b""
+    while len(body) < wanted:
+        chunk = sock.recv(wanted - len(body))
+        if not chunk:
+            break
+        body += chunk
+    return body.decode("utf-8", "replace")
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
+        fail(f"usage: {NAME} <host>")
+    host = sys.argv[1].encode("idna").decode("ascii")
+    proxy_host, proxy_port = proxy_address()
+
+    try:
+        sock = socket.create_connection((proxy_host, proxy_port), timeout=30)
+    except OSError as ex:
+        fail(f"cannot reach the proxy at {proxy_host}:{proxy_port}: {ex}")
+
+    with sock:
+        try:
+            sock.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode("ascii"))
+            status_line, headers = read_head(sock)
+        except (OSError, EOFError, ValueError) as ex:
+            fail(f"CONNECT {host}:443: {ex}")
+        status = status_line.split(" ")[1] if status_line.count(" ") >= 2 else ""
+
+        if status != "200":
+            print(f"CONNECT {host}:443: {status_line}")
+            sys.stdout.write(read_body(sock, headers))
+            sys.exit(1 if status == "403" else 2)
+
+        # Past the 200 every failure is the network's, not the policy's: exit 2, never 1.
+        try:
+            context = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE"))
+            tls = context.wrap_socket(sock, server_hostname=host)
+        except (ssl.SSLError, OSError) as ex:
+            print(f"CONNECT {host}:443: 200, then TLS failed: {ex}")
+            sys.exit(2)
+        with tls:
+            try:
+                tls.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii"))
+                origin_status, _ = read_head(tls)
+                # An informational response (103 Early Hints) precedes the final one.
+                while origin_status.split(" ")[1:2] and origin_status.split(" ")[1].startswith("1"):
+                    origin_status, _ = read_head(tls)
+            except (OSError, EOFError, ValueError) as ex:
+                print(f"CONNECT {host}:443: 200, then HEAD / failed: {ex}")
+                sys.exit(2)
+        print(f"CONNECT {host}:443: 200; HEAD / -> {origin_status}")
+
+
+main()
