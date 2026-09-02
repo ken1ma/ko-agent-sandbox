@@ -5,9 +5,6 @@ describes mechanism, and the launcher — `src/main/scala/`, with `AgentSandboxL
 flow and its neighbours one concern each — is the canonical description of the mounts and flags
 that implement it.
 
-The instructions to the agents are separate, at `container/ko-agent-sandbox/AGENTS-SANDBOX.md` and
-`AGENTS-CUSTOM.md`.
-
 ## Defended
 
 **Compromise the host workstation.** The host exposes only the project directory and the
@@ -808,7 +805,6 @@ Deliberate, both directions:
 What containers are usually wanted for here — a test database, an S3 endpoint — runs as ordinary
 processes inside the sandbox instead, with the same uid, capabilities and egress confinement as
 everything else: PostgreSQL rootless via `initdb`/`pg_ctl`, S3 via a JVM mock such as Adobe S3Mock.
-`AGENTS-SANDBOX.md` points the agents the same way.
 
 **The opt-in, and its price.** `KO_AGENT_SANDBOX_NESTING=same-uid` (exactly `none` or `same-uid`;
 anything else refuses the launch, like the workspace guard) loosens only the controls below, for

@@ -1730,9 +1730,7 @@ object AgentSandboxLauncher:
            |Run this project's Scala builds with $commands: they run on the
            |host, sandboxed to the project, per-project build caches and one artifact repository,
            |and they may write the project except git control state and `.ko-agent-sandbox`.
-           |Prefer them: a container build takes podman machine memory that is never returned, a
-           |host build runs at host speed on memory reclaimed when it exits. Each invocation
-           |starts and ends its own sbt server, so batch commands into one —
+           |Each invocation starts and ends its own sbt server, so batch commands into one —
            |`sandbox-run-on-host sbt compile test`. Container `sbt` still works, over the same
            |`target/` — host and container builds compile with different JVMs against different
            |caches, so switching between them can cost a rebuild or need cleanup first ("The

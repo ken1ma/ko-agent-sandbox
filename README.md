@@ -46,15 +46,14 @@ How it is put together:
     │  they are all removed (not reused)        └───────────────────────────┘      │
     │                                                                              │
     │  ┌─ macOS: --run-on-host sandbox for heavy workloads ───────────────────┐    │
-    │  │  sbt/mill relayed to the host under Seatbelt — SECURITY.md           │    │
+    │  │  sbt/mill relayed to the host under Seatbelt                         │    │
     │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 
 1. An intended workflow:
     1. `git clone`/`pull`/`fetch` on the host first — the launcher passes none of your host
        credentials in
-    1. run the agent in the sandbox: it should feel like running claude/codex/agy on the host,
-       just safer
+    1. run an agent in the sandbox: it should feel mostly like running it on the host
     1. review the changes, then `git commit`/`push` on the host
 1. The launcher refuses `$HOME` and its ancestors as the project directory
    (it would expose `~/.aws`, `~/.ssh`), along with the well-known home
@@ -107,10 +106,14 @@ checkout — [Development](#development).
 
     java -jar ko-agent-sandbox.jar --build  # once, and again after upgrading
 
-    java -jar ko-agent-sandbox.jar claude   # launch an agent
+    java -jar ko-agent-sandbox.jar claude   # launch an agent in a trusted directory
 
-1. On macOS, insert `--run-on-host=sbt,mill --auto-shutdown-foreign-sbt-on-host`
-   before `<command>` when the agent will run builds or tests
+1. Insert `--write=reject` before `<command>` when the agent must only read the directory.
+1. Insert `--egress=deny-unless-model` when the agent must not talk to
+   anything other than its own provider.
+1. On macOS, insert `--run-on-host=sbt,mill --auto-shutdown-foreign-sbt-on-host` when the
+   agent will run builds or tests: a build inside the podman machine takes memory from every
+   other container there and keeps it until the session ends.
 
 ### Reference
 
@@ -137,8 +140,7 @@ checkout — [Development](#development).
       --run-on-host=<tools>
                          macOS only: sbt / mill can be run on the host. This buys
                          nothing on Linux, and cannot be securely
-                         implemented on Windows — SECURITY.md "Run on
-                         host" has why. Adds the sandbox-run-on-host
+                         implemented on Windows. Adds the sandbox-run-on-host
                          command, which runs those build tools OUTSIDE
                          the container — on this host, confined by a
                          Seatbelt profile to the project (its git
@@ -146,7 +148,7 @@ checkout — [Development](#development).
                          unreachable), per-project build caches, and
                          the build's own egress proxy. Host builds
                          write the project even under --write=reject.
-                         SECURITY.md "Run on host" states its cost;
+                         SECURITY.md "Run on host" has the why and the cost;
                          doc/run-on-host.md has how it works
       --auto-shutdown-foreign-sbt-on-host
                          with --run-on-host naming sbt: when your own live

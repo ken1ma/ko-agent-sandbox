@@ -37,8 +37,8 @@ replacement, and a session without `--run-on-host` builds in the container as be
 
 ## Why only macOS
 
-`SECURITY.md` "Run on host" states the rule — the feature exists only where the guard's access-time
-name denies hold. What the alternatives look like, for whoever revisits them:
+The feature exists only where the guard's access-time name denies hold. What the alternatives
+look like, for whoever revisits them:
 
 On Linux, bubblewrap does the *positive* half better than Seatbelt: it starts with nothing mounted
 and builds up, so the grant table holds by construction, and `--unshare-all` removes the network
@@ -61,8 +61,8 @@ guard in ACLs at all — before it is worth reconsidering.
 
 ## The contract's mechanics
 
-`SECURITY.md` "Run on host" holds the reach — what a build may touch, in whole — and why the two
-deny rows make host builds safe to expose to a sandbox. The mechanics beneath them:
+The mechanics beneath the reach — what a build may touch, in whole — and the two deny rows that
+make host builds safe to expose to a sandbox:
 
 - **Writable implies executable for the project and the session temp, and for nothing else.** A
   child inherits the profile, so a build running what it wrote gains no authority it did not
@@ -232,7 +232,7 @@ next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leav
 broker open as a later addition if a tool ever makes it worth having. A *foreign* live server — the
 user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
 launch carried `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
-socket it derives itself (SECURITY.md "One sbt server per project" has the security argument).
+socket it derives itself.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-project exclusivity is also the lock over `target/`. A second rendezvous on the
@@ -363,10 +363,8 @@ without moving anything. It is discovered exactly as the launcher's state root i
 answer alike on one machine; a relative override is refused because it would resolve against the
 repository being sandboxed, and a root inside the project is refused outright.
 
-Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it.
-`plan-coursier.md` forbids the same thing for the container and reaches it with a podman `:O`
-upper; Seatbelt has no mount namespace, so separation here is by root. The cost is a cold cache on
-a project's first agent build, warm from the second onward.
+Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it. The cost
+is a cold cache on a project's first agent build, warm from the second onward.
 
 Why not the launcher state root: the state root is kind-first (`tls/<id>`, `log/<id>`, …) and the
 proxy's audit log must not sit beside the CA key. On the host the build runs as the user's own uid,
