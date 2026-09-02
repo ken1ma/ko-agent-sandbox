@@ -1129,6 +1129,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(hostBuilds.contains("sandbox-run-on-host sbt"), hostBuilds)
     assert(hostBuilds.contains("sandbox-run-on-host mill"), hostBuilds)
     assert(hostBuilds.contains("starts and ends its own sbt server"), hostBuilds)
+    // The batching example is quoted: the JVM client hands its arguments to sbt as one command
+    // line, so `compile test` is a parse error and `'compile; test'` is two commands (measured on
+    // sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening test suite — is
+    // named, with the container as where it runs instead.
+    assert(hostBuilds.contains("sandbox-run-on-host sbt 'compile; test'"), hostBuilds)
+    assert(!hostBuilds.contains("sbt compile test"), hostBuilds)
+    assert(hostBuilds.contains("Operation not permitted"), hostBuilds)
+    assert(hostBuilds.replace('\n', ' ').contains("that suite alone runs in the container"), hostBuilds)
     assert(hostBuilds.contains("never re-run in the container"), hostBuilds)
     assert(hostBuilds.contains(RunOnHostChannel.RunOnHostVariable), hostBuilds)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)

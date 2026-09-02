@@ -1731,12 +1731,14 @@ object AgentSandboxLauncher:
            |host, sandboxed to the project, per-project build caches and one artifact repository,
            |and they may write the project except git control state and `.ko-agent-sandbox`.
            |Each invocation starts and ends its own sbt server, so batch commands into one —
-           |`sandbox-run-on-host sbt compile test`. Container `sbt` still works, over the same
-           |`target/` — host and container builds compile with different JVMs against different
-           |caches, so switching between them can cost a rebuild or need cleanup first ("The
-           |host's own symlinks"). A host build that fails or is refused is reported to the user,
-           |never re-run in the container. The environment variable
-           |`${RunOnHostChannel.RunOnHostVariable}` carries this tool list.
+           |`sandbox-run-on-host sbt 'compile; test'`, quoted: sbt reads separate arguments as one
+           |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
+           |that binds one fails there with `Operation not permitted`; that suite alone runs in the
+           |container. Container `sbt` still works, over the same `target/` — host and container
+           |builds compile with different JVMs against different caches, so switching between them
+           |can cost a rebuild or need cleanup first ("The host's own symlinks"). Any other host
+           |build that fails or is refused is reported to the user, never re-run in the container.
+           |The environment variable `${RunOnHostChannel.RunOnHostVariable}` carries this tool list.
            |""".stripMargin
       else if hostBuildsAvailable then
         s"""
