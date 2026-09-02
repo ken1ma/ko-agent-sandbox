@@ -92,8 +92,10 @@ make host builds safe to expose to a sandbox:
 ## Network
 
 The build's only egress is its own proxy (below); Seatbelt permits connections to that loopback
-endpoint and nothing else, with UNIX-domain sockets only inside the session temp. Three measured
-rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`):
+endpoint and nothing else, with UNIX-domain sockets only inside the session temp. Loopback is every
+local service, so no TCP listener or other loopback connect is granted: a test suite that binds
+one — the proxy's own wire-relay tests do — gets `EPERM` on the host and runs in the container.
+Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`):
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
   compiler ("host must be * or localhost").
@@ -195,10 +197,10 @@ agent-authored shell on the host.
 Three more things `mill` needs, each measured by the gate against `src/probe/mill-fixture`:
 `mill-jvm-version: system` in the project — its default provisions a JVM through Coursier's index
 into a writable, executable place, which is what the JVM rule refuses; `--no-daemon` — the launcher
-and the daemon talk over a loopback TCP socket, and loopback is every local service, granted to
-nothing; and `out/mill-daemon/` cleared at session start — the launcher memoizes its resolved
-classpath against the cache of whatever run wrote it, and a memo from an unconfined run names paths
-the profile denies.
+and the daemon talk over a loopback TCP socket, which the profile denies ("Network"); and
+`out/mill-daemon/` cleared at session start — the launcher memoizes its resolved classpath against
+the cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
+denies.
 
 ## The session
 

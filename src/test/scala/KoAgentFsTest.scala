@@ -334,6 +334,21 @@ class KoAgentFsTest extends munit.FunSuite:
       .getOrElse(fail("src/main.rs declares no SELF_TEST_VENUE_EXIT"))
     assertEquals(declared, AgentSandboxLauncher.SelfTestVenueExit)
 
+  test("the rig's container script parses under the bash that runs it"):
+    // The script lives inside rig.sh as a quoted heredoc and is executed only in the privileged
+    // container, so nothing else parses it. `sh -n` over rig.sh itself is no check — the heredoc
+    // makes the outer file parse whatever the inner text says.
+    assume(!isWindows, "no /bin/bash to parse with")
+    val rig = Files.readString(Paths.get("fuse/ko-agent-fs/probe/rig.sh"))
+    val body = """(?s)<<'INNER'\n(.*?)\nINNER\n""".r
+      .findFirstMatchIn(rig)
+      .map(_.group(1))
+      .getOrElse(fail("probe/rig.sh holds no quoted heredoc INNER"))
+    assert(body.contains("cargo test"), body)
+    val parsed = ProcessBuilder("/bin/bash", "-n", "-c", body).redirectErrorStream(true).start()
+    val output = String(parsed.getInputStream.readAllBytes())
+    assertEquals(parsed.waitFor(), 0, s"the rig's container script does not parse:\n$output")
+
   test("everything that compiles the filter derives its toolchain instead of repeating it"):
     // probe/rig.sh reads the pin out of the Containerfile and the self-test image takes it as an
     // ARG with no default (pinnedRustVersion has why). rig.sh is read from the checkout, since it

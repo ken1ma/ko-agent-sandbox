@@ -30,8 +30,10 @@ rust=$(sed -n 's/^ARG RUST_VERSION=\(.*\)$/\1/p' "$crate/Containerfile")
 volume=ko-agent-fs-rig-target
 podman volume exists "$volume" 2>/dev/null || podman volume create "$volume" >/dev/null
 
-# Fixed text; the two values that vary travel as environment rather than being spliced in.
-inner='
+# Fixed text; the two values that vary travel as environment rather than being spliced in. A
+# quoted heredoc, not a quoted string: the text is prose as much as shell, and one apostrophe in
+# the prose would end a string — the outer shell then runs the rest of it, unmounted.
+inner=$(cat <<'INNER'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -63,7 +65,8 @@ fi
 # path is wrong, rather than leaving that to be read off thirty test failures.
 cargo run --locked $target --example mount_probe
 cargo test --locked $target -- --ignored $RIG_FILTER
-'
+INNER
+)
 
 # `bash -c`, never `bash -lc`: a login shell sources /etc/profile, which on Debian *assigns* PATH
 # rather than extending it, discarding the image ENV PATH where rustup and cargo live. The symptom
