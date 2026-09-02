@@ -1,7 +1,7 @@
 // The project directory — the thing that becomes /workspace, and everything the launcher decides
 // about it before any resource exists: the real path it resolves to, the directories refused as
 // projects outright, the identity its path hashes to (which names every per-project resource), and
-// the mount guards that pin or refuse its .git and .ko-agent-sandbox shapes. The session's
+// the mount guards that pin or refuse its .git and .ko-agent-sandbox layouts. The session's
 // configuration variables are deliberately not here — they describe a launch, not the project,
 // and live beside the --help text they must stay in step with.
 
@@ -66,7 +66,10 @@ object SandboxProject:
             Right(
               (
                 Seq(normalized),
-                Seq(s"$name ($value) does not resolve to a real path; only this exact spelling is refused as a project"),
+                Seq(
+                  s"$name ($value) does not resolve to a real path; " +
+                    "only this exact spelling is refused as a project",
+                ),
               ),
             )
     catch case _: InvalidPathException => Left(s"$name is not a valid path")
@@ -122,9 +125,9 @@ object SandboxProject:
    * the warnings describing any degradation in deriving them. PUBLIC is the
    * shared Windows profile. A home variable that is set but invalid refuses
    * the launch on POSIX; on Windows it is dropped with a warning as long as
-   * another home variable resolved,
-   * because Git Bash and MSYS2 export a POSIX-style HOME (/c/Users/me) beside
-   * a perfectly good USERPROFILE. No home variable at all degrades to the
+   * another home variable resolved, because Git Bash and MSYS2 export a
+   * POSIX-style HOME (/c/Users/me) beside a perfectly good USERPROFILE. No
+   * home variable at all degrades to the
    * well-known roots, with a warning — HOME-less environments (cron, CI,
    * env -i) stay launchable under the static guard.
    */
@@ -280,10 +283,10 @@ object SandboxProject:
    * The empty sources are the launcher's, under its state root: the project
    * tree is never written (SECURITY.md, "Silent changes to what you own").
    *
-   * The shape is read once, at launch; a bind mount binds the inode, so a
+   * The layout is read once, at launch; a bind mount binds the inode, so a
    * repository created on the host mid-session appears inside behind the
    * whole-directory pin, read-only until the next launch. Mid-session
-   * changes only ever sit behind a mount coarser than their shape warrants.
+   * changes only ever sit behind a mount coarser than their layout warrants.
    */
   def gitGuardVolumes(gitDir: Path, emptyFile: Path, emptyDir: Path): Either[String, Vector[String]] =
     def refuse(path: Path): Either[String, Vector[String]] =
@@ -328,7 +331,7 @@ object SandboxProject:
   /**
    * Why .ko-agent-sandbox cannot serve as this project's policy directory, or None. Checked in
    * every write mode before the policy is read — the read is a host-side read either way.
-   * Refused shapes: a symlink of the directory or of an entry (podman resolves mount sources on
+   * Refused forms: a symlink of the directory or of an entry (podman resolves mount sources on
    * the host, and the policy read must see the bytes a mounted-back directory would show);
    * anything that is not a directory; or an entry that is no configuration of this launcher's —
    * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
@@ -383,7 +386,7 @@ object SandboxProject:
 
   /**
    * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
-   * Read on the host, so the same shapes egress/ refuses (EgressProxyPolicy.readPolicyFiles) are
+   * Read on the host, so the same forms egress/ refuses (EgressProxyPolicy.readPolicyFiles) are
    * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
    * file, an empty file. Not normalized — it is prose, mounted as written.
    */

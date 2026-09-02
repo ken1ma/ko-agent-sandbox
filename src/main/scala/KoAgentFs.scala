@@ -223,7 +223,7 @@ object KoAgentFs:
       case None =>
         fail(s"error: unrecognized ko-agent-fs --version output: ${version.text}")
     // The whole stack, proven where it will run: an unprivileged mount over a scratch tree, with
-    // the policy shown to bite. Its failure text names the environment fix.
+    // the policy shown to refuse. Its failure text names the environment fix.
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
       fail(s"error: ko-agent-fs self-test failed after install:\n${selfTest.err}", selfTest.exit)
@@ -254,7 +254,7 @@ object KoAgentFs:
    * names the mechanism, so a better guard someday is a new value here, not a new variable.
    * This variable can weaken the boundary, so "security
    * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
-   * not silently weaken the effective boundary" (DESIGN.md's principles) applies to it
+   * not silently weaken the effective boundary" (design.md's principles) applies to it
    * exactly: any other value is a refused launch, never a guard quietly switched off
    * (HostCommands.closedChoice).
    */
@@ -435,10 +435,10 @@ object KoAgentFs:
    * with what it is and where its daemon runs — which is not the host on macOS and Windows.
    */
   def koAgentFsLabel(os: Os): String =
-    val venue = os match
+    val where = os match
       case Os.Linux => "on the host"
       case Os.Mac | Os.Windows => "in the podman machine"
-    s"ko-agent-fs filter $venue"
+    s"ko-agent-fs filter $where"
 
   def koAgentFsTeardownMode(os: Os): String =
     os match
@@ -512,7 +512,7 @@ object KoAgentFs:
 
   /**
    * The per-session gate and mount: prove the installed binary is this
-   * launcher's build, prove it can mount and the policy bites (self-test),
+   * launcher's build, prove it can mount and the policy refuses (self-test),
    * then mount the project and return the absolute mountpoint to bind at
    * /workspace. Every failure aborts the launch — there is no fallback to
    * an unfiltered bind mount.

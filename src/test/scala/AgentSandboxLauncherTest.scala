@@ -137,7 +137,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // EOF at the prompt is a decline, never a start: nothing was agreed to. (Stdin that was never a
     // terminal is the no-reader case below, and starts.)
     assertEquals(hold("pause")._1, false)
-    assertEquals(hold("pause", Some("maybe"), Some("?"), Some("y")), (true, Vector.fill(3)("\nstart: claude --resume [Y/n] ")))
+    assertEquals(
+      hold("pause", Some("maybe"), Some("?"), Some("y")),
+      (true, Vector.fill(3)("\nstart: claude --resume [Y/n] ")),
+    )
     assertEquals(hold("pause", Some("maybe"))._1, false)
     assertEquals(hold("immediate", Some("n")), (true, Vector()))
     assertEquals(holdForReader("pause", Vector("claude"), None), true)
@@ -202,7 +205,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     tool("ps", "#!/bin/sh\nexit 0\n")
     val mutePs = hostBackend("paste", Os.Mac, bin.toString)
     assert(mutePs.swap.exists(_.contains("pid=,ppid=")), mutePs.toString)
-    // A ps answering the shape with this JVM's own row, pid and parent — the parent baked in by
+    // A ps answering the probed arguments with this JVM's own row, pid and parent — the parent baked in by
     // the test, so the fake proves the parser and needs no ps of the host's own.
     val parent = ProcessHandle.current.parent.map[String](_.pid.toString).orElse("1")
     val ps = tool("ps", s"#!/bin/sh\nprintf '%s %s\\n' \"$$PPID\" $parent\n")
@@ -385,7 +388,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(shellWord(""), "''")
     import HostCommands.renderCommand
     val pull = Vector("/opt/podman/bin/podman", "pull", "docker.io/library/debian:13.6-slim", "--quiet")
-    assertEquals(renderCommand(pull, Some("/opt/podman/bin/podman")), "+ podman pull docker.io/library/debian:13.6-slim --quiet")
+    assertEquals(
+      renderCommand(pull, Some("/opt/podman/bin/podman")),
+      "+ podman pull docker.io/library/debian:13.6-slim --quiet",
+    )
     assertEquals(renderCommand(pull, None), "+ /opt/podman/bin/podman pull docker.io/library/debian:13.6-slim --quiet")
     assertEquals(renderCommand(Vector("rm", "-rf", "/a b"), Some("/opt/podman/bin/podman")), "+ rm -rf '/a b'")
     val script = "set -eu\nsudo sh -c 'echo user_allow_other >> /etc/fuse.conf'\n"
@@ -400,7 +406,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(pullVerdict(Some(old), Some(now)), "updated from 7e3898f7b011")
     assertEquals(pullVerdict(None, Some(now)), "new on this machine")
 
-  test("remote image parsing reads every shape the bundled Containerfiles use"):
+  test("remote image parsing reads every pattern the bundled Containerfiles use"):
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -695,7 +701,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(expanded.swap.exists(_.contains("unsupported stage alias")), expanded.toString)
 
-  test("remote image parsing refuses a shape it does not resolve"):
+  test("remote image parsing refuses a pattern it does not resolve"):
     // Every one of these is a Containerfile podman accepts. Approximating them is what would let a
     // refresh be skipped without a word, so each has to stop the verb instead.
     Vector(
@@ -1116,7 +1122,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/allowed"), section)
       assert(section.contains("deny-unless-allowed"), section)
-    // --run-on-host adds the venue instruction, naming each served tool's command. Without the
+    // --run-on-host adds the host-build instruction, naming each served tool's command. Without the
     // option, a macOS session gets one discovery line — only the launcher knows the platform —
     // and other platforms hear nothing about a command they can never have.
     val hostBuilds = authoritySection("live", "fuse", resolution, Vector("sbt", "mill"))
@@ -1379,7 +1385,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("a run's TLS mount copies are pruned only when provably dead and past the launch bound"):
     val names = Seq("run-1a2b3c4d", "run-ffffffff", "run-short", "ca.crt", ".lock", "run-1A2B3C4D")
-    // Only the run-<8 hex> shape is the launcher's to sweep; a live run's copies are its proxy's
+    // Only the run-<8 hex> pattern is the launcher's to sweep; a live run's copies are its proxy's
     // mount sources, and a fresh dir may belong to a launch that has no container yet.
     assertEquals(
       tlsRunDirsToPrune(names, Set("1a2b3c4d"), _ => true),
@@ -1417,7 +1423,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // And the minted suffix is what the anchor assumes: exactly eight hex characters.
     assert(newRunSuffix().matches("[0-9a-f]{8}"))
 
-  test("reset filters match exactly the launcher's reserved name shapes"):
+  test("reset filters match exactly the launcher's reserved name patterns"):
     val id = "app-0123456789ab"
     assertEquals(
       proxyContainers(
@@ -1458,7 +1464,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Seq(s"ko-agent-sandbox-$id-1a2b3c4d", s"ko-agent-egress-$id-1a2b3c4d"),
     )
 
-  test("a shared volume name inside the reserved shape is refused, ordinary names are not"):
+  test("a shared volume name inside the reserved pattern is refused, ordinary names are not"):
     assertEquals(sharedVolumeNameError("my-shared-volume"), None)
     assertEquals(sharedVolumeNameError("ko-agent-sandbox-persistent-backup"), None)
     val reserved = sharedVolumeNameError("ko-agent-sandbox-persistent-app-0123456789ab")

@@ -1,7 +1,7 @@
 # Issues to report upstream to sbt/sbt
 
 Found while measuring the `--run-on-host` build sandbox, each written as the report to submit.
-What this project does about each is in `RUN-ON-HOST.md` and the code it points to; the row here
+What this project does about each is in `run-on-host.md` and the code it points to; the row here
 is only what upstream needs.
 
 ## The JVM thin client crashes instead of reporting a long boot-socket path
@@ -61,7 +61,7 @@ The client then exits 0. Nothing was compiled, nothing more is printed, no serve
 
 **Expected:** a nonzero exit and a message naming the failed server start. `--jvm-client` in the
 same environment either completes the command or fails with output; success with no work is the
-one behaviour automation cannot detect.
+one behavior automation cannot detect.
 
 ## No one-shot mode: every invocation is a server rendezvous
 
@@ -78,7 +78,7 @@ directory is always the working directory, `project/target/active.json` is fixed
 connect to — so the wrapper's only safe options are refusing the build or shutting the
 developer's server down.
 
-**Ask:** a mode that runs the command queue in-process, holds the project exclusively for the
+**Request:** a mode that runs the command queue in-process, holds the project exclusively for the
 duration, and writes no portfile — the property `mill --no-daemon` provides. Confining wrappers
 could then coexist with a developer's live server instead of ending it.
 

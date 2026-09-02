@@ -1,6 +1,6 @@
 // Which images the bundled Containerfiles start from: the remote ones, so the image-producing
 // verbs can refresh them before a build, and the launcher-built ones, which order every cleanup
-// list. Reading is deliberately narrow: these Containerfiles are this repository's own, so a shape
+// list. Reading is deliberately narrow: these Containerfiles are this repository's own, so a pattern
 // this does not resolve is a deliberate edit, and refusing it beats approximating it — an
 // approximation would skip a refresh in silence.
 
@@ -13,7 +13,7 @@ import HostCommands.fail
 object ContainerfileSources:
 
   /**
-   * The shapes those Containerfiles use, and only those: one `ARG NAME[=value]` a line,
+   * The patterns those Containerfiles use, and only those: one `ARG NAME[=value]` a line,
    * `FROM <ref> [AS <name>]`, `COPY --from=<ref>`, `RUN --mount=...,from=<ref>`, and `${NAME}`.
    * Extend it when a bundled Containerfile needs one it refuses — the remote-source test reads
    * every one of them, so the file and line reach CI rather than a build.

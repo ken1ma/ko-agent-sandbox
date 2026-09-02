@@ -6,7 +6,7 @@
 // Out of reach here: the resident teardown path, which removes the same resources from the launcher
 // process instead of the reaper. Native Windows always takes it, and a POSIX launch falls back to
 // it only when the reaper's spawn fails — which nothing outside the process can make happen, and
-// DESIGN.md declines the test hook that would.
+// design.md declines the test hook that would.
 //
 // Opt-in like the other container-launching suites (IntegrationSession has the gate):
 //

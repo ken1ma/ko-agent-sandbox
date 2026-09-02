@@ -3,7 +3,7 @@
 ## Outcome
 
 Every refusal the proxy can express reaches the agent as one line naming the refusal and one
-sentence naming the sanctioned next step, at the enforcement point, so the agent instructions
+sentence naming the approved next step, at the enforcement point, so the agent instructions
 shrink to a pointer and no session is spent diagnosing the proxy.
 
 Deliverables, in order:
@@ -41,7 +41,7 @@ here fixed and launcher-owned, since the policy admits hosts, not patterns.
 1. The body is plain text, one line per part, no control characters, bounded — what the
    parser already guarantees for everything that reaches it.
 1. No body ever contains project data or a credential: the reason and the advice are fixed
-   strings plus the host, the rule spelling, the port or the path the request itself named.
+   strings plus the host, the rule's text, the port or the path the request itself named.
 
 ## The table
 
@@ -122,7 +122,7 @@ their reference-mode explanations of *why* those requests are refused.
 SECURITY.md changes where it describes the refusal and audit surfaces:
 
 - "Egress proxy": the refusal "is a `403` inside the tunnel with the reason in it" gains "and
-  the sanctioned next step"; the `CONNECT` refusal gains its body.
+  the approved next step"; the `CONNECT` refusal gains its body.
 - "The audit line grammar": unchanged in substance; one sentence that the response body is
   the agent's copy of `<why>` with advice appended, never the other way round.
 
@@ -160,7 +160,7 @@ log. What changes is what the refused party is told.
   the body bound, and mentions no host outside the request's own.
 - Per row: `AgentEgressProxyTest` end-to-end cases asserting the body for each reason —
   `/graphql`, an LFS batch path, `git-receive-pack` discovery, a `PUT`, an unallowed host, a
-  denied host with its rule spelled, port 8443, an IP literal.
+  denied host with its rule spelled out, port 8443, an IP literal.
 - `CONNECT` stage: the `403` carries `Content-Length` and the body; the audit line is
   unchanged (existing grammar tests).
 - `sandbox-egress-check`: in the self-test image (`container/ko-agent-self-test`), an allowed

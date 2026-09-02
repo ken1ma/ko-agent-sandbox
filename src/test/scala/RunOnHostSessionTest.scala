@@ -199,9 +199,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val fakes = processes(11L -> "START-G")
     assertEquals(scavenge(root, fakes, _ => ServerAnswer.ShutDown), Vector.empty)
     assertEquals(fakes.ended.toList, Nil, "only the lock chain proves the authority to signal")
-    assert(!Files.exists(entry), "the husk is removed")
+    assert(!Files.exists(entry), "the empty leftover entry is removed")
 
-  test("a child that will not delete keeps the entry locked, never a lockless non-husk"):
+  test("a child that will not delete keeps the entry locked, never lockless with records left"):
     import java.nio.file.attribute.PosixFilePermissions
     val root = freshRoot()
     val session = publish(root, Path.of("/p")).toOption.get
@@ -303,7 +303,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
     assert(skips.exists(_.contains("not this session's")), clue = skips)
 
-  test("a socket spelled through the session but resolving outside it is never spoken at"):
+  test("a socket spelled through the session but resolving outside it is never sent a shutdown"):
     val root = freshRoot()
     val outside = Files.createTempDirectory("outside").toRealPath()
     Files.createFile(outside.resolve("sock"))
@@ -330,7 +330,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
     assert(skips.exists(_.contains("does not resolve inside")), clue = skips)
 
-  test("endSession condemns before it collects, so the socket is spoken at the condemned pathname"):
+  test("endSession condemns before it collects, so the shutdown is sent to the condemned pathname"):
     val root = freshRoot()
     val project = Files.createTempDirectory("proj")
     val session = publish(root, project).toOption.get
@@ -350,7 +350,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val condemned = root.resolve(CondemnedDir).resolve(session.directory.getFileName)
     assertEquals(spoken.toList, List(condemned.resolve("tmp/sock")))
     assert(actions.exists(_.isInstanceOf[Collected.ServerShutDown]), clue = actions)
-    assert(!Files.exists(session.directory), "the original pathname is gone before anything spoke")
+    assert(!Files.exists(session.directory), "the original pathname is gone before any shutdown was sent")
     assert(!Files.exists(condemned), "collection deleted the condemned directory")
 
   test("an unanswered server keeps its condemned directory for the next start to retry"):

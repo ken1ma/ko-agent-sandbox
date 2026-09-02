@@ -1,6 +1,6 @@
 // Speaks sbt's local-socket shutdown: the tokenless `initialize` the pinned client sends, then
 // `sbt/exec shutdown` — the sequence sbt v2.0.4's NetworkClient/Serialization implement and
-// probe/session-recovery.sh M4 measured, framing per ServerConnection.sendString (the length
+// src/probe/session-recovery.sh M4 measured, framing per ServerConnection.sendString (the length
 // counts the body plus its trailing CRLF). Local-mode servers authenticate nothing
 // (Defaults.serverAuthentication is TCP-only), so there is no token to carry.
 //
@@ -39,7 +39,7 @@ object SbtServerShutdown:
 
   /**
    * Connect, initialize, wait for the server's first bytes, send the shutdown exec, and wait for
-   * the server to close the socket — the measured shape of a successful shutdown. Bounded
+   * the server to close the socket — the measured sequence of a successful shutdown. Bounded
    * throughout, the connect included; a definitive no-listener answer is Unreachable, and
    * everything else — an unanswered protocol, a transient connect failure — is Unanswered, for
    * the caller to retry, never something to guess at by pid. The default bound is minutes, not

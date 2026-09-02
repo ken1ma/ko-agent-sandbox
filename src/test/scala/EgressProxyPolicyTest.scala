@@ -1,5 +1,5 @@
 // The launcher's side of the egress proxy: policy normalization (what the proxy is handed), the
-// launch banner's shape, command classification, and audit-log retention.
+// launch banner's format, command classification, and audit-log retention.
 
 package agentsandbox.launcher
 
@@ -154,7 +154,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("a missing policy directory is an empty policy"):
     assertEquals(readPolicyFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
-  test("the policy directory's refused shapes each name their reason"):
+  test("the policy directory's refused forms each name their reason"):
     val parent = Files.createTempDirectory("policy-shapes")
 
     val asFile = parent.resolve("egress")

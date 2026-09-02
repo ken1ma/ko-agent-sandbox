@@ -49,7 +49,7 @@ class HostileInputTest extends munit.FunSuite:
 
   private val RefusedAuthorities = Vector(
     // Malformed bracket/port combinations. A bracketed *hostname* is accepted and canonicalized
-    // (AgentEgressProxyTest pins that, the Smokescreen bypass class); these are the shapes where
+    // (AgentEgressProxyTest pins that, the Smokescreen bypass class); these are the cases where
     // the brackets do not close a name at all.
     "[]:443",
     "[github.com]",

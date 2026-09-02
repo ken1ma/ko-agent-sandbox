@@ -366,13 +366,13 @@ impl KoAgentFs {
 ///     offset stale, and a `pwrite` there overwrites the bytes it should have followed. Carrying
 ///     the flag puts the guarantee where POSIX puts it, in the backing filesystem, and git appends
 ///     its reflogs. [`Filesystem::write`] is the other half: an `O_APPEND` fd must be written with
-///     `write`, because Linux has `pwrite` on one append regardless of the offset it was given.
+///     `write`, because on Linux `pwrite` on one appends regardless of the offset it was given.
 ///
 /// `O_SYNC` and `O_DSYNC` are deliberately absent, and they are the pair most likely to look like
 /// an oversight: the kernel already ends a write with `generic_write_sync`, which lands in this
 /// filesystem's own `fsync`, so carrying them to the backing fd would buy a second flush per write
 /// rather than a guarantee. That reasoning holds only while `fsync` really syncs — which is
-/// [`Filesystem::fsync`]'s own subject. Everything else — `O_DIRECT`, `O_NOATIME` — is surface
+/// [`Filesystem::fsync`]'s own subject. Everything else — `O_DIRECT`, `O_NOATIME` — is behavior
 /// nobody reasoned about, and the allowlist is what keeps that true as the platform grows flags.
 fn passthrough_flags(flags: i32) -> OFlag {
     let mut oflag = OFlag::from_bits_truncate(flags & libc::O_ACCMODE);
@@ -495,7 +495,7 @@ fn to_errno(err: NixErrno) -> Errno {
 /// outside the workspace. Neither `rename` nor `link` re-judges — not an oversight to correct:
 /// doing it for a directory means walking everything under it on every rename, at a cost this rule
 /// does not earn. What this refuses is a target written in a non-portable shape, which is the accidental
-/// tool behaviour the rule is aimed at; a session set on leaving a link that resolves elsewhere
+/// tool behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
 /// still can.
 fn target_has_portable_shape(target: &Path, depth: usize) -> bool {
     let mut at = depth;
@@ -610,7 +610,7 @@ fn dir_type(kind: nix::dir::Type) -> FileType {
 // So the deny surface is closed by construction: unimplemented ops fail, and every implemented op is
 // gated on *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never gated. This
 // is the deny side only; whether the *policy* is complete is `doc/git-metadata.md`, resting on the
-// git-behaviour premises `doc/git-metadata.md` records under "Premises".
+// git-behavior premises `doc/git-metadata.md` records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
@@ -759,9 +759,9 @@ impl Filesystem for KoAgentFs {
 
     /// Snapshot the directory once, into the handle. A `readdir` scan is then stable: re-reading the
     /// directory on every call, and paginating by index into a *changing* list, silently skips or
-    /// duplicates entries when the tree moves under a scan — and a large directory made it O(n²)
+    /// duplicates entries when the tree moves under a scan — and a large directory makes it O(n²)
     /// besides. POSIX leaves it unspecified whether a scan sees entries added after `opendir`, so a
-    /// snapshot is the sanctioned reading; the *next* `opendir` sees the new state, and attributes
+    /// snapshot is a permitted reading; the *next* `opendir` sees the new state, and attributes
     /// stay live because their TTL is zero.
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {

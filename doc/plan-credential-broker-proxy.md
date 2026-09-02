@@ -3,14 +3,14 @@
 ## Outcome
 
 A secret the session needs is never inside the sandbox. The sandbox holds a placeholder of the
-same shape; the proxy holds the value and substitutes it into one header of requests to the one
+same format; the proxy holds the value and substitutes it into one header of requests to the one
 inspected host the secret is bound to. Everywhere else the placeholder goes out as it is and
 authenticates nothing.
 
 One secret qualifies here: a value forwarded with `--env`, bound to a host —
 `--env=GH_TOKEN@api.github.com`. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web
 reached through the model provider") is a provider instance of
-`PLAN-PROVIDER-CREDENTIAL-PROXY.md`, which reuses the rewrite below ("Copilot").
+`plan-provider-credential-proxy.md`, which reuses the rewrite below ("Copilot").
 
 ## Evidence and target
 
@@ -24,7 +24,7 @@ The credential residues SECURITY.md concedes are the target.
   the sandbox and by anything that captures the environment or the volume — the class Codex hit
   when shell snapshots persisted secret variables (openai/codex #30971).
 
-Every comparable project that holds a credential converged on the same shape: Claude Code on the
+Every comparable project that holds a credential converged on the same design: Claude Code on the
 web (real GitHub token in a proxy outside the VM), Codex CLI (`credential_broker.rs`: dummy of the
 same prefix and length in the child's environment, swapped only for the bound GitHub hosts),
 Docker Sandboxes (`proxy-managed` sentinel, value in the OS keychain), greywall
@@ -44,7 +44,7 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
 1. An explicit `--env` binding names exactly one host, which must be `restricted` in the
    resolved profile. An `unrestricted` host is an opaque tunnel where no substitution can
    happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
-   reason. A service instance (`PLAN-PROVIDER-CREDENTIAL-PROXY.md`) spends on its finite
+   reason. A service instance (`plan-provider-credential-proxy.md`) spends on its finite
    target list instead, under the same rewrite.
 1. Substitution happens in a declared header only — `Authorization`, or the header a binding
    names — and only when the whole credential token equals the placeholder. Never in the
@@ -56,9 +56,9 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
    so it cannot end a field, start another, or alter framing. A header name is one of a closed
    set — `Authorization`, `x-api-key`, `PRIVATE-TOKEN` — never a free token: `Host`,
    `Content-Length`, `Transfer-Encoding`, `Connection` and their kin route or frame, and a
-   set is the one shape that needs no list of them. The rewrite replaces the token inside a
+   closed set is the one form that needs no list of them. The rewrite replaces the token inside a
    header the client sent; it never adds a header.
-1. The placeholder is unpredictable to the project: fresh random bytes per launch, in the shape
+1. The placeholder is unpredictable to the project: fresh random bytes per launch, in the format
    of the value it stands for (prefix and length preserved for a recognizable prefix such as
    `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Tools that validate
    token syntax before sending keep working; nothing can be derived from it.
@@ -137,7 +137,7 @@ values are substituted in `Authorization` only".
 
 Not brokered by this plan. Its production design — a host-side OAuth mechanism or a `gh`
 executable source, the token exchanged at `api.github.com/copilot_internal/v2/token` and
-substituted by the rewrite above — is `PLAN-PROVIDER-CREDENTIAL-PROXY.md`, "OAuth mechanisms",
+substituted by the rewrite above — is `plan-provider-credential-proxy.md`, "OAuth mechanisms",
 with the one measurement that design must settle first.
 
 ## Claude Code and Codex logins: excluded
@@ -187,11 +187,11 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
   launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
   — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
-  policy arithmetic: the gate must fire in `PLAN-PROVIDER-CREDENTIAL-PROXY.md`'s management
+  policy arithmetic: the gate must fire in `plan-provider-credential-proxy.md`'s management
   verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
   would be one more custody site. The executable-source result there passes through the same
   object.
-- Placeholder generation: `SecureRandom`, shape rules from invariant 5.
+- Placeholder generation: `SecureRandom`, format rules from invariant 5.
 - Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
   into the proxy, removed in `SandboxLifecycle` with the leaf.
 - Banner and `--egress-effective`: `NAME → HOST (Authorization)` per binding.
@@ -211,7 +211,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   space, `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused from the
   environment and from `=VALUE` alike, and each header name outside the set, `Host` and
   `Transfer-Encoding` among them;
-  placeholder shape per prefix, secret file mode and lifetime, banner content, no value in any
+  placeholder format per prefix, secret file mode and lifetime, banner content, no value in any
   `--env` argument the sandbox receives (`AgentSandboxLauncherTest` already checks the forwarded
   list — extend the same test).
 - Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
@@ -237,9 +237,9 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 ## Acceptance checklist
 
-- [ ] `--env=GH_TOKEN@api.github.com` launches; `env` inside the sandbox shows a `gh`-shaped
-      placeholder; `gh api user` succeeds; the same token sent to `gitlab.com` arrives there as
-      the placeholder (audit line without `inject`).
+- [ ] `--env=GH_TOKEN@api.github.com` launches; `env` inside the sandbox shows a placeholder in
+      GitHub token format; `gh api user` succeeds; the same token sent to `gitlab.com` arrives
+      there as the placeholder (audit line without `inject`).
 - [ ] Private `git clone https://github.com/...` with a credential helper returning the
       placeholder succeeds; `git push` is still refused at ref discovery.
 - [ ] Every refusal in "Command-line contract" fires with its message.

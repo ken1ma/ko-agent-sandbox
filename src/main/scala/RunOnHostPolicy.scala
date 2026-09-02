@@ -1,9 +1,9 @@
 // What a host build is allowed to touch, decided before any of it runs: where this project's
 // disposable build caches live, which JDK and launcher are the Coursier-managed ones, and which
-// directory a request from inside the sandbox may name as a working directory. RUN-ON-HOST.md is
+// directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
-// Everything here is pure over (Os, environment, filesystem shape), so the macOS answers are
+// Everything here is pure over (Os, environment, filesystem layout), so the macOS answers are
 // testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
 // is a value rather than an exit, because the same classification serves a launch preflight, a
 // channel request, and the tests that prove unsupported layouts stay unsupported.
@@ -22,7 +22,7 @@ object RunOnHostPolicy:
     case Sbt, Mill
 
   /**
-   * Why a build cannot run, one case per category (RUN-ON-HOST.md "Failure policy"). A value, not a
+   * Why a build cannot run, one case per category (run-on-host.md "Failure policy"). A value, not a
    * message: the wrapper prints one wording, the channel another, and the tests match on neither.
    */
   enum Refusal:
@@ -94,7 +94,7 @@ object RunOnHostPolicy:
    * session temp: sbt 2 writes a content-addressed store under its global base
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
    * host, where a build against a session-temporary base would have its own outputs dangle the
-   * moment the session directory is removed. Beside the Coursier cache, it shares the Coursier cache's poison
+   * moment the session directory is removed. Beside the Coursier cache, it shares that cache's poison
    * scope (later builds of the same project, themselves sandboxed) and `--reset-cache`'s removal.
    */
   def agentSbtGlobal(cacheRoot: Path, projectId: String): Path =
@@ -130,7 +130,7 @@ object RunOnHostPolicy:
         else Right(root)
 
   /** The user's Coursier cache root — read for the JDK, never granted whole
-    * (RUN-ON-HOST.md "The JVM", "The build cache"). */
+    * (run-on-host.md "The JVM", "The build cache"). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
       env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
@@ -214,9 +214,9 @@ object RunOnHostPolicy:
    * The sbt distribution home to grant, from the inner launcher the wrapper execs
    * (SeatbeltProfile.sbtDistribution names it). The executable is checked as the wrapper itself is —
    * canonical, an executable file, still inside the cache once symlinks are followed — and its
-   * shape is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
+   * layout is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
    * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
-   * or a `v1` entry: the shape is what keeps a grant a distribution.
+   * or a `v1` entry: the layout is what keeps a grant a distribution.
    */
   def validateSbtDistribution(
     inner: Path,

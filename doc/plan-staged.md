@@ -43,7 +43,7 @@ instructions. Future migrations are separate work.
 
 ## Proving the engine per platform
 
-The axes a venue varies on are `DESIGN.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the venues
+The axes a venue varies on are `design.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the venues
 themselves. What follows is only which one settles which part of the staged contract.
 
 | contract item                                      | settled by                  |
@@ -58,7 +58,7 @@ themselves. What follows is only which one settles which part of the staged cont
 | rename and exchange on the lower                   | in situ, on each share      |
 | symlinks: creation, and refusal of an escape       | in situ, on each share      |
 | upper and lower names differing only by case       | in situ, APFS and NTFS      |
-| upper durability and reflink behaviour             | in situ, each Linux backing |
+| upper durability and reflink behavior             | in situ, each Linux backing |
 
 A successful `--self-test` stamps the filter's source id and the venue it proved — podman version,
 machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
@@ -95,11 +95,11 @@ Attachment and list output show the representation version, pending path count a
 physical stored size, backing volume, attached-session count, lower path and last-use time. No
 pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`, `applying` and
 `recovery-needed` states, with the controlling host process and start time. Stage storage has a
-distinct reserved resource name shape that neither reset command matches; tests bind the
+distinct reserved resource-name pattern that neither reset command matches; tests bind the
 preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
 recovery transition is active; it never tears down a stage underneath its control process.
 
-The startup banner gains the stage's state, in the shape the implemented authorities already use:
+The startup banner gains the stage's state, in the format the implemented authorities already use:
 
 ```text
 workspace: STAGED; 17 paths, 42 KiB; 3 attached sessions
@@ -205,7 +205,7 @@ Complete full-tree validation is a launch-time cost; benchmark it on build-outpu
 every platform. An acceleration must still validate the current complete tree; a skipped directory
 or stale result would reopen the residue.
 
-The bare-layout rule uses Git's valid-`HEAD` plus `objects/` plus `refs/` discovery shape. Gitdirs
+The bare-layout rule uses Git's valid-`HEAD` plus `objects/` plus `refs/` discovery layout. Gitdirs
 reached from an existing worktree's `.git` metadata are classified separately. Elsewhere, only a
 mutation affecting an entry whose basename is one of those three candidates performs sibling
 lookups and, when necessary, validates `HEAD`; operations on other names and tree walks pay no extra
@@ -243,7 +243,7 @@ its private Git metadata cannot be applied.
    `WorkspaceGuardOffTest` and its policy mount-back; retain launcher-owned empty mount sources
    only where another mount still needs one; and update the surfaces that document the pin mode
    and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
-   pins of `WORKSPACE_GUARD=none`"), `doc/DESIGN.md` — in the same change. Persistent stages
+   pins of `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same change. Persistent stages
    narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
    opened; launcher comments, help, README and SECURITY must point to explicit stage discard. Remove
    completed TODO rows rather than retaining a change history.
@@ -283,7 +283,7 @@ no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/
 
 ## Unresolved: a staged workspace under `--run-on-host`
 
-`--run-on-host` (`RUN-ON-HOST.md`) runs an agent's build natively against the host project
+`--run-on-host` (`run-on-host.md`) runs an agent's build natively against the host project
 directory. A staged
 session's agent sees the merged mount, so the two disagree about what the project contains: the
 build compiles the host tree, not what the session staged, and writes its output where no stage

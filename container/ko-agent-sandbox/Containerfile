@@ -256,7 +256,7 @@ RUN set -euxo pipefail; \
 # removing the volume cannot drop it, and it does not depend on launcher
 # flags. One source outranks it: an organization's server-managed settings,
 # fetched when the session signs in to Anthropic directly. Claude Code
-# reads a single admin source, so under one this file is ignored whole —
+# reads a single admin source, so under one this file is ignored entirely —
 # prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
 # the source in force — and can require the sandbox (the apt step above).
 #

@@ -7,10 +7,10 @@
 #       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
-#   M4  the tokenless initialize + sbt/exec shutdown handshake, spoken at the socket's pathname
+#   M4  the tokenless initialize + sbt/exec shutdown handshake, sent to the socket's pathname
 #       after its directory is renamed, ends the server
 #   M5  the server's socket is <serverDir>/<half-sha1 of the portfile path's file:// URI>/sock —
-#       the derivation the wrapper's auto-shutdown speaks at (RunOnHostSandbox.sbtServerSocket).
+#       the derivation the wrapper's auto-shutdown sends to (RunOnHostSandbox.sbtServerSocket).
 #       It runs after M2 in the script, because M4 ends the server and takes the portfile with it
 #
 # Run it on the Mac, from this repository's root, when sbt or the proxy changes. It builds the

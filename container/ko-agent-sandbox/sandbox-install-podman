@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install a rootless podman in this session, configured for the one shape that works here.
+#
+# Install a rootless podman in this session, configured the one way that works here.
 #
 #     sandbox-install-podman
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman

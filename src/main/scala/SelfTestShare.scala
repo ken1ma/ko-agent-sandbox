@@ -1,11 +1,11 @@
-// --self-test's share rows: the host-writer/session-reader axis the crate's suites cannot reach,
+// --self-test's share rows: the host-writer/session-reader direction the crate's suites cannot reach,
 // because their backing tree is the container's own storage (fuse/ko-agent-fs/doc/testing.md). A
 // scratch lower created inside the current directory puts the real share in the path — host
 // filesystem -> share -> ko-agent-fs -> container — and the launcher plays the host half the
 // hand-run probes needed a person for. fuse/ko-agent-fs/doc/TODO.md is the standard: driven by the
 // launcher, venue recorded, the scratch gone on success and kept on failure, and nothing a killed
 // run leaves that the reset sweep does not match — the mount lives under the same mounts/ root the
-// unmount-all sweep clears, the container's name shape is in --reset-all's container sweep, and
+// unmount-all sweep clears, the container's name pattern is in --reset-all's container sweep, and
 // the scratch's name says what left it behind.
 
 package agentsandbox.launcher
@@ -28,7 +28,7 @@ object SelfTestShare:
 
   /** `--reset-all`'s sweep for the probe container a killed launcher leaves. `--rm` and the
     * removal in [[shareRows]]' finally are the primary cleanup; this is the belt-and-braces
-    * match, anchored on the eight-hex run suffix like the launcher's own reserved shapes. */
+    * match, anchored on the eight-hex run suffix like the launcher's own reserved patterns. */
   def probeContainers(names: Seq[String]): Seq[String] =
     names.filter(_.matches(probeContainerName("[0-9a-f]{8}")))
 
@@ -156,8 +156,8 @@ object SelfTestShare:
        |sys.exit(1)
        |""".stripMargin
 
-  /** What one probe line means to the orchestrator; Noise is the build of suspicion a failed run
-    * prints whole. */
+  /** What one probe line means to the orchestrator; Noise is any unrecognized line, printed so
+    * a failed run's transcript is whole. */
   enum ProbeEvent:
     case Stack(filtered: Boolean)
     case ReadySeen
@@ -252,7 +252,8 @@ object SelfTestShare:
         while line != null do
           interpret(line) match
             case ProbeEvent.Stack(filtered) =>
-              row(filtered, "the guard bites through the whole stack", if filtered then "" else "mkdir .git succeeded")
+              row(filtered, "the guard refuses through the whole stack",
+                if filtered then "" else "mkdir .git succeeded")
             case ProbeEvent.ReadySeen =>
               writeAt = System.nanoTime()
               // A refused write is retried within a bound: on Windows the program's read poll
@@ -290,7 +291,7 @@ object SelfTestShare:
                 refused,
                 "a host write is refused while the seed is held",
                 if refused then "the sharing lock, so the mapping can never go stale"
-                else "the write succeeded — the lock premise fell; re-measure the mmap row (verification-log.md)",
+                else "the write succeeded — the lock premise failed; re-measure the mmap row (verification-log.md)",
               )
               Files.write(scratch.resolve(ReleaseName), Array.emptyByteArray)
             case ProbeEvent.Aborted(reason) =>
@@ -302,7 +303,7 @@ object SelfTestShare:
         if exit != 0 && !failed then row(false, "share probe", s"exit $exit with no failing row")
       finally
         // The watchdog kills only the attached client; a container wedged in the share outlives
-        // it, --rm firing on container exit alone. Removed here directly — and by name shape in
+        // it, --rm firing on container exit alone. Removed here directly — and by name pattern in
         // --reset-all's sweep, for the killed launcher no finally survives.
         run(podman, "rm", "--force", "--ignore", container)
         if failed then

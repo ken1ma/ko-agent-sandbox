@@ -65,7 +65,9 @@ echo "(measuring cache sizes; a large v1 has millions of inodes and this can tak
 say "cache root" "$([ -d "$cache_root" ] && echo "$cache_root" || echo "MISSING $cache_root")"
 for sub in v1 jvm arc; do
     d="$cache_root/$sub"
-    if [ -d "$d" ]; then say "  $sub" "present, $(du -sh "$d" 2>/dev/null | cut -f1) $(ls -1 "$d" 2>/dev/null | wc -l | tr -d ' ') entries"
+    if [ -d "$d" ]; then
+        entries=$(ls -1 "$d" 2>/dev/null | wc -l | tr -d ' ')
+        say "  $sub" "present, $(du -sh "$d" 2>/dev/null | cut -f1) $entries entries"
     else say "  $sub" "MISSING"; fi
 done
 if [ -d "$cache_root/jvm" ]; then
@@ -97,4 +99,4 @@ say "PROJECT" "$project"
 say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"
 say "MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/mill/download"
 say "AGENT_CACHE_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
-printf '\nThe sbt distribution is the other half of TOOL; probe/sbt-exec-chain.sh finds it.\n'
+printf '\nThe sbt distribution is the other half of TOOL; src/probe/sbt-exec-chain.sh finds it.\n'

@@ -61,7 +61,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
 /// Which stage a self-test failure came from, because only this code knows. Everything up to and
 /// including the mount is the environment's — the scratch tree it needs, and the mount itself — and
 /// a caller can answer it by changing the venue; everything after the mount is this filter's own
-/// behaviour, which no venue change repairs. The stage reached is the whole of the classification,
+/// behavior, which no venue change repairs. The stage reached is the whole of the classification,
 /// and it is not a claim about the cause: the accompanying message carries what detail there is —
 /// sometimes the exact failure, sometimes an error and the usual suspects — so a caller passes it
 /// on rather than narrowing it into a diagnosis nothing here made. A caller that cannot tell the
@@ -76,15 +76,14 @@ enum SelfTestFailure {
 const SELF_TEST_VENUE_EXIT: u8 = 3;
 
 /// `--self-test`: prove, against a scratch tree that is never the user's workspace, that this
-/// binary can mount in *this* environment, that the policy actually bites, and that a host write
+/// binary can mount in *this* environment, that the policy actually refuses, and that a host write
 /// reaches both a cached read and an established mapping (`coherency_check`). It runs where the
 /// daemon will serve — inside the Podman machine, or on a native Linux host — at install time and
 /// again before every session that mounts it (`KoAgentFs.installKoAgentFs`,
-/// `ensureKoAgentFsMounted`), aborting
-/// either on failure, so the exit code is the contract and the text is for the human reading the
-/// log. Beyond the policy, this is the probe for the two environmental assumptions an unprivileged
-/// mount rests on: a `fusermount3` on PATH, and `user_allow_other` enabled in /etc/fuse.conf (the
-/// mount asks for `allow_other`).
+/// `ensureKoAgentFsMounted`), aborting either on failure, so the exit code is the contract and the
+/// text is for the human reading the log. Beyond the policy, this is the probe for the two
+/// environmental assumptions an unprivileged mount rests on: a `fusermount3` on PATH, and
+/// `user_allow_other` enabled in /etc/fuse.conf (the mount asks for `allow_other`).
 fn self_test() -> ExitCode {
     match self_test_run() {
         Ok(()) => {

@@ -17,8 +17,8 @@ the sandbox or project.
 Support explicit corporate DNS in this increment. Only the trusted per-run policy proxy and
 one-shot egress checker use it. Corporate DNS changes who answers a lookup, not which addresses
 are admissible: every origin answer must still pass the existing public-destination check. Only
-the host-selected corporate transport dependencies--the proxy endpoint and explicit DNS
-resolvers--may use private addresses; neither exception applies to an origin.
+the host-selected corporate transport dependencies — the proxy endpoint and explicit DNS
+resolvers — may use private addresses; neither exception applies to an origin.
 
 Do not add DNS over HTTPS (DoH) in this increment. A future corporate requirement can reopen the
 closed contract under "Deferred encrypted DNS" below.
@@ -118,7 +118,7 @@ https://proxy.corp.example:8443
 - HTTPS verifies the configured endpoint hostname or IP against its certificate before sending
   authentication. `endpoint-ca.pem` extends only that trust store.
 
-`authorization` contains one static `Proxy-Authorization` field value without the field name. Bound
+`authorization` contains one static `Proxy-Authorization` field value without the field name. Limit
 it to 8 KiB, require printable ASCII, and refuse every control character and leading or trailing
 whitespace. Internal spaces permit a scheme and credential, such as `Basic <value>`. Never
 challenge-negotiate or copy a response field into the next request. Accept this file only with an
@@ -155,9 +155,9 @@ the following for each validated address until one succeeds:
 3. Send one bounded HTTP/1.1 CONNECT request whose request target and Host field are the numeric
    origin authority: `<ipv4>:443` or `[<ipv6>]:443`.
 4. Add the static authorization value when configured and a fixed, versionless
-   `Via: 1.1 ko-agent-sandbox` field. The Via exception replaces `DESIGN.md`, "No Via header", only
-   for this newly created proxy-to-proxy message; inspected origin requests retain their existing
-   shape inside the established tunnel.
+   `Via: 1.1 ko-agent-sandbox` field. The Via exception replaces `design.md`, "No Via header", only
+   for this newly created proxy-to-proxy message; inspected origin requests pass
+   unchanged inside the established tunnel.
 5. Parse one response head within the existing header budget and handshake timeout. Accept any 2xx
    final status. Refuse an informational response, Upgrade, malformed framing or excess bytes before
    the tunnel begins.
@@ -398,7 +398,7 @@ References:
 4. Add explicit corporate DNS to proxy startup and `--egress-check`, preserving public-origin
    validation and sandbox `--dns=none`.
 5. Run the full container/platform matrix, then update README, launcher help, SECURITY.md, agent
-   instructions and `DESIGN.md` in the same distributable change. Replace the terminal-proxy premise
+   instructions and `design.md` in the same distributable change. Replace the terminal-proxy premise
    under "No Via header" with the narrow upstream-CONNECT rule rather than stating both facts.
 
 Do not expose the option as complete until authentication redaction, DNS non-fallback, numeric

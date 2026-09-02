@@ -25,11 +25,14 @@ object ClipboardBroker:
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/clipboard"
 
-  val SandboxRequestReader: String =
-    s"trap \"\" INT HUP TERM; d=$SandboxDir; mkdir -p -m 700 $$d; " +
+  // Each takes the directory rather than reading the constant, so a test can serve a channel of
+  // its own: a suite on the live one would delete the FIFOs this session's broker is holding.
+  def sandboxRequestReader(sandboxDir: String = SandboxDir): String =
+    s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"for f in req rsp; do [ -p $$d/$$f ] || mkfifo -m 600 $$d/$$f; done; while :; do cat $$d/req; done"
 
-  val SandboxResponseWriter: String = s"timeout 10 sh -c \"cat > $SandboxDir/rsp\""
+  def sandboxResponseWriter(sandboxDir: String = SandboxDir): String =
+    s"timeout 10 sh -c \"cat > $sandboxDir/rsp\""
 
   /**
    * The POSIX twin: `clipboard_broker <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
@@ -41,7 +44,7 @@ object ClipboardBroker:
    * and dropped. Restarted while the sandbox runs, because a signal the terminal sends the
    * foreground group can end the exec.
    */
-  val HostShellFunctions: String =
+  def hostShellFunctions(sandboxDir: String = SandboxDir): String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
       |# from stdin. macOS prints the PNG as AppleScript hex («data PNGf…»).
       |clipboard_broker() {
@@ -71,9 +74,9 @@ object ClipboardBroker:
       |      }
       |      ;;
       |  esac
-      |  reply() { "$1" exec -i "$2" sh -c '""".stripMargin + SandboxResponseWriter + """'; }
+      |  reply() { "$1" exec -i "$2" sh -c '""".stripMargin + sandboxResponseWriter(sandboxDir) + """'; }
       |  while [ "$("$1" container inspect --format '{{.State.Running}}' "$2" 2>/dev/null)" = true ]; do
-      |    "$1" exec -i "$2" sh -c '""".stripMargin + SandboxRequestReader + """' |
+      |    "$1" exec -i "$2" sh -c '""".stripMargin + sandboxRequestReader(sandboxDir) + """' |
       |      while read -r verb arg; do
       |        case "$verb" in
       |          set) if [ "$3" = bidirectional ]; then head -c "$arg" | copy; else head -c "$arg" >/dev/null; fi ;;
@@ -100,7 +103,7 @@ object ClipboardBroker:
   /**
    * What the host runs for the mode: PowerShell for the resident twin, or the tools the shell twin
    * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the project directory,
-   * DESIGN.md "No PATH-resolved host executables"). Each tool is its own field rather than a name
+   * design.md "No PATH-resolved host executables"). Each tool is its own field rather than a name
    * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
    * Empty where absent, and everywhere on macOS.
    */
@@ -138,7 +141,7 @@ object ClipboardBroker:
   /**
    * The `ps` the reaper enumerates the broker's process tree with, proven on this host before an
    * enabled mode is accepted: an absent `ps`, or one that answers `ps -A -o pid=,ppid=` with
-   * nothing (BusyBox's takes another shape), would leave a blocked clipboard tool alive after the
+   * nothing (BusyBox's prints another format), would leave a blocked clipboard tool alive after the
    * session while the cleanup silently ended the job alone. The proof is this launcher's own row —
    * its pid, and its parent's when the JVM knows one — in exactly the output the reaper parses.
    */
@@ -197,7 +200,7 @@ object ClipboardBroker:
       Thread.sleep(1000)
 
   private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
-    val reader = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", SandboxRequestReader)
+    val reader = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", sandboxRequestReader())
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()
@@ -227,7 +230,7 @@ object ClipboardBroker:
     out
 
   private def respond(podman: String, sandboxContainer: String, body: Array[Byte]): Unit =
-    val writer = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", SandboxResponseWriter)
+    val writer = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", sandboxResponseWriter())
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()

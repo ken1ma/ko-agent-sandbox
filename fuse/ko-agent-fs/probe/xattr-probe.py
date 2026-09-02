@@ -90,8 +90,8 @@ def direct_ops(work: str) -> None:
 def carrying_tools(work: str) -> None:
     """What a tool that *preserves* xattrs does when the destination refuses them. The source is
     outside the mount, because inside it there may be no way to attach an xattr in the first
-    place — which is exactly the shape of extracting an archive or copying a tree into
-    /workspace."""
+    place — which is exactly what extracting an archive or copying a tree into
+    /workspace does."""
     source = tempfile.mkdtemp(prefix="ko-agent-fs-xattr-src-")
     try:
         origin = os.path.join(source, "file")

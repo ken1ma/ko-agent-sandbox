@@ -373,8 +373,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
 
   test("a bare -host * and the undotted **domain spelling are refused, never suffix-matched"):
-    // Only **.domain is a wildcard; * is neither a valid pattern nor a host, and the pattern's
-    // dot is load-bearing — without it the spelling reads as a suffix match (barfoo.com).
+    // Only **.domain is a wildcard; * is neither a valid pattern nor a host, and without the
+    // pattern's dot the spelling reads as a suffix match (barfoo.com).
     intercept[IllegalArgumentException](policyOf(allowed = "-host *"))
     intercept[IllegalArgumentException](policyOf(allowed = "-host **pypi.org"))
     intercept[IllegalArgumentException](policyOf(denied = "host **pypi.org"))
@@ -447,7 +447,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(resolved.unrestrictedHosts, ModelProviderHosts("anthropic").keySet)
     assertEquals(resolved.restricted, Map("docs.python.org" -> Set.empty[String]))
 
-  test("treatment widening has no delta spelling; -** states a replacement instead"):
+  test("treatment widening cannot be written as a delta; -** states a replacement instead"):
     val ex = intercept[IllegalArgumentException](policyOf(allowed = "+host github.com unrestricted"))
     assert(ex.getMessage.contains("-**"), ex.getMessage)
     // Under a -** replacement the same entry is the stated policy, not a widening.
@@ -477,7 +477,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(files, ModelProviders.toSet)
     assertEquals(ModelProviderHosts.keySet, ModelProviders.toSet)
 
-  test("--print-policy is the shape the launcher mints the leaf from"):
+  test("--print-policy is the format the launcher mints the leaf from"):
     val lines = policyLines(policyOf())
     assertEquals(lines(0), "egress profile: deny-unless-allowed")
     assert(lines(1).startsWith(s"restricted hosts (${CuratedRestrictedHosts.size}): "), lines(1))
@@ -514,7 +514,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(lines.contains("  pypi.org: removed by allowed"), lines.toString)
 
   test("provenance is profile-scoped: a rule the profile never consults is not reported"):
-    // Under deny-unless-model the allowed delta shapes nothing, so an effective provider
+    // Under deny-unless-model the allowed delta changes nothing, so an effective provider
     // endpoint is the group's, never "allowed", and a removal of it is not reported as done.
     val model = provenanceLines(
       policyOf(
@@ -1093,7 +1093,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "Host: public.ecr.aws\r\n\r\n",
       )
 
-    // A documentation site wears the same tier: reads pass, anything else does not.
+    // A documentation site gets the same tier: reads pass, anything else does not.
     authorizeInspectedRequest(
       "developer.mozilla.org",
       head("GET /en-US/docs/Web HTTP/1.1\r\nHost: developer.mozilla.org\r\n\r\n"),
@@ -1106,9 +1106,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Set.empty,
       )
 
-    // A package registry wears the tier too — security is not traded for performance — so a
+    // A package registry gets the same tier — security is not traded for performance — so a
     // fetch reads, npm's measured install-time audit POST is its allow=npm-audit allowance, and an
-    // older npm's endpoint (or any other POST) earns an honest refusal.
+    // older npm's endpoint (or any other POST) gets an honest refusal.
     authorizeInspectedRequest(
       "registry.npmjs.org",
       head("GET /lodash HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n"),
@@ -1132,7 +1132,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Set("npm-audit"),
       )
     assert(oldNpm.getMessage.contains("restricted path"), oldNpm.getMessage)
-    // The allow=npm-audit allowance opens nothing on a allow=git-fetch host, and vice versa.
+    // The allow=npm-audit allowance opens nothing on an allow=git-fetch host, and vice versa.
     intercept[PolicyViolation]:
       authorizeInspectedRequest(
         "github.com",
@@ -1195,7 +1195,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       head("GET / HTTP/1.1\r\nHost: github.com\r\n continued\r\n\r\n")
 
-  test("reading a allow=git-fetch host is allowed"):
+  test("reading an allow=git-fetch host is allowed"):
     inspected("GET /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(
@@ -1463,7 +1463,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(bind.getAddress, InetAddress.getByName("::1"))
     assertEquals(bind.getPort, 3129)
 
-  test("EGRESS_BIND refuses every shape that is not <ip-literal>:<port>"):
+  test("EGRESS_BIND refuses every value that is not <ip-literal>:<port>"):
     for
       value <- Seq(
         "127.0.0.1",       // no port

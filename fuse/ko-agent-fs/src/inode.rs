@@ -4,7 +4,7 @@
 //! walking parents to the root only when an operation needs one; nothing here caches attributes or
 //! opens backing fds (that is the resolver's job, per operation).
 //!
-//! `forget` is honored so the table stays bounded to what the kernel currently references — the
+//! `forget` is honoured so the table stays bounded to what the kernel currently references — the
 //! property that keeps memory flat while a compiler stats hundreds of thousands of files.
 
 use std::collections::HashMap;
@@ -74,10 +74,10 @@ impl InodeTable {
     /// parent's — the O(1) step that every later operation on this inode reads instead of recomputing.
     ///
     /// `is_gitdir_root` ([`GitContext::ModuleNamespace`]) only matters where the context would
-    /// otherwise be a namespace. It is read on the
-    /// allocating path alone: a reused entry keeps the context it was created with, so a directory
-    /// that *becomes* a gitdir root after its first lookup stays a namespace — control — until the
-    /// kernel forgets it. Both drift directions land on the stricter answer.
+    /// otherwise be a namespace. It is read on the allocating path alone: a reused entry keeps the
+    /// context it was created with, so a directory that *becomes* a gitdir root after its first
+    /// lookup stays a namespace — control — until the kernel forgets it. Both drift directions
+    /// land on the stricter answer.
     pub fn lookup(&mut self, parent: u64, name: &OsStr, is_gitdir_root: bool) -> u64 {
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key) {

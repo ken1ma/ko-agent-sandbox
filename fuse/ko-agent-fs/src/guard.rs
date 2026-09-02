@@ -264,7 +264,7 @@ impl Workspace {
 
         if metadata.file_type().is_symlink() {
             // The launcher refuses a symlinked `.git` outright and so does this: a link decides
-            // where the whole control surface lives, and following it would make the guarded set
+            // where the whole of the control state lives, and following it would make the guarded set
             // depend on where it points at this instant.
             return Err(Refusal {
                 reason: format!("{dotgit:?} is a symlink"),
@@ -504,7 +504,7 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot read {head:?}: {err}"),
-                    remedy: "The filter will not serve a tree whose repository shape it cannot \
+                    remedy: "The filter will not serve a tree whose repository layout it cannot \
                              decide."
                         .to_string(),
                 });
@@ -530,7 +530,7 @@ impl Workspace {
                 Err(err) => {
                     return Err(Refusal {
                         reason: format!("cannot read {:?}: {err}", self.root.join(name)),
-                        remedy: "The filter will not serve a tree whose repository shape it \
+                        remedy: "The filter will not serve a tree whose repository layout it \
                                  cannot decide."
                             .to_string(),
                     });
@@ -590,7 +590,7 @@ enum HooksPath {
 /// Blunt has to mean blunt *toward refusing*, which is the invariant to preserve when changing
 /// this scanner. It reads no section headers, so it reports every `hooksPath` in
 /// the file and lets the caller refuse if *any* lands inside the workspace — keeping only the last
-/// would be the fail-open shape — and each doubt refuses because reading it any other way would
+/// would be the fail-open reading — and each doubt refuses because reading it any other way would
 /// compare a different string than the one hooks run from. The worked example and the per-doubt
 /// reasons are `doc/git-metadata.md`, "Relocated hook directories".
 fn scan_hooks_path(text: &str) -> HooksPath {
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn every_hooks_path_is_reported_because_sections_are_invisible() {
-        // The fail-open shape this scanner must not have. `tool.hooksPath` is a key git never reads
+        // The fail-open reading this scanner must not have. `tool.hooksPath` is a key git never reads
         // for hooks, so git runs `./githooks` from inside the worktree; a scanner keeping only the
         // last value would answer `/opt/hooks` and serve the tree. Both are reported instead, and
         // the caller refuses on the first that lands inside.
@@ -861,7 +861,7 @@ mod tests {
 
     #[test]
     fn a_hooks_path_masked_by_a_later_section_is_still_refused() {
-        // End to end, the shape `every_hooks_path_is_reported_because_sections_are_invisible`
+        // End to end, the property `every_hooks_path_is_reported_because_sections_are_invisible`
         // pins at the scanner: the repository git would run `./githooks` from is refused, whatever
         // stands after it in the file.
         let root = scratch("hookspath-masked");
@@ -983,7 +983,7 @@ mod tests {
 
     #[test]
     fn a_control_file_aliased_through_a_reaimable_workspace_intermediate_is_refused() {
-        // The two-hop shape a final-target check misses: at validation the chain ends outside the
+        // The two-hop chain a final-target check misses: at validation the chain ends outside the
         // workspace, but its intermediate is an ordinary workspace name the sandbox can re-aim.
         let outside = scratch("two-hop-target");
         fs::write(outside.join("real-config"), b"[core]\n").unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
         refused_with(&root, "bare");
         let _ = fs::remove_dir_all(&root);
 
-        // The recognition is git's own triple, so a partial or invalid shape stays an ordinary
+        // The recognition is git's own triple, so a partial or invalid layout stays an ordinary
         // project: a HEAD without refs, and a HEAD git would not validate.
         let root = scratch("bare-near-miss");
         fs::write(root.join("HEAD"), b"ref: refs/heads/main\n").unwrap();

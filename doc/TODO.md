@@ -1,15 +1,15 @@
 # TODO
 
 Remaining work that buys real security or maintainability for the actual threat model. Ideas
-without a concrete gain live in DESIGN.md as Non-TODOs so they stop resurfacing.
+without a concrete gain live in design.md as Non-TODOs so they stop resurfacing.
 
 ## Deferred — inspected-relay keep-alive
 
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
-  framing is parsed and enforced, so the shape is a request loop per client connection with a
+  framing is parsed and enforced, so the design is a request loop per client connection with a
   fresh upstream connection per request; the price is a larger state machine at the enforcement
-  point and the one-request stance's smuggling argument re-argued in SECURITY.md.
+  point and the one-request rule's smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
 
@@ -24,7 +24,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 ## Deferred — staged-workspace extensions and hardening
 
-These are separate increments after the staged workspace in `PLAN-STAGED.md`, not reasons to put
+These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put
 all of its lifecycle into one change. The initial one-stage-per-project sharing unit and its failure
 semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 
@@ -66,8 +66,8 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
 ## Deferred — `--self-test`'s remaining share rows
 
 `--self-test` runs share rows after the crate's suites (`SelfTestShare.scala`,
-`../fuse/ko-agent-fs/doc/testing.md`): the share is the axis the container suites cannot reach,
-and the coherency rows now cross it launcher-driven and venue-recorded, the scratch gone on
+`../fuse/ko-agent-fs/doc/testing.md`): the share is what the container suites cannot reach,
+and the coherency rows cross it launcher-driven and venue-recorded, the scratch gone on
 success and kept on failure — its files are how a row that measured a refusal is told apart from a
 row where the probe broke — with a killed run leaving nothing outside the mounts/ sweep,
 `--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
@@ -75,10 +75,10 @@ row where the probe broke — with a killed run leaving nothing outside the moun
 - [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
   folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
   halves are deleted when their rows land. Their venue record adds the upper volume's filesystem,
-  which is what the staged design needs the answers for (`PLAN-STAGED.md`).
+  which is what the staged design needs the answers for (`plan-staged.md`).
 - [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
-  the container — a host-native build turns the host-writer axis from an occasional human edit
-  into every build.
+  the container — a host-native build turns host writes from an occasional human edit into
+  every build.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
 
@@ -119,7 +119,7 @@ on podman-less machines and kills the test JVM.
 
 - [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
   which runs unconfined while parsing hostile bytes as the user's uid
-  (`RUN-ON-HOST.md` "The build's egress proxy", where the acceptance argument binds:
+  (`run-on-host.md` "The build's egress proxy", where the acceptance argument binds:
   loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
   surface). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
   log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
@@ -129,15 +129,15 @@ on podman-less machines and kills the test JVM.
   `runtime-authority.txt`); together those let a build reach any Mach service — `open` through
   LaunchServices would start an application outside the profile. Measure the services a build
   actually needs, as `ops` measures operation families, and filter to them
-  (`(allow mach-lookup (global-name …))`, the shape Apple's profiles use); the gate's
+  (`(allow mach-lookup (global-name …))`, the pattern Apple's profiles use); the gate's
   forked-process rows are where the answer is checked.
 
 ## Deferred — same-path workspace mounting under `--run-on-host`
 
 Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's
 JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
-does not establish compatibility between the venues' build state. That leaves legible paths in
-build output as the benefit, which did not carry the increment. The host path reaches the
+does not establish compatibility between the two builds' state. That leaves legible paths in
+build output as the benefit, which did not justify the change. The host path reaches the
 container regardless: the build's streamed output names it (`SECURITY.md`, "Run on host"). Prior
 art, both mounting the project at its host path for path legibility rather than shared state:
 

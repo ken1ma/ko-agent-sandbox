@@ -49,7 +49,7 @@ echo user_allow_other >> /etc/fuse.conf
 
 # The shipping triple, because the difference is not cosmetic: the static-musl link constraint
 # src/fs.rs records at its rename is invisible to a glibc build, and only this triple makes
-# tests/binary.rs spawn the artifact in its real shape. GLIBC=1 answers one question — whether a
+# tests/binary.rs spawn the artifact as it ships. GLIBC=1 answers one question — whether a
 # failure is libc-specific — and is not a faster alternative.
 if [ "$RIG_GLIBC" = 1 ]; then
     target=""
@@ -59,7 +59,7 @@ else
     target="--target $triple"
 fi
 
-# The venue check first. A PROBE FAIL says /dev/fuse, the mount privilege, or fusers libfuse-free
+# The venue check first. A PROBE FAIL says /dev/fuse, the mount privilege, or fuser's libfuse-free
 # path is wrong, rather than leaving that to be read off thirty test failures.
 cargo run --locked $target --example mount_probe
 cargo test --locked $target -- --ignored $RIG_FILTER

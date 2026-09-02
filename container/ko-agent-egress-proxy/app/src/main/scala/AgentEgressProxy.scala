@@ -1,5 +1,5 @@
-// The egress proxy: policy, connection handling, and the flow from CONNECT to tunnel. The HTTP surface lives in
-// HTTPHelper.scala, the TLS surface in TLSHelper.scala, git protocol knowledge in GitHelper.scala, and hostname/address
+// The egress proxy: policy, connection handling, and the flow from CONNECT to tunnel. HTTP handling lives in
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala, and hostname/address
 // vetting in IPAddrHelper.scala.
 
 package agentsandbox.egress
@@ -58,12 +58,12 @@ object AgentEgressProxy:
    *     (authorizeInspectedRequest).
    *
    * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
-   * rule, and an unknown tag is a refused start — the guardrail DESIGN.md ("No general HTTP
+   * rule, and an unknown tag is a refused start — the guardrail design.md ("No general HTTP
    * method/path policy language") sets on this syntax.
    *
    * Which hosts are in force is the selected profile's answer (resolvePolicy below): the
    * launcher-owned baseline — every model-provider group plus the curated restricted catalog —
-   * shaped by the project's `allowed` delta and `denied` rules. Whichever policy is in force is
+   * modified by the project's `allowed` delta and `denied` rules. Whichever policy is in force is
    * printed at startup and every denial is logged, which is how you find out what an agent
    * actually wanted.
    *
@@ -213,8 +213,8 @@ object AgentEgressProxy:
    * evidence — separately, because the policy decision is fixed per run
    * while a connection resolves and validates the destination again when it
    * is made. Run by the launcher's --egress-check through a one-shot
-   * container on an egress-shaped network, so the resolver path is
-   * enforcement's, never the launcher host's.
+   * container on a network built as the session's egress network is, so the
+   * resolver path is enforcement's, never the launcher host's.
    */
   def checkHost(rawHost: String): Unit =
     val resolved =
@@ -256,7 +256,7 @@ object AgentEgressProxy:
 
   /**
    * The resolved policy, one line each — printed by --print-policy and
-   * logged by serve() in the same shape, so the dry-run banner, the runtime
+   * logged by serve() identically, so the dry-run banner, the runtime
    * log and the launcher's leaf minting all read one format. The restricted
    * line is the whole inspected set — what the leaf certificate names — and
    * each allowance in force gets a line of its own (`restricted allow=git-fetch
@@ -512,10 +512,10 @@ object AgentEgressProxy:
    * IPAddrHelper's address vetting, applied to every resolved destination at connection time,
    * ambient hosts included, so no policy file can spell them away.
    *
-   * Fails closed on every ambiguity: an unknown profile, provider, tag or entry shape; duplicate
+   * Fails closed on every ambiguity: an unknown profile, provider, tag or entry form; duplicate
    * exact-host additions with different treatments; a host both added and removed — a `+host`
    * under a `-host **.domain` included; an addition that would widen a restricted baseline host
-   * to unrestricted, which has no delta spelling short of `-**` plus a complete
+   * to unrestricted, which the delta grammar cannot write short of `-**` plus a complete
    * replacement; a removal matching neither the baseline nor an addition. A `denied` entry
    * matching nothing the selected profile admits is a startup warning, not an error: it can
    * still apply under another profile or a future provider expansion, and a typo cannot be
@@ -550,7 +550,7 @@ object AgentEgressProxy:
       if widens then
         throw IllegalArgumentException(
           s"$AllowedVariable re-adds the restricted baseline host $host as unrestricted; " +
-            "treatment widening has no delta spelling — use -** and state the complete " +
+            "treatment widening cannot be written as a delta — use -** and state the complete " +
             "replacement policy",
         )
 
@@ -572,9 +572,9 @@ object AgentEgressProxy:
     // last rule that actually changed it, and a delta rule is reported as a removal only when it
     // removed a host that was present when it applied. A rule the profile never consults, or one
     // that restates what already held — re-adding a baseline host with its baseline treatment,
-    // removing under -** what -** already cleared — shapes nothing and is reported
+    // removing under -** what -** already cleared — changes nothing and is reported
     // nowhere.
-    // A host in the catalog and a group names both: its tags came from both.
+    // A host in the catalog and in a group at once names both sources: its tags came from both.
     def baselineSource(host: String): String =
       (Option.when(CuratedRestrictedHosts.contains(host))("curated baseline")
         ++ ModelProviderHosts.collect { case (name, hosts) if hosts.contains(host) => s"model-provider $name" })
@@ -592,7 +592,7 @@ object AgentEgressProxy:
 
     // A group's restricted entry contributes its tags to a host the catalog already restricts, as
     // BaselineHosts merged them: `+model-provider github` over the baseline is a no-op, not a
-    // re-allowancing of github.com. Removing the group takes back only what it contributed.
+    // second grant of github.com's allowances. Removing the group takes back only what it contributed.
     def addGroup(current: Map[String, (Treatment, String)], name: String, source: String) =
       ModelProviderHosts(name).foldLeft(current):
         case (current, (host, Treatment.Restricted(tags))) =>
@@ -715,7 +715,7 @@ object AgentEgressProxy:
     tags.foreach: tag =>
       if !KnownTags.contains(tag) then
         throw IllegalArgumentException(
-          s"$variable allows '$host' the operation '$tag', which is none this proxy defines; " +
+          s"$variable allows '$host' the operation '$tag', which this proxy does not define; " +
             s"the allowances are: ${KnownTags.toVector.sorted.mkString(", ")}",
         )
     tags.toSet
@@ -1038,9 +1038,9 @@ object AgentEgressProxy:
    * request goes upstream with `Connection: close` (end-of-stream then frames the response),
    * and the response reaches the client with this proxy's own `Connection: close`, whatever the
    * origin's hop said (toClientBytes). Keeping the connection alive would mean agreeing with
-   * the origin about where each message ends — request smuggling's exact surface. After the
-   * response the client is only drained (drainClient), never answered again. Cost: a handshake
-   * per request — `git fetch` is two.
+   * the origin about where each message ends — the exact disagreement request smuggling
+   * exploits. After the response the client is only drained (drainClient), never answered
+   * again. Cost: a handshake per request — `git fetch` is two.
    */
   def runInspectedSession(
     client: Socket,
@@ -1252,9 +1252,9 @@ object AgentEgressProxy:
 
   /*
    * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
-   * contain one and resolvePublic rejects private answers — and load-bearing clarity under the
-   * ambient profile, where it is the named refusal a literal target gets. Denial wins over both
-   * treatments and over the ambient default.
+   * contain one and resolvePublic rejects private answers — and under the ambient profile it is
+   * the named refusal a literal target gets. Denial wins over both treatments and over the
+   * ambient default.
    */
   def authorizeRequest(
     request: ConnectRequest,

@@ -132,7 +132,7 @@ fn a_hooks_path_inside_the_workspace_is_refused_before_mounting() {
 #[ignore = "needs a FUSE-capable environment; run in the privileged dev rig"]
 fn the_self_test_passes_where_fuse_is_available() {
     // The launcher's pre-session gate, end to end: mounts a scratch tree with the real mount
-    // options and proves the policy bites before any workspace is served.
+    // options and proves the policy refuses before any workspace is served.
     let output = Command::new(binary())
         .arg("--self-test")
         .output()

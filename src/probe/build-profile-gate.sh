@@ -1,12 +1,12 @@
 #!/bin/sh
 # The security gate, run by hand on macOS before each release, and when the profile generator,
 # the wrapper or the channel changes. One row per contract claim, each run under the generated
-# profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in probe/
+# profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in src/probe/
 # finds out what a profile needs; this one finds out whether the profile that resulted enforces
 # what the contract claims — and, in the channel rows, whether the channel carries a build and
 # tears down with its requester.
 #
-#   sh probe/build-profile-gate.sh [sbt|mill|all] [quick]
+#   sh src/probe/build-profile-gate.sh [sbt|mill|all] [quick]
 #
 # The tool selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
@@ -18,9 +18,9 @@
 # lifecycle as well as the profile; there is no warm-up block, and a cold agent cache resolves
 # through the proxy inside the profile, which is the measurement.
 #
-# The sbt rows build this repository. The mill rows build probe/mill-fixture, a one-module mill
+# The sbt rows build this repository. The mill rows build src/probe/mill-fixture, a one-module mill
 # project that exists for them: this repository is sbt-built, and a mill build of it would be a
-# second build definition rather than a measurement. probe/deny-fixture exists for the
+# second build definition rather than a measurement. src/probe/deny-fixture exists for the
 # non-allowlisted-host row: its resolution must reach a host the proxy refuses.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
@@ -66,7 +66,7 @@ report() { # status label detail
 }
 
 # The project each profile is for.
-mill_project=$project/probe/mill-fixture
+mill_project=$project/src/probe/mill-fixture
 project_of() { if [ "$1" = mill ]; then printf '%s\n' "$mill_project"; else printf '%s\n' "$project"; fi; }
 
 # The venue, before any row: a run with no venue recorded is not evidence for the next release.
@@ -149,7 +149,7 @@ wrapper() { # tool project command...
         agentsandbox.launcher.RunOnHost "$wrapper_tool" "$wrapper_project" \
         src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
 }
-deny_project=$project/probe/deny-fixture
+deny_project=$project/src/probe/deny-fixture
 session_root=/private/tmp/ko-agent-$(id -u)
 
 # A shell command under a profile, so a row runs exactly what a build's script would.

@@ -57,8 +57,8 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
 What the backing filesystem treats as "the same name" decides how wide the `.git` name rule must be.
 Findings the rule rests on:
 
-- **Normalization is a non-issue, and that is load-bearing.** APFS is normalization-insensitive (a
-  hash of the normalized form) in both variants — the headline difference from HFS+. But NFC/NFD
+- **Normalization is a non-issue, and the design rests on that.** APFS is normalization-insensitive
+  (a hash of the normalized form) in both variants — the headline difference from HFS+. But NFC/NFD
   only relate composed and decomposed forms of one character, never yielding an ASCII `g`, `i` or
   `t`. `.git` is pure ASCII, so normalization creates no collision: the audited core needs **no**
   Unicode normalization dependency. Stated in `git-metadata.md` and pinned by a test.

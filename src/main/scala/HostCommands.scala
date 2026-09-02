@@ -260,7 +260,7 @@ object HostCommands:
           """error: podman is not installed or not on PATH
             |
             |PATH entries inside the current directory are not searched: it is the
-            |project directory being sandboxed (DESIGN.md, "No PATH-resolved host executables").
+            |project directory being sandboxed (design.md, "No PATH-resolved host executables").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127,
@@ -473,8 +473,8 @@ object HostCommands:
    * A variable governing the boundary — or whether its reader sees it — takes exactly one of a
    * closed value set, case-sensitive: never a bare presence test, and no alternate spellings
    * (`1`, `true`, `yes`, …). An unclear value must refuse the launch rather than be read as
-   * either side of the choice (DESIGN.md, "Security configuration must fail closed"), and each
-   * accepted spelling is surface that has to stay correct everywhere it is parsed. Unset and
+   * either side of the choice (design.md, "Security configuration must fail closed"), and each
+   * accepted spelling is one more thing that has to stay correct everywhere it is parsed. Unset and
    * empty mean the default, which is always the choice that weakens nothing.
    */
   def closedChoice(

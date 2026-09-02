@@ -1,6 +1,6 @@
 #!/bin/sh
 # Whether SBPL still behaves the way the guard depends on. The answers are recorded in
-# RUN-ON-HOST.md "The Seatbelt profile" and encoded in SeatbeltProfile.scala;
+# run-on-host.md "The Seatbelt profile" and encoded in SeatbeltProfile.scala;
 # this is what measured them, and what re-measures them.
 #
 # Run it on each new macOS release. If E3, E4 or E5 stops answering DENIED, the guard has
@@ -75,7 +75,7 @@ r=$(attempt "$proj/late/.git/config" \
     "mkdir -p '$proj/late/.git' && echo probe > '$proj/late/.git/config'")
 report "E3 access-time evaluation" \
     "is a .git created *during* the run covered by the same rule?" "$r" \
-    "DENIED: the guard is an invariant, and the Windows exclusion stands. ALLOWED: it is a scan."
+    "DENIED: the deny held at access time, and the Windows exclusion stands. ALLOWED: it is a launch-time scan."
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/link/config'")

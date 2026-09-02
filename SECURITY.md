@@ -14,7 +14,7 @@ The instructions to the agents are separate, at `container/ko-agent-sandbox/AGEN
 agent-state volume; the containers run rootless, and agents have no way to become root inside
 them. `$HOME` and `/tmp` inside are writable but die with the session. No container socket is
 mounted under any spelling: one would hand a session the host's own container runtime, which is
-every boundary here at once, so `SessionBoundaryTest` looks for both.
+every boundary here at once, so `SessionBoundaryTest` looks for both spellings.
 
 **Credential theft.** There is little to steal: forge tokens, cloud credentials and SSH keys are
 never mounted — everything credentialed happens on the host (the README's private-repository
@@ -50,7 +50,7 @@ per-project volume and deliberately affects later sessions of that project ("Wha
 volume carries", below); the rest of the sandbox home is discarded on exit. Claude Code's hooks
 are disabled (the sandbox Containerfile's `disableAllHooks` note has the reasoning). The networks
 and proxy are per run and removed with it, so concurrent sessions cannot reach one another through
-those networks and nothing network-shaped is reused.
+those networks and no network object is reused.
 
 **A project loosening its own confinement.** Managed settings sit in the read-only image above every
 scope a repository can write, so a repository's own settings cannot weaken them; only an
@@ -122,9 +122,9 @@ a shortcut would be tempting:
 What the launcher does write, it owns: its images, containers, networks and named volumes, its
 per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
 objects, ownership is a name contract: `--reset-all` force-removes every container, network and
-volume matching the generated shapes — `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in the
-twelve-hex path hash and, for per-run resources, the eight-hex run suffix, and the self-test
-probe container `ko-agent-self-test-share-` followed by that suffix alone. Those shapes are
+volume matching the generated name patterns — `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in
+the twelve-hex path hash and, for per-run resources, the eight-hex run suffix, and the self-test
+probe container `ko-agent-self-test-share-` followed by that suffix alone. Those patterns are
 reserved: an object created by hand inside one is removed like the launcher's own, and a
 `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
 
@@ -205,13 +205,13 @@ Everything else writable — build scripts, CI definitions, IDE configuration, g
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
 for a contribution from a stranger. That includes a repository the agent created deeper in the tree,
-in both guard modes: under `WORKSPACE_GUARD=none` any shape is left unpinned, and the filter — which
-refuses creating a `.git` entry — cannot refuse a *bare layout*, built from ordinary names (`git
-init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks are served as writable
-data anywhere in the writable workspace — the mount-time check catches only a layout already
-standing at the root, not one assembled there afterwards in a repository-less workspace — and git's
-ascending discovery adopts it for a host command run at or beneath it. Running host git *inside* a
-directory the agent created is running the agent's output.
+in both guard modes: under `WORKSPACE_GUARD=none` any layout is left unpinned, and the filter —
+which refuses creating a `.git` entry — cannot refuse a *bare layout*, built from ordinary names
+(`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks are served as
+writable data anywhere in the writable workspace — the mount-time check catches only a layout
+already standing at the root, not one assembled there afterwards in a repository-less workspace —
+and git's ascending discovery adopts it for a host command run at or beneath it. Running host git
+*inside* a directory the agent created is running the agent's output.
 
 A symlink is the sharpest case of that, because its meaning can change with the namespace reading
 it. `/workspace/x -> /etc/passwd` written inside resolves to the *container's* `/etc/passwd`, and a
@@ -293,7 +293,7 @@ policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 **The `.git` pins of `WORKSPACE_GUARD=none`.** `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces the
 filter with mounts: `.git/config` and `.git/hooks` remounted read-only (a pointer-file `.git` pinned
 whole, and the bare name when no repository exists). A session that takes it says so on its
-`workspace:` line. Their shape is fixed at launch — a host-created repository appears behind the
+`workspace:` line. The pin set is fixed at launch — a host-created repository appears behind the
 whole-directory pin, read-only until the next launch — and they cover only the workspace root, so a
 repository the agent creates deeper in the tree is unpinned there, the residue "The project
 directory" describes.
@@ -324,7 +324,7 @@ inspection would expose the conversation and provider tokens in plaintext to the
 Inspection lets the retained log record each request's method and target; an opaque tunnel logs
 the `CONNECT` alone. Every other baseline host is inspected — restricted, the bulk package
 registries included at a known per-request handshake cost: security is not traded for performance
-(DESIGN.md's principles).
+(design.md's principles).
 
 **What the persistent volume carries.** Every session mounts every installed agent's state
 read-write under the same uid, regardless of which agent the host launched. The launched command is
@@ -367,10 +367,10 @@ generally are not comprehensively bounded.
 
 An HTTP proxy in its own container, so the policy is enforced somewhere the agent cannot edit, on
 the far side of a network the agent cannot route out of. The container is created per sandbox run
-and removed when the run ends, named in the reserved shapes ("Silent changes to what you own",
-above). Its log — every allow and every refusal — is appended through a bind mount to a per-run file
-in the launcher's state directory on the host, so the audit record does not share the container's
-lifetime. Every connection has to pass all of this, in order:
+and removed when the run ends, named in the reserved name patterns ("Silent changes to what you
+own", above). Its log — every allow and every refusal — is appended through a bind mount to a
+per-run file in the launcher's state directory on the host, so the audit record does not share the
+container's lifetime. Every connection has to pass all of this, in order:
 
 1. `CONNECT` only — any other method is a 400
 1. port 443 only
@@ -460,7 +460,7 @@ nothing was asked, so nothing was refused — an `error`, never a `deny`. A conn
 a half-sent header is a `deny`: a half request is an anomaly, not weather.
 
 The startup lines precede these and sit outside the grammar: the listening port, the resolved
-policy (the `--print-policy` shapes), its digest — one stable line naming which policy this run
+policy (the `--print-policy` lines), its digest — one stable line naming which policy this run
 enforced, comparable across runs — any warnings, and the inspection summary. There is no
 peer-address field anywhere: the per-run internal network has exactly one client, so it would be
 a constant.
@@ -517,7 +517,7 @@ agent asked a forge to do is recorded, not merely whether it opened a connection
 Consequences:
 
 - The GraphQL endpoints are a `POST` even to read: a query and a mutation are the same request
-  shape, telling them apart means reading the body, and this proxy does not. GraphQL is therefore
+  format, telling them apart means reading the body, and this proxy does not. GraphQL is therefore
   refused; the REST read endpoints are not. On GitHub that costs nothing — its GraphQL API accepts
   no unauthenticated query, and the sandbox carries no forge credential by design. GitLab's answers
   anonymously, so the cost is real there; its REST API still reads with `GET`s. (Codeberg's
@@ -614,8 +614,8 @@ under every profile. Additions name exact hostnames; the one wildcard is `**.dom
 taking-away side — `-host **.domain` in `allowed`, `host **.domain` in `denied`. That asymmetry
 is the security choice.
 
-A wildcard *grant* is an unenumerable reach, the opposite of what an admitted entry is for: every
-entry is meant to be a destination someone reviewed and chose. `+host *.example.com` would not
+A wildcard *grant* admits names nobody can list, the opposite of what an admitted entry is for:
+every entry is meant to be a destination someone reviewed and chose. `+host *.example.com` would not
 mean "the site" — it means every name under it, including ones added later, and for a shared apex
 like a cloud provider's, names an attacker can register or take over. The breadth is in the
 grant, not the matcher, so no careful pattern syntax removes it. For a restricted host it is also
@@ -627,10 +627,10 @@ launch command line, never through a pattern a repository ships.)
 An addition overrides the baseline entry for its host rather than merging with it (the README's
 "Modifying the egress policy" has the grammar): a merge would widen a host to a treatment no single
 line says and leave no way to take one allowance away. For the same reason an allowance on anything
-that takes away is refused — a removal or a denied entry removes the host whole — and widening has
-no delta spelling at all: the only way past a baseline host's restricted treatment is `-**`. And
-under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and `-**`
-cannot subtract from the restricted narrowing set.
+that takes away is refused — a removal or a denied entry removes the host whole — and widening
+cannot be written as a delta: the only way past a baseline host's restricted treatment is `-**`.
+And under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and
+`-**` cannot subtract from the restricted narrowing set.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
@@ -725,18 +725,18 @@ else refuses the launch, like the workspace guard) opens a channel with these pr
 Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`) is a container→host
 **execution** path — the one place this design runs code the agent chose outside the container —
 and what bounds it is a Seatbelt profile, not the container the build is no longer in.
-`doc/RUN-ON-HOST.md` is the reference; the properties, priced:
+`doc/run-on-host.md` is the reference; the properties, each with its cost:
 
 - **macOS only, structurally, not by neglect.** On Linux there is no VM between the sandbox and
-  the hardware: a container build already runs at host speed on host memory, so the venue would
+  the hardware: a container build already runs at host speed on host memory, so host builds would
   buy nothing — and neither bubblewrap nor Landlock can express the guard rows below, whose
   name-pattern denies are evaluated at access time (a `.git` created *mid-build* is covered),
   while their mounts and rulesets are fixed at start. Windows AppContainers express the grants
   but not the denies: ACL inheritance has no name patterns, so a mid-build `.git` inherits the
-  project's allow — a race where an invariant is required. Seatbelt's access-time path filters
-  are what make the guard an invariant, and the feature exists only where that holds.
+  project's allow — a race where the deny must hold at every access. Seatbelt's access-time
+  path filters give the guard exactly that, and the feature exists only where it holds.
 
-- **The sandbox asks; the host answers.** The clipboard channel's shape, sized up to a build: a
+- **The sandbox asks; the host answers.** The clipboard channel's design, sized up to a build: a
   broker the launcher spawns holds one `podman exec` reading a FIFO under the sandbox's `/tmp`,
   runs each request as a child of its own, streams the build's output back, and hands over the
   build's exit code. No host listener, no port, and nothing runs that the host did not start
@@ -762,8 +762,8 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   lives for one `sandbox-run-on-host` command, and `mill` runs `--no-daemon`. Under
   `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server first instead of
   refusing — authority the user typed at launch, and logged into the build's transcript. The
-  shutdown is spoken only at the socket the wrapper derives from the project path as sbt derives
-  it, never at one the portfile names: the portfile is workspace content, so honouring its
+  shutdown is sent only to the socket the wrapper derives from the project path as sbt derives
+  it, never to one the portfile names: the portfile is workspace content, so honouring its
   spelling would let the project aim an unconfined write-and-parse at any socket this uid
   reaches. The derived path is therefore authorization, and refused when a build could have
   planted it: resolving it one link at a time, no step may land in the project or in the
@@ -772,24 +772,24 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   refusal standing instead.
 - **The payload that matters runs later, as you.** A build that writes `.git/hooks/post-checkout`
   is perfectly contained and entirely beside the point: the payload would run on your next
-  `git status`, outside every sandbox. That property has two producers now — the workspace filter
+  `git status`, outside every sandbox. That property has two producers — the workspace filter
   for writes through `/workspace`, this profile's deny rows for writes by the build — and both are
   named where it is stated ("The host's git executing what the sandbox wrote", above).
 - **Cache poisoning stops at the project.** The build writes its own per-project Coursier cache,
   never yours: a poisoned artifact reaches later agent builds of the same project, which are
   themselves sandboxed, and no other project and no unsandboxed build. The separation is by root,
-  because Seatbelt has no mount namespace to overlay with (`PLAN-COURSIER.md` reaches the same
+  because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches the same
   property for the container by a podman `:O` upper).
 - **The build's output names host paths.** Every compiler message carrying an absolute path tells
   the container where the project lives on the host. Disclosure, not authority.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A
   host build writes `target/` and whatever else the profile's project grant admits. Composition
-  rather than escape — both are authority the user typed — but a reject session wanted as
-  evidence-grade read-only should not carry `--run-on-host`.
+  rather than escape — both are authority the user typed — but a reject session meant to
+  prove the project untouched should not carry `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
-  request, and the request itself travels on it, so no build starts without its liveness; an
+  request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and
-  the broker ends the build with SIGTERM — the wrapper's own hook teardown, which ends the build's
+  the broker ends the command with SIGTERM — the wrapper's own hook teardown, which ends the build's
   process groups, its sbt server and its proxy, and removes the session directory. A kill nothing
   survives leaves recorded groups the next start's scavenger ends by proof, never by guess.
 
@@ -831,7 +831,7 @@ is unavoidable is measured at `NestingLoosenings`; what each costs is:
 namespace — measured, the container rootfs mounts as `overlay` and the test matrix passes with
 the fuse-overlayfs binary removed — so the kernel's FUSE surface stays out.
 
-Everything else holds, and the holds are what shape the feature. `no-new-privileges` stays, which
+Everything else holds, and what holds is what bounds the feature. `no-new-privileges` stays, which
 blocks the setuid `newuidmap`, which caps a nested namespace at a single mapped uid: an image that
 switches `USER` or chowns to a second uid fails by design — this repository's own images among
 them, so the sandbox still cannot build itself. The egress topology is inherited, not escaped:

@@ -80,8 +80,8 @@ files and every command key above is out of reach, present and future.
 `.gitattributes` and `.gitmodules` stay writable worktree data. They can only *activate* a driver
 that a protected config file already defines, i.e. one the host chose; they cannot define the
 command. (`.gitmodules` additionally cannot supply `submodule.<name>.update = !cmd`: `git` has
-refused to honor the `!command` form from `.gitmodules` since the CVE-2017-1000117 family. This is a
-load-bearing assumption and is tested, not trusted.)
+refused to honor the `!command` form from `.gitmodules` since the CVE-2017-1000117 family. The
+design rests on this assumption, which is tested, not trusted.)
 
 ### 3. Indirection — moves the gitdir itself
 
@@ -294,7 +294,7 @@ The rule is also what makes the mount-time snapshot durable: a snapshot is sound
 its subject cannot mutate, and every admitted chain is made of Control components the sandbox can
 neither write nor rename. Only the host can invalidate it, which is the window recorded below.
 
-The same recognition covers the shape with no `.git` name at all: a workspace root that is itself
+The same recognition covers the layout with no `.git` name at all: a workspace root that is itself
 laid out as a gitdir — a valid `HEAD` plus `objects/` and `refs/`, git's own `is_git_directory`
 triple, which reftable repositories keep precisely so old gits recognize them — is refused, since
 ascending discovery would adopt it and its config and hooks sit at ordinary writable names.
@@ -307,7 +307,7 @@ resolution), so there is nothing to refuse and those repositories are served nor
 The scanner behind it does not read section headers, so it cannot tell `core.hooksPath` from a
 `hooksPath` under a section git never consults for hooks. It therefore judges **every** `hooksPath`
 the file states and refuses if any one of them lands inside the workspace. Keeping only the last
-would be the fail-open shape: a stray `[tool] hooksPath = /opt/hooks` after a real
+would be the fail-open reading: a stray `[tool] hooksPath = /opt/hooks` after a real
 `[core] hooksPath = ./githooks` would answer for both, and the worktree hooks git actually runs
 would be served as ordinary writable data. The price is over-refusing a config whose only
 inside-workspace `hooksPath` is one git ignores — a refused mount, never a lost guarantee.
@@ -320,10 +320,10 @@ scanner never opens. All are rare in a *repository-local* config, and the messag
 what to change.
 
 Scope: the repository at the workspace root, matching the launcher's own root-only pin, plus the
-bare-root check above. The residual shapes below the root are recorded in `TODO.md` and named in
+bare-root check above. The residual layouts below the root are recorded in `TODO.md` and named in
 `SECURITY.md`: a repository the **host** nested deeper — its control state under `.git` names is
 frozen like any other's, but control bytes the host routed into the worktree (relocated hooks, a
-redirected gitdir) are served writable; the sandbox cannot create this shape. And a **bare
+redirected gitdir) are served writable; the sandbox cannot create this layout. And a **bare
 layout**, which the sandbox *can* create — `git init --bare` and `git clone --bare|--mirror`
 write only ordinary names, and no per-name rule can refuse `HEAD`, `objects` and `refs`
 individually without swallowing legitimate projects ("Consequences", below) — anywhere below the
@@ -441,7 +441,7 @@ workspace root or inside a gitdir's operational tree.
 holds a descriptor — concurrency tests aimed specifically at the resolve-then-act window.
 
 
-## Premises: the git behaviour this rests on
+## Premises: the git behavior this rests on
 
 Everything above is derived from how a specific `git` lays out and writes its metadata. Those are
 **premises**, not universal truths: a future `git` could change them, and the classifier's
@@ -469,7 +469,7 @@ written does not make it safe to allow. Only real git against a real mount exerc
   `[submodule "libs/foo"]` and the gitdir `.git/modules/libs/foo`; a linked worktree is named for
   the *basename* of its path, so `git worktree add ../wt/deep/foo` yields `.git/worktrees/foo`,
   always one component (both measured, git 2.47). Any submodule under `deps/`, `vendor/` or
-  `third_party/` has a multi-component name, so this is the common shape, not an edge case. If it
+  `third_party/` has a multi-component name, so this is the common layout, not an edge case. If it
   drifted, a submodule's writable `objects/` would be judged against the wrong root and frozen —
   fail-closed, but quiet. Guarded by `tests/git_corpus.rs`, `tests/mounted_git.rs`
   (`a_submodule_in_a_subdirectory_works_like_any_other`) and `observe-git.sh`, which locates roots

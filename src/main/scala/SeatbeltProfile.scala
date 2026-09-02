@@ -1,8 +1,8 @@
-// The Seatbelt profile a host build runs under (RUN-ON-HOST.md "The Seatbelt profile"). Pure — a
+// The Seatbelt profile a host build runs under (run-on-host.md "The Seatbelt profile"). Pure — a
 // BuildPolicy in, SBPL out — so what the profile says is a unit test rather than something only a
 // Mac can check.
 //
-// Two properties of SBPL shape everything here, both measured by probe/seatbelt-semantics.sh:
+// Two properties of SBPL shape everything here, both measured by src/probe/seatbelt-semantics.sh:
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
 //     non-canonical path therefore matches nothing, which grants rather than denies. Every path
@@ -55,7 +55,7 @@ object SeatbeltProfile:
    * it, never the directories above. Measured: with only the deep grants, `java -version` dies in
    * the loader; with the chain present it runs, and the chain is what a coarse `/Users` grant was
    * standing in for. Metadata and not `file-read*`, because on a directory `file-read*` is its
-   * listing: probe/build-profile-gate.sh showed a chain granted that way listing all of
+   * listing: src/probe/build-profile-gate.sh showed a chain granted that way listing all of
    * `~/Library/Caches`. Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with
@@ -149,7 +149,7 @@ object SeatbeltProfile:
         lines += "(allow process-fork sysctl-read mach-lookup)"
         lines += Devices
         lines += ""
-        lines += ";; Runtime authority: measured by probe/build-profile-iterate.sh, never guessed."
+        lines += ";; Runtime authority: measured by src/probe/build-profile-iterate.sh, never guessed."
         inputs.runtime.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
         inputs.runtime.executes.foreach: path =>
           lines += s"(allow process-exec* file-read* ${subpath(path)})"
@@ -166,13 +166,12 @@ object SeatbeltProfile:
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
         // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
         // ::1 — not a dual-stack JVM's v4-mapped connect, which is why the environment contract pins
-        // preferIPv4Stack (probe/jvm-proxy-rule.sh measured all of this).
+        // preferIPv4Stack (src/probe/jvm-proxy-rule.sh measured all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
         // session temp, where the environment contract points XDG_RUNTIME_DIR and
-        // SBT_GLOBAL_SERVER_DIR; measured that a
-        // socket outside the subpath stays denied.
+        // SBT_GLOBAL_SERVER_DIR; measured that a socket outside the subpath stays denied.
         lines += ";; sbt's boot and server sockets, inside the session temp and nowhere else."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"

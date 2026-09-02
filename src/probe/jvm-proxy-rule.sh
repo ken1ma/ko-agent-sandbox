@@ -4,13 +4,13 @@
 # fetch), without props (must be denied — the direct path), with props and no proxy (must be
 # refused by connect, proving the profile admits the port and nothing listened).
 #
-#   sh probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
+#   sh src/probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
 #
 # The emitted profile grants port 51234 (EmitBuildProfile's constant), so the proxy is bound
 # there. Run it on the Mac from the repository root, on each new macOS or JDK release: the JVM's
 # path to the proxy under the profile is what either can move.
 set -u
-profile=${1:?usage: sh probe/jvm-proxy-rule.sh <gate-sbt.sb>}
+profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <gate-sbt.sb>}
 [ -f "$profile" ] || { echo "$profile does not exist" >&2; exit 2; }
 JAVA="${JAVA_HOME:?JAVA_HOME must name the granted JDK}/bin/java"
 

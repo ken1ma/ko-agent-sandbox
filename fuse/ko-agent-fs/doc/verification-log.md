@@ -73,9 +73,10 @@ machine-shared sources.)
 ### Verified: the same coherency, launcher-driven (same machine, libkrun, fc44 kernel; 2026-09-01)
 
 The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
-with the launcher playing the host writer over a scratch lower in the project directory: the guard
-bit through the whole stack, the host write was visible to `read()` 1 ms after it landed, and the
-established mmap showed it 0 ms behind `read()`. This is the form every later re-run takes.
+with the launcher playing the host writer over a scratch lower in the project directory: the
+guard's refusal held through the whole stack, the host write was visible to `read()` 1 ms after
+it landed, and the established mmap showed it 0 ms behind `read()`. This is the form every
+later re-run takes.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
@@ -158,10 +159,10 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 - **Two names differing only by case are one name**, through the mount and on the host alike: the
   default APFS volume folds, so an upper entry and a lower entry cannot differ by case alone.
 - **A descriptor held in the session blocks nothing on the host.** Write, rename and unlink all
-  succeed against a held path, read-held and write-held alike. Windows is where this bites.
+  succeed against a held path, read-held and write-held alike. Windows is where this matters.
 
 Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
-nothing in exchange support, symlink round-tripping, case behaviour or the reach of a hold.
+nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
 
 ## Mount privilege: what a venue grants
 

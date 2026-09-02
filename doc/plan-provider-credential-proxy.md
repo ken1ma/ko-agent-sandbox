@@ -3,7 +3,7 @@
 ## Outcome
 
 Add a host-selected service layer above the substitution primitive in
-`PLAN-CREDENTIAL-BROKER-PROXY.md`:
+`plan-credential-broker-proxy.md`:
 
 ```text
 credential instance -> source and lifecycle
@@ -25,9 +25,9 @@ itself.
 
 Facts have one binding site:
 
-- `PLAN-CREDENTIAL-BROKER-PROXY.md` owns the proxy's placeholder-to-value rewrite and its tests.
+- `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
 - This document owns service composition, credential sources, refresh and mediated TLS.
-- `PLAN-PATH-PREFIX-ALLOWANCE.md` owns literal path-prefix matching. A credential target may refer
+- `plan-path-prefix-allowance.md` owns literal path-prefix matching. A credential target may refer
   to that matcher but does not define another one.
 - The resolved egress policy owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
@@ -58,7 +58,7 @@ not requirements of this plan.
    exact-target list; no wildcard, redirect or response can add a target.
 4. Every active instance has a fresh per-run placeholder. Two instances have different
    placeholders even when they use the same service, host, header, source value or run.
-5. Injection still requires equality with the complete placeholder in the declared header shape.
+5. Injection still requires equality with the complete placeholder in the declared header format.
    It never rewrites a URL, query, body, response or arbitrary occurrence of the bytes.
 6. A denied destination remains denied. A selected service with no admitted target is inert and
    refuses launch rather than widening egress or silently falling back to an unbrokered value.
@@ -199,7 +199,7 @@ Source metadata and values are separate. Metadata contains the service, instance
 source kind, descriptor digest and refresh times. The secret backend contains only the value or
 OAuth material. Project state contains neither.
 
-The backend write and the generation publish are the one gate for value shape: every value
+The backend write and the generation publish are the one gate for value format: every value
 passes the base plan's value grammar (its invariant 4) there, whatever produced it — `set`,
 `import`, an executable result, an OAuth access token at issuance or refresh, a cached
 generation being reused. A value that fails is refused at that producer with the byte's offset
@@ -288,7 +288,7 @@ grant, scopes, token fields, refresh behavior and revocation semantics. The brow
 runs on the host; access and refresh tokens enter the host backend, never the sandbox.
 
 The sandbox adapter supplies stable placeholders in the exact environment or credential-file
-shape the installed client requires. Provider-specific expiry bookkeeping is generated from public
+format the installed client requires. Provider-specific expiry bookkeeping is generated from public
 metadata only. The client sends the placeholder to a resource target and the common proxy rewrite
 injects the current access token.
 
@@ -347,7 +347,7 @@ For one mediated connection:
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
 4. Apply standing restricted authorization when the resolved policy says restricted.
-5. Replace only the selected instance's complete placeholder in the declared header shape.
+5. Replace only the selected instance's complete placeholder in the declared header format.
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when spent.
 
@@ -431,7 +431,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### Placeholder and request path
 
-- Reuse the base plan's entire substitution suite for every supported header shape.
+- Reuse the base plan's entire substitution suite for every supported header format.
 - Generate many concurrent runs and instances; assert all placeholders are distinct, including
   multiple credentials for one host, and each selects only its own value.
 - Run every target through denial, restricted authorization and mediated relay. Assert redirects,

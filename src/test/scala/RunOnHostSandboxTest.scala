@@ -10,7 +10,7 @@ import RunOnHostPolicy.Tool
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
-  test("the measured runtime authority rides in the artifact, and parses"):
+  test("the measured runtime authority ships in the artifact, and parses"):
     val authority = RunOnHostSandbox.bundledRuntimeAuthority()
     assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
 
@@ -177,7 +177,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(livePortfileServer(Files.createTempDirectory("bare")), None, "no portfile")
 
   // --------------------------------------------------------------------------
-  // The venue sweep
+  // The target/ link sweep
   // --------------------------------------------------------------------------
 
   test("foreign and dangling target links are swept; granted, intra-project and non-target stay"):
@@ -274,8 +274,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(result.swap.exists(_.contains("run `sbt shutdown` there and retry")), result)
 
   test("autoShutdownForeignServer refuses a derived socket the project itself could have planted"):
-    // The whole defence of speaking only at the derived socket is that the project cannot choose
-    // it. An environment that puts sbt's server directory inside the project takes that away.
+    // The whole defence of sending the shutdown only to the derived socket is that the project
+    // cannot choose it. An environment that puts sbt's server directory inside the project takes
+    // that away.
     val project = Files.createTempDirectory("foreign")
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> project.resolve("srv").toString).get
     val derived = sbtServerSocket(project, env, Path.of("/u"))
@@ -356,7 +357,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def reachable(target: Path) = reachableThroughBuildWritable(target, project, Seq.empty)
     assert(reachable(project.resolve("srv/h/sock")))
     assert(!reachable(outside.resolve("srv/h/sock")))
-    // The planting this exists to catch, in both shapes a link can take: the endpoint tells
+    // The planting this exists to catch, in both forms a link can take: the endpoint tells
     // nothing, because the link inside the project is what chose it.
     val dangling = project.resolve("dangling.sock")
     Files.createSymbolicLink(dangling, outside.resolve("never-created"))
