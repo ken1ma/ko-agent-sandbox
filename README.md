@@ -195,11 +195,13 @@ checkout — [Development](#development).
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
-      --stats            report live sessions and per-project disk use
-                         across the launcher's state and build-cache
-                         roots, flagging any cache worth a --reset-cache;
-                         read-only — a stopped podman machine is not
-                         started
+      --stats            report the machine's memory and storage headroom,
+                         live sessions, and per-project disk use across
+                         the launcher's state and build-cache roots and
+                         the agents' volumes, each project named by its
+                         directory and any cache worth a --reset-cache
+                         flagged; read-only — a stopped podman machine is
+                         not started
 
       --self-test [<filter>]
                          run the workspace filter's own suites, always
