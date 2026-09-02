@@ -100,16 +100,7 @@ and logged; nothing is followed by the proxy.
 
 ## Baseline
 
-No baseline entry needs a prefix. The catalog admits `storage.googleapis.com` as "gcr blobs",
-and SECURITY.md calls it the one unauthenticated write surface the built-in list has. Measured
-2026-08-28: `gcr.io` serves blobs itself. A blob request answers
-`302 Location: /artifacts-downloads/namespaces/distroless/repositories/gcr.io/downloads/<id>`
-on `gcr.io` (`X-Gcr-Using-Artifact-Registry: true`) and the second hop is a `200` on `gcr.io`;
-`storage.googleapis.com` is not contacted, for `distroless/static` and for the 60 MB layers of
-`gcr.io/distroless/java25-debian13`. The entry names a redirect `gcr.io` does not make, and the
-change it calls for is removal — a smaller inspected set and the write-surface caveat gone —
-which is independent of this plan and belongs in its own change, confirmed by the self-test's
-nested pull under the baseline without the entry.
+No baseline entry needs a prefix.
 
 ## Credential broker
 
