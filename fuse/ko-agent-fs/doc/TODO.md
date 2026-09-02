@@ -301,16 +301,8 @@ The filter is the **default** enforcement on every platform, ahead of that verif
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the pin instead. What that leaves:
 
 - [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
-  unverified — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows that
+  unverified — verified on macOS and Windows, reasoned on Linux. When Linux has its row that
   entry has nothing left to say and goes; the claim it qualifies already sits under **Defended**.
-- [ ] The guard refuses to serve a repository whose control bytes resolve through the writable
-  workspace under the binding rule — a redirected gitdir or commondir, an aliased config, hooks or
-  an individual hook entry resolving back in, a bare layout at the root — and refuses the configs
-  it cannot read faithfully: a `~`, a backslash, an unterminated quote, a bare `path` key, a
-  non-UTF-8 or unreadable file (`git-metadata.md`, "Relocated hook directories"). As the default
-  enforcement that means a project which launched yesterday does not launch today, and the remedy
-  is to edit one's own `.git/config`. Decide whether that is acceptable, or whether the undecidable
-  cases should fall back to the pin rather than refuse.
 - [ ] The guard's scope residue (`SECURITY.md`, "Not defended"): decide whether to extend the
   checks to the repositories and bare layouts a pre-mount walk finds, or to keep recording it.
 
