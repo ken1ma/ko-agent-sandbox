@@ -43,7 +43,7 @@ cleanup). The corpus:
 Pass criterion: for every denied spelling the create fails with `EPERM`; for every allowed spelling
 it succeeds *and* host `lstat` of `.git` still finds nothing. A failure on any row means the fold
 rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Fold tables are
-version-specific, which is what makes the recorded versions load-bearing here.
+version-specific, which is why the recorded versions matter here.
 
 APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
 `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
@@ -58,7 +58,7 @@ writes promptly (`architecture.md`). The launcher's `--self-test` share rows mea
 write can travel, `read()` and an established `mmap`, across the whole stack, launcher-driven and
 venue-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
 session-held files refused by a share lock; `verification-log.md` records both, and why the
-premise is behavioural rather than declarative.
+premise is behavioral rather than declarative.
 
 - [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade — the measurement, not the
   mount table, is what notices a changed hypervisor default.
@@ -81,21 +81,21 @@ persisted across the rest of the session.
 
 - [ ] Reproduce deliberately: delete a directory through the mount while a process holds it open,
   then recreate it. If it reproduces, this belongs in the launcher's `--self-test` share rows,
-  whose axis it already is — a host-shared tree mutated under a live reader.
+  which already exercise it — a host-shared tree mutated under a live reader.
 A fresh container and mount cleared it: the same path accepted children again with no host-side
 repair. So it is state in this layer rather than anything reaching the backing share, and a session
 that hits it can be told to relaunch — which is worth an entry in `troubleshooting.md` once the
 trigger is understood well enough to name.
 
-The launcher's `--run-on-host` raises the stakes: it makes a host process writing the shared
-`target/` the ordinary case rather than an occasional one.
+The launcher's `--run-on-host` makes a host process writing the shared `target/` the ordinary
+case rather than an occasional one.
 
 ### What the staged lower can do, per share
 
 A stage's lower is the host project directory as it arrives inside the machine, and it is where the
 stage reads its baseline, revalidates it and applies back onto it. Each row below decides a
 representation choice, so they run before the stage format is fixed rather than after — the root
-`doc/PLAN-STAGED.md` has which venue settles which part of the contract. Every row is two-party:
+`doc/plan-staged.md` has which venue settles which part of the contract. Every row is two-party:
 `probe/lower-probe.py` runs in a session and `probe/lower-probe-host.py` on the host beside it, and
 the pair reports all five in one run.
 
@@ -107,7 +107,7 @@ The rows:
   absent exchange is an apply that cannot be atomic by that route.
 - Symlinks: can the daemon create one on the lower, and does the host then resolve it as a symlink?
   Windows makes symlink creation privileged, so this may be a refusal to plan around rather than a
-  behaviour to test.
+  behavior to test.
 - Case folding between the layers: an upper name and a lower name differing only by case. Whether
   they collide decides how whiteouts and upper entries may be named.
 - The reach of an open-file hold: host write, rename and unlink against a path a session holds open,
@@ -118,7 +118,7 @@ APFS answers all five (`verification-log.md` has the run): the lower keeps hardl
 exchange is available on both sides, symlinks round-trip, two names differing only by case are one
 name, and a session-held descriptor blocks no host mutation. One answer was never the share's to
 give — a session cannot see a hardlink relationship at all, because the filter mints an inode per
-`(parent, name)` — and what that costs a stage is the root `doc/PLAN-STAGED.md`'s to settle.
+`(parent, name)` — and what that costs a stage is the root `doc/plan-staged.md`'s to settle.
 
 What is left:
 
@@ -157,14 +157,14 @@ What the suites cover and how to run them, the self-test image and the privilege
 The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
 the sandbox's own. `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
 `probe/perf-probe.py` builds its own corpus, so two runs are comparable
-across machines, and reports per-entry times for the operation shapes below. Run it once in a
+across machines, and reports per-entry times for the workloads below. Run it once in a
 filtered session and once with the guard off — the ratio between the columns is the answer, and
 the control isolates the filter's cost from the backing share.
 
 Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
 virtiofs, against the same corpus over a plain bind mount:
 
-| operation                       | raw bind | filtered | ratio | shape                            |
+| operation                       | raw bind | filtered | ratio | workload                         |
 | ------------------------------- | -------- | -------- | ----- | -------------------------------- |
 | `find` (readdir only)           | 65 µs    | 317 µs   | 4.9×  | batched per directory            |
 | `find -printf` (readdir + stat) | 147 µs   | 1052 µs  | 7.2×  | ≈ a lookup + getattr round trip  |
@@ -180,8 +180,8 @@ virtiofs layer itself"), so what the ratio prices is this layer alone: one FUSE 
 the daemon per path component, which TTL 0 makes unavoidable.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
-(tolerable); walk+stat ~1.8 min; `ls -lR`-shaped traffic ~13 min — the `sbt`/`metals` stat-storm
-shape, on this project's own stated target workload. The dominant term is per-syscall LOOKUPs: entry
+(tolerable); walk+stat ~1.8 min; `ls -lR`-shaped traffic ~13 min — the `sbt`/`metals` stat storm,
+this project's own stated target workload. The dominant term is per-syscall LOOKUPs: entry
 TTL 0 means every path component of every syscall is a fresh round trip, which no batching
 downstream can amortize.
 
@@ -199,7 +199,7 @@ A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms
 component adds ~0.6 ms, one more LOOKUP round trip (`verification-log.md`, "The cost of a path
 walk"). git stats every tracked file by its full path
 from the root and pays the depth; `find` and the other `fts` walkers hold directory fds and pay
-depth 1 — the two `lstat` rows are those two shapes, and the 2.2× between them is the whole
+depth 1 — the two `lstat` rows are those two workloads, and the 2.2× between them is the whole
 path-walk term. Claude Code runs `git status` at startup: in that project it answers `pwd` in 51 s
 from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the host.
 
@@ -223,7 +223,7 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
-  `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe
+  `doc/plan-staged.md`; restrict passthrough to live mode unless research first establishes a safe
   revoke and re-register protocol. Do not make staged mode inherit a live-only optimization by
   accident.
 - [ ] Push-invalidation: the knob below kept *correct* by the daemon watching the backing (inotify
@@ -317,7 +317,7 @@ The filter is the **default** enforcement on every platform, ahead of that verif
 
 ## Deferred research
 
-Timed to the increment that needs it, so the findings are fresh when they are used.
+Timed to the work that needs it, so the findings are fresh when they are used.
 
 - [ ] `fuse-backend-rs` (virtiofsd, Cloud Hypervisor) versus `fuser` — before investing in
   passthrough, since it is the more battle-tested passthrough implementation.

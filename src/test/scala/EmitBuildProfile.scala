@@ -1,12 +1,12 @@
 // The generated Seatbelt profile for the project this runs in, so a real build can be driven
 // under it by hand.
 //
-// Test scope on purpose: probe/build-profile-gate.sh and probe/build-profile-iterate.sh are its
+// Test scope on purpose: src/probe/build-profile-gate.sh and src/probe/build-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
 //   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
 //
-// The project defaults to the working directory; the gate's mill rows name probe/mill-fixture.
+// The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
 // The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's.
 
 package agentsandbox.launcher

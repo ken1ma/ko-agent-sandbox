@@ -119,7 +119,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
       "the teardown step must come after this run's own cleanup",
     )
-    // The shape is pinned here; what it does — no job under off, a pid held, a signal delivered, a
+    // The script text is pinned here; what it does — no job under off, a pid held, a signal delivered, a
     // tree ended — is the lifecycle tests below.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
     val broker = ReaperScript.indexOf(
@@ -144,13 +144,13 @@ class SandboxLifecycleTest extends munit.FunSuite:
       * own — a handle knows its process's start time, so one whose pid was since reused answers
       * dead and cannot be signalled into another process. */
     childrenAtWait: Vector[ProcessHandle],
-    /** Whether the blocking `exec` child — the shape of a hung clipboard tool — is still alive,
+    /** Whether the blocking `exec` child — the stand-in for a hung clipboard tool — is still alive,
       * by the handle captured for the pid it recorded before blocking. */
     hungChildAlive: Boolean,
   )
 
   /** This host's `ps`, which the lifecycle tests hand the reaper as the launcher would, probed for
-    * the exact shape the harness itself parses — `-A -o pid=,ppid=,stat=`, the launcher's shape
+    * the exact arguments the harness itself parses — `-A -o pid=,ppid=,stat=`, the launcher's own
     * plus `stat=` — so an incompatible one (BusyBox) skips the suite rather than failing it. */
   private def hostPs(): String =
     val found = HostCommands.findOnPath("ps", sys.env.getOrElse("PATH", ""), HostCommands.currentOs)
@@ -171,7 +171,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
    * sandbox "runs" for the first `runningAnswers` inspect calls and is stopped after; `wait`
    * returns after a second; `exec` either returns at once (the broker then loops, one inspect per
    * turn) or blocks for good (a hung child under the job). With `groupTerm`, `wait` first sends
-   * TERM to the reaper's whole process group — an explicit group signal, the shape a terminal's
+   * TERM to the reaper's whole process group — an explicit group signal, the form a terminal's
    * INT or HUP take — from a fake that ignores it itself; the reaper then runs under `setsid`, so
    * that group is its own and not this JVM's, and the caller assumes `setsid` is present (stock
    * macOS has none). Beyond /bin/sh and its `wc` and `sleep`, the host tool this executes is its
@@ -253,7 +253,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assertEquals(run.childrenAtWait, Vector.empty, "a job was running at the wait")
 
   test("the broker and everything under it end with the sandbox, through the reaper's ignored TERM"):
-    // Here an exec that never returns is the shape of xclip waiting on a selection owner.
+    // Here an exec that never returns stands in for xclip waiting on a selection owner.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("paste", runningAnswers = 99, hangExec = true)
     assert(run.inspects > 1, "the broker never ran")
@@ -286,9 +286,9 @@ class SandboxLifecycleTest extends munit.FunSuite:
       assert(!run.hungChildAlive, s"($answers, $hang): a child under the job outlived the reaper")
       run.childrenAtWait.foreach: child =>
         assert(!child.isAlive, s"($answers, $hang): ${child.pid} outlived the reaper")
-    assert(ReaperScript.contains(ClipboardBroker.SandboxRequestReader))
-    assert(ReaperScript.contains(ClipboardBroker.SandboxResponseWriter))
-    assert(ClipboardBroker.SandboxResponseWriter.startsWith("timeout "))
+    assert(ReaperScript.contains(ClipboardBroker.sandboxRequestReader()))
+    assert(ReaperScript.contains(ClipboardBroker.sandboxResponseWriter()))
+    assert(ClipboardBroker.sandboxResponseWriter().startsWith("timeout "))
     assert(ReaperScript.contains("else head -c \"$arg\" >/dev/null; fi"))
     // Comments may name podman; no executable line may invoke it bare.
     assert(

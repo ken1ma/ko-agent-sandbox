@@ -1,11 +1,12 @@
-// The build channel, end to end on one host: the real broker against the image's real shim, with
-// `podman exec` replaced by a script and the wrapper by scripts the tests choose — the transport
-// and the build stubbed, never the protocol. What it holds is the channel's contract: framing under
-// bounds, the working-directory boundary, streamed output carried whole with the build's own exit
-// code, and teardown by descriptor lifetime — a dead shim ends the running build, a handshake
-// whose requester died is stillborn with no build started, and a competing shim waits its turn
-// rather than attaching to a predecessor's streams. The macOS gate re-runs the protocol against
-// real sbt; these rows hold everywhere.
+// The command channel, end to end on one host: the real broker against the image's real shim,
+// with `podman exec` replaced by a script, the shim's FIFO directory rewritten, and the wrapper
+// by scripts the tests choose — the transport and the command stubbed, never the protocol. What
+// it holds is the channel's contract: framing under bounds, the working-directory boundary,
+// streamed output carried whole with the command's own exit code, and teardown by descriptor
+// lifetime — a dead shim ends the running command, a handshake whose requester died is stillborn
+// with no command started, and a competing shim waits its turn rather than attaching to a
+// predecessor's streams. The macOS gate re-runs the protocol against real sbt; these rows hold
+// everywhere.
 
 package agentsandbox.launcher
 
@@ -26,8 +27,30 @@ class RunOnHostChannelTest extends munit.FunSuite:
   private def onPath(tool: String): Boolean =
     sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
 
-  private val Shim = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
-  private val FifoDir = Paths.get(RunOnHostChannel.SandboxDir)
+  /** Never the production path, for the reason ClipboardBrokerTest's own gives: both sides are
+    * pointed here instead — the broker by its endpoint, the shim by the line rewritten below. */
+  private val FifoDir = Files.createTempDirectory("channel-fifos")
+
+  /** The image's shim with its directory line rewritten and nothing else. A spelling this no
+    * longer finds fails the suite rather than testing a script the image does not ship. Made on
+    * first use, so a platform whose tests all skip never sets POSIX permissions — not at cleanup
+    * either, which is why the copy is tracked rather than the value forced. */
+  private var shimCopy: Option[Path] = None
+  private def Shim: Path = shimCopy.getOrElse:
+    val source = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
+    val text = Files.readString(source)
+    val line = s"dir=${RunOnHostChannel.SandboxDir}"
+    require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
+    val copy = Files.createTempFile("sandbox-run-on-host", "")
+    Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
+    Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
+    shimCopy = Some(copy)
+    copy
+
+  override def afterAll(): Unit =
+    deleteRecursively(FifoDir)
+    shimCopy.foreach(Files.deleteIfExists)
+    ()
 
   // ---------------------------------------------------------------------------
   // Framing
@@ -115,7 +138,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       Files.walk(path).iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
 
   /**
-   * The broker served like production — same exec argument shape, `podman` a script running the
+   * The broker served like production — same exec argument pattern, `podman` a script running the
    * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
    * a request every host can make.
    */
@@ -137,7 +160,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
     )
     deleteRecursively(FifoDir)
     val running = AtomicBoolean(true)
-    val endpoint = Endpoint(Seq(host.resolve("podman").toString, "exec", "-i", "C"), () => running.get)
+    val endpoint =
+      Endpoint(Seq(host.resolve("podman").toString, "exec", "-i", "C"), () => running.get, FifoDir.toString)
     val log = StringBuilder()
     val broker = Thread(() =>
       serve(
@@ -174,7 +198,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val err = process.getErrorStream.readAllBytes()
     (process.waitFor(), String(out, UTF_8), String(err, UTF_8))
 
-  test("a build streams both channels back and returns its own exit code"):
+  test("a command streams both channels back and returns its own exit code"):
     channel((tool, cwd, args) =>
       Seq("sh", "-c", s"echo ran $tool ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
     ): (project, _, _) =>
@@ -182,6 +206,23 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(exit, 7)
       assertEquals(out, s"ran sbt test -v in $project\n")
       assertEquals(err, "complaint\n")
+
+  test("the banner the injected JAVA_TOOL_OPTIONS causes is dropped, and nothing else is"):
+    val banner = "Picked up JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/x"
+    channel((_, _, _) =>
+      Seq(
+        "sh", "-c",
+        s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up _JAVA_OPTIONS: -Dx=1' >&2; " +
+          s"echo '[warn] $banner' >&2; echo '$banner'",
+      ),
+    ): (project, _, _) =>
+      val (exit, out, err) = shimCall(project, "sbt")
+      assertEquals(exit, 0)
+      // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
+      // host environment's to explain, a line that merely quotes the banner is the build's, and
+      // stdout is not the stream the announcement lands on.
+      assertEquals(err, s"complaint\nPicked up _JAVA_OPTIONS: -Dx=1\n[warn] $banner\n")
+      assertEquals(out, s"$banner\n")
 
   test("a refused request answers on stderr with exit 2, and the channel keeps serving"):
     channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, _) =>
@@ -192,7 +233,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(again, 0)
       assertEquals(out, s"built in $project\n")
 
-  test("a dead shim ends the running build: teardown follows the descriptor"):
+  test("a dead shim ends the running command: teardown follows the descriptor"):
     channel((_, cwd, _) =>
       // The validated working directory arrives as an argument, so the markers spell it out; the
       // child's own cwd is the broker's and carries nothing.
@@ -211,13 +252,13 @@ class RunOnHostChannelTest extends munit.FunSuite:
       while !Files.exists(project.resolve("started")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("started")), "the build never started")
+      assert(Files.exists(project.resolve("started")), "the command never started")
       shim.destroyForcibly()
       waited = 0
       while !Files.exists(project.resolve("ended")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("ended")), "the shim died and the build kept running")
+      assert(Files.exists(project.resolve("ended")), "the shim died and the command kept running")
 
   test("a request the broker cannot frame is answered, not left hanging"):
     channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, _) =>
@@ -243,10 +284,10 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(logged.contains("9998"), logged)
       assert(logged.contains("9999"), logged)
 
-  test("a requester dead before speaking is stillborn: no build, and the channel keeps serving"):
+  test("a requester dead before speaking is stillborn: no command, and the channel keeps serving"):
     channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), deadline = 1500): (project, _, _) =>
       // A handshake whose ctl exists but is never opened — the shim died between its two steps —
-      // and one whose ctl never existed at all. Neither may start a build or wedge the broker.
+      // and one whose ctl never existed at all. Neither may start a command or wedge the broker.
       ProcessBuilder("sh", "-c", s"mkfifo -m 600 $FifoDir/ctl.4242; echo 4242 > $FifoDir/req")
         .start().waitFor()
       ProcessBuilder("sh", "-c", s"echo 4243 > $FifoDir/req").start().waitFor()
@@ -274,7 +315,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       while !Files.exists(project.resolve("started")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("started")), "the first build never started")
+      assert(Files.exists(project.resolve("started")), "the first command never started")
       val second = ProcessBuilder(Shim.toString, "sbt", "quick").directory(project.toFile).start()
       second.getOutputStream.close()
       Thread.sleep(500)
@@ -309,7 +350,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
         script,
         s"""#!/bin/sh
            |set -eu
-           |d=${RunOnHostChannel.SandboxDir}
+           |d=$FifoDir
            |id=$$$$
            |rm -f "$$d/ctl.$$id" "$$d/out.$$id" "$$d/err.$$id" "$$d/exit.$$id"
            |mkfifo -m 600 "$$d/ctl.$$id" "$$d/out.$$id" "$$d/err.$$id" "$$d/exit.$$id"

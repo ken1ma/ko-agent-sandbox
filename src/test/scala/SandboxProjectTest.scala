@@ -260,7 +260,7 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createSymbolicLink(git2.resolve("hooks"), target)
     assert(gitGuardVolumes(git2, emptyFixture.file, emptyFixture.dir).isLeft)
 
-  test("a refused symlink shape leaves no artifact through the link"):
+  test("a refused symlink form leaves no artifact through the link"):
     // bazelbuild/bazel#28515: setup must not write through a pre-seeded symlink, so the refusal comes before any
     // creation.
     val project = Files.createTempDirectory("git-guard-no-write")
@@ -303,7 +303,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The other tenants are admitted by name, and a symlink of one refused like egress.
+    // The other entries are admitted by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
     Files.createDirectory(dir.resolve("host-command"))
     assertEquals(policyDirError(dir), None)
@@ -324,7 +324,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val refused = policyDirError(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
-  test("agent/ holds one file, with the shapes egress/ refuses refused for the same reasons"):
+  test("agent/ holds one file, with the forms egress/ refuses refused for the same reasons"):
     val parent = Files.createTempDirectory("agent-shapes")
     assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
 

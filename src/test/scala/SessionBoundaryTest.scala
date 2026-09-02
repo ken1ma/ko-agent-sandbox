@@ -166,7 +166,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       .text.stripPrefix("subject=").trim
 
     // curl indents its certificate lines under the `*` marker, and by more than one space, so this
-    // keys on the field name rather than on the shape of the prefix.
+    // keys on the field name rather than on the format of the prefix.
     def issuer(host: String): String =
       curl("-v", "-o", "/dev/null", s"https://$host/").err.linesIterator
         .map(_.trim)

@@ -45,7 +45,7 @@ class EgressPolicyTest extends munit.FunSuite:
 
   /** Which CA signed the certificate a host presented, as the sandbox saw it. curl indents its
     * certificate lines under the `*` marker and by more than one space, so this keys on the field
-    * name rather than on the shape of the prefix. */
+    * name rather than on the format of the prefix. */
   private def issuer(session: Session, host: String): String =
     curl(session, "-v", "-o", "/dev/null", s"https://$host/").err.linesIterator
       .map(_.trim)

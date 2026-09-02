@@ -1,4 +1,5 @@
 #!/bin/sh
+#
 # The sandbox's apt-get: same verbs, different destination — packages unpack into $HOME with
 # dependencies resolved, because real `apt-get install` can never work on a read-only rootfs as
 # uid 65532, which is why this exists.

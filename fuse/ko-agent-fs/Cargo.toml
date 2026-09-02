@@ -6,7 +6,7 @@ description = "FUSE filter that keeps a sandbox from planting host-executable Gi
 license = "MIT OR Apache-2.0"
 publish = false
 
-# The policy core (src/policy.rs) imports nothing external — that is the audited heart. The
+# The policy core (src/policy.rs) imports nothing external — that is the audited core. The
 # dependencies below serve only the plumbing (src/fs.rs, src/main.rs): fuser for the FUSE protocol,
 # nix/libc for the fd-relative syscalls. fuser without its libfuse feature has no C linkage and
 # mounts unprivileged (`doc/architecture.md`, "Build and install").

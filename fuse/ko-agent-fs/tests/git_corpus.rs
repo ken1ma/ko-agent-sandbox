@@ -61,7 +61,7 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
         ".git/modules/sub/refs/heads/main",
         ".git/modules/sub/objects/ab/cd",
         ".git/modules/sub/logs/HEAD",
-        // A submodule in a subdirectory — the common shape, and a two-component name.
+        // A submodule in a subdirectory — the common layout, and a two-component name.
         ".git/modules/libs/foo/HEAD",
         ".git/modules/libs/foo/index",
         ".git/modules/libs/foo/objects/ab/cd",

@@ -1,11 +1,11 @@
 #!/bin/sh
-# Run one of this project's builds on the host, inside a sandbox of its own:
-# SECURITY.md "Run on host" has the channel and its limits. The channel exists only when the
-# session was launched with --run-on-host naming the tool; the launcher's broker makes `req`.
+#
+# Requests the host to run a command, inside a sandbox of its own.
+# This can be used only when the session was launched with --run-on-host listing this command.
 #
 # One transaction, serialized by the lock: hand the broker this pid, then send the request over
 # `ctl.$$` and hold it open — the request travels on the liveness descriptor, so the broker ends
-# the build the moment this process dies, Ctrl-C included, and no request is ever runnable
+# the command the moment this process dies, Ctrl-C included, and no request is ever runnable
 # without its liveness. The data FIFOs are this transaction's own, so no later invocation can
 # attach to another's streams. RunOnHostChannel.scala is the other side and documents the framing.
 set -eu
@@ -16,50 +16,59 @@ tool=$1
 shift
 case "$tool" in sbt|mill) ;; *) usage ;; esac
 
+# The launcher's broker creates "$dir/req".
 dir=/tmp/ko-agent-sandbox/host-command
 if [ -n "${KO_AGENT_SANDBOX_RUN_ON_HOST:-}" ]; then
   i=0
   while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
 fi
 [ -p "$dir/req" ] || {
-  echo "sandbox-run-on-host: this session has no host build channel; it exists only when the" \
-    "launcher runs with --run-on-host=$tool, on macOS" >&2
+  echo "sandbox-run-on-host: this session was not launched with --run-on-host=$tool," \
+    "or the broker has died unexpectedly" >&2
   exit 1
 }
 
-# One build at a time; a later invocation waits here until the running one finishes.
+# One command at a time; a later invocation waits here until the running one completes.
 exec 9> "$dir/lock"
 flock 9
 
-# This transaction's own FIFOs, fresh inodes under this pid — a killed predecessor's leftovers
+# Create FIFOs, fresh inodes under this pid — a killed predecessor's leftovers
 # with a reused pid are removed, never adopted. The trap is best effort; the broker copes with
 # litter a kill leaves.
-id=$$
-fifos="$dir/ctl.$id $dir/out.$id $dir/err.$id $dir/exit.$id"
+pid=$$
+fifos="$dir/ctl.$pid $dir/out.$pid $dir/err.$pid $dir/exit.$pid"
 trap 'rm -f $fifos' EXIT
 rm -f $fifos
 mkfifo -m 600 $fifos
 
-printf '%s\n' "$id" > "$dir/req"
+printf '%s\n' "$pid" > "$dir/req"
 
 # The broker opens ctl's reading side once it has the handshake; dying before this open leaves a
-# transaction the broker declares stillborn on its own deadline, with no build started.
-exec 8> "$dir/ctl.$id"
+# transaction the broker declares stillborn on its own deadline, with no command started.
+exec 8> "$dir/ctl.$pid"
 { printf '%s %s\n' "$tool" "$#"; printf '%s\0' "$PWD" "$@"; } >&8
 
 # 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell, and holding its ctl or
-# lock descriptor would stall the cancel, or the next build, until the broker ends them.
-cat "$dir/out.$id" 8>&- 9>&- &
-cat "$dir/err.$id" >&2 8>&- 9>&- &
+# lock descriptor would stall the cancel, or the next command, until the broker ends them.
+cat "$dir/out.$pid" 8>&- 9>&- &
+# The host injects the command's JVM settings through JAVA_TOOL_OPTIONS, because a JVM the command
+# forks inherits the environment and nothing else — its options come from the build definition,
+# and SBT_OPTS or JAVA_OPTS would reach only the JVMs the tool itself starts. Every JVM started
+# under it then prints what it picked up, with no flag in HotSpot to stop it: the relay is where
+# that line goes.
+# -a: one NUL byte on stderr would otherwise make grep call the stream binary and print none of it.
+# --line-buffered: grep block-buffers to a pipe, holding the command's stderr back by a bufferful.
+# A line still waits for its newline; nothing here is a tty, so the tools print none unterminated.
+grep -a --line-buffered -v '^Picked up JAVA_TOOL_OPTIONS: ' "$dir/err.$pid" >&2 8>&- 9>&- &
 wait
 # Bounded because in every live-broker flow the exit code follows the drained output within
-# milliseconds; only a broker that died mid-build leaves this FIFO unwritten, and hanging on it
+# milliseconds; only a broker that died mid-command leaves this FIFO unwritten, and hanging on it
 # would turn that death into a command that never returns.
 # `|| true`: a timed-out substitution would otherwise trip set -e before the diagnostic below.
-code=$(timeout 30 cat "$dir/exit.$id" 8>&- 9>&- || true)
+code=$(timeout 30 cat "$dir/exit.$pid" 8>&- 9>&- || true)
 [ -n "$code" ] || {
-  echo "sandbox-run-on-host: the host side stopped answering; the build may still be running —" \
-    "report this to the user" >&2
+  echo "sandbox-run-on-host: the host side stopped answering; the command may still be" \
+    "running — report this to the user" >&2
   exit 70
 }
 exit "$code"

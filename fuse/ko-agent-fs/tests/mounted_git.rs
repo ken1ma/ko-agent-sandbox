@@ -188,7 +188,7 @@ fn the_deliberately_blocked_commands_fail() {
 }
 
 /// A superproject whose submodule sits in a subdirectory — so git names it `libs/foo` and puts its
-/// gitdir two levels below `modules/`, which is the common shape and the one a depth rule misses.
+/// gitdir two levels below `modules/`, which is the common layout and the one a depth rule misses.
 /// The upstream lives beside the backing tree rather than inside it, so the mount serves only the
 /// superproject.
 fn super_with_nested_submodule(backing: &Path) {

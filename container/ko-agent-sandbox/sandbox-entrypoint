@@ -1,4 +1,5 @@
 #!/bin/sh
+#
 # The image's ENTRYPOINT. Seeds ~/persistent-volume one agent directory at a time, only where the
 # directory is absent: a fresh volume receives every seed, one created by an older image only the
 # directories it lacks, and a directory that exists is agent state, never touched. Podman's own

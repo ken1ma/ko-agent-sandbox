@@ -17,7 +17,7 @@ import HostCommands.*
 object EgressProxyPolicy:
 
   /**
-   * Comment-stripped, whitespace-collapsed policy text, one entry per line — the shape the
+   * Comment-stripped, whitespace-collapsed policy text, one entry per line — the format the
    * environment variables carry. Entries are multi-token lines (`+host x`), so line
    * structure is what separates them and must be preserved. What is in force is the proxy's to
    * say — a delta file's resolved policy is not this text.
@@ -109,7 +109,7 @@ object EgressProxyPolicy:
 
   /**
    * The policy directory's files as (name, normalized text), present files
-   * only. Refused shapes, each of which would otherwise be silently ignored
+   * only. Refused forms, each of which would otherwise be silently ignored
    * or misread config: egress as a regular file rather than a directory,
    * fatal so a policy written that way is never skipped unseen; a filename
    * that is no policy file (a typo'd name configures nothing); a symlinked
@@ -148,7 +148,7 @@ object EgressProxyPolicy:
             s"error: $entry is not a policy file\negress/ holds only " +
               s"${PolicyFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          // The one stray shape the name check cannot see: a policy file's own name on something
+          // The one stray form the name check cannot see: a policy file's own name on something
           // the read below skips, which would leave that file silently unread.
           case entry if !Files.isRegularFile(entry) =>
             s"error: $entry is not a regular file\negress/ holds a text file per policy; " +
@@ -241,14 +241,14 @@ object EgressProxyPolicy:
       case None =>
         Left(
           "error: the proxy image's --print-policy has no 'restricted hosts' line\n" +
-            "An image built by another launcher version prints another shape; rebuild with --build.",
+            "An image built by another launcher version prints another format; rebuild with --build.",
         )
       case Some(line) =>
         line.indexOf("):") match
           case -1 =>
             Left(
               s"error: unparseable policy line: $line\n" +
-                "An image built by another launcher version prints another shape; rebuild with --build.",
+                "An image built by another launcher version prints another format; rebuild with --build.",
             )
           case at =>
             Right(

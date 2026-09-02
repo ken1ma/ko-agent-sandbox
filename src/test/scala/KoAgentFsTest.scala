@@ -261,7 +261,7 @@ class KoAgentFsTest extends munit.FunSuite:
         |+ user_allow_other""".stripMargin
     )
 
-  test("the --version line parses to its source id, and to nothing on any other shape"):
+  test("the --version line parses to its source id, and to nothing on any other format"):
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0 source probe"), Some("probe"))
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 1.2.3 source " + "a" * 64), Some("a" * 64))
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0 source unstamped"), Some("unstamped"))
@@ -311,7 +311,7 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(context)
 
   test("the workspace guard fails closed on anything it does not recognize"):
-    // Exactly fuse and none, case-sensitive: every accepted spelling is surface that must stay
+    // Exactly fuse and none, case-sensitive: every accepted value is one more thing to keep
     // correct everywhere it is parsed.
     assertEquals(workspaceGuard(None), Right("fuse"))
     assertEquals(workspaceGuard(Some("")), Right("fuse"))

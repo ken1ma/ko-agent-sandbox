@@ -1,4 +1,5 @@
 #!/bin/sh
+#
 # Give one JVM what this session's network needs: the egress proxy's inspection CA, and the proxy
 # itself.
 #
@@ -43,7 +44,7 @@ ALIAS=ko-agent-sandbox-egress
 # The password every JDK ships cacerts under; not a secret, and the store holds only certificates.
 STOREPASS=changeit
 
-# Named JAVA_HOME because that is what it is — the home of the JDK being taught.
+# Named JAVA_HOME because that is what it is — the home of the JDK being prepared.
 JAVA_HOME="${1:-${JAVA_HOME:-}}"
 
 if [ $# -gt 1 ] || [ -z "$JAVA_HOME" ]; then

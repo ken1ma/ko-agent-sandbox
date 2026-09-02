@@ -1,7 +1,8 @@
 #!/bin/sh
+#
 # The host clipboard, through the launcher's broker: SECURITY.md "Clipboard" has the channel and its
 # limits. Installed under the names Claude Code and Copilot CLI shell out to on Linux (xclip, xsel,
-# wl-paste, wl-copy), answering only the argument shapes they use; anything else is a usage error.
+# wl-paste, wl-copy), answering only the argument patterns they use; anything else is a usage error.
 #
 # One transaction: take the lock, write a request line (plus body for `set`) to the request FIFO,
 # read the whole response FIFO. The broker's absence is a missing FIFO: an immediate failure in a

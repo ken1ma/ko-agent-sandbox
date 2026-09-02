@@ -106,7 +106,7 @@ class HostCommandsTest extends munit.FunSuite:
 
   test("an absolute PATH entry inside the project is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
-    // The absolute-entry-inside-the-project shape (HostCommands.findOnPath's doc, DESIGN.md "No
+    // The absolute-entry-inside-the-project case (HostCommands.findOnPath's doc, design.md "No
     // PATH-resolved host executables").
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
     val shipped = Files.createDirectories(project.resolve("node_modules/.bin"))
@@ -172,7 +172,7 @@ class HostCommandsTest extends munit.FunSuite:
     scripts.foreach: (name, script) =>
       assertEquals(script.linesIterator.next(), s"export PATH=$ScriptPath", name)
       // Syntax only, by the interpreter that runs it; what a valid script does is each script's
-      // own behavioural test.
+      // own behavioral test.
       if !isWindows then
         val parsed = ProcessBuilder("/bin/sh", "-n", "-c", script).redirectErrorStream(true).start()
         val output = String(parsed.getInputStream.readAllBytes())
@@ -187,7 +187,7 @@ class HostCommandsTest extends munit.FunSuite:
     val base = Files.createTempDirectory("future-path").toRealPath()
     // Exists already: plain canonicalization.
     assertEquals(canonicalizedFuturePath(base), Right(base))
-    // Does not exist yet: the missing tail rides on the canonicalized ancestor.
+    // Does not exist yet: the missing tail is appended to the canonicalized ancestor.
     assertEquals(canonicalizedFuturePath(base.resolve("a/b/c")), Right(base.resolve("a/b/c")))
     // A symlinked ancestor resolves, so a comparison against the answer sees the real location.
     val real = Files.createDirectories(base.resolve("real"))

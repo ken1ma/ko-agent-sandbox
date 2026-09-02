@@ -58,7 +58,7 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
 - **Why this is TOCTOU-safe, not a naive path join.** `RESOLVE_IN_ROOT` makes the kernel resolve the
   intermediate walk atomically with escape-proof containment — `..` is clamped to the backing root,
   no `backing_root.join(user_path)` string is ever handed to an ordinary syscall. It
-  is the sanctioned primitive for this (`security-research.md`, "FUSE correctness & openat2
+  is the primitive intended for this (`security-research.md`, "FUSE correctness & openat2
   semantics"). The remaining resolve flags, and the bounded `EAGAIN` retry a
   concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
 - **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
@@ -167,8 +167,8 @@ sessions at once, fail-closed for each of them.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no
-FUSE mount. The staged view is not implemented; the root `doc/PLAN-STAGED.md` defines its
-increment and the root `doc/TODO.md` keeps the deferred work. This topology is nevertheless
+FUSE mount. The staged view is not implemented; the root `doc/plan-staged.md` plans it
+and the root `doc/TODO.md` keeps the deferred work. This topology is nevertheless
 fixed before that work starts: per-session mounts would make a cheap restart expensive and give
 collaborating sessions incoherent locks and caches.
 
@@ -229,7 +229,7 @@ code: `KoAgentFs.koAgentFsSourceId`.
 tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear value is a refused
 launch, never a silently weaker boundary): each launch gates on the installed binary's identity
 and self-test, then mounts the project through a per-project daemon shared by its sessions and
-binds the mountpoint at `/workspace`. The lifecycle's shape and reasoning
+binds the mountpoint at `/workspace`. The lifecycle's design and reasoning
 live with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid

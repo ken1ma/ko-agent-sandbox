@@ -18,7 +18,7 @@ import org.bouncycastle.cert.jcajce.{
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 /**
- * Everything certificate-shaped in the launcher: PEM, X.509 parsing,
+ * All the launcher's certificate handling: PEM, X.509 parsing,
  * fingerprints, expiry checks, minting the per-project CA and leaf.
  * Deliberately the only file that imports org.bouncycastle: replacing the
  * dependency makes this file the whole blast radius.

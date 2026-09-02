@@ -228,7 +228,7 @@ def case_folding() -> None:
 
 
 def open_file_hold() -> None:
-    """How far a descriptor held here reaches the host's ability to write, rename and unlink that
+    """How far a descriptor held here limits the host's ability to write, rename and unlink that
     path — and whether releasing it restores what was refused. Apply write-back stands on this.
 
     Each attempt gets its own file, and the released phase gets a third set. A shared target would

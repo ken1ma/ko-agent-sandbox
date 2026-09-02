@@ -8,7 +8,7 @@ The AI agents in this sandbox, by default,
 1. reach no network except the launcher-owned baseline:
     1. the model providers of the agents
     1. a curated set of sites, limited to reads and named operations, such as `git clone`/`pull`,
-       shaped per project by `.ko-agent-sandbox/egress/`
+       modified per project by `.ko-agent-sandbox/egress/`
 
 How it is put together:
 
@@ -31,25 +31,26 @@ How it is put together:
     │        │                                       │                             │
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
-    │  ┌─ sandbox container ────┴──────┐     ┌─ egress proxy container ──────┐     │
-    │  │  runs claude/codex/agy/...    │     │  https only, stateless,       │     │
-    │  │  nonroot user, caps dropped,  │ (a) │  TLS-inspects except model    │ (b) │
-    │  │  read-only rootfs             ├────>│  providers                    ├─────┼─> Internet
-    │  └───────────────────────────────┘     └────┬──────────────────────────┘     │
+    │  ┏━ sandbox container ━━━━┷━━━━━━┓     ┌─ egress proxy container ──────┐     │
+    │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │     │
+    │  ┃  nonroot user, caps dropped,  ┃ (a) │  TLS-inspects except model    │ (b) │
+    │  ┃  read-only rootfs,            ┠────>│  providers                    ├─────┼─> Internet
+    │  ┃  ephemeral /tmp and $HOME     ┃     │                               │     │
+    │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └────┬──────────────────────────┘     │
     │  (a) internal network, no gateway           │                                │
     │  (b) only egress network                    │                                │
+    │                                             │                                │
     │                                           ┌─┴─ proxy log (audit) ─────┐      │
     │  the containers and networks are created  │  every allow and refusal; │      │
     │  per run, and when the sandbox exits      │  outlives the run         │      │
     │  they are all removed (not reused)        └───────────────────────────┘      │
     │                                                                              │
-    │                                                                              │
-    │  ┌─ macOS only: --run-on-host sandbox for heavy workloads ──────────────┐    │
+    │  ┌─ macOS: --run-on-host sandbox for heavy workloads ───────────────────┐    │
     │  │  sbt/mill relayed to the host under Seatbelt — SECURITY.md           │    │
     │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 
-1. The intended workflow:
+1. An intended workflow:
     1. `git clone`/`pull`/`fetch` on the host first — the launcher passes none of your host
        credentials in
     1. run the agent in the sandbox: it should feel like running claude/codex/agy on the host,
@@ -85,7 +86,8 @@ not.
 1. [podman](https://github.com/containers/podman) 6.1.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. Run `podman machine init` after a new installation
-    1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md): WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
+    1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
+       WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
         1. `wsl --version` should show the version.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
         1. AWS EC2: before `podman machine init`, shut down the instance then
@@ -99,13 +101,23 @@ Publication coordinates wait on the artifact's name, which is undecided; the jar
 checkout — [Development](#development).
 
 
-## Commands
+## Usage
+
+### Typical sequence
+
+    java -jar ko-agent-sandbox.jar --build  # once, and again after upgrading
+
+    java -jar ko-agent-sandbox.jar claude   # launch an agent
+
+1. On macOS, insert `--run-on-host=sbt,mill --auto-shutdown-foreign-sbt-on-host`
+   before `<command>` when the agent will run builds or tests
 
 ### Reference
 
     Run an AI agent inside the sandbox container.
 
     Usage, from a project directory (which becomes /workspace):
+
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
     <command> runs inside the sandbox: claude, codex, agy, copilot, bash, ...
@@ -118,48 +130,31 @@ checkout — [Development](#development).
                          reject mounts /workspace read-only; live (the
                          default) is the shared writable mount
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
-                         deny-unless-allowed (default) admits the
-                         launcher-owned baseline shaped by
-                         .ko-agent-sandbox/egress/; deny-unless-model
-                         admits only the launched agent's model provider
-                         (claude -> anthropic, codex -> openai, agy ->
-                         google, copilot -> github; anything else, bash
-                         included, admits no host); allow-unless-denied
-                         admits every public host on port 443, the
-                         restricted catalog staying inspected; deny-all
-                         admits none
+                         which hosts the session reaches; the default,
+                         deny-unless-allowed, admits the launcher-owned
+                         baseline modified by .ko-agent-sandbox/egress/.
+                         Each profile: README "Choosing an egress profile"
       --run-on-host=<tools>
-                         macOS only: sbt, mill, or sbt,mill. This buys
+                         macOS only: sbt / mill can be run on the host. This buys
                          nothing on Linux, and cannot be securely
                          implemented on Windows — SECURITY.md "Run on
-                         host" has why. Adds the
-                         sandbox-run-on-host command, which runs those
-                         build tools OUTSIDE the container — on this
-                         host, confined by a Seatbelt profile to the
-                         project (its git control state and
-                         .ko-agent-sandbox unreachable), per-project
-                         build caches (its own Coursier cache, never
-                         yours), and the build's own egress proxy.
-                         The point is memory even more than speed: podman
-                         machine memory a build touches is never returned
-                         to macOS, while a host build's is reclaimed when
-                         it exits. Each invocation starts and ends its
-                         own sbt server; no warm daemon spans builds. For
-                         sbt this is target/ coherence as well: a
-                         container build leaves target/ symlinks that
-                         dangle on the host and vice versa, each venue
-                         deleting the other's, while a host build leaves
-                         a tree your own sbt can read, and the wrapper
-                         sweeps stale foreign links itself. Host builds
+                         host" has why. Adds the sandbox-run-on-host
+                         command, which runs those build tools OUTSIDE
+                         the container — on this host, confined by a
+                         Seatbelt profile to the project (its git
+                         control state and .ko-agent-sandbox
+                         unreachable), per-project build caches, and
+                         the build's own egress proxy. Host builds
                          write the project even under --write=reject.
-                         SECURITY.md "Run on host" prices it
+                         SECURITY.md "Run on host" states its cost;
+                         doc/run-on-host.md has how it works
       --auto-shutdown-foreign-sbt-on-host
                          with --run-on-host naming sbt: when your own live
                          sbt server holds the project, a host build shuts
                          it down and proceeds — one transcript line names
                          the socket — instead of refusing until you run
-                         `sbt shutdown` there. Only the socket sbt derives
-                         for this project is ever spoken to. Your warm
+                         `sbt shutdown` there. The shutdown is sent only to
+                         the socket sbt derives for this project. Your warm
                          server dies with whatever clients it had; your
                          next sbt command starts a fresh one
       --env=<name>[=<value>]
@@ -175,18 +170,6 @@ checkout — [Development](#development).
       --build            build the sandbox container image, always pulling remote updates
       --update           update the agents: rebuild only the sandbox container
                          image, without cache
-      --self-test [<filter>]
-                         run the workspace filter's own suites, always pulling
-                         remote updates; builds the self-test image on top of the
-                         sandbox image, mounted cases included; <filter> selects
-                         one case or family. Without a filter, then runs the
-                         share rows: a scratch lower inside the current
-                         directory, mounted through the filter, a container
-                         reading the launcher's host writes back through the
-                         real share — removed on success, kept on failure.
-                         Removes self-test images it replaces; leaves no bind
-                         mount or volume behind and does not change podman
-                         machine configuration
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
@@ -218,6 +201,13 @@ checkout — [Development](#development).
                          read-only — a stopped podman machine is not
                          started
 
+      --self-test [<filter>]
+                         run the workspace filter's own suites, always
+                         pulling remote updates; <filter> selects one
+                         case or family. Removes the self-test images
+                         it replaces and leaves the machine otherwise
+                         untouched (fuse/ko-agent-fs/doc/testing.md)
+
       --help             this text
 
     Environment:
@@ -231,11 +221,8 @@ checkout — [Development](#development).
                                           less. The sandbox never swaps
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps /workspace shared live and
                                           writable while protecting Git control state and
-                                          .ko-agent-sandbox at any depth; "none" weakens this to
-                                          the workspace root's Git configuration, hooks, .git
-                                          entry and .ko-agent-sandbox; nested Git control state
-                                          and .ko-agent-sandbox directories remain writable
-                                          (SECURITY.md).
+                                          .ko-agent-sandbox at any depth; "none" weakens this
+                                          to mount pins at the workspace root (SECURITY.md).
                                           Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking
@@ -247,15 +234,14 @@ checkout — [Development](#development).
                                           starts, n or EOF at the prompt exits without starting;
                                           "immediate" starts the agent at once
       KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
-                                          lets the agent read an image you copied (Ctrl-V in
-                                          claude); "bidirectional" also lets it set your
-                                          clipboard (SECURITY.md). A Linux host needs xclip
-                                          or wl-clipboard
+                                          lets the agent read a copied image; "bidirectional"
+                                          also lets it set your clipboard (SECURITY.md). A
+                                          Linux host needs xclip or wl-clipboard
 
     Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
     "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and
     provider groups under every profile. .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces
-    the image's conventions in the agent instructions ("Overriding the agent instructions").
+    the image's conventions in the agent instructions (README "Overriding the agent instructions").
 
 
 ### `--build`
@@ -328,7 +314,7 @@ checkout — [Development](#development).
        `COPILOT_ALLOW_ALL=false`.
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume, and race on both.
-1. Calling another installed agent’s command or MCP server reuses that agent’s login and
+1. Calling another installed agent's command or MCP server reuses that agent's login and
    configuration. Treat the project directory as their shared trust domain.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
    in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
@@ -341,7 +327,7 @@ checkout — [Development](#development).
 
 Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. A host is
 either `unrestricted` — an opaque tunnel — or `restricted` — the default, which an `allowed`
-entry spells by saying nothing — TLS-inspected, GET and HEAD only, except for a named allowance
+entry selects by saying nothing — TLS-inspected, GET and HEAD only, except for a named allowance
 ("Modifying the egress policy" below; SECURITY.md, "Reading without being able to write", has
 what each opens).
 
@@ -351,7 +337,7 @@ unrestricted, except that `github`'s forge hosts stay restricted, with `allow=gi
 for the sign-in) plus a curated catalog of restricted documentation, package-registry and forge
 hosts.
 
-1. `deny-unless-allowed` (the default) — the baseline, shaped by the project's `allowed` delta.
+1. `deny-unless-allowed` (the default) — the baseline, modified by the project's `allowed` delta.
 1. `deny-unless-model` — only the launched agent's own provider group: `claude` selects
    `anthropic`, `codex` selects `openai`, `agy` selects `google`, `copilot` selects `github`.
    Only the basename of the directly launched command is classified; anything else — `bash`, a
@@ -386,8 +372,8 @@ one operation it opens; several go in one word, `allow=git-fetch,github-login-de
 provider entry adds or takes back the group's own contribution and no more: `github.com` is in
 the catalog (`allow=git-fetch`) and in the `github` group (`allow=github-login-device`), so
 `+model-provider github` merges the login allowance in and `-model-provider github` leaves the
-catalog's clonable host behind; to drop the host outright, deny the group. Widening has no
-delta spelling: re-adding a restricted baseline host as `unrestricted` is refused; a project
+catalog's clonable host behind; to drop the host outright, deny the group. Widening cannot be
+written as a delta: re-adding a restricted baseline host as `unrestricted` is refused; a project
 that needs it writes `-**` — which removes the whole baseline, wherever in the file it appears;
 the file's own additions stand — and states its complete replacement policy:
 

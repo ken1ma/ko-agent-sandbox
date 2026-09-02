@@ -17,9 +17,37 @@ class ClipboardBrokerTest extends munit.FunSuite:
   private def onPath(tool: String): Boolean =
     sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
 
-  private val Shim = Paths.get("container/ko-agent-sandbox/ko-agent-clipboard").toAbsolutePath
   private val Image = "PNG binary".getBytes(UTF_8)
-  private val FifoDir = Paths.get(ClipboardBroker.SandboxDir)
+
+  /**
+   * Never the production path. A suite is run inside a sandbox session as readily as outside one,
+   * and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that session's broker is reading:
+   * removing them wedges its reader on an unlinked inode, and nothing inside the container can
+   * make the channel again. Both sides are pointed here instead — the broker's shell functions by
+   * their argument, the shim by the one line rewritten below.
+   */
+  private val FifoDir = Files.createTempDirectory("clipboard-fifos")
+
+  /** The image's shim with its directory line rewritten and nothing else. A spelling this no
+    * longer finds fails the suite rather than testing a script the image does not ship. Made on
+    * first use, so a platform whose tests all skip never sets POSIX permissions — not at cleanup
+    * either, which is why the copy is tracked rather than the value forced. */
+  private var shimCopy: Option[Path] = None
+  private def Shim: Path = shimCopy.getOrElse:
+    val source = Paths.get("container/ko-agent-sandbox/ko-agent-clipboard").toAbsolutePath
+    val text = Files.readString(source)
+    val line = s"dir=${ClipboardBroker.SandboxDir}"
+    require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
+    val copy = Files.createTempFile("ko-agent-clipboard", "")
+    Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
+    Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
+    shimCopy = Some(copy)
+    copy
+
+  override def afterAll(): Unit =
+    deleteRecursively(FifoDir)
+    shimCopy.foreach(Files.deleteIfExists)
+    ()
 
   private def executable(path: Path, body: String): Unit =
     Files.writeString(path, body)
@@ -82,7 +110,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
       if wayland then s"'' $host/wl-paste $host/wl-copy" else s"$host/xclip '' ''"
     val broker = ProcessBuilder(
       "setsid", "sh", "-c",
-      s"${ClipboardBroker.HostShellFunctions}\nclipboard_broker $host/podman C $mode $hostTools",
+      s"${ClipboardBroker.hostShellFunctions(FifoDir.toString)}\n" +
+        s"clipboard_broker $host/podman C $mode $hostTools",
     )
     broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     val process = broker.start()
@@ -138,13 +167,13 @@ class ClipboardBrokerTest extends munit.FunSuite:
       Thread.sleep(300)
       assertEquals(Files.readString(host.resolve("copied.txt")), "via wl-copy")
 
-  test("without a broker the shim fails at once, and an unknown shape is a usage error"):
+  test("without a broker the shim fails at once, and an unknown argument pattern is a usage error"):
     assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
     val sandboxBin = Files.createTempDirectory("clipboard-none")
     Files.createSymbolicLink(sandboxBin.resolve("xclip"), Shim)
     deleteRecursively(FifoDir)
     assertEquals(sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")._1, 1)
-    // A broker present, an argument shape the shim does not speak: refused before any FIFO is touched.
+    // A broker present, an argument pattern the shim does not answer: refused before any FIFO is touched.
     Files.createDirectories(FifoDir)
     try
       ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor()

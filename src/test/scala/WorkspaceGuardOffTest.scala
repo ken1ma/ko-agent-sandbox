@@ -2,11 +2,11 @@
 // `.git` is a directory, the whole `.git` file in a linked worktree, an empty `.git` mount when no
 // repository exists, and `.ko-agent-sandbox`. Every default session runs the filter instead, so
 // nothing else here can reach this path — the in-session probe skips its git rows whenever the
-// filter is on, which is always. The tests cover a directory repository's pins and the other shapes
+// filter is on, which is always. The tests cover a directory repository's pins and the other layouts
 // gitGuardVolumes mounts — a pointer-file `.git` pinned whole, and the empty whole-directory pin a
 // repository-less project gets.
 //
-// The pins are nested read-only mounts inside a writable bind, the shape Docker Sandboxes #388
+// The pins are nested read-only mounts inside a writable bind, the layout Docker Sandboxes #388
 // reported losing under host-side mutation: the nested mount disappears and access falls through to
 // the writable parent. So the mutations below run from the host while the session holds the mount,
 // and each is followed by the question that is the boundary — can the sandbox write through the pin
@@ -192,10 +192,10 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
   test("a pointer-file .git is pinned whole, so its redirection cannot be re-aimed"):
     optIn()
 
-    // The second of gitGuardVolumes' shapes: a linked worktree's `.git` is a file naming the real
+    // The second of gitGuardVolumes' layouts: a linked worktree's `.git` is a file naming the real
     // gitdir, and rewriting it re-aims a repository's control state
     // (fuse/ko-agent-fs/doc/git-metadata.md, group 3). Fabricated rather than a real worktree:
-    // the guard reads only the shape, never the target.
+    // the guard reads only the layout, never the target.
     val project = scratchProject()
     val pointer = "gitdir: /elsewhere/real/.git"
     Files.writeString(project.resolve(".git"), pointer + "\n")
@@ -221,7 +221,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       )
 
       // An in-place host edit keeps the inode, so the pin holds; replacing the inode is the
-      // second test's measurement, and this shape shares it.
+      // second test's measurement, and this layout shares it.
       Files.writeString(project.resolve(".git"), "gitdir: /elsewhere/other/.git\n")
       assert(!writable(session, "/workspace/.git"), "after an in-place host edit the pin fell")
     finally
@@ -231,7 +231,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
   test("a project with no repository gets an empty read-only .git the host cannot seed mid-session"):
     optIn()
 
-    // The third shape: no `.git` at all, so the name is pinned over the launcher's own empty
+    // The third layout: no `.git` at all, so the name is pinned over the launcher's own empty
     // directory and a sandbox cannot fabricate a repository for host git to discover. The mount
     // target podman creates in the project is one of SECURITY.md's two enumerated writes
     // ("Silent changes to what you own"); what the session sees behind the name is the launcher's

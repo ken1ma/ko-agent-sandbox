@@ -1,5 +1,5 @@
 // What the generated profile says, asserted here rather than only on a Mac. The rules under test
-// are the ones probe/seatbelt-semantics.sh measured: a non-canonical path grants rather than
+// are the ones src/probe/seatbelt-semantics.sh measured: a non-canonical path grants rather than
 // denies, so it is refused; the guard denies come last, because SBPL is last-match-wins.
 
 package agentsandbox.launcher
@@ -48,8 +48,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("a path that is not canonical is refused, because such a rule would grant"):
     val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-build/abc/tmp")
-    // Not normalized rather than not-real: purity keeps realpath out of here, and `..` is the
-    // shape a test can express.
+    // Not normalized rather than not-real: purity keeps realpath out of here, and `..` is what
+    // a test can express.
     val dotted = Paths.get("/private/tmp/ko-agent-build/../abc")
     assert(render(inputs(tmp = dotted)).isLeft)
     // A merely different-but-canonical spelling still renders; resolving /tmp is the caller's job.

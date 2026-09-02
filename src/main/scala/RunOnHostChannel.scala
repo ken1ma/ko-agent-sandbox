@@ -1,7 +1,8 @@
-// The sandbox → host build channel: the FIFO protocol both sides speak, and the host-side broker
+// The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side broker
 // that serves it. The sandbox side is the image's sandbox-run-on-host
-// shim; the broker is a detached process of the launcher's own vehicle, spawned per session under
-// --run-on-host. SECURITY.md "Run on host" has what the channel grants and withholds.
+// shim; the broker is a detached process of the launcher's own vehicle — the jar or native
+// binary — spawned per session under --run-on-host. SECURITY.md "Run on host" has what the
+// channel grants and withholds.
 
 package agentsandbox.launcher
 
@@ -27,9 +28,9 @@ object RunOnHostChannel:
    *
    * The request travels on the liveness descriptor, so no request is ever runnable without its
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
-   * dead container all close the descriptor, and the running build is ended with SIGTERM, the
+   * dead container all close the descriptor, and the running command is ended with SIGTERM, the
    * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
-   * never completes, is declared stillborn on a deadline with no build started. The data FIFOs
+   * never completes, is declared stillborn on a deadline with no command started. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
    *
@@ -50,15 +51,15 @@ object RunOnHostChannel:
    */
   val RunOnHostVariable = "KO_AGENT_SANDBOX_RUN_ON_HOST"
 
-  val SandboxHandshakeReader: String =
-    s"trap \"\" INT HUP TERM; d=$SandboxDir; mkdir -p -m 700 $$d; " +
+  def handshakeReader(sandboxDir: String): String =
+    s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"[ -p $$d/req ] || mkfifo -m 600 $$d/req; cat $$d/req"
 
   /** A pid, and interpolated into the transaction's FIFO names, so nothing else is accepted. */
   private val TransactionId = "[0-9]{1,18}".r
 
   /** A request is small — a path and a command line — so a huge one is framing gone wrong, not a
-    * build to run; refused before memory is committed to it. The broker parses these bytes on
+    * command to run; refused before memory is committed to it. The broker parses these bytes on
     * the host, so every read is bounded: the handshake, the header, and the fields as a whole.
     * An over-bound frame is still drained (never stored) up to DrainBytes — comfortably past any
     * ARG_MAX — because the requester opens its response readers only after writing the whole
@@ -160,7 +161,13 @@ object RunOnHostChannel:
    * How the broker reaches the sandbox, as data so the gate and the tests can substitute a local
    * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
    */
-  final case class Endpoint(execPrefix: Seq[String], sandboxRunning: () => Boolean)
+  final case class Endpoint(
+    execPrefix: Seq[String],
+    sandboxRunning: () => Boolean,
+    /** Where the FIFOs live inside the sandbox: the shim's own constant, and a parameter only so
+      * a test can put both sides somewhere that is not a live session's channel. */
+    sandboxDir: String = SandboxDir,
+  )
 
   /** Everything one session's broker serves with: the launcher's canonical project root, the
     * tools `--run-on-host` named, and how a validated request becomes a wrapper command. */
@@ -216,7 +223,7 @@ object RunOnHostChannel:
    * nothing, the caller's cue to pace; garbage still dies with its reader.
    */
   private def cycle(endpoint: Endpoint, service: Service, log: String => Unit): Boolean =
-    val reader = sandboxShell(endpoint, SandboxHandshakeReader)
+    val reader = sandboxShell(endpoint, handshakeReader(endpoint.sandboxDir))
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()
@@ -240,11 +247,11 @@ object RunOnHostChannel:
       end(reader)
       reader.waitFor(10, TimeUnit.SECONDS)
 
-  /** The build a broker is currently running, for the shutdown hook: a TERM to the broker ends
-    * the build too, rather than silently leaving it to finish. */
-  @volatile private var currentBuild: Option[Process] = None
+  /** The command a broker is currently running, for the shutdown hook: a TERM to the broker ends
+    * the command too, rather than silently leaving it to finish. */
+  @volatile private var currentCommand: Option[Process] = None
 
-  def endCurrentBuild(): Unit = currentBuild.foreach(_.destroy())
+  def endCurrentCommand(): Unit = currentCommand.foreach(_.destroy())
 
   private def transact(
     endpoint: Endpoint,
@@ -254,13 +261,13 @@ object RunOnHostChannel:
   ): Unit =
     // The transaction's liveness and its request are one stream: the exec ends when the shim
     // does, or when the container dies — the same signal either way.
-    val ctl = sandboxShell(endpoint, s"cat $SandboxDir/ctl.$id")
+    val ctl = sandboxShell(endpoint, s"cat ${endpoint.sandboxDir}/ctl.$id")
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     ctl.getOutputStream.close()
 
     // The shim may have died between its handshake and opening ctl, leaving the open above with
-    // no writer ever: a request not complete by the deadline is stillborn, no build started.
+    // no writer ever: a request not complete by the deadline is stillborn, no command started.
     val requestArrived = AtomicBoolean(false)
     val stillborn = Thread(() =>
       try Thread.sleep(service.requestDeadlineMillis)
@@ -278,7 +285,7 @@ object RunOnHostChannel:
           // nothing will open.
           refuse(endpoint, id, s"CHANNEL_UNAVAILABLE: the request could not be read: $reason", log)
         case Right(None) =>
-          log(s"stillborn transaction $id: the requester never spoke")
+          log(s"stillborn transaction $id: the requester never sent a request")
         case Right(Some(request)) =>
           requestArrived.set(true)
           answer(endpoint, service, id, ctl, request, log)
@@ -288,7 +295,7 @@ object RunOnHostChannel:
       ctl.waitFor(10, TimeUnit.SECONDS)
 
   private def writer(endpoint: Endpoint, id: String, name: String): Process =
-    sandboxShell(endpoint, s"cat > $SandboxDir/$name.$id")
+    sandboxShell(endpoint, s"cat > ${endpoint.sandboxDir}/$name.$id")
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
@@ -308,7 +315,7 @@ object RunOnHostChannel:
       if !exitWriter.waitFor(10, TimeUnit.SECONDS) then end(exitWriter)
     catch case _: IOException => ()
 
-  /** No build ran: the message on stderr, exit 2, every wait bounded — a requester that died
+  /** No command ran: the message on stderr, exit 2, every wait bounded — a requester that died
     * mid-request cannot hold this open. */
   private def refuse(endpoint: Endpoint, id: String, message: String, log: String => Unit): Unit =
     log(s"refused: $message")
@@ -339,7 +346,7 @@ object RunOnHostChannel:
           val child = ProcessBuilder(command*)
             .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
             .start()
-          currentBuild = Some(child)
+          currentCommand = Some(child)
           val ended = AtomicBoolean(false)
           val requesterGone = AtomicBoolean(false)
           // The writers die only with their requester: a slow reader is the requester's own
@@ -348,7 +355,7 @@ object RunOnHostChannel:
           ctl.onExit.thenRun: () =>
             if !ended.get then
               requesterGone.set(true)
-              log("the requester is gone; ending the build")
+              log("the requester is gone; ending the command")
               child.destroy()
               end(outWriter)
               end(errWriter)
@@ -357,7 +364,7 @@ object RunOnHostChannel:
             pump(child.getErrorStream, errWriter.getOutputStream),
           )
           val exit = child.waitFor()
-          currentBuild = None
+          currentCommand = None
           pumps.foreach(_.join())
           if requesterGone.get then log(s"ended with $exit for a requester already gone")
           else
@@ -376,7 +383,7 @@ object RunOnHostChannel:
             writeAll(errWriter.getOutputStream, s"could not start the build wrapper: ${ex.getMessage}\n")
             writeExit(endpoint, id, 2)
         finally
-          currentBuild = None
+          currentCommand = None
           Seq(outWriter, errWriter).foreach: process =>
             if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
 
@@ -419,7 +426,7 @@ object RunOnHostChannel:
    * and the terminal's INT and HUP are ignored before the exec — sh's ignore is inherited, and a
    * JVM leaves an inherited SIG_IGN in place — so a Ctrl-C at the session's terminal cannot take
    * the broker before its sandbox. TERM stays live: a deliberate kill ends the broker, and its
-   * shutdown hook ends the running build with it.
+   * shutdown hook ends the running command with it.
    */
   def spawnBroker(
     podman: String,
@@ -472,7 +479,7 @@ object RunOnHostChannel:
             case ex: IOException =>
               log(s"project $projectArg: ${ex.getMessage}")
               sys.exit(1)
-        Runtime.getRuntime.addShutdownHook(Thread(() => endCurrentBuild()))
+        Runtime.getRuntime.addShutdownHook(Thread(() => endCurrentCommand()))
         val endpoint = Endpoint(
           execPrefix = Seq(podman, "exec", "-i", container),
           sandboxRunning = () =>

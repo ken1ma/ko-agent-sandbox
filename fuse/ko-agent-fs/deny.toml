@@ -1,4 +1,4 @@
-# The license gate, run in the build container before the binary is produced (`Containerfile`), so a
+# The licence gate, run in the build container before the binary is produced (`Containerfile`), so a
 # dependency arriving under an unexpected licence fails the build rather than shipping unnoticed.
 #
 # Only permissive licences, and only the ones the tree actually carries — cargo-deny warns on an

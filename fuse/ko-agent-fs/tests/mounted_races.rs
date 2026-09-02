@@ -69,7 +69,7 @@ fn a_concurrent_host_rename_never_yields_another_file() {
     stop.store(true, Ordering::Relaxed);
     churn.join().expect("the churn thread panicked");
 
-    // The daemon must still be serving after the storm, not wedged or dead.
+    // The daemon must still be serving after the churn, not wedged or dead.
     let _ = fs::rename(
         mount.backing_at("deep/moved"),
         mount.backing_at("deep/nested"),

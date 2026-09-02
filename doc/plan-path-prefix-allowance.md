@@ -11,7 +11,7 @@ whose path is outside it:
 ```
 
 Only narrowing: an entry without `path=` is unchanged, `path=` on an unrestricted host is
-refused, `denied` stays whole-host. The credential broker (`PLAN-CREDENTIAL-BROKER-PROXY.md`)
+refused, `denied` stays whole-host. The credential broker (`plan-credential-broker-proxy.md`)
 reuses the same matcher to bound where a brokered value may be spent — two rules, one comparison.
 
 ## Evidence and target
@@ -86,7 +86,7 @@ In `authorizeInspectedRequest`, before the method rule and after the `Host` head
 the entry carries prefixes, `requireLiteralPath(head.path)` (invariant 4) and then the scope
 whose prefix `head.path` starts with — at most one, by invariant 7; a miss is
 `PolicyViolation("path outside allowance")` with the advice "this host is admitted under
-`<prefixes>` only" — its row in `PLAN-PROXY-DENIAL-REASON.md`'s table. The method rule that
+`<prefixes>` only" — its row in `plan-proxy-denial-reason.md`'s table. The method rule that
 follows sees that scope's tags alone (invariant 7).
 
 `requireUnambiguousPath` refuses `%` and dot segments on `POST` only, because only the
@@ -117,7 +117,7 @@ The broker's binding takes the same matcher: `--env=NAME@HOST/PREFIX/` substitut
 the request is on `HOST` and its path is under `/PREFIX/`; the policy's own prefix, if any,
 applies first. The two are different facts — where requests may go, and where a credential may
 be spent — and stay different lines; the comparison and the canonical-form rule are one
-function. `PLAN-CREDENTIAL-BROKER-PROXY.md` gains the binding form and a pointer here for the
+function. `plan-credential-broker-proxy.md` gains the binding form and a pointer here for the
 rules; nothing in that plan waits on this one.
 
 ## Security model
@@ -154,7 +154,7 @@ SECURITY.md sites:
 ### Tests
 
 - Grammar: every launch refusal above, with its message; canonical-form table (each forbidden
-  shape once); an allowance path outside the prefix for each allowance; `/org/` beside
+  form once); an allowance path outside the prefix for each allowance; `/org/` beside
   `/org/private/`, and beside an unprefixed entry, each refused in both orders.
 - Enforcement, end-to-end against the local TLS origin: under-prefix `GET` allowed;
   sibling path refused; `/prefix/../other` refused; `/prefix/%2e%2e/other` refused;
@@ -172,7 +172,7 @@ SECURITY.md sites:
 - README "Modifying the egress policy": grammar and the one sentence.
 - SECURITY.md sites above.
 - `doc/egress-policy-examples/`: one example narrowing a project bucket.
-- `PLAN-PROXY-DENIAL-REASON.md` table: the row.
+- `plan-proxy-denial-reason.md` table: the row.
 
 ## Acceptance checklist
 
@@ -190,7 +190,7 @@ SECURITY.md sites:
 
 - Nested prefixes on one host with most-specific-wins or pooled allowances: a launch
   refusal is the only reading with no selection rule to get wrong.
-- Wildcards or globs inside a prefix, and suffix or regex matching: a prefix is the one shape
+- Wildcards or globs inside a prefix, and suffix or regex matching: a prefix is the one form
   whose worst case is over-blocking; a pattern reintroduces reach a reviewer did not enumerate.
 - Path rules on `denied`: denial is whole-host so that "denial wins" stays one rule.
 - Query-string rules: the query is the message channel and is not a destination.

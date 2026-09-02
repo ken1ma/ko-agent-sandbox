@@ -1,6 +1,6 @@
 // The gate's wrapper driver, EmitBuildProfile's sibling: the RunOnHostSandbox wrapper with the authority file
 // as an argument, where the durable front-end — the launcher's --run-build-on-host verb, behind
-// the channel — reads the bundled copy. probe/build-profile-gate.sh is its caller.
+// the channel — reads the bundled copy. src/probe/build-profile-gate.sh is its caller.
 //
 //   java -cp <the classpath EmitBuildProfile prints> \
 //     agentsandbox.launcher.RunOnHost <sbt|mill> <project> [authority-file] -- <args...>

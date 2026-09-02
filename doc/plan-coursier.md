@@ -1,9 +1,9 @@
 # Plan: optional Coursier cache overlay
 
-`--run-on-host` (`RUN-ON-HOST.md`) meets part of this plan's goal: an agent's sbt and `mill`
+`--run-on-host` (`run-on-host.md`) meets part of this plan's goal: an agent's sbt and `mill`
 builds run on the host against a per-project cache of their own, so they neither warm nor need the
-container's. What this plan still carries is the container's own Scala tooling — the venue for
-`scala-cli`, `scalafmt`, `cs install` and for sbt when the host channel is not in force — and the
+container's. What this plan still carries is the container's own Scala tooling — which runs
+`scala-cli`, `scalafmt`, `cs install`, and sbt when the host channel is not in force — and the
 image-home relocation that removes the copy-up cost.
 
 Both plans hold one property for the user's own Coursier cache — a sandboxed build never changes
@@ -172,7 +172,7 @@ Change `container/debian-coursier/Containerfile`, the canonical producer of the 
 2. Make the installed tree root-owned and non-writable by UID 65532.
 3. Perform setup with a temporary `HOME`, then delete that home and every Coursier download cache
    in the same `RUN` instruction. A later `RUN rm` leaves the bytes in an earlier image layer and
-   does not satisfy the invariant.
+   does not satisfy invariant 3.
 4. Set `PATH` in this order:
 
    ```text
@@ -278,7 +278,7 @@ against lower mutation. The accepted behavior is:
 - a host change may or may not become visible to an untouched sandbox path;
 - sandbox locks in the upper do not coordinate with host Coursier locks.
 
-`PLAN-STAGED.md` rejects kernel OverlayFS over a mutable lower because staged workspace contents
+`plan-staged.md` rejects kernel OverlayFS over a mutable lower because staged workspace contents
 must remain coherent and apply correctly. This cache overlay makes a narrower decision: its data
 is disposable and reconstructible, so a transient miss, failed command and retry are accepted.
 The workspace decision remains unchanged.

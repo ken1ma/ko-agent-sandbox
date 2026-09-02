@@ -34,7 +34,7 @@
 //    |                                       (~/.claude, ~/.codex, ~/.gemini,
 //    |                                        ~/.copilot are symlinks into it)
 //    |
-//    +-- --run-on-host (macOS only): sandbox-run-on-host relays a build
+//    +-- --run-on-host (macOS only): sandbox-run-on-host relays a command
 //    |      request to a host-side wrapper that runs sbt/mill under a
 //    |      Seatbelt profile — the project (git control state and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
@@ -518,7 +518,7 @@ object AgentSandboxLauncher:
    * after another project's id yields resources that extend this project's
    * prefix, and a --reset here would end that project's live sessions.
    * With the suffix anchored, a name matches exactly one project. Taking
-   * the builder keeps the name shape stated once, in the builders above.
+   * the builder keeps the name pattern stated once, in the builders above.
    */
   def isRunNamed(builder: (String, String) => String, projectId: String)(name: String): Boolean =
     val prefix = builder(projectId, "")
@@ -772,7 +772,7 @@ object AgentSandboxLauncher:
       ++ filter.toVector
 
   /**
-   * The exit code for a self-test that failed before its behavioural checks began, as against one
+   * The exit code for a self-test that failed before its behavioral checks began, as against one
    * of those checks failing. The filter's own `--self-test` decides which, being the only party
    * that knows the stage it reached, and run-suite passes the verdict up; its message says what it
    * can about the cause, which this launcher repeats and does not sharpen
@@ -886,9 +886,9 @@ object AgentSandboxLauncher:
   /**
    * The generated tail every launcher-made name carries: the folded directory slug, the
    * twelve-hex path hash (SandboxProject.projectIdOf), and — for per-run resources — the
-   * eight-hex run suffix. `--reset-all` matches whole names against these shapes rather than
+   * eight-hex run suffix. `--reset-all` matches whole names against these patterns rather than
    * bare prefixes: it force-removes what it matches, and a prefix alone would also take a
-   * user's own `ko-agent-sandbox-persistent-backup`. A shape is not provenance, so the shapes
+   * user's own `ko-agent-sandbox-persistent-backup`. A pattern is not provenance, so the patterns
    * are a reserved namespace, stated as such in SECURITY.md ("Silent changes to what you own"):
    * an object hand-named inside one is removed like the launcher's own, and the one
    * launcher-adopted name — the shared volume — is refused when it strays into it
@@ -899,7 +899,7 @@ object AgentSandboxLauncher:
 
   /**
    * Why `name` may not serve as the shared agent-state volume, or None. The generated volume
-   * shape is `--reset-all`'s to remove by name, so adopting a user-supplied name inside it
+   * pattern is `--reset-all`'s to remove by name, so adopting a user-supplied name inside it
    * would hand that sweep a volume it must not own — including another project's real volume,
    * spelled out to alias its sign-ins. Refused at launch, where the volume would be created and
    * used, rather than discovered at the reset that deletes it.
@@ -907,7 +907,7 @@ object AgentSandboxLauncher:
   def sharedVolumeNameError(name: String): Option[String] =
     Option.when(name.matches(s"ko-agent-sandbox-persistent-$ProjectIdShape"))(
       s"KO_AGENT_SANDBOX_PERSISTENT_VOLUME is '$name', which has the launcher's generated " +
-        "volume-name shape, and --reset-all removes every volume matching it\n\n" +
+        "volume-name pattern, and --reset-all removes every volume matching it\n\n" +
         "Choose a name outside ko-agent-sandbox-persistent-<slug>-<12 hex>.",
     )
 
@@ -925,7 +925,7 @@ object AgentSandboxLauncher:
 
   /**
    * Volumes named through KO_AGENT_SANDBOX_PERSISTENT_VOLUME are deliberately left alone — and
-   * cannot sit inside this shape, because such a value refuses the launch (sharedVolumeNameError).
+   * cannot sit inside this pattern, because such a value refuses the launch (sharedVolumeNameError).
    */
   def persistentVolumes(names: Seq[String]): Seq[String] =
     names.filter(_.matches(s"ko-agent-sandbox-persistent-$ProjectIdShape"))
@@ -966,7 +966,7 @@ object AgentSandboxLauncher:
         || isRunNamed(egressRunNetwork, projectId)(name)
 
   /**
-   * Creation is the whole story: the name carries a random run suffix, so
+   * Created fresh every run: the name carries a random run suffix, so
    * nothing can already carry it, nothing is ever reused, and no
    * pre-existing object's properties need vetting before the boundary rests
    * on them. A creation failure is a failed launch, stated with podman's
@@ -1043,7 +1043,7 @@ object AgentSandboxLauncher:
       writeImageCleanupJournal(journal, remaining)
 
     System.err.println(s"venue: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
-    // After the container suites, the share rows — the axis those suites cannot reach
+    // After the container suites, the share rows — what those suites cannot reach
     // (SelfTestShare). Skipped under a filter: it selects crate cases, and the one-case loop
     // stays fast.
     def finish(suiteExit: Int): Nothing =
@@ -1175,9 +1175,9 @@ object AgentSandboxLauncher:
     sys.exit(0)
 
   /**
-   * One host's policy decision and current resolution, through a one-shot proxy container on an
-   * egress-shaped per-run network (AgentEgressProxy.checkHost has why the two are reported apart
-   * and why the resolver must be enforcement's).
+   * One host's policy decision and current resolution, through a one-shot proxy container on a
+   * per-run network built like a session's egress network (AgentEgressProxy.checkHost has why the
+   * two are reported apart and why the resolver must be enforcement's).
    */
   def egressCheck(os: Os, profile: String, host: String, operands: List[String]): Nothing =
     val (projectId, proxyImage, policyFiles, provider) = egressPreflight(os, operands)
@@ -1580,7 +1580,7 @@ object AgentSandboxLauncher:
 
   /**
    * The independent authority options, selected on every launch and never persisted by a
-   * stage or an agent resume. The writable default is `live` (doc/PLAN-STAGED.md has the staged
+   * stage or an agent resume. The writable default is `live` (doc/plan-staged.md has the staged
    * mode and the default flip that follow it); no distributable build may make launches with no
    * `--write` option read-only before the staged workflow is usable.
    */
@@ -1822,8 +1822,8 @@ object AgentSandboxLauncher:
            |host build runs at host speed on memory reclaimed when it exits. Each invocation
            |starts and ends its own sbt server, so batch commands into one —
            |`sandbox-run-on-host sbt compile test`. Container `sbt` still works, over the same
-           |`target/` — the venues compile with different JVMs against different caches, so a
-           |venue switch can cost a rebuild or need cleanup first ("The
+           |`target/` — host and container builds compile with different JVMs against different
+           |caches, so switching between them can cost a rebuild or need cleanup first ("The
            |host's own symlinks"). A host build that fails or is refused is reported to the user,
            |never re-run in the container. The environment variable
            |`${RunOnHostChannel.RunOnHostVariable}` carries this tool list.
@@ -1835,8 +1835,8 @@ object AgentSandboxLauncher:
            |`sandbox-run-on-host` is absent from this session. If sbt or `mill` builds here are
            |slow, or the machine is short on memory, tell the user: relaunching with
            |`--run-on-host=sbt,mill` runs them on the host — memory reclaimed on exit rather than
-           |left with the podman machine, at host speed, and without the venue-switch symlink
-           |cleanup ("The host's own symlinks").
+           |left with the podman machine, at host speed, and without the symlink cleanup that
+           |switching between container and host builds needs ("The host's own symlinks").
            |""".stripMargin
       else ""
     s"""
@@ -1878,7 +1878,7 @@ object AgentSandboxLauncher:
     // surface, and nothing outside this codebase spells them. Each re-invokes the launcher's own
     // vehicle — jar or native image (RunOnHostSandbox.selfInvocation). --serve-proxy-on-host
     // hosts a build's egress proxy, configured by the EGRESS_* environment as in the container;
-    // --serve-run-on-host is the session's build broker (RunOnHostChannel), and
+    // --serve-run-on-host is the session's command broker (RunOnHostChannel), and
     // --run-build-on-host one channel request as the broker's own child.
     args.headOption match
       case Some("--serve-proxy-on-host") if args.length == 1 =>
@@ -2111,7 +2111,7 @@ object AgentSandboxLauncher:
     // launcher's own settings and wrong here, where set-but-empty is a value to forward.
     val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
 
-    // macOS only (RUN-ON-HOST.md "Why only macOS"): elsewhere there is no Seatbelt backend, and a
+    // macOS only (run-on-host.md "Why only macOS"): elsewhere there is no Seatbelt backend, and a
     // container build already runs at host speed on host memory.
     val runOnHost = parsed.runOnHost.getOrElse(Vector.empty)
     if runOnHost.nonEmpty && os != Os.Mac then
@@ -2256,7 +2256,7 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // The project's egress/ is read here on the host and handed to the proxy at startup.
-    // policyDirError and readPolicyFiles have the shapes, SECURITY.md the why. What keeps a
+    // policyDirError and readPolicyFiles have the forms, SECURITY.md the why. What keeps a
     // session from writing the next one's policy is the write mode itself: reject's read-only
     // tree, or live's FUSE reserved-name rule; only guard=none needs the read-only mount-back
     // (policyGuardArgs below).
@@ -2331,7 +2331,7 @@ object AgentSandboxLauncher:
     val inspectedHosts = inspectedHostsOf(policyResolvedText).fold(fail(_), identity)
 
     // The workspace FUSE filter, mounted before any volume is assembled (the lifecycle banner above
-    // ensureKoAgentFsMounted has the shape). Every live session's enforcement, on every platform;
+    // ensureKoAgentFsMounted has the layout). Every live session's enforcement, on every platform;
     // the .git pins below are what a guard=none session gets instead. The two are alternatives
     // rather than a stack: the filter's policy is a strict superset of the pins', and preparing a
     // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
@@ -2414,7 +2414,7 @@ object AgentSandboxLauncher:
       case (_, "none") => None
       case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
 
-    // gitGuardVolumes has the threat and the shapes. Reject mode needs no pin: the whole tree is
+    // gitGuardVolumes has the threat and the layouts. Reject mode needs no pin: the whole tree is
     // bound read-only, git control state included.
     val gitGuardArgs =
       if writeMode == "reject" || filteredWorkspace.isDefined then Vector.empty
@@ -2554,7 +2554,7 @@ object AgentSandboxLauncher:
         writeReadable(bundleStampFile, bundleStamp + "\n")
 
       // The JVM reads a `cacerts` keystore and no proxy variable, so the bundle above and the
-      // HTTPS_PROXY family cannot reach it; JdkTrust.scala is that whole story, and empty means
+      // HTTPS_PROXY family cannot reach it; JdkTrust.scala handles all of it, and empty means
       // the image ships no JDK.
       val jdkFileMounts = jdkMounts(
         podman, image, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
@@ -2657,7 +2657,7 @@ object AgentSandboxLauncher:
       Files.setPosixFilePermissions(logDir, PosixFilePermissions.fromString("rwx------"))
 
     // A log names its run in the same suffix its proxy container carries; the proxy is the log's
-    // only writer, so proxy liveness alone decides it, and an unreadable running set pruned
+    // only writer, so proxy liveness alone decides it, and an unreadable running set prunes
     // nothing.
     liveProxyRuns.foreach: live =>
       logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
@@ -2917,7 +2917,7 @@ object AgentSandboxLauncher:
       "--http-proxy=false",
     ) ++ nestedArgs ++ clipboardArgs ++ runOnHostArgs ++ egressArgs ++ Vector(
 
-      // The host's zone, for the JVM resolves it on every platform the launcher runs on. The image
+      // The host's zone, because the JVM resolves it on every platform the launcher runs on. The image
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
       // carries +0000 and the agent's "today" turns over at the wrong hour.
       s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
@@ -2979,7 +2979,7 @@ object AgentSandboxLauncher:
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
     clipboardHost.powershell.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
 
-    // The build broker, detached like the reaper: it must outlive the exec below, and it ends
+    // The command broker, detached like the reaper: it must outlive the exec below, and it ends
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
@@ -2988,8 +2988,8 @@ object AgentSandboxLauncher:
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
           autoShutdownForeignSbt = parsed.autoShutdownForeignSbt,
         )
-      then fail("error: could not spawn the build broker, which serves --run-on-host")
-      System.err.println(s"host build log: $channelLogFile")
+      then fail("error: could not spawn the command broker, which serves --run-on-host")
+      System.err.println(s"host command log: $channelLogFile")
 
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),

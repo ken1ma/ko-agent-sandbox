@@ -97,7 +97,7 @@ object RunOnHostSandbox:
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
    * applies (SandboxProject.policyDirError): the tools this wrapper serves, egress/ inside each,
    * allowed inside that — a stray name, a symlinked component, or a component of the wrong type
-   * refuses the build, never sits as ignored config. The type rule has teeth of its own: a file
+   * refuses the build, never sits as ignored config. The type rule prevents real failures: a file
    * where a directory belongs would read as absent configuration, and a FIFO where the file
    * belongs would block the read forever.
    */
@@ -136,7 +136,7 @@ object RunOnHostSandbox:
             s"${stray.mkString(", ")}: not configuration this launcher reads — " +
               "a typo, or a newer launcher's file; check the spelling or update the launcher"
 
-  /** The project file's hosts, validated to the allowlist grammar (RUN-ON-HOST.md
+  /** The project file's hosts, validated to the allowlist grammar (run-on-host.md
     * "Configuration"); an absent file contributes nothing. */
   def readAllowlist(project: Path, tool: Tool): Either[String, Vector[String]] =
     hostCommandStray(project).toLeft(()).flatMap: _ =>
@@ -154,7 +154,7 @@ object RunOnHostSandbox:
    * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
    * path that must also be executable. A runtime path is admitted only where testing proves the
    * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
-   * probe/build-profile-iterate.sh is how it grows.
+   * src/probe/build-profile-iterate.sh is how it grows.
    */
   def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
@@ -247,12 +247,11 @@ object RunOnHostSandbox:
 
   /**
    * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
-   * server reached through the project's
-   * portfile belongs to someone — the user's shell, another session — and a build that attached
-   * to it would run outside this profile. Live means connectable; a stale portfile is left for
-   * sbt, which replaces it. The socket here is wherever the portfile points, uncontained on
-   * purpose — the user's own server lives outside any session — and the probe only connects and
-   * closes, speaking nothing at what it reaches.
+   * server reached through the project's portfile belongs to someone — the user's shell, another
+   * session — and a build that attached to it would run outside this profile. Live means
+   * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
+   * the portfile points, uncontained on purpose — the user's own server lives outside any
+   * session — and the probe only connects and closes, writing nothing to what it reaches.
    */
   def livePortfileServer(project: Path): Option[Path] =
     val portfile = project.resolve("project").resolve("target").resolve("active.json")
@@ -313,7 +312,7 @@ object RunOnHostSandbox:
   private val MaxSymlinkHops = 40
 
   /**
-   * Whether a path the wrapper is about to speak at could have been planted by a build. The
+   * Whether a path the wrapper is about to send to could have been planted by a build. The
    * question is not where the path ends but whether resolving it ever *enters* somewhere a build
    * writes: from the first component inside, the build chooses what every later component means,
    * and a link there can send the rest anywhere — including straight back out, which is why the
@@ -327,7 +326,7 @@ object RunOnHostSandbox:
    * The roots are the profile's writable set (`SeatbeltProfile.render`): the project, and the
    * per-project caches that persist across sessions, so a socket an *earlier* agent's build
    * planted in a cache is caught as well. Each is compared in both of its macOS spellings, the
-   * firmlink invariant every containment check here shares
+   * firmlink aliasing every containment check here shares
    * (`SandboxProject.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
    * is skipped; the project is mandatory, so its silence, a relative target, and any unanswerable
    * walk all count as reachable. A target already lexically inside a root is reachable whatever
@@ -375,8 +374,8 @@ object RunOnHostSandbox:
 
   /**
    * The consented resolution: under the launch option, end the foreign server instead of
-   * refusing. The socket spoken to is derived from the project path the way sbt derives it,
-   * never read from the portfile, and the portfile's word is only compared against it: workspace
+   * refusing. The socket the shutdown is sent to is derived from the project path the way sbt
+   * derives it, never read from the portfile, and the portfile's word is only compared against it: workspace
    * content must not choose where an unconfined write-and-parse lands. The derivation is
    * authorization, so it is checked as well as computed — a derived socket the project could
    * have planted is refused, since the project chooses its own content and would then be
@@ -523,7 +522,7 @@ object RunOnHostSandbox:
     assembled.sbtGlobal.foreach: sbtGlobal =>
       val swept = cleanForeignTargetLinks(assembled.policy.project, Seq(assembled.policy.project, sbtGlobal))
       if swept.nonEmpty then
-        log(s"removed ${swept.size} target/ links into another venue's store (first: ${swept.head})")
+        log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
     for
       _ <- startProxy(session, fileHosts)
       port <- awaitProxyPort(session.directory.resolve("proxy.log"), deadlineMillis = 30_000)
@@ -585,6 +584,11 @@ object RunOnHostSandbox:
     val environment = builder.environment
     environment.put("PATH",
       s"${policy.jdkHome.resolve("bin")}:${Option(System.getenv("PATH")).getOrElse("/usr/bin:/bin")}")
+    // The settings must reach the JVMs the build forks — a forked test or `run` — and such a JVM
+    // inherits the environment and nothing else: its options come from the build definition, so
+    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill launcher do read, would confine
+    // the launcher's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
+    // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
     environment.put("JAVA_TOOL_OPTIONS", (Seq(
       s"-Djava.io.tmpdir=${session.tmp}",
       s"-Djava.util.prefs.userRoot=${session.tmp}",
@@ -593,7 +597,7 @@ object RunOnHostSandbox:
       "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
       // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
       // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover: the connect to
-      // the proxy dies with EPERM (measured, probe/jvm-proxy-rule.sh).
+      // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
       "-Djava.net.preferIPv4Stack=true",
     )).mkString(" "))
     environment.put("XDG_RUNTIME_DIR", session.tmp.toString)
@@ -606,13 +610,13 @@ object RunOnHostSandbox:
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
 
   /**
-   * The venue-switch cost, automated at the confined venue's door. sbt 2 leaves `target/` outputs as
+   * The cost of switching where a build runs, paid before each confined build. sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
    * symlink under a `target/` directory that does not resolve inside a granted root — the
    * dangling included — is removed before the build; the artifacts it named still exist in the
-   * store of the venue that made it, which relinks on its own next run.
+   * store of the sbt that made them, which relinks on its own next run.
    */
   def cleanForeignTargetLinks(project: Path, granted: Seq[Path]): Vector[Path] =
     val removed = Vector.newBuilder[Path]

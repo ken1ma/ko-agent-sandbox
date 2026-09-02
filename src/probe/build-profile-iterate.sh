@@ -1,5 +1,5 @@
 #!/bin/sh
-# Discover the profile's runtime authority (RUN-ON-HOST.md "The Seatbelt profile") the only way
+# Discover the profile's runtime authority (run-on-host.md "The Seatbelt profile") the only way
 # it admits — by running a real build and reading what it actually needs, never by listing what
 # the host happens to have. Run it when a build stops under the profile and nothing names the
 # missing grant.
@@ -13,13 +13,13 @@
 # works, so they start from a set that runs and remove cumulatively, keeping only grants whose
 # absence breaks it.
 #
-#   sh probe/build-profile-iterate.sh floor          # which layer fails? run this first
-#   sh probe/build-profile-iterate.sh ops "<command>"    # which operations does it need?
-#   sh probe/build-profile-iterate.sh paths          # what does /bin/sh need?
-#   sh probe/build-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
-#   sh probe/build-profile-iterate.sh narrow         # drop every grant that is not needed
+#   sh src/probe/build-profile-iterate.sh floor          # which layer fails? run this first
+#   sh src/probe/build-profile-iterate.sh ops "<command>"    # which operations does it need?
+#   sh src/probe/build-profile-iterate.sh paths          # what does /bin/sh need?
+#   sh src/probe/build-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
+#   sh src/probe/build-profile-iterate.sh narrow         # drop every grant that is not needed
 #
-# Whether the current grant set builds is probe/build-profile-gate.sh's question, not this one's.
+# Whether the current grant set builds is src/probe/build-profile-gate.sh's question, not this one's.
 #
 # Runtime authority accumulates in src/main/resources/agentsandbox/runtime-authority.txt, which you edit by hand: a line
 # added because a build failed once is a grant that outlives every later build, so each belongs
@@ -32,7 +32,8 @@ command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-build-profile
 authority=src/main/resources/agentsandbox/runtime-authority.txt
 mkdir -p "$work"
-[ -f "$authority" ] || printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
+[ -f "$authority" ] ||
+    printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
 
 emit() {
     rm -f "$work/build.env"
@@ -53,10 +54,11 @@ emit() {
 # the two socket directories keep sbt inside the session temp.
 build() {
     . "$work/build.env"
+    tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"
     PATH="$JAVA_HOME/bin:$PATH" \
     COURSIER_CACHE=$(sed -n 's/^agent cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
-    JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP -Dsbt.global.base=$SESSION_TMP/sbt-global" \
+    JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global" \
     /usr/bin/sandbox-exec -f "$work/build.sb" \
         sbt --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
 }
@@ -105,9 +107,9 @@ ops)
               signal network* system-socket iokit-open pseudo-tty file-ioctl"
     keep=$(printf '%s' "$families" | tr -s ' \n' ' ')
 
-    # A family under test must be genuinely absent when dropped. An earlier version appended
-    # (allow file-read* file-map-executable process-exec* (subpath "/")) unconditionally, which
-    # re-granted three of the families being measured and made their removal untestable.
+    # A family under test must be genuinely absent when dropped: an unconditional
+    # (allow file-read* file-map-executable process-exec* (subpath "/")) would re-grant three of
+    # the families being measured and make their removal untestable.
     # Path-filtered families take (subpath "/"); the rest take no filter, which is a syntax error
     # for them.
     try_ops() {
@@ -157,8 +159,8 @@ ops)
     echo
     dump_profile "$work/ops.sb"
     echo "the operations it needs: $keep"
-    printf '%s\n' "$keep" > probe/runtime-operations.txt
-    echo "written to probe/runtime-operations.txt, which 'paths' uses as its base"
+    printf '%s\n' "$keep" > src/probe/runtime-operations.txt
+    echo "written to src/probe/runtime-operations.txt, which 'paths' uses as its base"
     ;;
 paths)
     # The minimal set of trees /bin/sh needs, by cumulative removal.
@@ -170,8 +172,8 @@ paths)
     base='(deny default)'
     # The families `ops` measured, so a path search is not defeated by a missing operation. Without
     # this the JDK reports "not a path" when the truth is "not only a path".
-    if [ -f probe/runtime-operations.txt ]; then
-        ops=$(cat probe/runtime-operations.txt)
+    if [ -f src/probe/runtime-operations.txt ]; then
+        ops=$(cat src/probe/runtime-operations.txt)
     else
         ops='file-read* process-exec*'
     fi
@@ -323,7 +325,7 @@ floor)
     rung "the JDK"                                       "$JAVA_HOME/bin/java" -version
     rung "the sbt wrapper, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every rung passed; the gate is next: sh probe/build-profile-gate.sh quick"
+    echo "every rung passed; the gate is next: sh src/probe/build-profile-gate.sh quick"
     ;;
 narrow)
     emit "$authority" || exit 1

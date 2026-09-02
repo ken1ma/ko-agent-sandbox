@@ -1,7 +1,7 @@
 // The host build's session lifecycle. A session is one wrapper
 // command; its directory is published by rename so it is never seen half-made, its lock states the
 // wrapper's liveness, and its records own the children's. Everything here is choreography over an
-// injected filesystem-and-processes surface, so the kill interleavings are unit tests rather than
+// injected filesystem-and-processes interface, so the kill interleavings are unit tests rather than
 // something only a Mac under kill -9 can check.
 //
 // The invariant the records carry: no process may outlive its record. A spawn's shim becomes its
@@ -62,7 +62,7 @@ object RunOnHostSession:
     /** Alive but not answering: its condemned directory is kept, and the next start retries. */
     case ServerUnanswered(socket: Path, reason: String)
 
-  /** What speaking shutdown at a socket established (SbtServerShutdown is the real speaker). */
+  /** What a shutdown sent to a socket established (SbtServerShutdown is the real sender). */
   enum ServerAnswer:
     case ShutDown
     /** The connect itself failed: nothing lives behind the socket, so nothing is left to end. */
@@ -159,7 +159,7 @@ object RunOnHostSession:
    * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
    * TERM). The session's own lock is held through the collection — the exclusivity every other
    * collector respects (scavenge) — and released only after. A failed rename falls back to ending
-   * the recorded groups and removing in place, with no socket spoken at.
+   * the recorded groups and removing in place, with no shutdown sent to any socket.
    */
   def endSession(root: Path, session: Session, processes: Processes,
     shutdown: Path => ServerAnswer): Vector[Collected] =
@@ -262,7 +262,7 @@ object RunOnHostSession:
    * The portfile attribution: the session's recorded project names
    * `project/target/active.json`; a `local://` socket under the session's *original* path is our
    * server and no other. The socket moved with the condemnation rename, so the portfile's
-   * spelling is remapped before the shutdown is spoken at it — and spoken only at a pathname
+   * spelling is remapped before the shutdown is sent to it — and sent only to a pathname
    * proven inside the condemned directory: the portfile is the build's to write, so its spelling
    * is a claim, and canonicalization is the proof.
    */
@@ -295,7 +295,7 @@ object RunOnHostSession:
   /**
    * The socket at its canonical pathname, or None when that leaves `container`: `..` in a
    * portfile's spelling and a symlink beneath the session both point outside, and the unconfined
-   * wrapper must never speak shutdown past the session's own boundary.
+   * wrapper must never send a shutdown past the session's own boundary.
    */
   def containedSocket(socket: Path, container: Path): Option[Path] =
     try
@@ -303,7 +303,7 @@ object RunOnHostSession:
       Option.when(real.startsWith(container.toRealPath()))(real)
     catch case _: IOException => None
 
-  /** The portfile's `{"uri":"local://<path>"}`; anything else — TCP mode, or a shape a newer sbt
+  /** The portfile's `{"uri":"local://<path>"}`; anything else — TCP mode, or a format a newer sbt
     * writes — is nobody's to shut down here. */
   def portfileSocket(json: String): Option[Path] =
     val Uri = raw""".*"uri"\s*:\s*"local://([^"]+)".*""".r
@@ -420,7 +420,7 @@ object RunOnHostSession:
     /** Another collector — a concurrent start, or the wrapper ending its own session — holds it. */
     case Held
     /** No lock file: deleteSessionTree unlinks the lock last, so this is a dead collector's
-      * leftover husk — removed without signalling, since only the lock chain proves ownership. */
+      * leftover — removed without signalling, since only the lock chain proves ownership. */
     case Residue
 
   /** The entry's lock taken for the whole collection. Never created when missing: a fresh inode
@@ -471,7 +471,8 @@ object RunOnHostSession:
     * no collector can create and take a fresh inode there while the held one still guards a
     * half-deleted tree; a missing lock therefore always means this deletion's residue
     * (Claim.Residue). A child that would not delete — an unreadable subtree, say — keeps the
-    * entry locked and collectable instead of turning it into a lockless non-husk. */
+    * entry locked and collectable instead of leaving a lockless directory that still holds
+    * records. */
   private def deleteSessionTree(entry: Path): Unit =
     listDirectory(entry).filterNot(_.getFileName.toString == LockFile).foreach(deleteTree)
     if listDirectory(entry).forall(_.getFileName.toString == LockFile) then deleteTree(entry)

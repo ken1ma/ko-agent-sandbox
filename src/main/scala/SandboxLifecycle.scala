@@ -150,7 +150,7 @@ object SandboxLifecycle:
    * (documented at the step that reads them), $8 the clipboard mode, $9
    * to ${11} its host tools, ${12} the ps its cleanup walks the tree with.
    *
-   * The trap is load-bearing: the reaper shares the launcher's process
+   * The trap is necessary: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
    *
    * The clipboard broker is a job of this script rather than a process of
@@ -166,7 +166,7 @@ object SandboxLifecycle:
     withScriptPath(
       "trap '' INT HUP TERM\n\n" +
       """# A process and its descendants, through the ps the launcher proved answers this exact
-      |# command shape (ClipboardBroker.probedPs): one answering nothing would leave every job
+      |# command arguments (ClipboardBroker.probedPs): one answering nothing would leave every job
       |# childless here and the cleanup ending the job alone, silently. ${12} is read at top
       |# level; inside a function the positionals are the function's. STOP and KILL, the two
       |# signals no disposition can refuse — the tree inherits this shell's ignores. A stopped
@@ -179,7 +179,7 @@ object SandboxLifecycle:
       |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
       |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
       |
-      |""".stripMargin + ClipboardBroker.HostShellFunctions +
+      |""".stripMargin + ClipboardBroker.hostShellFunctions() +
       """# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten

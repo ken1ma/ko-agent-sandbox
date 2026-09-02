@@ -4,7 +4,7 @@ Two suites, split by whether a test has to mount, and three venues to run them i
 builds for the musl triple — one triple everywhere, because that is the one that ships and the
 difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename` is
 invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the
-artifact's real shape rather than a differently-linked build of it.
+artifact as it ships rather than a differently-linked build of it.
 
 The image build runs neither suite: it gates on `cargo deny` and builds, so a user's `--build`
 compiles the dependency tree once, in the release profile (`Containerfile` has why).
@@ -36,10 +36,10 @@ this is the venue where *both* halves run, on macOS and Windows as readily as on
 
 Without a case filter, the launcher then runs its share rows (`SelfTestShare.scala`): a scratch
 lower inside the current directory, mounted through the installed filter, with a container reading
-the launcher's host writes back through the real share — the host-writer/session-reader axis the
-container suites cannot reach, because their backing tree is the container's own storage
-(`doc/TODO.md`, "End-to-end coherency through the real host share"). The scratch is removed on
-success and kept on failure.
+the launcher's host writes back through the real share — the host-writer/session-reader
+direction the container suites cannot reach, because their backing tree is the container's own
+storage (`doc/TODO.md`, "End-to-end coherency through the real host share"). The scratch is
+removed on success and kept on failure.
 
 This is the venue for proving the filter on a machine. The rig below is the loop for changing it.
 
@@ -66,7 +66,7 @@ where a reader changing one is standing. What is worth knowing before reading it
   compiler that ships, and a second copy of the version is a rig that quietly stops doing so; a
   test holds the script to deriving it (`KoAgentFsTest`).
 - **`GLIBC=1` answers one question** — whether a failure is libc-specific — and is not a faster
-  alternative: the two compile within a few percent of each other, and all musl costs on top is one
+  alternative: the two compile within a few percent of each other, and all that musl adds is one
   `rust-std` download per container.
 - **The target directory is a named volume, outside the source mount.** `tests/binary.rs` resolves
   the binary relative to the running test executable rather than through `CARGO_BIN_EXE_`, precisely

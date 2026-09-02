@@ -10,7 +10,7 @@ import scala.annotation.tailrec
 import IPAddrHelper.normalizeHost
 
 /**
- * The HTTP surface. Everything here refuses ambiguity rather than resolving
+ * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving
  * it — folded headers, Content-Length beside Transfer-Encoding, conflicting
  * Content-Lengths, bare CR or LF — because a proxy and an origin reading
  * the same bytes differently is what request smuggling exploits. (The
@@ -604,7 +604,7 @@ object HTTPHelper:
 
     loop(false)
 
-  /** The refusal curl and git surface: a reason inside the tunnel beats a
+  /** The refusal as curl and git see it: a reason inside the tunnel beats a
     * dropped connection. */
   def respondInsideTls(
     socket: SSLSocket,

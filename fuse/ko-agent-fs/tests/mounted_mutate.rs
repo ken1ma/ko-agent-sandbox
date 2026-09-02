@@ -532,7 +532,7 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
     // classification, because the classification is a function of that stale chain. Nothing races:
     // three ordinary operations, in order.
     //
-    // The handle is on `src/hooks` rather than on `src` itself, and that is load-bearing. Planting
+    // The handle is on `src/hooks` rather than on `src` itself, and that choice matters. Planting
     // the symlink re-reports the *vacated* name's inode number with a new file type, which the
     // kernel answers by invalidating that inode — so a handle on `src` would be stopped by the
     // kernel rather than by this filter, and would prove nothing about either. A handle one level

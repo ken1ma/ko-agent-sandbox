@@ -2,7 +2,7 @@
 
 `--run-on-host=<tools>` (macOS only, off by default) relays this project's sbt and `mill` builds to
 the host, where each runs under a Seatbelt profile of its own. This document is the reference for
-how the venue works and what it requires; each piece's enforcement lives with its code:
+how host builds work and what they require; each piece's enforcement lives with its code:
 
 | concern | binding site |
 | --- | --- |
@@ -13,20 +13,26 @@ how the venue works and what it requires; each piece's enforcement lives with it
 | prerequisite validation and path policy | `RunOnHostPolicy.scala` |
 | the wrapper: proxy, environment, diagnostics | `RunOnHostSandbox.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
-| the exit criteria, measured | `probe/build-profile-gate.sh` |
+| the exit criteria, measured | `src/probe/build-profile-gate.sh` |
 
-The measurement behind the venue: an `sbt test` of this project takes about 2 GB inside the podman
+The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on
 it — and whose footprint, once grown to hold a build, macOS never gets back. On the host the same
 build runs on memory reclaimed when it exits, at host speed.
 
+A host build's recurring cost is startup: sbt's server lives for one `sandbox-run-on-host` command
+and `mill` runs `--no-daemon` — no warm daemon spans invocations (`SECURITY.md` "One sbt server
+per project" has the security argument) — so every invocation pays JVM start and build load,
+while the on-disk state stays warm: the caches, and the incremental-compile outputs under
+`target/`. This is why the agent instructions say to batch commands into one invocation.
+
 Out of scope, deliberately: arbitrary build tools (`scala-cli`, `scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
 direct Internet access from the build; any automatic expansion of permissions when a build fails,
-and any fallback to another venue; implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH
+and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH
 credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell` and `sbtn`'s
 interactive modes; mounting the container's workspace at its host path (`TODO.md`, "same-path
-mounting"). The container keeps its Scala toolchain: the host venue is the fast path, not a
+mounting"). The container keeps its Scala toolchain: host builds are the fast path, not a
 replacement, and a session without `--run-on-host` builds in the container as before.
 
 ## Why only macOS
@@ -40,7 +46,7 @@ namespace outright, making proxy bypass impossible rather than merely denied. Bu
 established once at start, so covering `.git` at any depth means binding over each one found then —
 and a `.git` created during the build has no mount over it. Landlock is no better: its ruleset is
 fixed at creation. With no payoff to buy — a container build already runs at host speed on host
-memory, reclaimed on exit — the venue would also cost Linux the one thing the container has that a
+memory, reclaimed on exit — the feature would also cost Linux the one thing the container has that a
 host build does not: the cgroup ceiling that kills a runaway build inside the sandbox instead of
 taking the machine down.
 
@@ -49,14 +55,14 @@ SID, inheritable ACEs on the granted roots, private profile storage, network con
 capability plus a WFP rule restricted to the proxy endpoint. What it cannot express is the denies.
 ACL inheritance has no name patterns, so "deny `.git` at any depth" can only be an enumerated set
 of deny ACEs placed by a launch-time scan, and a `.git` created *during* the build inherits the
-project's allow — a race where the design requires an invariant. A Windows backend needs an
+project's allow — a race where the deny must hold at every access. A Windows backend needs an
 equivalent of access-time path filters — a filesystem minifilter, or a design that does not put the
 guard in ACLs at all — before it is worth reconsidering.
 
 ## The contract's mechanics
 
 `SECURITY.md` "Run on host" holds the reach — what a build may touch, in whole — and why the two
-deny rows make the venue safe to expose to a sandbox. The mechanics beneath them:
+deny rows make host builds safe to expose to a sandbox. The mechanics beneath them:
 
 - **Writable implies executable for the project and the session temp, and for nothing else.** A
   child inherits the profile, so a build running what it wrote gains no authority it did not
@@ -68,7 +74,7 @@ deny rows make the venue safe to expose to a sandbox. The mechanics beneath them
   denied rather than because the directory is bare.
 - **Both guard rows fold case.** APFS is case-insensitive by default, so `.GIT` reaches the same
   directory as `.git`, and `ko-agent-fs` already folds on the filter's side; two guards over one
-  tree that disagree about a name are one guard.
+  tree protect only where they agree about a name — a write arrives through the laxer one.
 - **Both guard rows deny link creation, not only writes.** On the host the project and its `.git`
   are one filesystem, so `link(PROJECT/.git/config, PROJECT/x)` would succeed and a later write to
   `x` reach `.git/config` by a path no write rule matches. `SECURITY.md` dismisses hardlinks for
@@ -87,7 +93,7 @@ deny rows make the venue safe to expose to a sandbox. The mechanics beneath them
 
 The build's only egress is its own proxy (below); Seatbelt permits connections to that loopback
 endpoint and nothing else, with UNIX-domain sockets only inside the session temp. Three measured
-rules (`probe/loopback-rule.sh`, `probe/jvm-proxy-rule.sh`):
+rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`):
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
   compiler ("host must be * or localhost").
@@ -110,8 +116,8 @@ inferred or silently permitted.
 ## Failure policy
 
 Missing prerequisites and denied accesses fail clearly, nothing expands authority, and nothing
-falls back to another venue: a host build that cannot run is reported to the user, never re-run in
-the container — the same stance the egress refusal takes.
+falls back: a host build that cannot run is reported to the user, never re-run in the
+container — the same rule the egress refusal follows.
 
 Every pre-build refusal is a `RunOnHostPolicy.Refusal` value, one case per category, so the wrapper
 and the channel word the same refusal for their own readers without the tests matching on either
@@ -128,7 +134,7 @@ JDK reads, fetched into the writable agent cache through the proxy. `mill`'s lau
 fetched thing, and it is an executable — so it is provisioned, not fetched, and a version bump
 becomes an explicit host step rather than something a build definition performs on itself.
 `RunOnHostPolicy.scala` validates all of the below before a build starts; a violation is a refusal
-naming what to fix, and `probe/host-layout.sh` shows what a host actually has.
+naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 ### The JVM
 
@@ -186,7 +192,7 @@ default — and derives the launcher file the way the bootstrap does (`RunOnHost
 `millLauncher`). Reading the version is a read; asking the script by running it would execute
 agent-authored shell on the host.
 
-Three more things `mill` needs, each measured by the gate against `probe/mill-fixture`:
+Three more things `mill` needs, each measured by the gate against `src/probe/mill-fixture`:
 `mill-jvm-version: system` in the project — its default provisions a JVM through Coursier's index
 into a writable, executable place, which is what the JVM rule refuses; `--no-daemon` — the launcher
 and the daemon talk over a loopback TCP socket, and loopback is every local service, granted to
@@ -202,28 +208,28 @@ before collection, and the portfile-attributed shutdown of an orphaned server. T
 `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
 socket's `sun_path` (`RunOnHostPolicy.SessionTmpMaxLength`).
 
-The build's environment is the contract, not its command line: sbt 2's client forks the server with
-its own arguments, so the JVM settings travel in `JAVA_TOOL_OPTIONS`, which every JVM in the chain
-reads and inherits. `RunOnHostSandbox` assembles it, and the gate's `build_env` mirrors it.
+The build's environment is the contract, not its command line: the JVM settings travel in
+`JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and inherits, for the reason
+`RunOnHostSandbox` states where it assembles it. The gate's `build_env` mirrors it.
 
 ## The channel and the command
 
 `sandbox-run-on-host <tool> [args…]` is a named command, a sibling of `sandbox-apt-get`, rather
-than a shim shadowing `sbt` on `PATH`: the venue is then visible in the transcript the user reads.
-It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails* in the sandbox
-and teaches the agent to look for the prefixed name, while `sbt test` in the container *succeeds*,
-in the slower venue, and nothing prompts a reconsideration. So the authority section carries the
-instruction, and only where it can be true: the launcher knows the platform, so a macOS session
-launched without the option gets one discovery line, and Linux and Windows sessions hear nothing
-about a command they can never have. That makes the venue a norm rather than an enforcement: an
-agent that ignores the instruction gets a slower build, not a refusal — a deliberate difference
-from the egress rule, where the proxy actually refuses.
+than a shim shadowing `sbt` on `PATH`: where each build ran is then visible in the transcript
+the user reads. It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails*
+in the sandbox and teaches the agent to look for the prefixed name, while `sbt test` in the
+container *succeeds*, slower, and nothing prompts a reconsideration. So the authority section
+carries the instruction, and only where it can be true: the launcher knows the platform, so a
+macOS session launched without the option gets one discovery line, and Linux and Windows
+sessions hear nothing about a command they can never have. That makes the host build a norm
+rather than an enforcement: an agent that ignores the instruction gets a slower build, not a
+refusal — a deliberate difference from the egress rule, where the proxy actually refuses.
 
 The transport, its framing and its teardown are `RunOnHostChannel.scala`'s header and the shim's
 own comments. One build runs at a time, serial by design rather than as a shortcut: one sbt server
 per project means a concurrent second sbt request would be *refused* where a queued one simply runs
 next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
-broker open as an increment if a tool ever makes it worth having. A *foreign* live server — the
+broker open as a later addition if a tool ever makes it worth having. A *foreign* live server — the
 user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
 launch carried `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
 socket it derives itself (SECURITY.md "One sbt server per project" has the security argument).
@@ -231,23 +237,24 @@ socket it derives itself (SECURITY.md "One sbt server per project" has the secur
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-project exclusivity is also the lock over `target/`. A second rendezvous on the
 same tree — a shadow base directory, a relocated portfile — would put two unsynchronized
-compilers in one content-addressed store, which is why the venues coexist on the source and never
-on the outputs. Nor can an invocation opt out: sbt's build directory is always its working
-directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either attaches to
-the portfile's server or contends for it. `mill` needs none of this, running `--no-daemon`; the
-upstream ask that would retire the option is in `SBT-ISSUES.md`.
+compilers in one content-addressed store, which is why container and host builds coexist on the
+source and never on the outputs. Nor can an invocation opt out: sbt's build directory is always
+its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either
+attaches to the portfile's server or contends for it. `mill` needs none of this, running
+`--no-daemon`; the upstream request that would remove the option is in `sbt-issues.md`.
 
 ## The Seatbelt profile
 
 Apple does not document SBPL for third-party use: `sandbox-exec` compiles it through private entry
 points, and the published write-ups are reverse-engineered and date from 2011. Two sources are
-authoritative here — measurement (`probe/seatbelt-semantics.sh`, `probe/build-profile-iterate.sh`),
-and Apple's own shipped profiles under `/System/Library/Sandbox/Profiles/`, current and written
-against the implementation; `system.sb` is the one worth reading first. `SeatbeltProfile.scala`
-encodes the findings, the two that shape everything in its header. The rest, measured:
+authoritative here — measurement (`src/probe/seatbelt-semantics.sh`,
+`src/probe/build-profile-iterate.sh`), and Apple's own shipped profiles under
+`/System/Library/Sandbox/Profiles/`, current and written against the implementation; `system.sb` is
+the one worth reading first. `SeatbeltProfile.scala` encodes the findings, the two that shape
+everything in its header. The rest, measured:
 
-- What the guard rests on (`probe/seatbelt-semantics.sh`): the accessed path is canonicalized — a
-  write through `link -> .git` is denied — and canonicalization folds case where the volume does;
+- What the guard rests on (`src/probe/seatbelt-semantics.sh`): the accessed path is canonicalized —
+  a write through `link -> .git` is denied — and canonicalization folds case where the volume does;
   rules are evaluated at access time, so a `.git` created *during* the build is covered; one regex
   spans every depth; and `file-write*` already refuses a hardlink to a denied target, so the
   explicit link clause is redundancy — kept, because the membership of a wildcard operation family
@@ -269,13 +276,13 @@ Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this f
 exactly — and its generated profile is worth reading and worth *not* copying. It is a blacklist
 (`(allow default)`, then writes and network taken away), which is why Bazel never meets the
 findings above: with nothing denied by default, path resolution cannot fail, so the root entry and
-the ancestor chain never arise. It is also why that shape cannot serve here: a build under it reads
+the ancestor chain never arise. It is also why that design cannot serve here: a build under it reads
 the whole filesystem, and "everything else user-owned inaccessible" is the property this feature
 exists to provide. The difficulty of deny-by-default is the price of that row, not evidence of a
 wrong turn — worth stating because the blacklist form is the obvious simplification when the
 whitelist will not start. One thing is taken from Bazel: `(debug deny)`, which makes denials
-visible without the unified log's redaction, and which `probe/build-profile-iterate.sh` puts at the
-top of every profile it iterates.
+visible without the unified log's redaction, and which `src/probe/build-profile-iterate.sh` puts
+at the top of every profile it iterates.
 
 **Runtime authority** — the loader, libc, the CA bundle and the rest a toolchain needs from the
 system — is discovered by running a real build under a deny-default profile and reading the
@@ -283,8 +290,8 @@ denials, never by listing what a host happens to have, and never as a way to rea
 measured set is one file, a resource of the launcher's own artifact
 (`src/main/resources/agentsandbox/runtime-authority.txt`): what the production wrapper grants is
 what the probes measured, and the gate and a session run one authority rather than two copies that
-can drift. `probe/build-profile-iterate.sh` is how the file grows. Do not pre-authorize broad paths
-(`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the narrowest rule testing justifies.
+can drift. `src/probe/build-profile-iterate.sh` is how the file grows. Do not pre-authorize broad
+paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the narrowest rule testing justifies.
 
 ## The build's egress proxy
 
@@ -357,7 +364,7 @@ answer alike on one machine; a relative override is refused because it would res
 repository being sandboxed, and a root inside the project is refused outright.
 
 Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it.
-`PLAN-COURSIER.md` forbids the same thing for the container and reaches it with a podman `:O`
+`plan-coursier.md` forbids the same thing for the container and reaches it with a podman `:O`
 upper; Seatbelt has no mount namespace, so separation here is by root. The cost is a cold cache on
 a project's first agent build, warm from the second onward.
 

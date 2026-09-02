@@ -16,7 +16,7 @@ valuable credentials outside the sandbox.
 
 A capability layer would create a second security-policy language and another enforcement surface
 while providing little reduction in authority under this operating model. Prior art proposing
-exactly this shape — a host-side MCP auth broker/gateway holding credentials the agent container
+exactly this design — a host-side MCP auth broker/gateway holding credentials the agent container
 never sees — solves a real problem for workflows that need credentialed MCP servers, a requirement
 this project's operating model deliberately avoids:
 
@@ -47,13 +47,13 @@ loads unconditionally — a project file can add to the image's conventions but 
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
 session cannot rewrite the instructions governing the next one, as it could any file in the
 project directory. Prose governs nothing enforceable; the file sits in the boundary directory for
-that read-before-launch property alone, and is the directory's second tenant, so its closed
+that read-before-launch property alone, and is the directory's second entry, so its closed
 namespace admits `agent/` with the one filename.
 
 ### No richer egress-policy format
 
 The policy stays four fixed profiles over two fixed files, `allowed` and `denied`, in the grammar
-the README's "Modifying the egress policy" spells — no fields, no globs beyond the taking-away
+the README's "Modifying the egress policy" spells out — no fields, no globs beyond the taking-away
 subtree, no ranked rules, no open allowance vocabulary, no selected-provider-plus-extras
 profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
 `resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
@@ -73,14 +73,14 @@ outside the closed set without a concrete need that outweighs that surface.
 
 ### No HTTP query surface on the proxy
 
-Considered: the RFC 9110 shape `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
+Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
 header, answering the effective policy from the live proxy. Rejected, because every consumer
 already gets that answer from the proxy's own `--print-policy` dry run — `--egress-effective`, the
 launch banner, `KO_AGENT_SANDBOX_EGRESS_POLICY`, and the appended agent instructions — and the
 launcher cannot use a live query anyway: the policy must be validated and the leaf minted before
 the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
-would add is a second parsed request shape at the enforcement point, against its
-CONNECT-only-one-request stance, for information already delivered. `Max-Forwards` itself creates
+would add is a second parsed request format at the enforcement point, against its
+CONNECT-only-one-request rule, for information already delivered. `Max-Forwards` itself creates
 no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE, and this one never does —
 non-CONNECT is refused at the proxy layer, both methods are refused inside inspected tunnels, and
 an unrestricted tunnel is not an HTTP hop at all.
@@ -120,7 +120,7 @@ resolved path as an argument, so no host-side invocation consults `PATH` or, on 
 CreateProcess's implicit current-directory search.
 
 Absoluteness is not consent, and a repository must never be what supplies the host's container
-runtime: both halves of that filter are load-bearing, and `findOnPath`'s comment has why. Prior
+runtime: both halves of that filter are necessary, and `findOnPath`'s comment has why. Prior
 art:
 
 - https://github.com/docker/sbx-releases/issues/392
@@ -133,9 +133,9 @@ inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicy
 repository-controlled link would expose its target into the sandbox, and following the link to pin
 its resolved target would make the pinned surface depend on where the link points at launch time.
 The refusal is loud, names the path, and comes before the launcher creates anything, so setup writes
-nothing through a pre-seeded link (tested: "a refused symlink shape leaves no artifact through the
+nothing through a pre-seeded link (tested: "a refused symlink form leaves no artifact through the
 link"); the project directory itself is `toRealPath()`-canonical before any of this. Prior art for
-both failure shapes — a sandbox that crashed mid-setup on a symlink, and setup code whose
+both failure cases — a sandbox that crashed mid-setup on a symlink, and setup code whose
 mount-target creation wrote through one to paths outside its root:
 
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/221
@@ -193,11 +193,11 @@ Conflating them is what makes verification look larger than it is.
   instead, a named volume landing in the host's container storage — btrfs, ZFS, XFS or overlay —
   against the machine's own ext4 everywhere else.
 
-Every case asserts a premise behaviourally, at the layer the product uses it — never a version, a
+Every case asserts a premise behaviorally, at the layer the product uses it — never a version, a
 mount option or a declared feature. That is the rule the virtiofs premise is already recorded under
 (`../fuse/ko-agent-fs/doc/verification-log.md`), and it keeps the suite indifferent to *why* an
 environment moved: a podman upgrade, a recreated machine, a host OS update and a changed storage
-driver all reach it by the same door, and no case has to anticipate which.
+driver all reach it the same way, and no case has to anticipate which.
 
 ## Prior-art references worth retaining
 

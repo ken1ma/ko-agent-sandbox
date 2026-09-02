@@ -1,12 +1,12 @@
-# The runtime authority (RUN-ON-HOST.md "The Seatbelt profile"): paths the toolchain needs that
+# The runtime authority (run-on-host.md "The Seatbelt profile"): paths the toolchain needs that
 # are not the policy's own. One absolute path per line; prefix with "x " if it must also be
 # executable. Entries resolve through realPath, so a symlink entry becomes a grant on its target;
 # list a symlink's directory instead.
 #
-# Measured by `sh probe/build-profile-iterate.sh paths`, which grants every root entry and then
+# Measured by `sh src/probe/build-profile-iterate.sh paths`, which grants every root entry and then
 # removes them cumulatively — a tree stays only if the set without it stops working. Nothing here
-# is reasoned about: an earlier list containing /usr/lib, /System/Library and the dyld cryptexes
-# was wrong in every entry, because the shared cache is mapped without any filesystem access.
+# is reasoned about: the intuitive entries — /usr/lib, /System/Library, the dyld cryptexes —
+# all measure as unnecessary, because the shared cache is mapped without any filesystem access.
 #
 # Grow it by running `floor`, which climbs from a shell to a real build and stops at the first
 # rung that fails; the layer that failed names what to measure next.
@@ -15,7 +15,7 @@
 x /bin
 
 # The system tool directories. The launcher chain itself needs nine binaries from /usr/bin (env,
-# uname, dirname, basename, readlink, expr, sed, grep, tr — probe/sbt-exec-chain.sh), but a
+# uname, dirname, basename, readlink, expr, sed, grep, tr — src/probe/sbt-exec-chain.sh), but a
 # build's own scripts call whatever they like: this repository's suite needs find and mount, and
 # a profile that names tools one by one fails every project's tests differently. These are
 # Apple-signed binaries whose effects on files and sockets are bounded by this same profile, so
