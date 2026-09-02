@@ -72,8 +72,8 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.{FileVisitResult, Files, Path, Paths, SimpleFileVisitor, StandardCopyOption}
-import java.nio.file.attribute.{BasicFileAttributes, PosixFilePermissions}
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
+import java.nio.file.attribute.PosixFilePermissions
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
@@ -404,7 +404,7 @@ object AgentSandboxLauncher:
     for
       totalBytes <- total
       availableBytes <- available
-    yield s"$label: ${gibNumber(availableBytes)} / ${gibNumber(totalBytes)} GiB available"
+    yield SandboxStats.shareLine(label, availableBytes, totalBytes, "available")
 
   /**
    * MemAvailable of the machine the image builds run on: this host on native Linux, the VM
@@ -433,9 +433,7 @@ object AgentSandboxLauncher:
         machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
-  def gib(bytes: Long): String = s"${gibNumber(bytes)} GiB"
-
-  private def gibNumber(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f"
+  def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
 
   /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_POLICY,
@@ -923,6 +921,15 @@ object AgentSandboxLauncher:
   def sandboxRunContainers(names: Seq[String]): Seq[String] =
     names.filter(_.matches(s"ko-agent-sandbox-run-$RunShape"))
 
+  private val RunContainerName = s"ko-agent-(sandbox-run|egress-proxy)-($ProjectIdShape)-([0-9a-f]{8})".r
+
+  /** The kind, project id and run suffix of a container in the namespace the two filters above
+    * sweep, or None: `--stats` reads the names back one at a time. */
+  def runContainerParts(name: String): Option[(String, String, String)] =
+    name match
+      case RunContainerName(kind, projectId, suffix) => Some((kind, projectId, suffix))
+      case _                                         => None
+
   /**
    * Volumes named through KO_AGENT_SANDBOX_PERSISTENT_VOLUME are deliberately left alone — and
    * cannot sit inside this pattern, because such a value refuses the launch (sharedVolumeNameError).
@@ -1277,8 +1284,9 @@ object AgentSandboxLauncher:
     // roots are resolved and checked against the current directory before the first of them.
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
-    // The whole build-cache root, removed last: every project's host-build caches go with
-    // everything else.
+    // The whole build-cache root, removed after the podman resources and the per-project state:
+    // every project's host-build caches go with everything else, and only the directory
+    // records follow them.
     val caches = buildCacheRoot(os, project)
     val imageState = stateRoot(os).resolve("image-build")
     val cleanupJournal = imageState.resolve("cleanup.ids")
@@ -1329,6 +1337,11 @@ object AgentSandboxLauncher:
     deleteRecursively(caches)
 
     if failures > 0 then fail(s"error: $failures reset steps failed")
+    // Last, and only after everything it locates is gone: a volume or cache left by a failed
+    // step keeps its directory in the next --stats.
+    val records = projectsStateRoot(os)
+    echoCommand(Vector("rm", "-rf", records.toString))
+    deleteRecursively(records)
     sys.exit(0)
 
   /**
@@ -1366,120 +1379,6 @@ object AgentSandboxLauncher:
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
     sys.exit(0)
-
-  /** One project's disk use across the launcher's state and build-cache roots. */
-  final case class ProjectUsage(id: String, stateBytes: Long, cacheBytes: Long)
-
-  /**
-   * A read-only report, because a size seen only while resetting is seen too late. The live
-   * section is answered first and skipped when the podman machine is stopped — a report starts
-   * nothing — and the directory walk is last: a real Coursier cache is millions of inodes, which
-   * is why this is a verb and not a line printed at every launch.
-   */
-  def stats(os: Os): Nothing =
-    System.out.print(liveSessionsSection(os))
-    val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), policyStateRoot(os))
-    val cacheDir = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
-    val ids = (stateDirs ++ cacheDir.toVector).flatMap(childNames).distinct.sorted
-    val usages = ids.toVector.map: id =>
-      ProjectUsage(
-        id,
-        stateDirs.map(dir => directoryBytes(dir.resolve(id))).sum,
-        cacheDir.map(dir => directoryBytes(dir.resolve(id))).getOrElse(0L),
-      )
-    System.out.print(statsReport(usages, freeSpace(cacheDir.getOrElse(stateRoot(os)))))
-    sys.exit(0)
-
-  /**
-   * Pure for the tests. The flag threshold is 1% of the cache filesystem's free space, so the
-   * report says which project to `--reset-cache` rather than leaving a column of numbers to
-   * compare by eye.
-   */
-  def statsReport(usages: Vector[ProjectUsage], cacheFreeBytes: Long): String =
-    val footer = s"free space where the caches live: ${humanBytes(cacheFreeBytes)}\n"
-    if usages.isEmpty then "projects: none\n" + footer
-    else
-      val header = f"""  ${"total"}%10s  ${"state"}%10s  ${"cache"}%10s  project"""
-      val rows = usages.sortBy(usage => -(usage.stateBytes + usage.cacheBytes)).map: usage =>
-        val flag =
-          if usage.cacheBytes * 100 > cacheFreeBytes then
-            "  <- cache over 1% of free space; a --reset-cache candidate"
-          else ""
-        f"  ${humanBytes(usage.stateBytes + usage.cacheBytes)}%10s  ${humanBytes(usage.stateBytes)}%10s" +
-          f"  ${humanBytes(usage.cacheBytes)}%10s  ${usage.id}$flag"
-      ("projects by size, largest first:\n" + (header +: rows).mkString("", "\n", "\n") + footer)
-
-  /**
-   * Sizes from bytes to TiB in one column: a Coursier cache is gigabytes while a policy cache is
-   * kilobytes, and one fixed unit would flatten one of them.
-   */
-  def humanBytes(bytes: Long): String =
-    val units = Vector("B", "KiB", "MiB", "GiB", "TiB")
-    var value = bytes.toDouble
-    var index = 0
-    while value >= 1024 && index < units.size - 1 do
-      value /= 1024
-      index += 1
-    if index == 0 then s"$bytes B" else f"$value%.1f ${units(index)}"
-
-  /** Sessions running now, from `podman stats`; a missing podman or a stopped machine is a note,
-    * never a start. */
-  private def liveSessionsSection(os: Os): String =
-    findOnPath("podman", env("PATH").getOrElse(""), os).map(_.toString) match
-      case None => "live sessions: not queried; podman is not on PATH\n"
-      case Some(found) =>
-        val machineDown = os != Os.Linux && {
-          val machines = run(found, "machine", "list", "--format", "{{.Running}}")
-          !machines.ok || !machines.text.linesIterator.map(_.trim).contains("true")
-        }
-        if machineDown then "live sessions: not queried; the podman machine is not running\n"
-        else
-          val result =
-            run(found, "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}} {{.CPUPerc}}")
-          if !result.ok then
-            val reason = result.err.linesIterator.nextOption().getOrElse("").trim
-            s"live sessions: podman stats failed: $reason\n"
-          else
-            liveSessionRows(result.text.linesIterator.toVector) match
-              case Vector() => "live sessions: none\n"
-              case rows     => rows.mkString("live sessions:\n  ", "\n  ", "\n")
-
-  /** Only this launcher's containers: another workload on the same machine is not the report's. */
-  def liveSessionRows(lines: Vector[String]): Vector[String] =
-    lines.filter: line =>
-      val name = line.takeWhile(_ != ' ')
-      proxyContainers(Seq(name)).nonEmpty || sandboxRunContainers(Seq(name)).nonEmpty
-
-  /** Continues past races and permission holes: sizing must not fail on a tree a session is
-    * changing. */
-  def directoryBytes(root: Path): Long =
-    if !Files.exists(root) then 0L
-    else
-      var total = 0L
-      Files.walkFileTree(
-        root,
-        new SimpleFileVisitor[Path]:
-          override def visitFile(file: Path, attrs: BasicFileAttributes) =
-            if attrs.isRegularFile then total += attrs.size()
-            FileVisitResult.CONTINUE
-          override def visitFileFailed(file: Path, exc: IOException) = FileVisitResult.CONTINUE,
-      )
-      total
-
-  private def childNames(dir: Path): Vector[String] =
-    if !Files.isDirectory(dir) then Vector.empty
-    else
-      val stream = Files.list(dir)
-      try stream.iterator().asScala.map(_.getFileName.toString).toVector
-      finally stream.close()
-
-  /** Of the filesystem holding `path`, read at its nearest existing ancestor: the cache root does
-    * not exist before the first host build. */
-  private def freeSpace(path: Path): Long =
-    var probe = path.toAbsolutePath
-    while !Files.exists(probe) && probe.getParent != null do probe = probe.getParent
-    try Files.getFileStore(probe).getUsableSpace
-    catch case _: IOException => 0L
 
   /**
    * Per-user state, outside any project directory: nothing in it is the
@@ -1573,6 +1472,19 @@ object AgentSandboxLauncher:
    * the proxy re-resolves the policy at every startup.
    */
   def policyStateRoot(os: Os): Path = stateRoot(os).resolve("policy")
+
+  /**
+   * The directory each project id was made from, one file per id. The hash in the id is one-way,
+   * and `--stats` names a project by the directory its `--reset-cache` runs in.
+   */
+  def projectsStateRoot(os: Os): Path = stateRoot(os).resolve("projects")
+
+  /** Rewritten at every launch: the id changes with the path, so a stale record cannot exist
+    * under a live id. Kept by --reset, which keeps the cache the record locates; --reset-all
+    * removes both. */
+  def recordProjectDirectory(projectsRoot: Path, projectId: String, projectDir: Path): Unit =
+    Files.createDirectories(projectsRoot)
+    writePrivate(projectsRoot.resolve(projectId), projectDir.toString)
 
   // -------------------------------------------------------------------------
   // Command line
@@ -2018,7 +1930,7 @@ object AgentSandboxLauncher:
       case Some(("--stats", rest)) =>
         noAuthorityOptions("--stats")
         if rest.nonEmpty then fail("error: --stats takes no further arguments")
-        stats(currentOs)
+        SandboxStats.stats(currentOs)
 
       // No requirePodman() here: with no arguments this reads host files only, and the retained
       // logs are documented as readable after every container is gone. proxyLog asks for podman on
@@ -2159,6 +2071,7 @@ object AgentSandboxLauncher:
     // the whole path; moving a project yields new resources and new sign-ins.
     val projectSlug = slugOf(projectDir.getFileName.toString)
     val projectId = projectIdOf(projectDir, os)
+    recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
 
     // -----------------------------------------------------------------------
     // Per-project persistent volume
