@@ -121,11 +121,11 @@ The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this sessi
 with what treatment, is the appended "Authority in force for this session" section;
 `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
 
-On a restricted host, `git push`, an API `POST` outside a named allowance, and `PUT` are refused
-by the proxy, with the reason in the body. GraphQL is a `POST`; read through REST.
-
-If a host will not connect, name it to the user and stop. Do not look for another route, and do
-not spend the session diagnosing it — they can add a host in seconds.
+On a restricted host a write — `git push`, a `POST` outside a named allowance, `PUT` — is
+refused, and the `403` body says what to do next. If a host will not connect, run
+`sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
+A TLS error on an allowed host is the trust store (next paragraph), or a client the proxy
+closes on: no SNI, Encrypted ClientHello, or HTTP/2 only. Plain `curl`/`git` are none of these.
 
 `getent hosts` and every other name lookup fail by design; that is never why a fetch failed.
 Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443

@@ -193,7 +193,8 @@ checkout — [Development](#development).
       --egress-check=<host> [--] [<command> [args...]]
                          one host's policy decision plus its current DNS
                          resolution, through a one-shot proxy container on
-                         enforcement's own resolver path
+                         enforcement's own resolver path; inside a session,
+                         sandbox-egress-check <host> asks the running proxy
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead

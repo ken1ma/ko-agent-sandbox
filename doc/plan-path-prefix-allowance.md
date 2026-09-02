@@ -86,7 +86,7 @@ In `authorizeInspectedRequest`, before the method rule and after the `Host` head
 the entry carries prefixes, `requireLiteralPath(head.path)` (invariant 4) and then the scope
 whose prefix `head.path` starts with — at most one, by invariant 7; a miss is
 `PolicyViolation("path outside allowance")` with the advice "this host is admitted under
-`<prefixes>` only" — its row in `plan-proxy-denial-reason.md`'s table. The method rule that
+`<prefixes>` only" — its member in the proxy's `RefusalAdvice`. The method rule that
 follows sees that scope's tags alone (invariant 7).
 
 `requireUnambiguousPath` refuses `%` and dot segments on `POST` only, because only the
@@ -163,7 +163,7 @@ SECURITY.md sites:
 - README "Modifying the egress policy": grammar and the one sentence.
 - SECURITY.md sites above.
 - `doc/egress-policy-examples/`: one example narrowing a project bucket.
-- `plan-proxy-denial-reason.md` table: the row.
+- `RefusalAdvice` in the proxy: the member, and its row in `AgentEgressProxyTest`'s refusal rows.
 
 ## Acceptance checklist
 

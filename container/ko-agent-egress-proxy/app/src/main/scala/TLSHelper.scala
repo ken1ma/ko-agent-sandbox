@@ -22,7 +22,7 @@ object TLSHelper:
     hello: TlsClientHello,
   ): Unit =
     if hello.echPresent then
-      throw PolicyViolation("encrypted ClientHello")
+      throw PolicyViolation("encrypted ClientHello", RefusalAdvice.clientHello)
 
     val sni =
       hello.serverName match
@@ -30,13 +30,13 @@ object TLSHelper:
           try normalizeHost(raw)
           catch
             case ex: BadRequest =>
-              throw PolicyViolation(s"invalid TLS SNI: ${ex.getMessage}")
+              throw PolicyViolation(s"invalid TLS SNI: ${ex.getMessage}", RefusalAdvice.clientHello)
 
         case None =>
-          throw PolicyViolation("TLS ClientHello has no SNI")
+          throw PolicyViolation("TLS ClientHello has no SNI", RefusalAdvice.clientHello)
 
     if sni != connectHost then
-      throw PolicyViolation(s"SNI $sni differs from target")
+      throw PolicyViolation(s"SNI $sni differs from target", RefusalAdvice.clientHello)
 
   /**
    * The MITM, and the one place holding a private key — the leaf's only.

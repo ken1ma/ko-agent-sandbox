@@ -1482,6 +1482,251 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(readyLine(51234), "agent-egress-proxy listening on :51234")
     assertEquals(ReadyLine, readyLine(ListenPort))
 
+  // ---------------------------------------------------------------------------
+  // Refusal advice: the 403 body's second line, RefusalAdvice's table
+  // ---------------------------------------------------------------------------
+
+  /** One row per outcome of a `throw PolicyViolation(` in the sources, keyed by the site. The
+    * population test counts the sites against the sources, so a refusal added without a row
+    * fails it. `host` is the request's own — the one host an advice may name unadmitted. */
+  private case class RefusalRow(site: String, host: String, expected: String, refuse: () => Unit)
+
+  private def post(
+    host: String,
+    path: String,
+    tags: Set[String],
+    admitted: String => Boolean = _ => false,
+  ): () => Unit =
+    () =>
+      authorizeInspectedRequest(
+        host,
+        head(s"POST $path HTTP/1.1\r\nHost: $host\r\nContent-Length: 0\r\n\r\n"),
+        tags,
+        admitted,
+      )
+
+  private lazy val refusalRows: Vector[RefusalRow] =
+    import RefusalAdvice.*
+    val github = "github.com"
+    val gitlab = "gitlab.com"
+    val fetch = Set("git-fetch")
+    def hello(sni: Option[String], ech: Boolean = false): TlsClientHello =
+      TlsClientHello(Array.emptyByteArray, sni, echPresent = ech)
+    Vector(
+      RefusalRow("authorizeRequest port", github, port, () => authorize(github, 8443)),
+      RefusalRow("authorizeRequest IP literal", "8.8.8.8", ipLiteral, () => authorize("8.8.8.8", 443)),
+      RefusalRow(
+        "authorizeRequest denied", gitlab, hostDenied,
+        () => authorize(gitlab, 443, policyOf(denied = s"host $gitlab")),
+      ),
+      RefusalRow(
+        "authorizeRequest denied", "api.example.com", hostDenied,
+        () =>
+          authorize(
+            "api.example.com", 443,
+            policyOf(allowed = "+host api.example.com", denied = "host **.example.com"),
+          ),
+      ),
+      RefusalRow(
+        "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", DefaultProfile),
+        () => authorize("tracker.example", 443),
+      ),
+      RefusalRow(
+        "authorizeRequest not allowed", github, hostNotAllowed(github, DefaultProfile),
+        () => authorize(github, 443, policyOf(allowed = "-host github.com")),
+      ),
+      // Under a profile the allowed file cannot widen, the step is the relaunch.
+      RefusalRow(
+        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
+        () => authorize(github, 443, policyOf(profile = "deny-all")),
+      ),
+      // The same step with the project's file removing the host: the relaunch is named as
+      // necessary, and the removal the default profile would apply is the user's to see.
+      RefusalRow(
+        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
+        () => authorize(github, 443, policyOf(profile = "deny-all", allowed = "-host github.com")),
+      ),
+      RefusalRow(
+        "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", "deny-unless-model"),
+        () =>
+          authorize("tracker.example", 443, policyOf(profile = "deny-unless-model", provider = "anthropic")),
+      ),
+      RefusalRow("requirePublic no address", "-", nonPublicAddress, () => requirePublic(Vector.empty)),
+      RefusalRow(
+        "requirePublic non-public", "-", nonPublicAddress,
+        () => requirePublic(Vector(InetAddress.getByAddress(Array[Byte](10, 0, 0, 5)))),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest origin-form", github, originForm,
+        () => inspected("GET https://github.com/x HTTP/1.1\r\nHost: github.com\r\n\r\n"),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest Upgrade", github, upgrade,
+        () => inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nUpgrade: websocket\r\n\r\n"),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest Host header", github, hostHeader,
+        () => inspected("GET /x HTTP/1.1\r\nHost: evil.example\r\n\r\n"),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest request body", github, requestBody,
+        () => inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 9\r\n\r\n"),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest push discovery", github, gitPush,
+        () => inspected("GET /o/r.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"),
+      ),
+      // The refused-POST site chooses by path, for a tagged host (`restricted path`) and an
+      // untagged one (`restricted host`) alike — api.github.com's GraphQL is the case that matters.
+      RefusalRow("authorizeInspectedRequest POST refused", github, graphql, post(github, "/graphql", fetch)),
+      RefusalRow(
+        "authorizeInspectedRequest POST refused", "api.github.com", graphql,
+        post("api.github.com", "/graphql", Set.empty),
+      ),
+      RefusalRow("authorizeInspectedRequest POST refused", gitlab, graphql, post(gitlab, "/api/graphql", fetch)),
+      RefusalRow(
+        "authorizeInspectedRequest POST refused", github, lfsBatchGithub,
+        post(github, "/o/r.git/info/lfs/objects/batch", fetch, baselinePolicy.hosts.contains),
+      ),
+      // The content host is named only while the policy admits it, and only for the forge it serves.
+      RefusalRow(
+        "authorizeInspectedRequest POST refused", github, lfsBatch,
+        post(
+          github, "/o/r.git/info/lfs/objects/batch", fetch,
+          policyOf(allowed = s"-host $LfsContentHost").hosts.contains,
+        ),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest POST refused", gitlab, lfsBatch,
+        post(gitlab, "/g/o/r.git/info/lfs/objects/batch", fetch, baselinePolicy.hosts.contains),
+      ),
+      RefusalRow("authorizeInspectedRequest POST refused", github, readOnly, post(github, "/o/r/issues", fetch)),
+      RefusalRow(
+        "authorizeInspectedRequest other method", github, readOnly,
+        () => inspected("PUT /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
+      ),
+      RefusalRow(
+        "requireUnambiguousPath percent", github, ambiguousPath,
+        post(github, "/o/r.git/%2e%2e/git-upload-pack", fetch),
+      ),
+      RefusalRow(
+        "requireUnambiguousPath dot segment", github, ambiguousPath,
+        post(github, "/o/r.git/../git-upload-pack", fetch),
+      ),
+      RefusalRow(
+        "validateTlsIdentity ECH", github, RefusalAdvice.clientHello,
+        () => validateTlsIdentity(github, hello(Some(github), ech = true)),
+      ),
+      RefusalRow(
+        "validateTlsIdentity invalid SNI", github, RefusalAdvice.clientHello,
+        () => validateTlsIdentity(github, hello(Some(""))),
+      ),
+      RefusalRow(
+        "validateTlsIdentity no SNI", github, RefusalAdvice.clientHello,
+        () => validateTlsIdentity(github, hello(None)),
+      ),
+      RefusalRow(
+        "validateTlsIdentity mismatch", github, RefusalAdvice.clientHello,
+        () => validateTlsIdentity(github, hello(Some("evil.example"))),
+      ),
+    )
+
+  /** A hostname as it would appear in advice: dotted lowercase labels. */
+  private val HostToken = """[a-z0-9-]+(?:\.[a-z0-9-]+)+""".r
+
+  test("every refusal names its next step: one line, control-free, naming no unadmitted host"):
+    val sourceDir = java.nio.file.Paths.get("src", "main", "scala")
+    val sites =
+      java.nio.file.Files.list(sourceDir).iterator.asScala
+        .map(path => java.nio.file.Files.readString(path))
+        .map(_.split(java.util.regex.Pattern.quote("throw PolicyViolation("), -1).length - 1)
+        .sum
+    val covered = refusalRows.map(_.site).distinct.size
+    assertEquals(covered, sites, s"$sites refusal sites in the sources, $covered with a row here: add one per new site")
+
+    refusalRows.foreach: row =>
+      val refusal = intercept[PolicyViolation](row.refuse())
+      val advice = refusal.advice
+      assertEquals(advice, row.expected, s"${row.site}: ${refusal.getMessage}")
+      assert(advice.nonEmpty && !advice.exists(isForbiddenControl), s"${row.site}: '$advice'")
+      assert(refusalBody(refusal.getMessage, Some(advice)).length <= 512, s"${row.site}: body over 512 bytes")
+      HostToken.findAllIn(advice).foreach: named =>
+        assert(named == row.host || baselinePolicy.hosts.contains(named), s"${row.site} names $named")
+
+  test("the host-not-allowed step names a configuration that can admit the host, or none"):
+    // The named configuration, applied over a clean project file, admits the host; a bare `+host`
+    // for a baseline host would override the baseline treatment, so it is never named for one.
+    // The relaunch is named as possible only ("can admit"), since the project's file may remove
+    // the host under the default profile (the deny-all row above).
+    import RefusalAdvice.hostNotAllowed
+    val addition = "'+host tracker.example' in .ko-agent-sandbox/egress/allowed"
+    Vector(DefaultProfile, "deny-all", "deny-unless-model").foreach: profile =>
+      assert(hostNotAllowed("tracker.example", profile).contains(addition), profile)
+      assert(!hostNotAllowed("github.com", profile).contains("+host"), profile)
+    assertEquals(authorize("tracker.example", 443, policyOf(allowed = "+host tracker.example")), "tracker.example")
+    assertEquals(authorize("github.com", 443, policyOf()), "github.com")
+    Vector("deny-all", "deny-unless-model").foreach: profile =>
+      Vector("github.com", "tracker.example").foreach: host =>
+        val advice = hostNotAllowed(host, profile)
+        assert(advice.contains(s"a relaunch under $DefaultProfile"), advice)
+        assert(advice.endsWith("can admit it."), advice)
+    assert(hostNotAllowed("github.com", DefaultProfile).contains("removes it"))
+
+  test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):
+    val (client, server) = socketPair()
+    respondInsideTls(server, 403, "Forbidden", "restricted path", Some(RefusalAdvice.readOnly))
+    server.close()
+    val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
+    client.close()
+
+    val body = s"ko-agent-egress-proxy: restricted path\n${RefusalAdvice.readOnly}\n"
+    assertEquals(
+      received,
+      "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+        s"Content-Length: ${body.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n" + body,
+    )
+    // A 400 or 502 has no step to name, and keeps the one-line body.
+    assertEquals(
+      String(refusalBody("origin: certificate expired", None), StandardCharsets.UTF_8),
+      "ko-agent-egress-proxy: origin: certificate expired\n",
+    )
+
+  test("a refused CONNECT answers 403 with the same body, and the audit line is the reason alone"):
+    def exchange(request: String): (String, String) =
+      val (client, server) = socketPair()
+      val log = java.io.ByteArrayOutputStream()
+      val saved = System.err
+      System.setErr(java.io.PrintStream(log, true))
+      try
+        val handling = Thread.startVirtualThread(() => handle(server, EgressPolicy(baselinePolicy, None)))
+        client.getOutputStream.write(ascii(request))
+        client.getOutputStream.flush()
+        val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
+        handling.join()
+        (received, String(log.toByteArray, StandardCharsets.UTF_8).trim)
+      finally
+        System.setErr(saved)
+        client.close()
+
+    val body =
+      s"ko-agent-egress-proxy: host not allowed\n${RefusalAdvice.hostNotAllowed("tracker.example", DefaultProfile)}\n"
+    assertEquals(
+      exchange("CONNECT tracker.example:443 HTTP/1.1\r\nHost: tracker.example:443\r\n\r\n"),
+      (
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+          s"Content-Length: ${body.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n" + body,
+        "deny tracker.example CONNECT host not allowed",
+      ),
+    )
+    // A malformed request is the client's defect, answered with no body as before.
+    assertEquals(
+      exchange("GET / HTTP/1.1\r\nHost: tracker.example\r\n\r\n"),
+      (
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "deny - - GET non-CONNECT request",
+      ),
+    )
+
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 

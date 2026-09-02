@@ -987,6 +987,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val useProxy = BundledBuildContext.resource("ko-agent-sandbox/sandbox-jdk-use-proxy")
     assert(useProxy.contains("-importcert"), "sandbox-jdk-use-proxy imports no certificate")
     assert(useProxy.contains("net.properties"), "sandbox-jdk-use-proxy sets no proxy")
+    // The one way a CONNECT refusal's reason reaches the sandbox: no client shows that body.
+    assert(index.contains("ko-agent-sandbox/sandbox-egress-check"), "sandbox-egress-check script missing")
+    assert(
+      BundledBuildContext.resource("ko-agent-sandbox/sandbox-egress-check").contains("CONNECT {host}:443"),
+      "sandbox-egress-check sends no CONNECT",
+    )
     assert(index.contains("ko-agent-sandbox/sandbox-apt-get"), "sandbox-apt-get script missing")
     assert(
       BundledBuildContext.resource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),

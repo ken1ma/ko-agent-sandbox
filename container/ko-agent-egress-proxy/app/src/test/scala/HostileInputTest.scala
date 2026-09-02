@@ -202,6 +202,23 @@ class HostileInputTest extends munit.FunSuite:
     assert(reached > 0, "no mutation reached a host; the generator stopped producing near-misses")
     assert(refused > 0, "no mutation was refused; the generator stopped mutating")
 
+  test("a path that would select a refusal's advice is refused at the parser when it carries a control"):
+    // RefusalAdvice.forRefusedPost reads HttpRequestHead.path, so no advice is ever chosen for a
+    // target the audit log would refuse to print; and the absolute form is refused before the
+    // path is looked at, with the origin-form step, not GraphQL's.
+    Vector("/graphql\u0007", "/graphql\u001b[0m", "/o/r.git/info/lfs/objects/batch\t").foreach: path =>
+      intercept[BadRequest]:
+        HttpRequestHead.parse(ascii(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"))
+    val absolute = intercept[PolicyViolation]:
+      authorizeInspectedRequest(
+        "github.com",
+        HttpRequestHead.parse(
+          ascii("POST https://github.com/graphql HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
+        ),
+        Set("git-fetch"),
+      )
+    assertEquals(absolute.advice, RefusalAdvice.originForm)
+
   test("the TLS parser survives arbitrary bytes"):
     // Nothing else feeds the ClientHello parser bytes it did not build itself. A typed refusal or
     // an EOF is the whole contract; anything else escapes and fails.

@@ -204,6 +204,43 @@ class SessionBoundaryTest extends munit.FunSuite:
     )
     assertEquals(status("-X", "POST", "-d", "{}", "https://registry.npmjs.org/lodash"), "403")
 
+  test("a refusal says what to do next, in the words curl, git and the check print"):
+    inSession()
+    // RefusalAdvice's rows as the tools show them: curl prints a 403's body
+    // as it is, git prints a text/plain body as `remote:` lines, and sandbox-egress-check is the
+    // only reader of a failed CONNECT's body.
+    import agentsandbox.egress.RefusalAdvice
+    def body(args: String*): String = curl(args*).text
+    assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.readOnly))
+    assert(body("-X", "POST", "-d", "{}", "https://api.github.com/graphql").contains(RefusalAdvice.graphql))
+    assert(
+      body("-X", "POST", "-d", "{}", "https://github.com/o/r.git/info/lfs/objects/batch")
+        .contains(RefusalAdvice.lfsBatchGithub),
+    )
+
+    // A ref deletion needs no local commit and still starts with receive-pack discovery.
+    val repo = Files.createTempDirectory("push-probe")
+    try
+      assert(run("git", "-C", repo.toString, "init", "-q").ok)
+      val push = run("git", "-C", repo.toString, "push", "https://github.com/o/r.git", ":refs/heads/x")
+      assert(!push.ok)
+      assert(push.err.contains(s"remote: ${RefusalAdvice.gitPush}"), push.err)
+    finally
+      Files.walk(repo).sorted(java.util.Comparator.reverseOrder[Path]).forEach(path => Files.delete(path))
+
+    val refused = run("sandbox-egress-check", "unlisted.invalid")
+    assertEquals(refused.exit, 1, refused.err)
+    assert(refused.text.contains("403"), refused.text)
+    assert(
+      refused.text.contains(
+        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.AgentEgressProxy.DefaultProfile),
+      ),
+      refused.text,
+    )
+    val admitted = run("sandbox-egress-check", "api.github.com")
+    assertEquals(admitted.exit, 0, admitted.err)
+    assert(admitted.text.contains("HEAD / -> HTTP/1.1 "), admitted.text)
+
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
     // Driven as a program rather than asserted against the mounted file, because what matters is
