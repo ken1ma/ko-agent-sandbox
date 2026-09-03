@@ -1,6 +1,8 @@
-// The egress proxy: policy, connection handling, and the flow from CONNECT to tunnel. HTTP handling lives in
-// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala, and hostname/address
-// vetting in IPAddrHelper.scala.
+// The egress proxy: the listening loop, the flow from CONNECT to tunnel, and the one-request
+// inspected session. The policy and its decisions live in PolicyHelper.scala, the audit log's form
+// in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala,
+// and hostname/address vetting in IPAddrHelper.scala.
 
 package agentsandbox.egress
 
@@ -8,15 +10,15 @@ import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintS
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
 import java.nio.file.Path
 import java.time.Instant
-import java.time.format.DateTimeFormatter
 import java.security.GeneralSecurityException
 import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
 
-import GitHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
+import LogHelper.*
+import PolicyHelper.*
 import TLSHelper.*
 
 object AgentEgressProxy:
@@ -45,121 +47,6 @@ object AgentEgressProxy:
    * objects before the first byte can legitimately take minutes.
    */
   val InspectedIdleTimeoutMillis = 300_000
-
-  /*
-   * Exact hostnames only. Deliberately no regex or wildcard matching on the granting side.
-   *
-   * Every allowed host is a GET-based exfiltration channel: a permitted GET carries its URL, and a URL is a message.
-   *
-   * A host's treatment is one of two:
-   *
-   *   - unrestricted: an opaque tunnel — nothing seen or logged past the CONNECT.
-   *   - restricted: TLS-inspected; only GET and HEAD, plus the POST paths its `allow=` tags open
-   *     (authorizeInspectedRequest).
-   *
-   * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
-   * rule, and an unknown tag is a refused start — the guardrail design.md ("No general HTTP
-   * method/path policy language") sets on this syntax.
-   *
-   * Which hosts are in force is the selected profile's answer (resolvePolicy below): the
-   * launcher-owned baseline — every model-provider group plus the curated restricted catalog —
-   * modified by the project's `allowed` delta and `denied` rules. Whichever policy is in force is
-   * printed at startup and every denial is logged, which is how you find out what an agent
-   * actually wanted.
-   *
-   * Inspection is off unless the launcher supplies a certificate and key; the leaf must name
-   * exactly the resolved restricted hosts, tags stripped (SECURITY.md, "Who holds the CA key").
-   */
-
-  enum Treatment:
-    case Restricted(tags: Set[String])
-    case Unrestricted
-
-
-  /** The tags a restricted entry may carry — a closed set: a tag names one of the fixed
-    * rule-sets in authorizeInspectedRequest, never describes one. Each is named tool-operation,
-    * for the single operation it opens. */
-  val KnownTags: Set[String] = Set("git-fetch", "npm-audit", "github-login-device")
-
-  /** The audit endpoint the image's npm POSTs at install time — measured on the bundled Node
-    * 24.19.0 / npm 11.17.0, not guessed. An older npm's /-/npm/v1/security/audits/quick is
-    * refused and logged: the contract is the shipped client, and npm treats the refusal as
-    * non-fatal. */
-  val NpmAuditPath = "/-/npm/v1/security/advisories/bulk"
-
-  /** GitHub's OAuth device flow, as Copilot CLI 1.0.80 drives it: the first mints the user code the
-    * agent prints, the second polls for the token once the browser has approved. Both bodies are
-    * fixed forms naming a client id, so the allowance carries no project data. */
-  val GithubLoginDevicePaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
-
-  /**
-   * The baseline is policy, so it is written as policy: resource files in the `allowed` grammar's
-   * addition form, read through the parser a project's file goes through, with the reasoning for
-   * each host as a comment beside it. `baseline/host` is the curated restricted catalog — what
-   * deny-unless-allowed admits on its own; `baseline/model-provider/<name>` is what
-   * `+model-provider <name>` expands to: the party trusted to receive project data, and only its
-   * model, authentication and control-plane endpoints, never every domain it owns (the github
-   * group's forge entries have the case).
-   *
-   * A baseline file holds `+host` entries and nothing else, and the catalog holds no unrestricted
-   * one; either is a refused start, not a silent narrowing, so the image's own `--print-policy`
-   * (the launcher's dry run) is where a malformed baseline surfaces.
-   */
-  val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "github")
-
-  private def readBaseline(name: String): Map[String, Treatment] =
-    val variable = s"the baseline file $name"
-    val stream = getClass.getResourceAsStream(s"/baseline/$name")
-    if stream == null then throw IllegalStateException(s"$variable is missing from the proxy jar")
-    val text =
-      try String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
-      finally stream.close()
-    val entries = policyEntries(text).map:
-      case "+host" +: entry +: words => parseHostAddition(variable, entry, words)
-      case tokens =>
-        throw IllegalStateException(
-          s"$variable contains '${tokens.mkString(" ")}'; a baseline file holds +host entries only",
-        )
-    val twice = entries.groupBy(_(0)).collect { case (host, seen) if seen.sizeIs > 1 => host }.toVector.sorted
-    if twice.nonEmpty then throw IllegalStateException(s"$variable names ${twice.mkString(", ")} twice")
-    entries.toMap
-
-  val CuratedRestrictedHosts: Map[String, Set[String]] =
-    readBaseline("host").map:
-      case (host, Treatment.Restricted(tags)) => host -> tags
-      case (host, Treatment.Unrestricted) =>
-        throw IllegalStateException(
-          s"the baseline file host makes $host unrestricted; the catalog is restricted, and an " +
-            "opaque tunnel belongs to a model-provider group",
-        )
-
-  val ModelProviderHosts: Map[String, Map[String, Treatment]] =
-    ModelProviders.map(name => name -> readBaseline(s"model-provider/$name")).toMap
-
-  /**
-   * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
-   * is restricted in both — a group never widens the catalog — and carries the union of its tags
-   * (github.com: `allow=git-fetch` from the catalog, `allow=github-login-device` from its group). What each
-   * profile admits of it is resolvePolicy's equation.
-   */
-  val BaselineHosts: Map[String, Treatment] =
-    (ModelProviderHosts.values.flatten
-      ++ CuratedRestrictedHosts.map((host, tags) => host -> Treatment.Restricted(tags)))
-      .groupMapReduce(_(0))(_(1)):
-        case (Treatment.Restricted(a), Treatment.Restricted(b)) => Treatment.Restricted(a ++ b)
-        case (a, b) =>
-          throw IllegalStateException(s"a provider group and the catalog disagree on a host's treatment: $a, $b")
-
-  val ProfileVariable = "EGRESS_PROFILE"
-  val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
-  val AllowedVariable = "EGRESS_ALLOWED"
-  val DeniedVariable = "EGRESS_DENIED"
-
-  /** The authority profiles, weakest-to-widest; deny-unless-allowed is what an unset
-    * EGRESS_PROFILE means — the launcher-owned baseline, every entry restricted or a model
-    * provider's own endpoints, so the default is useful without opening the open internet. */
-  val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
-  val DefaultProfile = "deny-unless-allowed"
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
@@ -201,6 +88,7 @@ object AgentEgressProxy:
     try
       val resolved = configuredPolicy()
       policyLines(resolved).foreach(println)
+      wideningLine(resolved).foreach(println)
       if provenance then provenanceLines(resolved).foreach(println)
       resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     catch
@@ -234,82 +122,20 @@ object AgentEgressProxy:
     // The decision is authorizeRequest's own — the very function a CONNECT meets — so this
     // diagnostic cannot disagree with enforcement: an IP-literal target, a denied rule and a
     // non-admitted host all answer here exactly as they would on the wire, in enforcement's
-    // words. Only an accepted host's treatment is looked up on top.
-    val decision =
+    // words. Only an accepted host's treatment is looked up on top, one line per scope.
+    val decisions =
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
         resolved.hosts.get(authorized) match
           case Some(treatment) => spelled(treatment)
-          case None            => "unrestricted (the public-HTTPS default)"
-      catch case ex: PolicyViolation => s"refused: ${ex.getMessage}"
-    println(s"policy: $host $decision")
+          case None            => Vector("unrestricted (the public-HTTPS default)")
+      catch case ex: PolicyViolation => Vector(s"refused: ${ex.getMessage}")
+    decisions.foreach(decision => println(s"policy: $host $decision"))
 
     try println(s"resolves: ${resolvePublic(host).map(_.getHostAddress).mkString(" ")}")
     catch
       case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
       case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
-
-  def spelled(treatment: Treatment): String = treatment match
-    case Treatment.Restricted(tags) if tags.nonEmpty => s"restricted allow=${tags.toVector.sorted.mkString(",")}"
-    case Treatment.Restricted(_)                     => "restricted"
-    case Treatment.Unrestricted                      => "unrestricted"
-
-  /**
-   * The resolved policy, one line each — printed by --print-policy and
-   * logged by serve() identically, so the dry-run banner, the runtime
-   * log and the launcher's leaf minting all read one format. The restricted
-   * line is the whole inspected set — what the leaf certificate names — and
-   * each allowance in force gets a line of its own (`restricted allow=git-fetch
-   * (7): ...`), so which hosts carry which exception is read off directly.
-   * Under allow-unless-denied there is no finite unrestricted line to print —
-   * the profile line carries the public-HTTPS default instead, and no host
-   * count is invented.
-   */
-  def policyLines(resolved: ResolvedEgress): Vector[String] =
-    val profileLine = resolved.profile match
-      case "deny-unless-model" =>
-        s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
-      case "allow-unless-denied" =>
-        "egress profile: allow-unless-denied; default: public HTTPS unrestricted"
-      case other => s"egress profile: $other"
-
-    val restrictedHosts = resolved.restricted.keys.toVector.sorted
-    val allowanceLines = resolved.restricted.values.flatten.toVector.distinct.sorted.map: tag =>
-      val hosts = resolved.tagged(tag).toVector.sorted
-      s"restricted allow=$tag (${hosts.size}):" + hosts.map(" " + _).mkString
-    val unrestrictedLine = Option.when(!resolved.ambient)(
-      s"unrestricted hosts (${resolved.unrestrictedHosts.size}):"
-        + resolved.unrestrictedHosts.toVector.sorted.map(" " + _).mkString,
-    )
-
-    Vector(
-      profileLine,
-      s"restricted hosts (${restrictedHosts.size}):" + restrictedHosts.map(" " + _).mkString,
-    ) ++ allowanceLines ++ unrestrictedLine ++ Vector(
-      s"denied rules (${resolved.denied.size}):"
-        + resolved.denied.map(" " + _.spelled).mkString,
-    ) ++ Option.when(resolved.idleDenied.nonEmpty)(
-      s"idle denied rules (${resolved.idleDenied.size}):"
-        + resolved.idleDenied.map(" " + _.spelled).mkString,
-    )
-
-  /**
-   * Where each effective entry came from — built-in provider group or curated catalog, `allowed`
-   * addition, `denied` — and what overrode what: a removal or denial that costs a host is a line
-   * here, never a silent subtraction. Printed by `--print-policy --provenance`, which is what
-   * `--egress-effective` runs.
-   */
-  def provenanceLines(resolved: ResolvedEgress): Vector[String] =
-    def sourceOf(host: String): String = resolved.sources(host)
-
-    val hostLines = resolved.hosts.toVector.sorted(using Ordering.by(_(0))).map: (host, treatment) =>
-      s"  $host: ${spelled(treatment)}; ${sourceOf(host)}"
-    val deniedOverrides = resolved.deniedAdmitted.toVector.sortBy(_(0)).map: (host, rule) =>
-      s"  $host: denied by ${rule.spelled}; ${sourceOf(host)}"
-    val removalLines = resolved.removedSpellings.map(spelling => s"  $spelling: removed by allowed")
-    val idleLines = resolved.idleDenied.map(rule => s"  ${rule.spelled}: denies nothing this profile admits (idle)")
-
-    Vector("provenance:") ++ hostLines ++ deniedOverrides ++ removalLines ++ idleLines
 
   def configuredPolicy(): ResolvedEgress =
     def read(variable: String): Option[String] = Option(System.getenv(variable))
@@ -393,6 +219,7 @@ object AgentEgressProxy:
     // The digest gives the audit log one stable, grep-able line naming which policy this run
     // enforced, comparable across runs without diffing the lines above.
     System.err.println(s"resolved-policy digest: ${sha256Hex(lines.mkString("\n"))}")
+    wideningLine(policy.resolved).foreach(System.err.println)
     policy.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     System.err.println(policy.inspectionSummary)
 
@@ -427,57 +254,6 @@ object AgentEgressProxy:
           s"$CertificateVariable and $PrivateKeyVariable must be set together",
         )
 
-  /**
-   * One `denied` rule, or an entry of the launcher-owned internal denials. Every form is
-   * removal-only, so none can widen authority; the provider form keeps a denied provider denied
-   * when its concrete endpoints change, because it matches whatever the group expands to now.
-   */
-  enum DenyRule:
-    case Exact(host: String)
-    case Subtree(base: String)
-    case Provider(name: String)
-
-    def matches(host: String): Boolean = this match
-      case Exact(h) => host == h
-      // The pattern's own dot is the label boundary: `**.foo.com` covers foo.com and api.foo.com, never barfoo.com.
-      case Subtree(b)  => host == b || host.endsWith("." + b)
-      case Provider(p) => ModelProviderHosts(p).contains(host)
-
-    def spelled: String = this match
-      case Exact(h)    => h
-      case Subtree(b)  => s"**.$b"
-      case Provider(p) => s"model-provider:$p"
-
-  /**
-   * The policy in force: the selected profile's finite host map — under allow-unless-denied,
-   * the restricted exceptions, with `ambient` admitting every other public hostname on port 443
-   * as unrestricted — and the denied rules, which win over both treatments. What each treatment
-   * means is the policy comment's enumeration; how the restricted rules are enforced once TLS
-   * is terminated is authorizeInspectedRequest. The provenance fields exist for presentation
-   * only — `sources` labels each pre-denial host with the rule that last changed it,
-   * `deniedAdmitted` the hosts a denial cost, `removedSpellings` the allowed-delta rules that
-   * actually removed something; enforcement reads `hosts`, `ambient` and `denied`.
-   */
-  case class ResolvedEgress(
-    profile: String,
-    provider: Option[String],
-    ambient: Boolean,
-    hosts: Map[String, Treatment],
-    denied: Vector[DenyRule],
-    idleDenied: Vector[DenyRule],
-    warnings: Vector[String],
-    sources: Map[String, String],
-    deniedAdmitted: Map[String, DenyRule],
-    removedSpellings: Vector[String],
-  ):
-    val restricted: Map[String, Set[String]] =
-      hosts.collect { case (host, Treatment.Restricted(tags)) => host -> tags }
-    val unrestrictedHosts: Set[String] =
-      hosts.collect { case (host, Treatment.Unrestricted) => host }.toSet
-    val inspected: Set[String] = restricted.keySet
-    def tagged(tag: String): Set[String] =
-      restricted.collect { case (host, tags) if tags.contains(tag) => host }.toSet
-
   case class EgressPolicy(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
@@ -488,389 +264,6 @@ object AgentEgressProxy:
           s"tls inspection: active for the ${active.hosts.size} restricted hosts"
         case None =>
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
-
-  /**
-   * The variables resolved to the policy in force.
-   *
-   * Let `M` be the selected provider's group, `B` the baseline (BaselineHosts), `A` the result
-   * of applying the `allowed` delta to `B`, `N` the restricted narrowing set — `B`'s restricted
-   * entries plus restricted exact-host additions; removals, `-**` and unrestricted
-   * additions cannot subtract from it — `D` the `denied` rules expanded, and `U` the implicit
-   * map from every public hostname on port 443 to unrestricted:
-   *
-   *   deny-all            = empty
-   *   deny-unless-model   = M - D
-   *   deny-unless-allowed = A - D
-   *   allow-unless-denied = narrow(U, N) - D
-   *
-   * A provider group is a contribution, not a replacement: `+model-provider` merges a group's
-   * restricted tags into a host the catalog restricts too, and `-model-provider` takes back only
-   * those — `+` then `-` is the identity, and over the baseline `+` alone is a no-op. `D`'s
-   * `model-provider` form is the one that removes such a host outright.
-   *
-   * The internal-network denials of the security model are not host rules here: they are
-   * IPAddrHelper's address vetting, applied to every resolved destination at connection time,
-   * ambient hosts included, so no policy file can spell them away.
-   *
-   * Fails closed on every ambiguity: an unknown profile, provider, tag or entry form; duplicate
-   * exact-host additions with different treatments; a host both added and removed — a `+host`
-   * under a `-host **.domain` included; an addition that would widen a restricted baseline host
-   * to unrestricted, which the delta grammar cannot write short of `-**` plus a complete
-   * replacement; a removal matching neither the baseline nor an addition. A `denied` entry
-   * matching nothing the selected profile admits is a startup warning, not an error: it can
-   * still apply under another profile or a future provider expansion, and a typo cannot be
-   * distinguished from a proactive denial against the ambient host universe. An empty effective
-   * map is valid and reported as such — deny-all resolves empty by design, as does
-   * deny-unless-model with no provider selected. The only wildcard is the taking-away side's
-   * `**.domain`; SECURITY.md ("Adding hosts, not patterns") records the asymmetry.
-   */
-  def resolvePolicy(
-    profileValue: Option[String],
-    providerValue: Option[String],
-    allowedText: Option[String],
-    deniedText: Option[String],
-  ): ResolvedEgress =
-    val profile = profileValue.getOrElse(DefaultProfile)
-    if !Profiles.contains(profile) then
-      throw IllegalArgumentException(
-        s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}",
-      )
-    val provider =
-      providerValue.filterNot(_ == "none").map(requireProvider(ModelProviderVariable, _))
-
-    val delta = parseAllowed(allowedText.getOrElse(""))
-    val denied = parseDenied(deniedText.getOrElse(""))
-
-    delta.addedHosts.foreach: (host, treatment) =>
-      val widens = !delta.clearsBaseline && treatment == Treatment.Unrestricted &&
-        BaselineHosts.get(host).exists {
-          case Treatment.Restricted(_) => true
-          case Treatment.Unrestricted  => false
-        }
-      if widens then
-        throw IllegalArgumentException(
-          s"$AllowedVariable re-adds the restricted baseline host $host as unrestricted; " +
-            "treatment widening cannot be written as a delta — use -** and state the complete " +
-            "replacement policy",
-        )
-
-    val contradicted =
-      delta.addedHosts.keySet.filter(host => delta.removals.exists(_.matches(host)))
-    if contradicted.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes ${contradicted.toVector.sorted.mkString(", ")}",
-      )
-
-    delta.removals.foreach: removal =>
-      if !(BaselineHosts.keySet ++ delta.addedHosts.keySet).exists(removal.matches) then
-        throw IllegalArgumentException(
-          s"$AllowedVariable removes ${removal.spelled}, which matches neither the baseline " +
-            "nor an addition; a '-' that removes nothing is refused",
-        )
-
-    // Provenance rides along with the transformation itself: each host carries the label of the
-    // last rule that actually changed it, and a delta rule is reported as a removal only when it
-    // removed a host that was present when it applied. A rule the profile never consults, or one
-    // that restates what already held — re-adding a baseline host with its baseline treatment,
-    // removing under -** what -** already cleared — changes nothing and is reported
-    // nowhere.
-    // A host in the catalog and in a group at once names both sources: its tags came from both.
-    def baselineSource(host: String): String =
-      (Option.when(CuratedRestrictedHosts.contains(host))("curated baseline")
-        ++ ModelProviderHosts.collect { case (name, hosts) if hosts.contains(host) => s"model-provider $name" })
-        .mkString(", ")
-
-    def overlay(
-      current: Map[String, (Treatment, String)],
-      host: String,
-      treatment: Treatment,
-      source: String,
-    ): Map[String, (Treatment, String)] =
-      current.get(host) match
-        case Some((standing, _)) if standing == treatment => current
-        case _ => current.updated(host, (treatment, source))
-
-    // A group's restricted entry contributes its tags to a host the catalog already restricts, as
-    // BaselineHosts merged them: `+model-provider github` over the baseline is a no-op, not a
-    // second grant of github.com's allowances. Removing the group takes back only what it contributed.
-    def addGroup(current: Map[String, (Treatment, String)], name: String, source: String) =
-      ModelProviderHosts(name).foldLeft(current):
-        case (current, (host, Treatment.Restricted(tags))) =>
-          current.get(host) match
-            case Some((Treatment.Restricted(standing), _)) if tags.subsetOf(standing) => current
-            case Some((Treatment.Restricted(standing), _)) =>
-              current.updated(host, (Treatment.Restricted(standing ++ tags), source))
-            case _ => current.updated(host, (Treatment.Restricted(tags), source))
-        case (current, (host, treatment)) => overlay(current, host, treatment, source)
-    def removeGroup(current: Map[String, (Treatment, String)], name: String) =
-      ModelProviderHosts(name).keys.foldLeft(current): (current, host) =>
-        CuratedRestrictedHosts.get(host) match
-          case Some(tags) if current.contains(host) =>
-            current.updated(host, (Treatment.Restricted(tags), "curated baseline"))
-          case _ => current - host
-
-    // A: the allowed delta applied to B, in the delta's fixed order. Additions land last, so an
-    // exact entry overrides the baseline's treatment of the same host (the widening direction was
-    // refused above).
-    val cleared: Map[String, (Treatment, String)] =
-      if delta.clearsBaseline then Map.empty
-      else BaselineHosts.map((host, treatment) => host -> (treatment, baselineSource(host)))
-    val afterProviderRemovals = delta.removedProviders.toVector.sorted.foldLeft(cleared)(removeGroup)
-    val withAddedProviders =
-      delta.addedProviders.toVector.sorted.foldLeft(afterProviderRemovals): (current, name) =>
-        addGroup(current, name, s"allowed +model-provider $name")
-    // Sequentially, each rule judged against the map as the rules before it left it: of two
-    // overlapping removals, only the first removes anything, and only it is reported.
-    val (afterRemovals, effectiveHostRemovals) =
-      delta.removals.foldLeft((withAddedProviders, Vector.empty[String])):
-        case ((current, effective), rule) =>
-          val remaining = current.filterNot((host, _) => rule.matches(host))
-          (remaining, if remaining.size < current.size then effective :+ rule.spelled else effective)
-    val admitted = delta.addedHosts.toVector.sortBy(_(0)).foldLeft(afterRemovals):
-      case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
-
-    val effectiveRemovals =
-      Option.when(delta.clearsBaseline)("-** (baseline cleared)").toVector
-        ++ delta.removedProviders.toVector.sorted
-          .filter(name => cleared.keys.exists(ModelProviderHosts(name).contains))
-          .map(name => s"model-provider:$name")
-        ++ effectiveHostRemovals
-
-    // N: what stays restricted under allow-unless-denied — every restricted baseline entry, a
-    // group's included, so github.com keeps allow=github-login-device. Only additions extend it; nothing in
-    // the delta subtracts from it, so a removal or `-**` cannot widen an ambient host.
-    val narrowed: Map[String, (Treatment, String)] =
-      delta.addedHosts.toVector.sortBy(_(0))
-        .filter((_, treatment) => treatment != Treatment.Unrestricted)
-        .foldLeft(
-          BaselineHosts.collect { case (host, treatment @ Treatment.Restricted(_)) =>
-            host -> ((treatment: Treatment) -> baselineSource(host))
-          },
-        ):
-          case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
-
-    val (preDenyWithSources, ambient) = profile match
-      case "deny-all" => (Map.empty[String, (Treatment, String)], false)
-      case "deny-unless-model" =>
-        (
-          provider.fold(Map.empty[String, (Treatment, String)])(name =>
-            ModelProviderHosts(name).map((host, treatment) => host -> (treatment, s"model-provider $name")),
-          ),
-          false,
-        )
-      case "deny-unless-allowed" => (admitted, false)
-      case "allow-unless-denied" => (narrowed, true)
-
-    val preDeny = preDenyWithSources.view.mapValues(_(0)).toMap
-    val sources = preDenyWithSources.view.mapValues(_(1)).toMap
-
-    val deniedAdmitted: Map[String, DenyRule] =
-      preDeny.keys.toVector.flatMap(host => denied.find(_.matches(host)).map(host -> _)).toMap
-
-    // deny-all warns about nothing: its denials are idle by definition. Under
-    // allow-unless-denied every syntactically valid rule matches the ambient universe.
-    val idleDenied =
-      if profile == "deny-all" || ambient then Vector.empty
-      else denied.filterNot(rule => preDeny.keys.exists(rule.matches))
-
-    val hosts = preDeny.filterNot((host, _) => deniedAdmitted.contains(host))
-
-    val warnings =
-      provider.toVector.flatMap: selected =>
-        val unreachable = ModelProviderHosts(selected).keys.toVector.sorted.filterNot: host =>
-          !denied.exists(_.matches(host)) && (hosts.contains(host) || ambient)
-        Option.when(unreachable.nonEmpty)(
-          s"the selected model provider '$selected' is not fully reachable under $profile: " +
-            unreachable.mkString(" "),
-        )
-      ++ Option.when(idleDenied.nonEmpty)(
-        "denied rules matching nothing this profile admits (kept: they can apply under " +
-          s"another profile or a future provider expansion): ${idleDenied.map(_.spelled).mkString(" ")}",
-      )
-
-    // Only deny-unless-allowed consults the removal side of the delta; under every other profile
-    // even an effective-looking removal shaped nothing.
-    val activeRemovals =
-      if profile == "deny-unless-allowed" then effectiveRemovals else Vector.empty[String]
-
-    ResolvedEgress(
-      profile, provider, ambient, hosts, denied, idleDenied, warnings,
-      sources, deniedAdmitted, activeRemovals,
-    )
-
-  private def requireProvider(variable: String, name: String): String =
-    if !ModelProviderHosts.contains(name) then
-      throw IllegalArgumentException(
-        s"$variable names the model provider '$name', which this proxy does not define; " +
-          s"the providers are ${ModelProviderHosts.keys.toVector.sorted.mkString(", ")}",
-      )
-    name
-
-  /**
-   * The allowances of one `allow=<tag>,...` word: KnownTags members only, so a tag names a fixed
-   * treatment, and never empty — `allow=` saying nothing is refused, not read as none.
-   */
-  private def parseAllowances(variable: String, host: String, word: String): Set[String] =
-    val tags = word.stripPrefix("allow=").split(",", -1).toVector
-    tags.foreach: tag =>
-      if !KnownTags.contains(tag) then
-        throw IllegalArgumentException(
-          s"$variable allows '$host' the operation '$tag', which this proxy does not define; " +
-            s"the allowances are: ${KnownTags.toVector.sorted.mkString(", ")}",
-        )
-    tags.toSet
-
-  private def parseHostAddition(variable: String, entry: String, words: Vector[String]): (String, Treatment) =
-    val host = normalizeEntry(variable, entry)
-    words match
-      case Vector()               => host -> Treatment.Restricted(Set.empty)
-      case Vector("unrestricted") => host -> Treatment.Unrestricted
-      case Vector(word) if word.startsWith("allow=") =>
-        host -> Treatment.Restricted(parseAllowances(variable, host, word))
-      case _ if words.contains("unrestricted") =>
-        throw IllegalArgumentException(
-          s"$variable gives the unrestricted host $host an allowance; allow= opens one " +
-            "restricted operation, so it belongs on a restricted entry only",
-        )
-      case _ if words.contains("restricted") =>
-        throw IllegalArgumentException(
-          s"$variable spells $host's treatment 'restricted', which is the default and " +
-            "has no word: +host <host>, or +host <host> allow=<tag>,...",
-        )
-      case other =>
-        throw IllegalArgumentException(
-          s"$variable follows $host with '${other.mkString(" ")}'; the forms are " +
-            "+host <host>, +host <host> allow=<tag>,..., +host <host> unrestricted",
-        )
-
-  private enum AllowedEntry:
-    case ClearBaseline
-    case AddProvider(name: String)
-    case RemoveProvider(name: String)
-    case AddHost(host: String, treatment: Treatment)
-    case RemoveHost(removal: DenyRule)
-
-  private case class AllowedDelta(
-    clearsBaseline: Boolean,
-    addedProviders: Set[String],
-    removedProviders: Set[String],
-    addedHosts: Map[String, Treatment],
-    removals: Vector[DenyRule],
-  )
-
-  /**
-   * The `allowed` delta's grammar, one entry per line, `#` comments:
-   *
-   *   +model-provider <name>            -model-provider <name>
-   *   +host <host>                      restricted, the default: TLS-inspected, GET and HEAD
-   *   +host <host> allow=<tag>,...      restricted, plus the named allowances (KnownTags)
-   *   +host <host> unrestricted         an opaque tunnel — the one word that widens
-   *   -host <host | **.domain>
-   *   -**                               removes the whole baseline, wherever it appears
-   *
-   * The safe treatment has no word, so the dangerous one is the only entry with an extra word;
-   * `restricted` spelled out is refused rather than accepted as a second spelling. `-**` is a
-   * flag, not a rule in sequence — the file is not applied top to bottom (resolvePolicy) — so
-   * the file's own additions stand above or below it.
-   *
-   * An entry outside the grammar is refused, never skipped: a stray line configures nothing,
-   * which is the silent-weakening failure mode this file must not have. An addition states its
-   * host's complete allowances and overrides the baseline entry for the same host — never a
-   * merge, which would widen a host to a treatment no single line says. Two entries for one
-   * host with different treatments or allowances are refused; restating a baseline entry
-   * identically stays the legal defensive no-op, so a policy that names a host keeps working
-   * when the image adopts it.
-   */
-  private def parseAllowed(text: String): AllowedDelta =
-    import AllowedEntry.*
-    val entries = policyEntries(text).map:
-      case Vector("-**")                   => ClearBaseline
-      case Vector("+model-provider", name) => AddProvider(requireProvider(AllowedVariable, name))
-      case Vector("-model-provider", name) => RemoveProvider(requireProvider(AllowedVariable, name))
-      case "+host" +: entry +: words =>
-        val (host, treatment) = parseHostAddition(AllowedVariable, entry, words)
-        AddHost(host, treatment)
-      case Vector("-host", entry) => RemoveHost(parseHostRule(AllowedVariable, entry))
-      case tokens =>
-        throw IllegalArgumentException(
-          s"$AllowedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
-            "allowed grammar: +model-provider <name>, -model-provider <name>, " +
-            "+host <host> [allow=<tag>,... | unrestricted], -host <host | **.domain>, -**",
-        )
-
-    val added = entries.collect { case AddHost(host, treatment) => (host, treatment) }.distinct
-    val conflicted = added.groupBy(_(0)).filter(_._2.sizeIs > 1).keys.toVector.sorted
-    if conflicted.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable adds ${conflicted.mkString(", ")} with two different treatments; " +
-          "an entry states its host's complete treatment, once",
-      )
-
-    val addedProviders = entries.collect { case AddProvider(name) => name }.toSet
-    val removedProviders = entries.collect { case RemoveProvider(name) => name }.toSet
-    val bothWays = (addedProviders intersect removedProviders).toVector.sorted
-    if bothWays.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes model-provider ${bothWays.mkString(", ")}",
-      )
-
-    AllowedDelta(
-      entries.contains(ClearBaseline),
-      addedProviders,
-      removedProviders,
-      added.toMap,
-      entries.collect { case RemoveHost(removal) => removal },
-    )
-
-  /**
-   * The `denied` file's grammar, one entry per line, `#` comments — no `+`/`-` prefixes and no
-   * `allow=`, because denied only ever takes away, the host whole, under every profile:
-   *
-   *   model-provider <name>
-   *   host <host | **.domain>
-   */
-  private def parseDenied(text: String): Vector[DenyRule] =
-    policyEntries(text)
-      .map:
-        case Vector("model-provider", name) =>
-          DenyRule.Provider(requireProvider(DeniedVariable, name))
-        case Vector("host", entry) => parseHostRule(DeniedVariable, entry)
-        case tokens =>
-          throw IllegalArgumentException(
-            s"$DeniedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
-              "denied grammar: model-provider <name>, host <host | **.domain>",
-          )
-      .distinct
-
-  private def parseHostRule(variable: String, entry: String): DenyRule =
-    if entry.startsWith("**.") then DenyRule.Subtree(normalizeEntry(variable, entry.drop(3)))
-    else DenyRule.Exact(normalizeEntry(variable, entry))
-
-  /** A policy file's lines as token vectors: `#` starts a comment, blank lines vanish, tokens
-    * split on whitespace — never comma, which stays inside its token and fails hostname
-    * validation instead of silently becoming two entries. */
-  private def policyEntries(text: String): Vector[Vector[String]] =
-    text.linesIterator
-      .map(_.takeWhile(_ != '#'))
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty))
-      .filter(_.nonEmpty)
-      .toVector
-
-  private def normalizeEntry(variable: String, entry: String): String =
-    val host =
-      try normalizeHost(entry)
-      catch
-        case ex: BadRequest =>
-          throw IllegalArgumentException(
-            s"$variable contains an invalid hostname '$entry': ${ex.getMessage}",
-          )
-
-    if isIpLiteral(host) then
-      throw IllegalArgumentException(
-        s"$variable contains an IP literal '$entry'; only hostnames are allowed",
-      )
-
-    host
 
   @tailrec
   def acceptForever(server: ServerSocket, policy: EgressPolicy): Unit =
@@ -1052,7 +445,7 @@ object AgentEgressProxy:
     host: String,
     hello: TlsClientHello,
     inspection: TlsInspection,
-    hostTags: Set[String],
+    hostScopes: Set[Scope],
     admitted: String => Boolean,
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes)
@@ -1072,7 +465,7 @@ object AgentEgressProxy:
         method = head.method
         target = head.target
 
-        authorizeInspectedRequest(host, head, hostTags, admitted)
+        authorizeInspectedRequest(host, head, hostScopes, admitted)
 
         val upstreamTls = inspection.connect(upstream, host)
 
@@ -1195,96 +588,6 @@ object AgentEgressProxy:
       loop(64 * 1024)
     catch case _: IOException => ()
 
-  /**
-   * What "read access" means once TLS is terminated. Everywhere: GET and
-   * HEAD to any path, bodyless. Each of the host's tags additionally admits
-   * its POSTs: `allow=git-fetch` the git-upload-pack path, without which "read
-   * access" would silently exclude `git clone`; `allow=npm-audit` the audit
-   * endpoint npm hits during install (NpmAuditPath); `allow=github-login-device` the
-   * device-flow pair (GithubLoginDevicePaths). On a host without it, no
-   * POST at all: a path there is an object name anyone can choose, so a
-   * path rule authorizes nothing.
-   *
-   * Receive-pack discovery, the LFS batch endpoint and GraphQL stay refused:
-   * SECURITY.md, "Reading without being able to write".
-   */
-  def authorizeInspectedRequest(
-    host: String,
-    head: HttpRequestHead,
-    hostTags: Set[String],
-    // Which hosts this session admits, consulted only where a refusal's advice would name another
-    // host (RefusalAdvice.forRefusedPost); the default names none.
-    admitted: String => Boolean = _ => false,
-  ): Unit =
-    if !head.target.startsWith("/") then
-      throw PolicyViolation("only origin-form request targets are allowed", RefusalAdvice.originForm)
-
-    if head.values("Upgrade").nonEmpty then
-      throw PolicyViolation("HTTP Upgrade is not allowed", RefusalAdvice.upgrade)
-
-    head.values("Host") match
-      case Vector(value) =>
-        val declared = normalizeHostHeader(value)
-
-        if declared != host then
-          throw PolicyViolation(s"Host header $declared", RefusalAdvice.hostHeader)
-
-      case Vector() => throw BadRequest("missing Host header")
-      case _        => throw BadRequest("duplicate Host header")
-
-    head.bodyFraming // throws when ambiguous
-
-    head.method match
-      case "GET" | "HEAD" =>
-        // a body on a read method would be an unbounded, unlogged client-to-server channel
-        if head.bodyFraming != BodyFraming.Empty then
-          throw PolicyViolation("request body", RefusalAdvice.requestBody)
-
-        if isReceivePackDiscovery(head) then
-          throw PolicyViolation("git push ref discovery", RefusalAdvice.gitPush)
-
-      case "POST" =>
-        requireUnambiguousPath(head.path)
-
-        val opened =
-          (hostTags.contains("git-fetch") && isUploadPack(head.path))
-            || (hostTags.contains("npm-audit") && head.path == NpmAuditPath)
-            || (hostTags.contains("github-login-device") && GithubLoginDevicePaths.contains(head.path))
-        if !opened then
-          throw PolicyViolation(
-            if hostTags.isEmpty then "restricted host" else "restricted path",
-            RefusalAdvice.forRefusedPost(host, head.path, admitted),
-          )
-
-      case _ =>
-        throw PolicyViolation("restricted host", RefusalAdvice.readOnly)
-
-  /*
-   * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
-   * contain one and resolvePublic rejects private answers — and under the ambient profile it is
-   * the named refusal a literal target gets. Denial wins over both treatments and over the
-   * ambient default.
-   */
-  def authorizeRequest(
-    request: ConnectRequest,
-    resolved: ResolvedEgress,
-  ): String =
-    if request.port != 443 then
-      throw PolicyViolation(s"port ${request.port}", RefusalAdvice.port)
-
-    val host = normalizeHost(request.host)
-
-    if isIpLiteral(host) then
-      throw PolicyViolation("IP-literal target", RefusalAdvice.ipLiteral)
-
-    resolved.denied.find(_.matches(host)).foreach: rule =>
-      throw PolicyViolation(s"host denied (${rule.spelled})", RefusalAdvice.hostDenied)
-
-    if !resolved.hosts.contains(host) && !resolved.ambient then
-      throw PolicyViolation("host not allowed", RefusalAdvice.hostNotAllowed(host, resolved.profile))
-
-    host
-
   def connect(
     addresses: Vector[InetAddress],
     port: Int,
@@ -1356,159 +659,6 @@ object AgentEgressProxy:
       case _: InterruptedException =>
         Thread.currentThread().interrupt()
 
-  /**
-   * One connection event of the audit log: `verb host method [target] tail` — the grammar
-   * SECURITY.md ("The audit line grammar") declares stable through field 3. A `-` fills a field
-   * the connection ended before revealing; the target appears exactly when a parsed inspected
-   * request exists; the tail is human text with no field structure.
-   */
-  def auditLine(verb: String, host: String, method: String, target: String, tail: String): String =
-    (Vector(verb, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
-
-  /**
-   * Every line the proxy reports, prefixed with the instant it was written, as
-   * `2026-08-26T11:59:38Z `. UTC, per SECURITY.md "The audit line grammar".
-   * Prefixing at the byte level, on the first byte after a newline, so a line
-   * printed in pieces is stamped once.
-   */
-  def stampLines(out: OutputStream, now: () => Instant): OutputStream = new OutputStream:
-    private var lineStart = true
-    private def stamp(): Unit =
-      out.write(DateTimeFormatter.ISO_INSTANT.format(now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS)).getBytes)
-      out.write(' ')
-      lineStart = false
-    override def write(byte: Int): Unit =
-      if lineStart then stamp()
-      out.write(byte)
-      lineStart = byte == '\n'
-    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
-      var from = offset
-      val end = offset + length
-      while from < end do
-        if lineStart then stamp()
-        val newline = bytes.indexOf('\n'.toByte, from)
-        val to = if newline < 0 || newline >= end then end else newline + 1
-        out.write(bytes, from, to - from)
-        lineStart = bytes(to - 1) == '\n'
-        from = to
-    override def flush(): Unit = out.flush()
-
-  /**
-   * Both sinks, flushes included; line-currency matters because the reaper
-   * removes this container the moment its sandbox exits.
-   */
-  def teeOutput(a: OutputStream, b: OutputStream): OutputStream = new OutputStream:
-    override def write(byte: Int): Unit =
-      a.write(byte)
-      b.write(byte)
-    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
-      a.write(bytes, offset, length)
-      b.write(bytes, offset, length)
-    override def flush(): Unit =
-      a.flush()
-      b.flush()
-
   def closeQuietly(socket: Socket): Unit =
     try socket.close()
     catch case _: IOException => ()
-
-  def sha256Hex(text: String): String =
-    java.security.MessageDigest
-      .getInstance("SHA-256")
-      .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-      .map(byte => f"$byte%02x")
-      .mkString
-
-case class BadRequest(message: String) extends RuntimeException(message)
-
-/** A connection that closed after zero bytes: routine pooled-client behavior after admission,
-  * logged as `error`; policy refused nothing (SECURITY.md, "The audit line grammar"). */
-case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
-
-/** An upstream EOF where response framing promised more. Distinct from IOException because the
-  * response head has already been forwarded by then: no 502 can follow, and the handler must end
-  * the client connection abortively so the stump cannot read as a completed response. */
-case class TruncatedResponse(message: String) extends RuntimeException(message)
-
-/** A refusal the policy made, told to the refused party as a 403 body of two lines
-  * (HTTPHelper.refusalBody): `message` is the audit line's `<why>`, `advice` the next step,
-  * RefusalAdvice's. Both are required, so no refusal site can ship without its step. */
-case class PolicyViolation(message: String, advice: String) extends RuntimeException(message)
-
-/**
- * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
- * can take there, or the one thing to tell the user. Never a way around the policy, and never a
- * host this session's policy does not admit — forRefusedPost checks before naming one. Fixed text
- * plus what the request itself named, so a body never carries project data or a credential. This
- * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
- */
-object RefusalAdvice:
-  /** The step depends on why the host is refused. The `allowed` file counts under
-    * deny-unless-allowed alone (resolvePolicy's equations), so under deny-all or deny-unless-model
-    * the step is a relaunch — named as necessary, never as sufficient: this session's resolution
-    * says nothing about what that profile would apply from the project's file, a removal of this
-    * very host included. A baseline host is never spelled as a bare `+host`: that entry would
-    * override the baseline treatment, stripping a git host's allowance, and under the default
-    * profile a baseline host is refused only because this project's file removed it.
-    * allow-unless-denied never reaches this refusal. */
-  def hostNotAllowed(host: String, profile: String): String =
-    val default = AgentEgressProxy.DefaultProfile
-    val baseline = AgentEgressProxy.BaselineHosts.contains(host)
-    val addition = s"'+host $host' in .ko-agent-sandbox/egress/allowed"
-    if profile == default then
-      if baseline then
-        "This project's policy removes it from the baseline. Ask the user; do not look for another route."
-      else s"Not in this session's egress policy. Ask the user to add $addition on the host."
-    else
-      s"This session's egress profile, $profile, admits no project hosts. Ask the user; a relaunch under " +
-        (if baseline then s"$default can admit it." else s"$default with $addition can admit it.")
-
-  // The rule is on the body's first line already (`host denied (<rule>)`); a `**.domain` rule
-  // repeated here would name a host the policy does not admit.
-  val hostDenied = "Denied by this project's policy. Ask the user; do not look for another route."
-
-  val port = "Only port 443 is reachable."
-
-  val ipLiteral = "Connect by hostname; addresses are refused."
-
-  val nonPublicAddress = "This name resolves to an address the sandbox never reaches. Ask the user."
-
-  val gitPush = "Push is refused in the sandbox. Leave the commits; the user pushes on the host."
-
-  val graphql = "GraphQL is a POST. Read through the REST API."
-
-  /** Where GitHub serves LFS file contents read-only, one URL per file (SECURITY.md, "Reading
-    * without being able to write"). Named in advice only while the policy admits it. */
-  val LfsContentHost = "media.githubusercontent.com"
-
-  val lfsBatchGithub =
-    s"LFS batch is refused. Read one file from https://$LfsContentHost/media/<owner>/<repo>/<ref>/<path>."
-
-  val lfsBatch = "LFS batch is refused, and no admitted host serves this forge's LFS content. Ask the user."
-
-  val readOnly = "This host is read-only here: GET and HEAD. Do the write on the host."
-
-  val requestBody = "A read carries no body. Send the request without one."
-
-  val upgrade = "WebSockets and HTTP/2 upgrades are refused. Use a plain request."
-
-  val originForm = "Send the path, not the absolute URL."
-
-  val hostHeader = "The Host header must name the host the tunnel was opened to."
-
-  val ambiguousPath = "Spell the path without percent-encoding or dot segments."
-
-  /** The ClientHello stage answers after the 200, so this reaches no client; the agent
-    * instructions carry the sentence. Given all the same: the constructor requires a step. */
-  val clientHello = "Send SNI naming the CONNECT host, without Encrypted ClientHello."
-
-  /** Chosen by the path the request named — parsed by this proxy, never read from a body — so the
-    * two POSTs whose refusal costs a read get the read's other route: GraphQL (`/graphql` on
-    * GitHub, `/api/graphql` on GitLab) and the LFS batch endpoint. */
-  def forRefusedPost(host: String, path: String, admitted: String => Boolean): String =
-    if path.endsWith("/graphql") then graphql
-    else if path.endsWith("/info/lfs/objects/batch") then
-      if host == "github.com" && admitted(LfsContentHost) then lfsBatchGithub else lfsBatch
-    else readOnly
-
-case class BadTls(message: String) extends RuntimeException(message)

@@ -75,7 +75,14 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
 --env=NAME=VALUE@HOST      the same with an explicit value
 --env=NAME@HOST:HEADER     substitute into HEADER instead of Authorization
                            (x-api-key, PRIVATE-TOKEN)
+--env=NAME@HOST/PREFIX/    substitute only for requests whose path is under /PREFIX/
 ```
+
+The prefix form takes the policy's own matcher: the canonical-form rule for `PREFIX` and the
+literal comparison are the proxy's `path=` ones (README, "Modifying the egress policy";
+SECURITY.md, "Adding hosts, not patterns"), and the policy's own prefix, if the entry carries
+one, applies first. Where requests may go and where a credential may be spent are two facts
+and stay two lines; the comparison is one function.
 
 `EnvironmentName` admits no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
 stays command-line-only; a repository file cannot bind a host. `KO_AGENT_SANDBOX_*` stays refused.

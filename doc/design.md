@@ -53,9 +53,23 @@ namespace admits `agent/` with the one filename.
 ### No richer egress-policy format
 
 The policy stays four fixed profiles over two fixed files, `allowed` and `denied`, in the grammar
-the README's "Modifying the egress policy" spells out — no fields, no globs beyond the taking-away
-subtree, no ranked rules, no open allowance vocabulary, no selected-provider-plus-extras
-profile variant. SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
+the README's "Modifying the egress policy" spells out — no fields beyond `allow=` and `path=`, no
+globs beyond the taking-away subtree, no ranked rules, no open allowance vocabulary, no
+selected-provider-plus-extras profile variant. `path=` is the one narrowing admitted on the
+granting side, for the multi-tenant host a project adds for one tenant's content — its own
+bucket, one owner on a raw-content host — which every comparable project has been asked for:
+sandbox-runtime's open request names `storage.googleapis.com` and `raw.githubusercontent.com`,
+Copilot's coding-agent firewall accepts a URL entry beside a domain, coder/boundary carries path
+rules. It is a prefix and nothing more — no glob, no suffix, no regex, no query rule, no path on
+`denied`, no nesting with most-specific-wins — because a prefix is the one form whose worst case
+is over-blocking; each of the others reintroduces reach a reviewer did not enumerate, or a
+selection rule to get wrong:
+
+- https://github.com/anthropic-experimental/sandbox-runtime/issues/468
+- https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall
+- https://github.com/coder/boundary
+
+SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
 `resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
 the launcher's dry run executes), and an allow silently overriding a deny (one fixed order,

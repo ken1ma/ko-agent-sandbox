@@ -8,7 +8,7 @@ import HTTPHelper.HttpRequestHead
 /**
  * What requests mean in git's smart-HTTP protocol. The decisions about them
  * — what is allowed to reach a forge — stay in
- * AgentEgressProxy.authorizeInspectedRequest; this file only names the
+ * PolicyHelper.authorizeInspectedRequest; this file only names the
  * requests.
  */
 object GitHelper:
@@ -67,13 +67,45 @@ object GitHelper:
     loop(0)
 
   /**
-   * Forge names never need escaping, so a percent-encoded or dot-segmented
-   * path on the one write-capable method is not a request git would make;
-   * refused rather than normalized.
+   * The spellings a forge's router decodes before routing, so that a policy
+   * comparing the path as sent would disagree with the origin about which
+   * path it names. Forge names never need escaping, so neither is a request
+   * git would make.
    */
-  def requireUnambiguousPath(path: String): Unit =
-    if path.contains('%') then
-      throw PolicyViolation("percent-encoding is not allowed in this path", RefusalAdvice.ambiguousPath)
+  private val DecodedSpellings: Vector[(String, String => Boolean)] = Vector(
+    "percent-encoding" -> (_.contains('%')),
+    "a dot segment" -> (_.split("/", -1).exists(segment => segment == "." || segment == "..")),
+  )
 
-    if path.split("/", -1).exists(segment => segment == "." || segment == "..") then
-      throw PolicyViolation("dot segments are not allowed in this path", RefusalAdvice.ambiguousPath)
+  /**
+   * The further spellings an origin may fold onto another path — a
+   * backslash, which a Windows-hosted or lenient server reads as `/`, and an
+   * empty segment, which many collapse — refused wherever the path is
+   * compared to a reviewed prefix.
+   */
+  private val FoldedSpellings: Vector[(String, String => Boolean)] = Vector(
+    "a backslash" -> (_.contains('\\')),
+    "an empty segment" -> (_.contains("//")),
+  )
+
+  private def problemOf(path: String, spellings: Vector[(String, String => Boolean)]): Option[String] =
+    spellings.collectFirst { case (name, present) if present(path) => name }
+
+  /** Why `path` cannot be compared literally to a prefix, or None: the one
+    * rule for a `path=` prefix at launch and for a request under one. */
+  def literalPathProblem(path: String): Option[String] =
+    problemOf(path, DecodedSpellings ++ FoldedSpellings)
+
+  private def requireSpelledPlainly(path: String, spellings: Vector[(String, String => Boolean)]): Unit =
+    problemOf(path, spellings).foreach: problem =>
+      throw PolicyViolation(s"$problem in the path", RefusalAdvice.ambiguousPath)
+
+  /** A write-capable method's path, refused rather than normalized when a
+    * forge would decode it first. */
+  def requireUnambiguousPath(path: String): Unit =
+    requireSpelledPlainly(path, DecodedSpellings)
+
+  /** A path on a prefixed host, on every method: refused for any spelling
+    * literalPathProblem names. */
+  def requireLiteralPath(path: String): Unit =
+    requireSpelledPlainly(path, DecodedSpellings ++ FoldedSpellings)

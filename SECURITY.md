@@ -163,8 +163,9 @@ host reachable for reading is reachable for writing if it has a write API; `api.
 receives the conversation by design. At every other host the proxy terminates TLS and names the
 permitted operations — reading plus the named allowances described below — but that bounds the
 method and path, not what a permitted read can be pointed at: a `GET` still carries its URL, and a
-URL is a message. A project directory holding a forge token should still deny that forge's hosts in
-its own `egress/denied`.
+URL is a message; a `path=` prefix narrows the recipient, not the message, since the suffix and
+the query still travel. A project directory holding a forge token should still deny that forge's
+hosts in its own `egress/denied`.
 
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
 on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
@@ -442,6 +443,8 @@ representative reasons:
     deny github.com GET /owner/repo request body
     deny registry.npmjs.org PUT /lodash restricted host
     deny github.com GET /owner/repo Host header evil.example
+    deny storage.googleapis.com GET /other-bucket/key path outside allowance
+    deny storage.googleapis.com GET /my-bucket/../other-bucket/key a dot segment in the path
 
     # infrastructure — error, never deny
     error internal.example CONNECT resolution: unknown host
@@ -462,11 +465,13 @@ A refused request's `403` body is the agent's copy of `<why>`, with the next ste
 (`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
 for the person who has this document.
 
-The startup lines precede these and sit outside the grammar: the listening port, the resolved
-policy (the `--print-policy` lines), its digest — one stable line naming which policy this run
-enforced, comparable across runs — any warnings, and the inspection summary. There is no
-peer-address field anywhere: the per-run internal network has exactly one client, so it would be
-a constant.
+The startup lines precede these and sit outside the grammar: the listening port, the resolved policy
+(the policy lines of `--print-policy`), its digest — one stable line naming which policy this run
+enforced, comparable across runs — then, when the project's `allowed` reaches past the baseline,
+the widening entries: a line about the project's file rather than the policy, printed after the
+digest and outside it, so two files resolving to one policy keep one digest; then any warnings, and
+the inspection summary. There is no peer-address field anywhere: the per-run internal network has
+exactly one client, so it would be a constant.
 
 ### Reading without being able to write
 
@@ -542,7 +547,8 @@ smuggling exploits: the request body is framed once and forwarded, the proxy the
 the client entirely, and `Connection: close` upstream makes end-of-stream the end of the response.
 Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, two `Content-Length`s that
 disagree — are refused rather than resolved. ALPN is pinned to `http/1.1` so the request is one the
-proxy can read at all.
+proxy can read at all, and `Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the
+one inspected request into a stream the proxy no longer reads.
 
 ### Who holds the CA key
 
@@ -635,6 +641,26 @@ cannot be written as a delta: the only way past a baseline host's restricted tre
 And under `allow-unless-denied`, nothing in `allowed` can widen an ambient host: removals and
 `-**` cannot subtract from the restricted narrowing set.
 
+A path prefix on an addition — `+host storage.googleapis.com path=/my-bucket/` — is on the same
+narrowing side: it removes reach from an exact host and adds none, so its worst case is also
+over-blocking. It is the one path form admitted, because the request path is not a name the
+proxy can vouch for: the origin decodes it, and how — percent-escapes, `..`, a backslash, an
+empty segment, letter case — is the one thing a proxy cannot know. So the matcher is literal by
+rule: a prefix is written in canonical form or the launch fails; under a prefix, a request
+spelled with any of those is refused on every method, before the comparison, and the comparison
+folds nothing. The cost is a path the origin would have accepted and this rule refuses; the
+alternative, guessing the origin's canonicalization, is the bypass class. A prefix in the wrong
+case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where they
+are two buckets, alike. Prefixes on one host are disjoint or the launch fails — nesting would
+give a request two scopes and make its allowances a matter of selection order — and every fixed
+path an allowance opens lies under the entry's prefix, or the launch fails rather than grant an
+allowance that can never open. A redirect is the client's to follow: a same-host redirect out of
+the prefix arrives as a fresh request, refused and logged like any other, and the proxy follows
+nothing itself. What a prefix bounds is which tenant of a shared host can be reached; it does not
+bound the message ("Exfiltration through an allowed host", above), and it attenuates no
+credential. The catalog forges stay whole by default, since reading public
+repositories is what the agents are for; a project that means one owner writes `path=/my-org/`.
+
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
 drops `foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`),
@@ -666,8 +692,10 @@ The policy names destinations, and the treatments name operations — reading, p
 reading is meant to be broad — discovering and reading arbitrary public repositories is much of what
 the agents are for — and the sandbox carries no credential whose authority a finer grant would
 attenuate ("Credential theft", above). The one distinction that matters at a forge, reading versus
-writing, is already enforced in the protocol. Nor would capabilities fix exfiltration: a permitted
-read still carries its URL ("Exfiltration through an allowed host", above). What a capability
+writing, is already enforced in the protocol. A `path=` prefix ("Adding hosts, not patterns",
+above) names a destination more precisely and still grants no operation. Nor would capabilities
+fix exfiltration: a permitted read still carries its URL ("Exfiltration through an allowed
+host", above). What a capability
 vocabulary would add is a second policy language whose semantics must stay correct across every
 layer that reads it — precisely where richer sandbox policies fail in the field. Revisit only if an
 agent must someday perform an operation inside the sandbox with a credential materially more

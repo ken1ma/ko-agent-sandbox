@@ -19,18 +19,41 @@ object EgressProxyPolicy:
   /**
    * Comment-stripped, whitespace-collapsed policy text, one entry per line — the format the
    * environment variables carry. Entries are multi-token lines (`+host x`), so line
-   * structure is what separates them and must be preserved. What is in force is the proxy's to
-   * say — a delta file's resolved policy is not this text.
+   * structure is what separates them and must be preserved. A comment starts at the start of a
+   * line or after whitespace; a `#` inside a token is kept, so the proxy's parser sees and
+   * refuses it rather than this pass turning `path=/a/#b/` into the wider `path=/a/`. What is
+   * in force is the proxy's to say — a delta file's resolved policy is not this text.
    */
   def normalizePolicyText(text: String): String =
     text.linesIterator
-      .map(_.takeWhile(_ != '#'))
-      .map(_.trim.split("\\s+").filter(_.nonEmpty).mkString(" "))
+      .map(_.trim.split("\\s+").filter(_.nonEmpty).takeWhile(!_.startsWith("#")).mkString(" "))
       .filter(_.nonEmpty)
       .mkString("\n")
 
   def entriesSummary(normalized: String): String =
     normalized.linesIterator.mkString("; ")
+
+  /**
+   * The `allowed` entries the resolved policy reports as reaching past the baseline — its
+   * `widening entries (N): ...` line, `; ` between entries — printed on a line of their own at
+   * launch, so that a policy which only removes or narrows prints nothing extra and the line is a
+   * signal rather than a habit. The proxy classifies against the baseline it ships (resolvePolicy
+   * has the classes), so a custom image reports against its own; an image printing no such line
+   * reports nothing, never a classification against a baseline it does not have.
+   */
+  def wideningEntries(resolved: String): Vector[String] =
+    resolved.linesIterator.find(_.startsWith("widening entries (")).toVector.flatMap: line =>
+      line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
+
+  /** The lines the proxy prints after the policy lines, describing the project's file rather than
+    * the policy: today the widening line; a summary line joins it. Everything from the first of
+    * them on is metadata. */
+  val MetadataPrefixes: Vector[String] = Vector("widening entries (")
+
+  /** The dry run's text up to its first metadata line — the policy alone — for the consumers that
+    * carry nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY`. */
+  def policyLinesOf(resolved: String): String =
+    resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
   /**
    * The launch banner's one-line summary of the resolved policy: the profile as the policy spells
@@ -51,10 +74,11 @@ object EgressProxyPolicy:
         val close = line.indexOf(')')
         Option.when(open >= 0 && close > open)(line.substring(open + 1, close).toIntOption).flatten
 
+    // The restricted line counts scopes; the banner counts hosts, as the leaf does.
     val parsed =
       for
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
-        restricted <- countOf("restricted hosts (")
+        restricted <- lines.find(_.startsWith("restricted hosts (")).flatMap(restrictedHostsOf(_).toOption).map(_.size)
         denied <- countOf("denied rules (")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
@@ -228,13 +252,16 @@ object EgressProxyPolicy:
 
   /**
    * The inspected hosts out of a --print-policy answer: its `restricted
-   * hosts (N): ...` line, which names every inspected host and nothing else
-   * (the allowances have lines of their own). This is how the launcher
-   * learns which names the leaf certificate must carry — the proxy image's
-   * own answer under this project's policy, so no second copy of any list
-   * exists to drift, and a proxy image or policy of the user's choosing gets
-   * a matching leaf too. Empty means the policy inspects nothing; the
-   * launcher then mints no leaf and hands the proxy no inspection material.
+   * hosts (N): ...` line, which names every inspected scope and nothing else
+   * (the allowances have lines of their own) — a token per scope, `host` or
+   * `host/prefix/` for an entry narrowed by `path=`, so the host is the token
+   * up to its first `/`, and a host under several prefixes is one name. This
+   * is how the launcher learns which names the leaf certificate must carry —
+   * the proxy image's own answer under this project's policy, so no second
+   * copy of any list exists to drift, and a proxy image or policy of the
+   * user's choosing gets a matching leaf too. Empty means the policy inspects
+   * nothing; the launcher then mints no leaf and hands the proxy no
+   * inspection material.
    */
   def inspectedHostsOf(printPolicyOutput: String): Either[String, Vector[String]] =
     printPolicyOutput.linesIterator.find(_.startsWith("restricted hosts (")) match
@@ -243,20 +270,25 @@ object EgressProxyPolicy:
           "error: the proxy image's --print-policy has no 'restricted hosts' line\n" +
             "An image built by another launcher version prints another format; rebuild with --build.",
         )
-      case Some(line) =>
-        line.indexOf("):") match
-          case -1 =>
-            Left(
-              s"error: unparseable policy line: $line\n" +
-                "An image built by another launcher version prints another format; rebuild with --build.",
-            )
-          case at =>
-            Right(
-              line
-                .drop(at + 2)
-                .trim
-                .split(" ")
-                .toVector
-                .filter(_.nonEmpty)
-                .sorted,
-            )
+      case Some(line) => restrictedHostsOf(line)
+
+  /** The distinct hosts of one policy line's tokens, sorted; Left for a line without its `):`. */
+  private def restrictedHostsOf(line: String): Either[String, Vector[String]] =
+    line.indexOf("):") match
+      case -1 =>
+        Left(
+          s"error: unparseable policy line: $line\n" +
+            "An image built by another launcher version prints another format; rebuild with --build.",
+        )
+      case at =>
+        Right(
+          line
+            .drop(at + 2)
+            .trim
+            .split(" ")
+            .toVector
+            .filter(_.nonEmpty)
+            .map(_.takeWhile(_ != '/'))
+            .distinct
+            .sorted,
+        )

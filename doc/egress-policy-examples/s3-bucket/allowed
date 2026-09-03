@@ -1,0 +1,11 @@
+# The .ko-agent-sandbox/egress/allowed of a project that reads one of its own S3 buckets. S3's
+# virtual-hosted URL names the bucket in the host, <bucket>.s3.<region>.amazonaws.com, so the
+# exact host already admits that bucket and no other; path= then keeps the reach to one key
+# prefix within it, and a key outside — or one spelled with percent-encoding, a dot segment, a
+# backslash or an empty segment — is refused and logged. A bucket whose name contains dots does
+# not fit S3's wildcard certificate and takes the path-style form instead, where the region's
+# host serves every bucket and the bucket is the prefix: +host s3.<region>.amazonaws.com
+# path=/<bucket>/, the shape gcs-bucket narrows. Reads only: a presigned upload URL still fails
+# here, since a PUT is refused on every restricted host. What travels in an allowed GET's suffix
+# and query is not bounded; SECURITY.md, "Exfiltration through an allowed host".
++host my-bucket.s3.us-east-1.amazonaws.com path=/public/

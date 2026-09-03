@@ -213,6 +213,47 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     )
     assert(inspectedHostsOf("another shape entirely").isLeft)
 
+  test("the widening entries are the proxy's own line, and an image printing none reports none"):
+    // Which entries widen is the proxy's classification against the baseline it ships
+    // (AgentEgressProxyTest has the classes); the launcher only reads the line back.
+    assertEquals(
+      wideningEntries(
+        "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):\n" +
+          "widening entries (2): +host api.example unrestricted; +host pypi.org allow=git-fetch",
+      ),
+      Vector("+host api.example unrestricted", "+host pypi.org allow=git-fetch"),
+    )
+    assertEquals(
+      wideningEntries("egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):"),
+      Vector.empty,
+    )
+    // The consumers carrying the policy alone get the text up to the first metadata line, whatever
+    // follows it, and unchanged when nothing does.
+    val policy = "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):"
+    assertEquals(policyLinesOf(policy + "\nwidening entries (1): +host a unrestricted\nanother line"), policy)
+    assertEquals(policyLinesOf(policy), policy)
+    MetadataPrefixes.foreach(prefix => assertEquals(policyLinesOf(policy + "\n" + prefix + "x"), policy))
+
+  test("normalizing keeps a # inside a token, so the proxy refuses it instead of reading a wider entry"):
+    assertEquals(
+      normalizePolicyText(
+        "# whole line\n+host a.example   # trailing\n  +host b.example path=/x/#y/\n+host c.example#d",
+      ),
+      "+host a.example\n+host b.example path=/x/#y/\n+host c.example#d",
+    )
+
+  test("a scope narrowed by path= names its host once, whatever the prefixes; the banner counts hosts"):
+    // The proxy prints one token per scope, `host/prefix/`; the leaf names the host, and a host
+    // under two prefixes is one name.
+    val resolution =
+      "egress profile: deny-unless-allowed\n" +
+        "restricted hosts (4): github.com/login/ github.com/owner/ pypi.org storage.googleapis.com/my-bucket/\n" +
+        "restricted allow=git-fetch (1): github.com/owner/\n" +
+        "restricted allow=github-login-device (1): github.com/login/\n" +
+        "unrestricted hosts (1): api.anthropic.com\ndenied rules (0):"
+    assertEquals(inspectedHostsOf(resolution), Right(Vector("github.com", "pypi.org", "storage.googleapis.com")))
+    assertEquals(egressBanner(resolution, color = false), "egress: deny-unless-allowed; 4 effective hosts")
+
   test("log pruning keeps the newest files and leaves room for the new one"):
     val names = Vector(
       "proxy-20260810-090000-aaaaaaaa.log",

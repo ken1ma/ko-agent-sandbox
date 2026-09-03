@@ -14,7 +14,7 @@ import HostCommands.Os
 import ContainerfileSources.*
 import LauncherImages.*
 import KoAgentFs.bundledSourceId
-import agentsandbox.egress.AgentEgressProxy.resolvePolicy
+import agentsandbox.egress.PolicyHelper.resolvePolicy
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
 
@@ -274,7 +274,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("this build carries the proxy for --serve-proxy-on-host: resources load, spellings agree"):
     // Class initialization reads /baseline eagerly, so nonEmpty proves the resources are on this
     // classpath — the same classpath the assembled jar packages.
-    assert(agentsandbox.egress.AgentEgressProxy.CuratedRestrictedHosts.nonEmpty)
+    assert(agentsandbox.egress.PolicyHelper.CuratedRestrictedHosts.nonEmpty)
     assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
@@ -1085,12 +1085,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // up nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
     // list above, because the launcher carries no copy of the tag set.
     val proxySource = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala"),
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/PolicyHelper.scala"),
     )
-    val declared = """val KnownTags: Set\[String\] = Set\(([^)]*)\)""".r
+    val declared = """val AllowancePaths: Map\[String, Set\[String\]\] = Map\(([\s\S]*?)\n  \)\n""".r
       .findFirstMatchIn(proxySource)
-      .getOrElse(fail("the proxy no longer declares KnownTags as a literal Set"))
-    val known = """"([^"]+)"""".r.findAllMatchIn(declared.group(1)).map(_.group(1)).toSet
+      .getOrElse(fail("the proxy no longer declares AllowancePaths as a literal Map, KnownTags its key set"))
+    val known = """"([^"]+)" ->""".r.findAllMatchIn(declared.group(1)).map(_.group(1)).toSet
     assert(known.nonEmpty, "scraped no tags at all")
 
     // A resolved policy with no allowances of its own, so every `allow=tag` found is the prose's
@@ -1104,6 +1104,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(named -- known, Set.empty[String], s"the proxy defines only $known")
     val section = authoritySection("live", "fuse", emptyResolution)
     assert(section.contains("named allowances"), section)
+    // The section carries the policy alone: the dry run's widening line, which describes the
+    // project's file, stays with the terminal (EgressProxyPolicy.policyLinesOf).
+    val widened =
+      authoritySection("live", "fuse", emptyResolution + "\nwidening entries (1): +host a.example unrestricted")
+    assert(!widened.contains("widening entries"), widened)
+    assert(widened.contains("denied rules (0):"), widened)
     val baseInstructions = Files.readString(
       Paths.get("container/ko-agent-sandbox/AGENTS-SANDBOX.md"),
     )
@@ -1290,7 +1296,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable"))
     Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_POLICY").foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
-    assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=")))
+    // The variable carries the policy lines alone: the dry run's metadata after them describes the
+    // project's file, and stays with the terminal (EgressProxyPolicy.policyLinesOf).
+    assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=${policyLinesOf(")))
 
   test("--self-test's container leaves nothing behind and carries what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and

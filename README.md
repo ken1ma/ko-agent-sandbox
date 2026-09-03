@@ -363,6 +363,9 @@ restricted additions, by `allow-unless-denied`'s narrowing set):
     # egress/allowed
     +host html.spec.whatwg.org             # a spec site this project reads: restricted
     +host mirror.example allow=git-fetch   # a git mirror: clonable, never pushable
+    +host storage.googleapis.com path=/my-bucket/   # restricted, and only under that prefix
+    +host github.com path=/my-org/ allow=git-fetch  # clonable under one owner only
+    +host github.com path=/login/ allow=github-login-device  # a second prefix, its own allowance
     +host api.example unrestricted         # an opaque tunnel: the one word that widens
     -host github.com                       # a baseline host this project drops
     -host **.example.com                   # a subtree removal: the apex and everything under it
@@ -373,14 +376,19 @@ so the dangerous entry is the one that says more. An addition states its host's 
 allowances and overrides the baseline entry for the same host — `+host gitlab.com` makes
 gitlab.com plain restricted, its baseline `allow=git-fetch` gone. The allowances are a closed
 set the proxy defines: `git-fetch`, `github-login-device` and `npm-audit`, each named for the
-one operation it opens; several go in one word, `allow=git-fetch,github-login-device`. A
-provider entry adds or takes back the group's own contribution and no more: `github.com` is in
-the catalog (`allow=git-fetch`) and in the `github` group (`allow=github-login-device`), so
-`+model-provider github` merges the login allowance in and `-model-provider github` leaves the
-catalog's clonable host behind; to drop the host outright, deny the group. Widening cannot be
-written as a delta: re-adding a restricted baseline host as `unrestricted` is refused; a project
-that needs it writes `-**` — which removes the whole baseline, wherever in the file it appears;
-the file's own additions stand — and states its complete replacement policy:
+one operation it opens; several go in one word, `allow=git-fetch,github-login-device`. `path=`
+narrows an entry to one tree; a request outside it is refused like a write, and so is one
+spelled with percent-encoding, a dot segment, a backslash or an empty segment, since the proxy
+compares the path literally and cannot know how the origin would decode it. Several `path=`
+entries for one host are several trees, disjoint, each with its own allowances; the prefix
+begins and ends with `/`, in the origin's own case. A provider entry adds or takes back the
+group's own contribution and no more: `github.com` is in the catalog (`allow=git-fetch`) and in
+the `github` group (`allow=github-login-device`), so `+model-provider github` merges the login
+allowance in and `-model-provider github` leaves the catalog's clonable host behind; to drop the
+host outright, deny the group. Widening cannot be written as a delta: re-adding a restricted
+baseline host as `unrestricted` is refused; a project that needs it writes `-**` — which removes
+the whole baseline, wherever in the file it appears; the file's own additions stand — and states
+its complete replacement policy:
 
     # egress/allowed
     -**                                    # nothing built-in survives
@@ -405,12 +413,20 @@ allowances:
 1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
    duplicate additions with different treatments, a host both added and removed, a removal
    matching neither the baseline nor an addition, an unknown profile, provider, treatment or
-   allowance, a filename that is neither `allowed` nor `denied` (and in `.ko-agent-sandbox/`
+   allowance, a `path=` that is not in canonical form, on an `unrestricted` or `denied` entry,
+   nested in another prefix of the same host (an entry without `path=` included), or not
+   containing an allowance's fixed paths (`github-login-device` needs `/login/`, `npm-audit`
+   `/-/`), a filename that is neither `allowed` nor `denied` (and in `.ko-agent-sandbox/`
    itself, an entry other than `egress`, `agent` or `host-command`). A `denied` entry matching
    nothing the profile admits is a startup warning, not an error: it can still apply under
    another profile.
 1. `--egress-effective` and `--egress-check=<host>` (Reference) answer without starting a
-   session. Every start prints your policy files as written, and the resolved hosts as counts.
+   session. Every start prints your policy files as written, and the resolved hosts as counts;
+   when `allowed` reaches past the baseline — a host the baseline lacks, an `unrestricted`
+   addition, an allowance the baseline entry lacks, `-**` — those entries are printed once more
+   on a line of their own, `egress policy widens:`, so a file that only removes or narrows
+   prints nothing extra. A `#` starts a comment at the start of a line or after whitespace;
+   inside a token it is refused, never a cut.
 1. Editing the files takes effect on the next launch; a running session keeps its original policy.
 1. The sandbox cannot edit them, under either write mode ([SECURITY.md], "Why the policy is per
    project, in the project, and read-only").
