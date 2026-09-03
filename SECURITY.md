@@ -386,7 +386,11 @@ container's lifetime. Every connection has to pass all of this, in order:
    speaks on this connection; from here on the bytes are the client's TLS, not HTTP
 1. the client's TLS ClientHello is parsed within a fixed byte budget
 1. Encrypted ClientHello is refused: it would hide the name that actually selects a backend
-1. SNI must be present, and must equal the hostname in the `CONNECT`
+1. SNI must be present, and must equal the hostname in the `CONNECT` — which is also what keeps
+   a destination named by address out of both treatments: SNI carries no address, so a client
+   connecting to one sends none, and this step refuses the hello. A leaf can name an address
+   (an `iPAddress` subject alternative name), so inspecting one is a decision this lifecycle
+   has not taken, not a limit of the protocol
 1. only then does it become a tunnel — inspected for a restricted host, opaque for the rest
 
 Steps 8-11 are what stops `CONNECT allowed.example:443` from being used to speak TLS to something
