@@ -233,7 +233,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(refused.text.contains("403"), refused.text)
     assert(
       refused.text.contains(
-        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.AgentEgressProxy.DefaultProfile),
+        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.PolicyHelper.DefaultProfile),
       ),
       refused.text,
     )

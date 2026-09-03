@@ -153,6 +153,55 @@ class EgressPolicyTest extends munit.FunSuite:
     withSession(): session =>
       assert(exec(session, clone*).ok, "the clone fails under the built-in policy too; this fixture proves nothing")
 
+  test("a path= prefix admits one owner's content and refuses the rest of the host, clone included"):
+    optIn()
+
+    // One prefix for the clone, one for Copilot's device login, on the forge the baseline restricts
+    // whole; and one on the raw-content host. The requests outside are refused inside the tunnel,
+    // so curl reports the proxy's own status, and a clone of another owner fails at ref discovery.
+    withSession(
+      "allowed" ->
+        """|+host github.com path=/octocat/ allow=git-fetch
+           |+host github.com path=/login/ allow=github-login-device
+           |+host raw.githubusercontent.com path=/octocat/
+           |""".stripMargin
+    ): session =>
+      val readme = "https://raw.githubusercontent.com/octocat/Hello-World/master/README"
+      assertEquals(status(session, readme), "200", "the read under the prefix is refused")
+      assertEquals(
+        status(session, "https://raw.githubusercontent.com/github/docs/main/README.md"), "403",
+        "SECURITY: a read outside the prefix was admitted",
+      )
+      assertEquals(
+        status(session, "https://raw.githubusercontent.com/octocat/../github/docs/main/README.md"), "403",
+        "SECURITY: a dot segment under the prefix was admitted",
+      )
+      assertEquals(
+        status(session, "https://raw.githubusercontent.com/octocat/%2e%2e/github/docs/main/README.md"), "403",
+        "SECURITY: a percent-encoded dot segment under the prefix was admitted",
+      )
+      // The device flow's first POST, under its own prefix: GitHub answers a client-id error, which
+      // is the origin speaking — the proxy's refusal would be a 403 with its own body.
+      val login = curl(
+        session, "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-d", "client_id=x",
+        "https://github.com/login/device/code",
+      ).text.trim
+      assertNotEquals(login, "403", "the login allowance under /login/ is refused")
+
+      def clone(repo: String): Run =
+        val target = s"/tmp/${repo.replace('/', '-')}"
+        exec(session, "git", "clone", "--depth", "1", "--quiet", s"https://github.com/$repo.git", target)
+      assert(clone("octocat/Hello-World").ok, "the clone under the fetch prefix fails")
+      assert(!clone("github/docs").ok, "SECURITY: a clone outside the fetch prefix succeeded")
+
+      // The refusal is the prefix's, at the clone's first request, and the log says so.
+      val audit = run(podman, "logs", session.proxy)
+      assert(
+        (audit.text + "\n" + audit.err).linesIterator.exists: line =>
+          line.contains(" deny github.com GET /github/docs.git/info/refs") && line.endsWith("path outside allowance"),
+        "no deny line records the refused clone at ref discovery",
+      )
+
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
     // The restricted treatment's reason to exist (SECURITY.md, "Reading without being able to write").
     // The rule is host-independent, which is what lets any owner-minted bucket serve as the fixture.

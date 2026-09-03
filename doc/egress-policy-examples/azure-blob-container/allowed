@@ -1,0 +1,10 @@
+# The .ko-agent-sandbox/egress/allowed of a project that reads one container of its own Azure
+# storage account. The account is the host, <account>.blob.core.windows.net, and every container
+# in it is a first path segment, so admitting the host whole admits every public container of the
+# account; the prefix keeps the reach to this one. Container names are lowercase by Azure's rule,
+# so the prefix is written that way. Reads only, and a request outside the prefix — or spelled
+# with percent-encoding, a dot segment, a backslash or an empty segment — is refused and logged,
+# which also refuses a blob whose name needs escaping on the wire. A SAS upload URL still fails
+# here: a PUT is refused on every restricted host. What travels in an allowed GET's suffix and
+# query is not bounded; SECURITY.md, "Exfiltration through an allowed host".
++host myaccount.blob.core.windows.net path=/my-container/

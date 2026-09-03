@@ -1154,12 +1154,24 @@ object AgentSandboxLauncher:
         System.err.println(s"egress: '$name' is not a recognized agent command; it selects no model provider")
       case Some(_) => ()
 
-    if policyFiles.nonEmpty then
-      policyFiles.foreach: (name, text) =>
-        System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
+    if policyFiles.nonEmpty then printPolicyFiles(policyFiles)
     else System.err.println("egress policy: no project policy files; the launcher-owned baseline")
 
     (projectId, proxyImage, policyFiles, provider)
+
+  /** The project's policy files as written, one line each. Printed by a launch and by the egress
+    * verbs alike; the launch follows it with the widening line once the dry run has answered
+    * (printWidening). */
+  def printPolicyFiles(policyFiles: Vector[(String, String)]): Unit =
+    policyFiles.foreach: (name, text) =>
+      System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
+
+  /** The entries the dry run reports as reaching past the baseline (EgressProxyPolicy.wideningEntries),
+    * once more, alone, tinted like the permissive profile: the lines as written print at every
+    * launch and are read as a habit; this one appears only when there is one. */
+  def printWidening(policyResolvedText: String): Unit =
+    val widens = wideningEntries(policyResolvedText)
+    if widens.nonEmpty then System.err.println(caution(s"egress policy widens: ${widens.mkString("; ")}"))
 
   /**
    * The policy this project would apply, without a session: the same readPolicyFiles +
@@ -1698,7 +1710,9 @@ object AgentSandboxLauncher:
     // never have. Constant per machine, so the agents.md stamp needs no part of it.
     hostBuildsAvailable: Boolean = false,
   ): String =
-    val indented = resolved.linesIterator.map("    " + _).mkString("\n")
+    // The policy alone: the dry run's widening line describes the project's file, not what is
+    // enforced, and the same lines go to KO_AGENT_SANDBOX_EGRESS_POLICY (policyLinesOf).
+    val indented = policyLinesOf(resolved).linesIterator.map("    " + _).mkString("\n")
     val workspace = (writeMode, workspaceGuard) match
       // The plain reject instruction would be false under --run-on-host: a host build writes the
       // project (SECURITY.md "Run on host", the --write=reject composition).
@@ -1763,7 +1777,10 @@ object AgentSandboxLauncher:
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
        |Anything not admitted below is refused. An unrestricted host is an opaque tunnel; a
        |restricted host answers GET and HEAD plus only the named allowances shown below.
-       |`allow=git-fetch` serves `clone` and `pull`; `git push` is always refused.
+       |`allow=git-fetch` serves `clone` and `pull`; `git push` is always refused. A
+       |`host/prefix/` entry is a restricted host reachable under that path only; a request
+       |outside it, or spelled with percent-encoding, a dot segment, a backslash or an empty
+       |segment, is refused.
        |
        |$indented
        |
@@ -2664,9 +2681,8 @@ object AgentSandboxLauncher:
             (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
              else ""),
         ))
-    if policyFiles.nonEmpty then
-      policyFiles.foreach: (name, text) =>
-        System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
+    if policyFiles.nonEmpty then printPolicyFiles(policyFiles)
+    printWidening(policyResolvedText)
     val egressLine = egressBanner(policyResolvedText)
     System.err.println(if permissiveProfile(policyResolvedText) then caution(egressLine) else egressLine)
     if policyWarnings.nonEmpty then System.err.println(emphasized(policyWarnings))
@@ -2705,11 +2721,13 @@ object AgentSandboxLauncher:
       "--env=no_proxy=localhost,127.0.0.1",
 
       // The policy, handed to the agent rather than left to be discovered by failing requests. The
-      // value is the proxy's own --print-policy answer, verbatim and unparsed, so this is the same
-      // string the banner above prints and there is no second derivation of the list to drift from
-      // it. It grants nothing: an agent can already enumerate the policy by probing, slowly and
-      // noisily, and reading a refusal as breakage is the usual outcome of not knowing.
-      s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=$policyResolvedText",
+      // value is the proxy's own --print-policy answer, its policy lines as printed and nothing
+      // derived from them, so there is no second derivation of the list to drift; the metadata
+      // after them — the widening line, about the project's file — stays with the terminal
+      // (policyLinesOf), as the authority section does. It grants nothing: an agent can already
+      // enumerate the policy by probing, slowly and noisily, and reading a refusal as breakage is
+      // the usual outcome of not knowing.
+      s"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=${policyLinesOf(policyResolvedText)}",
 
       // The entrypoint holds its machine-health warning on screen under the same setting as
       // holdForReader, for the same reason: the TUI clears it otherwise.

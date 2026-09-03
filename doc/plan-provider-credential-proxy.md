@@ -27,8 +27,9 @@ Facts have one binding site:
 
 - `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
 - This document owns service composition, credential sources, refresh and mediated TLS.
-- `plan-path-prefix-allowance.md` owns literal path-prefix matching. A credential target may refer
-  to that matcher but does not define another one.
+- The egress policy owns literal path-prefix matching — SECURITY.md, "Adding hosts, not
+  patterns", and `plan-egress-rules.md` for its next form. A credential target may refer to that
+  matcher but does not define another one.
 - The resolved egress policy owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
 

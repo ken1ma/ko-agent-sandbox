@@ -17,7 +17,7 @@ import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 import scala.util.Random
 
-import AgentEgressProxy.*
+import PolicyHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import TLSHelper.*
@@ -215,7 +215,7 @@ class HostileInputTest extends munit.FunSuite:
         HttpRequestHead.parse(
           ascii("POST https://github.com/graphql HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
         ),
-        Set("git-fetch"),
+        Set(Scope(None, Set("git-fetch"))),
       )
     assertEquals(absolute.advice, RefusalAdvice.originForm)
 
@@ -297,6 +297,11 @@ class HostileInputTest extends munit.FunSuite:
       "-model-provider google", "+host", "-host", "+host a..b",
       "+host 10.0.0.1 unrestricted", "+host [github.com] restricted", "+host github.com.",
       "+github.com", "pypi.org", "host pypi.org", "allow=git-fetch",
+      "+host github.com path=/octocat/", "+host github.com path=/octocat/ allow=git-fetch",
+      "+host github.com path=/login/ allow=github-login-device", "+host github.com path=/octocat/Hello-World/",
+      "+host pypi.org path=/simple/", "+host pypi.org path=/simple/../", "+host pypi.org path=simple/",
+      "+host pypi.org path=/", "+host mirror.example path=/a/ unrestricted",
+      "+host registry.npmjs.org path=/lodash/ allow=npm-audit",
     )
     var resolved = 0
     var refused = 0
@@ -310,8 +315,21 @@ class HostileInputTest extends munit.FunSuite:
             BaselineHosts.contains(host) || named.contains(host),
             s"'$value' admitted the unnamed host '$host'",
           )
-        policy.restricted.foreach: (host, tags) =>
-          assert(tags.subsetOf(KnownTags), s"'$value' tagged '$host' with $tags")
+        policy.restricted.foreach: (host, scopes) =>
+          scopes.foreach: scope =>
+            assert(scope.tags.subsetOf(KnownTags), s"'$value' tagged '$host' with ${scope.tags}")
+            // A prefix is the file's own words, in canonical form, containing every fixed path its
+            // tags open — and no scope of a host lies within another.
+            scope.prefix.foreach: prefix =>
+              assert(named.contains(s"path=$prefix".toLowerCase), s"'$value' narrowed '$host' to the unnamed $prefix")
+              assert(
+                prefix.startsWith("/") && prefix.endsWith("/") && prefix != "/"
+                  && GitHelper.literalPathProblem(prefix).isEmpty,
+                s"'$value' narrowed '$host' to the non-canonical $prefix",
+              )
+              scope.tags.foreach: tag =>
+                assert(AllowancePaths(tag).forall(_.startsWith(prefix)), s"'$value' put $tag outside $prefix")
+            scopes.foreach(other => assert(scope == other || !scope.within(other), s"'$value' nested $scope in $other"))
         resolved += 1
       catch case _: IllegalArgumentException => refused += 1
     // The same guard as the authority draws: a delta set that only ever refused would assert
