@@ -22,6 +22,51 @@ If `git lfs pull` becomes important:
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
+## Deferred — LAN destinations, as launch-time authority
+
+The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
+policy grammar refuses an IP literal, so a corporate site on the LAN without a public name is
+unreachable from a session. If that is ever needed, the shape that keeps the security model:
+
+- [ ] A launch option naming exact addresses — never a range, never a line in
+  `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
+  line would name a different machine on every clone, and a reviewer could not say what it
+  reaches. Authority typed at launch, like `--egress=allow-unless-denied`, and tinted in the
+  banner the same way.
+- [ ] The vetting admits those addresses and nothing else of the private space, and only when
+  the CONNECT names the address itself: a public name resolving to a private address stays
+  refused, or a name whose answer changes, or carries one public and one private record, reaches
+  the LAN through the name.
+- [ ] An exception to the lifecycle's step 10 for the listed addresses, and only those: a
+  ClientHello with no SNI is the form a client sends to an address and is admitted there, one
+  naming any host stays refused. Opaque, as the simplest form; an inspected address is
+  possible — the leaf can carry an `iPAddress` name — and is its own further decision. Opaque,
+  the consequence is stated with it: nothing binds the tunnel to a name, so the origin's
+  identity rests on the client's own certificate check, which the client may skip, and the
+  grant reaches every application endpoint selectable at the address — by `Host`, by HTTP/2's
+  `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
+  sees none of it.
+- [ ] Stated cost, in SECURITY.md when it lands: the traffic is a tunnel by construction — the
+  hello admitted at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
+  logged; and the sandbox then holds
+  the host's network position against services that authenticate by location — router and NAS
+  pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
+  the same class. Port 443 and the one-client network bound the surface, not the trust.
+
+## Deferred — `--explain-request`, the ordered policy traced for one request
+
+Once the rule file's order is its meaning (`plan-egress-rules.md`), the question an operator
+asks is no longer "is this host admitted" — `--egress-check` answers that — but "which line
+decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
+against the file through the same code that would run it; the equivalent here is a trace:
+
+- [ ] `--explain-request METHOD URL`, printing the request's classification, each applicable
+  line with the grant state it leaves, the boundary the longest match selects, and the
+  decision. The trace comes from the proxy's own resolver and authorizer emitting it as they
+  decide, run through the launcher's dry run — never a second evaluator in production: the
+  tests' plain ordered evaluator stays the oracle the fold is checked against, and a trace
+  that could disagree with enforcement would be worse than none.
+
 ## Deferred — staged-workspace extensions and hardening
 
 These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put
