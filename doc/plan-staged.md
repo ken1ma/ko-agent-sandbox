@@ -34,17 +34,17 @@ volume may hold upper data, but raw upper layers, whiteouts, baselines, manifest
 control sockets are never mounted into the sandbox. Only the merged FUSE view is reachable.
 
 Before exposing staged mode, prove the engine on native Linux and in the macOS and Windows podman
-machines ("Proving the engine per platform" below carries the contract and where each item is
+machines ("Proving the engine per platform" below has the contract and where each item is
 settled). Failure aborts staged launch; there is no detached-copy or live-write fallback.
 
-Every stage starts with a host-only manifest carrying a representation version. A launcher that
+Every stage starts with a host-only manifest naming a representation version. A launcher that
 does not understand that version preserves the stage and refuses attachment with recovery
 instructions. Future migrations are separate work.
 
 ## Proving the engine per platform
 
-The axes a venue varies on are `design.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the venues
-themselves. What follows is only which one settles which part of the staged contract.
+The axes a machine varies on are `design.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the
+places to run the suites. What follows is only which one settles which part of the staged contract.
 
 | contract item                                      | settled by                  |
 | -------------------------------------------------- | --------------------------- |
@@ -60,15 +60,15 @@ themselves. What follows is only which one settles which part of the staged cont
 | upper and lower names differing only by case       | in situ, APFS and NTFS      |
 | upper durability and reflink behavior             | in situ, each Linux backing |
 
-A successful `--self-test` stamps the filter's source id and the venue it proved — podman version,
+A successful `--self-test` stamps the filter's source id and the machine it proved — podman version,
 machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
 non-matching stamp, which is what makes "failure aborts staged launch" above a mechanism rather than
 an intention, and what turns "re-run after a podman or macOS upgrade" from a row someone remembers
-into a refused launch until `--self-test` runs again. The stamp records that a venue was proved
+into a refused launch until `--self-test` runs again. The stamp records that a machine was proved
 once; that the filter can still mount here now is the filter's own `--self-test`'s job, before every
 session.
 
-Windows carries one measured hazard to settle before the apply state machine is built rather than
+Windows has one measured hazard to settle before the apply state machine is built rather than
 during it: a host write to a file a live session holds open is refused with a sharing violation
 (SECURITY.md, "The project directory"; `../fuse/ko-agent-fs/doc/verification-log.md` has the
 measurement). Apply writes to the host while sessions are
@@ -130,7 +130,7 @@ ordered set of operation groups: a rename, hardlink relationship or other indivi
 selected and applied as one group. A link relationship cannot be recovered from what a session
 observed — the filter mints an inode per `(parent, name)`, so two names for one object are two
 inodes there (`../fuse/ko-agent-fs/doc/verification-log.md`) — so the stage records it at copy-up,
-from the backing object's identity, and the plan carries it. The lower keeps the relationship;
+from the backing object's identity, and the plan records it. The lower keeps the relationship;
 only the view through the filter does not. For each group, trusted code:
 
 1. Revalidates its lower baseline and every host path through open directory descriptors.
@@ -269,7 +269,7 @@ its private Git metadata cannot be applied.
 - Exercise 32 concurrent sessions and smoke-test 64, including Git locks, append, rename, mmap,
   host-side writes, daemon failure and journal ordering.
 - Run every row of the table above on native Linux and in the macOS and Windows podman machines,
-  and record each run with its venue.
+  and record each run with its machine.
 
 ## Deliberate exclusions
 

@@ -10,7 +10,7 @@ import JdkTrust.*
 
 class JdkTrustTest extends munit.FunSuite:
 
-  test("the -D words carry every fact sandbox-jdk-use-proxy writes, plus the trust store"):
+  test("the -D words state every fact sandbox-jdk-use-proxy writes, plus the trust store"):
     // Two spellings of one route, for the JVMs that read the file and the ones that read none; a
     // key in one and not the other is a JVM that reaches the proxy and one that does not. The
     // script's spelling is read from its source: the properties block it appends is the one

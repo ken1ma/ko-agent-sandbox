@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, InvalidPathException, Path, Paths}
 import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 import HostCommands.*
 
@@ -311,6 +312,185 @@ object SandboxProject:
         )
     else if Files.exists(gitDir) then Right(Vector(s"--volume=$gitDir:/workspace/.git:ro"))
     else Right(Vector(s"--volume=$emptyDir:/workspace/.git:ro"))
+
+  /**
+   * Why git does not work in a session on this project directory, while the host directory the
+   * user launched from is part of a repository. The container has the project directory at
+   * `/workspace` and nothing above or beside it, so git works there only when the repository's
+   * control directory is inside the project: a `.git` directory, or a pointer file whose relative
+   * target stays within it. Every other shape leaves `/workspace/.git` naming a path the container
+   * does not have — a submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
+   * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
+   * from a subdirectory of the repository — and every git command fails with `not a git repository`,
+   * which an agent reads as breakage. No workspace path holds control bytes in any of them, so
+   * every guard rightly admits the mount.
+   *
+   * Said at launch and in the agent's instructions — a warning, never a refusal: the host's git is
+   * untouched, and a session that only edits files is a legitimate one.
+   *
+   * Two questions of one resolution (repositoryAt): whether the host has a repository rooted at a
+   * directory — a nested worktree or submodule is one, its control directory elsewhere — and
+   * whether the container can follow `.git` to that control directory from a given base. A
+   * `launchFrom` is the nearest directory holding the project from which the repository git uses
+   * there is reachable, so `that whole tree is then the project` is true of it: the superproject
+   * over a submodule, the repository root over a subdirectory. A separate git dir has none — nor
+   * has any parent of one, under which the pointer stays as absolute — and neither has a linked
+   * worktree, whose main worktree is a different checkout, not this one's tree.
+   *
+   * Nothing is said where host git fails too: a `.git` naming a gitdir git rejects ends its search
+   * where it ends this one, and a `.git` that cannot be read or parsed is another check's to refuse
+   * (gitGuardVolumes, the filter's own guard). This one never fails a launch.
+   */
+  enum NoGit:
+    case Gitdir(named: String, resolved: Path, launchFrom: Option[Path])
+    case Above(repository: Path, launchFrom: Option[Path])
+
+  def noGit(projectDir: Path, homes: HomeProtection): Option[NoGit] =
+    repositoryAt(projectDir) match
+      case Some(gitdir) if gitdir.reachable => None
+      case Some(gitdir) => Some(NoGit.Gitdir(gitdir.named, gitdir.resolved, launchWithGit(projectDir, homes)))
+      // A `.git` directory git rejects, or none at all, leaves it searching above, where the
+      // container cannot follow. A pointer file it rejects ends the search instead — here as at
+      // any ancestor the search would otherwise pass (searched).
+      case None if Files.isRegularFile(projectDir.resolve(".git")) => None
+      case None =>
+        searched(projectDir)
+          .find(dir => repositoryAt(dir).isDefined)
+          .map(repository => NoGit.Above(repository, launchWithGit(repository, homes)))
+
+  /**
+   * The repository rooted at a directory, as the host has it, and whether the container would
+   * reach its control directory with `base` as `/workspace`.
+   *
+   * A shape test, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
+   * `HEAD`, `objects` and `refs`, the last two through a linked worktree's `commondir`): the
+   * gitdir must exist and hold a `HEAD`, the one entry every gitdir shape has. Reproducing the
+   * rest buys an exactness this cannot spend — what it decides is a warning and a suggested
+   * launch, never a refusal, and host git states the authoritative failure in its own words. The
+   * cost, in full: a `.git` git would reject and search past counts here, so a session under one
+   * hears nothing, and such a directory can be the launch named.
+   */
+  private def repositoryAt(dir: Path): Option[Gitdir] = repositoryAt(dir, base = dir)
+
+  private def repositoryAt(dir: Path, base: Path): Option[Gitdir] =
+    gitdirOf(dir, base).filter(gitdir => Files.exists(gitdir.resolved.resolve("HEAD")))
+
+  /** `named` is what `.git` names, as it is written, which is what the warning shows; `reachable`
+    * says the container can take every step there, which is what decides whether it has git. */
+  private case class Gitdir(named: String, resolved: Path, reachable: Boolean)
+
+  /**
+   * Where `.git` leads: the OS follows a symlink when git opens the path, but a pointer file's
+   * relative `gitdir:` resolves against the directory holding the `.git` pathname — never the
+   * symlink's own — and what it names is a gitdir, never a second pointer file
+   * (`read_gitfile_gently`). So there are two steps at most, and one base for both.
+   *
+   * `reachable` is the container's side of those steps, and deliberately approximate: each must be
+   * relative, never climb above `base` — the directory that would be `/workspace` — and land
+   * inside it. The container resolves the same two steps under a `/workspace` of its own, so a
+   * step that is absolute, or that leaves the base and re-enters the host's path by name
+   * (`../foo/x` under `/root/foo`), leads nowhere there; one through a symlinked component is
+   * judged where the host's link really lands.
+   */
+  private def gitdirOf(dir: Path, base: Path): Option[Gitdir] =
+    val dotGit = dir.resolve(".git")
+    val link =
+      if !Files.isSymbolicLink(dotGit) then None
+      else
+        try gitdirNamed(dir, base, Files.readSymbolicLink(dotGit).toString)
+        catch case _: IOException => None
+    if Files.isSymbolicLink(dotGit) && link.isEmpty then None
+    else if Files.isDirectory(dotGit) then Some(link.getOrElse(Gitdir(".git", dotGit, reachable = true)))
+    else if !Files.isRegularFile(dotGit) then None
+    else
+      gitfileTarget(dotGit)
+        .flatMap(gitdirNamed(dir, base, _))
+        .map(gitdir => gitdir.copy(reachable = gitdir.reachable && link.forall(_.reachable)))
+
+  /** The gitdir one step names, resolved against the directory holding `.git`, and whether the
+    * container can take that step under `base` (gitdirOf). */
+  private def gitdirNamed(dir: Path, base: Path, target: String): Option[Gitdir] =
+    try
+      val path = dir.getFileSystem.getPath(target)
+      val resolved = dir.resolve(path).toAbsolutePath.normalize
+      val under = base.toAbsolutePath.normalize.relativize(dir.toAbsolutePath.normalize)
+      val stays = !path.isAbsolute
+        && !under.resolve(path).normalize.startsWith("..")
+        && realized(resolved).startsWith(realized(base))
+      Some(Gitdir(target, resolved, stays))
+    catch case _: InvalidPathException => None
+
+  /** git's `read_gitfile_gently` (setup.c): a file of at most 1 MiB that begins `gitdir: ` — that
+    * spelling, at its start — and the rest of it, less trailing CR and LF, is the path. A file of
+    * another shape is no pointer to git, and a later line naming a gitdir is not one either. The
+    * bound is the read itself, one byte past it and no more, so a `.git` of any size — or one
+    * growing while it is read — costs the launcher nothing. */
+  private def gitfileTarget(gitfile: Path): Option[String] =
+    val bound = 1 << 20
+    try
+      val bytes = Using.resource(Files.newInputStream(gitfile))(_.readNBytes(bound + 1))
+      if bytes.length > bound then None
+      else
+        val text = String(bytes, StandardCharsets.UTF_8)
+        Option
+          .when(text.startsWith("gitdir: ")):
+            val body = text.substring("gitdir: ".length)
+            body.substring(0, body.lastIndexWhere(char => char != '\n' && char != '\r') + 1)
+          .filter(_.nonEmpty)
+    catch case _: IOException => None
+
+  /** The nearest directory holding the project from which the repository git uses there is
+    * reachable — judged on that repository's own `.git` chain, never on the candidate's: a parent
+    * whose own `.git` is fine holds a nested absolute pointer exactly as absolute as before, and a
+    * parent with no repository of its own still serves a pointer into a sibling. A directory the
+    * launcher would refuse as the project (forbiddenProjectDirReason) is passed over, not stopped
+    * at: it is no launch at all, and what lies above it may still be one. */
+  private def launchWithGit(repository: Path, homes: HomeProtection): Option[Path] =
+    (Iterator(repository.toAbsolutePath.normalize) ++ ancestors(repository))
+      .filter(base => forbiddenProjectDirReason(base, homes).isEmpty)
+      .find(base => repositoryAt(repository, base).exists(_.reachable))
+
+  /** The ancestors host git's search from this directory reaches: a `.git` file it rejects is a
+    * failure there, not a step passed over, so the search — and every answer drawn from it — ends
+    * at that directory (`setup_git_directory_gently_1`). A repository whose control directory the
+    * container cannot reach is not such a stop: git works there, and a launch above it still
+    * holds the project. */
+  private def searched(projectDir: Path): Iterator[Path] =
+    ancestors(projectDir).takeWhile: dir =>
+      repositoryAt(dir).isDefined || !Files.isRegularFile(dir.resolve(".git"))
+
+  private def ancestors(dir: Path): Iterator[Path] =
+    Iterator.iterate(dir.toAbsolutePath.normalize.getParent)(_.getParent).takeWhile(_ != null)
+
+  /** The path with its deepest existing ancestor resolved, so a root reached through a symlink —
+    * macOS's `/var` — compares equal to its real spelling whether or not the leaf exists. */
+  private def realized(path: Path): Path =
+    val absolute = path.toAbsolutePath.normalize
+    Iterator.iterate(absolute)(_.getParent).takeWhile(_ != null).find(Files.exists(_)) match
+      case Some(existing) =>
+        try existing.toRealPath().resolve(existing.relativize(absolute))
+        catch case _: IOException => absolute
+      case None => absolute
+
+  /** The launch's warning: what is wrong, and the launch that would have git. */
+  def noGitWarning(noGit: NoGit): String =
+    val (cause, launchFrom) = noGit match
+      case NoGit.Gitdir(named, resolved, launchFrom) =>
+        (s".git names $named ($resolved), a gitdir the container does not have", launchFrom)
+      case NoGit.Above(repository, launchFrom) =>
+        (s"the repository at $repository is above the project directory, which is all the " +
+          "container has", launchFrom)
+    s"git will not work in this session: $cause." +
+      launchFrom.fold(" Git operations stay on the host.")(path =>
+        s" To have git, launch from $path, which holds this directory; that whole tree is then the project.",
+      )
+
+  /** The same fact in the container's words, for the agent's instructions. */
+  def noGitInstruction(noGit: NoGit): String = noGit match
+    case NoGit.Gitdir(named, _, _) =>
+      s"`/workspace/.git` names `$named`, a gitdir the sandbox does not have"
+    case NoGit.Above(_, _) =>
+      "the repository's `.git` lies above the project directory, which is all the sandbox has"
 
   /**
    * The launcher-owned empty bind sources gitGuardVolumes pins from. Kept

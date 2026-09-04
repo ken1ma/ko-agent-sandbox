@@ -70,7 +70,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // A missing fuse.conf must not make the backup step fail the script.
     assert(KoAgentFsFuseConfEnable.startsWith("test ! -f /etc/fuse.conf ||"))
 
-  test("the mount script carries the backing path only base64-encoded, and every lifecycle step"):
+  test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
     val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1")
     // A user-controlled path must never be spliced into shell text.
@@ -325,14 +325,14 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
     assert(refused.contains(RawWorkspaceBoundary), refused)
 
-  test("the venue exit code matches in the filter and launcher"):
+  test("the setup exit code matches in the filter and launcher"):
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a
-    // bad venue as a bug.
-    val declared = """(?m)^const SELF_TEST_VENUE_EXIT: u8 = (\d+);$""".r
+    // setup failure as a bug.
+    val declared = """(?m)^const SELF_TEST_SETUP_EXIT: u8 = (\d+);$""".r
       .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/src/main.rs")))
       .map(_.group(1).toInt)
-      .getOrElse(fail("src/main.rs declares no SELF_TEST_VENUE_EXIT"))
-    assertEquals(declared, AgentSandboxLauncher.SelfTestVenueExit)
+      .getOrElse(fail("src/main.rs declares no SELF_TEST_SETUP_EXIT"))
+    assertEquals(declared, AgentSandboxLauncher.SelfTestSetupExit)
 
   test("the rig's container script parses under the bash that runs it"):
     // The script lives inside rig.sh as a quoted heredoc and is executed only in the privileged

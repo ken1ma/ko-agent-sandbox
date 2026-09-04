@@ -624,7 +624,7 @@ fn scan_hooks_path(text: &str) -> HooksPath {
             return HooksPath::Undecidable("sets a hooksPath relative to a home directory");
         }
         if value.contains('\\') {
-            return HooksPath::Undecidable("sets a hooksPath carrying a backslash escape");
+            return HooksPath::Undecidable("sets a hooksPath containing a backslash escape");
         }
         if !value.is_empty() {
             found.push(value.to_string());

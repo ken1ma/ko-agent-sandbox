@@ -4,7 +4,7 @@
 // injected filesystem-and-processes interface, so the kill interleavings are unit tests rather than
 // something only a Mac under kill -9 can check.
 //
-// The invariant the records carry: no process may outlive its record. A spawn's shim becomes its
+// The rule the records keep: no process may outlive its record. A spawn's shim becomes its
 // own group's leader and publishes `<pgid> <leader start time>` by rename before it runs the
 // command, aborting when the rename fails — so a kill at any instant leaves a complete record or
 // a child that ends itself. The shim stays after the command ends, publishing its exit status
@@ -356,7 +356,7 @@ object RunOnHostSession:
 
   /**
    * The command's exit status. The shim stays alive after publishing it, so the file, not the
-   * process, carries the answer; a shim gone without one was killed, or ended itself (exit 71)
+   * process, holds the answer; a shim gone without one was killed, or ended itself (exit 71)
    * after losing a condemnation race.
    */
   def awaitExit(exitFile: Path, shim: Process): Either[String, Int] =

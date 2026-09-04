@@ -1,4 +1,4 @@
-//! Venue probe, not part of the product. Mounts a trivial read-only FUSE filesystem, reads one file
+//! Mount probe, not part of the product. Mounts a trivial read-only FUSE filesystem, reads one file
 //! back through the mount, and reports PASS/FAIL. Its only job is to prove a host can mount and
 //! serve FUSE — the `/dev/fuse` device, the mount privilege, and fuser's libfuse-free mount path
 //! all working — before the real filesystem is built on top.

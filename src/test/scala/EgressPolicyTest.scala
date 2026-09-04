@@ -11,7 +11,7 @@
 //
 //     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *EgressPolicyTest"
 //
-// Hosts outside the built-in policy carry the assertions, and the suite is only as good as their
+// The assertions use hosts outside the built-in policy, and the suite is only as good as their
 // reachability from the host running it: `example.com` (a plain addition), `expired.badssl.com` and
 // `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
 // a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address

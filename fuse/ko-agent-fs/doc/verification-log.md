@@ -1,7 +1,7 @@
 # Verification log
 
-The measured runs the design's claims rest on, each with the venue that produced it. What a row is
-meant to settle, why a pass without its venue is not evidence, and which rows are still open is
+The measured runs the design's claims rest on, each with the machine that produced it. What a row is
+meant to settle, why a pass without its machine is not evidence, and which rows are still open is
 `TODO.md` ("Platform verification"); the external research the same claims draw on is
 `security-research.md`.
 
@@ -100,14 +100,14 @@ measured with host-side ground truth at every step:
   already (the NTFS name-rule run).
 - A host write to a file a live session held open failed with a sharing violation ("used by
   another process") until the session released it: the daemon's backing fd reaches NTFS through
-  the machine's 9p server, whose handle carries Windows sharing semantics. Isolated below the
+  the machine's 9p server, whose handle follows Windows sharing rules. Isolated below the
   filter: a bare 9p hold (`tail -f` in the machine, no session involved) reproduces the refusal,
   and the write succeeds the moment the hold ends.
 
 Together they close the mmap question by construction: a mapped file cannot go stale under a host
 write, because the write is refused while the mapping holds — the coherency measurement's mmap
 half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
-("The project directory") carries it: a host editor's save is refused while a session holds that
+("The project directory") records it: a host editor's save is refused while a session holds that
 file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
@@ -164,12 +164,12 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
 nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
 
-## Mount privilege: what a venue grants
+## Mount privilege: what a container grants
 
 ### Measured: a container needs `CAP_SYS_ADMIN`, setuid notwithstanding (podman 6.0.2; 2026-08-22)
 
 In a podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
-`--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the venue probe, before a test runs:
+`--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the mount probe, before a test runs:
 
     Error: Custom { kind: Other, error: "fusermount3: mount failed: Operation not permitted\n" }
 
@@ -192,5 +192,5 @@ in the *bounding* set for a container whose `USER` is not root, and the setuid `
 it: an unprivileged uid holds no effective `CAP_SYS_ADMIN` and cannot `mount(2)`, and the mount
 succeeds anyway.
 
-This venue is therefore the only one that exercises the route a real session takes. The dev rig runs
-as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.
+This container is therefore the only one that exercises the route a real session takes. The dev
+rig runs as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.

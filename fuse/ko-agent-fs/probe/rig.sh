@@ -5,7 +5,7 @@
 # containers inside the sandbox by default"). So they run here instead: on the host, in a
 # privileged container, against the toolchain that ships.
 #
-#     probe/rig.sh                        # the whole ignored suite, venue probe first
+#     probe/rig.sh                        # the whole ignored suite, mount probe first
 #     probe/rig.sh a_handle_held          # one filter, for a single test or a family
 #     GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
 #
@@ -61,7 +61,7 @@ else
     target="--target $triple"
 fi
 
-# The venue check first. A PROBE FAIL says /dev/fuse, the mount privilege, or fuser's libfuse-free
+# The mount probe first. A PROBE FAIL says /dev/fuse, the mount privilege, or fuser's libfuse-free
 # path is wrong, rather than leaving that to be read off thirty test failures.
 cargo run --locked $target --example mount_probe
 cargo test --locked $target -- --ignored $RIG_FILTER

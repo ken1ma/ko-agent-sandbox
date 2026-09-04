@@ -123,7 +123,7 @@ itself. Therefore, as invariants and not tunables:
   host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when it sees mtime change — which
   the zero-TTL getattrs surface — so data stays coherent while shared `mmap` keeps working.
   Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
-  the container venue, and its share rows measure it across the real host share.
+  the self-test container, and its share rows measure it across the real host share.
 
 The invariant has a measured price: with entry TTL 0, every path component of every syscall is a
 fresh LOOKUP round trip.
@@ -174,7 +174,7 @@ collaborating sessions incoherent locks and caches.
 
 `allow_other` from an unprivileged user additionally requires `user_allow_other` in
 `/etc/fuse.conf`, which stock images do not set. Getting it there is consent-gated and never
-silent: `SECURITY.md`, "Silent changes to what you own", carries the rule, and
+silent: `SECURITY.md`, "Silent changes to what you own", has the rule, and
 `ensureUserAllowOther` is what runs it.
 
 

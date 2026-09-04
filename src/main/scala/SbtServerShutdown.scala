@@ -2,7 +2,7 @@
 // `sbt/exec shutdown` — the sequence sbt v2.0.4's NetworkClient/Serialization implement and
 // src/probe/session-recovery.sh M4 measured, framing per ServerConnection.sendString (the length
 // counts the body plus its trailing CRLF). Local-mode servers authenticate nothing
-// (Defaults.serverAuthentication is TCP-only), so there is no token to carry.
+// (Defaults.serverAuthentication is TCP-only), so there is no token to pass.
 //
 // Never sbt's own client here: its measured answer to a dead socket is to delete the portfile and
 // start its own server — from a scavenger, an unconfined one.

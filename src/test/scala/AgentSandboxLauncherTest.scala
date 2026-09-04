@@ -164,7 +164,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(renderArgument("a\u2028b\u2029c"), "$'a\\u2028b\\u2029c'")
     assertEquals(renderArgument("a\ud83c\udff4\udb40\udc67b"), "$'a🏴\\U000e0067b'")
     assertEquals(renderArgument("日本語 café"), "'日本語 café'")
-    // Nothing rendered carries a character the terminal would act on, whatever the argument held:
+    // Nothing rendered contains a character the terminal would act on, whatever the argument held:
     // every code point, in an argument that already needs quoting.
     (0 to Character.MAX_CODE_POINT).foreach: cp =>
       val out = renderArgument(new String(Character.toChars(cp)) + " ")
@@ -271,8 +271,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
 
-  test("this build carries the proxy for --serve-proxy-on-host: resources load, spellings agree"):
-    // Class initialization reads /default eagerly, so nonEmpty proves the resources are on this
+  test("this build includes the proxy for --serve-proxy-on-host: resources load, spellings agree"):
+    // Class initialization reads /defaults eagerly, so nonEmpty proves the resources are on this
     // classpath — the same classpath the assembled jar packages.
     assert(agentsandbox.egress.PolicyHelper.CatalogLines.nonEmpty)
     assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
@@ -597,7 +597,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Vector.empty),
     )
     // Either spelling names the image whichever spelling the caller declared, so both sides of
-    // the comparison carry the same normalization.
+    // the comparison use the same normalization.
     Vector(Set("localhost/base:1"), Set("base:1")).foreach: local =>
       assertEquals(
         remoteImagesInContainerfile(
@@ -967,7 +967,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains(s"$sandboxId")), unlabeled.toString)
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
-  test("the bundled build context carries every Containerfile and an INDEX"):
+  test("the bundled build context includes every Containerfile and an INDEX"):
     // The resourceGenerators task in build.sbt put these in the jar; this pins that the launcher can find what --build
     // unpacks.
     val index = BundledBuildContext.resource("INDEX").linesIterator.filter(_.nonEmpty).toVector
@@ -1036,8 +1036,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
 
   test("SECURITY.md names exactly the git-fetch hosts the proxy ships"):
-    // The git-host list has two homes: the git-fetch lines of the proxy's default/host and the
-    // SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
+    // The git-host list has two homes: the git-fetch lines of the proxy's defaults/host and the
+    // SECURITY.md section that reasons about them (the launcher holds no copy — the leaf's
     // names come from the image's own --print-policy at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
     // SECURITY.md — prose or a different marker keeps this green.
@@ -1048,7 +1048,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .collect { case Listed(host) => host }
       .toVector
     val catalog = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/default/host"),
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/defaults/host"),
     )
     val gitHosts = "(?m)^allow https://(\\S+)/\\s+read git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
@@ -1073,7 +1073,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The launcher writes this prose; the proxy owns the vocabulary. An agent following a word the
     // proxy does not define writes a rule file that fails the *next* launch, so the drift shows up
     // nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
-    // list above, because the launcher carries no copy of the grant words.
+    // list above, because the launcher holds no copy of the grant words.
     val proxySource = Files.readString(
       Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/PolicyHelper.scala"),
     )
@@ -1091,11 +1091,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
-    // The section carries the policy alone: the dry run's metadata, which describes the policy's
+    // The section holds the policy alone: the dry run's metadata, which describes the policy's
     // size and the project's file, stays with the terminal (EgressProxyPolicy.policyLinesOf).
     val widened = authoritySection(
       "live", "fuse",
-      emptyResolution + "\npolicy summary: 0 inspected hosts; 0 opaque hosts; 0 ambient denials; 1 widening lines\n" +
+      emptyResolution + "\npolicy summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
     )
     assert(!widened.contains("widening lines") && !widened.contains("policy summary"), widened)
@@ -1154,6 +1154,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(rejectWithBuilds.contains("session's own writes"), rejectWithBuilds)
     assert(rejectWithBuilds.contains("sandbox-run-on-host"), rejectWithBuilds)
     assert(rejectWithBuilds.contains("--write=live"), rejectWithBuilds)
+    // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
+    // was chosen: the agent is not sent to ask for an allow line it already has.
+    val publicDefault =
+      authoritySection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS tunnel")
+    assert(publicDefault.contains("reachable as an opaque tunnel, except"), publicDefault)
+    assert(publicDefault.contains("denied on purpose"), publicDefault)
+    assert(!publicDefault.contains("Anything not admitted below is refused"), publicDefault)
+    assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
+    assert(filtered.contains("Anything not admitted below is refused"), filtered)
+    assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
+    // A session without git: the agent hears it before its first command, in the words naming
+    // what the container lacks (SandboxProject.noGitInstruction).
+    val cause = "`/workspace/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
+    val noGit = authoritySection("live", "fuse", resolution, noGit = Some(cause))
+    assert(noGit.contains(s"Git does not work in this session: $cause."), noGit)
+    assert(!filtered.contains("Git does not work"), filtered)
 
   test("the generated agent document cache varies with every authority input"):
     def stamp(
@@ -1163,7 +1179,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       policy: String = "policy-a",
       instructions: Option[String] = None,
       runOnHost: Vector[String] = Vector.empty,
-    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions, runOnHost)
+      noGit: Option[String] = None,
+    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions, runOnHost, noGit)
 
     val variants = Vector(
       stamp(),
@@ -1174,6 +1191,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(instructions = Some("project instructions")),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),
+      stamp(noGit = Some("no git in this session")),
     )
     assertEquals(variants.distinct.size, variants.size)
 
@@ -1278,7 +1296,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("what the launcher tells the sandbox is in force is all KO_AGENT_SANDBOX_*, the prefix --env refuses"):
     // The refusal is a prefix, so a variable the launcher passes to say what is enforced must
-    // carry it: the interpolated `--env=$Constant=` forms are those, and EgressProxyPolicy's
+    // start with it: the interpolated `--env=$Constant=` forms are those, and EgressProxyPolicy's
     // `$variable` names the proxy container's policy files, which no forward reaches.
     val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
       .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
@@ -1286,11 +1304,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable"))
     Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_POLICY").foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
-    // The variable carries the policy lines alone: the dry run's metadata after them describes the
+    // The variable holds the policy lines alone: the dry run's metadata after them describes the
     // project's file, and stays with the terminal (EgressProxyPolicy.policyLinesOf).
     assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=${policyLinesOf(")))
 
-  test("--self-test's container leaves nothing behind and carries what the mount needs"):
+  test("--self-test's container leaves nothing behind and has what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and
     // keeps no container.
     val command = selfTestRunCommand("podman", Some("a_handle_held"), asRoot = false)

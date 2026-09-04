@@ -92,7 +92,7 @@ object RefusalAdvice:
       "Ask the user; do not look for another route."
 
   /** The ClientHello stage answers after the 200, so this reaches no client; the agent
-    * instructions carry the sentence. Given all the same: the constructor requires a step. */
+    * instructions have the sentence. Given all the same: the constructor requires a step. */
   val clientHello = "Send SNI naming the CONNECT host, without Encrypted ClientHello."
 
   /** Chosen by the path the request named — parsed by this proxy, never read from a body — so the

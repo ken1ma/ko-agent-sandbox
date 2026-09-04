@@ -113,12 +113,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val refused = awaitProxyPort(log, deadlineMillis = 300)
     assert(refused.swap.exists(_.contains("+junk")), refused.toString)
 
-  test("the relaunch classpath walked from the loaders carries these classes and their deps"):
+  test("the relaunch classpath walked from the loaders includes these classes and their deps"):
     // What emit prints for the gate: inside sbt's layered loaders java.class.path is sbt's own,
     // so the walk is what has to find the test classes and munit.
     val classpath = EmitBuildProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
     assert(classpath.exists(_.contains("munit")), classpath.take(5).toString)
-    def carries(entry: String): Boolean =
+    def includes(entry: String): Boolean =
       val wanted = "agentsandbox/launcher/RunOnHost.class"
       val path = Path.of(entry)
       if Files.isDirectory(path) then Files.exists(path.resolve(wanted))
@@ -127,7 +127,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         try zip.getEntry(wanted) != null
         finally zip.close()
       else false
-    assert(classpath.exists(carries), classpath.take(8).toString)
+    assert(classpath.exists(includes), classpath.take(8).toString)
 
   test("selfInvocation on a JVM re-runs this classpath under the private verb"):
     val command = selfInvocation("--serve-proxy-on-host")

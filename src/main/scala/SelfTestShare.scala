@@ -3,7 +3,7 @@
 // scratch lower created inside the current directory puts the real share in the path — host
 // filesystem -> share -> ko-agent-fs -> container — and the launcher plays the host half the
 // hand-run probes needed a person for. fuse/ko-agent-fs/doc/TODO.md is the standard: driven by the
-// launcher, venue recorded, the scratch gone on success and kept on failure, and nothing a killed
+// launcher, machine recorded, the scratch gone on success and kept on failure, and nothing a killed
 // run leaves that the reset sweep does not match — the mount lives under the same mounts/ root the
 // unmount-all sweep clears, the container's name pattern is in --reset-all's container sweep, and
 // the scratch's name says what left it behind.
@@ -117,12 +117,12 @@ object SelfTestShare:
 
   /**
    * The Windows program (verification-log.md, "coherency on Windows"): the podman machine reaches
-   * the host's NTFS through its 9p server, whose handles carry Windows sharing semantics, so the
+   * the host's NTFS through its 9p server, whose handles follow Windows sharing rules, so the
    * POSIX program's opening mmap would turn the orchestrator's own rewrite into the failure. Here
    * nothing holds the seed when READY asks for the rewrite — the unheld half of the documented
    * result — and the file is opened and mapped only afterwards: HELD asks the orchestrator to
    * write against the hold and expect the refusal, which is what closes the mmap question on that
-   * venue — a mapped file cannot go stale, because the write is refused while the mapping holds.
+   * machine — a mapped file cannot go stale, because the write is refused while the mapping holds.
    * The release file is the orchestrator's answer either way, and waiting for it is bounded like
    * every other wait.
    */
@@ -180,11 +180,11 @@ object SelfTestShare:
     else if line.startsWith(Abort) then ProbeEvent.Aborted(line.stripPrefix(Abort))
     else ProbeEvent.Noise(line)
 
-  /** The machine's own view, for the venue record: its kernel, and what filesystem serves the
+  /** The machine's own view, for the machine record: its kernel, and what filesystem serves the
     * backing path there — virtiofs is the answer that says the real share is in the path. findmnt,
     * because virtiofs registers under FUSE's own statfs magic: `stat -f` answers "fuse" for it,
     * indistinguishable from the filter's mounts. */
-  def machineVenueScript(backing: String): String =
+  def machineViewScript(backing: String): String =
     val encoded = java.util.Base64.getEncoder.encodeToString(backing.getBytes(UTF_8))
     withScriptPath(
       s"""backing="$$(printf %s $encoded | base64 -d)"
@@ -214,7 +214,7 @@ object SelfTestShare:
     try
       Files.write(scratch.resolve(SeedName), OldBytes.getBytes(UTF_8))
 
-      // The venue, before any row: a run with no venue recorded is not evidence.
+      // The machine, before any row: a run with no machine recorded is not evidence.
       val lowerType =
         try Files.getFileStore(scratch).`type`()
         catch case _: java.io.IOException => "unknown"
@@ -226,9 +226,9 @@ object SelfTestShare:
         case Os.Linux => s"kernel ${run("uname", "-r").text.trim}, share local"
         case _ =>
           val provider = run(podman, "machine", "info", "--format", "{{.Host.VMType}}")
-          run(koAgentFsScriptCommand(podman, os, machineVenueScript(backing))*).text.trim +
+          run(koAgentFsScriptCommand(podman, os, machineViewScript(backing))*).text.trim +
             s", provider ${if provider.ok then provider.text.trim else "unknown"}"
-      System.err.println(s"share venue: lower $lowerType case-$lowerCase; machine: $machineView")
+      System.err.println(s"share: lower $lowerType case-$lowerCase; machine: $machineView")
 
       val mount = ensureKoAgentFsMounted(podman, os, mountId, scratch, container)
       try

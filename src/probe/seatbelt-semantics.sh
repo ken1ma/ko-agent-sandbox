@@ -127,7 +127,7 @@ report "E8 a rule naming a non-canonical path" \
     "does a rule spelled /tmp/... cover an access that resolves to /private/tmp/...?" "$r" \
     "ALLOWED: rules are matched as written, so a non-canonical rule fails OPEN. DENIED: rules canonicalize too."
 
-printf '\n=== venue ===\n'
+printf '\n=== machine ===\n'
 printf '%-20s %s\n' "macOS" "$(sw_vers -productVersion)"
 printf '%-20s %s\n' "arch" "$(uname -m)"
 printf '%-20s %s\n' "scratch volume" "$(df -h /tmp | tail -1 | awk '{print $1}')"

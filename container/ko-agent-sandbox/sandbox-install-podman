@@ -28,7 +28,7 @@ sandbox-apt-get install podman
 mkdir -p /tmp/xdg "$HOME/.config/containers"
 
 # netns/utsns host: an inner container shares this sandbox's network namespace and hostname,
-# because creating either of its own needs a capability this sandbox does not carry.
+# because creating either of its own needs a capability this sandbox does not have.
 # cgroups disabled: nothing delegates a cgroup here, so per-container limits are unavailable.
 cat > "$HOME/.config/containers/containers.conf" <<EOF
 [containers]

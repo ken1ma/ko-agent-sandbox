@@ -87,7 +87,7 @@ A **service definition** is trusted, versioned data shipped in the proxy image. 
 
 - a stable lowercase service identifier;
 - its supported mechanisms, either `api-key` or a named built-in OAuth flow;
-- sandbox adapters: environment names and any image-owned client configuration that carries the
+- sandbox adapters: environment names and any image-owned client configuration that holds the
   placeholder;
 - injection targets, each an exact normalized host, one header and one fixed value format with a
   single placeholder slot;

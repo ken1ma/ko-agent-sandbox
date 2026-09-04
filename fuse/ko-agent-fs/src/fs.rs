@@ -998,7 +998,7 @@ impl Filesystem for KoAgentFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
-        // Source-side too (`doc/git-metadata.md`, "Operations that carry these mutations").
+        // Source-side too (`doc/git-metadata.md`, "Operations that make these mutations").
         if let Err(err) = self.allow_ino(ino.0, Mutation::Link, "link-source") {
             return reply.error(err);
         }
@@ -1239,7 +1239,7 @@ impl Filesystem for KoAgentFs {
     }
 
     /// The directory twin, and needed for the same reason: git syncs the directory holding a ref it
-    /// just renamed into place. The `opendir` handle carries a name snapshot rather than an fd, so
+    /// just renamed into place. The `opendir` handle holds a name snapshot rather than an fd, so
     /// this re-resolves the inode — which is what every other operation here does anyway.
     fn fsyncdir(
         &self,

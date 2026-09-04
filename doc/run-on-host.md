@@ -123,7 +123,7 @@ container — the same rule the egress refusal follows.
 
 Every pre-build refusal is a `RunOnHostPolicy.Refusal` value, one case per category, so the wrapper
 and the channel word the same refusal for their own readers without the tests matching on either
-wording. A denial that happens mid-build has no launcher category to carry: a filesystem denial
+wording. A denial that happens mid-build falls under no launcher category: a filesystem denial
 reaches the build's own stderr as the OS error, and a network denial is the proxy's audit line,
 which the wrapper reads and reports per host after the build ("Build requested network access
 to: …"). It never adds the host itself.
@@ -221,7 +221,7 @@ than a shim shadowing `sbt` on `PATH`: where each build ran is then visible in t
 the user reads. It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails*
 in the sandbox and teaches the agent to look for the prefixed name, while `sbt test` in the
 container *succeeds*, slower, and nothing prompts a reconsideration. So the authority section
-carries the instruction, and only where it can be true: the launcher knows the platform, so a
+states the instruction, and only where it can be true: the launcher knows the platform, so a
 macOS session launched without the option gets one discovery line, and Linux and Windows
 sessions hear nothing about a command they can never have. That makes the host build a norm
 rather than an enforcement: an agent that ignores the instruction gets a slower build, not a
@@ -233,7 +233,7 @@ per project means a concurrent second sbt request would be *refused* where a que
 next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
 broker open as a later addition if a tool ever makes it worth having. A *foreign* live server — the
 user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
-launch carried `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
+launch named `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
 socket it derives itself.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
@@ -312,7 +312,7 @@ server the client forks is what resolves, and it lives past the client until the
 Binding to the lock keeps the answer unchanged if a warm server spanning invocations is ever added.
 
 Its vehicle is the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/default` resources, and the wrapper starts the proxy by
+`dist` compiles them in beside their `/defaults` resources, and the wrapper starts the proxy by
 re-invoking whichever vehicle it is running in — `java -jar` or the native binary — under a private
 verb. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
 only in the container's own network namespace), and the wrapper reads the port from the same ready

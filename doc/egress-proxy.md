@@ -24,7 +24,7 @@ The launcher-owned defaults are every model-provider group — `anthropic`, `ope
 `github`, each that provider's model, authentication and control-plane endpoints as tunnels; the
 `github` group's forge lines are two login `POST`s and one token read, inspected — plus a curated
 catalog of inspected documentation, package-registry and forge hosts, every line a `read`, the
-three forges `read git-fetch`. The proxy image's `default/host` and `default/model-provider/*`
+three forges `read git-fetch`. The proxy image's `defaults/host` and `defaults/model-provider/*`
 files are the membership, with the reason beside each line.
 
 1. `deny-unless-allowed` (the default) — the defaults, then every line of the project's file.
@@ -37,6 +37,10 @@ files are the membership, with the reason beside each line.
    defaults' inspected hosts, and the file's inspected `allow` lines, stay inspected — the
    narrowing set — and every `deny` line applies, a whole-host or `tunnel` deny refusing the
    host outright. `deny defaults` and a `tunnel` line are not consulted: neither could narrow.
+   Choose it for work whose hosts cannot be listed ahead of it — the open web, an unbounded
+   dependency tree — and expect its price: every host no line names is an opaque, writable
+   tunnel. An inspected `allow` line narrows one such host to its grants, and
+   `deny https://**.domain/` refuses a domain and every host under it.
 1. `deny-all` — nothing.
 
 ## The rule file
@@ -105,8 +109,10 @@ else on the forge; a clone there is refused at its first request.
 
 A request is decided against the resolved scope of its longest literal match: the scope at a path
 holds the union of the contributions still in force there once the lines have applied in order,
-so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope carry both.
-A request matching no line, on a host without a root line, is refused. Where the longest match is
+so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope hold both.
+A request matching no line, on a host without a root line, is refused; under `allow-unless-denied`
+that is a host some line narrowed, since one no line names is not inspected at all but tunneled
+whole (the profiles, above). Where the longest match is
 a scope other than the root, the request is first refused, on every method, for a spelling the
 origin might fold onto another path — `%`, a dot segment, a backslash, an empty segment — because
 the proxy compares literally and cannot know how the origin decodes; a wrong-case path fails
@@ -130,8 +136,8 @@ allow model-provider anthropic
 
 A host has one treatment. `deny https://api.example/ tunnel` takes the treatment, and an `allow`
 with `read`, `git-fetch` or `method=` then makes the host inspected; a `tunnel` line for a host
-the defaults inspect needs `deny defaults` and the whole policy after it, because an opaque
-tunnel ends inspection and the audit record for a host every project has.
+the defaults inspect needs `deny defaults` and the whole policy after it (SECURITY.md, "Adding
+hosts, not patterns", has why).
 
 `doc/egress-rule-example/*/rule` holds complete files for common needs — a bucket, a container,
 a Pulumi AWS stack, the lockdown, npm's audit `POST` — to copy over `.ko-agent-sandbox/egress/rule`
@@ -169,8 +175,8 @@ adopts its hosts.
 1. Editing the file takes effect on the next launch; a running session keeps its original policy.
 1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the policy is per
    project, in the project, and read-only").
-1. The directory is meant to be committed. Review it in an unfamiliar repository before
-   launching, exactly as you would its build scripts — `tunnel` and `method=` lines most of all.
+1. The directory is meant to be committed, and read before an unfamiliar project is launched
+   (SECURITY.md, "A repository that ships a wide egress policy").
 
 ## The printed policy
 
@@ -183,9 +189,9 @@ a line of their own, `egress policy widens:`, so a file that only takes or narro
 extra.
 
 The policy itself is what the proxy prints at its start and `--egress-effective` shows whole: the
-profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree no ambient
-tunnel is admitted under, then one `allow` line per resolved scope, in the rule grammar, carrying
-the scope's whole grant set, hosts and paths sorted:
+profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree the public
+tunnel does not reach, then one `allow` line per resolved scope, in the rule grammar, with the
+scope's whole grant set, hosts and paths sorted:
 
 ```text
 egress profile: deny-unless-allowed
@@ -197,13 +203,13 @@ allow https://github.com/login/device/code read git-fetch method=POST
 
 Each `allow` and `deny` line uses the rule grammar so a reader learns one; but the printout is a
 serialization of
-the resolved policy, not a rule file: it carries no `deny defaults` header, nothing reads it as
+the resolved policy, not a rule file: it has no `deny defaults` header, nothing reads it as
 input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
 names — one stable log line per run, comparable across runs — what the leaf certificate's names
-are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY` carry,
+are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY` give,
 so two files resolving to one policy print one digest and the same lines, and the same file under
 two profiles never does. After them, outside the digest, the metadata: one summary line — the
-counts of inspected and opaque hosts, ambient denials and widening lines — and the widening line.
+counts of inspected and opaque hosts, denial patterns and widening lines — and the widening line.
 `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
 a `deny` line's pattern, and under the finite profiles the hosts the file's lines denied.
 

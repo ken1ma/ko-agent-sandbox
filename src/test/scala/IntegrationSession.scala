@@ -15,11 +15,11 @@ object IntegrationSession extends munit.Assertions:
 
   val jar: Path = Paths.get("target/dist/ko-agent-sandbox.jar").toAbsolutePath
 
-  /** Opt-in rather than venue-detected: these launch containers, and an ordinary `sbt test` must
+  /** Opt-in rather than detected from the machine: these launch containers, and an ordinary `sbt test` must
     * never start a session. */
   val enabled: Boolean = env("KO_AGENT_SANDBOX_INTEGRATION").isDefined
 
-  /** Skips without the opt-in; with it, a missing jar is a broken run, not an absent venue, and
+  /** Skips without the opt-in; with it, a missing jar is a broken run, not a machine without one, and
     * fails rather than lets `testFull` pass with every session suite skipped. */
   def optIn(): Unit =
     assume(enabled, "set KO_AGENT_SANDBOX_INTEGRATION to run the container-launching suites")

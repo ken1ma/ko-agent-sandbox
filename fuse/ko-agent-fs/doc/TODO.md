@@ -12,8 +12,8 @@ Decisions that research has already closed are in **Non-TODOs** so they stop res
 
 ## P1 — Platform verification (needs real filesystems)
 
-Every run belongs in `verification-log.md` with the venue that produced it: OS, podman, kernel and
-filesystem versions. A pass with no venue recorded is not evidence for the next release, and
+Every run belongs in `verification-log.md` with the machine that produced it: OS, podman, kernel and
+filesystem versions. A pass with no machine recorded is not evidence for the next release, and
 re-running is the only thing that notices a platform default changing underneath a row.
 
 ### The `.git` name rule per backing filesystem
@@ -56,7 +56,7 @@ one end to end. What is left:
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
 writes promptly (`architecture.md`). The launcher's `--self-test` share rows measure both paths a
 write can travel, `read()` and an established `mmap`, across the whole stack, launcher-driven and
-venue-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
+machine-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
 session-held files refused by a share lock; `verification-log.md` records both, and why the
 premise is behavioral rather than declarative.
 
@@ -95,7 +95,7 @@ case rather than an occasional one.
 A stage's lower is the host project directory as it arrives inside the machine, and it is where the
 stage reads its baseline, revalidates it and applies back onto it. Each row below decides a
 representation choice, so they run before the stage format is fixed rather than after — the root
-`doc/plan-staged.md` has which venue settles which part of the contract. Every row is two-party:
+`doc/plan-staged.md` has which machine settles which part of the contract. Every row is two-party:
 `probe/lower-probe.py` runs in a session and `probe/lower-probe-host.py` on the host beside it, and
 the pair reports all five in one run.
 
@@ -239,7 +239,7 @@ opt-in and off by default:
 
 A per-project TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen
 over an always-on value because the knee moves with the host: a component costs ~0.6 ms over
-virtiofs and far less on native Linux, so the right T is measured per venue, not designed.
+virtiofs and far less on native Linux, so the right T is measured per machine, not designed.
 
 What it caches, and why exactly that. The path-walk term is the kernel re-asking per component,
 and an entry-only TTL does not remove it: under `DefaultPermissions` the kernel's `fuse_permission`
@@ -248,7 +248,7 @@ refreshes a directory's attributes before each permission check on the walk, so 
 directory's name *and* attributes, together. A file's attribute TTL stays 0, so `AUTO_INVAL_DATA`
 stays whole and file `stat` and data are as fresh as today (every `open` also drops the file's
 cached pages: no `FOPEN_KEEP_CACHE` is granted). fuser 0.18's `ReplyEntry::entry_with_ttls`
-carries the two TTLs separately, so the per-reply choice needs no patch.
+keeps the two TTLs separately, so the per-reply choice needs no patch.
 
 What it exposes, exactly: a directory's mode, owner and mtime, and a name, may be up to T old. The
 sharpest consequence found: git's untracked cache keys on directory mtime, so a file the host
@@ -282,7 +282,7 @@ T = 10 ms loses a third of it. Those are derived, not measured; the sweep below 
 - [ ] Docs: `architecture.md` "Coherency" states the guarantee with the knob in it — file
       attributes and data always fresh, directory names and attributes ≤ T, default 0;
       `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
-      README's reference block carries the flag.
+      README's reference block documents the flag.
 
 
 ## P2 — Diagnostics
@@ -300,7 +300,7 @@ launch gate. The gap:
 The filter is the **default** enforcement on every platform, ahead of that verification;
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the pin instead. What that leaves:
 
-- [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
+- [ ] `SECURITY.md` has a **Not defended** entry for the filter on the platforms where it is
   unverified — verified on macOS and Windows, reasoned on Linux. When Linux has its row that
   entry has nothing left to say and goes; the claim it qualifies already sits under **Defended**.
 - [ ] The guard's scope residue (`SECURITY.md`, "Not defended"): decide whether to extend the
