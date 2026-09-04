@@ -33,14 +33,16 @@ files are the membership, with the reason beside each line.
    `copilot` selects `github`. Only the basename of the directly launched command is classified;
    anything else — `bash`, a wrapper script — selects no provider, admits no host, and says so at
    startup.
-1. `allow-unless-denied` — every public hostname on port 443 as a tunnel, except that the
-   defaults' inspected hosts, and the file's inspected `allow` lines, stay inspected — the
-   narrowing set — and every `deny` line applies, a whole-host or `tunnel` deny refusing the
-   host outright. `deny defaults` and a `tunnel` line are not consulted: neither could narrow.
-   Choose it for work whose hosts cannot be listed ahead of it — the open web, an unbounded
-   dependency tree — and expect its price: every host no line names is an opaque, writable
-   tunnel. An inspected `allow` line narrows one such host to its grants, and
-   `deny https://**.domain/` refuses a domain and every host under it.
+1. `allow-unless-denied` — `deny-unless-allowed`'s policy, and every public hostname on port
+   443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, every write
+   refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
+   `read` and nothing else, so a `tunnel` deny takes nothing from it. Choose it for work whose
+   hosts cannot be listed ahead of it — the open web, an unbounded dependency tree — and expect
+   its price: every public host is reachable for reading, and a permitted read carries its URL
+   (SECURITY.md, "Exfiltration through an allowed host"). An `allow` line narrows one such host
+   to its grants or, with `tunnel`, makes it opaque; `deny https://**.domain/` refuses a domain
+   and every host under it; a clone from an unlisted forge fails at its first request until a
+   `git-fetch` line names the forge.
 1. `deny-all` — nothing.
 
 ## The rule file
@@ -111,8 +113,8 @@ A request is decided against the resolved scope of its longest literal match: th
 holds the union of the contributions still in force there once the lines have applied in order,
 so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope hold both.
 A request matching no line, on a host without a root line, is refused; under `allow-unless-denied`
-that is a host some line narrowed, since one no line names is not inspected at all but tunneled
-whole (the profiles, above). Where the longest match is
+that is a host some line narrowed, since one no line names has `read` at the root (the profiles,
+above). Where the longest match is
 a scope other than the root, the request is first refused, on every method, for a spelling the
 origin might fold onto another path — `%`, a dot segment, a backslash, an empty segment — because
 the proxy compares literally and cannot know how the origin decodes; a wrong-case path fails
@@ -190,7 +192,7 @@ extra.
 
 The policy itself is what the proxy prints at its start and `--egress-effective` shows whole: the
 profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree the public
-tunnel does not reach, then one `allow` line per resolved scope, in the rule grammar, with the
+default does not reach, then one `allow` line per resolved scope, in the rule grammar, with the
 scope's whole grant set, hosts and paths sorted:
 
 ```text
@@ -234,10 +236,9 @@ SECURITY.md, "The audit line grammar", has every field and reason.
 ## TLS inspection
 
 The proxy terminates the TLS of every inspected host so that reading can be allowed and writing
-refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` the
-model providers, unless a project adds more; under `deny-unless-model` the selected group's
-tunnel lines; under `allow-unless-denied` every public host the narrowing set leaves out; under
-`deny-all` none.
+refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` and
+`allow-unless-denied` the model providers, unless a project adds more; under `deny-unless-model`
+the selected group's tunnel lines; under `deny-all` none.
 
 The per-project CA lives on the host, under
 
@@ -247,4 +248,8 @@ The per-project CA lives on the host, under
 1. The certificates are created and refreshed automatically for each project (SECURITY.md,
    "Who holds the CA key").
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
-   launch's proxy starts with the certificates current at that moment.
+   launch's proxy starts with the certificates the launch found or minted.
+1. Under `allow-unless-denied` a launch mints a CA for the run instead, as
+   `run-<suffix>/agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
+   directory, and removes it with the run; the proxy mints each host's certificate from it at the
+   host's first connection. Nothing is rotated: no session trusts another's.

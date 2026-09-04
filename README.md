@@ -430,6 +430,8 @@ project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`
     sbt dist
     cd target/dist
     native-image --enable-native-access=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.util=ALL-UNNAMED \
       -H:IncludeResources='sandbox-build/.*|defaults/.*|agentsandbox/.*' \
       -o ko-agent-sandbox -jar ko-agent-sandbox.jar
 

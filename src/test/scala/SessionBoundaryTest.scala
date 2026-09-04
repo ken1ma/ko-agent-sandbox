@@ -162,7 +162,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // The decisive in-session test for "a tunnel host is still opaque": an
     // inspected host presents a leaf this project's CA signed, an opaque one the origin's own chain.
-    val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-ca.crt")
+    val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
       .text.stripPrefix("subject=").trim
 
     // curl indents its certificate lines under the `*` marker, and by more than one space, so this

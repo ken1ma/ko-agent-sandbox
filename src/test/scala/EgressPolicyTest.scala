@@ -270,6 +270,38 @@ class EgressPolicyTest extends munit.FunSuite:
         "no deny line records the refused PUT",
       )
 
+  test("under allow-unless-denied an unlisted host is an inspected read under this run's CA, a tunnel host opaque"):
+    optIn()
+
+    val project = scratchProject()
+    var live: Option[Session] = None
+    try
+      val session = launchWith(project, project.resolve("session.log"), Vector("--egress=allow-unless-denied"))
+      live = Some(session)
+      // example.com is no defaults host: what it gets is the public default, read and nothing else.
+      assertEquals(status(session, "https://example.com/"), "200", "the unlisted host is not readable")
+      assertEquals(
+        status(session, "-X", "POST", "https://example.com/"), "403", "SECURITY: the unlisted host took a write",
+      )
+      // The leaf is this run's CA's, the same signer a catalog host's is under this profile, and the
+      // CA the sandbox trusts names the run; a tunnel host presents the origin's own chain.
+      val runCa = exec(
+        session, "openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt",
+      ).text.stripPrefix("subject=").trim
+      assert(runCa.contains("run-"), s"the sandbox trusts a CA other than this run's: $runCa")
+      assertEquals(issuer(session, "example.com"), runCa, "the unlisted host is not inspected under the run CA")
+      assertEquals(issuer(session, "pypi.org"), runCa, "the catalog host is not inspected under the run CA")
+      assertNotEquals(issuer(session, "api.anthropic.com"), runCa, "the tunnel host was inspected")
+      // Logged with its target, as every inspected request is.
+      val audit = run(podman, "logs", session.proxy)
+      assert(
+        (audit.text + "\n" + audit.err).linesIterator.exists(_.contains(" allow example.com GET / ")),
+        "no allow line records the unlisted host's read with its target",
+      )
+    finally
+      live.foreach(stop)
+      discard(project)
+
   test("a deny defaults lockdown removes the defaults and still signs in"):
     optIn()
 

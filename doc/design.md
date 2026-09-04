@@ -24,6 +24,20 @@ this project's operating model deliberately avoids:
 
 - https://github.com/mattolson/agent-sandbox/issues/122
 
+### No signing broker for the proxy's leaves, and no run intermediate
+
+Under `allow-unless-denied` the proxy mints a leaf per unlisted host from a CA minted for the run
+(SECURITY.md, "Who holds the CA key"). Two shapes that would keep the CA key on the host were
+rejected. A signing broker — the proxy asking the launcher to sign each leaf — keeps the letter of
+"the launcher holds the key" and loses its sense: the broker is a signing oracle for whatever the
+proxy asks, so the key's location no longer bounds what a compromised proxy can mint, only where
+the bytes sit, at the cost of a channel and a round trip per host. A run intermediate signed by
+the project CA would keep the project-level trust store and JDK keystore, and would let a leaf a
+compromised proxy minted chain to the project CA and be honoured by every other session of the
+project, which is what the run scope exists to prevent. A launch-minted leaf beside the run CA
+proves nothing either: a missing or extra name, the two things the "names exactly" check exists
+for, cannot happen when the proxy mints what it inspects.
+
 ### No per-repository `GitRead(repository)` policy
 
 The policy names destinations and its grant words name operations; nothing names a repository,

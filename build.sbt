@@ -35,7 +35,16 @@ Compile / unmanagedResourceDirectories +=
   baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "resources"
 
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
-Compile / run / javaOptions += "--enable-native-access=ALL-UNNAMED"
+// The exports open the JDK's internal certificate builder to the proxy sources compiled in below
+// (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the README's
+// native-image command for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
+// a forked test JVM would need sbt's TCP listener to reach it, which the host build sandbox does
+// not grant (doc/run-on-host.md, "Network").
+Compile / run / javaOptions ++= Seq(
+  "--enable-native-access=ALL-UNNAMED",
+  "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
+  "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
+)
 Compile / run / fork := true
 
 // The --help text has one home: README.md's Reference block, the copy a reader browses before any
@@ -158,6 +167,7 @@ assembly / assemblyMergeStrategy := {
 // jar built from multi-release inputs is not itself multi-release.
 assembly / packageOptions += Package.ManifestAttributes(
   "Enable-Native-Access" -> "ALL-UNNAMED",
+  "Add-Exports" -> "java.base/sun.security.x509 java.base/sun.security.util",
   "Multi-Release" -> "true",
 )
 

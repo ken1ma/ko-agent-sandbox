@@ -1825,9 +1825,10 @@ object AgentSandboxLauncher:
     val publicDefault = permissiveProfile(resolved)
     val admission =
       if publicDefault then
-        """Every public host on port 443 is reachable as an opaque tunnel, except the hosts listed
-          |below with grants, which are inspected and limited to those grants, and the hosts under
-          |a `deny` line, which are refused.""".stripMargin
+        """Every public host on port 443 is reachable for reading — GET and HEAD, inspected and
+          |logged — except as the lines below say: a host listed with grants is limited to those
+          |grants, a host listed with `tunnel` is an opaque tunnel, and a host under a `deny` line
+          |is refused.""".stripMargin
       else "Anything not admitted below is refused."
     val refused =
       if publicDefault then
@@ -2441,20 +2442,30 @@ object AgentSandboxLauncher:
     // key reach the proxy. SECURITY.md ("Who holds the CA key") has the reasoning.
     //
     // Under the project lock, because every step is check-then-act over shared files: two first
-    // launches that both find no current CA would otherwise interleave their writes and leave one
+    // launches that both find no usable CA would otherwise interleave their writes and leave one
     // launch's ca.key beside the other's ca.crt. The lock spans the checks through the per-run
     // copies, so what this run mounts is one launch's consistent set; it cannot span further —
     // podman resolves bind sources at container *start*, past the interactive hold — and the
     // per-run copies are what close that remainder. What the lock cannot cover is a launch that
     // *died* between two writes, which is the coherence gates' job below: they test that key and
-    // certificate answer each other, not merely that both look current.
+    // certificate answer each other, not merely that both look fine.
     val caCertFile = tlsDir.resolve("ca.crt")
     val caKeyFile = tlsDir.resolve("ca.key")
     val leafCertFile = tlsDir.resolve("leaf.crt")
     val leafKeyFile = tlsDir.resolve("leaf.key")
     val leafSansFile = tlsDir.resolve("leaf.sans")
-    val bundleFile = tlsDir.resolve("sandbox-ca-bundle.crt")
-    val bundleStampFile = tlsDir.resolve("bundle.stamp")
+    // Under allow-unless-denied the CA the sandbox trusts is this run's own, minted below and
+    // mounted into the proxy with its key, which mints every leaf from it (X509Helper.scala;
+    // SECURITY.md, "Who holds the CA key", has the trade); the project CA and its leaf are left as
+    // they are, and the trust files derived from the CA are this run's too, in its directory,
+    // where nothing shares them. The CA sits under the proxy's and the profile's names, so a
+    // listing says whose it is and why a key is there.
+    val publicDefault = permissiveProfile(policyResolvedText)
+    val trustDir = if publicDefault then runFiles else tlsDir
+    val runCaDir = runFiles.resolve("agent-egress-proxy").resolve("allow-unless-denied")
+    val trustCertFile = if publicDefault then runCaDir.resolve("ca.crt") else caCertFile
+    val bundleFile = trustDir.resolve("sandbox-ca-bundle.crt")
+    val bundleStampFile = trustDir.resolve("bundle.stamp")
 
     val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
@@ -2488,22 +2499,37 @@ object AgentSandboxLauncher:
         tlsRunDirsToPrune(entries, live, name => olderThanLaunchBound(tlsDir.resolve(name)))
           .foreach(name => deleteRecursively(tlsDir.resolve(name)))
 
-      // Coherence, not just currency: a launch that died between writing the key and the
-      // certificate leaves a pair that is current, non-empty and useless — every handshake fails
+      // Coherence, not just expiry: a launch that died between writing the key and the
+      // certificate leaves a pair that is unexpired, non-empty and useless — every handshake fails
       // while both files look fine — and only a correspondence test re-mints it.
       def coherentPair(certFile: Path, keyFile: Path): Boolean =
         (readIfPresent(certFile), readIfPresent(keyFile)) match
           case (Some(cert), Some(key)) => keyMatchesCertificate(cert, key)
           case _                       => false
 
-      if !certificateCurrent(readIfPresent(caCertFile), reissueDeadline)
+      // This run's directory first: the run CA, the trust files and the copies below land in it.
+      Files.createDirectories(runFiles)
+      if posixPermissions(runFiles) then
+        Files.setPosixFilePermissions(runFiles, PosixFilePermissions.fromString("rwx------"))
+
+      if publicDefault then
+        try
+          Files.createDirectories(runCaDir)
+          val ca =
+            mintCa(s"$projectSlug run-$runSuffix", days = agentsandbox.egress.X509Helper.LeafValidityDays)
+          writePrivate(runCaDir.resolve("ca.key"), ca.privateKeyPem)
+          writePrivate(trustCertFile, ca.certificatePem)
+        catch
+          case ex: Exception =>
+            fail(s"error: could not create this run's inspection CA in $runCaDir\n$ex")
+      else if !certificateExpiresAfter(readIfPresent(caCertFile), reissueDeadline)
         || !coherentPair(caCertFile, caKeyFile)
       then
         try
           val ca = mintCa(projectSlug)
           // The leaf this CA no longer signs is retired by emptying it, not by deleting it: the
           // names stay stable for the copies below and for anything still reading them
-          // (HostCommands, writeWithMode). Empty fails every currency test below, so the leaf is
+          // (HostCommands, writeWithMode). Empty fails every expiry test below, so the leaf is
           // reissued in this same launch — and it is emptied before the CA is written, so a
           // launch that dies here leaves a leaf that the next one reissues rather than one
           // silently signed by the old CA.
@@ -2519,8 +2545,8 @@ object AgentSandboxLauncher:
       // it expires — and not minted at all for a policy that inspects nothing. Its own coherence
       // gate, plus the chain to this CA: a leaf another launch minted under a CA since replaced
       // is internally consistent and still fails every handshake.
-      if inspectedHosts.nonEmpty
-        && (!certificateCurrent(readIfPresent(leafCertFile), reissueDeadline)
+      if !publicDefault && inspectedHosts.nonEmpty
+        && (!certificateExpiresAfter(readIfPresent(leafCertFile), reissueDeadline)
           || firstLine(leafSansFile) != sanList
           || !coherentPair(leafCertFile, leafKeyFile)
           || !readIfPresent(leafCertFile).exists(signedBy(_, Files.readString(caCertFile))))
@@ -2538,10 +2564,10 @@ object AgentSandboxLauncher:
           case ex: Exception =>
             fail(s"error: could not issue this project's inspection certificate\n$ex")
 
-      // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set entirely — plus this
-      // project's CA. Re-read when image or CA changes; the stamp records both (imageId came from
-      // the inspect beside the image-exists check).
-      val caFingerprint = certificateFingerprint(pemBody(Files.readString(caCertFile)))
+      // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set
+      // entirely — plus the CA this run trusts. Re-read when image or CA changes; the stamp records
+      // both (imageId came from the inspect beside the image-exists check).
+      val caFingerprint = certificateFingerprint(pemBody(Files.readString(trustCertFile)))
       val bundleStamp = s"$imageId $caFingerprint"
 
       if readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp then
@@ -2555,7 +2581,7 @@ object AgentSandboxLauncher:
           fail(s"error: could not read the CA bundle out of $image\n${imageBundle.err}")
         val bundleText =
           String(imageBundle.out, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
-            Files.readString(caCertFile)
+            Files.readString(trustCertFile)
         writeReadable(bundleFile, bundleText)
         writeReadable(bundleStampFile, bundleStamp + "\n")
 
@@ -2563,7 +2589,7 @@ object AgentSandboxLauncher:
       // HTTPS_PROXY family cannot reach it; JdkTrust.scala handles all of it, and empty means
       // the image ships no JDK.
       val jdkFileMounts = jdkMounts(
-        podman, image, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
+        podman, image, imageEnv, trustDir, bundleStamp, trustCertFile, EgressProxyHost, EgressProxyPort,
       )
 
       if readIfPresent(agentDocFile).forall(_.isEmpty)
@@ -2589,26 +2615,36 @@ object AgentSandboxLauncher:
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
       // This run's copies, made while the lock still holds so no concurrent launch's rewrite can
-      // land between a currency check above and a copy below. Modes travel with the copy: the
-      // leaf key stays owner-only, and the run directory itself admits only this user.
-      Files.createDirectories(runFiles)
-      if posixPermissions(runFiles) then
-        Files.setPosixFilePermissions(runFiles, PosixFilePermissions.fromString("rwx------"))
+      // land between an expiry check above and a copy below; a file this run wrote into its own
+      // directory is mounted where it is. Modes travel with the copy: the leaf key stays
+      // owner-only, and the run directory itself admits only this user.
       def carried(source: Path): Path =
-        val target = runFiles.resolve(source.getFileName)
-        Files.copy(
-          source, target,
-          StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING,
-        )
-        target
+        if source.startsWith(runFiles) then source
+        else
+          val target = runFiles.resolve(source.getFileName)
+          Files.copy(
+            source, target,
+            StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING,
+          )
+          target
 
-      // The leaf and its key only: the CA key sits beside them and is never copied or mounted.
-      // --userns makes the owner-only key readable as uid 65532; without it the key would have to
-      // be world-readable on the host. (The userns flag itself stays on the create call: the
-      // proxy writes its owner-only log file through the same mapping.) A policy that inspects
-      // nothing gets no material — the proxy refuses material it has nothing to inspect with.
+      // Under the finite profiles the leaf and its key only: the project CA key sits beside them
+      // and is never copied or mounted, and a policy that inspects nothing gets no material — the
+      // proxy refuses material it has nothing to inspect with. Under allow-unless-denied the run
+      // CA and its key, and no leaf. --userns makes an owner-only key readable as uid 65532;
+      // without it the key would have to be world-readable on the host. (The userns flag itself
+      // stays on the create call: the proxy writes its owner-only log file through the same
+      // mapping.)
       val proxyTls =
-        if inspectedHosts.isEmpty then Vector.empty
+        if publicDefault then
+          val mounted = "/etc/agent-egress-proxy/allow-unless-denied"
+          Vector(
+            s"--volume=$trustCertFile:$mounted/ca.crt:ro",
+            s"--volume=${runCaDir.resolve("ca.key")}:$mounted/ca.key:ro",
+            s"--env=EGRESS_TLS_CA_CERTIFICATE=$mounted/ca.crt",
+            s"--env=EGRESS_TLS_CA_PRIVATE_KEY=$mounted/ca.key",
+          )
+        else if inspectedHosts.isEmpty then Vector.empty
         else
           Vector(
             s"--volume=${carried(leafCertFile)}:/etc/agent-egress-proxy/leaf.crt:ro",
@@ -2625,7 +2661,7 @@ object AgentSandboxLauncher:
       // certificate is already inside the bundle above — it just saves a script parsing one out.
       val sandboxTls = Vector(
         s"--volume=${carried(bundleFile)}:$sandboxCaBundle:ro",
-        s"--volume=${carried(caCertFile)}:$SandboxEgressCaPath:ro",
+        s"--volume=${carried(trustCertFile)}:$SandboxEgressProxyCaPath:ro",
         s"--env=SSL_CERT_FILE=$sandboxCaBundle",
         s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
         s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
@@ -2765,9 +2801,9 @@ object AgentSandboxLauncher:
     if policyFiles.nonEmpty then printPolicyFiles(policyFiles)
     printWidening(policyResolvedText)
     val egressLine = egressBanner(policyResolvedText)
-    System.err.println(if permissiveProfile(policyResolvedText) then weakened(egressLine) else egressLine)
+    System.err.println(if publicDefault then weakened(egressLine) else egressLine)
     if policyWarnings.nonEmpty then System.err.println(emphasized(policyWarnings))
-    if inspectedHosts.isEmpty then
+    if inspectedHosts.isEmpty && !publicDefault then
       System.err.println("egress tls inspection: this policy inspects no hosts; no leaf minted")
     System.err.println(s"egress log: $hostLogFile")
     // Names only: a forwarded value may be a secret, and this line is the one place the forward

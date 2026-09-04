@@ -1,8 +1,8 @@
 // The egress proxy: the listening loop, the flow from CONNECT to tunnel, and the one-request
 // inspected session. The policy and its decisions live in PolicyHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
-// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala,
-// and hostname/address vetting in IPAddrHelper.scala.
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf minting in X509Helper.scala, git protocol
+// knowledge in GitHelper.scala, and hostname/address vetting in IPAddrHelper.scala.
 
 package agentsandbox.egress
 
@@ -50,6 +50,8 @@ object AgentEgressProxy:
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
+  val CaCertificateVariable = "EGRESS_TLS_CA_CERTIFICATE"
+  val CaPrivateKeyVariable = "EGRESS_TLS_CA_PRIVATE_KEY"
   val LogFileVariable = "EGRESS_LOG_FILE"
   val BindVariable = "EGRESS_BIND"
 
@@ -80,9 +82,9 @@ object AgentEgressProxy:
    *
    * The lines say what this policy *would* inspect, not what a given
    * run will: unlike serve() this reads no certificate, because the dry run
-   * is not given one. Every launch mounts the leaf, so the two agree there;
-   * only the standalone image run without EGRESS_TLS_CERTIFICATE logs the
-   * inspected hosts as opaque.
+   * is not given one. Every launch mounts the leaf, or under allow-unless-denied
+   * the run CA, so the two agree there; only the standalone image run without
+   * material logs the inspected hosts as opaque.
    */
   def printPolicy(provenance: Boolean): Unit =
     try
@@ -129,7 +131,7 @@ object AgentEgressProxy:
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
         resolved.hosts.get(authorized) match
           case Some(treatment) => ruleLines(authorized, treatment)
-          case None            => Vector("tunnel (the public-HTTPS default)")
+          case None            => Vector("read (the public-HTTPS default)")
       catch case ex: PolicyViolation => Vector(s"refused: ${ex.getMessage}")
     decisions.foreach(decision => println(s"policy: $host $decision"))
 
@@ -225,33 +227,54 @@ object AgentEgressProxy:
     acceptForever(server, policy)
 
   /*
-   * Both variables absent is not an error — the image runs on its own,
-   * inspection off and said so. Material for a policy that inspects nothing
-   * is an error, not a narrower policy: the launcher never mints a leaf for
-   * such a policy, so a supplied one means the two disagree about what this
-   * policy is.
+   * The material a proxy starts with is keyed by profile. Under the three finite profiles the
+   * leaf and its key are present exactly when the policy inspects a host: both absent is the
+   * image running on its own, inspection off and said so; material for a policy that inspects
+   * nothing is an error, not a narrower policy, since the launcher never mints a leaf for such a
+   * policy and a supplied one means the two disagree about what this policy is. Under
+   * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
+   * inspected, and without the CA each would be the writable tunnel this profile no longer admits,
+   * so their absence refuses the start. Either pair under the other profile is refused likewise
+   * (SECURITY.md, "Who holds the CA key").
    */
-  def loadInspection(resolved: ResolvedEgress): Option[TlsInspection] =
-    val certificate = Option(System.getenv(CertificateVariable)).filter(_.nonEmpty)
-    val privateKey = Option(System.getenv(PrivateKeyVariable)).filter(_.nonEmpty)
+  def loadInspection(
+    resolved: ResolvedEgress,
+    read: String => Option[String] = variable => Option(System.getenv(variable)),
+  ): Option[TlsInspection] =
+    def pair(certificateVariable: String, keyVariable: String): Option[(Path, Path)] =
+      (read(certificateVariable).filter(_.nonEmpty), read(keyVariable).filter(_.nonEmpty)) match
+        case (Some(certificate), Some(key)) => Some((Path.of(certificate), Path.of(key)))
+        case (None, None)                   => None
+        case _ => throw IllegalArgumentException(s"$certificateVariable and $keyVariable must be set together")
+    val leaf = pair(CertificateVariable, PrivateKeyVariable)
+    val ca = pair(CaCertificateVariable, CaPrivateKeyVariable)
 
-    (certificate, privateKey) match
-      case (Some(certificatePath), Some(privateKeyPath)) =>
+    if resolved.publicDefault then
+      if leaf.nonEmpty then
+        throw IllegalArgumentException(
+          s"$CertificateVariable is set under ${resolved.profile}, which mints every leaf from " +
+            s"$CaCertificateVariable and takes none",
+        )
+      val (certificate, key) = ca.getOrElse(
+        throw IllegalArgumentException(
+          s"$CaCertificateVariable and $CaPrivateKeyVariable are unset under ${resolved.profile}, which " +
+            "inspects every unlisted host and mints their leaves from the run CA",
+        ),
+      )
+      Some(TlsInspection.minting(certificate, key))
+    else
+      if ca.nonEmpty then
+        throw IllegalArgumentException(
+          s"$CaCertificateVariable is set under ${resolved.profile}, which mints nothing; the CA key never " +
+            "enters this container there",
+        )
+      leaf.map: (certificate, key) =>
         if resolved.inspected.isEmpty then
           throw IllegalArgumentException(
             s"$CertificateVariable is set, but this policy restricts no host; " +
               "with nothing to inspect the material can only be a mistake",
           )
-        Some(
-          TlsInspection.load(Path.of(certificatePath), Path.of(privateKeyPath), resolved.inspected),
-        )
-
-      case (None, None) => None
-
-      case _ =>
-        throw IllegalArgumentException(
-          s"$CertificateVariable and $PrivateKeyVariable must be set together",
-        )
+        TlsInspection.load(certificate, key, resolved.inspected)
 
   case class EgressPolicy(
     resolved: ResolvedEgress,
@@ -259,8 +282,10 @@ object AgentEgressProxy:
   ):
     def inspectionSummary: String =
       inspection match
-        case Some(active) =>
-          s"tls inspection: active for the ${active.hosts.size} inspected hosts"
+        case Some(_) if resolved.publicDefault =>
+          s"tls inspection: every admitted host, except the ${resolved.tunnelHosts.size} tunnel hosts"
+        case Some(_) =>
+          s"tls inspection: active for the ${resolved.inspected.size} inspected hosts"
         case None =>
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
 
@@ -378,12 +403,14 @@ object AgentEgressProxy:
 
       validateTlsIdentity(connectHost, hello)
 
-      policy.inspection.filter(_.inspects(connectHost)) match
+      // A tunnel host is opaque; every other admitted host is inspected, with its lines' scopes or
+      // the public default's (ResolvedPolicy.scopesOf) — unless this run has no material at all.
+      policy.inspection.filter(_ => !policy.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedSession(
             client, upstream, connectHost, hello, inspection,
-            policy.resolved.inspectedScopes.getOrElse(connectHost, Map.empty),
-            policy.resolved.hosts.contains,
+            policy.resolved.scopesOf(connectHost),
+            policy.resolved.admits,
           )
 
         case None =>
@@ -447,7 +474,7 @@ object AgentEgressProxy:
     hostScopes: Map[String, Set[String]],
     admitted: String => Boolean,
   ): Unit =
-    val clientTls = inspection.accept(client, hello.wireBytes)
+    val clientTls = inspection.accept(client, hello.wireBytes, host)
 
     // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
     // line prints only after the origin leg connects, so a failing request's method and target

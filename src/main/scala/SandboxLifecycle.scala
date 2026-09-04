@@ -57,7 +57,7 @@ object SandboxLifecycle:
   // -------------------------------------------------------------------------
   //
   // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's policy and
-  // certificate are current; nothing worth keeping dies with any of it (the audit log is a host file).
+  // certificate are its own; nothing worth keeping dies with any of it (the audit log is a host file).
   //
   // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never toward
   // a removed proxy under a live sandbox:

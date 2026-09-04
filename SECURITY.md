@@ -451,6 +451,7 @@ representative reasons:
     # tunnels and inspected requests — step 11 onward
     allow api.anthropic.com CONNECT -> 160.79.104.10
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
+    allow docs.example GET /guide?q=x -> 203.0.113.7    # unlisted, under allow-unless-denied
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -572,7 +573,8 @@ one inspected request into a stream the proxy no longer reads.
 
 ### Who holds the CA key
 
-The launcher, on the host, and nothing else.
+The launcher, on the host, and nothing else — under every profile but `allow-unless-denied`,
+whose exception, and its trade, follow the per-project CA below.
 
 Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
 (`%LOCALAPPDATA%` on Windows) — outside `/workspace`, so the agent can neither read the key that
@@ -593,8 +595,28 @@ name would surface as an inexplicable TLS error inside the sandbox, and one nami
 means an inspection the proxy will not perform — that host would have been an opaque, writable
 tunnel.
 
-The sandbox trusts that CA through a bundle assembled on the host from the image's own CA bundle
-plus this project's CA, mounted over `/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
+Under `allow-unless-denied` every host no line names is an inspected read, and a host nobody
+listed has no name in a leaf minted at launch: the proxy mints a leaf at each host's first
+connection, which needs a CA key inside the proxy container — the process facing the internet,
+and under this profile all of it. What makes that acceptable is the key's scope. It is a CA
+minted for the run, trusted by that session alone through a bundle assembled per run, kept in the
+run's directory under `tls/<project>/` and removed with it. The project CA never enters the
+container, so nothing a compromised proxy could mint outlives the run or is honoured by another
+session. What such a compromise gains during the run is precise, and the one thing no other
+profile allows: a leaf for a tunnel host, so the sandbox's model traffic and provider tokens could
+be read. Set against it is what every unlisted host loses: writes, and silence. The proxy is a
+memory-safe program with no query surface (design.md, "No HTTP query surface on the proxy"), and a
+compromise of it is the class "Container, runtime and kernel escape" already places at the edge;
+the run scope is defence in depth against that class, bought at one keypair per launch and the
+image JDK's trust store prepared per launch rather than per project. The run CA and every leaf it
+signs get the leaf's validity: what bounds the run CA is the trust, never the clock, since a
+session's length is unknown at launch. The proxy refuses to start with the run CA under any other
+profile, and without it under this one, where every unlisted host would otherwise be the writable
+tunnel the profile no longer admits.
+
+The sandbox trusts that CA — the project's, or under `allow-unless-denied` the run's — through a
+bundle assembled on the host from the image's own CA bundle plus it, mounted over
+`/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
 `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO` point at the same
 file, for the tools with a trust store of their own rather than the system's.
 
@@ -645,11 +667,13 @@ A wildcard *grant* admits names nobody can list, the opposite of what an admitte
 every line is meant to be a destination someone reviewed and chose. `allow https://*.example.com/`
 would not mean "the site" — it means every name under it, including ones added later, and for a
 shared apex like a cloud provider's, names an attacker can register or take over. The breadth is
-in the grant, not the matcher, so no careful pattern syntax removes it. For an inspected host it
-is also unmintable: the leaf certificate must enumerate its names at launch, and a subtree has no
-enumeration. So grants stay exact. (`allow-unless-denied` is not this rule's exception but the
-user's own profile decision: the *profile* itself admits every host no line names, and it is
-chosen on the launch command line, never through a pattern a repository ships.)
+in the grant, not the matcher, so no careful pattern syntax removes it. For an inspected host
+under the finite profiles it is also unmintable: the leaf certificate minted at launch must
+enumerate its names, and a subtree has no enumeration. So grants stay exact. (`allow-unless-denied`
+is not this rule's exception but the user's own profile decision: the *profile* itself admits
+every host no line names, and it is chosen on the launch command line, never through a pattern a
+repository ships; what its proxy mints for such a host at the host's first connection is the
+profile's own `read`, never a grant a line could not name.)
 
 A line grants exactly its words, under the path it names, and nothing else on the host; nothing is
 implied, so a line with no grant word is refused rather than read as `read`. The grammar, the
