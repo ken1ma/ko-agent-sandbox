@@ -145,8 +145,9 @@ needs nothing — mounts died with the VM and stale session markers are pruned a
 ## Stale state after crashes
 
 Self-healing by design, so intervention is rarely needed: a leaked session marker is pruned by the
-first reap that finds it older than the launch bound of ten minutes (its container no longer exists,
-and by then no launch could still be on its way to creating one); a stale or version-skewed mount is
-unmounted and replaced at the next launch; `--reset` removes the project's whole `mounts/<project>`
-tree. The one thing worth checking after repeated crashes is that `pgrep -a ko-agent-fs` matches the
-projects that actually have sessions.
+first reap that finds no container of its name — a launcher killed between its sandbox's `create`
+and `start` leaves both, and the reaper removes such a container after ten minutes, except on
+Windows or after a failed reaper spawn, where only `--reset` does; a stale or version-skewed mount
+is unmounted and replaced at the next launch; `--reset` removes the project's whole
+`mounts/<project>` tree. The one thing worth checking after repeated crashes is that
+`pgrep -a ko-agent-fs` matches the projects that actually have sessions.

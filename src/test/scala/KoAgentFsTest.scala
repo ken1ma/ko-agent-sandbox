@@ -73,6 +73,11 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
     val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1")
+    // The build check sits under the project lock and right before the daemon start; the
+    // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
+    val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
+    assert(check > script.indexOf("flock 9"), script)
+    assert(check < script.indexOf("nohup"), script)
     // A user-controlled path must never be spliced into shell text.
     assert(!script.contains(backing))
     assert(!script.contains("rm -rf $HOME"))
@@ -133,9 +138,6 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.contains("rm -f \"$dir/sessions/run-container-1\""))
     assert(script.contains("\"/usr/bin/podman\" container exists \"$(basename \"$marker\")\""))
     assert(script.contains("mounts/app-abc123def456"))
-    val age = script.indexOf("[ -z \"$(find \"$marker\" -mmin +10 2>/dev/null)\" ] && continue")
-    assert(age >= 0, script)
-    assert(age < script.indexOf("container exists"), "the prune runs before the age gate")
     assert(script.contains("if [ -z \"$(ls -A \"$dir/sessions\" 2>/dev/null)\" ]"))
     assert(script.contains("fusermount3 -uz \"$dir/workspace\""))
     val lock = script.indexOf("flock 9")
@@ -168,17 +170,17 @@ class KoAgentFsTest extends munit.FunSuite:
       Option(sessions.toFile.list()).map(_.toSet).getOrElse(Set.empty)
     finally deleteRecursively(home)
 
-  test("a reap leaves a launch that has mounted but has no container yet"):
-    // The failure this rules out: a marker is written at the mount, its container exists only once
-    // the proxy is up, and a concurrent session's reap in between would prune the marker, find
-    // none left and unmount under the launch. Deterministic because the stub podman answers "no
-    // such container" for every marker — the state a launch in flight is indistinguishable from.
+  test("a reap prunes every marker whose container does not exist, whatever its age"):
+    // A session creates its container before its marker is written, so a marker without one is a
+    // session that is gone — a launch in flight has a created container for `container exists` to
+    // answer for. Deterministic because the stub podman answers "no such container" for every
+    // marker.
     assume(!isWindows)
     assertEquals(
-      survivingMarkers(podmanExit = 1, Seq("launching" -> 5L, "crashed" -> 3600L)),
-      Set("launching"),
+      survivingMarkers(podmanExit = 1, Seq("fresh" -> 5L, "crashed" -> 3600L)),
+      Set(),
     )
-    // Its own marker goes by name whatever its age, and a live container's is never touched.
+    // Its own marker goes by name, and one whose container exists is never touched.
     assertEquals(
       survivingMarkers(podmanExit = 0, Seq("run-1" -> 5L, "live" -> 3600L)),
       Set("live"),

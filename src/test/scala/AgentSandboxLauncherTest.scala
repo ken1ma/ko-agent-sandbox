@@ -1414,16 +1414,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(forbiddenStateRootReason(mac, aliasedProject.resolve("state"), plainProject).isDefined)
       assertEquals(forbiddenStateRootReason(linux, plainProject.resolve("state"), aliasedProject), None)
 
-  test("a run's TLS mount copies are pruned only when provably dead and past the launch bound"):
+  test("a run's TLS mount copies are pruned only when no container names the run"):
     val names = Seq("run-1a2b3c4d", "run-ffffffff", "run-short", "ca.crt", ".lock", "run-1A2B3C4D")
-    // Only the run-<8 hex> pattern is the launcher's to sweep; a live run's copies are its proxy's
-    // mount sources, and a fresh dir may belong to a launch that has no container yet.
-    assertEquals(
-      tlsRunDirsToPrune(names, Set("1a2b3c4d"), _ => true),
-      Seq("run-ffffffff"),
-    )
-    assertEquals(tlsRunDirsToPrune(names, Set.empty, _ != "run-ffffffff"), Seq("run-1a2b3c4d"))
-    assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d", "ffffffff"), _ => true), Seq())
+    // Only the run-<8 hex> pattern is the launcher's to sweep; a named run's copies are its
+    // containers' mount sources.
+    assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d")), Seq("run-ffffffff"))
+    assertEquals(tlsRunDirsToPrune(names, Set.empty), Seq("run-1a2b3c4d", "run-ffffffff"))
+    assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d", "ffffffff")), Seq())
 
   test("reset removes exactly this project's per-run networks"):
     val names = Seq(

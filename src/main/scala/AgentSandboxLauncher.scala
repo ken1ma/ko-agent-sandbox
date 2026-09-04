@@ -21,7 +21,7 @@
 //    +-- current project -------------------> /workspace
 //    |     (--write selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with git and policy control
-//    |      state frozen (ensureKoAgentFsMounted; under guard=none the
+//    |      state frozen (mountKoAgentFs; under guard=none the
 //    |      .git pins of gitGuardVolumes stand in); reject is a
 //    |      read-only bind of the raw tree)
 //    |
@@ -877,9 +877,12 @@ object AgentSandboxLauncher:
    */
   def withImageBuildLock[A](os: Os)(body: Path => A): A =
     requireStateRootOutside(os, workingDirectory())
-    val imageState = stateRoot(os).resolve("image-build")
-    withFileLock(imageState.resolve("lock")):
-      body(imageState.resolve("cleanup.ids"))
+    withFileLock(imageBuildLockFile(os)):
+      body(stateRoot(os).resolve("image-build").resolve("cleanup.ids"))
+
+  /** The lock every image-producing verb holds, and a mount of the filter too, since the verb
+    * replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
+  def imageBuildLockFile(os: Os): Path = stateRoot(os).resolve("image-build").resolve("lock")
 
   /**
    * The generated tail every launcher-made name ends with: the folded directory slug, the
@@ -942,30 +945,17 @@ object AgentSandboxLauncher:
       name.matches(s"ko-agent-sandbox-$RunShape") || name.matches(s"ko-agent-egress-$RunShape")
 
   /**
-   * The per-run TLS mount-source directories a launch may sweep: named for a run (`run-<8 hex>`),
-   * not live, and past the launch bound — a launch makes its copies before its proxy container
-   * exists, so inside that window a live launch has no run for the listing to find, and removing
-   * its copies would fail the `podman start` that mounts them. The reaper deliberately does not
-   * remove these (its argument surface stays fixed); the next launch's sweep and the resets do.
+   * The per-run TLS mount-source directories a launch may sweep: named for a run (`run-<8 hex>`)
+   * that no container names. `liveRuns` is a listing taken under the project lock, and a launch
+   * creates its proxy under that lock before releasing it, so a directory another launch can see
+   * belongs to a run with a container or to a launch that died — never to one in flight. The
+   * reaper deliberately does not remove these (its argument surface stays fixed); the next
+   * launch's sweep and the resets do.
    */
-  def tlsRunDirsToPrune(
-    names: Seq[String],
-    liveRuns: Set[String],
-    oldEnough: String => Boolean,
-  ): Seq[String] =
+  def tlsRunDirsToPrune(names: Seq[String], liveRuns: Set[String]): Seq[String] =
     names
       .filter(_.matches("run-[0-9a-f]{8}"))
       .filterNot(name => liveRuns.contains(name.stripPrefix("run-")))
-      .filter(oldEnough)
-
-  /** Past the same ten-minute bound the reaper and the marker prune use; false on any doubt. */
-  def olderThanLaunchBound(path: Path): Boolean =
-    try
-      Files
-        .getLastModifiedTime(path)
-        .toInstant
-        .isBefore(Instant.now().minusSeconds(600))
-    catch case _: java.io.IOException => false
 
   def projectNetworks(names: Seq[String], projectId: String): Seq[String] =
     names.filter: name =>
@@ -2334,8 +2324,9 @@ object AgentSandboxLauncher:
     // through leaf.sans below. Empty: no leaf, no inspection material.
     val inspectedHosts = inspectedHostsOf(policyResolvedText).fold(fail(_), identity)
 
-    // The workspace FUSE filter, mounted before any volume is assembled (the lifecycle banner above
-    // ensureKoAgentFsMounted has the layout). Every live session's enforcement, on every platform;
+    // The workspace FUSE filter, checked before any volume is assembled and mounted once the
+    // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
+    // Every live session's enforcement, on every platform;
     // the .git pins below are what a guard=none session gets instead. The two are alternatives
     // rather than a stack: the filter's policy is a strict superset of the pins', and preparing a
     // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
@@ -2344,8 +2335,8 @@ object AgentSandboxLauncher:
 
     // Derived from the mode rather than from the mount, so it exists before the mount does: the
     // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript),
-    // and a failure after that would otherwise leave the marker to age out of a later reap. Only
-    // live sessions behind the filter have a mount to reap.
+    // and a failure after that would otherwise leave the marker to a later reap. Only live
+    // sessions behind the filter have a mount to reap.
     val filterReap = Option.when(writeMode == "live" && guard != "none")(
       koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer),
     )
@@ -2362,33 +2353,6 @@ object AgentSandboxLauncher:
       Files.setPosixFilePermissions(tlsDir, PosixFilePermissions.fromString("rwx------"))
     val runFiles = tlsDir.resolve(s"run-$runSuffix")
 
-    // Which of this project's runs are still live, for every pruning decision this launch makes.
-    // A failed listing prunes nothing — unknown liveness must not read as "no live runs" and
-    // delete a running session's files out from under it. Two liveness notions, because the two
-    // pruned things have different writers: the audit log is the proxy's alone, so the proxy
-    // decides a log's fate; the mount copies serve the sandbox container too, so a run whose
-    // proxy crashed while its sandbox lives on must keep them.
-    val proxyPrefix = proxyRunContainer(projectId, "")
-    val sandboxPrefix = sandboxRunContainer(projectId, "")
-    val runningContainers = run(podman, "ps", "--format", "{{.Names}}")
-    val runningNames: Option[Vector[String]] =
-      Option.when(runningContainers.ok)(
-        runningContainers.text.linesIterator.map(_.trim).toVector,
-      )
-    def liveSuffixes(prefix: String): Option[Set[String]] =
-      runningNames.map(_.filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).toSet)
-    val liveProxyRuns = liveSuffixes(proxyPrefix)
-    val liveRuns =
-      for
-        proxies <- liveProxyRuns
-        sandboxes <- liveSuffixes(sandboxPrefix)
-      yield proxies ++ sandboxes
-    if runningNames.isEmpty then
-      System.err.println(
-        "note: could not list the running containers; keeping every retained log and run file\n"
-          + runningContainers.err,
-      )
-
     // Everything this run creates, in one place: the shutdown hook and the resident teardown both
     // run exactly this, so the two cannot drift into removing different sets.
     val removeWhatThisRunCreated = () =>
@@ -2400,23 +2364,25 @@ object AgentSandboxLauncher:
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them (its
       // argument surface stays fixed); a run it cleans up leaves its copies to the next launch's
-      // age-and-liveness sweep, or a reset's.
+      // liveness sweep, or a reset's.
       try deleteRecursively(runFiles)
       catch case _: Exception => ()
-      // Best effort, as on the reaper's path: this run's session marker goes now rather than
-      // waiting out the launch bound, and the mount follows if no other session holds it.
+      // Best effort, as on the reaper's path: this run's session marker goes now rather than with
+      // the reap that finds its container gone, and the mount follows if no other session holds it.
       filterReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
 
-    // Armed before the first resource this run owns — the filter's session marker, which the mount
-    // below writes. What precedes it is this project's policy cache, which outlives every run by
-    // design. From here on this process is the only thing that knows what to remove, and every
-    // refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
+    // Armed before the first resource this run owns — its networks, then its files under the
+    // project lock below. What precedes it is this project's policy cache, which outlives every
+    // run by design. From here on this process is the only thing that knows what to remove, and
+    // every refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
     val cleanup = armRunCleanup(removeWhatThisRunCreated)
 
+    // The filter's gate and its mountpoint now; the mount itself once the sandbox container
+    // exists (mountKoAgentFs has why), which is after the proxy and the hold.
     val filteredWorkspace = (writeMode, guard) match
       case ("reject", _) => None
       case (_, "none") => None
-      case _ => Some(ensureKoAgentFsMounted(podman, os, projectId, projectDir, sandboxContainer))
+      case _ => Some(prepareKoAgentFs(podman, os, projectId))
 
     // gitGuardVolumes has the threat and the layouts. Reject mode needs no pin: the whole tree is
     // bound read-only, git control state included.
@@ -2435,6 +2401,41 @@ object AgentSandboxLauncher:
       else Vector.empty
 
     // -----------------------------------------------------------------------
+    // Networks
+    // -----------------------------------------------------------------------
+    //
+    createNetwork(sandboxNetwork, internal = true)
+    createNetwork(egressNetwork, internal = false)
+
+    // -----------------------------------------------------------------------
+    // This run's audit log
+    // -----------------------------------------------------------------------
+    //
+    // Appended by the proxy through a bind-mounted host file, so the record
+    // outlives the per-run container. Not --log-opt path=: conmon interprets
+    // that inside the podman-machine VM. A single-file mount — the directory
+    // would hand the proxy every previous session's record — and owner-only:
+    // refusal lines carry full URLs, and a URL can carry a secret.
+    val logDir = logStateRoot(os).resolve(projectId)
+    Files.createDirectories(logDir)
+    if posixPermissions(logDir) then
+      Files.setPosixFilePermissions(logDir, PosixFilePermissions.fromString("rwx------"))
+
+    val logStamp = DateTimeFormatter
+      .ofPattern("uuuuMMdd-HHmmss")
+      .withZone(ZoneOffset.UTC)
+      .format(Instant.now())
+    val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
+
+    // :Z relabels privately, right for a file only this run's proxy writes — launcher-owned
+    // state, never the user's.
+    val containerLogFile = "/var/log/agent-egress-proxy/proxy.log"
+    val proxyLogArgs = Vector(
+      s"--volume=$hostLogFile:$containerLogFile:rw${if selinuxEnforcing then ",Z" else ""}",
+      s"--env=EGRESS_LOG_FILE=$containerLogFile",
+    )
+
+    // -----------------------------------------------------------------------
     // This project's TLS inspection CA, and this run's mount sources
     // -----------------------------------------------------------------------
     //
@@ -2444,9 +2445,10 @@ object AgentSandboxLauncher:
     // Under the project lock, because every step is check-then-act over shared files: two first
     // launches that both find no usable CA would otherwise interleave their writes and leave one
     // launch's ca.key beside the other's ca.crt. The lock spans the checks through the per-run
-    // copies, so what this run mounts is one launch's consistent set; it cannot span further —
-    // podman resolves bind sources at container *start*, past the interactive hold — and the
-    // per-run copies are what close that remainder. What the lock cannot cover is a launch that
+    // copies and the proxy's create, so what this run mounts is one launch's consistent set; it
+    // cannot span further — podman resolves bind sources at container *start*, past the
+    // interactive hold — and the per-run copies are what close that remainder. What the lock
+    // cannot cover is a launch that
     // *died* between two writes, which is the coherence gates' job below: they test that key and
     // certificate answer each other, not merely that both look fine.
     val caCertFile = tlsDir.resolve("ca.crt")
@@ -2490,14 +2492,55 @@ object AgentSandboxLauncher:
       imageId, writeMode, guard, policyResolvedText, agentInstructions, runOnHost, gitInstruction,
     )
 
-    val (proxyTlsArgs, sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
-      // Run copies whose runs are provably gone — and past the launch bound, so a launch between
-      // its copies and its `podman create` is never swept — leave with this launch rather than
-      // accumulating; the resets take the rest.
+    val (sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
+      // Which of this project's runs a container still names, for every pruning decision this
+      // launch makes. Listed under the lock and in every state, because a run's files — its audit
+      // log, its run directory — are written under this lock and its proxy created before the
+      // lock is released: a run whose files another launch can see has a container in that
+      // launch's listing, or died before creating one. A launcher dead between its create and
+      // start left a created container, which keeps the files until a reset removes it. A failed
+      // listing prunes nothing — unknown liveness must not read as "no live runs" and delete a
+      // running session's files out from under it. Two liveness notions, because the two pruned
+      // things have different writers: the audit log is the proxy's alone, so the proxy decides a
+      // log's fate; the mount copies serve the sandbox container too, so a run whose proxy crashed
+      // while its sandbox lives on must keep them.
+      val proxyPrefix = proxyRunContainer(projectId, "")
+      val sandboxPrefix = sandboxRunContainer(projectId, "")
+      val containers = run(podman, "ps", "--all", "--format", "{{.Names}}")
+      val containerNames: Option[Vector[String]] =
+        Option.when(containers.ok)(containers.text.linesIterator.map(_.trim).toVector)
+      def runsNamed(prefix: String): Option[Set[String]] =
+        containerNames.map(_.filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).toSet)
+      val liveProxyRuns = runsNamed(proxyPrefix)
+      val liveRuns =
+        for
+          proxies <- liveProxyRuns
+          sandboxes <- runsNamed(sandboxPrefix)
+        yield proxies ++ sandboxes
+      if containerNames.isEmpty then
+        System.err.println(
+          "note: could not list this project's containers; keeping every retained log and run file\n"
+            + containers.err,
+        )
+
+      // A log names its run in the same suffix as its proxy container.
+      liveProxyRuns.foreach: live =>
+        logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
+          .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
+
+      // The channel broker's log family, same retention — pruned by whole-run liveness, because the
+      // broker lives with the sandbox container rather than the proxy.
+      liveRuns.foreach: live =>
+        logsToPrune(retainedLogs(logDir, "channel-").map(_.getFileName.toString), RetainedProxyLogs, live)
+          .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
+
+      // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
+      // take the rest.
       liveRuns.foreach: live =>
         val entries = Files.list(tlsDir).iterator().asScala.map(_.getFileName.toString).toVector
-        tlsRunDirsToPrune(entries, live, name => olderThanLaunchBound(tlsDir.resolve(name)))
-          .foreach(name => deleteRecursively(tlsDir.resolve(name)))
+        tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
+
+      writePrivate(hostLogFile, "")
 
       // Coherence, not just expiry: a launch that died between writing the key and the
       // certificate leaves a pair that is unexpired, non-empty and useless — every handshake fails
@@ -2673,92 +2716,42 @@ object AgentSandboxLauncher:
           s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
         ).toVector
 
-      (
-        proxyTls,
-        sandboxTls,
-        Vector(s"--volume=${carried(agentDocFile)}:$agentDocPath:ro"),
+      // -----------------------------------------------------------------------
+      // Proxy container
+      // -----------------------------------------------------------------------
+      //
+      // A session keeps the policy it started with; the next launch re-reads.
+      // --rm, so a proxy whose process exits removes itself. The audit-log bind is its only writable
+      // path; the native executable needs no scratch filesystem. Created here, still under the lock,
+      // so no sweep that lists under it (the top of this block) sees this run's files above without
+      // a container naming the run; a launch that dies before this create leaves files no
+      // container names, which is what that sweep is for. Started once the lock is released.
+      val proxyCreated = run(
+        Vector(
+          podman, "create",
+          s"--name=$proxyContainer",
+          "--rm",
+          "--pull=never",
+          "--init",
+          s"--network=$sandboxNetwork",
+          s"--network=$egressNetwork",
+          "--cap-drop=ALL",
+          "--security-opt=no-new-privileges",
+          "--read-only",
+          "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
+        ) ++
+          // memoryArguments has why the equal limits disable podman's default swap allowance.
+          memoryArguments(Some(ProxyMemoryCeiling), None, None) ++ Vector(
+            "--pids-limit=512",
+            "--http-proxy=false",
+            s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
+          ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
+          ++ proxyTls ++ proxyLogArgs ++ Vector(proxyImage)*
       )
+      if !proxyCreated.ok then
+        fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
 
-    // -----------------------------------------------------------------------
-    // Networks
-    // -----------------------------------------------------------------------
-    //
-    createNetwork(sandboxNetwork, internal = true)
-    createNetwork(egressNetwork, internal = false)
-
-    // -----------------------------------------------------------------------
-    // This run's audit log
-    // -----------------------------------------------------------------------
-    //
-    // Appended by the proxy through a bind-mounted host file, so the record
-    // outlives the per-run container. Not --log-opt path=: conmon interprets
-    // that inside the podman-machine VM. A single-file mount — the directory
-    // would hand the proxy every previous session's record — and owner-only:
-    // refusal lines carry full URLs, and a URL can carry a secret.
-    val logDir = logStateRoot(os).resolve(projectId)
-    Files.createDirectories(logDir)
-    if posixPermissions(logDir) then
-      Files.setPosixFilePermissions(logDir, PosixFilePermissions.fromString("rwx------"))
-
-    // A log names its run in the same suffix as its proxy container; the proxy is the log's
-    // only writer, so proxy liveness alone decides it, and an unreadable running set prunes
-    // nothing.
-    liveProxyRuns.foreach: live =>
-      logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
-        .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
-
-    // The channel broker's log family, same retention — pruned by whole-run liveness, because the
-    // broker lives with the sandbox container rather than the proxy.
-    liveRuns.foreach: live =>
-      logsToPrune(retainedLogs(logDir, "channel-").map(_.getFileName.toString), RetainedProxyLogs, live)
-        .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
-
-    val logStamp = DateTimeFormatter
-      .ofPattern("uuuuMMdd-HHmmss")
-      .withZone(ZoneOffset.UTC)
-      .format(Instant.now())
-    val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
-    writePrivate(hostLogFile, "")
-
-    // :Z relabels privately, right for a file only this run's proxy writes — launcher-owned
-    // state, never the user's.
-    val containerLogFile = "/var/log/agent-egress-proxy/proxy.log"
-    val proxyLogArgs = Vector(
-      s"--volume=$hostLogFile:$containerLogFile:rw${if selinuxEnforcing then ",Z" else ""}",
-      s"--env=EGRESS_LOG_FILE=$containerLogFile",
-    )
-
-    // -----------------------------------------------------------------------
-    // Proxy container
-    // -----------------------------------------------------------------------
-    //
-    // A session keeps the policy it started with; the next launch re-reads.
-    // --rm, so a proxy whose process exits removes itself. The audit-log bind is its only writable
-    // path; the native executable needs no scratch filesystem.
-    val proxyCreated = run(
-      Vector(
-        podman, "create",
-        s"--name=$proxyContainer",
-        "--rm",
-        "--pull=never",
-        "--init",
-        s"--network=$sandboxNetwork",
-        s"--network=$egressNetwork",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-        "--read-only",
-        "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
-      ) ++
-        // memoryArguments has why the equal limits disable podman's default swap allowance.
-        memoryArguments(Some(ProxyMemoryCeiling), None, None) ++ Vector(
-          "--pids-limit=512",
-          "--http-proxy=false",
-          s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
-        ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
-        ++ proxyTlsArgs ++ proxyLogArgs ++ Vector(proxyImage)*
-    )
-    if !proxyCreated.ok then
-      fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
+      (sandboxTls, Vector(s"--volume=${carried(agentDocFile)}:$agentDocPath:ro"))
 
     val proxyStarted = run(podman, "start", proxyContainer)
     if !proxyStarted.ok then
@@ -2776,17 +2769,15 @@ object AgentSandboxLauncher:
     // Both authorities and their relevant state, said every launch — and a policy that arrived
     // with the repository never takes effect unseen: the files as written, then the dry run's
     // counts, the proxy's own answers to exactly what is enforced.
-    // The workspace line is also where the mount step reports which branch it took, and where
-    // guard=none is said every session it happens: it is the weaker boundary, and silence about
+    // The workspace line is also where guard=none is said every session it happens: it is the
+    // weaker boundary, and silence about
     // it is how a user forgets which one they are running under — the relabel notice included,
     // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
     // Each line tints the mode it states; a branch weaker than the default is tinted whole
     // instead, red (HostCommands.weakened), so no line ever has two colours.
     System.err.println((writeMode, filteredWorkspace) match
       case ("reject", _) => s"workspace: ${statedMode("reject")}; /workspace is read-only this session"
-      case (_, Some(mount)) =>
-        s"workspace: ${statedMode("live")}; ${koAgentFsLabel(os)}, " +
-          (if mount.joined then "reusing the mount shared by sessions in the same project directory" else "mounted")
+      case (_, Some(_)) => s"workspace: ${statedMode("live")}; ${koAgentFsLabel(os)}"
       case (_, None) =>
         weakened(
           s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
@@ -2901,7 +2892,7 @@ object AgentSandboxLauncher:
       // Never :Z: the reject gate above established the tree is already container-readable, and
       // relabeling is the host write the mode withholds.
       case ("reject", _)                 => s"$projectDir:/workspace:ro"
-      case (_, Some(mount))              => s"${mount.mountpoint}:/workspace:rw"
+      case (_, Some(prepared))           => s"${prepared.mountpoint}:/workspace:rw"
       case (_, None) if selinuxEnforcing => s"$projectDir:/workspace:rw,Z"
       case (_, None)                     => s"$projectDir:/workspace:rw"
 
@@ -2990,18 +2981,22 @@ object AgentSandboxLauncher:
       image,
     ) ++ command.toVector
 
-    // Before the container exists, and so before the reaper that waits on it: a Ctrl-C at the hold
-    // is then an ordinary shutdown, the hook removing this run's proxy and networks and the launch
-    // ending at once. Held after the create, it would sit inside the reaper's
-    // created-but-never-started wait (SandboxLifecycle, ReaperScript) and leave it polling podman
-    // for minutes after the launcher was gone. The cost is that the note below — the reaper could
-    // not be spawned — prints after the release, and the TUI then clears it with the rest.
+    // The hold, then the create, the reaper, the mount, and the start. The hold before the
+    // container exists: a Ctrl-C there is then an ordinary shutdown, the hook removing this run's
+    // proxy and networks and the launch ending at once, and a launcher killed outright at the
+    // prompt leaves no created container behind. The reaper right after the create, so a
+    // created-but-never-started sandbox has its remover (SandboxLifecycle, ReaperScript) from the
+    // first instant — where a reaper runs: Windows, and a POSIX spawn that failed, stay resident,
+    // and a resident launcher killed outright leaves the created container, and with it the
+    // marker and the mount, to a reset, as it leaves the proxy. The mount after both, because the
+    // container is what names this session to
+    // the filter's reap, which asks podman for it by name (KoAgentFs, koAgentFsReapScript):
+    // written after the create, the session marker is never on disk without it, and a launcher
+    // that dies during the mount leaves the marker to the reap that follows the reaper's removal
+    // of the container. The cost is that the notes below — the reaper could not be spawned, which
+    // branch the mount took — print after the release, and the TUI then clears them with the rest.
     if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
       sys.exit(0)
-
-    // The create and the start behind it, for the reason removeWhatThisRunCreated states.
-    // The blank line separates the launch's own output from the agent's.
-    System.err.println("starting in sandbox\n")
 
     val created = run(createCommand*)
     if !created.ok then
@@ -3026,6 +3021,19 @@ object AgentSandboxLauncher:
         fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
     clipboardHost.powershell.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
+
+    // Said here, not on the workspace line above: the user should not have to infer "joined" from
+    // silence, and which branch the mount took is known only now.
+    filteredWorkspace.foreach: prepared =>
+      val joined = mountKoAgentFs(podman, os, prepared, projectId, projectDir, sandboxContainer)
+      System.err.println(
+        if joined then "workspace filter: reusing the mount shared by sessions in the same project directory"
+        else "workspace filter: mounted",
+      )
+
+    // The start, behind the create, for the reason removeWhatThisRunCreated states.
+    // The blank line separates the launch's own output from the agent's.
+    System.err.println("starting in sandbox\n")
 
     // The command broker, detached like the reaper: it must outlive the exec below, and it ends
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
