@@ -72,9 +72,10 @@ class MountLifecycleTest extends munit.FunSuite:
 
     try
       val a = launch(project.resolve("a.log"))
+      val aLog = Files.readString(project.resolve("a.log"))
       assert(
-        Files.readString(project.resolve("a.log")).contains(", mounted shared by this project's live sessions"),
-        s"session A did not create the mount — another session of $id already holds one",
+        aLog.contains(", mounted") && !aLog.contains("reusing the mount"),
+        s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
       assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")
       assertEquals(mounted(), 1, "A is running but its mountpoint is not mounted")

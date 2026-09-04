@@ -620,9 +620,12 @@ object RunOnHostSandbox:
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
    * symlink under a `target/` directory that does not resolve inside a granted root — the
    * dangling included — is removed before the build; the artifacts it named still exist in the
-   * store of the sbt that made them, which relinks on its own next run.
+   * store of the sbt that made them, which relinks on its own next run. The roots are compared
+   * resolved, as the links are: a root reached through a symlink, macOS's `/var`, would
+   * otherwise match nothing and the sweep would take every link.
    */
   def cleanForeignTargetLinks(project: Path, granted: Seq[Path]): Vector[Path] =
+    val roots = granted.flatMap(root => try Some(root.toRealPath()) catch case _: IOException => None)
     val removed = Vector.newBuilder[Path]
     def walk(dir: Path, inTarget: Boolean): Unit =
       val stream =
@@ -636,7 +639,7 @@ object RunOnHostSandbox:
         if Files.isSymbolicLink(entry) then
           if inTarget then
             val resolvesInside =
-              try granted.exists(entry.toRealPath().startsWith)
+              try roots.exists(entry.toRealPath().startsWith)
               catch case _: IOException => false
             if !resolvesInside then
               try
