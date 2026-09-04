@@ -162,9 +162,10 @@ intermediary or joins a chain: the assumption above is then gone.
 
 ### No test hook that pauses a launch mid-flight
 
-The workspace filter's reference count has one window worth attacking: a launch between its mount
-and its `podman create`, where the marker exists and the container does not (`KoAgentFs`, "The
-workspace FUSE filter's mount lifecycle"). Arranging that interleaving at an arbitrary instant
+The workspace filter's reference count has one state worth attacking: a launch between its
+`podman create` and its `podman start`, where the marker and a container that is not running exist
+together and a reap must count the marker (`KoAgentFs`, "The workspace FUSE filter's mount
+lifecycle"). Arranging that interleaving at an arbitrary instant
 would need the launcher pausable from outside — a variable read on the launch path. It would need
 to be known, documented in `--help`, and fail closed like every other variable: boundary code
 containing scaffolding for a test, on the path that decides whether the filter is mounted at all.

@@ -12,10 +12,10 @@
 //
 // Beyond the straight line it covers the two rules that exist for a *concurrent* reap
 // (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle"). Neither needs a launch that can be
-// paused: the state a launch-in-flight presents to a reap is a marker whose container does not
-// exist, which can be created directly; that a real launch passes through that state is the
-// marker's mtime against its container's creation; and that the project lock serializes a reap
-// against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
+// paused: the state a launch-in-flight presents to a reap is a marker whose container exists and
+// is not running, which can be created directly; that a real launch passes through that state and
+// no other is the marker's mtime against its container's creation; and that the project lock
+// serializes a reap against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
 
 package agentsandbox.launcher
 
@@ -42,6 +42,7 @@ class MountLifecycleTest extends munit.FunSuite:
     var started = Vector.empty[Session]
     var lockHolder = ""
     var id = ""
+    var planted = ""
 
     def launch(log: Path): String =
       val appeared = IntegrationSession.launch(project, log)
@@ -74,7 +75,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val a = launch(project.resolve("a.log"))
       val aLog = Files.readString(project.resolve("a.log"))
       assert(
-        aLog.contains(", mounted") && !aLog.contains("reusing the mount"),
+        aLog.contains("workspace filter: mounted") && !aLog.contains("reusing the mount"),
         s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
       assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")
@@ -96,17 +97,17 @@ class MountLifecycleTest extends munit.FunSuite:
       daemonPids().foreach: pid =>
         assertEquals(vm(s"[ -e /proc/$pid/fd/9 ] && echo held || echo free").trim, "free")
 
-      // The ordering the whole reference count rests on, measured rather than assumed: the marker
-      // is written at the mount, the container created only once the proxy is up.
+      // The ordering the whole reference count rests on, measured rather than assumed: the
+      // container is created first, the marker written at the mount after it.
       val written = vm(s"""stat -c %.9Y "$$HOME/$Mounts/$id/sessions/$b" 2>/dev/null""")
         .trim.filter(_.isDigit)
       val created = run(podman, "inspect", "--format", "{{.Created.UnixNano}}", b).text.trim
       assert(written.nonEmpty && created.forall(_.isDigit), s"marker=$written created=$created")
-      val windowMillis = (created.toLong - written.toLong) / 1000000
+      val afterMillis = (written.toLong - created.toLong) / 1000000
       assert(
-        windowMillis >= 100,
-        s"B's marker and its container are ${windowMillis}ms apart; the window the age gate " +
-          "covers is not there, so either the launcher's ordering changed or the clocks differ",
+        afterMillis > 0,
+        s"B's marker was written ${-afterMillis}ms before its container was created; either the " +
+          "launcher's ordering changed or the clocks differ",
       )
 
       run(podman, "stop", "--time", "2", a)
@@ -117,9 +118,14 @@ class MountLifecycleTest extends munit.FunSuite:
              "B's /workspace stopped serving when A exited")
 
       // Exactly the state a launch in flight presents to a reap, planted rather than raced for: a
-      // fresh marker whose container does not exist. Without the age gate the next reap prunes it,
-      // finds none left, and unmounts under a launch still on its way to creating its container.
-      val planted = s"ko-agent-sandbox-run-$id-0000dead"
+      // marker whose container exists and is not running. Pruning on anything short of the
+      // container's absence would take it, find none left, and unmount under a launch still on its
+      // way to starting.
+      planted = s"ko-agent-sandbox-run-$id-0000dead"
+      assert(
+        run(podman, "create", "--name", planted, "--pull=never", "ko-agent-sandbox:latest", "true").ok,
+        "could not create the planted container",
+      )
       vm(s"""touch "$$HOME/$Mounts/$id/sessions/$planted"""")
       run(podman, "stop", "--time", "2", b)
       started = started.filterNot(_.container == b)
@@ -130,7 +136,9 @@ class MountLifecycleTest extends munit.FunSuite:
       assertEquals(mounted(), 1, "the mount was pulled out from under a launch in flight")
       assertEquals(daemonPids().size, 1, "the daemon exited under a launch in flight")
 
-      vm(s"""touch -d '20 minutes ago' "$$HOME/$Mounts/$id/sessions/$planted"""")
+      // Its container gone — as the reaper's bounded wait or a reset leaves it — the marker is the
+      // next reap's to collect.
+      assert(run(podman, "rm", planted).ok, "could not remove the planted container")
       val c = launch(project.resolve("c.log"))
       assert(
         Files
@@ -158,15 +166,16 @@ class MountLifecycleTest extends munit.FunSuite:
         "no reap ever blocked on the project lock; it is not serializing",
       )
       assertEquals(mounted(), 1, "the mount went down while the lock was held")
-      assertEquals(markers(), planted, "expected only the aged marker while the reap is blocked")
+      assertEquals(markers(), planted, "expected only the planted marker while the reap is blocked")
 
       vm(s"kill $lockHolder 2>/dev/null || true")
       lockHolder = ""
-      assertEquals(eventually(Patience)(markers())(_.isEmpty), "", "the aged marker was collected")
+      assertEquals(eventually(Patience)(markers())(_.isEmpty), "", "the planted marker was collected")
       assertEquals(eventually(60)(mounted())(_ == 0), 0, "the mountpoint is still mounted")
       assertEquals(eventually(60)(daemonPids().size)(_ == 0), 0, "the daemon is still running")
 
     finally
       if lockHolder.nonEmpty then vm(s"kill $lockHolder 2>/dev/null || true")
+      if planted.nonEmpty then run(podman, "rm", "--force", planted)
       started.foreach(stop)
       discard(project)

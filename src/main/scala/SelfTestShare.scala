@@ -230,9 +230,9 @@ object SelfTestShare:
             s", provider ${if provider.ok then provider.text.trim else "unknown"}"
       System.err.println(s"share: lower $lowerType case-$lowerCase; machine: $machineView")
 
-      val mount = ensureKoAgentFsMounted(podman, os, mountId, scratch, container)
+      val mountpoint = ensureKoAgentFsMounted(podman, os, mountId, scratch, container)
       try
-        val command = probeRunCommand(podman, mount.mountpoint, container)
+        val command = probeRunCommand(podman, mountpoint, container)
         echoCommand(command)
         val process = ProcessBuilder(command*).redirectErrorStream(true).start()
         // The hard bound over both 120 s probe waits plus container start; the kill turns a wedged
