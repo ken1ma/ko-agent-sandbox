@@ -96,10 +96,10 @@ object RunOnHostSandbox:
   /**
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
    * applies (SandboxProject.policyDirError): the tools this wrapper serves, egress/ inside each,
-   * allowed inside that — a stray name, a symlinked component, or a component of the wrong type
-   * refuses the build, never sits as ignored config. The type rule prevents real failures: a file
-   * where a directory belongs would read as absent configuration, and a FIFO where the file
-   * belongs would block the read forever.
+   * rule inside that — a stray name, the retired grammar's file among them, a symlinked component,
+   * or a component of the wrong type refuses the build, never sits as ignored config. The type rule
+   * prevents real failures: a file where a directory belongs would read as absent configuration,
+   * and a FIFO where the file belongs would block the read forever.
    */
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
@@ -118,25 +118,29 @@ object RunOnHostSandbox:
     else
       val directories = dir +: tools.flatMap: name =>
         Vector(dir.resolve(name), dir.resolve(name).resolve("egress"))
-      val allowedFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
+      val ruleFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("rule"))
+      val retiredFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
       def wrongType(path: Path, directory: Boolean): Boolean =
         Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
           (if directory then !Files.isDirectory(path) else !Files.isRegularFile(path))
-      (directories ++ allowedFiles).find(Files.isSymbolicLink)
+      (directories ++ ruleFiles).find(Files.isSymbolicLink)
         .map(link => s"$link is a symlink; boundary configuration is read plainly or not at all")
         .orElse(directories.find(wrongType(_, directory = true))
           .map(p => s"$p is not a directory; boundary configuration is read plainly or not at all"))
-        .orElse(allowedFiles.find(wrongType(_, directory = false))
+        .orElse(ruleFiles.find(wrongType(_, directory = false))
           .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
+        .orElse(retiredFiles.find(Files.exists(_, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+          .map(p => s"$p is a file of the retired grammar; the build's policy is egress/rule, one " +
+            s"`$BuildAllowlistForm` per line — rewrite the lines there and delete this file"))
         .orElse:
           val stray = strays(dir, tools.toSet) ++ tools.flatMap: name =>
             strays(dir.resolve(name), Set("egress")) ++
-              strays(dir.resolve(name).resolve("egress"), Set("allowed"))
+              strays(dir.resolve(name).resolve("egress"), Set("rule"))
           Option.when(stray.nonEmpty):
             s"${stray.mkString(", ")}: not configuration this launcher reads — " +
               "a typo, or a newer launcher's file; check the spelling or update the launcher"
 
-  /** The project file's hosts, validated to the allowlist grammar (run-on-host.md
+  /** The project file's hosts, validated to the build's rule grammar (run-on-host.md
     * "Configuration"); an absent file contributes nothing. */
   def readAllowlist(project: Path, tool: Tool): Either[String, Vector[String]] =
     hostCommandStray(project).toLeft(()).flatMap: _ =>
@@ -146,7 +150,7 @@ object RunOnHostSandbox:
         try
           buildAllowlist(Files.readString(file, UTF_8)).left.map:
             case Refusal.AllowlistEntryOutsideGrammar(entry) =>
-              s"$file: '$entry' is outside the allowlist grammar — one `+host <host>` per line"
+              s"$file: '$entry' is outside the build's rule grammar — one `$BuildAllowlistForm` per line"
             case other => s"$file: $other"
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
@@ -546,7 +550,7 @@ object RunOnHostSandbox:
       .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
-    builder.environment.put("EGRESS_ALLOWED", egressAllowedText(fileHosts))
+    builder.environment.put("EGRESS_RULE", egressRuleText(fileHosts))
     builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
     builder.environment.put("EGRESS_LOG_FILE", session.directory.resolve("proxy.log").toString)
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -658,5 +662,6 @@ object RunOnHostSandbox:
     if hosts.nonEmpty then
       val toolName = tool.toString.toLowerCase(java.util.Locale.ROOT)
       log((("Build requested network access to:" +: hosts.map(host => s"  $host")) :+
-        ("Not permitted by the Scala build sandbox. If the build should reach it, add a" +
-          s" `+host` line to .ko-agent-sandbox/host-command/$toolName/egress/allowed.")).mkString("\n"))
+        ("Not permitted by the Scala build sandbox. If the build should reach it, add an" +
+          s" `$BuildAllowlistForm` line to .ko-agent-sandbox/host-command/$toolName/egress/rule."))
+        .mkString("\n"))

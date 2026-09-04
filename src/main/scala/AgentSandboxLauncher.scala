@@ -52,7 +52,7 @@
 //    |
 //    +-- egress proxy ------------------> the hosts --egress=<profile> admits, CONNECT :443 only
 //    |                                       (EgressProxyPolicy.scala; the flags are below)
-//    |                                    restricted hosts: TLS-inspected reads plus named operations;
+//    |                                    inspected hosts: TLS-inspected reads plus named grants;
 //    |                                       git push refused
 //    X-- everything else                    NO ROUTE
 //
@@ -1155,18 +1155,18 @@ object AgentSandboxLauncher:
       case Some(_) => ()
 
     if policyFiles.nonEmpty then printPolicyFiles(policyFiles)
-    else System.err.println("egress policy: no project policy files; the launcher-owned baseline")
+    else System.err.println("egress policy: no project rule file; the launcher-owned defaults")
 
     (projectId, proxyImage, policyFiles, provider)
 
-  /** The project's policy files as written, one line each. Printed by a launch and by the egress
-    * verbs alike; the launch follows it with the widening line once the dry run has answered
+  /** The project's rule file as written, one line. Printed by a launch and by the egress verbs
+    * alike; the launch follows it with the widening line once the dry run has answered
     * (printWidening). */
   def printPolicyFiles(policyFiles: Vector[(String, String)]): Unit =
     policyFiles.foreach: (name, text) =>
       System.err.println(s"egress policy (.ko-agent-sandbox/egress/$name): ${entriesSummary(text)}")
 
-  /** The entries the dry run reports as reaching past the baseline (EgressProxyPolicy.wideningEntries),
+  /** The lines the dry run reports as granting beyond the defaults (EgressProxyPolicy.wideningEntries),
     * once more, alone, tinted like the permissive profile: the lines as written print at every
     * launch and are read as a habit; this one appears only when there is one. */
   def printWidening(policyResolvedText: String): Unit =
@@ -1775,19 +1775,21 @@ object AgentSandboxLauncher:
        |
        |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
-       |Anything not admitted below is refused. An unrestricted host is an opaque tunnel; a
-       |restricted host answers GET and HEAD plus only the named allowances shown below.
-       |`allow=git-fetch` serves `clone` and `pull`; `git push` is always refused. A
-       |`host/prefix/` entry is a restricted host reachable under that path only; a request
-       |outside it, or spelled with percent-encoding, a dot segment, a backslash or an empty
-       |segment, is refused.
+       |Anything not admitted below is refused. A line grants exactly its words under its
+       |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
+       |serves `clone` and `pull`, and `git push` is always refused; `method=` names the
+       |write methods admitted there. A request takes the line whose path is its longest
+       |match, a tree by prefix, an exact path alone; one matching no line is refused, and so
+       |is one under a line other than the root spelled with percent-encoding, a dot segment,
+       |a backslash or an empty segment.
        |
        |$indented
        |
        |If a package registry or clone host you need is not admitted, do not look for another
-       |route: name the host to the user, who adds it to `.ko-agent-sandbox/egress/allowed` on
-       |the host and relaunches — under the default deny-unless-allowed profile or a broader
-       |one, if this session's profile does not admit project hosts at all.
+       |route: name the host to the user, who adds `allow https://<host>/ read` to
+       |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
+       |deny-unless-allowed profile or a broader one, if this session's profile does not admit
+       |project hosts at all.
        |""".stripMargin
 
   def agentDocumentStamp(
@@ -2210,7 +2212,7 @@ object AgentSandboxLauncher:
       warn(
         s"'${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
           "so deny-unless-model selects no model provider and admits no host; " +
-          "the default --egress=deny-unless-allowed admits the project's allowed policy instead",
+          "the default --egress=deny-unless-allowed applies the project's rule file instead",
       )
 
     // Validated before anything is created: an invalid policy would otherwise surface as "could not determine the

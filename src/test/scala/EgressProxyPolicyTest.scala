@@ -12,120 +12,123 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("policy normalization strips comments and collapses whitespace but keeps lines"):
     val text =
       """# Reads public Python documentation.
-        |+host docs.python.org
+        |allow https://docs.python.org/ read
         |
-        |-host   pypi.org
-        |+model-provider anthropic  # trailing comment
+        |deny   https://pypi.org/
+        |allow model-provider anthropic  # trailing comment
         |""".stripMargin
     assertEquals(
       normalizePolicyText(text),
-      "+host docs.python.org\n-host pypi.org\n+model-provider anthropic",
+      "allow https://docs.python.org/ read\ndeny https://pypi.org/\nallow model-provider anthropic",
     )
 
   test("a policy of only comments and blanks normalizes to empty"):
     assertEquals(normalizePolicyText("# nothing\n\n   \n# more\n"), "")
 
   test("normalization is idempotent, so a normalized policy re-reads unchanged"):
-    val normalized = normalizePolicyText("+host a.example\n\n-** # x\n")
+    val normalized = normalizePolicyText("allow https://a.example/ read\n\ndeny defaults # x\n")
     assertEquals(normalizePolicyText(normalized), normalized)
 
   test("the banner summary joins a file's entries on one line"):
     assertEquals(
-      entriesSummary("+host a.example\n-host b.example"),
-      "+host a.example; -host b.example",
+      entriesSummary("allow https://a.example/ read\ndeny https://b.example/"),
+      "allow https://a.example/ read; deny https://b.example/",
     )
 
+  private def summary(inspected: Int, opaque: Int, denied: Int, widening: Int = 0): String =
+    s"policy summary: $inspected inspected hosts; $opaque opaque hosts; $denied ambient denials; " +
+      s"$widening widening lines"
+
   // The profile reads as the policy spells it; case is not emphasis (HostCommands, "Emphasis").
-  test("the launch banner names the profile and the counts, never the host names"):
+  test("the launch banner names the profile off the profile line and the counts off the summary line, never a host"):
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed\n" +
-          "restricted hosts (2): github.com secret.example\n" +
-          "unrestricted hosts (3): a.example b.example c.example\n" +
-          "denied rules (0):",
+          "allow https://github.com/ read git-fetch\nallow https://secret.example/ read\n" +
+          "allow https://a.example/ tunnel\n" + summary(
+            2,
+            1,
+            0,
+            1,
+          ) + "\nwidening lines (1): allow https://secret.example/ read",
         color = false,
       ),
-      "egress: deny-unless-allowed; 5 effective hosts",
+      "egress: deny-unless-allowed; 2 inspected, 1 opaque",
     )
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\n" +
-          "restricted hosts (0):\nunrestricted hosts (3): a b c\ndenied rules (0):",
+          "allow https://a/ tunnel\nallow https://b/ tunnel\nallow https://c/ tunnel\n" + summary(0, 3, 0),
         color = false,
       ),
-      "egress: deny-unless-model; model provider anthropic; 3 effective hosts",
+      "egress: deny-unless-model; model provider anthropic; 0 inspected, 3 opaque",
+    )
+    assertEquals(
+      egressBanner("egress profile: deny-unless-model; model provider: none\n" + summary(0, 0, 0), color = false),
+      "egress: deny-unless-model; no provider selected; 0 inspected, 0 opaque",
     )
     assertEquals(
       egressBanner(
-        "egress profile: deny-unless-model; model provider: none\n" +
-          "restricted hosts (0):\nunrestricted hosts (0):\ndenied rules (0):",
+        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" +
+          "deny https://w/\ndeny https://x/\ndeny https://**.y/\ndeny https://z/\n" +
+          "allow https://a/ read\nallow https://b/ read\n" + summary(2, 0, 4),
         color = false,
       ),
-      "egress: deny-unless-model; no provider selected; 0 effective hosts",
+      "egress: allow-unless-denied; public HTTPS; 2 inspected, 4 denied",
     )
     assertEquals(
-      egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
-          "restricted hosts (2): a b\ndenied rules (4): w x y z",
-        color = false,
-      ),
-      "egress: allow-unless-denied; public HTTPS; 2 restricted, 4 denied",
-    )
-    assertEquals(
-      egressBanner(
-        "egress profile: deny-all\nrestricted hosts (0):\nunrestricted hosts (0):\ndenied rules (1): x",
-        color = false,
-      ),
-      "egress: deny-all; 0 effective hosts",
+      egressBanner("egress profile: deny-all\n" + summary(0, 0, 0), color = false),
+      "egress: deny-all; 0 inspected, 0 opaque",
     )
     assertEquals(egressBanner("some reason instead", color = false), "egress: some reason instead")
+    // Each source alone is insufficient: a resolution without its summary line is printed whole.
+    assertEquals(
+      egressBanner("egress profile: deny-all\nallow https://secret.example/ read", color = false),
+      "egress: egress profile: deny-all",
+    )
+    assertEquals(egressBanner(summary(1, 0, 0), color = false), "egress: " + summary(1, 0, 0))
     // Whatever the proxy says, no hostname survives into the banner.
     assert(
       !egressBanner(
-        "egress profile: deny-all\nrestricted hosts (1): secret.example\ndenied rules (0):",
+        "egress profile: deny-all\nallow https://secret.example/ read\n" + summary(1, 0, 0),
         color = false,
       ).contains("secret.example"),
     )
 
   test("a terminal reads the profile as the mode it is, and never in the severity hue"):
     assertEquals(
-      egressBanner(
-        "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):",
-        color = true,
-      ),
-      "egress: \u001b[38;5;208mdeny-unless-allowed\u001b[0m; 1 effective hosts",
+      egressBanner("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0), color = true),
+      "egress: \u001b[38;5;208mdeny-unless-allowed\u001b[0m; 1 inspected, 0 opaque",
     )
     // The counts are what the profile resolved to, not a mode of their own.
     assertEquals(
       egressBanner(
-        "egress profile: deny-unless-model; model provider: anthropic\n" +
-          "restricted hosts (0):\nunrestricted hosts (1): a\ndenied rules (0):",
+        "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1, 0),
         color = true,
       ),
-      "egress: \u001b[38;5;208mdeny-unless-model\u001b[0m; model provider anthropic; 1 effective hosts",
+      "egress: \u001b[38;5;208mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 opaque",
     )
     // The permissive line is tinted whole by the caller, so nothing inside it ends that colour.
     assertEquals(
       egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS unrestricted\n" +
-          "restricted hosts (0):\ndenied rules (0):",
+        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" + summary(0, 0, 0),
         color = true,
       ),
-      "egress: allow-unless-denied; public HTTPS; 0 restricted, 0 denied",
+      "egress: allow-unless-denied; public HTTPS; 0 inspected, 0 denied",
     )
 
   test("the permissive profile is the one the banner tints, whatever follows it on the line"):
     assert(
       permissiveProfile(
-        "egress profile: allow-unless-denied; default: public HTTPS unrestricted\nrestricted hosts (0):",
+        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" + summary(0, 0, 0),
       ),
     )
-    assert(!permissiveProfile("egress profile: deny-unless-allowed\nrestricted hosts (0):"))
+    assert(!permissiveProfile("egress profile: deny-unless-allowed\n" + summary(0, 0, 0)))
     assert(!permissiveProfile("egress profile: deny-all"))
     assert(!permissiveProfile("some reason instead"))
     assert(!permissiveProfile(""))
     // Only the head line decides; a hostname further down cannot make a strict profile read weak.
-    assert(!permissiveProfile("egress profile: deny-all\nrestricted hosts (1): allow-unless-denied.example"))
+    assert(!permissiveProfile("egress profile: deny-all\nallow https://allow-unless-denied.example/ read"))
 
   test("only the basename of a recognized agent command selects a provider"):
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
@@ -136,19 +139,13 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)
 
-  test("the policy directory reads present files, normalized, in file order"):
+  test("the policy directory reads the rule file, normalized"):
     val dir = Files.createTempDirectory("egress")
-    Files.writeString(dir.resolve("denied"), "host gitlab.com\nhost **.example.org # a comment\n")
-    Files.writeString(dir.resolve("allowed"), "+host ghcr.io\n")
+    Files.writeString(dir.resolve("rule"), "allow https://ghcr.io/ read\ndeny https://**.example.org/ # a comment\n")
     Files.createFile(dir.resolve(".DS_Store"))
     assertEquals(
       readPolicyFiles(dir),
-      Right(
-        Vector(
-          "allowed" -> "+host ghcr.io",
-          "denied" -> "host gitlab.com\nhost **.example.org",
-        ),
-      ),
+      Right(Vector("rule" -> "allow https://ghcr.io/ read\ndeny https://**.example.org/")),
     )
 
   test("a missing policy directory is an empty policy"):
@@ -158,24 +155,31 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     val parent = Files.createTempDirectory("policy-shapes")
 
     val asFile = parent.resolve("egress")
-    Files.writeString(asFile, "+host ghcr.io\n")
+    Files.writeString(asFile, "allow https://ghcr.io/ read\n")
     assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
     Files.delete(asFile)
 
     val dir = Files.createDirectory(parent.resolve("egress"))
-    Files.writeString(dir.resolve("alowed"), "+host ghcr.io\n")
+    Files.writeString(dir.resolve("rules"), "allow https://ghcr.io/ read\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
-    Files.delete(dir.resolve("alowed"))
+    Files.delete(dir.resolve("rules"))
 
-    Files.createDirectory(dir.resolve("allowed"))
+    // The retired grammar's files are named as such, with the pointer.
+    Vector("allowed", "denied").foreach: retired =>
+      Files.writeString(dir.resolve(retired), "+host ghcr.io\n")
+      val refusal = readPolicyFiles(dir).swap.getOrElse(fail(s"$retired was read"))
+      assert(refusal.contains("retired grammar") && refusal.contains("egress/rule"), refusal)
+      Files.delete(dir.resolve(retired))
+
+    Files.createDirectory(dir.resolve("rule"))
     assert(readPolicyFiles(dir).swap.exists(_.contains("not a regular file")))
-    Files.delete(dir.resolve("allowed"))
+    Files.delete(dir.resolve("rule"))
 
-    Files.createSymbolicLink(dir.resolve("denied"), parent.resolve("elsewhere"))
+    Files.createSymbolicLink(dir.resolve("rule"), parent.resolve("elsewhere"))
     assert(readPolicyFiles(dir).swap.exists(_.contains("symlink")))
-    Files.delete(dir.resolve("denied"))
+    Files.delete(dir.resolve("rule"))
 
-    Files.writeString(dir.resolve("allowed"), "# only a comment\n")
+    Files.writeString(dir.resolve("rule"), "# only a comment\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
 
   test("the policy env args carry the authority selection and each file's variable"):
@@ -183,13 +187,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       policyEnvArgs(
         "deny-unless-allowed",
         Some("anthropic"),
-        Vector("allowed" -> "+host api.example unrestricted", "denied" -> "host x.example"),
+        Vector("rule" -> "allow https://api.example/ tunnel\ndeny https://x.example/"),
       ),
       Vector(
         "--env=EGRESS_PROFILE=deny-unless-allowed",
         "--env=EGRESS_MODEL_PROVIDER=anthropic",
-        "--env=EGRESS_ALLOWED=+host api.example unrestricted",
-        "--env=EGRESS_DENIED=host x.example",
+        "--env=EGRESS_RULE=allow https://api.example/ tunnel\ndeny https://x.example/",
       ),
     )
     assertEquals(
@@ -197,62 +200,64 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none"),
     )
 
-  test("the inspected hosts are the restricted line's names; the allowance lines are not read"):
+  test("the inspected hosts are the allow lines' hosts, a tunnel line never among them"):
     assertEquals(
       inspectedHostsOf(
-        "egress profile: deny-unless-allowed\n" +
-          "restricted hosts (2): github.com pypi.org\n" +
-          "restricted allow=git-fetch (1): github.com\n" +
-          "unrestricted hosts (0):\ndenied rules (0):",
+        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" +
+          "deny https://x.example/\n" +
+          "allow https://pypi.org/ read\nallow https://github.com/ read git-fetch\n" +
+          "allow https://github.com/login/device/code read git-fetch method=POST\n" +
+          "allow https://api.anthropic.com/ tunnel\n" + summary(2, 1, 1),
       ),
       Right(Vector("github.com", "pypi.org")),
     )
-    assertEquals(
-      inspectedHostsOf("egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"),
-      Right(Vector.empty),
-    )
+    assertEquals(inspectedHostsOf("egress profile: deny-all\n" + summary(0, 0, 0)), Right(Vector.empty))
     assert(inspectedHostsOf("another shape entirely").isLeft)
+    assert(inspectedHostsOf("allow https://pypi.org/ read").isLeft)
 
-  test("the widening entries are the proxy's own line, and an image printing none reports none"):
-    // Which entries widen is the proxy's classification against the baseline it ships
+  test("the widening lines are the proxy's own line, and an image printing none reports none"):
+    // Which lines widen is the proxy's classification against the defaults it ships
     // (AgentEgressProxyTest has the classes); the launcher only reads the line back.
     assertEquals(
       wideningEntries(
-        "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):\n" +
-          "widening entries (2): +host api.example unrestricted; +host pypi.org allow=git-fetch",
+        "egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0, 2) + "\n" +
+          "widening lines (2): allow https://api.example/ tunnel; allow https://pypi.org/ git-fetch",
       ),
-      Vector("+host api.example unrestricted", "+host pypi.org allow=git-fetch"),
+      Vector("allow https://api.example/ tunnel", "allow https://pypi.org/ git-fetch"),
     )
     assertEquals(
-      wideningEntries("egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):"),
+      wideningEntries("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0)),
       Vector.empty,
     )
     // The consumers carrying the policy alone get the text up to the first metadata line, whatever
     // follows it, and unchanged when nothing does.
-    val policy = "egress profile: deny-unless-allowed\nrestricted hosts (1): a\ndenied rules (0):"
-    assertEquals(policyLinesOf(policy + "\nwidening entries (1): +host a unrestricted\nanother line"), policy)
+    val policy = "egress profile: deny-unless-allowed\nallow https://a/ read"
+    assertEquals(
+      policyLinesOf(policy + "\n" + summary(1, 0, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
+      policy,
+    )
     assertEquals(policyLinesOf(policy), policy)
     MetadataPrefixes.foreach(prefix => assertEquals(policyLinesOf(policy + "\n" + prefix + "x"), policy))
 
   test("normalizing keeps a # inside a token, so the proxy refuses it instead of reading a wider entry"):
     assertEquals(
       normalizePolicyText(
-        "# whole line\n+host a.example   # trailing\n  +host b.example path=/x/#y/\n+host c.example#d",
+        "# whole line\nallow https://a.example/ read   # trailing\n  allow https://b.example/x/#y/ read\n" +
+          "allow https://c.example/#d read",
       ),
-      "+host a.example\n+host b.example path=/x/#y/\n+host c.example#d",
+      "allow https://a.example/ read\nallow https://b.example/x/#y/ read\nallow https://c.example/#d read",
     )
 
-  test("a scope narrowed by path= names its host once, whatever the prefixes; the banner counts hosts"):
-    // The proxy prints one token per scope, `host/prefix/`; the leaf names the host, and a host
-    // under two prefixes is one name.
+  test("a host under several scopes names itself once for the leaf; the banner counts hosts, as the summary does"):
+    // The proxy prints one line per scope; the leaf names the host, and a host under two scopes
+    // is one name.
     val resolution =
       "egress profile: deny-unless-allowed\n" +
-        "restricted hosts (4): github.com/login/ github.com/owner/ pypi.org storage.googleapis.com/my-bucket/\n" +
-        "restricted allow=git-fetch (1): github.com/owner/\n" +
-        "restricted allow=github-login-device (1): github.com/login/\n" +
-        "unrestricted hosts (1): api.anthropic.com\ndenied rules (0):"
+        "allow https://api.anthropic.com/ tunnel\n" +
+        "allow https://github.com/login/ read method=POST\nallow https://github.com/owner/ read git-fetch\n" +
+        "allow https://pypi.org/ read\nallow https://storage.googleapis.com/my-bucket/ read\n" + summary(3, 1, 0)
     assertEquals(inspectedHostsOf(resolution), Right(Vector("github.com", "pypi.org", "storage.googleapis.com")))
-    assertEquals(egressBanner(resolution, color = false), "egress: deny-unless-allowed; 4 effective hosts")
+    assertEquals(egressBanner(resolution, color = false), "egress: deny-unless-allowed; 3 inspected, 1 opaque")
 
   test("log pruning keeps the newest files and leaves room for the new one"):
     val names = Vector(

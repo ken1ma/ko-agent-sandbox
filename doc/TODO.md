@@ -1,7 +1,18 @@
 # TODO
 
 Remaining work that buys real security or maintainability for the actual threat model. Ideas
-without a concrete gain live in design.md as Non-TODOs so they stop resurfacing.
+without a concrete gain live in design.md as standing design decisions so they stop resurfacing.
+
+## Deferred — GREASE ECH on inspected hosts
+
+- [ ] Admit an ECH extension on an inspected host, only if a client that sends GREASE ECH —
+  a browser, a BoringSSL-based tool — enters the image. The proxy is the TLS server there, so
+  ignoring an extension it cannot decrypt is what every non-ECH server does: a GREASE client
+  continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
+  origin never sees the client's hello. On a `tunnel` host the refusal stays: GREASE and real ECH
+  are indistinguishable by design (RFC 9849, 6.2), and real ECH under a passing outer SNI is
+  domain fronting through the allowed host (`TLSHelper`, the extension constant). The price is a
+  second ECH step in SECURITY.md's handshake list and its tests.
 
 ## Deferred — inspected-relay keep-alive
 
@@ -55,7 +66,8 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
 
 ## Deferred — `--explain-request`, the ordered policy traced for one request
 
-Once the rule file's order is its meaning (`plan-egress-rules.md`), the question an operator
+The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an
+operator
 asks is no longer "is this host admitted" — `--egress-check` answers that — but "which line
 decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
 against the file through the same code that would run it; the equivalent here is a trace:

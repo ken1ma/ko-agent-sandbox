@@ -1,0 +1,11 @@
+# The .ko-agent-sandbox/egress/rule of a project that opts into npm's audit service, at the
+# endpoint the image's npm POSTs at install time — measured on the bundled Node 24.19.0 /
+# npm 11.17.0, not guessed; an older npm's /-/npm/v1/security/audits/quick is refused and logged,
+# which npm treats as non-fatal. npm sends a package/version inventory to the public registry,
+# which may include private-registry and git dependency names. The line also lets any sandbox
+# process send any body to that one path; every other registry POST and every PUT stays refused.
+# The response supplies install-time warnings; it does not fail npm install. Use an explicit
+# `npm audit --audit-level=high` when findings should fail a job.
+# Leaving this out blocks automatic inventory disclosure and the POST-body channel, not the
+# lower-bandwidth channel in allowed GET URLs. SECURITY.md, "Exfiltration through an allowed host".
+allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST

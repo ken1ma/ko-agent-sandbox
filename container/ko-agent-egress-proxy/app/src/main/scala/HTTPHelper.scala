@@ -315,11 +315,19 @@ object HTTPHelper:
         if !name.forall(isHttpTokenChar) then
           throw BadRequest("invalid HTTP header name")
 
-        val value = line.substring(colon + 1).trim
-        if value.exists(ch => isForbiddenControl(ch) && ch != '\t') then
+        // Checked before the optional whitespace is stripped: Java's `trim` removes every
+        // character up to SP, so trimming first would drop an edge NUL, VT or FF where it should
+        // refuse the head.
+        val raw = line.substring(colon + 1)
+        if raw.exists(ch => isForbiddenControl(ch) && ch != '\t') then
           throw BadRequest("control character in HTTP header value")
 
-        (name, value)
+        (name, stripOptionalWhitespace(raw))
+
+  /** A field value without its optional whitespace, SP and HTAB at either end (RFC 9110 §5.5);
+    * what the origin receives and what the decision reads. */
+  def stripOptionalWhitespace(value: String): String =
+    value.dropWhile(ch => ch == ' ' || ch == '\t').reverse.dropWhile(ch => ch == ' ' || ch == '\t').reverse
 
   /**
    * The response head, parsed for status and framing only — just enough to tell a completed body

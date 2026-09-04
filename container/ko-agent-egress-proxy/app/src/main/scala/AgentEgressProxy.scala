@@ -73,22 +73,22 @@ object AgentEgressProxy:
   /*
    * The dry run behind --egress-effective and every launch: no port, no log, a
    * pure computation the launcher runs --network=none to read back what would
-   * be enforced. The restricted line is also where the launcher reads the
-   * leaf certificate's names from, tags stripped. Warnings — an idle denial,
-   * a selected provider the profile does not fully admit — go to stderr, so
-   * the data lines pipe cleanly.
+   * be enforced. The policy lines are also where the launcher reads the leaf
+   * certificate's names from. Warnings — a deny matching nothing, a redundant
+   * grant, a selected provider the profile does not fully admit — go to
+   * stderr, so the data lines pipe cleanly.
    *
    * The lines say what this policy *would* inspect, not what a given
    * run will: unlike serve() this reads no certificate, because the dry run
    * is not given one. Every launch mounts the leaf, so the two agree there;
    * only the standalone image run without EGRESS_TLS_CERTIFICATE logs the
-   * restricted hosts as opaque.
+   * inspected hosts as opaque.
    */
   def printPolicy(provenance: Boolean): Unit =
     try
       val resolved = configuredPolicy()
       policyLines(resolved).foreach(println)
-      wideningLine(resolved).foreach(println)
+      metadataLines(resolved).foreach(println)
       if provenance then provenanceLines(resolved).foreach(println)
       resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     catch
@@ -120,15 +120,16 @@ object AgentEgressProxy:
           sys.exit(2)
 
     // The decision is authorizeRequest's own — the very function a CONNECT meets — so this
-    // diagnostic cannot disagree with enforcement: an IP-literal target, a denied rule and a
+    // diagnostic cannot disagree with enforcement: an IP-literal target, a denied host and a
     // non-admitted host all answer here exactly as they would on the wire, in enforcement's
-    // words. Only an accepted host's treatment is looked up on top, one line per scope.
+    // words. Only an accepted host's treatment is looked up on top, its resolved lines, one
+    // per scope.
     val decisions =
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
         resolved.hosts.get(authorized) match
-          case Some(treatment) => spelled(treatment)
-          case None            => Vector("unrestricted (the public-HTTPS default)")
+          case Some(treatment) => ruleLines(authorized, treatment)
+          case None            => Vector("tunnel (the public-HTTPS default)")
       catch case ex: PolicyViolation => Vector(s"refused: ${ex.getMessage}")
     decisions.foreach(decision => println(s"policy: $host $decision"))
 
@@ -137,14 +138,12 @@ object AgentEgressProxy:
       case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
       case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
 
-  def configuredPolicy(): ResolvedEgress =
-    def read(variable: String): Option[String] = Option(System.getenv(variable))
-    resolvePolicy(
-      read(ProfileVariable),
-      read(ModelProviderVariable),
-      read(AllowedVariable),
-      read(DeniedVariable),
-    )
+  def configuredPolicy(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
+    RetiredVariables.filter(variable => read(variable).nonEmpty).foreach: variable =>
+      throw IllegalArgumentException(
+        s"$variable is set, which this proxy no longer reads; the policy is one file, in $RuleVariable",
+      )
+    resolvePolicy(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
 
   /**
    * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an
@@ -219,7 +218,7 @@ object AgentEgressProxy:
     // The digest gives the audit log one stable, grep-able line naming which policy this run
     // enforced, comparable across runs without diffing the lines above.
     System.err.println(s"resolved-policy digest: ${sha256Hex(lines.mkString("\n"))}")
-    wideningLine(policy.resolved).foreach(System.err.println)
+    metadataLines(policy.resolved).foreach(System.err.println)
     policy.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     System.err.println(policy.inspectionSummary)
 
@@ -261,7 +260,7 @@ object AgentEgressProxy:
     def inspectionSummary: String =
       inspection match
         case Some(active) =>
-          s"tls inspection: active for the ${active.hosts.size} restricted hosts"
+          s"tls inspection: active for the ${active.hosts.size} inspected hosts"
         case None =>
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
 
@@ -383,7 +382,7 @@ object AgentEgressProxy:
         case Some(inspection) =>
           runInspectedSession(
             client, upstream, connectHost, hello, inspection,
-            policy.resolved.restricted.getOrElse(connectHost, Set.empty),
+            policy.resolved.inspectedScopes.getOrElse(connectHost, Map.empty),
             policy.resolved.hosts.contains,
           )
 
@@ -445,7 +444,7 @@ object AgentEgressProxy:
     host: String,
     hello: TlsClientHello,
     inspection: TlsInspection,
-    hostScopes: Set[Scope],
+    hostScopes: Map[String, Set[String]],
     admitted: String => Boolean,
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes)

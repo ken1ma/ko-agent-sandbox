@@ -495,11 +495,11 @@ mod tests {
             GitPathClass::Control
         );
         assert_eq!(
-            classify_relative_path(b".ko-agent-sandbox/egress/allowed", &[]),
+            classify_relative_path(b".ko-agent-sandbox/egress/rule", &[]),
             GitPathClass::Control
         );
         assert_eq!(
-            classify_relative_path(b"apps/web/.ko-agent-sandbox/egress/denied", &[]),
+            classify_relative_path(b"apps/web/.ko-agent-sandbox/egress/rule", &[]),
             GitPathClass::Control
         );
         // A repository below it is the launcher's own business, not something to re-root into a

@@ -3,7 +3,7 @@
 # them. Five measurements:
 #
 #   M1  the egress proxy runs on macOS from its dist jars, admits repo1.maven.org through a
-#       replacement policy (-** plus one +host), refuses everything else, and binds where the
+#       replacement policy (deny defaults plus one read line), refuses everything else, and binds where the
 #       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
@@ -65,8 +65,8 @@ fi
 if lsof -nP -iTCP:3128 -sTCP:LISTEN >/dev/null 2>&1; then
     report FAIL "M1 port 3128 free before start" "something already listens; stop it and re-run"
 else
-    EGRESS_PROFILE=deny-unless-allowed EGRESS_ALLOWED='-**
-+host repo1.maven.org' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
+    EGRESS_PROFILE=deny-unless-allowed EGRESS_RULE='deny defaults
+allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
     proxy_pid=$!
     tries=0; m1_ready=1
     until grep -q 'agent-egress-proxy listening' "$work/proxy.log" 2>/dev/null; do

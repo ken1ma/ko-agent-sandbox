@@ -1,0 +1,197 @@
+# The curated catalog: what deny-unless-allowed admits on its own, the defaults beside the
+# model-provider groups in model-provider/. Every line is TLS-inspected and grants `read`, GET and
+# HEAD, plus the words written beside it; SECURITY.md, "Reading without being able to write", has
+# what each grant opens and what the inspection costs and buys.
+#
+# Before adding a host, answer all five:
+# - why does an arbitrary project need it by default;
+# - what sandbox data could be sent to it;
+# - does it expose an unauthenticated write endpoint;
+# - which grants do its operations call for;
+# - could it be project-specific (.ko-agent-sandbox/egress/rule) instead?
+# This list stays a small set of intentional data recipients; it never grows by accumulation.
+
+# git repositories: clone and pull are fetch, a POST to .../git-upload-pack, hence git-fetch
+allow https://github.com/   read git-fetch
+allow https://codeberg.org/ read git-fetch
+allow https://gitlab.com/   read git-fetch
+
+# GitHub
+allow https://raw.githubusercontent.com/            read  # raw file contents
+allow https://objects.githubusercontent.com/        read  # download redirects, user attachments
+allow https://codeload.github.com/                  read  # archive downloads (tarball, zipball)
+allow https://api.github.com/                       read  # REST reads: issues, PRs, releases
+allow https://release-assets.githubusercontent.com/ read  # release downloads
+allow https://media.githubusercontent.com/          read  # direct LFS media URLs
+
+# agent docs
+allow https://code.claude.com/        read  # claude
+allow https://developers.openai.com/  read  # codex
+allow https://antigravity.google/     read  # agy
+allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
+allow https://docs.github.com/        read  # copilot
+
+# public documents / repositories
+allow https://www.rfc-editor.org/   read  # published RFCs
+allow https://datatracker.ietf.org/ read  # Internet-Drafts / RFC status / history / IETF process
+allow https://www.iana.org/         read  # protocol registries referenced by specs
+
+allow https://developer.mozilla.org/    read  # HTTP / HTML / CSS / JavaScript / Web APIs
+allow https://www.w3.org/               read  # W3C standards and drafts
+# WHATWG specs are per-spec subdomains
+#allow https://html.spec.whatwg.org/    read  # HTML
+#allow https://dom.spec.whatwg.org/     read  # DOM
+#allow https://fetch.spec.whatwg.org/   read  # Fetch
+#allow https://streams.spec.whatwg.org/ read  # ReadableStream, WritableStream, TransformStream
+#allow https://url.spec.whatwg.org/     read  # URL
+#allow https://drafts.csswg.org/        read  # CSS drafts
+
+# specs
+# www.unicode.org holds the UAX reports, charts and Public/ data; its root page redirects to
+# home.unicode.org, the non-technical site, which is not admitted
+allow https://www.unicode.org/     read
+allow https://semver.org/          read  # Semantic Versioning
+allow https://spec.commonmark.org/ read  # CommonMark / Markdown
+allow https://tc39.es/             read  # ECMAScript
+allow https://yaml.org/            read  # YAML
+allow https://grpc.io/             read
+allow https://protobuf.dev/        read
+allow https://openid.net/          read  # OpenID Connect; OAuth is IETF RFCs/drafts
+allow https://spec.openapis.org/   read
+allow https://json-schema.org/     read  # increasingly tied to OpenAPI and configuration formats
+allow https://opentelemetry.io/    read
+allow https://cyclonedx.org/       read  # CycloneDX / SBOM
+allow https://spdx.github.io/      read  # SPDX / SBOM and licensing metadata
+
+# Scala docs
+allow https://www.scala-lang.org/  read  # downloads, blog
+allow https://docs.scala-lang.org/ read
+
+allow https://scalameta.org/ read  # scalafmt, munit, Metals
+allow https://typelevel.org/ read  # cats, cats-effect
+allow https://fs2.io/        read
+allow https://http4s.org/    read
+
+allow https://scala-cli.virtuslab.org/ read  # scala-cli
+
+# build tools
+allow https://www.scala-sbt.org/            read
+allow https://mill-build.org/               read
+allow https://get-coursier.io/              read  # cs
+allow https://docs.gradle.org/              read
+allow https://services.gradle.org/          read  # gradle/wrapper distributions
+allow https://plugins.gradle.org/           read  # redirects to plugins-artifacts
+allow https://plugins-artifacts.gradle.org/ read  # https://plugins.gradle.org/docs/mirroring
+# api.adoptium.net (`cs java` fetching an extra JDK) is not needed: the image bakes its Temurin in
+
+# Java docs / artifact
+allow https://openjdk.org/     read  # JEPs
+allow https://docs.oracle.com/ read  # Java API, JLS, JVMS
+
+allow https://maven.apache.org/      read  # docs
+allow https://repo.maven.apache.org/ read  # artifacts
+allow https://repo1.maven.org/       read  # artifacts
+
+allow https://javadoc.io/          read  # hosts scaladocs too
+allow https://slf4j.org/           read
+allow https://logback.qos.ch/      read
+allow https://logging.apache.org/  read
+allow https://netty.io/            read
+allow https://commons.apache.org/  read
+allow https://quarkus.io/          read
+allow https://docs.micronaut.io/   read
+allow https://guides.micronaut.io/ read
+allow https://vertx.io/            read
+allow https://jakarta.ee/          read
+allow https://spring.io/           read  # guides and tutorials
+allow https://docs.spring.io/      read
+allow https://hibernate.org/       read
+allow https://projectreactor.io/   read  # used by Spring WebFlux and Reactor Netty
+allow https://docs.micrometer.io/  read
+allow https://docs.junit.org/      read
+#allow https://fasterxml.com/      read  # jackson: github is authoritative now
+
+# mobile
+allow https://developer.android.com/ read
+allow https://kotlinlang.org/        read
+allow https://developer.apple.com/   read
+allow https://swift.org/             read  # redirects to www
+allow https://www.swift.org/         read
+allow https://docs.swift.org/        read  # swift lang, libs, tools, and platform docs
+# mobile references only; builds stay outside — no Android SDK in the image (dl.google.com absent),
+# and Xcode needs macOS
+
+# JavaScript
+allow https://nodejs.org/             read  # the runtime's dist/ downloads
+allow https://www.typescriptlang.org/ read
+# package registry; the audit POST is doc/egress-rule-example/npm-audit/rule
+allow https://registry.npmjs.org/     read  # package metadata and tarballs
+allow https://docs.npmjs.com/         read
+
+# Python
+allow https://docs.astral.sh/         read  # uv
+allow https://docs.python.org/        read
+allow https://peps.python.org/        read  # PEPs
+allow https://packaging.python.org/   read  # the packaging guide
+allow https://pypi.org/               read  # project pages and the simple/ index pip and uv read
+allow https://files.pythonhosted.org/ read  # wheels and sdists
+
+# Rust
+allow https://doc.rust-lang.org/ read  # std, the book, the reference
+allow https://docs.rs/           read  # every crate's API
+allow https://crates.io/         read  # package pages and cargo search
+allow https://index.crates.io/   read  # cargo's sparse registry index
+allow https://static.crates.io/  read  # crate downloads
+
+# Go
+allow https://go.dev/     read  # the toolchain download redirects to dl.google.com, absent
+allow https://pkg.go.dev/ read  # every module's API
+# the Go toolchain waits on an image block plus proxy.golang.org
+
+# DB
+allow https://www.postgresql.org/ read
+allow https://www.sqlite.org/     read  # the amalgamation download
+
+# containers
+allow https://specs.opencontainers.org/ read  # OCI specs
+allow https://containerd.io/            read
+allow https://kubernetes.io/            read
+allow https://helm.sh/                  read  # kubernetes package manager
+allow https://docs.podman.io/           read
+allow https://docs.docker.com/          read
+
+# cloud providers
+allow https://docs.aws.amazon.com/ read  # AWS
+allow https://cloud.google.com/    read  # GCP
+allow https://learn.microsoft.com/ read  # Azure
+
+# infrastructure as code: the docs
+# doc/egress-rule-example/pulumi-aws/rule shows what `pulumi up` needs.
+allow https://www.pulumi.com/          read
+# provider docs / registry metadata; provider downloads are not in the defaults
+allow https://registry.terraform.io/   read
+allow https://developer.hashicorp.com/ read
+
+# container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). The CDN hosts are
+# convention, not contract: when a provider moves one, pulls stall and the log names the successor.
+allow https://registry-1.docker.io/             read  # Docker Hub API
+allow https://auth.docker.io/                   read  # token issuer; anonymous pulls need it too
+# blob CDN, https://docs.docker.com/docker-hub/release-notes/#2026-05-20
+allow https://production.cloudfront.docker.com/ read  # blob CDN
+allow https://production.cloudflare.docker.com/ read  # no longer listed in https://docs.docker.com/desktop/setup/allow-list/
+# distroless; Artifact Registry serves the blobs itself, so storage.googleapis.com is not needed
+allow https://gcr.io/                           read
+allow https://public.ecr.aws/                   read  # Amazon Linux
+allow https://d5l0dvt14r5h8.cloudfront.net/     read  # blob CDN
+allow https://d2glxqk2uabbnd.cloudfront.net/    read  # blob CDN
+# ghcr.io and quay.io wait for a real need: a project adds them in egress/rule,
+# and the proxy log names a refused one.
+
+# Unix / Debian
+allow https://man7.org/            read  # Linux man pages
+allow https://manpages.debian.org/ read
+allow https://deb.debian.org/      read  # packages
+allow https://www.gnu.org/         read  # the GNU manuals: bash, coreutils, sed, awk, make, grep
+allow https://pubs.opengroup.org/  read  # POSIX
+
+allow https://git-scm.com/         read  # the manual and the book

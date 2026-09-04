@@ -517,16 +517,16 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     assert(overlaps(project.resolve("sub"), project, Os.Mac))
 
   // --------------------------------------------------------------------------
-  // The build's egress allowlist
+  // The build's egress rule file
   // --------------------------------------------------------------------------
 
-  test("the allowlist accepts +host entries, comments and blank lines, in file order, once each"):
+  test("the build's rule file accepts read lines, comments and blank lines, in file order, once each"):
     val text =
       """# artifact repositories this build resolves from
-        |+host repo.example.org
+        |allow https://repo.example.org/ read
         |
-        |+host mirror.example.org  # inline comment
-        |+host repo.example.org
+        |allow https://mirror.example.org/ read  # inline comment
+        |allow https://repo.example.org/ read
         |""".stripMargin
     assertEquals(
       buildAllowlist(text),
@@ -537,20 +537,28 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     for text <- Seq("", "\n\n", "# nothing yet\n") do
       assertEquals(buildAllowlist(text), Right(Vector.empty))
 
-  test("every entry of the proxy's wider grammar is outside the file's"):
+  test("every line of the proxy's wider grammar is outside the file's"):
     for
       entry <- Seq(
-        "-**",
-        "+model-provider openai",
-        "-model-provider openai",
-        "+host repo.example.org allow=git-fetch",
-        "+host repo.example.org unrestricted",
-        "+host repo.example.org restricted",
-        "-host repo.example.org",
+        "deny defaults",
+        "allow model-provider openai",
+        "deny model-provider openai",
+        "allow https://repo.example.org/ read git-fetch",
+        "allow https://repo.example.org/ git-fetch",
+        "allow https://repo.example.org/ tunnel",
+        "allow https://repo.example.org/ method=POST",
+        "allow https://repo.example.org/",
+        "allow https://repo.example.org/maven2/ read",
+        "allow https://repo.example.org read",
+        "allow https://**.example.org/ read",
+        "allow https://repo.example.org/ read#typo",
+        "allow https://repo.example.org/#x read",
+        "allow#x https://repo.example.org/ read",
+        "allow https:///read read",
+        "deny https://repo.example.org/",
+        "+host repo.example.org",
         "repo.example.org",
-        "+host",
-        "+host -**",
-        "+host +evil",
+        "allow",
       )
     do
       buildAllowlist(entry) match
@@ -559,20 +567,26 @@ class RunOnHostPolicyTest extends munit.FunSuite:
 
   test("a refused entry names itself even after a comment is stripped"):
     assertEquals(
-      buildAllowlist("-host x # a removal\n"),
-      Left(Refusal.AllowlistEntryOutsideGrammar("-host x")),
+      buildAllowlist("deny https://x/ # a removal\n"),
+      Left(Refusal.AllowlistEntryOutsideGrammar("deny https://x/")),
+    )
+    // A comment starts at a token, as in the proxy: a `#` inside one is the entry, not a comment.
+    assertEquals(
+      buildAllowlist("allow https://repo.example.org/ read#comment\n"),
+      Left(Refusal.AllowlistEntryOutsideGrammar("allow https://repo.example.org/ read#comment")),
+    )
+    assertEquals(buildAllowlist("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
+
+  test("the composed rule input is the whole policy: deny defaults, Maven Central, then the file"):
+    assertEquals(
+      egressRuleText(Vector("repo.example.org")),
+      "deny defaults\nallow https://repo1.maven.org/ read\nallow https://repo.example.org/ read",
     )
 
-  test("the composed allowed input is a complete replacement: -**, baseline, then the file"):
+  test("a file restating Maven Central composes it once"):
     assertEquals(
-      egressAllowedText(Vector("repo.example.org")),
-      "-**\n+host repo1.maven.org\n+host repo.example.org",
-    )
-
-  test("a file restating the baseline host composes it once"):
-    assertEquals(
-      egressAllowedText(Vector("repo1.maven.org")),
-      "-**\n+host repo1.maven.org",
+      egressRuleText(Vector("repo1.maven.org")),
+      "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
   test("the sbt global base sits beside the project's Coursier cache, one --reset-cache removal"):
@@ -590,11 +604,11 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     val project = Paths.get("/Users/u/proj")
     assertEquals(
       buildAllowlistPath(project, Tool.Sbt),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/allowed"),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/rule"),
     )
     assertEquals(
       buildAllowlistPath(project, Tool.Mill),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/allowed"),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/rule"),
     )
 
   // --------------------------------------------------------------------------

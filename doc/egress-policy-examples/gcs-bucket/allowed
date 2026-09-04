@@ -1,8 +1,0 @@
-# The .ko-agent-sandbox/egress/allowed of a project that reads one of its own Cloud Storage
-# buckets. storage.googleapis.com serves every tenant's bucket under its own first path segment,
-# so admitting the host whole admits every public bucket on it; the prefix keeps the reach to this
-# one. Reads only, and a request outside the prefix — or spelled with percent-encoding, a dot
-# segment, a backslash or an empty segment — is refused and logged. A signed upload URL for the
-# bucket still fails here: a PUT is refused on every restricted host. What travels in an allowed
-# GET's suffix and query is not bounded; SECURITY.md, "Exfiltration through an allowed host".
-+host storage.googleapis.com path=/my-bucket/

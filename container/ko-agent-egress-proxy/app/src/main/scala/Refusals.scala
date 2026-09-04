@@ -27,27 +27,27 @@ case class PolicyViolation(message: String, advice: String) extends RuntimeExcep
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
 object RefusalAdvice:
-  /** The step depends on why the host is refused. The `allowed` file counts under
-    * deny-unless-allowed alone (resolvePolicy's equations), so under deny-all or deny-unless-model
-    * the step is a relaunch — named as necessary, never as sufficient: this session's resolution
-    * says nothing about what that profile would apply from the project's file, a removal of this
-    * very host included. A baseline host is never spelled as a bare `+host`: that entry would
-    * override the baseline treatment, stripping a git host's allowance, and under the default
-    * profile a baseline host is refused only because this project's file removed it.
-    * allow-unless-denied never reaches this refusal. */
+  /** The step depends on why the host is refused. The rule file's allow lines count under
+    * deny-unless-allowed alone (resolvePolicy), so under deny-all or deny-unless-model the step is
+    * a relaunch — named as necessary, never as sufficient: this session's resolution says nothing
+    * about what that profile would apply from the project's file, a denial of this very host
+    * included. A defaults host reaches this refusal under the default profile only through `deny
+    * defaults` — a host a deny line emptied is refused as denied, naming the line — so the step
+    * names that. allow-unless-denied never reaches this refusal. */
   def hostNotAllowed(host: String, profile: String): String =
     val default = PolicyHelper.DefaultProfile
-    val baseline = PolicyHelper.BaselineHosts.contains(host)
-    val addition = s"'+host $host' in .ko-agent-sandbox/egress/allowed"
+    val defaults = PolicyHelper.DefaultHosts.contains(host)
+    val addition = s"'allow https://$host/ read' in .ko-agent-sandbox/egress/rule"
     if profile == default then
-      if baseline then
-        "This project's policy removes it from the baseline. Ask the user; do not look for another route."
+      if defaults then
+        "This project's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
+          "for another route."
       else s"Not in this session's egress policy. Ask the user to add $addition on the host."
     else
       s"This session's egress profile, $profile, admits no project hosts. Ask the user; a relaunch under " +
-        (if baseline then s"$default can admit it." else s"$default with $addition can admit it.")
+        (if defaults then s"$default can admit it." else s"$default with $addition can admit it.")
 
-  // The rule is on the body's first line already (`host denied (<rule>)`); a `**.domain` rule
+  // The line is on the body's first line already (`host denied (<line>)`); a `**.domain` pattern
   // repeated here would name a host the policy does not admit.
   val hostDenied = "Denied by this project's policy. Ask the user; do not look for another route."
 
@@ -58,6 +58,10 @@ object RefusalAdvice:
   val nonPublicAddress = "This name resolves to an address the sandbox never reaches. Ask the user."
 
   val gitPush = "Push is refused in the sandbox. Leave the commits; the user pushes on the host."
+
+  val gitFetch = "Clone and fetch are refused here: no git-fetch grant. Ask the user; do not look for another route."
+
+  val noRead = "This host is not readable here: no read grant. Ask the user; do not look for another route."
 
   val graphql = "GraphQL is a POST. Read through the REST API."
 
@@ -70,7 +74,7 @@ object RefusalAdvice:
 
   val lfsBatch = "LFS batch is refused, and no admitted host serves this forge's LFS content. Ask the user."
 
-  val readOnly = "This host is read-only here: GET and HEAD. Do the write on the host."
+  val readOnly = "This host grants no such write here. Do the write on the host."
 
   val requestBody = "A read carries no body. Send the request without one."
 
@@ -82,9 +86,9 @@ object RefusalAdvice:
 
   val ambiguousPath = "Spell the path without percent-encoding, dot segments, backslashes or empty segments."
 
-  /** The prefixes are the policy's own words for this host, so naming them names nothing new. */
-  def pathOutside(prefixes: Set[String]): String =
-    s"This host is admitted under ${prefixes.toVector.sorted.mkString(" and ")} only. " +
+  /** The paths are the policy's own words for this host, so naming them names nothing new. */
+  def pathOutside(paths: Set[String]): String =
+    s"This host is admitted under ${paths.toVector.sorted.mkString(" and ")} only. " +
       "Ask the user; do not look for another route."
 
   /** The ClientHello stage answers after the 200, so this reaches no client; the agent

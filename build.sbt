@@ -26,7 +26,7 @@ Test / parallelExecution := false
 
 // --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject, compiled into
 // this jar from the same sources so an installed launcher carries it — the Scala sources, and the
-// /baseline resources their class initialization loads eagerly. The subproject's own build still
+// /default resources their class initialization loads eagerly. The subproject's own build still
 // exists for the container image, which builds a native image from the bundled context; its
 // tests run there.
 Compile / unmanagedSourceDirectories +=

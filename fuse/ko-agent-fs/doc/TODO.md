@@ -276,7 +276,7 @@ T = 10 ms loses a third of it. Those are derived, not measured; the sweep below 
 - [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
       `verification-log.md`. Only then a persisted value.
 - [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, admitted
-      by the unknown-filename rule (README, "Modifying the egress policy"). A project sets its own
+      by the unknown-filename rule (doc/egress-proxy.md, "The rule file"). A project sets its own
       coherency window, and a session cannot edit the file. Deferred until the sweep has a value
       worth persisting.
 - [ ] Docs: `architecture.md` "Coherency" states the guarantee with the knob in it — file

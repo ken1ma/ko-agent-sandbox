@@ -38,8 +38,8 @@ proxy_pid=""
 cleanup() { [ -n "$proxy_pid" ] && kill "$proxy_pid" 2>/dev/null; rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 
-EGRESS_PROFILE=deny-unless-allowed EGRESS_ALLOWED='-**
-+host repo1.maven.org' EGRESS_BIND=127.0.0.1:51234 "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
+EGRESS_PROFILE=deny-unless-allowed EGRESS_RULE='deny defaults
+allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:51234 "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
 proxy_pid=$!
 tries=0
 until grep -q 'listening on :51234' "$work/proxy.log" 2>/dev/null; do

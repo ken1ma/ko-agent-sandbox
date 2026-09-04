@@ -250,7 +250,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val listened = dir.resolve("listened.log")
     Files.writeString(
       listened,
-      s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z restricted hosts (1): a\n",
+      s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z allow https://a/ read\n",
     )
     assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right(()))
     val refused = dir.resolve("refused.log")
@@ -272,9 +272,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
 
   test("this build carries the proxy for --serve-proxy-on-host: resources load, spellings agree"):
-    // Class initialization reads /baseline eagerly, so nonEmpty proves the resources are on this
+    // Class initialization reads /default eagerly, so nonEmpty proves the resources are on this
     // classpath — the same classpath the assembled jar packages.
-    assert(agentsandbox.egress.PolicyHelper.CuratedRestrictedHosts.nonEmpty)
+    assert(agentsandbox.egress.PolicyHelper.CatalogLines.nonEmpty)
     assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
@@ -1035,9 +1035,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         )
       case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
 
-  test("SECURITY.md names exactly the allow=git-fetch hosts the proxy ships"):
-    // The git-host list has two homes: the allow=git-fetch entries of the proxy's baseline/host and
-    // the SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
+  test("SECURITY.md names exactly the git-fetch hosts the proxy ships"):
+    // The git-host list has two homes: the git-fetch lines of the proxy's default/host and the
+    // SECURITY.md section that reasons about them (the launcher carries no copy — the leaf's
     // names come from the image's own --print-policy at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
     // SECURITY.md — prose or a different marker keeps this green.
@@ -1048,75 +1048,65 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .collect { case Listed(host) => host }
       .toVector
     val catalog = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/baseline/host"),
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/default/host"),
     )
-    val gitHosts = "(?m)^\\+host (\\S+)\\s+allow=git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
+    val gitHosts = "(?m)^allow https://(\\S+)/\\s+read git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
 
-  test("every egress-policy example is a complete policy the production parser accepts"):
+  test("every egress rule example is a complete rule file the production parser accepts, without a warning"):
     def entries(directory: java.nio.file.Path) =
       val stream = Files.list(directory)
       try stream.iterator.asScala.toVector
       finally stream.close()
 
-    val root = Paths.get("doc/egress-policy-examples")
+    val root = Paths.get("doc/egress-rule-example")
     val examples = entries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
-    assert(examples.nonEmpty, "no egress-policy examples found")
+    assert(examples.nonEmpty, "no egress rule examples found")
 
     examples.foreach: directory =>
       val files = entries(directory)
-      val names = files.map(_.getFileName.toString).toSet
-      assert(names.nonEmpty, s"$directory is empty")
-      assertEquals(names -- Set("allowed", "denied"), Set.empty[String], directory.toString)
+      assertEquals(files.map(_.getFileName.toString), Vector("rule"), directory.toString)
+      val resolved = resolvePolicy(Some("deny-unless-allowed"), None, Some(Files.readString(files.head)))
+      assertEquals(resolved.warnings, Vector.empty, directory.toString)
 
-      def contents(name: String) =
-        files.find(_.getFileName.toString == name).map(Files.readString(_))
-
-      resolvePolicy(
-        Some("deny-unless-allowed"),
-        None,
-        contents("allowed"),
-        contents("denied"),
-      )
-
-  test("agent egress instructions use the proxy's allowance vocabulary without denying its exceptions"):
-    // The launcher writes this prose; the proxy owns the vocabulary. An agent following a tag the
-    // proxy does not define writes a policy file that fails the *next* launch, so the drift shows
-    // up nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
-    // list above, because the launcher carries no copy of the tag set.
+  test("agent egress instructions use the proxy's grant vocabulary, every word and no other"):
+    // The launcher writes this prose; the proxy owns the vocabulary. An agent following a word the
+    // proxy does not define writes a rule file that fails the *next* launch, so the drift shows up
+    // nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
+    // list above, because the launcher carries no copy of the grant words.
     val proxySource = Files.readString(
       Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/PolicyHelper.scala"),
     )
-    val declared = """val AllowancePaths: Map\[String, Set\[String\]\] = Map\(([\s\S]*?)\n  \)\n""".r
+    val grantObject = """object Grant:\n([\s\S]*?)\n\n""".r
       .findFirstMatchIn(proxySource)
-      .getOrElse(fail("the proxy no longer declares AllowancePaths as a literal Map, KnownTags its key set"))
-    val known = """"([^"]+)" ->""".r.findAllMatchIn(declared.group(1)).map(_.group(1)).toSet
-    assert(known.nonEmpty, "scraped no tags at all")
+      .getOrElse(fail("the proxy no longer declares its grant words in `object Grant`"))
+    val words = """val (?:Read|GitFetch|Tunnel) = "([^"]+)"""".r
+      .findAllMatchIn(grantObject.group(1)).map(_.group(1)).toSet
+    assertEquals(words, Set("read", "git-fetch", "tunnel"))
+    assert(grantObject.group(1).contains("method="), "the proxy no longer spells the method word `method=`")
 
-    // A resolved policy with no allowances of its own, so every `allow=tag` found is the prose's
-    // own.
-    val emptyResolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
-    val named = "allow=([a-z-]+)".r
-      .findAllMatchIn(authoritySection("live", "fuse", emptyResolution))
-      .map(_.group(1))
-      .toSet
-    assert(named.nonEmpty, "the section names no allowance, so it teaches an agent nothing about them")
-    assertEquals(named -- known, Set.empty[String], s"the proxy defines only $known")
+    // A resolved policy with no lines of its own, so every grant word found is the prose's own.
+    val emptyResolution = "egress profile: deny-all"
     val section = authoritySection("live", "fuse", emptyResolution)
-    assert(section.contains("named allowances"), section)
-    // The section carries the policy alone: the dry run's widening line, which describes the
-    // project's file, stays with the terminal (EgressProxyPolicy.policyLinesOf).
-    val widened =
-      authoritySection("live", "fuse", emptyResolution + "\nwidening entries (1): +host a.example unrestricted")
-    assert(!widened.contains("widening entries"), widened)
-    assert(widened.contains("denied rules (0):"), widened)
+    (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
+    val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
+    assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
+    // The section carries the policy alone: the dry run's metadata, which describes the policy's
+    // size and the project's file, stays with the terminal (EgressProxyPolicy.policyLinesOf).
+    val widened = authoritySection(
+      "live", "fuse",
+      emptyResolution + "\npolicy summary: 0 inspected hosts; 0 opaque hosts; 0 ambient denials; 1 widening lines\n" +
+        "widening lines (1): allow https://a.example/ tunnel",
+    )
+    assert(!widened.contains("widening lines") && !widened.contains("policy summary"), widened)
+    assert(widened.contains("egress profile: deny-all"), widened)
     val baseInstructions = Files.readString(
       Paths.get("container/ko-agent-sandbox/AGENTS-SANDBOX.md"),
     )
-    assert(baseInstructions.contains("outside a named allowance"), baseInstructions)
+    assert(baseInstructions.contains("no line grants at its path"), baseInstructions)
 
   test("the authority section directs the agent by write mode, never leaves it to probing"):
-    val resolution = "egress profile: deny-all\nrestricted hosts (0):\ndenied rules (0):"
+    val resolution = "egress profile: deny-all"
     val readOnly = authoritySection("reject", "fuse", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
@@ -1132,7 +1122,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(raw.contains("symlinks remain writable"), raw)
     // Both name the relaunch path for a host the policy does not admit.
     Vector(readOnly, filtered, raw).foreach: section =>
-      assert(section.contains(".ko-agent-sandbox/egress/allowed"), section)
+      assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
     // --run-on-host adds the host-build instruction, naming each served tool's command. Without the
     // option, a macOS session gets one discovery line — only the launcher knows the platform —

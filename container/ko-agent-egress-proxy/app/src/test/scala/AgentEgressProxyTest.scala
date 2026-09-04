@@ -51,8 +51,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       parseConnect("GET https://api.anthropic.com/ HTTP/1.1\r\n\r\n")
 
-  test("the pull hosts are reachable and restricted"):
-    // Why the tier: SECURITY.md, "Reading without being able to write".
+  test("the pull hosts are reachable and inspected"):
+    // Why the treatment: SECURITY.md, "Reading without being able to write".
     Vector(
       "registry-1.docker.io", "auth.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com",
@@ -60,13 +60,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net",
     ).foreach: host =>
       assertEquals(authorize(host, 443), host)
-      assert(CuratedRestrictedHosts.contains(host), host)
+      assertEquals(DefaultHosts.get(host), Some(Treatment.Inspected(Map("/" -> Set("read")))), host)
+
 
   test("authorizeRequest rejects ports other than 443"):
     intercept[PolicyViolation]:
       authorize("api.anthropic.com", 8443)
 
-  test("authorizeRequest rejects a hostname outside the allowlist"):
+  test("authorizeRequest rejects a hostname outside the policy"):
     intercept[PolicyViolation]:
       authorize("example.com", 443)
 
@@ -84,7 +85,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("Smokescreen-class canonicalization tricks reach no non-allowed host"):
     // Permanent regression inputs from Smokescreen's deny-list bypasses: bracketed hostname (GHSA-qwrf-gfpj-qvj6),
-    // trailing dot / letter case (GHSA-gcj7-j438-hjj2). An allowlist with one normalizeHost chokepoint keeps every
+    // trailing dot / letter case (GHSA-gcj7-j438-hjj2). A policy with one normalizeHost chokepoint keeps every
     // dressing of a non-listed host refused.
     Vector(
       "[example.com]:443",
@@ -95,7 +96,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       intercept[PolicyViolation]:
         authorizeRequest(
           ConnectRequest.parse(ascii(s"CONNECT $authority HTTP/1.1\r\n\r\n")),
-          baselinePolicy,
+          defaultsPolicy,
         )
 
   test("an allowed host authorizes to one canonical form however it is spelled"):
@@ -110,7 +111,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assertEquals(
         authorizeRequest(
           ConnectRequest.parse(ascii(s"CONNECT $authority HTTP/1.1\r\n\r\n")),
-          baselinePolicy,
+          defaultsPolicy,
         ),
         "github.com",
       )
@@ -124,753 +125,885 @@ class AgentEgressProxyTest extends munit.FunSuite:
     ).foreach(host => assert(!isIpLiteral(host), host))
 
   // ---------------------------------------------------------------------------
-  // Policy resolution: profile equations over the baseline, the allowed delta,
-  // and the always-applied denied rules
+  // The grammar: every launch refusal names its line and the problem
   // ---------------------------------------------------------------------------
-
-  private val BaselineRestricted: Map[String, Set[String]] =
-    BaselineHosts.collect { case (host, Treatment.Restricted(scopes)) => host -> scopes.flatMap(_.tags) }
-  private val BaselineUnrestricted: Set[String] =
-    BaselineHosts.collect { case (host, Treatment.Unrestricted) => host }.toSet
 
   private def policyOf(
     profile: String = "deny-unless-allowed",
     provider: String = "",
-    allowed: String = "",
-    denied: String = "",
+    rule: String = "",
   ): ResolvedEgress =
     def opt(value: String) = Option(value).filter(_.nonEmpty)
-    resolvePolicy(Some(profile), opt(provider), opt(allowed), opt(denied))
+    resolvePolicy(Some(profile), opt(provider), opt(rule))
 
-  test("deny-unless-allowed with no policy files resolves to the whole baseline"):
-    val resolved = policyOf()
-    assertEquals(resolved.allowances, BaselineRestricted)
-    assertEquals(resolved.unrestrictedHosts, BaselineUnrestricted)
-    assert(!resolved.ambient)
+  private def refusalOf(rule: String): String =
+    intercept[IllegalArgumentException](policyOf(rule = rule)).getMessage
 
-  test("a provider group's forge endpoints stay restricted in the baseline, tags merged"):
-    // github.com is in the catalog (allow=git-fetch) and in the github group (allow=github-login-device): the
-    // baseline carries both tags, the group's merging with the catalog's rather than replacing
-    // it; api.github.com sits untagged in both.
-    assertEquals(BaselineHosts("github.com"), Treatment.restricted(Set("git-fetch", "github-login-device")))
-    assertEquals(BaselineHosts("api.github.com"), Treatment.restricted(Set.empty))
-    assertEquals(BaselineHosts("api.githubcopilot.com"), Treatment.Unrestricted)
-    ModelProviderHosts.values.flatten.foreach: (host, treatment) =>
-      if treatment == Treatment.Unrestricted then
-        assert(!CuratedRestrictedHosts.contains(host), s"$host is opaque in its group and restricted in the catalog")
-
-  test("deny-all resolves empty, and empty is a valid policy, not a broken one"):
-    val resolved = policyOf(profile = "deny-all", denied = "host example.com")
-    assertEquals(resolved.hosts, Map.empty[String, Treatment])
-    intercept[PolicyViolation](authorize("api.anthropic.com", 443, resolved))
-    // Its denials are idle by definition and deliberately unwarned.
-    assertEquals(resolved.idleDenied, Vector.empty)
-    assertEquals(resolved.warnings, Vector.empty)
-
-  test("deny-unless-model admits the selected provider's endpoints and no project extras"):
-    val resolved = policyOf(profile = "deny-unless-model", provider = "anthropic")
-    assertEquals(resolved.hosts, ModelProviderHosts("anthropic"))
-    assertEquals(authorize("api.anthropic.com", 443, resolved), "api.anthropic.com")
-    intercept[PolicyViolation](authorize("github.com", 443, resolved))
-    val withExtras = policyOf(
-      profile = "deny-unless-model", provider = "anthropic",
-      allowed = "+host docs.example",
-    )
-    assertEquals(withExtras.hosts, ModelProviderHosts("anthropic"))
-
-  test("deny-unless-model for copilot admits the forge for login and token exchange, never for push"):
-    val resolved = policyOf(profile = "deny-unless-model", provider = "github")
-    assertEquals(resolved.hosts, ModelProviderHosts("github"))
-    assertEquals(resolved.allowances.get("github.com"), Some(Set("github-login-device")))
-    assertEquals(resolved.allowances.get("api.github.com"), Some(Set.empty))
-    assert(resolved.unrestrictedHosts.contains("api.githubcopilot.com"))
-    // The catalog's allow=git-fetch is not in the group: under this profile the forge is not even cloned from.
-    assert(!resolved.tagged("git-fetch").contains("github.com"))
-
-  test("deny-unless-model with no provider selected is a valid empty policy"):
-    val resolved = policyOf(profile = "deny-unless-model")
-    assertEquals(resolved.hosts, Map.empty[String, Treatment])
-    assertEquals(
-      policyLines(resolved)(0),
-      "egress profile: deny-unless-model; model provider: none",
-    )
+  test("a line outside the grammar is refused naming the line and the problem, never skipped"):
+    Vector(
+      "allow https://x.example" -> "has no / after its host",
+      "allow https://x.example/" -> "names no grant",
+      "allow https://x.example/ read read" -> "names read twice",
+      "allow https://x.example/ method=POST,POST" -> "names POST twice",
+      "allow https://x.example/ method=POST method=PUT" -> "names method= twice",
+      "allow https://x.example/ method=" -> "names the method ''",
+      "allow https://x.example/ method=GET" -> "names the method 'GET'",
+      "allow https://x.example/ method=post" -> "names the method 'post'",
+      "allow https://x.example/ tunnel read" -> "puts tunnel beside another word",
+      "allow https://x.example/api/ tunnel" -> "gives a tunnel a path",
+      "allow https://x.example/ write" -> "has the word 'write', which is no grant",
+      "allow https://x.example/ allow=git-fetch" -> "has the word 'allow=git-fetch', which is no grant",
+      "deny https://x.example/api/" -> "denies a path",
+      "deny https://x.example/api/ read" -> "denies a path",
+      "deny https://x.example/api" -> "denies a path",
+      "deny https://x.example" -> "has no / after its host",
+      "allow https://**.example/ read" -> "names a pattern",
+      "allow https://x.example:8443/ read" -> "carries a port",
+      "allow https://user@x.example/ read" -> "carries userinfo",
+      "allow https://[x.example]/ read" -> "carries a bracket",
+      "allow https:///a/ read" -> "names no host",
+      "allow https://x.example/a?b=1 read" -> "has a query",
+      "allow https://x.example/a%20b/ read" -> "has percent-encoding in its path",
+      "allow https://x.example/a/../b/ read" -> "has a dot segment in its path",
+      "allow https://x.example/./ read" -> "has a dot segment in its path",
+      "allow https://x.example/a//b/ read" -> "has an empty segment in its path",
+      "allow https://x.example/a\\b/ read" -> "has a backslash in its path",
+      "allow https://x.example/ä/ read" -> "outside printable ASCII",
+      "allow HTTPS://x.example/ read" -> "is no line of the rule grammar",
+      "allow http://x.example/ read" -> "is no line of the rule grammar",
+      "allow x.example read" -> "is no line of the rule grammar",
+      "+host x.example" -> "is no line of the rule grammar",
+      "host x.example" -> "is no line of the rule grammar",
+      "-**" -> "is no line of the rule grammar",
+      "allow" -> "is no line of the rule grammar",
+      "deny" -> "is no line of the rule grammar",
+      "allow model-provider" -> "is no line of the rule grammar",
+      "allow model-provider anthropic read" -> "is no line of the rule grammar",
+      "allow model-provider meta" -> "names the model provider 'meta'",
+      "deny model-provider meta" -> "names the model provider 'meta'",
+      "deny defaults read" -> "takes no word after defaults",
+      "allow https://x.example/ read\ndeny defaults" -> "follows another line",
+      "deny https://x.example/\ndeny defaults" -> "follows another line",
+      "allow https://x.example/a#b read" -> "a token with '#' inside it",
+      "allow https://x.example/ read#" -> "a token with '#' inside it",
+      "deny https://x.example/#y" -> "a token with '#' inside it",
+      "allow https://10.0.0.1/ read" -> "IP literal",
+      "allow https://a..b/ read" -> "invalid hostname",
+      "deny https://a.example,b.example/" -> "invalid hostname",
+      "deny https://**pypi.org/" -> "invalid hostname",
+      "deny https://*/" -> "invalid hostname",
+      "allow https://x.example/ tunnel\nallow https://x.example/api/ read" -> "inspects x.example while it is a tunnel",
+      "allow https://x.example/api/ read\nallow https://x.example/ tunnel" -> "makes x.example a tunnel while it holds",
+      "allow https://api.anthropic.com/safe/ read" -> "inspects api.anthropic.com while it is a tunnel",
+      "allow https://github.com/ tunnel" -> "makes github.com an opaque tunnel, which the defaults inspect",
+      "deny https://github.com/\nallow https://github.com/ tunnel" -> "makes github.com an opaque tunnel",
+    ).foreach: (rule, problem) =>
+      val message = refusalOf(rule)
+      assert(message.contains(problem), s"$rule: $message")
+      assert(message.startsWith("rule"), s"$rule: $message")
 
   test("an unknown profile or provider is refused, never defaulted"):
     intercept[IllegalArgumentException](policyOf(profile = "allow-all"))
     intercept[IllegalArgumentException](policyOf(profile = "deny-unless-model", provider = "meta"))
 
-  test("allow-unless-denied admits any public host, keeps the catalog restricted, denial wins"):
-    val resolved = policyOf(profile = "allow-unless-denied", denied = "host telemetry.example.com")
-    assert(resolved.ambient)
-    assertEquals(authorize("anything.example.org", 443, resolved), "anything.example.org")
-    // The narrowing set is every restricted baseline entry, a group's tags included: a catalog
-    // host stays restricted rather than widening to the default, and copilot still signs in.
-    assertEquals(resolved.allowances.get("github.com"), Some(Set("git-fetch", "github-login-device")))
-    assertEquals(resolved.allowances, BaselineRestricted)
-    intercept[PolicyViolation](authorize("telemetry.example.com", 443, resolved))
-    // The port and IP-literal rules hold for ambient hosts too.
-    intercept[PolicyViolation](authorize("anything.example.org", 8443, resolved))
-    intercept[PolicyViolation](authorize("8.8.8.8", 443, resolved))
-
-  test("an allowed removal narrows the curated profile but can never widen an ambient host"):
-    // Under deny-unless-allowed the removal takes github.com away entirely...
-    intercept[PolicyViolation](
-      authorize("github.com", 443, policyOf(allowed = "-host github.com")),
-    )
-    // ...while under allow-unless-denied the same delta subtracts nothing from the narrowing
-    // set: only denied removes ambient access, so github.com stays restricted rather than
-    // becoming an opaque tunnel.
-    val ambient = policyOf(profile = "allow-unless-denied", allowed = "-host github.com")
-    assertEquals(ambient.allowances.get("github.com"), Some(Set("git-fetch", "github-login-device")))
-    // -** cannot subtract from it either.
-    val reset = policyOf(profile = "allow-unless-denied", allowed = "-**")
-    assertEquals(reset.allowances, BaselineRestricted)
-
-  test("a restricted addition extends the narrowing set; an unrestricted one adds nothing to it"):
-    val resolved = policyOf(
-      profile = "allow-unless-denied",
-      allowed = "+host mirror.example allow=git-fetch\n+host opaque.example unrestricted",
-    )
-    assertEquals(resolved.allowances.get("mirror.example"), Some(Set("git-fetch")))
-    assert(!resolved.hosts.contains("opaque.example"))
-    assertEquals(authorize("opaque.example", 443, resolved), "opaque.example")
-
-  test("the allowed delta adds to and removes from the baseline"):
-    val resolved = policyOf(allowed = "+host html.spec.whatwg.org\n-host pypi.org")
-    assertEquals(
-      resolved.allowances,
-      BaselineRestricted - "pypi.org" + ("html.spec.whatwg.org" -> Set.empty[String]),
-    )
-    assertEquals(resolved.unrestrictedHosts, BaselineUnrestricted)
-
-  test("entries are enforced in the normalized form they resolve to"):
-    // The launcher passes the files' lines, resolvePolicy normalizes the entries, and
-    // authorizeRequest normalizes the CONNECT target: whatever spelling either side used,
-    // enforcement compares one canonical form.
-    val resolved = policyOf(allowed = "+host Example.ORG.\n-host GitLab.COM.")
-    assertEquals(authorize("EXAMPLE.ORG.", 443, resolved), "example.org")
-    assert(!resolved.hosts.contains("gitlab.com"))
-    intercept[PolicyViolation](authorize("example.com", 443, resolved))
-
-  test("an entry outside the grammar is refused with the grammar in hand, never skipped"):
-    // A bare +host token is the likely stray.
-    val ex = intercept[IllegalArgumentException](policyOf(allowed = "+pypi.org"))
-    assert(ex.getMessage.contains("allowed grammar"), ex.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "host example.com"))
-    intercept[IllegalArgumentException](policyOf(denied = "+host example.com"))
-    intercept[IllegalArgumentException](policyOf(denied = "example.com"))
-    intercept[IllegalArgumentException](policyOf(denied = "-**"))
-
-  test("restating a baseline entry identically is a harmless no-op"):
-    // Deliberately not an error: a defensively added host must not start failing when a later
-    // image adopts it into the baseline.
-    assertEquals(policyOf(allowed = "+host pypi.org").allowances, BaselineRestricted)
-    assertEquals(
-      policyOf(allowed = "+host github.com allow=git-fetch").allowances,
-      CuratedRestrictedHosts,
-    )
-    ModelProviderHosts.keys.foreach: name =>
-      assertEquals(policyOf(allowed = s"+model-provider $name").hosts, policyOf().hosts, name)
-
-  test("an addition states its host's complete allowances, and allow=git-fetch opens git fetch"):
-    // An addition states its host's complete allowances and overrides the baseline entry for that
-    // host — explicit, printed as written at launch, never a merge.
-    val mirror = policyOf(allowed = "+host mirror.example allow=git-fetch")
-    assert(mirror.tagged("git-fetch").contains("mirror.example"))
-    authorizeInspectedRequest(
-      "mirror.example",
-      head(
-        "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\n" +
-          "Host: mirror.example\r\nContent-Length: 0\r\n\r\n",
-      ),
-      whole("git-fetch"),
-    )
-    // Revoking: a bare restatement strips the built-in allow=git-fetch; the host stays restricted.
-    val demoted = policyOf(allowed = "+host gitlab.com")
-    assert(!demoted.tagged("git-fetch").contains("gitlab.com"))
-    assert(demoted.restricted.contains("gitlab.com"))
-    // Granting is just as explicit — legal, and the entry says exactly what it opens.
+  test("a retired variable refuses the start naming the one variable the proxy reads"):
+    assertEquals(RetiredVariables, Vector("EGRESS_ALLOWED", "EGRESS_DENIED"))
+    RetiredVariables.foreach: retired =>
+      val ex = intercept[IllegalArgumentException](
+        configuredPolicy(name => Option.when(name == retired)("+host x.example")),
+      )
+      assert(ex.getMessage.contains(RuleVariable), ex.getMessage)
+    assertEquals(configuredPolicy(_ => None).hosts, DefaultHosts)
     assert(
-      policyOf(allowed = "+host pypi.org allow=git-fetch")
-        .tagged("git-fetch").contains("pypi.org"),
+      !configuredPolicy(name => Option.when(name == RuleVariable)("deny https://pypi.org/")).hosts.contains("pypi.org"),
     )
-
-  test("one host, one treatment: entries that disagree are refused"):
-    val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example\n+host docs.example allow=git-fetch"),
-    )
-    assert(ex.getMessage.contains("two different treatments"), ex.getMessage)
-    intercept[IllegalArgumentException](
-      policyOf(allowed = "+host docs.example\n+host docs.example unrestricted"),
-    )
-
-  test("an unknown allowance or treatment is refused with the closed set in hand"):
-    // An allowance names a fixed treatment, never describes one.
-    val ex = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host mirror.example allow=lfs"),
-    )
-    assert(ex.getMessage.contains("the allowances are: git-fetch, github-login-device, npm-audit"), ex.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example=8443"))
-    intercept[IllegalArgumentException](policyOf(allowed = "+host mirror.example 8443"))
-    val treatment = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host mirror.example writable"),
-    )
-    assert(treatment.getMessage.contains("the forms are"), treatment.getMessage)
-
-  test("restricted is the default and has no word; an empty allow= says nothing and is refused"):
-    val spelled = intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example restricted"))
-    assert(spelled.getMessage.contains("has no word"), spelled.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example allow="))
-    intercept[IllegalArgumentException](policyOf(allowed = "+host docs.example allow=git-fetch,"))
-    // Several allowances go in one word, and the order does not matter.
-    assertEquals(
-      policyOf(allowed = "+host mirror.example allow=github-login-device,git-fetch").allowances("mirror.example"),
-      Set("git-fetch", "github-login-device"),
-    )
-
-  test("-** is a flag, not a rule in sequence: the file's own additions stand on either side of it"):
-    val below = policyOf(allowed = "-**\n+host docs.example\n+model-provider openai")
-    val above = policyOf(allowed = "+host docs.example\n+model-provider openai\n-**")
-    assertEquals(above.hosts, below.hosts)
-    assert(above.restricted.contains("docs.example"))
-
-  test("an allowance belongs on a restricted addition and nowhere else"):
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example allow=git-fetch unrestricted"))
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example unrestricted allow=git-fetch"))
-    intercept[IllegalArgumentException](policyOf(allowed = "-host github.com allow=git-fetch"))
-    intercept[IllegalArgumentException](policyOf(denied = "host github.com allow=git-fetch"))
 
   // ---------------------------------------------------------------------------
-  // path= prefixes: a restricted entry narrowed to one tree (Scope)
+  // The warnings: printed at every launch, the same under every profile
   // ---------------------------------------------------------------------------
 
-  test("path= narrows a restricted addition to one prefix, in either order beside allow="):
-    val bucket = policyOf(allowed = "+host storage.googleapis.com path=/my-bucket/")
-    assertEquals(bucket.restricted("storage.googleapis.com"), under("/my-bucket/"))
-    val either = Vector(
-      "+host github.com path=/owner/ allow=git-fetch",
-      "+host github.com allow=git-fetch path=/owner/",
-    ).map(entry => policyOf(allowed = entry).restricted("github.com"))
-    assertEquals(either, Vector.fill(2)(under("/owner/", "git-fetch")))
-    // The addition overrides the baseline entry whole, like any addition: the login allowance is gone.
-    assertEquals(
-      policyOf(allowed = "+host github.com path=/owner/ allow=git-fetch").tagged("github-login-device"),
-      Set.empty[String],
-    )
-    // Under allow-unless-denied the prefixed addition joins the narrowing set, prefix and all.
-    assertEquals(
-      policyOf(profile = "allow-unless-denied", allowed = "+host docs.example path=/v2/").restricted("docs.example"),
-      under("/v2/"),
-    )
-
-  test("a prefix is in canonical form or the launch fails, naming the entry and the problem"):
+  test("a deny matching nothing at its position is warned under every profile, so a misspelling cannot fail silently"):
+    Profiles.foreach: profile =>
+      val provider = if profile == "deny-unless-model" then "anthropic" else ""
+      val resolved = policyOf(profile = profile, provider = provider, rule = "deny https://telemetry.example/")
+      assertEquals(
+        resolved.warnings,
+        Vector("rule: deny https://telemetry.example/ matches nothing at its position"),
+        profile,
+      )
+    // A deny that takes something is no warning, under a profile that never consults it included.
+    assertEquals(policyOf(profile = "deny-all", rule = "deny https://github.com/").warnings, Vector.empty)
+    // A grant no line gave, a subtree over nothing, a group after `deny defaults`, and `tunnel` on an
+    // inspected host: each names its line.
     Vector(
-      "/" -> "narrows nothing",
-      "owner/" -> "does not begin with /",
-      "/owner" -> "does not end with /",
-      "/own%65r/" -> "has percent-encoding",
-      "/owner\\repo/" -> "has a backslash",
-      "/owner//repo/" -> "has an empty segment",
-      "/owner/./" -> "has a dot segment",
-      "/owner/../" -> "has a dot segment",
-      "/owner/?x=1/" -> "has a query",
-      "/ownér/" -> "outside printable ASCII",
-      "/owner/" -> "outside printable ASCII",
-    ).foreach: (prefix, problem) =>
-      val ex = intercept[IllegalArgumentException](policyOf(allowed = s"+host github.com path=$prefix"))
-      assert(ex.getMessage.contains("narrows github.com to 'path="), s"$prefix: ${ex.getMessage}")
-      assert(ex.getMessage.contains(problem), s"$prefix: ${ex.getMessage}")
-    // Case is kept as written: the origin's to fold, never the proxy's.
-    assertEquals(policyOf(allowed = "+host github.com path=/MyOrg/").restricted("github.com"), under("/MyOrg/"))
+      "deny https://api.anthropic.com/ read" -> "matches nothing",
+      "deny https://**.example.com/" -> "matches nothing",
+      "deny https://github.com/ tunnel" -> "matches nothing",
+      "deny defaults\ndeny model-provider google" -> "removes nothing",
+      "deny model-provider google\ndeny model-provider google" -> "removes nothing",
+    ).foreach: (rule, problem) =>
+      val warnings = policyOf(rule = rule).warnings
+      assert(
+        warnings.exists(warning => warning.contains(problem) && warning.contains(rule.linesIterator.toVector.last)),
+        s"$rule: $warnings",
+      )
+    assertEquals(policyOf(rule = "deny https://**.googleapis.com/").warnings, Vector.empty)
+    assertEquals(policyOf(rule = "deny model-provider google").warnings, Vector.empty)
 
-  test("path= binds to a restricted entry: an unrestricted host has no path, and denied names a host whole"):
-    val opaque = intercept[IllegalArgumentException](policyOf(allowed = "+host api.example path=/v1/ unrestricted"))
-    assert(opaque.getMessage.contains("gives the unrestricted host api.example a path"), opaque.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api.example unrestricted path=/v1/"))
-    val denied = intercept[IllegalArgumentException](policyOf(denied = "host github.com path=/owner/"))
-    assert(denied.getMessage.contains("no entry of the denied grammar"), denied.getMessage)
-    intercept[IllegalArgumentException](policyOf(allowed = "-host github.com path=/owner/"))
-    // One path= word, like one allow= word.
-    val twice = intercept[IllegalArgumentException](policyOf(allowed = "+host github.com path=/a/ path=/b/"))
-    assert(twice.getMessage.contains("two path= words"), twice.getMessage)
-
-  test("an allowance whose fixed paths lie outside the prefix is refused, naming both"):
-    val login = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host github.com path=/owner/ allow=git-fetch,github-login-device"),
-    )
-    assert(
-      login.getMessage.contains(
-        "allow=github-login-device under path=/owner/, which does not contain " +
-          "/login/device/code /login/oauth/access_token",
-      ),
-      login.getMessage,
-    )
-    val audit = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host registry.npmjs.org path=/lodash/ allow=npm-audit"),
-    )
-    assert(audit.getMessage.contains(s"does not contain $NpmAuditPath"), audit.getMessage)
-    // Under a prefix containing them each allowance stands; git-fetch has no fixed path and composes with any.
+  test("a redundant grant is warned naming the deny-then-re-grant pair; a restatement of the defaults is silent"):
+    val redundant = policyOf(rule = "allow https://github.com/my-org/ git-fetch")
     assertEquals(
-      policyOf(allowed = "+host github.com path=/login/ allow=github-login-device").tagged("github-login-device"),
-      Set("github.com"),
-    )
-    assertEquals(
-      policyOf(allowed = "+host registry.npmjs.org path=/-/ allow=npm-audit").tagged("npm-audit"),
-      Set("registry.npmjs.org"),
-    )
-    assert(
-      policyOf(allowed = "+host github.com path=/owner/ allow=git-fetch").tagged("git-fetch").contains("github.com"),
-    )
-    // Every allowance has a row in the table the check reads, so a new tag cannot skip it.
-    assertEquals(AllowancePaths.keySet, KnownTags)
-
-  test("several prefixes on one host are several scopes, disjoint or refused in either order"):
-    val two = policyOf(allowed = "+host github.com path=/public/\n+host github.com path=/repos/ allow=git-fetch")
-    assertEquals(two.restricted("github.com"), under("/public/") ++ under("/repos/", "git-fetch"))
-    // An identical restatement is the same no-op it is for a whole host.
-    assertEquals(
-      policyOf(allowed = "+host github.com path=/repos/\n+host github.com path=/repos/").restricted("github.com"),
-      under("/repos/"),
-    )
-    // One scope, two treatments: the whole-host rule.
-    val disagree = intercept[IllegalArgumentException](
-      policyOf(allowed = "+host github.com path=/repos/\n+host github.com path=/repos/ allow=git-fetch"),
-    )
-    assert(disagree.getMessage.contains("two different treatments"), disagree.getMessage)
-    intercept[IllegalArgumentException](
-      policyOf(allowed = "+host github.com path=/repos/\n+host github.com unrestricted"),
-    )
-    Vector(
-      Vector("+host github.com path=/org/", "+host github.com path=/org/private/"),
-      Vector("+host github.com path=/org/private/", "+host github.com path=/org/"),
-    ).foreach: entries =>
-      val nested = intercept[IllegalArgumentException](policyOf(allowed = entries.mkString("\n")))
-      assert(nested.getMessage.contains("path=/org/private/ inside path=/org/"), nested.getMessage)
-    Vector(
-      Vector("+host github.com", "+host github.com path=/org/"),
-      Vector("+host github.com path=/org/", "+host github.com"),
-    ).foreach: entries =>
-      val nested = intercept[IllegalArgumentException](policyOf(allowed = entries.mkString("\n")))
-      assert(nested.getMessage.contains("adds github.com whole and under path=/org/"), nested.getMessage)
-    // A sibling is not a container: /org/ and /organisation/ are disjoint.
-    assertEquals(
-      policyOf(allowed = "+host github.com path=/org/\n+host github.com path=/organisation/")
-        .restricted("github.com").size,
-      2,
-    )
-
-  test("a baseline file names its hosts whole"):
-    // The catalog and a provider group merge on a host by tags; a prefix there would nest.
-    BaselineHosts.values.foreach:
-      case Treatment.Restricted(scopes) => assertEquals(scopes.map(_.prefix), Set(Option.empty[String]))
-      case Treatment.Unrestricted       => ()
-
-  test("under a prefix, a read inside it is allowed and everything outside or foldable is refused"):
-    def get(path: String, scopes: Set[Scope] = under("/x/")): Unit =
-      authorizeInspectedRequest("docs.example", head(s"GET $path HTTP/1.1\r\nHost: docs.example\r\n\r\n"), scopes)
-    get("/x/y")
-    get("/x/y/z?download=1")
-    get("/x/")
-    Vector(
-      "/z/y" -> "path outside allowance",
-      "/x" -> "path outside allowance", // the prefix is a tree; its own name is not in it
-      "/xy/z" -> "path outside allowance",
-      "/X/y" -> "path outside allowance", // wrong case fails closed, whatever the origin folds
-      "/x/../z/y" -> "a dot segment in the path",
-      "/x/%2e%2e/z/y" -> "percent-encoding in the path",
-      "/x/./y" -> "a dot segment in the path",
-      "/x\\..\\z" -> "a backslash in the path",
-      "//x/y" -> "an empty segment in the path",
-      "/x//y" -> "an empty segment in the path",
-      "/x/%2Fy" -> "percent-encoding in the path",
-    ).foreach: (path, why) =>
-      val refusal = intercept[PolicyViolation](get(path))
-      assertEquals(refusal.getMessage, why, path)
-    // The literal rule is the prefixed entry's: an unprefixed host keeps reading percent-encoded object names.
-    get("/blobs/a%2Fb", whole())
-    get("/x/%2e%2e/y", whole())
-
-  test("two prefixes union for reads, and an allowance stays with the prefix it was written on"):
-    val scopes = under("/public/") ++ under("/repos/", "git-fetch")
-    def request(request: String): Unit = authorizeInspectedRequest("github.com", head(request), scopes)
-    request("GET /public/site/index.html HTTP/1.1\r\nHost: github.com\r\n\r\n")
-    request("GET /repos/o/r.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: github.com\r\n\r\n")
-    request("POST /repos/o/r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
-    val outside = intercept[PolicyViolation](request("GET /private/o/r HTTP/1.1\r\nHost: github.com\r\n\r\n"))
-    assertEquals(outside.getMessage, "path outside allowance")
-    assertEquals(outside.advice, RefusalAdvice.pathOutside(Set("/public/", "/repos/")))
-    val unopened = intercept[PolicyViolation](
-      request("POST /public/o/r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-    )
-    assertEquals(unopened.getMessage, "restricted host")
-    // Push stays refused under a fetch prefix, discovery and transfer alike.
-    intercept[PolicyViolation](
-      request("GET /repos/o/r.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"),
-    )
-    intercept[PolicyViolation](
-      request("POST /repos/o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-    )
-
-  test("the login allowance beside a fetch prefix: clone under the owner, device login under /login/"):
-    // github.com narrowed to one owner for git, with the sign-in kept on its own prefix.
-    val resolved = policyOf(
-      allowed =
-        "+host github.com path=/owner/ allow=git-fetch\n+host github.com path=/login/ allow=github-login-device",
-    )
-    val scopes = resolved.restricted("github.com")
-    def request(request: String): Unit = authorizeInspectedRequest("github.com", head(request), scopes)
-    request("POST /owner/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
-    request("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
-    request("POST /login/oauth/access_token HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
-    intercept[PolicyViolation](
-      request("POST /other/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-    )
-    intercept[PolicyViolation](request("GET /other/repo HTTP/1.1\r\nHost: github.com\r\n\r\n"))
-
-  test("the policy lines spell a prefixed scope as host/prefix/, and re-parse to the same policy"):
-    val resolved = policyOf(
-      allowed = "+host github.com path=/owner/ allow=git-fetch\n" +
-        "+host github.com path=/login/ allow=github-login-device\n" +
-        "+host storage.googleapis.com path=/my-bucket/",
-    )
-    val lines = policyLines(resolved)
-    assert(lines(1).startsWith(s"restricted hosts (${BaselineRestricted.size + 2}): "), lines(1))
-    assert(lines(1).contains(" github.com/login/ github.com/owner/ "), lines(1))
-    assert(!lines(1).contains(" github.com "), lines(1))
-    assert(lines(1).contains(" storage.googleapis.com/my-bucket/"), lines(1))
-    val gitTokens = (builtinGitHosts - "github.com" + "github.com/owner/").toVector.sorted
-    assert(
-      lines.contains(s"restricted allow=git-fetch (${gitTokens.size}):" + gitTokens.map(" " + _).mkString),
-      lines.toString,
-    )
-    assert(lines.contains("restricted allow=github-login-device (1): github.com/login/"), lines.toString)
-    // The leaf's names are hosts, read off the tokens (EgressProxyPolicy.inspectedHostsOf).
-    assertEquals(resolved.inspected, BaselineRestricted.keySet + "storage.googleapis.com")
-
-    // The round trip: the lines, read back as a complete replacement policy, resolve to the same
-    // hosts and print the same lines — so the format loses nothing a prefix carries.
-    def tokensOf(line: String): Vector[String] =
-      line.drop(line.indexOf("):") + 2).trim.split(" ").toVector.filter(_.nonEmpty)
-    val allowanceOf = lines.collect { case line if line.startsWith("restricted allow=") =>
-      line.drop("restricted allow=".length).takeWhile(_ != ' ') -> tokensOf(line).toSet
-    }.toMap
-    def entry(token: String): String =
-      val (host, prefix) = token.span(_ != '/')
-      val tags = allowanceOf.collect { case (tag, tokens) if tokens(token) => tag }.toVector.sorted
-      s"+host $host" + Option.when(prefix.nonEmpty)(s" path=$prefix").getOrElse("")
-        + Option.when(tags.nonEmpty)(s" allow=${tags.mkString(",")}").getOrElse("")
-    val unrestricted = tokensOf(lines.find(_.startsWith("unrestricted hosts (")).get)
-    val replacement =
-      ("-**" +: tokensOf(lines(1)).map(entry) :++ unrestricted.map(host => s"+host $host unrestricted")).mkString("\n")
-    val reread = policyOf(allowed = replacement)
-    assertEquals(reread.hosts, resolved.hosts)
-    assertEquals(policyLines(reread), lines)
-
-  test("the widening line names the delta entries reaching past the baseline, and only those"):
-    val resolved = policyOf(
-      allowed =
-        "+host html.spec.whatwg.org                # a host the baseline lacks: a new recipient\n" +
-          "+host storage.googleapis.com path=/b/     # narrowed, and still a new recipient\n" +
-          "+host pypi.org allow=git-fetch            # an allowance the baseline entry lacks\n" +
-          "+host GitHub.com allow=git-fetch          # the baseline's own allowance, restated\n" +
-          "+host registry.npmjs.org allow=npm-audit  # the baseline ships it disabled\n" +
-          "+host api.anthropic.com unrestricted      # the baseline's own tunnel, restated\n" +
-          "+host claude.ai allow=git-fetch           # a tunnel narrowed to inspected reads\n" +
-          "-host gitlab.com\n-model-provider google\n+model-provider anthropic\n",
-    )
-    assertEquals(
-      resolved.widening,
+      redundant.warnings,
       Vector(
-        "+host html.spec.whatwg.org",
-        "+host pypi.org allow=git-fetch",
-        "+host registry.npmjs.org allow=npm-audit",
-        "+host storage.googleapis.com path=/b/",
+        "rule: allow https://github.com/my-org/ git-fetch grants nothing its enclosing scope lacks at its position; " +
+          "to narrow, take the grants first: deny https://github.com/ git-fetch, then this line",
       ),
     )
-    // Printed after the policy lines and outside their digest: delta metadata, not policy.
-    assertEquals(
-      wideningLine(resolved),
-      Some(
-        "widening entries (4): +host html.spec.whatwg.org; +host pypi.org allow=git-fetch; " +
-          "+host registry.npmjs.org allow=npm-audit; +host storage.googleapis.com path=/b/",
-      ),
-    )
-    assert(!policyLines(resolved).exists(_.startsWith("widening")), policyLines(resolved).toString)
-    // A baseline host narrowed by path=, its allowance the baseline's, widens nothing.
-    assertEquals(policyOf(allowed = "+host github.com path=/my-org/ allow=git-fetch").widening, Vector.empty)
-    // `-**` widens, and under it a re-added restricted baseline host may go unrestricted: both listed.
-    assertEquals(
-      policyOf(allowed = "-**\n+host github.com unrestricted\n+host pypi.org").widening,
-      Vector("-**", "+host github.com unrestricted"),
-    )
-    // Nothing widens under a profile the delta cannot widen; a file that only removes prints no line.
-    assertEquals(policyOf(profile = "allow-unless-denied", allowed = "+host new.example").widening, Vector.empty)
-    assertEquals(policyOf(profile = "deny-all", allowed = "+host new.example").widening, Vector.empty)
-    val narrowing = policyOf(allowed = "+host pypi.org\n-host github.com")
-    assertEquals(narrowing.widening, Vector.empty)
-    assertEquals(wideningLine(narrowing), None)
-
-  test("provenance and --check-host spell a prefixed host one line per scope"):
-    val resolved = policyOf(
-      allowed =
-        "+host github.com path=/owner/ allow=git-fetch\n+host github.com path=/login/ allow=github-login-device",
-    )
-    val lines = provenanceLines(resolved)
-    assert(
-      lines.contains("  github.com: restricted path=/login/ allow=github-login-device; allowed +host"),
-      lines.toString,
-    )
-    assert(lines.contains("  github.com: restricted path=/owner/ allow=git-fetch; allowed +host"), lines.toString)
-    assertEquals(
-      spelled(resolved.hosts("github.com")),
-      Vector("restricted path=/login/ allow=github-login-device", "restricted path=/owner/ allow=git-fetch"),
-    )
-    assertEquals(spelled(Treatment.restricted()), Vector("restricted"))
-    assertEquals(spelled(Treatment.restricted(Set("git-fetch"))), Vector("restricted allow=git-fetch"))
-
-  test("adding and removing the same host is refused"):
-    intercept[IllegalArgumentException](policyOf(allowed = "+host pypi.org\n-host pypi.org"))
-
-  test("a removal matching neither the baseline nor an addition is refused, not a silent no-op"):
-    // The sharp fail-open edge: a typo'd '-host githib.example' that removed nothing would read
-    // as a narrowing that never happened.
-    intercept[IllegalArgumentException](policyOf(allowed = "-host githib.example"))
-    // A provider endpoint is baseline like any other host; removing one exactly works.
-    assert(!policyOf(allowed = "-host api.anthropic.com").hosts.contains("api.anthropic.com"))
-
-  test("delta entries reject IP literals and malformed hostnames like any other"):
-    intercept[IllegalArgumentException](policyOf(allowed = "+host 10.0.0.1 unrestricted"))
-    intercept[IllegalArgumentException](policyOf(allowed = "+host api..example"))
-    intercept[IllegalArgumentException](policyOf(denied = "host 10.0.0.1"))
-
-  test("a comma joins nothing: tokens split on whitespace alone, like the policy files"):
-    // A comma-joined pair must not silently become two entries — it stays one token and fails
-    // hostname validation, so the mistake is a refused launch, not a policy nobody wrote.
-    intercept[IllegalArgumentException](policyOf(allowed = "+host a.example,b.example"))
-    intercept[IllegalArgumentException](policyOf(denied = "host gitlab.com,chatgpt.com"))
-
-  test("a comment starts at line start or after whitespace; a # inside a token is refused, never a cut"):
-    // Cut at the `#`, `path=/my-bucket/#private/` would read as `path=/my-bucket/`, an entry admitting
-    // more than it says; refusing the token is the only reading that admits nothing unwritten.
-    val commented = policyOf(allowed = "# a comment\n+host docs.example   # trailing\n  # indented\n+host b.example #x")
-    assert(commented.restricted.contains("docs.example") && commented.restricted.contains("b.example"))
+    // The boundary stands all the same: the scope is in the policy (invariant 5 of the plan).
+    assertEquals(redundant.inspectedScopes("github.com")("/my-org/"), Set("read", "git-fetch"))
     Vector(
-      "+host storage.googleapis.com path=/my-bucket/#private/",
-      "+host docs.example#comment",
-      "+host docs.example allow=git-fetch#",
-    ).foreach: entry =>
-      val ex = intercept[IllegalArgumentException](policyOf(allowed = entry))
-      assert(ex.getMessage.contains("a token with '#' inside it"), s"$entry: ${ex.getMessage}")
-    intercept[IllegalArgumentException](policyOf(denied = "host telemetry.example#x"))
-
-  test("a -host **.domain removal drops the domain and everything under it"):
-    val resolved = policyOf(allowed = "-host **.github.com")
-    assert(!resolved.hosts.contains("github.com"))
-    assert(!resolved.hosts.contains("api.github.com"))
-    assert(!resolved.hosts.contains("codeload.github.com"))
-    // A label boundary, not a suffix match: the .githubusercontent.com hosts stay.
-    assert(resolved.hosts.contains("raw.githubusercontent.com"))
-
-  test("a +host under a -host **.domain is a contradiction, not a precedence"):
-    intercept[IllegalArgumentException](
-      policyOf(allowed = "-host **.github.com\n+host api.github.com allow=git-fetch"),
-    )
-
-  test("a bare -host * and the undotted **domain spelling are refused, never suffix-matched"):
-    // Only **.domain is a wildcard; * is neither a valid pattern nor a host, and without the
-    // pattern's dot the spelling reads as a suffix match (barfoo.com).
-    intercept[IllegalArgumentException](policyOf(allowed = "-host *"))
-    intercept[IllegalArgumentException](policyOf(allowed = "-host **pypi.org"))
-    intercept[IllegalArgumentException](policyOf(denied = "host **pypi.org"))
-
-  test("denied removes a host from any treatment and beats an addition"):
-    val resolved = policyOf(denied = "host gitlab.com\nhost developer.mozilla.org\nhost chatgpt.com")
-    Vector("gitlab.com", "developer.mozilla.org", "chatgpt.com").foreach: host =>
-      assert(!resolved.hosts.contains(host), host)
-      intercept[PolicyViolation](authorize(host, 443, resolved))
-    assert(
-      !policyOf(allowed = "+host docs.example", denied = "host docs.example")
-        .hosts.contains("docs.example"),
-    )
-
-  test("denied applies under every profile, a selected provider's endpoints included"):
-    val resolved = policyOf(
-      profile = "deny-unless-model", provider = "openai", denied = "host chatgpt.com",
-    )
-    assert(!resolved.hosts.contains("chatgpt.com"))
-    assert(resolved.hosts.contains("api.openai.com"))
-    // Absent-or-denied endpoints warn but never fail the start: the profile stays the user's
-    // authority decision.
-    assert(resolved.warnings.exists(_.contains("chatgpt.com")), resolved.warnings.toString)
-
-  test("a denied **.domain subtree crosses treatment boundaries"):
-    val resolved = policyOf(denied = "host **.claude.com")
-    assert(!resolved.hosts.contains("code.claude.com"))         // curated catalog, restricted
-    assert(!resolved.hosts.contains("platform.claude.com"))     // provider endpoint, unrestricted
-
-  test("a denied model-provider group denies whatever the group expands to"):
-    val resolved = policyOf(denied = "model-provider google")
-    ModelProviderHosts("google").keys.foreach: host =>
-      assert(!resolved.hosts.contains(host), host)
-      intercept[PolicyViolation](authorize(host, 443, resolved))
-    intercept[IllegalArgumentException](policyOf(denied = "model-provider meta"))
-    // An allowed removal takes back only the group's contribution: github.com stays the catalog's
-    // allow=git-fetch host, the model hosts go.
-    val withoutGithub = policyOf(allowed = "-model-provider github")
-    assertEquals(withoutGithub.allowances.get("github.com"), Some(Set("git-fetch")))
-    assertEquals(withoutGithub.allowances.get("api.github.com"), Some(Set.empty[String]))
-    assert(!withoutGithub.hosts.contains("api.githubcopilot.com"))
-    // Denying the github group takes its forge hosts with it, catalog membership notwithstanding:
-    // a denial wins over both treatments.
-    val noGithub = policyOf(denied = "model-provider github")
-    assert(!noGithub.hosts.contains("github.com"))
-    assert(!noGithub.hosts.contains("api.githubcopilot.com"))
-
-  test("an idle denial is a startup warning and a marked line, not an error"):
-    // A typo cannot be distinguished from a proactive denial against the ambient host universe,
-    // so exact no-match refusal would make legitimate cross-profile denials unwritable.
-    val resolved = policyOf(
-      profile = "deny-unless-model", provider = "anthropic", denied = "host telemetry.example.com",
-    )
-    assertEquals(resolved.idleDenied.map(_.spelled), Vector("telemetry.example.com"))
-    assert(resolved.warnings.exists(_.contains("telemetry.example.com")), resolved.warnings.toString)
-    assert(
-      policyLines(resolved).contains("idle denied rules (1): telemetry.example.com"),
-      policyLines(resolved).toString,
-    )
-    // Under allow-unless-denied every syntactically valid rule matches the ambient universe.
+      "allow https://github.com/ read",
+      "allow https://github.com/ read git-fetch",
+      "allow https://github.com/login/device/code method=POST",
+      "allow https://api.github.com/copilot_internal/v2/token read",
+      "allow https://api.anthropic.com/ tunnel",
+      "allow model-provider anthropic",
+      "allow model-provider github",
+    ).foreach(rule => assertEquals(policyOf(rule = rule).warnings, Vector.empty, rule))
+    // The pair itself is what the line was written for.
     assertEquals(
-      policyOf(profile = "allow-unless-denied", denied = "host telemetry.example.com").idleDenied,
+      policyOf(rule = "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch").warnings,
+      Vector.empty,
+    )
+    // A file line restating an earlier file line at its path, or repeating it, is the file's own redundancy.
+    Vector(
+      "allow https://x.example/ read git-fetch\nallow https://x.example/ read",
+      "allow https://x.example/ read\nallow https://x.example/ read",
+      "deny defaults\nallow model-provider anthropic\nallow model-provider anthropic",
+    ).foreach: rule =>
+      assert(policyOf(rule = rule).warnings.exists(_.contains("grants nothing its enclosing")), rule)
+    // The check reads the defaults and the file, never the profile.
+    Profiles.foreach: profile =>
+      assertEquals(
+        policyOf(profile = profile, rule = "allow https://github.com/my-org/ git-fetch").warnings,
+        redundant.warnings,
+        profile,
+      )
+
+  test("a line every grant of which a later line takes back is warned, whatever boundary it leaves"):
+    val taken = policyOf(rule = "allow https://x.example/ read\ndeny https://x.example/")
+    assertEquals(
+      taken.warnings,
+      Vector("rule: allow https://x.example/ read grants nothing: every grant it names is taken back by a later line"),
+    )
+    // Taken back in part is no warning; the pair the other way round is none either.
+    assertEquals(
+      policyOf(rule = "allow https://x.example/ read git-fetch\ndeny https://x.example/ read").warnings,
+      Vector.empty,
+    )
+    assertEquals(policyOf(rule = "deny https://pypi.org/\nallow https://pypi.org/simple/ read").warnings, Vector.empty)
+    // The three-line cases: a repeated deny takes the exception back and the exception is warned; a
+    // repeated allow restores what the deny between them took, and the first allow is warned.
+    val third = policyOf(
+      rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch\n" +
+        "deny https://codeberg.org/ git-fetch",
+    )
+    assertEquals(third.inspectedScopes("codeberg.org"), Map("/" -> Set("read"), "/my-org/" -> Set("read")))
+    assert(third.warnings.exists(_.contains("taken back")), third.warnings.toString)
+    val restored = policyOf(
+      rule = "allow https://x.example/ read\ndeny https://x.example/ read\nallow https://x.example/ read",
+    )
+    assertEquals(restored.inspectedScopes("x.example"), Map("/" -> Set("read")))
+    assertEquals(restored.warnings.size, 1)
+    assert(restored.warnings.head.contains("taken back"), restored.warnings.toString)
+    // A provider line is warned once, naming itself, when every line it expands to is taken back —
+    // by the group's deny or host by host; one host left standing is no warning.
+    val groupTaken = "deny defaults\nallow model-provider anthropic\ndeny model-provider anthropic"
+    assertEquals(
+      policyOf(rule = groupTaken).warnings,
+      Vector("rule: allow model-provider anthropic grants nothing: every grant it names is taken back by a later line"),
+    )
+    val hostByHost = "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/\n" +
+      "deny https://claude.ai/\ndeny https://platform.claude.com/"
+    assertEquals(policyOf(rule = hostByHost).warnings.count(_.contains("taken back")), 1)
+    assertEquals(
+      policyOf(rule = "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/").warnings,
       Vector.empty,
     )
 
-  test("-** removes the whole baseline before additions apply"):
-    val resolved = policyOf(
-      allowed = "-**\n+model-provider anthropic\n+host docs.python.org",
-    )
-    assertEquals(resolved.unrestrictedHosts, ModelProviderHosts("anthropic").keySet)
-    assertEquals(resolved.allowances, Map("docs.python.org" -> Set.empty[String]))
+  // ---------------------------------------------------------------------------
+  // Resolution: the profiles, the defaults, and the lines in order
+  // ---------------------------------------------------------------------------
 
-  test("treatment widening cannot be written as a delta; -** states a replacement instead"):
-    val ex = intercept[IllegalArgumentException](policyOf(allowed = "+host github.com unrestricted"))
-    assert(ex.getMessage.contains("-**"), ex.getMessage)
-    // Under a -** replacement the same entry is the stated policy, not a widening.
+  test("deny-unless-allowed with no rule file resolves to the defaults, the groups' lines in their hosts' scopes"):
+    val resolved = policyOf()
+    assertEquals(resolved.hosts, DefaultHosts)
+    assert(!resolved.ambient)
     assertEquals(
-      policyOf(allowed = "-**\n+host github.com unrestricted").unrestrictedHosts,
-      Set("github.com"),
+      resolved.inspectedScopes("github.com"),
+      Map(
+        "/" -> Set("read", "git-fetch"),
+        "/login/device/code" -> Set("read", "git-fetch", "POST"),
+        "/login/oauth/access_token" -> Set("read", "git-fetch", "POST"),
+      ),
     )
-
-  test("a model-provider removal takes exactly that provider's endpoints"):
-    val resolved = policyOf(allowed = "-model-provider google")
-    ModelProviderHosts("google").keys.foreach(host => assert(!resolved.hosts.contains(host), host))
-    assert(resolved.hosts.contains("api.anthropic.com"))
-    intercept[IllegalArgumentException](policyOf(allowed = "-model-provider meta"))
-    intercept[IllegalArgumentException](
-      policyOf(allowed = "+model-provider google\n-model-provider google"),
+    assertEquals(
+      resolved.inspectedScopes("api.github.com"),
+      Map("/" -> Set("read"), "/copilot_internal/v2/token" -> Set("read")),
     )
+    assertEquals(resolved.hosts("api.githubcopilot.com"), Treatment.Tunnel)
+    assertEquals(resolved.ambientDenials, Vector.empty)
+    assertEquals(resolved.warnings, Vector.empty)
+    assert(!resolved.clearsDefaults)
 
-  test("a provider the profile does not fully admit warns but never fails the start"):
-    val resolved = policyOf(provider = "google", allowed = "-model-provider google")
-    assert(resolved.warnings.exists(_.contains("google")), resolved.warnings.toString)
-
-  test("the provider list names exactly the baseline's model-provider files"):
-    // A jar cannot list a resource directory, so the names are a constant; this holds it to the
-    // files, both ways.
-    val dir = java.nio.file.Paths.get("src/main/resources/baseline/model-provider")
+  test("the defaults are the catalog, every line a root read, and the groups, pinned"):
+    // The provider pin is the privacy boundary: a tunnel is a host whose TLS must not be read — the
+    // agent endpoints — and not one host more; a group's forge lines are precise, or deny-unless-model
+    // would admit a push or a browse of the forge.
+    CatalogLines.foreach: line =>
+      line.rule match
+        case Rule.Allow(_, path, grants) =>
+          assertEquals(path, "/", line.text)
+          assert(grants("read") && !grants("tunnel"), line.text)
+        case other => fail(s"${line.text}: $other")
+    assertEquals(ModelProviderLines.keySet, ModelProviders.toSet)
+    def lines(name: String): Vector[String] = ModelProviderLines(name).map(_.text)
+    assertEquals(
+      lines("anthropic"),
+      Vector(
+        "allow https://api.anthropic.com/ tunnel",
+        "allow https://claude.ai/ tunnel",
+        "allow https://platform.claude.com/ tunnel",
+      ),
+    )
+    assertEquals(
+      lines("openai"),
+      Vector(
+        "allow https://chatgpt.com/ tunnel",
+        "allow https://api.openai.com/ tunnel",
+        "allow https://auth.openai.com/ tunnel",
+      ),
+    )
+    assertEquals(
+      lines("google"),
+      Vector(
+        "allow https://cloudcode-pa.googleapis.com/ tunnel",
+        "allow https://accounts.google.com/ tunnel",
+        "allow https://oauth2.googleapis.com/ tunnel",
+      ),
+    )
+    assertEquals(
+      lines("github"),
+      Vector(
+        "allow https://api.githubcopilot.com/ tunnel",
+        "allow https://api.individual.githubcopilot.com/ tunnel",
+        "allow https://api.business.githubcopilot.com/ tunnel",
+        "allow https://api.enterprise.githubcopilot.com/ tunnel",
+        "allow https://github.com/login/device/code method=POST",
+        "allow https://github.com/login/oauth/access_token method=POST",
+        "allow https://api.github.com/copilot_internal/v2/token read",
+      ),
+    )
+    assertEquals(builtinGitHosts, Set("github.com", "codeberg.org", "gitlab.com"))
+    // The provider list names exactly the defaults' model-provider files: a jar cannot list a
+    // resource directory, so the names are a constant, held to the files both ways.
+    val dir = java.nio.file.Paths.get("src/main/resources/default/model-provider")
     val files = java.nio.file.Files.list(dir).iterator.asScala.map(_.getFileName.toString).toSet
     assertEquals(files, ModelProviders.toSet)
-    assertEquals(ModelProviderHosts.keySet, ModelProviders.toSet)
 
-  test("--print-policy is the format the launcher mints the leaf from"):
-    val lines = policyLines(policyOf())
-    assertEquals(lines(0), "egress profile: deny-unless-allowed")
-    assert(lines(1).startsWith(s"restricted hosts (${CuratedRestrictedHosts.size}): "), lines(1))
-    // The restricted line is hosts only — the leaf's names, verbatim; each allowance in force
-    // has a line of its own, hosts sorted, allowances sorted.
-    assert(lines(1).contains(" github.com "), lines(1))
-    assert(!lines(1).contains("allow="), lines(1))
-    val gitHosts = CuratedRestrictedHosts.collect { case (host, tags) if tags("git-fetch") => host }.toVector.sorted
-    assertEquals(lines(2), s"restricted allow=git-fetch (${gitHosts.size}):" + gitHosts.map(" " + _).mkString)
-    assertEquals(lines(3), "restricted allow=github-login-device (1): github.com")
-    // No allow=npm-audit line: the baseline ships that allowance disabled, so it is not in force.
-    assert(lines(4).startsWith(s"unrestricted hosts (${BaselineUnrestricted.size}): "), lines(4))
-    assertEquals(lines(5), "denied rules (0):")
+  test("deny-all resolves empty, and empty is a valid policy, not a broken one"):
+    val resolved = policyOf(profile = "deny-all", rule = "deny https://example.com/")
+    assertEquals(resolved.hosts, Map.empty[String, Treatment])
+    intercept[PolicyViolation](authorize("api.anthropic.com", 443, resolved))
+    assertEquals(resolved.ambientDenials, Vector.empty)
 
-  test("an empty policy prints zero counts, parseable like any other"):
-    val lines = policyLines(policyOf(profile = "deny-unless-model"))
-    assertEquals(lines(1), "restricted hosts (0):")
-    assertEquals(lines(2), "unrestricted hosts (0):")
-
-  test("allow-unless-denied prints its default and invents no host count"):
-    val lines = policyLines(policyOf(profile = "allow-unless-denied", denied = "host x.example"))
-    assertEquals(lines(0), "egress profile: allow-unless-denied; default: public HTTPS unrestricted")
-    assert(!lines.exists(_.startsWith("unrestricted hosts")), lines.toString)
-    assert(lines.contains("denied rules (1): x.example"), lines.toString)
-
-  test("provenance names each entry's source, and an overriding removal or denial is shown"):
-    val lines = provenanceLines(
-      policyOf(allowed = "+host docs.example\n-host pypi.org", denied = "host gitlab.com"),
-    )
-    assert(lines.contains("  docs.example: restricted; allowed +host"), lines.toString)
-    assert(lines.contains("  api.anthropic.com: unrestricted; model-provider anthropic"), lines.toString)
-    assert(lines.contains("  crates.io: restricted; curated baseline"), lines.toString)
-    assert(lines.contains("  gitlab.com: denied by gitlab.com; curated baseline"), lines.toString)
-    assert(lines.contains("  pypi.org: removed by allowed"), lines.toString)
-
-  test("provenance is profile-scoped: a rule the profile never consults is not reported"):
-    // Under deny-unless-model the allowed delta changes nothing, so an effective provider
-    // endpoint is the group's, never "allowed", and a removal of it is not reported as done.
-    val model = provenanceLines(
-      policyOf(
-        profile = "deny-unless-model", provider = "openai",
-        allowed = "-host api.openai.com\n+host docs.example",
+  test("deny-unless-model admits the selected group and consults the file's deny lines alone"):
+    val resolved = policyOf(profile = "deny-unless-model", provider = "anthropic")
+    assertEquals(
+      resolved.hosts,
+      Map(
+        "api.anthropic.com" -> Treatment.Tunnel,
+        "claude.ai" -> Treatment.Tunnel,
+        "platform.claude.com" -> Treatment.Tunnel,
       ),
     )
-    assert(model.contains("  api.openai.com: unrestricted; model-provider openai"), model.toString)
-    assert(!model.exists(_.contains("allowed")), model.toString)
-    // Under allow-unless-denied only restricted additions reach the narrowing set: an
-    // unrestricted addition and a removal change nothing and are not reported as sources.
-    val ambient = provenanceLines(
+    assertEquals(authorize("api.anthropic.com", 443, resolved), "api.anthropic.com")
+    intercept[PolicyViolation](authorize("github.com", 443, resolved))
+    // Allow lines, another group and deny defaults change nothing.
+    assertEquals(
+      policyOf(
+        profile = "deny-unless-model", provider = "anthropic",
+        rule = "deny defaults\nallow https://docs.example/ read\nallow model-provider openai",
+      ).policy,
+      resolved.policy,
+    )
+    // A deny applies, and an endpoint it takes is warned, never a failed start: the profile stays
+    // the user's authority decision.
+    val denied = policyOf(profile = "deny-unless-model", provider = "openai", rule = "deny https://chatgpt.com/")
+    assert(!denied.hosts.contains("chatgpt.com"))
+    assert(denied.hosts.contains("api.openai.com"))
+    assert(denied.warnings.exists(_.contains("chatgpt.com")), denied.warnings.toString)
+    assertEquals(
+      policyOf(profile = "deny-unless-model", provider = "github", rule = "deny model-provider github").hosts,
+      Map.empty,
+    )
+    // No provider selected: valid and empty.
+    val none = policyOf(profile = "deny-unless-model")
+    assertEquals(none.hosts, Map.empty[String, Treatment])
+    assertEquals(policyLines(none), Vector("egress profile: deny-unless-model; model provider: none"))
+
+  test("deny-unless-model for copilot admits the precise group: two login POSTs, one token read, four tunnels"):
+    val resolved = policyOf(profile = "deny-unless-model", provider = "github")
+    assertEquals(
+      resolved.inspectedScopes,
+      Map(
+        "github.com" -> Map("/login/device/code" -> Set("POST"), "/login/oauth/access_token" -> Set("POST")),
+        "api.github.com" -> Map("/copilot_internal/v2/token" -> Set("read")),
+      ),
+    )
+    assertEquals(
+      resolved.tunnelHosts,
+      Set(
+        "api.githubcopilot.com", "api.individual.githubcopilot.com",
+        "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com",
+      ),
+    )
+    // The forge is readable nowhere and clonable nowhere: the group grants no read of it.
+    val scopes = resolved.inspectedScopes("github.com")
+    def request(request: String): Unit = authorizeInspectedRequest("github.com", head(request), scopes)
+    request("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
+    request("POST /login/oauth/access_token HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n")
+    assertEquals(
+      intercept[PolicyViolation](request("GET /octocat/Hello-World HTTP/1.1\r\nHost: github.com\r\n\r\n")).getMessage,
+      "path outside allowance",
+    )
+    assertEquals(
+      intercept[PolicyViolation](request("GET /login/device/code HTTP/1.1\r\nHost: github.com\r\n\r\n")).getMessage,
+      "read not granted",
+    )
+    intercept[PolicyViolation](
+      request(
+        "POST /octocat/Hello-World.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
+      ),
+    )
+    authorizeInspectedRequest(
+      "api.github.com",
+      head("GET /copilot_internal/v2/token HTTP/1.1\r\nHost: api.github.com\r\n\r\n"),
+      resolved.inspectedScopes("api.github.com"),
+    )
+    intercept[PolicyViolation](
+      authorizeInspectedRequest(
+        "api.github.com", head(
+          "GET /user HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+        ), resolved.inspectedScopes("api.github.com"),
+      ),
+    )
+
+  test("allow-unless-denied admits any public host, keeps the defaults' inspected hosts narrowed; a denial wins"):
+    val resolved = policyOf(profile = "allow-unless-denied", rule = "deny https://telemetry.example.com/")
+    assert(resolved.ambient)
+    assertEquals(authorize("anything.example.org", 443, resolved), "anything.example.org")
+    // The narrowing set is every inspected default, the groups' scopes included: a catalog host stays
+    // inspected rather than widening to the default, and copilot still signs in.
+    assertEquals(resolved.inspectedScopes, policyOf().inspectedScopes)
+    // No finite tunnel set: the tunnels are the ambient default.
+    assertEquals(resolved.tunnelHosts, Set.empty[String])
+    assertEquals(authorize("api.anthropic.com", 443, resolved), "api.anthropic.com")
+    assertEquals(resolved.ambientDenials, Vector(HostPattern.Exact("telemetry.example.com")))
+    assertEquals(
+      intercept[PolicyViolation](authorize("telemetry.example.com", 443, resolved)).getMessage,
+      "host denied (rule: deny https://telemetry.example.com/)",
+    )
+    // The port and IP-literal rules hold for ambient hosts too.
+    intercept[PolicyViolation](authorize("anything.example.org", 8443, resolved))
+    intercept[PolicyViolation](authorize("8.8.8.8", 443, resolved))
+    // A tunnel line and deny defaults are not consulted: nothing widens or narrows by them.
+    assertEquals(
       policyOf(
         profile = "allow-unless-denied",
-        allowed =
-          "-host github.com\n+host opaque.example unrestricted\n+host mirror.example",
-      ),
+        rule = "deny defaults\nallow https://api.example/ tunnel\nallow model-provider anthropic",
+      ).policy,
+      policyOf(profile = "allow-unless-denied").policy,
     )
-    assert(ambient.contains("  mirror.example: restricted; allowed +host"), ambient.toString)
-    assert(
-      ambient.contains(
-        "  github.com: restricted allow=git-fetch,github-login-device; curated baseline, model-provider github",
-      ),
-      ambient.toString,
+    // An inspected line extends the narrowing set.
+    assertEquals(
+      policyOf(
+        profile = "allow-unless-denied",
+        rule = "allow https://mirror.example/ read git-fetch",
+      ).inspectedScopes("mirror.example"),
+      Map("/" -> Set("read", "git-fetch")),
     )
-    assert(!ambient.exists(_.contains("removed by allowed")), ambient.toString)
-    assert(!ambient.exists(_.contains("opaque.example")), ambient.toString)
 
-  test("provenance reports a rule only when it actually changed the resolved policy"):
-    // A removal under -** removes what -** already cleared: not reported.
-    val defaults = policyOf(allowed = "-**\n-host pypi.org\n+host docs.example")
-    assertEquals(defaults.removedSpellings, Vector("-** (baseline cleared)"))
-    // Of two overlapping removals, the second finds nothing left to remove: not reported.
-    val overlapping = policyOf(allowed = "-host pypi.org\n-host **.pypi.org")
-    assertEquals(overlapping.removedSpellings, Vector("pypi.org"))
-    // Re-adding a baseline host with its baseline treatment changes nothing, so the standing
-    // source holds — the provider group's and the curated catalog's alike.
-    val restated = provenanceLines(
-      policyOf(allowed = "+host api.openai.com unrestricted\n+host crates.io"),
+  test("the lines apply in the order written: for each grant the last applicable line decides"):
+    val narrowed = policyOf(rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch")
+    assertEquals(
+      narrowed.inspectedScopes("codeberg.org"),
+      Map("/" -> Set("read"), "/my-org/" -> Set("read", "git-fetch")),
+    )
+    assertEquals(narrowed.warnings, Vector.empty)
+    val reversed = policyOf(rule = "allow https://codeberg.org/my-org/ git-fetch\ndeny https://codeberg.org/ git-fetch")
+    assertEquals(reversed.inspectedScopes("codeberg.org"), Map("/" -> Set("read"), "/my-org/" -> Set("read")))
+    // A deny is host-wide, so the exception beneath it is the narrower scope, and a spelling the
+    // proxy cannot place in it lands where the deny holds.
+    val owner = policyOf(rule = "deny https://github.com/\nallow https://github.com/my-org/ read")
+    assertEquals(owner.inspectedScopes("github.com"), Map("/my-org/" -> Set("read")))
+    def get(path: String): Unit =
+      authorizeInspectedRequest(
+        "github.com",
+        head(s"GET $path HTTP/1.1\r\nHost: github.com\r\n\r\n"),
+        owner.inspectedScopes("github.com"),
+      )
+    get("/my-org/repo")
+    Vector(
+      "/other/repo" -> "path outside allowance",
+      "/My-Org/repo" -> "path outside allowance",
+      "/my-org/%2e%2e/x" -> "percent-encoding in the path",
+      "/my-org/repo.git/info/refs?service=git-upload-pack" -> "git fetch ref discovery",
+    ).foreach: (path, why) =>
+      assertEquals(intercept[PolicyViolation](get(path)).getMessage, why, path)
+    // The same two lines the other way round deny the owner too, the deny being the last word.
+    val denied = policyOf(rule = "allow https://github.com/my-org/ read\ndeny https://github.com/")
+    assert(!denied.hosts.contains("github.com"))
+    // Under the ambient profile the pair holds as it does elsewhere.
+    Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      val resolved = policyOf(
+        profile = profile,
+        rule = "deny https://github.com/\nallow https://github.com/my-org/ read",
+      )
+      assertEquals(resolved.inspectedScopes("github.com"), Map("/my-org/" -> Set("read")), profile)
+      assertEquals(resolved.ambientDenials, Vector.empty, profile)
+      assertEquals(authorize("github.com", 443, resolved), "github.com")
+
+  test("deny takes by host, by subtree, by grant and by group, each what it names and no more"):
+    val host = policyOf(rule = "deny https://gitlab.com/")
+    assert(!host.hosts.contains("gitlab.com"))
+    assertEquals(
+      intercept[PolicyViolation](authorize("gitlab.com", 443, host)).getMessage,
+      "host denied (rule: deny https://gitlab.com/)",
+    )
+    // A subtree: a label boundary, not a suffix match, crossing treatments.
+    val subtree = policyOf(rule = "deny https://**.github.com/")
+    Vector("github.com", "api.github.com", "codeload.github.com").foreach(h => assert(!subtree.hosts.contains(h), h))
+    assert(subtree.hosts.contains("raw.githubusercontent.com"))
+    val claude = policyOf(rule = "deny https://**.claude.com/")
+    assert(!claude.hosts.contains("code.claude.com"))
+    assert(!claude.hosts.contains("platform.claude.com"))
+    // A grant: read taken leaves a forge clonable and not browsable; git-fetch taken leaves it readable.
+    val unreadable = policyOf(rule = "deny https://github.com/ read")
+    assertEquals(unreadable.inspectedScopes("github.com")("/"), Set("git-fetch"))
+    assertEquals(unreadable.inspectedScopes("github.com")("/login/device/code"), Set("git-fetch", "POST"))
+    val unclonable = policyOf(rule = "deny https://github.com/ git-fetch")
+    assertEquals(unclonable.inspectedScopes("github.com")("/"), Set("read"))
+    assertEquals(
+      policyOf(rule = "deny https://**.github.com/ git-fetch").inspectedScopes("github.com")("/"),
+      Set("read"),
+    )
+    assertEquals(
+      policyOf(rule = "deny https://github.com/ method=POST").inspectedScopes("github.com")("/login/device/code"),
+      Set("read", "git-fetch"),
+    )
+    // The tunnel word takes the treatment.
+    assert(!policyOf(rule = "deny https://api.anthropic.com/ tunnel").hosts.contains("api.anthropic.com"))
+    // A group: its contributions and no other line's — the catalog's read on api.github.com outlives
+    // the group's token line, and the forge stays readable and clonable.
+    val noGithub = policyOf(rule = "deny model-provider github")
+    // The group's paths stay as boundaries, holding the catalog's grants and nothing of the group's.
+    assertEquals(
+      noGithub.inspectedScopes("github.com"),
+      Map(
+        "/" -> Set("read", "git-fetch"),
+        "/login/device/code" -> Set("read", "git-fetch"),
+        "/login/oauth/access_token" -> Set("read", "git-fetch"),
+      ),
+    )
+    assertEquals(
+      noGithub.inspectedScopes("api.github.com"),
+      Map("/" -> Set("read"), "/copilot_internal/v2/token" -> Set("read")),
+    )
+    assert(!noGithub.hosts.contains("api.githubcopilot.com"))
+    assertEquals(authorize("github.com", 443, noGithub), "github.com")
+    authorizeInspectedRequest(
+      "github.com", head(
+        "GET /octocat/Hello-World HTTP/1.1\r\nHost: github.com\r\n\r\n",
+      ), noGithub.inspectedScopes("github.com"),
+    )
+    intercept[PolicyViolation](
+      authorizeInspectedRequest(
+        "github.com",
+        head("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
+        noGithub.inspectedScopes("github.com"),
+      ),
+    )
+    val noGoogle = policyOf(rule = "deny model-provider google")
+    ModelProviderLines("google").map(_.rule).foreach:
+      case Rule.Allow(h, _, _) => assert(!noGoogle.hosts.contains(h), h)
+      case other               => fail(other.toString)
+    assert(noGoogle.hosts.contains("api.anthropic.com"))
+
+  test("a group is lines: allowed after a deny it contributes again, denied after an allow it is removed"):
+    assertEquals(policyOf(rule = "deny model-provider github\nallow model-provider github").policy, policyOf().policy)
+    assertEquals(
+      policyOf(rule = "allow model-provider github\ndeny model-provider github").policy,
+      policyOf(rule = "deny model-provider github").policy,
+    )
+    // A URL deny between them: the re-added group is the last word for its own lines.
+    val between = policyOf(rule = "deny model-provider github\ndeny https://github.com/\nallow model-provider github")
+    assertEquals(
+      between.inspectedScopes("github.com"),
+      Map("/login/device/code" -> Set("POST"), "/login/oauth/access_token" -> Set("POST")),
+    )
+    // After deny defaults the group is the whole policy: the lockdown.
+    val lockdown = policyOf(rule = "deny defaults\nallow model-provider anthropic")
+    assertEquals(lockdown.hosts, policyOf(profile = "deny-unless-model", provider = "anthropic").hosts)
+    assertEquals(lockdown.inspectedScopes, Map.empty)
+    assertEquals(lockdown.warnings, Vector.empty)
+    intercept[PolicyViolation](authorize("github.com", 443, lockdown))
+    // Under the ambient profile the lockdown narrows nothing: neither line is consulted.
+    assertEquals(
+      policyOf(profile = "allow-unless-denied", rule = "deny defaults\nallow model-provider anthropic").policy,
+      policyOf(profile = "allow-unless-denied").policy,
+    )
+    // Under every profile a group's lines meet the one-treatment check like any line.
+    val ex = intercept[IllegalArgumentException](
+      policyOf(rule = "deny defaults\nallow model-provider anthropic\nallow https://api.anthropic.com/ read"),
+    )
+    assert(ex.getMessage.contains("inspects api.anthropic.com while it is a tunnel"), ex.getMessage)
+
+  test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
+    val narrowed = policyOf(rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/ read")
+    assertEquals(narrowed.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")))
+    assertEquals(narrowed.warnings, Vector.empty)
+    val beneath = policyOf(
+      rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/v1/models read",
+    )
+    assertEquals(beneath.inspectedScopes("api.anthropic.com"), Map("/v1/models" -> Set("read")))
+    // Widened, with the whole policy stated after deny defaults; and a new host as a tunnel.
+    assertEquals(
+      policyOf(rule = "deny defaults\nallow https://github.com/ tunnel").hosts,
+      Map("github.com" -> Treatment.Tunnel),
+    )
+    assertEquals(policyOf(rule = "allow https://api.example/ tunnel").hosts("api.example"), Treatment.Tunnel)
+    // Under the ambient profile the narrowing holds with the same two lines; the tunnel taken alone
+    // denies the host rather than leaving it ambient.
+    val ambient = policyOf(
+      profile = "allow-unless-denied",
+      rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/ read",
+    )
+    assertEquals(ambient.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")))
+    assertEquals(ambient.ambientDenials, Vector.empty)
+    val taken = policyOf(profile = "allow-unless-denied", rule = "deny https://api.anthropic.com/ tunnel")
+    assertEquals(taken.ambientDenials, Vector(HostPattern.Exact("api.anthropic.com")))
+    intercept[PolicyViolation](authorize("api.anthropic.com", 443, taken))
+    // deny defaults with an inspected line on a defaults tunnel is valid under every profile: the
+    // ambient profile keeps the defaults' tunnels standing, and there the tunnel gives way.
+    Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      val resolved = policyOf(profile = profile, rule = "deny defaults\nallow https://api.anthropic.com/ read")
+      assertEquals(resolved.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")), profile)
+      assertEquals(resolved.warnings, Vector.empty, profile)
+
+  test("a host left with no grant is denied whole: off the map, off the leaf, denied rather than ambient"):
+    val emptied = policyOf(rule = "deny https://docs.python.org/ read")
+    val whole = policyOf(rule = "deny https://docs.python.org/")
+    assert(!emptied.hosts.contains("docs.python.org"))
+    assert(!emptied.inspected.contains("docs.python.org"))
+    assertEquals(emptied.policy, whole.policy)
+    assertEquals(policyLines(emptied), policyLines(whole))
+    assertEquals(
+      intercept[PolicyViolation](authorize("docs.python.org", 443, emptied)).getMessage,
+      "host denied (rule: deny https://docs.python.org/ read)",
+    )
+    val ambientEmptied = policyOf(profile = "allow-unless-denied", rule = "deny https://docs.python.org/ read")
+    val ambientWhole = policyOf(profile = "allow-unless-denied", rule = "deny https://docs.python.org/")
+    assertEquals(ambientEmptied.ambientDenials, Vector(HostPattern.Exact("docs.python.org")))
+    assertEquals(ambientEmptied.policy, ambientWhole.policy)
+    assertEquals(policyLines(ambientEmptied), policyLines(ambientWhole))
+    intercept[PolicyViolation](authorize("docs.python.org", 443, ambientEmptied))
+    // The two forms name their own lines.
+    assert(provenanceLines(ambientEmptied).contains("  pattern: rule: deny https://docs.python.org/ read"))
+    assert(provenanceLines(ambientWhole).contains("  pattern: rule: deny https://docs.python.org/"))
+    // Re-granted beneath a narrower path: back on the map, narrowed, under both profiles.
+    Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      val regranted = policyOf(
+        profile = profile,
+        rule = "deny https://docs.python.org/ read\nallow https://docs.python.org/3/ read",
+      )
+      assertEquals(regranted.inspectedScopes("docs.python.org"), Map("/3/" -> Set("read")), profile)
+      assertEquals(regranted.ambientDenials, Vector.empty, profile)
+
+  test("a scope left with no grant while its host keeps some is dropped; one adding nothing stays as a boundary"):
+    // The login scopes emptied with the root are gone; the file's scope alone remains.
+    val dropped = policyOf(rule = "deny https://github.com/\nallow https://github.com/a/ read")
+    assertEquals(dropped.inspectedScopes("github.com"), Map("/a/" -> Set("read")))
+    // A scope a deny has left with only its enclosing scope's grants stays, and is where invariant 5's
+    // refusal begins: `/api/%2e%2e/x` under it is refused where `/%2e%2e/x` under the root reads.
+    val boundary = policyOf(
+      rule = "allow https://x.example/ read\nallow https://x.example/api/ method=POST\n" +
+        "deny https://x.example/ method=POST",
+    )
+    assertEquals(boundary.inspectedScopes("x.example"), Map("/" -> Set("read"), "/api/" -> Set("read")))
+    def get(path: String): Unit =
+      authorizeInspectedRequest(
+        "x.example",
+        head(s"GET $path HTTP/1.1\r\nHost: x.example\r\n\r\n"),
+        boundary.inspectedScopes("x.example"),
+      )
+    get("/%2e%2e/x")
+    assertEquals(intercept[PolicyViolation](get("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
+
+  test("deny defaults is the whole policy under deny-unless-allowed and is not consulted elsewhere"):
+    val own = policyOf(rule = "deny defaults\nallow https://docs.python.org/ read")
+    assertEquals(own.hosts, Map("docs.python.org" -> Treatment.Inspected(Map("/" -> Set("read")))))
+    assert(own.clearsDefaults)
+    assertEquals(own.warnings, Vector.empty)
+    assertEquals(
+      policyOf(profile = "allow-unless-denied", rule = "deny defaults").policy,
+      policyOf(profile = "allow-unless-denied").policy,
+    )
+    assertEquals(
+      policyOf(profile = "deny-unless-model", provider = "anthropic", rule = "deny defaults").policy,
+      policyOf(profile = "deny-unless-model", provider = "anthropic").policy,
+    )
+
+  test("two files resolving to one policy yield one ResolvedPolicy and the same lines; two profiles never do"):
+    def same(profile: String, a: String, b: String, provider: String = ""): Unit =
+      val (x, y) = (policyOf(profile, provider, a), policyOf(profile, provider, b))
+      assertEquals(x.policy, y.policy, s"$profile: '$a' against '$b'")
+      assertEquals(policyLines(x), policyLines(y))
+    def differ(profile: String, a: String, b: String): Unit =
+      assertNotEquals(policyOf(profile, "", a).policy, policyOf(profile, "", b).policy, s"$profile: '$a' against '$b'")
+    // A group denial against its exact lines under deny-unless-model.
+    same(
+      "deny-unless-model", "deny model-provider github",
+      "deny https://api.githubcopilot.com/\ndeny https://api.individual.githubcopilot.com/\n" +
+        "deny https://api.business.githubcopilot.com/\ndeny https://api.enterprise.githubcopilot.com/\n" +
+        "deny https://github.com/\ndeny https://api.github.com/",
+      provider = "github",
+    )
+    Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      // A grant subtree against its exact lines.
+      same(
+        profile, "deny https://**.github.com/ read",
+        "deny https://github.com/ read\ndeny https://api.github.com/ read\ndeny https://codeload.github.com/ read\n" +
+          "deny https://docs.github.com/ read",
+      )
+      // A grant list emptying a host against a whole-host line.
+      same(profile, "deny https://docs.python.org/ read", "deny https://docs.python.org/")
+    // A whole-host subtree against its tunnel form over ambient hosts, and apart from it over an inspected one.
+    same("allow-unless-denied", "deny https://**.example.com/", "deny https://**.example.com/ tunnel")
+    differ("allow-unless-denied", "deny https://**.python.org/", "deny https://**.python.org/ tunnel")
+    // A deny list against its reordering where no grant depends on the order.
+    same(
+      "allow-unless-denied",
+      "deny https://a.example/\ndeny https://**.b.example/\ndeny https://docs.python.org/ read",
+      "deny https://docs.python.org/ read\ndeny https://**.b.example/\ndeny https://a.example/",
+    )
+    // A pattern a subtree covers is dropped from the normal form.
+    same(
+      "allow-unless-denied",
+      "deny https://**.example.com/\ndeny https://api.example.com/",
+      "deny https://**.example.com/",
+    )
+    // The provider selected and unselected: one policy under every profile but deny-unless-model.
+    Vector("deny-all", "deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      assertEquals(policyOf(profile, "google").policy, policyOf(profile).policy, profile)
+    assertNotEquals(policyOf("deny-unless-model", "google").policy, policyOf("deny-unless-model", "anthropic").policy)
+    // One file under three profiles: three line sets, so three digests and three authority texts.
+    val texts = Vector("deny-unless-allowed", "allow-unless-denied", "deny-unless-model")
+      .map(profile => policyLines(policyOf(profile, "anthropic", "deny https://github.com/ git-fetch")).mkString("\n"))
+    assertEquals(texts.distinct.size, 3)
+    assertEquals(texts.map(sha256Hex).distinct.size, 3)
+
+  test("the widening line names the project lines granting beyond the defaults for their host, and only those"):
+    val resolved = policyOf(
+      rule =
+        "allow https://html.spec.whatwg.org/ read      # a host the defaults lack: a new recipient\n" +
+          "allow https://storage.googleapis.com/b/ read   # narrowed, and still a new recipient\n" +
+          "allow https://pypi.org/ git-fetch              # a grant the defaults lack\n" +
+          "allow https://github.com/ read git-fetch       # the defaults' own line, restated\n" +
+          "allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST\n" +
+          "allow https://api.anthropic.com/ tunnel        # the defaults' own tunnel, restated\n" +
+          "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
+          "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read  # a tunnel narrowed to inspected reads\n" +
+          "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
+    )
+    val widening = Vector(
+      "allow https://html.spec.whatwg.org/ read",
+      "allow https://storage.googleapis.com/b/ read",
+      "allow https://pypi.org/ git-fetch",
+      "allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST",
+    )
+    assertEquals(resolved.provenance.widening.map(_.text), widening)
+    assertEquals(wideningLine(resolved), Some(s"widening lines (4): ${widening.mkString("; ")}"))
+    // Printed after the policy lines and outside their digest: metadata about the file, not the policy.
+    assert(!policyLines(resolved).exists(_.startsWith("widening")), policyLines(resolved).toString)
+    assertEquals(metadataLines(resolved)(1), wideningLine(resolved).get)
+    // `deny defaults` widens, and under it a defaults host may go tunnel: both listed.
+    assertEquals(
+      policyOf(
+        rule = "deny defaults\nallow https://github.com/ tunnel\nallow https://pypi.org/ read",
+      ).provenance.widening.map(_.text),
+      Vector("deny defaults", "allow https://github.com/ tunnel"),
+    )
+    // Nothing widens under a profile the file cannot widen; a file that only takes prints no line.
+    Vector("allow-unless-denied", "deny-all", "deny-unless-model").foreach: profile =>
+      assertEquals(
+        policyOf(profile = profile, rule = "allow https://new.example/ read").provenance.widening,
+        Vector.empty,
+        profile,
+      )
+    val narrowing = policyOf(rule = "deny https://github.com/")
+    assertEquals(wideningLine(narrowing), None)
+    assertEquals(metadataLines(narrowing).size, 1)
+
+  test("--print-policy is the rule grammar, one line per resolved scope, sorted: what the leaf is minted from"):
+    val resolved = policyOf()
+    val lines = policyLines(resolved)
+    assertEquals(lines(0), "egress profile: deny-unless-allowed")
+    val scopes = DefaultHosts.values.map {
+      case Treatment.Inspected(scopes) => scopes.size
+      case Treatment.Tunnel       => 1
+    }.sum
+    assertEquals(lines.size, 1 + scopes)
+    assert(lines.contains("allow https://github.com/ read git-fetch"), lines.toString)
+    assert(lines.contains("allow https://github.com/login/device/code read git-fetch method=POST"), lines.toString)
+    assert(lines.contains("allow https://api.github.com/copilot_internal/v2/token read"), lines.toString)
+    assert(lines.contains("allow https://api.anthropic.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://pypi.org/ read"), lines.toString)
+    val hosts = lines.drop(1).map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
+    assertEquals(hosts, hosts.sorted)
+    assert(!lines.exists(_.startsWith("deny")), lines.toString)
+    assertEquals(
+      metadataLines(resolved),
+      Vector(
+        s"policy summary: ${resolved.inspected.size} inspected hosts; " +
+          s"${resolved.tunnelHosts.size} opaque hosts; 0 ambient denials; 0 widening lines",
+      ),
+    )
+    assertEquals(
+      metadataLines(policyOf(profile = "deny-all")),
+      Vector("policy summary: 0 inspected hosts; 0 opaque hosts; 0 ambient denials; 0 widening lines"),
+    )
+    // Under allow-unless-denied the deny lines come before the allow lines, so a host surviving
+    // beneath one reads as the exception the grammar's order makes it; no tunnel line is printed,
+    // the profile line carrying the public-HTTPS default instead.
+    val ambient = policyOf(
+      profile = "allow-unless-denied",
+      rule = "deny https://**.example.com/\nallow https://docs.example.com/ read\ndeny https://x.example/",
+    )
+    val ambientLines = policyLines(ambient)
+    assertEquals(ambientLines(0), "egress profile: allow-unless-denied; default: public HTTPS tunnel")
+    assertEquals(ambientLines(1), "deny https://**.example.com/")
+    assertEquals(ambientLines(2), "deny https://x.example/")
+    assert(ambientLines.contains("allow https://docs.example.com/ read"), ambientLines.toString)
+    assert(!ambientLines.exists(line => line.startsWith("allow") && line.endsWith(" tunnel")), ambientLines.toString)
+    assertEquals(
+      metadataLines(ambient)(0),
+      s"policy summary: ${ambient.inspected.size} inspected hosts; 0 opaque hosts; 2 ambient denials; 0 widening lines",
+    )
+    assertEquals(authorize("docs.example.com", 443, ambient), "docs.example.com")
+    intercept[PolicyViolation](authorize("api.example.com", 443, ambient))
+
+  test("provenance names each scope's boundary and each grant's contributions, a pattern's lines, and a denied host's"):
+    val lines = provenanceLines(
+      policyOf(
+        rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch\n" +
+          "deny https://gitlab.com/",
+      ),
+    )
+    assertEquals(lines(0), "provenance:")
+    val narrowed = lines.indexOf("allow https://codeberg.org/my-org/ read git-fetch")
+    assertEquals(
+      lines.slice(narrowed, narrowed + 4),
+      Vector(
+        "allow https://codeberg.org/my-org/ read git-fetch",
+        "  boundary: rule: allow https://codeberg.org/my-org/ git-fetch",
+        "  read: default/host: allow https://codeberg.org/ read git-fetch",
+        "  git-fetch: rule: allow https://codeberg.org/my-org/ git-fetch",
+      ),
+    )
+    val root = lines.indexOf("allow https://codeberg.org/ read")
+    assertEquals(
+      lines.slice(root, root + 3),
+      Vector(
+        "allow https://codeberg.org/ read",
+        "  boundary: default/host: allow https://codeberg.org/ read git-fetch",
+        "  read: default/host: allow https://codeberg.org/ read git-fetch",
+      ),
+    )
+    // A grant two lines supply names both: the group's token read beside the catalog's root read.
+    val token = lines.indexOf("allow https://api.github.com/copilot_internal/v2/token read")
+    assertEquals(
+      lines(token + 2),
+      "  read: default/host: allow https://api.github.com/ read; " +
+        "default/model-provider/github: allow https://api.github.com/copilot_internal/v2/token read",
     )
     assert(
-      restated.contains("  api.openai.com: unrestricted; model-provider openai"),
-      restated.toString,
+      lines.contains("  tunnel: default/model-provider/anthropic: allow https://api.anthropic.com/ tunnel"),
+      lines.toString,
     )
-    assert(restated.contains("  crates.io: restricted; curated baseline"), restated.toString)
-    // A provider group the allowed delta restored after -** is the delta's doing; naming
-    // the built-in group would hide that the project's own file re-opened it.
-    val restored = provenanceLines(policyOf(allowed = "-**\n+model-provider openai"))
+    assert(lines.contains("denied hosts:"), lines.toString)
+    assert(lines.contains("  gitlab.com: denied by rule: deny https://gitlab.com/"), lines.toString)
+    // A group the file expanded names both lines.
     assert(
-      restored.contains("  api.openai.com: unrestricted; allowed +model-provider openai"),
-      restored.toString,
+      provenanceLines(policyOf(rule = "deny defaults\nallow model-provider anthropic")).contains(
+        "  tunnel: rule: allow model-provider anthropic " +
+          "(default/model-provider/anthropic: allow https://api.anthropic.com/ tunnel)",
+      ),
     )
+    // Under the ambient profile a pattern's lines: the group behind an expanded pattern, the absorbed
+    // exact line behind its subtree, the two forms behind one host — and the refusal names the same.
+    val ambient = policyOf(
+      profile = "allow-unless-denied",
+      rule = "deny model-provider google\ndeny https://**.example.com/\ndeny https://api.example.com/\n" +
+        "deny https://x.example/\ndeny https://x.example/ tunnel",
+    )
+    val ambientLines = provenanceLines(ambient)
+    assert(ambientLines.contains("deny https://accounts.google.com/"), ambientLines.toString)
+    assert(ambientLines.contains("  pattern: rule: deny model-provider google"), ambientLines.toString)
+    // The exact line the normal form folded into its subtree is named under the subtree, as the
+    // refusal names it.
+    assert(
+      ambientLines.contains("  pattern: rule: deny https://**.example.com/; rule: deny https://api.example.com/"),
+      ambientLines.toString,
+    )
+    assert(!ambientLines.contains("deny https://api.example.com/"), ambientLines.toString)
+    assert(
+      ambientLines.contains("  pattern: rule: deny https://x.example/; rule: deny https://x.example/ tunnel"),
+      ambientLines.toString,
+    )
+    assertEquals(
+      intercept[PolicyViolation](authorize("api.example.com", 443, ambient)).getMessage,
+      "host denied (rule: deny https://**.example.com/; rule: deny https://api.example.com/)",
+    )
+    assertEquals(
+      intercept[PolicyViolation](authorize("accounts.google.com", 443, ambient)).getMessage,
+      "host denied (rule: deny model-provider google)",
+    )
+
+  test("--check-host spells a host's treatment as its resolved lines, one per scope"):
+    assertEquals(
+      ruleLines("github.com", policyOf().hosts("github.com")),
+      Vector(
+        "allow https://github.com/ read git-fetch",
+        "allow https://github.com/login/device/code read git-fetch method=POST",
+        "allow https://github.com/login/oauth/access_token read git-fetch method=POST",
+      ),
+    )
+    assertEquals(
+      ruleLines("api.anthropic.com", Treatment.Tunnel),
+      Vector("allow https://api.anthropic.com/ tunnel"),
+    )
+    assertEquals(Grant.spelled(Set("DELETE", "PUT", "read", "POST")), "read method=POST,PUT,DELETE")
+
+  test("a comment starts at line start or after whitespace; lines are enforced in the normalized form they resolve to"):
+    val commented = policyOf(
+      rule = "# a comment\nallow https://Docs.Example./ read   # trailing\n  # indented\n" +
+        "allow https://b.example/ read #x",
+    )
+    assert(commented.inspectedScopes.contains("docs.example") && commented.inspectedScopes.contains("b.example"))
+    assertEquals(authorize("DOCS.EXAMPLE.", 443, commented), "docs.example")
+    assert(!policyOf(rule = "deny https://GitLab.COM./").hosts.contains("gitlab.com"))
+
 
   test("IPv4 public-destination policy"):
     assert(isPublicDestination(InetAddress.getByName("8.8.8.8")))
@@ -1224,6 +1357,79 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(received.contains("HTTP/1.1 200 OK\r\n"), received)
     assert(received.endsWith("\r\n\r\ndata"), received)
 
+  /** An origin that records the request head it received and answers an empty 200: what reaches
+    * the origin is the test's subject, so the head is captured before the reply. */
+  private def recordingOrigin(socket: java.net.Socket): (Thread, java.util.concurrent.atomic.AtomicReference[String]) =
+    val received = java.util.concurrent.atomic.AtomicReference("")
+    val thread = Thread.startVirtualThread: () =>
+      try
+        val head = readHttpHeader(socket.getInputStream, 64 * 1024)
+        received.set(String(head, StandardCharsets.ISO_8859_1))
+        socket.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+        socket.getOutputStream.close()
+      catch case _: Exception => ()
+    (thread, received)
+
+  test("what is authorized is what is forwarded: the method and request-target byte for byte, the Host by its meaning"):
+    // The pipeline, not the authorizer, is what this proves: after the decision nothing rewrites,
+    // normalizes or re-encodes the request line, and the Host reaches the origin as the client
+    // spelled it, its optional whitespace stripped — every spelling naming the one host the
+    // tunnel was opened to (normalizeHostHeader).
+    val scopes = Map("/" -> Set("read", "POST"))
+    Vector(
+      "GET /a%2Fb/%2e%2e/c HTTP/1.1\r\nHost: docs.python.org\r\n\r\n" -> "GET /a%2Fb/%2e%2e/c HTTP/1.1",
+      "GET //a//b HTTP/1.1\r\nHost: docs.python.org\r\n\r\n" -> "GET //a//b HTTP/1.1",
+      "GET /a\\b/../c?x=%20y HTTP/1.1\r\nHost: docs.python.org\r\n\r\n" -> "GET /a\\b/../c?x=%20y HTTP/1.1",
+      "POST /a/b HTTP/1.1\r\nHost: docs.python.org\r\nContent-Length: 0\r\n\r\n" -> "POST /a/b HTTP/1.1",
+    ).foreach: (request, requestLine) =>
+      val head = HttpRequestHead.parse(ascii(request))
+      authorizeInspectedRequest("docs.python.org", head, scopes)
+      val (client, clientPeer) = socketPair()
+      val (upstream, upstreamPeer) = socketPair()
+      val (origin, received) = recordingOrigin(upstreamPeer)
+      clientPeer.shutdownOutput()
+      relayInspected(client, upstream, "docs.python.org", head)
+      client.close()
+      origin.join()
+      assertEquals(received.get.linesIterator.next(), requestLine, request)
+    Vector(
+      "Host:  docs.python.org \t" -> "Host: docs.python.org",
+      "Host: docs.python.org:443" -> "Host: docs.python.org:443",
+      "Host: Docs.Python.ORG" -> "Host: Docs.Python.ORG",
+      "Host: docs.python.org." -> "Host: docs.python.org.",
+    ).foreach: (sent, forwarded) =>
+      val head = HttpRequestHead.parse(ascii(s"GET /x HTTP/1.1\r\n$sent\r\n\r\n"))
+      authorizeInspectedRequest("docs.python.org", head, scopes)
+      val (client, clientPeer) = socketPair()
+      val (upstream, upstreamPeer) = socketPair()
+      val (origin, received) = recordingOrigin(upstreamPeer)
+      clientPeer.shutdownOutput()
+      relayInspected(client, upstream, "docs.python.org", head)
+      client.close()
+      origin.join()
+      assert(received.get.linesIterator.contains(forwarded), s"$sent: ${received.get}")
+
+  test("a header value edged with a control is refused on a request and a response head; SP and HTAB are stripped"):
+    // Checked raw: Java's `trim` removes every character up to SP, so a check after it would let an
+    // edge NUL, VT or FF through as the value's whitespace.
+    Vector('\u0000', '\u000b', '\u000c').foreach: ch =>
+      intercept[BadRequest](
+        HttpRequestHead.parse(ascii(s"GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: ${ch}v\r\n\r\n")),
+      )
+      intercept[BadRequest](
+        HttpRequestHead.parse(ascii(s"GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: v$ch\r\n\r\n")),
+      )
+      intercept[IOException](HttpResponseHead.parse(ascii(s"HTTP/1.1 200 OK\r\nX-Probe: ${ch}v\r\n\r\n")))
+      intercept[IOException](HttpResponseHead.parse(ascii(s"HTTP/1.1 200 OK\r\nX-Probe: v$ch\r\n\r\n")))
+    // A bare CR or LF is refused before any header is read.
+    intercept[BadRequest](HttpRequestHead.parse(ascii("GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: v\r\r\n\r\n")))
+    intercept[IOException](HttpResponseHead.parse(ascii("HTTP/1.1 200 OK\r\nX-Probe: v\n\r\n\r\n")))
+    val request = HttpRequestHead.parse(ascii("GET /a HTTP/1.1\r\nHost: github.com\r\nX-Probe: \t v \t\r\n\r\n"))
+    assertEquals(request.values("X-Probe"), Vector("v"))
+    val response = HttpResponseHead.parse(ascii("HTTP/1.1 200 OK\r\nX-Probe: \t v \t\r\n\r\n"))
+    assertEquals(response.values("X-Probe"), Vector("v"))
+    assertEquals(stripOptionalWhitespace(" \t a\tb \t "), "a\tb")
+
   test("TLS ClientHello extracts SNI"):
     val bytes = clientHello("api.anthropic.com")
     val hello = TlsClientHello.read(
@@ -1311,32 +1517,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
         64 * 1024,
       )
 
-  test("the groups are the agent endpoints, opaque only off the catalog, tags pinned"):
-    // The provider pin is the privacy boundary: unrestricted is the hosts whose TLS must not be
-    // read — the agent endpoints — and not one host more; a group's forge hosts are pinned
-    // restricted, or deny-unless-model would admit a push. The tag pins bound each POST
-    // allowance to the hosts that genuinely serve the operation.
-    def opaque(hosts: String*) = hosts.map(_ -> Treatment.Unrestricted).toMap
-    assertEquals(
-      ModelProviderHosts,
-      Map(
-        "anthropic" -> opaque("api.anthropic.com", "claude.ai", "platform.claude.com"),
-        "openai" -> opaque("api.openai.com", "auth.openai.com", "chatgpt.com"),
-        "google" -> opaque("accounts.google.com", "oauth2.googleapis.com", "cloudcode-pa.googleapis.com"),
-        "github" -> (opaque(
-          "api.githubcopilot.com", "api.individual.githubcopilot.com",
-          "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com",
-        ) ++ Map(
-          "github.com" -> Treatment.restricted(Set("github-login-device")),
-          "api.github.com" -> Treatment.restricted(Set.empty),
-        )),
-      ),
-    )
-    assertEquals(builtinGitHosts, Set("github.com", "codeberg.org", "gitlab.com"))
-    // Disabled by default; a project re-enables it with `+host registry.npmjs.org allow=npm-audit`.
-    assertEquals(baselinePolicy.tagged("npm-audit"), Set.empty[String])
-    assertEquals(baselinePolicy.tagged("github-login-device"), Set("github.com"))
-
   test("the leaf must name exactly the inspected hosts, in either direction"):
     val required = Set("github.com", "gitlab.com")
 
@@ -1347,131 +1527,196 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(missing.exists(_.contains("does not cover gitlab.com")), missing.toString)
 
     // Over-coverage is the fail-open direction: a launcher minting a name this proxy does not inspect believes that
-    // host is restricted while it tunnels opaquely, writable.
+    // host is inspected while it tunnels opaquely, writable.
     val extra = TlsInspection.inspectedNamesError(required + "gist.github.com", required)
     assert(extra.exists(_.contains("gist.github.com")), extra.toString)
 
     val both = TlsInspection.inspectedNamesError(Set("github.com", "gist.github.com"), required)
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
-  test("a restricted host allows reading and nothing else"):
-    // SECURITY.md, "Reading without being able to write". The sharp case pinned here: a POST whose
-    // path mimics git-upload-pack must NOT ride the allow=git-fetch rule through.
-    def pull(request: String): Unit =
-      authorizeInspectedRequest("public.ecr.aws", head(request), whole())
 
-    pull("GET /v2/amazonlinux/blobs/sha256:abc HTTP/1.1\r\nHost: public.ecr.aws\r\n\r\n")
-    pull("HEAD /v2/x/object HTTP/1.1\r\nHost: public.ecr.aws\r\n\r\n")
-
-    Vector("PUT", "POST", "PATCH", "DELETE").foreach: method =>
-      intercept[PolicyViolation]:
-        pull(
-          s"$method /v2/x/object HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
-        )
-    intercept[PolicyViolation]:
-      pull(
-        "POST /v2/x/x/git-upload-pack HTTP/1.1\r\n" +
-          "Host: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
-      )
-    // The user-facing concern is not the method name but the channel: a GET carrying a body is
-    // an upload wearing a read method, and is refused on every inspected host — the fact named,
-    // never a git host blamed for one that is not.
-    val bodied = intercept[PolicyViolation]:
-      pull(
-        "GET /v2/x/object HTTP/1.1\r\n" +
-          "Host: public.ecr.aws\r\nContent-Length: 9\r\n\r\n",
-      )
-    assert(bodied.getMessage.contains("request body"), bodied.getMessage)
-
-    // The other refusal branches carry the tier in their wording too.
-    val optioned = intercept[PolicyViolation]:
-      pull(
-        "OPTIONS /v2/x HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
-      )
-    assert(optioned.getMessage.contains("restricted host"), optioned.getMessage)
-
-    // Uniform deny-side rules still apply: push ref discovery is refused here as anywhere.
-    intercept[PolicyViolation]:
-      pull(
-        "GET /x/info/refs?service=git-receive-pack HTTP/1.1\r\n" +
-          "Host: public.ecr.aws\r\n\r\n",
-      )
-
-    // A documentation site gets the same tier: reads pass, anything else does not.
-    authorizeInspectedRequest(
-      "developer.mozilla.org",
-      head("GET /en-US/docs/Web HTTP/1.1\r\nHost: developer.mozilla.org\r\n\r\n"),
-      Set.empty,
+  test("a request is decided against the resolved scope of its longest literal match, and no match is refused"):
+    def get(path: String, scopes: Map[String, Set[String]]): Unit =
+      authorizeInspectedRequest("docs.example", head(s"GET $path HTTP/1.1\r\nHost: docs.example\r\n\r\n"), scopes)
+    // The tree under /x/, and no root line.
+    get("/x/y", under("/x/", "read"))
+    get("/x/y/z?download=1", under("/x/", "read"))
+    get("/x/", under("/x/", "read"))
+    Vector(
+      "/z/y" -> "path outside allowance",
+      "/x" -> "path outside allowance", // the tree's own name is not in it
+      "/xy/z" -> "path outside allowance",
+      "/X/y" -> "path outside allowance", // wrong case fails closed, whatever the origin folds
+      "/x/../z/y" -> "a dot segment in the path",
+      "/x/%2e%2e/z/y" -> "percent-encoding in the path",
+      "/x/./y" -> "a dot segment in the path",
+      "/x\\..\\z" -> "path outside allowance", // matches no scope before any spelling is judged
+      "/x/a\\b" -> "a backslash in the path",
+      "//x/y" -> "path outside allowance",
+      "/x//y" -> "an empty segment in the path",
+      "/x/%2Fy" -> "percent-encoding in the path",
+    ).foreach: (path, why) =>
+      assertEquals(intercept[PolicyViolation](get(path, under("/x/", "read"))).getMessage, why, path)
+    // Under the root a read may carry any spelling: it has the host's least grants.
+    get("/blobs/a%2Fb", whole("read"))
+    get("/x/%2e%2e/y", whole("read"))
+    // An exact path names that one path.
+    get("/v2/token", under("/v2/token", "read"))
+    assertEquals(
+      intercept[PolicyViolation](get("/v2/token/x", under("/v2/token", "read"))).getMessage,
+      "path outside allowance",
     )
-    intercept[PolicyViolation]:
+    assertEquals(
+      intercept[PolicyViolation](get("/v2/tokens", under("/v2/token", "read"))).getMessage,
+      "path outside allowance",
+    )
+    // The longest match selects the state and the boundary: a request under both takes the narrower.
+    val two = Map("/" -> Set("read"), "/api/" -> Set("read", "POST"))
+    def post(path: String): Unit =
       authorizeInspectedRequest(
-        "developer.mozilla.org",
-        head("POST /api/x HTTP/1.1\r\nHost: developer.mozilla.org\r\nContent-Length: 0\r\n\r\n"),
-        Set.empty,
+        "docs.example",
+        head(s"POST $path HTTP/1.1\r\nHost: docs.example\r\nContent-Length: 0\r\n\r\n"),
+        two,
       )
+    post("/api/x")
+    assertEquals(intercept[PolicyViolation](post("/x")).getMessage, "POST not granted")
+    assertEquals(intercept[PolicyViolation](post("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
+    assertEquals(intercept[PolicyViolation](post("/%2e%2e/x")).getMessage, "percent-encoding in the path")
+    get("/%2e%2e/x", two)
+    assertEquals(intercept[PolicyViolation](get("/api/%2e%2e/x", two)).getMessage, "percent-encoding in the path")
+    // The paths named in the refusal are the policy's own words for the host.
+    assertEquals(
+      intercept[PolicyViolation](get("/q/r", under("/o/", "read") ++ under("/p/", "read"))).advice,
+      RefusalAdvice.pathOutside(Set("/o/", "/p/")),
+    )
 
-    // A package registry gets the same tier — security is not traded for performance — so a
-    // fetch reads, npm's measured install-time audit POST is its allow=npm-audit allowance, and an
-    // older npm's endpoint (or any other POST) gets an honest refusal.
-    authorizeInspectedRequest(
-      "registry.npmjs.org",
-      head("GET /lodash HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n"),
-      whole("npm-audit"),
-    )
-    authorizeInspectedRequest(
-      "registry.npmjs.org",
-      head(
-        s"POST $NpmAuditPath HTTP/1.1\r\n" +
-          "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
-      ),
-      whole("npm-audit"),
-    )
-    val oldNpm = intercept[PolicyViolation]:
-      authorizeInspectedRequest(
-        "registry.npmjs.org",
-        head(
-          "POST /-/npm/v1/security/audits/quick HTTP/1.1\r\n" +
-            "Host: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
-        ),
-        whole("npm-audit"),
-      )
-    assert(oldNpm.getMessage.contains("restricted path"), oldNpm.getMessage)
-    // The allow=npm-audit allowance opens nothing on an allow=git-fetch host, and vice versa.
-    intercept[PolicyViolation]:
-      authorizeInspectedRequest(
-        "github.com",
-        head(
-          s"POST $NpmAuditPath HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
-        ),
+  test("read is GET and HEAD, bodyless; git-fetch is the clone's two requests; method= its list; nothing else"):
+    def request(request: String, scopes: Map[String, Set[String]], host: String = "github.com"): Unit =
+      authorizeInspectedRequest(host, head(request), scopes)
+    def refused(request: String, scopes: Map[String, Set[String]], host: String = "github.com"): String =
+      intercept[PolicyViolation](authorizeInspectedRequest(host, head(request), scopes)).getMessage
+    val discovery = "GET /o/r.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"
+    val transfer = "POST /o/r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"
+    val browse = "GET /o/r HTTP/1.1\r\nHost: github.com\r\n\r\n"
+    // git-fetch alone: clonable and not browsable.
+    request(discovery, whole("git-fetch"))
+    request(transfer, whole("git-fetch"))
+    assertEquals(refused(browse, whole("git-fetch")), "read not granted")
+    assertEquals(refused("HEAD /o/r HTTP/1.1\r\nHost: github.com\r\n\r\n", whole("git-fetch")), "read not granted")
+    assertEquals(
+      refused(
+        "POST /o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         whole("git-fetch"),
+      ),
+      "POST not granted",
+    )
+    // read alone: browsable, and a clone fails at its first request rather than its second.
+    request(browse, whole("read"))
+    assertEquals(refused(discovery, whole("read")), "git fetch ref discovery")
+    assertEquals(refused(transfer, whole("read")), "POST not granted")
+    // A POST whose path mimics upload-pack rides nothing through on a host without git-fetch.
+    assertEquals(
+      refused(
+        "POST /v2/x/x/git-upload-pack HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
+        whole("read"),
+        "public.ecr.aws",
+      ),
+      "POST not granted",
+    )
+    // A body on a read method is an upload wearing a read method: the fact named, on every host.
+    Vector("GET", "HEAD").foreach: method =>
+      assertEquals(
+        refused(s"$method /o/r HTTP/1.1\r\nHost: github.com\r\nContent-Length: 9\r\n\r\n", whole("read", "git-fetch")),
+        "request body",
       )
-
-    // allow=github-login-device opens the device-flow pair and nothing beside it: neither GitHub's other
-    // OAuth endpoints nor, on the same host, a push.
-    GithubLoginDevicePaths.foreach: path =>
-      authorizeInspectedRequest(
-        "github.com",
-        head(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        whole("git-fetch", "github-login-device"),
+    // method= is its list, under its path, and write-only where the scope has no read.
+    val api = Map("/" -> Set("read"), "/api/" -> Set("read", "PUT", "DELETE"))
+    request("PUT /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api)
+    request("DELETE /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api)
+    assertEquals(
+      refused("PATCH /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api),
+      "PATCH not granted",
+    )
+    assertEquals(
+      refused("POST /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api),
+      "POST not granted",
+    )
+    assertEquals(refused("PUT /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api), "PUT not granted")
+    val login = under("/login/device/code", "POST")
+    request("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", login)
+    assertEquals(refused("GET /login/device/code HTTP/1.1\r\nHost: github.com\r\n\r\n", login), "read not granted")
+    assertEquals(
+      refused("POST /login/device/codes HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", login),
+      "path outside allowance",
+    )
+    Vector("OPTIONS", "TRACE").foreach: method =>
+      assertEquals(
+        refused(s"$method /o/r HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", whole("read", "git-fetch")),
+        s"$method not granted",
       )
-      intercept[PolicyViolation]:
-        authorizeInspectedRequest(
-          "github.com",
-          head(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-          whole("git-fetch"),
-        )
-    intercept[PolicyViolation]:
-      authorizeInspectedRequest(
-        "github.com",
-        head("POST /login/oauth/authorize HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        whole("github-login-device"),
+    // Push discovery is refused under read and git-fetch, admitted under a POST grant at the repository.
+    val pushDiscovery = "GET /o/r.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"
+    assertEquals(refused(pushDiscovery, whole("read", "git-fetch")), "git push ref discovery")
+    request(pushDiscovery, Map("/" -> Set("read"), "/o/" -> Set("read", "POST")))
+    assertEquals(
+      refused(pushDiscovery, Map("/" -> Set("read"), "/p/" -> Set("read", "POST"))),
+      "git push ref discovery",
+    )
+    Vector(
+      "/o/r.git/info/refs?service=git%2Dreceive-pack",
+      "/o/r.git/info/refs?%73ervice=git-receive-pack",
+      "/o/r.git/inf%6F/refs?service=git-receive-pack",
+    ).foreach: target =>
+      assertEquals(
+        refused(s"GET $target HTTP/1.1\r\nHost: github.com\r\n\r\n", whole("read", "git-fetch")),
+        "git push ref discovery",
       )
-    intercept[PolicyViolation]:
-      authorizeInspectedRequest(
-        "github.com",
-        head("POST /o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
-        whole("git-fetch", "github-login-device"),
-      )
+    // A malformed escape is no discovery of either service: the GET stays an ordinary read.
+    request("GET /o/r.git/info/refs?service=git-receive%2xpack HTTP/1.1\r\nHost: github.com\r\n\r\n", whole("read"))
+    // npm: the audit line beside the root read admits the audit POST at its exact path, an older
+    // npm's endpoint gets an honest refusal, and a scoped package keeps reading under the root.
+    val npm = Map("/" -> Set("read"), "/-/npm/v1/security/advisories/bulk" -> Set("read", "POST"))
+    request(
+      "POST /-/npm/v1/security/advisories/bulk HTTP/1.1\r\nHost: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
+      npm,
+      "registry.npmjs.org",
+    )
+    assertEquals(
+      refused(
+        "POST /-/npm/v1/security/audits/quick HTTP/1.1\r\nHost: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
+        npm,
+        "registry.npmjs.org",
+      ),
+      "POST not granted",
+    )
+    request("GET /@scope%2fname HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n", npm, "registry.npmjs.org")
+    // The github group's login lines beside the catalog's root: the device-flow pair and nothing beside it.
+    val github = policyOf().inspectedScopes("github.com")
+    request("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github)
+    request("POST /login/oauth/access_token HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github)
+    request("GET /login/device/code HTTP/1.1\r\nHost: github.com\r\n\r\n", github)
+    assertEquals(
+      refused("POST /login/oauth/authorize HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github),
+      "POST not granted",
+    )
+    assertEquals(
+      refused("POST /o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github),
+      "POST not granted",
+    )
+    // A documentation site: reads pass, nothing else does.
+    request(
+      "GET /en-US/docs/Web HTTP/1.1\r\nHost: developer.mozilla.org\r\n\r\n",
+      whole("read"),
+      "developer.mozilla.org",
+    )
+    assertEquals(
+      refused(
+        "POST /api/x HTTP/1.1\r\nHost: developer.mozilla.org\r\nContent-Length: 0\r\n\r\n",
+        whole("read"),
+        "developer.mozilla.org",
+      ),
+      "POST not granted",
+    )
 
   test("HTTP request head parses a request line and its headers"):
     val request = head(
@@ -1499,7 +1744,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       head("GET / HTTP/1.1\r\nHost: github.com\r\n continued\r\n\r\n")
 
-  test("reading an allow=git-fetch host is allowed"):
+  test("reading a read git-fetch host is allowed"):
     inspected("GET /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected("HEAD /owner/repo HTTP/1.1\r\nHost: github.com\r\n\r\n")
     inspected(
@@ -1710,8 +1955,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny - - invalid CONNECT port",
     )
     assertEquals(
-      auditLine("deny", "github.com", "POST", "/r.git/git-receive-pack", "restricted path"),
-      "deny github.com POST /r.git/git-receive-pack restricted path",
+      auditLine("deny", "github.com", "POST", "/r.git/git-receive-pack", "POST not granted"),
+      "deny github.com POST /r.git/git-receive-pack POST not granted",
     )
 
   test("every reported line is stamped once with the UTC instant, however it is written"):
@@ -1790,6 +2035,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
   // Refusal advice: the 403 body's second line, RefusalAdvice's table
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Refusal advice: the 403 body's second line, RefusalAdvice's table
+  // ---------------------------------------------------------------------------
+
   /** One row per outcome of a `throw PolicyViolation(` in the sources, keyed by the site. The
     * population test counts the sites against the sources, so a refusal added without a row
     * fails it. `host` is the request's own — the one host an advice may name unadmitted. */
@@ -1798,7 +2047,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def post(
     host: String,
     path: String,
-    scopes: Set[Scope],
+    scopes: Map[String, Set[String]],
     admitted: String => Boolean = _ => false,
   ): () => Unit =
     () =>
@@ -1813,7 +2062,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     import RefusalAdvice.*
     val github = "github.com"
     val gitlab = "gitlab.com"
-    val fetch = whole("git-fetch")
+    val fetch = whole("read", "git-fetch")
     def hello(sni: Option[String], ech: Boolean = false): TlsClientHello =
       TlsClientHello(Array.emptyByteArray, sni, echPresent = ech)
     Vector(
@@ -1821,34 +2070,40 @@ class AgentEgressProxyTest extends munit.FunSuite:
       RefusalRow("authorizeRequest IP literal", "8.8.8.8", ipLiteral, () => authorize("8.8.8.8", 443)),
       RefusalRow(
         "authorizeRequest denied", gitlab, hostDenied,
-        () => authorize(gitlab, 443, policyOf(denied = s"host $gitlab")),
+        () => authorize(gitlab, 443, policyOf(rule = s"deny https://$gitlab/")),
+      ),
+      // A host a grant list emptied is denied as the whole-host line denies it.
+      RefusalRow(
+        "authorizeRequest denied", gitlab, hostDenied,
+        () => authorize(gitlab, 443, policyOf(rule = s"deny https://$gitlab/ read git-fetch")),
       ),
       RefusalRow(
         "authorizeRequest denied", "api.example.com", hostDenied,
         () =>
           authorize(
             "api.example.com", 443,
-            policyOf(allowed = "+host api.example.com", denied = "host **.example.com"),
+            policyOf(profile = "allow-unless-denied", rule = "deny https://**.example.com/"),
           ),
       ),
       RefusalRow(
         "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", DefaultProfile),
         () => authorize("tracker.example", 443),
       ),
+      // A defaults host under the default profile reaches this refusal through `deny defaults` alone.
       RefusalRow(
         "authorizeRequest not allowed", github, hostNotAllowed(github, DefaultProfile),
-        () => authorize(github, 443, policyOf(allowed = "-host github.com")),
+        () => authorize(github, 443, policyOf(rule = "deny defaults\nallow https://pypi.org/ read")),
       ),
-      // Under a profile the allowed file cannot widen, the step is the relaunch.
+      // Under a profile the rule file cannot widen, the step is the relaunch.
       RefusalRow(
         "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
         () => authorize(github, 443, policyOf(profile = "deny-all")),
       ),
-      // The same step with the project's file removing the host: the relaunch is named as
-      // necessary, and the removal the default profile would apply is the user's to see.
+      // The same step with the project's file denying the host: the relaunch is named as
+      // necessary, and the denial the default profile would apply is the user's to see.
       RefusalRow(
         "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
-        () => authorize(github, 443, policyOf(profile = "deny-all", allowed = "-host github.com")),
+        () => authorize(github, 443, policyOf(profile = "deny-all", rule = "deny https://github.com/")),
       ),
       RefusalRow(
         "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", "deny-unless-model"),
@@ -1880,37 +2135,55 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "authorizeInspectedRequest push discovery", github, gitPush,
         () => inspected("GET /o/r.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"),
       ),
-      // The refused-POST site chooses by path, for a tagged host (`restricted path`) and an
-      // untagged one (`restricted host`) alike — api.github.com's GraphQL is the case that matters.
-      RefusalRow("authorizeInspectedRequest POST refused", github, graphql, post(github, "/graphql", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest POST refused", "api.github.com", graphql,
-        post("api.github.com", "/graphql", whole()),
+        "authorizeInspectedRequest fetch discovery", github, gitFetch,
+        () =>
+          authorizeInspectedRequest(
+            github, head(
+              "GET /o/r.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: github.com\r\n\r\n",
+            ), whole("read"),
+          ),
       ),
-      RefusalRow("authorizeInspectedRequest POST refused", gitlab, graphql, post(gitlab, "/api/graphql", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest POST refused", github, lfsBatchGithub,
-        post(github, "/o/r.git/info/lfs/objects/batch", fetch, baselinePolicy.hosts.contains),
+        "authorizeInspectedRequest read not granted", github, noRead,
+        () =>
+          authorizeInspectedRequest(github, head("GET /o/r HTTP/1.1\r\nHost: github.com\r\n\r\n"), whole("git-fetch")),
+      ),
+      // The refused-write site chooses by path for a POST — api.github.com's GraphQL is the case that
+      // matters — and names the write for any other method.
+      RefusalRow("authorizeInspectedRequest write not granted", github, graphql, post(github, "/graphql", fetch)),
+      RefusalRow(
+        "authorizeInspectedRequest write not granted", "api.github.com", graphql,
+        post("api.github.com", "/graphql", whole("read")),
+      ),
+      RefusalRow("authorizeInspectedRequest write not granted", gitlab, graphql, post(gitlab, "/api/graphql", fetch)),
+      RefusalRow(
+        "authorizeInspectedRequest write not granted", github, lfsBatchGithub,
+        post(github, "/o/r.git/info/lfs/objects/batch", fetch, defaultsPolicy.hosts.contains),
       ),
       // The content host is named only while the policy admits it, and only for the forge it serves.
       RefusalRow(
-        "authorizeInspectedRequest POST refused", github, lfsBatch,
+        "authorizeInspectedRequest write not granted", github, lfsBatch,
         post(
           github, "/o/r.git/info/lfs/objects/batch", fetch,
-          policyOf(allowed = s"-host $LfsContentHost").hosts.contains,
+          policyOf(rule = s"deny https://$LfsContentHost/").hosts.contains,
         ),
       ),
       RefusalRow(
-        "authorizeInspectedRequest POST refused", gitlab, lfsBatch,
-        post(gitlab, "/g/o/r.git/info/lfs/objects/batch", fetch, baselinePolicy.hosts.contains),
+        "authorizeInspectedRequest write not granted", gitlab, lfsBatch,
+        post(gitlab, "/g/o/r.git/info/lfs/objects/batch", fetch, defaultsPolicy.hosts.contains),
       ),
-      RefusalRow("authorizeInspectedRequest POST refused", github, readOnly, post(github, "/o/r/issues", fetch)),
+      RefusalRow("authorizeInspectedRequest write not granted", github, readOnly, post(github, "/o/r/issues", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest other method", github, readOnly,
+        "authorizeInspectedRequest write not granted", github, readOnly,
         () => inspected("PUT /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
       ),
-      // GitHelper's one refusal site, reached by a write path's two spellings and, under a
-      // prefix, a read path's two further ones.
+      RefusalRow(
+        "authorizeInspectedRequest other method", github, readOnly,
+        () => inspected("OPTIONS /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
+      ),
+      // GitHelper's one refusal site, reached by a write path's two spellings and, under a line
+      // other than the root, a read path's two further ones.
       RefusalRow(
         "requireSpelledPlainly", github, ambiguousPath,
         post(github, "/o/r.git/%2e%2e/git-upload-pack", fetch),
@@ -1921,17 +2194,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
       RefusalRow(
         "requireSpelledPlainly", github, ambiguousPath,
-        () => authorizeInspectedRequest(github, head("GET /o\\r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/")),
+        () =>
+          authorizeInspectedRequest(
+            github, head("GET /o/a\\r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/", "read"),
+          ),
       ),
       RefusalRow(
         "requireSpelledPlainly", github, ambiguousPath,
-        () => authorizeInspectedRequest(github, head("GET //o/r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/")),
+        () =>
+          authorizeInspectedRequest(
+            github, head("GET /o//r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/", "read"),
+          ),
       ),
       RefusalRow(
         "authorizeInspectedRequest path outside", github, pathOutside(Set("/o/", "/p/")),
         () =>
           authorizeInspectedRequest(
-            github, head("GET /q/r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/") ++ under("/p/"),
+            github, head("GET /q/r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/", "read") ++ under("/p/", "read"),
           ),
       ),
       RefusalRow(
@@ -1972,35 +2251,38 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assert(advice.nonEmpty && !advice.exists(isForbiddenControl), s"${row.site}: '$advice'")
       assert(refusalBody(refusal.getMessage, Some(advice)).length <= 512, s"${row.site}: body over 512 bytes")
       HostToken.findAllIn(advice).foreach: named =>
-        assert(named == row.host || baselinePolicy.hosts.contains(named), s"${row.site} names $named")
+        assert(named == row.host || defaultsPolicy.hosts.contains(named), s"${row.site} names $named")
 
   test("the host-not-allowed step names a configuration that can admit the host, or none"):
-    // The named configuration, applied over a clean project file, admits the host; a bare `+host`
-    // for a baseline host would override the baseline treatment, so it is never named for one.
-    // The relaunch is named as possible only ("can admit"), since the project's file may remove
-    // the host under the default profile (the deny-all row above).
+    // The named line, in a clean project file, admits the host; a defaults host is refused under the
+    // default profile only through `deny defaults`, and the step says so rather than naming a line
+    // the defaults already carry. The relaunch is named as possible only ("can admit"), since the
+    // project's file may deny the host under the default profile (the deny-all row above).
     import RefusalAdvice.hostNotAllowed
-    val addition = "'+host tracker.example' in .ko-agent-sandbox/egress/allowed"
+    val addition = "'allow https://tracker.example/ read' in .ko-agent-sandbox/egress/rule"
     Vector(DefaultProfile, "deny-all", "deny-unless-model").foreach: profile =>
       assert(hostNotAllowed("tracker.example", profile).contains(addition), profile)
-      assert(!hostNotAllowed("github.com", profile).contains("+host"), profile)
-    assertEquals(authorize("tracker.example", 443, policyOf(allowed = "+host tracker.example")), "tracker.example")
+      assert(!hostNotAllowed("github.com", profile).contains("allow https://"), profile)
+    assertEquals(
+      authorize("tracker.example", 443, policyOf(rule = "allow https://tracker.example/ read")),
+      "tracker.example",
+    )
     assertEquals(authorize("github.com", 443, policyOf()), "github.com")
     Vector("deny-all", "deny-unless-model").foreach: profile =>
       Vector("github.com", "tracker.example").foreach: host =>
         val advice = hostNotAllowed(host, profile)
         assert(advice.contains(s"a relaunch under $DefaultProfile"), advice)
         assert(advice.endsWith("can admit it."), advice)
-    assert(hostNotAllowed("github.com", DefaultProfile).contains("removes it"))
+    assert(hostNotAllowed("github.com", DefaultProfile).contains("deny defaults"))
 
   test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):
     val (client, server) = socketPair()
-    respondInsideTls(server, 403, "Forbidden", "restricted path", Some(RefusalAdvice.readOnly))
+    respondInsideTls(server, 403, "Forbidden", "POST not granted", Some(RefusalAdvice.readOnly))
     server.close()
     val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
     client.close()
 
-    val body = s"ko-agent-egress-proxy: restricted path\n${RefusalAdvice.readOnly}\n"
+    val body = s"ko-agent-egress-proxy: POST not granted\n${RefusalAdvice.readOnly}\n"
     assertEquals(
       received,
       "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +
@@ -2019,7 +2301,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val saved = System.err
       System.setErr(java.io.PrintStream(log, true))
       try
-        val handling = Thread.startVirtualThread(() => handle(server, EgressPolicy(baselinePolicy, None)))
+        val handling = Thread.startVirtualThread(() => handle(server, EgressPolicy(defaultsPolicy, None)))
         client.getOutputStream.write(ascii(request))
         client.getOutputStream.flush()
         val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
@@ -2051,29 +2333,29 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
 
-  private lazy val baselinePolicy: ResolvedEgress =
-    resolvePolicy(Some("deny-unless-allowed"), None, None, None)
+  private lazy val defaultsPolicy: ResolvedEgress =
+    resolvePolicy(Some("deny-unless-allowed"), None, None)
 
-  private lazy val builtinGitHosts: Set[String] = baselinePolicy.tagged("git-fetch")
+  private lazy val builtinGitHosts: Set[String] =
+    defaultsPolicy.inspectedScopes
+      .collect { case (host, scopes) if scopes.get("/").exists(_("git-fetch")) => host }
+      .toSet
 
   private def inspected(value: String): Unit =
-    authorizeInspectedRequest("github.com", head(value), whole("git-fetch"))
+    authorizeInspectedRequest("github.com", head(value), whole("read", "git-fetch"))
 
-  /** A host restricted whole, with these allowances: the scopes every unprefixed entry resolves to. */
-  private def whole(tags: String*): Set[Scope] = Set(Scope(None, tags.toSet))
+  /** A host with one root line carrying these grants: the scopes every `allow https://host/` line resolves to. */
+  private def whole(grants: String*): Map[String, Set[String]] = Map("/" -> grants.toSet)
 
-  /** One `path=` scope, as a `+host <host> path=<prefix> allow=<tags>` entry resolves to. */
-  private def under(prefix: String, tags: String*): Set[Scope] = Set(Scope(Some(prefix), tags.toSet))
-
-  extension (resolved: ResolvedEgress)
-    /** Each restricted host's allowances, prefixes folded: what the resolution tests compare. */
-    private def allowances: Map[String, Set[String]] = resolved.restricted.view.mapValues(_.flatMap(_.tags)).toMap
+  /** One scope at a path, as an `allow https://host/path` line resolves to on a host with no other line. */
+  private def under(path: String, grants: String*): Map[String, Set[String]] = Map(path -> grants.toSet)
 
   private def parseConnect(value: String): ConnectRequest =
     ConnectRequest.parse(ascii(value))
 
-  private def authorize(host: String, port: Int, resolved: ResolvedEgress = baselinePolicy): String =
+  private def authorize(host: String, port: Int, resolved: ResolvedEgress = defaultsPolicy): String =
     authorizeRequest(ConnectRequest(host, port), resolved)
+
 
   private def clientHello(
     serverName: String,
