@@ -174,3 +174,24 @@ class SandboxStatsTest extends munit.FunSuite:
     if HostCommands.posixPermissions(root) then
       assertEquals(Files.getPosixFilePermissions(root.resolve("app-0123456789ab")).size, 2)
     assertEquals(projectDirectories(root.resolve("absent")), Map.empty)
+
+  test("a volume probe answers present on 0, absent on 1, and nothing on any other exit"):
+    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(0), Some(true))
+    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(1), Some(false))
+    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(125), None)
+    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(-1), None)
+
+  test("a reset drops the record once nothing it names remains, and keeps it while something does"):
+    val root = Files.createTempDirectory("projects")
+    val id = "app-0123456789ab"
+    val kept = Files.createTempDirectory("cache")
+    val absent = kept.resolve("absent")
+    AgentSandboxLauncher.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
+    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
+    assert(Files.exists(root.resolve(id)), "kept: one of the named directories exists")
+    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = true)
+    assert(Files.exists(root.resolve(id)), "kept: the generated volume remains")
+    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = false)
+    assert(!Files.exists(root.resolve(id)), "dropped: nothing named remains")
+    AgentSandboxLauncher.dropRecordUnless(root, id, Vector.empty, volumeKept = false)
+    AgentSandboxLauncher.dropRecordUnless(root.resolve("never"), id, Vector(absent), volumeKept = false)

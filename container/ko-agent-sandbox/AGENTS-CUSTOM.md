@@ -4,12 +4,13 @@ Be concise and keep everything easy to reason about: the human reader's attentio
 scarcest budget, but don't under-report.
 
 Anything pointed out or found while working is evidence of a class, never its extent. Define the
-class as a violated invariant and mechanism — not the wording or file that exposed it.
-Inventory every producer, consumer, entry point, lifecycle variant, test, and document that could
-violate it; account for each as fixed, conforming, or deliberately excluded with a concrete
-reason. Search structure and trace behavior — wording search is not an inventory. If only the
-reported instance appears, assume the class is too narrow. Fix the canonical enforcement point,
-add a test over the whole class, and do not report completion until every member is accounted for.
+class as a violated invariant and mechanism — not the wording or file that exposed it. Before the
+first edit, inventory every producer, consumer, entry point, lifecycle variant, test, and document
+that could violate it; account for each as fixed, conforming, or deliberately excluded with a
+concrete reason. Search structure and trace behavior — wording search is not an inventory. If
+only the reported instance appears, assume the class is too narrow. Fix the canonical
+enforcement point, add a test over the whole class, and do not report completion until every
+member is accounted for.
 
 Preserve the boundaries, such as scope and ownership, including how work is separated for review.
 If completing the request requires changing or crossing a boundary, name it and its consequence

@@ -1246,13 +1246,23 @@ object AgentSandboxLauncher:
 
     // Only the computed per-project volume; a volume shared through KO_AGENT_SANDBOX_PERSISTENT_VOLUME belongs to other
     // projects too.
-    env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
+    // A failed probe is a failed step, not an absent volume, so the record below is not dropped over one.
+    val volume = s"ko-agent-sandbox-persistent-$id"
+    val volumeExists: Option[Boolean] =
+      val probe = run(podman, "volume", "exists", volume)
+      val answer = volumeExistsAnswer(probe.exit)
+      if answer.isEmpty then
+        failures += 1
+        System.err.println(s"podman volume exists $volume: exit ${probe.exit} ${probe.err}".stripTrailing)
+      answer
+    val volumeKept = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
       case Some(shared) =>
         System.err.println(s"note: leaving shared volume $shared in place")
+        volumeExists.contains(true)
       case None =>
-        val volume = s"ko-agent-sandbox-persistent-$id"
-        if runOk(podman, "volume", "exists", volume) then
+        if volumeExists.contains(true) then
           remove(podman, "volume", "rm", volume)
+        false
 
     // This project's per-run networks. Containers went first above, so nothing still holds them.
     val networks = run(podman, "network", "ls", "--format", "{{.Name}}")
@@ -1283,7 +1293,19 @@ object AgentSandboxLauncher:
       System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
 
     if failures > 0 then fail(s"error: $failures reset steps failed")
+    // Last, as in --reset-all: the record outlives the cache alone, and the generated volume a
+    // shared one left in place. The cache root is read as --stats reads it: where --stats can
+    // show no cache, none keeps the record.
+    val cache = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(RunOnHostPolicy.agentCacheDir(_, id))
+    dropRecordUnless(projectsStateRoot(os), id, cache.toSeq, volumeKept)
     sys.exit(0)
+
+  /** `podman volume exists` answers present with exit 0, absent with 1, and any failure with
+    * another code, which is neither. */
+  def volumeExistsAnswer(exit: Int): Option[Boolean] = exit match
+    case 0 => Some(true)
+    case 1 => Some(false)
+    case _ => None
 
   /**
    * `--reset-all`, every project's `--reset`. It deliberately does not remove built images or
@@ -1387,9 +1409,19 @@ object AgentSandboxLauncher:
    */
   def resetCache(os: Os): Nothing =
     val project = resolveProjectDir()
-    val caches = RunOnHostPolicy.agentCacheDir(buildCacheRoot(os, project), projectIdOf(project, os))
+    requireStateRootOutside(os, project)
+    val id = projectIdOf(project, os)
+    val caches = RunOnHostPolicy.agentCacheDir(buildCacheRoot(os, project), id)
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
+    // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
+    // a --reset that removed these directories. This verb needs no podman, so where none answers
+    // the record stays.
+    val state = Vector(tlsStateRoot(os), logStateRoot(os), policyStateRoot(os)).map(_.resolve(id))
+    val volumeKept = findOnPath("podman", env("PATH").getOrElse(""), os).fold(true): found =>
+      volumeExistsAnswer(run(found.toString, "volume", "exists", s"ko-agent-sandbox-persistent-$id").exit)
+        .getOrElse(true)
+    dropRecordUnless(projectsStateRoot(os), id, state, volumeKept)
     sys.exit(0)
 
   /**
@@ -1491,12 +1523,25 @@ object AgentSandboxLauncher:
    */
   def projectsStateRoot(os: Os): Path = stateRoot(os).resolve("projects")
 
-  /** Rewritten at every launch: the id changes with the path, so a stale record cannot exist
-    * under a live id. Kept by --reset, which keeps the cache the record locates; --reset-all
-    * removes both. */
+  /** Written with the first state a launch creates, so a launch refused before that leaves no
+    * record, and rewritten at every launch: the id changes with the path, so a stale record
+    * cannot exist under a live id. It lives as long as something `--stats` names by it:
+    * `--reset` keeps it with the cache it keeps, `--reset-cache` with the state it leaves, and
+    * each drops it when nothing remains ([[dropRecordUnless]]); `--reset-all` removes them all. */
   def recordProjectDirectory(projectsRoot: Path, projectId: String, projectDir: Path): Unit =
     Files.createDirectories(projectsRoot)
     writePrivate(projectsRoot.resolve(projectId), projectDir.toString)
+
+  /**
+   * The record goes when none of `remaining` exists: a record naming nothing keeps a project
+   * `--stats` lists after its directory is deleted, its size the path string. `remaining` and
+   * `volumeKept` are what the calling verb leaves in place.
+   */
+  def dropRecordUnless(projectsRoot: Path, projectId: String, remaining: Seq[Path], volumeKept: Boolean): Unit =
+    val record = projectsRoot.resolve(projectId)
+    if !volumeKept && !remaining.exists(Files.exists(_)) && Files.exists(record) then
+      echoCommand(Vector("rm", "-f", record.toString))
+      Files.delete(record)
 
   // -------------------------------------------------------------------------
   // Command line
@@ -2117,8 +2162,6 @@ object AgentSandboxLauncher:
     // the whole path; moving a project yields new resources and new sign-ins.
     val projectSlug = slugOf(projectDir.getFileName.toString)
     val projectId = projectIdOf(projectDir, os)
-    recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
-
     // -----------------------------------------------------------------------
     // Per-project persistent volume
     // -----------------------------------------------------------------------
@@ -2251,6 +2294,7 @@ object AgentSandboxLauncher:
     Files.createDirectories(policyCacheDir)
     if posixPermissions(policyCacheDir) then
       Files.setPosixFilePermissions(policyCacheDir, PosixFilePermissions.fromString("rwx------"))
+    recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
 
     val resolvedHostsFile = policyCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = policyCacheDir.resolve("resolved.warnings")
