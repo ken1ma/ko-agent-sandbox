@@ -112,20 +112,35 @@ object IntegrationSession extends munit.Assertions:
 
   /** `--reset` in a project, as the user runs it after a crash: whether it succeeded, and its own
     * output, which is the only useful thing to print when it did not. */
-  def reset(project: Path): (Boolean, String) =
-    val log = project.resolve("reset.log")
-    val builder = ProcessBuilder("java", "-jar", jar.toString, "--reset")
+  def reset(project: Path, extra: (String, String)*): (Boolean, String) = verb(project, "--reset", extra*)
+
+  def resetCache(project: Path): (Boolean, String) = verb(project, "--reset-cache")
+
+  private def verb(project: Path, option: String, extra: (String, String)*): (Boolean, String) =
+    val log = project.resolve(s"${option.stripPrefix("--")}.log")
+    val builder = ProcessBuilder("java", "-jar", jar.toString, option)
+    extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(project.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
     val ok = builder.start().waitFor() == 0
     (ok, Files.readString(log))
 
+  /** The file `--stats` names this project's directory from. */
+  def projectRecord(project: Path): Path =
+    val id = SandboxProject.projectIdOf(project.toRealPath(), currentOs)
+    AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(id)
+
   /** What a session leaves behind is the state every project accumulates — a volume, a CA, a policy
-    * cache, logs and the mount tree — so a scratch project is reset before it is deleted. */
+    * cache, logs and the mount tree — so a scratch project is reset before it is deleted. A scratch
+    * project never builds on the host, so the reset takes its --stats record with the rest. */
   def discard(project: Path): Unit =
-    reset(project)
-    deleteRecursively(project)
+    try
+      val (ok, output) = reset(project)
+      assert(ok, s"--reset failed; its output:\n$output")
+      val record = projectRecord(project)
+      assert(!Files.exists(record), s"--reset left the project's --stats record $record; its output:\n$output")
+    finally deleteRecursively(project)
 
   /** A command inside a live session, run the way the agent in it would. */
   def exec(session: Session, command: String*): Run =
