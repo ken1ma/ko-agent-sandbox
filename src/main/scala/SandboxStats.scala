@@ -12,7 +12,7 @@ import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.{
   logStateRoot, machineMemoryAvailable, machineMemoryLine, memoryTotal, persistentVolumes, policyStateRoot,
-  projectsStateRoot, runContainerParts, stateRoot, tlsStateRoot,
+  projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom, tlsStateRoot,
 }
 import HostCommands.*
 
@@ -42,11 +42,17 @@ object SandboxStats:
   /**
    * `memory: 58% (4.2 GiB) available`, `storage: 58% (936.7 GiB) free`: the share first, for a
    * reader who knows the machine's size, and beside it the figure the ceilings and the
-   * `--reset-cache` flag act on. `whole` is positive; a machine that cannot say its size gets no
-   * line.
+   * `--reset-cache` flag act on, `tint` applied to just those. `whole` is positive; a machine that
+   * cannot say its size gets no line.
    */
-  def shareLine(label: String, part: Long, whole: Long, state: String): String =
-    f"$label: ${part * 100.0 / whole}%.0f%% (${humanBytes(part)}) $state"
+  def shareLine(label: String, part: Long, whole: Long, state: String, tint: String => String = identity): String =
+    val figure = f"${part * 100.0 / whole}%.0f%% (${humanBytes(part)})"
+    s"$label: ${tint(figure)} $state"
+
+  /** `0 live sessions`, `1 project`, `3 projects`: the line over each table, and the whole
+    * section when there is nothing to tabulate. */
+  def counted(count: Int, noun: String): String =
+    if count == 1 then s"1 $noun" else s"$count ${noun}s"
 
   // -------------------------------------------------------------------------
   // Live sessions
@@ -89,9 +95,13 @@ object SandboxStats:
    * Sessions by their combined memory, largest first, and within a session the sandbox before
    * its proxy: the one the reader acts on, whatever an idle sandbox happens to use. A project
    * is named as the project table names it: by its recorded directory, or by its id where none
-   * is recorded.
+   * is recorded. Under a line counting the sessions, not the rows: a session is two containers.
    */
   def liveTable(containers: Vector[LiveContainer], directories: Map[String, String]): String =
+    if containers.isEmpty then counted(0, "live session") + "\n"
+    else liveRows(containers, directories)
+
+  private def liveRows(containers: Vector[LiveContainer], directories: Map[String, String]): String =
     val sessions = containers
       .groupBy(container => (container.projectId, container.run))
       .toVector
@@ -107,7 +117,8 @@ object SandboxStats:
         f"${container.cpuPercent}%.1f%%",
         directories.getOrElse(container.projectId, container.projectId),
       )
-    table(Vector("run", "role", "memory", "cpu", "project"), rows, rightAligned = Set(2, 3))
+    counted(sessions.size, "live session") + "\n" +
+      table(Vector("run", "role", "memory", "cpu", "project"), rows, rightAligned = Set(2, 3))
 
   // -------------------------------------------------------------------------
   // Volumes and storage
@@ -199,7 +210,7 @@ object SandboxStats:
    * compare by eye; it reads the cache column alone, the one `--reset-cache` removes.
    */
   def projectTable(usages: Vector[ProjectUsage], cacheFreeBytes: Long): String =
-    if usages.isEmpty then "projects: none\n"
+    if usages.isEmpty then counted(0, "project") + "\n"
     else
       val rows = usages.sortBy(usage => (-usage.totalBytes, usage.id)).map: usage =>
         val flag =
@@ -213,7 +224,8 @@ object SandboxStats:
           usage.volumeBytes.fold("-")(humanBytes),
           usage.directory.getOrElse(usage.id) + flag,
         )
-      table(Vector("total", "state", "cache", "volume", "project"), rows, rightAligned = Set(0, 1, 2, 3))
+      counted(usages.size, "project") + "\n" +
+        table(Vector("total", "state", "cache", "volume", "project"), rows, rightAligned = Set(0, 1, 2, 3))
 
   /** Columns padded to their widest cell, the header included; rows indented two spaces. */
   private def table(header: Vector[String], rows: Vector[Vector[String]], rightAligned: Set[Int]): String =
@@ -247,13 +259,12 @@ object SandboxStats:
             readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""),
             run(podman, "machine", "ssh", "cat /proc/meminfo"),
           ),
+          color = colorStdout,
+          scale = buildMemoryHeadroom,
         ).foreach(System.out.println)
         val answer = run(podman, "stats", "--no-stream", "--format", StatsFormat)
         if !answer.ok then System.out.print(s"live sessions: podman stats failed: ${firstLine(answer.err)}\n")
-        else
-          liveContainers(answer.text.linesIterator.toVector) match
-            case Vector() => System.out.print("live sessions: none\n")
-            case found    => System.out.print("live sessions:\n" + liveTable(found, directories))
+        else System.out.print(liveTable(liveContainers(answer.text.linesIterator.toVector), directories))
 
     val volumes: Option[Map[String, Long]] = service.toOption.flatMap: podman =>
       val answer = run(podman, "system", "df", "-v")

@@ -101,9 +101,9 @@ object EgressProxyPolicy:
               .getOrElse("none")
             val selected =
               if provider == "none" then "no provider selected" else s"model provider $provider"
-            s"egress: ${statedMode(profile, color)}; $selected; $inspected inspected, $opaque opaque"
+            s"egress: ${chosen(profile, color)}; $selected; $inspected inspected, $opaque opaque"
           case _ =>
-            s"egress: ${statedMode(profile, color)}; $inspected inspected, $opaque opaque"
+            s"egress: ${chosen(profile, color)}; $inspected inspected, $opaque opaque"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 

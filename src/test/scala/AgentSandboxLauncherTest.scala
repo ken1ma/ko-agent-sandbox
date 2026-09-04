@@ -84,16 +84,40 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("every podman verb says the machine's headroom, when the machine can say it"):
     assertEquals(
-      machineMemoryLine(Os.Mac, Some(8L << 30), Some(6L << 30)),
+      machineMemoryLine(Os.Mac, Some(8L << 30), Some(6L << 30), color = false),
       Some("podman machine memory: 75% (6.0 GiB) available"),
     )
     // Native Linux has no podman machine: the figures are this host's, and the label says no more.
     assertEquals(
-      machineMemoryLine(Os.Linux, Some(8L << 30), Some(6L << 30)),
+      machineMemoryLine(Os.Linux, Some(8L << 30), Some(6L << 30), color = false),
       Some("memory: 75% (6.0 GiB) available"),
     )
-    assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30)), None)
-    assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None), None)
+    assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
+    assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
+
+  test("the memory figure's scale is the verb's: the session floor at a launch, the build gate before a build"):
+    import HostCommands.Headroom
+    assertEquals(launchMemoryHeadroom(MinimumCeiling), Headroom.Ample)
+    assertEquals(launchMemoryHeadroom(MinimumCeiling - 1), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2 - 1), Headroom.Short)
+    assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold), Headroom.Ample)
+    assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold - 1), Headroom.Warned)
+    assertEquals(buildMemoryHeadroom(MinimumCeiling), Headroom.Warned)
+    assertEquals(buildMemoryHeadroom(MinimumCeiling - 1), Headroom.Short)
+    // On a terminal the figure alone is tinted, and the label and state stay plain.
+    assertEquals(
+      machineMemoryLine(Os.Linux, Some(8L << 30), Some(2L << 30), color = true),
+      Some("memory: \u001b[32m25% (2.0 GiB)\u001b[0m available"),
+    )
+    assertEquals(
+      machineMemoryLine(Os.Linux, Some(8L << 30), Some(2L << 30), color = true, scale = buildMemoryHeadroom),
+      Some("memory: \u001b[38;5;208m25% (2.0 GiB)\u001b[0m available"),
+    )
+    assertEquals(
+      machineMemoryLine(Os.Linux, Some(8L << 30), Some(256L << 20), color = true),
+      Some("memory: \u001b[31m3% (256 MiB)\u001b[0m available"),
+    )
 
   test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
     // The same fail-closed contract as the workspace guard, through the same closedChoice.
