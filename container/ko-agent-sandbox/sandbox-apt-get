@@ -10,7 +10,7 @@
 # What install does: apt-get with its directories under ~/.local/deb — the image's real dpkg
 # status stays apt's baseline, so only what the image lacks is fetched, and Release signatures are
 # still verified against the image's own /etc/apt keyrings — then every archive is unpacked and
-# each new command gets a wrapper in ~/.local/bin (already on PATH) carrying the library path it
+# each new command gets a wrapper in ~/.local/bin (already on PATH) setting the library path it
 # needs. Nothing is exported, so it works from any shell, script, or pipe.
 #
 # What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
@@ -113,7 +113,7 @@ done
 # One wrapper per unpacked command: LD_LIBRARY_PATH scoped to that process tree instead of exported
 # globally, so nothing agent-unpacked shadows libraries for the image's own binaries. A command the
 # image already provides is left alone for the same reason — a dependency chain that happens to
-# carry python3 must not change which python3 the session runs. Our own earlier wrappers do get
+# include python3 must not change which python3 the session runs. Our own earlier wrappers do get
 # rewritten, so re-running stays idempotent.
 libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib:$root/lib"
 wrapped=""

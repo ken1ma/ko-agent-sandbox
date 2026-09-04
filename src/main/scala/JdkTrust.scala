@@ -66,7 +66,7 @@ object JdkTrust:
         || firstLine(stampFile) != stamp
       then
         // `cp -L` first: the Debian Temurin packages link `cacerts` into /etc/ssl/certs, and a copy
-        // out of the container must carry the store, not the link.
+        // out of the container must contain the store, not the link.
         val prepared = "/prepared-jdk"
         // --entrypoint=: this container depends on nothing but sh and the script. The stock
         // sandbox-entrypoint would come through — it skips seeding when the root this runs as has

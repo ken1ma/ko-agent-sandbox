@@ -18,7 +18,7 @@ object EgressProxyPolicy:
 
   /**
    * Comment-stripped, whitespace-collapsed rule text, one line per line — the format the
-   * environment variable carries. A rule is a multi-token line (`allow https://x/ read`), so line
+   * environment variable holds. A rule is a multi-token line (`allow https://x/ read`), so line
    * structure is what separates them and must be preserved. A comment starts at the start of a
    * line or after whitespace; a `#` inside a token is kept, so the proxy's parser sees and
    * refuses it rather than this pass turning `https://x/a/#b/` into the wider `https://x/a/`.
@@ -51,7 +51,7 @@ object EgressProxyPolicy:
   val MetadataPrefixes: Vector[String] = Vector("policy summary:", "widening lines (")
 
   /** The dry run's text up to its first metadata line — the policy alone — for the consumers that
-    * carry nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY`. */
+    * hold nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY`. */
   def policyLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
@@ -83,7 +83,7 @@ object EgressProxyPolicy:
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
         inspected <- counts.get("inspected hosts")
         opaque <- counts.get("opaque hosts")
-        denied <- counts.get("ambient denials")
+        denied <- counts.get("denial patterns")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
         profile match
@@ -230,7 +230,7 @@ object EgressProxyPolicy:
         ++ Option.when(provenance)("--provenance"))*
     )
 
-  /** The --env arguments carrying the authority selection and policy files to the proxy — the
+  /** The --env arguments passing the authority selection and policy files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
   def policyEnvArgs(
     profile: String,
@@ -260,7 +260,7 @@ object EgressProxyPolicy:
    * The inspected hosts out of a --print-policy answer: the hosts of its `allow https://` lines,
    * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
    * between the scheme and its first `/`, and a host under several scopes is one name. This is
-   * how the launcher learns which names the leaf certificate must carry — the proxy image's own
+   * how the launcher learns which names the leaf certificate must list — the proxy image's own
    * answer under this project's policy, so no second copy of any list exists to drift, and a proxy
    * image or policy of the user's choosing gets a matching leaf too. Empty means the policy
    * inspects nothing; the launcher then mints no leaf and hands the proxy no inspection material.

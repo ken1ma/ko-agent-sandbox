@@ -1,6 +1,6 @@
 # Running the `ko-agent-fs` tests
 
-Two suites, split by whether a test has to mount, and three venues to run them in. Everything
+Two suites, split by whether a test has to mount, and three places to run them in. Everything
 builds for the musl triple — one triple everywhere, because that is the one that ships and the
 difference is not cosmetic: the static-musl link constraint `fs.rs` records at its `rename` is
 invisible to a glibc build, and only the shipping triple makes `tests/binary.rs` spawn the
@@ -17,7 +17,7 @@ compiles the dependency tree once, in the release profile (`Containerfile` has w
 The policy core, the inode table, the startup guard, the static git corpus, and the parts of
 `tests/binary.rs` that drive the real binary without mounting — argument handling and the startup
 refusal, which the in-process suites bypass. None of it mounts, so it runs in CI and inside a
-`ko-agent-sandbox` session, whose image carries the musl target for exactly this — it has to,
+`ko-agent-sandbox` session, whose image ships the musl target for exactly this — it has to,
 since its rustup home is read-only and a session cannot add a target to it.
 
 
@@ -31,7 +31,7 @@ toolchain, on top of the sandbox image — and runs them in a container with `/d
 `CAP_SYS_ADMIN`.
 The container binds and writes nothing, and `--rm` removes it. The launcher retains the current
 self-test output and compile-cache tags and removes images they replace. `--include-ignored`, so
-this is the venue where *both* halves run, on macOS and Windows as readily as on Linux. It needs
+this container is where *both* halves run, on macOS and Windows as readily as on Linux. It needs
 `--build` to have happened; it does not run one.
 
 Without a case filter, the launcher then runs its share rows (`SelfTestShare.scala`): a scratch
@@ -41,7 +41,7 @@ direction the container suites cannot reach, because their backing tree is the c
 storage (`doc/TODO.md`, "End-to-end coherency through the real host share"). The scratch is
 removed on success and kept on failure.
 
-This is the venue for proving the filter on a machine. The rig below is the loop for changing it.
+This is how the filter is proved on a machine. The rig below is the loop for changing it.
 
 
 ## Mounted — the privileged dev rig
@@ -52,15 +52,15 @@ the sandbox deliberately does not have (`SECURITY.md`, "No containers inside the
 default") — so they are `#[ignore]`d by default. `--self-test` above runs them on an arbitrary
 machine; this rig runs them against source you are still editing, with no jar rebuild in between:
 
-    probe/rig.sh                        # the whole ignored suite, venue probe first
+    probe/rig.sh                        # the whole ignored suite, mount probe first
     probe/rig.sh a_handle_held          # one filter, for a single test or a family
     GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
 
 Each flag the rig needs is justified beside itself in that script rather than here, because that is
 where a reader changing one is standing. What is worth knowing before reading it:
 
-- **The venue probe runs first.** `mount_probe` mounts a trivial read-only filesystem and reads one
-  file back, so a `PROBE FAIL` says the venue is wrong — `/dev/fuse`, the mount privilege, or
+- **The mount probe runs first.** `mount_probe` mounts a trivial read-only filesystem and reads one
+  file back, so a `PROBE FAIL` says the container is wrong — `/dev/fuse`, the mount privilege, or
   fuser's libfuse-free path — rather than leaving you to read that off thirty test failures.
 - **The toolchain is read from `Containerfile`, never repeated.** The rig has to compile with the
   compiler that ships, and a second copy of the version is a rig that quietly stops doing so; a

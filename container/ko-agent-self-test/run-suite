@@ -6,13 +6,13 @@ set -eu
 suite=/opt/ko-agent-fs-suite
 filter=${1:-}
 
-echo "venue: $(uname -srm), uid $(id -u)"
+echo "machine: $(uname -srm), uid $(id -u)"
 
-# The venue check first, and the filter's own: --self-test mounts with the product's options,
+# The setup check first, and the filter's own: --self-test mounts with the product's options,
 # allow_other among them, so it is the only thing here that exercises what user_allow_other gates.
 # It grades its own failure by the stage it reached — exit 3 for anything before its behavioural
 # checks begin, the scratch tree and the mount alike, which the launcher answers by retrying with
-# more privilege; 1 for anything past that, which no venue change repairs.
+# more privilege; 1 for anything past that, which no machine or privilege change repairs.
 # mount_probe cannot serve as this gate: it mounts with fuser's defaults, so an allow_other refusal
 # passes it and surfaces later as an apparent defect.
 selftest=0
@@ -41,7 +41,7 @@ status=0
 [ "$selftest" -eq 0 ] || status=1
 
 # --include-ignored, not --ignored: the image build runs neither half
-# (ko-agent-fs/Containerfile), so this venue is where all of it runs.
+# (ko-agent-fs/Containerfile), so this container is where all of it runs.
 for binary in "$suite"/deps/*; do
     echo "== ${binary##*/}"
     "$binary" --include-ignored ${filter:+"$filter"} || status=1

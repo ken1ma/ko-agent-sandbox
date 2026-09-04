@@ -260,6 +260,184 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createSymbolicLink(git2.resolve("hooks"), target)
     assert(gitGuardVolumes(git2, emptyFixture.file, emptyFixture.dir).isLeft)
 
+  test("a session without git is reported with the launch that would have it"):
+    val root = Files.createTempDirectory("no-git").toRealPath()
+    // A home of this test's own, beside the fixtures rather than above them, so that only the
+    // cases meant to reach it do.
+    val home = Files.createTempDirectory("no-git-home").toRealPath()
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> home.toString))
+    def noGit(dir: Path): Option[NoGit] = SandboxProject.noGit(dir, homes)
+    def launchOf(dir: Path): Option[Option[Path]] = noGit(dir).map:
+      case NoGit.Gitdir(_, _, launchFrom) => launchFrom
+      case NoGit.Above(_, launchFrom) => launchFrom
+    // What git's own discovery tests for (is_git_directory): a valid HEAD, and objects and refs
+    // under the gitdir itself or under the one its commondir names.
+    def gitdirAt(path: Path): Path =
+      Files.createDirectories(path.resolve("objects"))
+      Files.createDirectories(path.resolve("refs"))
+      Files.writeString(path.resolve("HEAD"), "ref: refs/heads/main\n")
+      path
+    def worktreeGitdirAt(path: Path, common: Path): Path =
+      Files.createDirectories(path)
+      Files.writeString(path.resolve("commondir"), s"${path.relativize(common)}\n")
+      Files.writeString(path.resolve("HEAD"), "ref: refs/heads/feature\n")
+      path
+
+    // A submodule checkout: the superproject's .git/modules holds the gitdir.
+    val superproject = Files.createDirectories(root.resolve("super"))
+    gitdirAt(superproject.resolve(".git"))
+    val moduleGitdir = gitdirAt(superproject.resolve(".git/modules/lib"))
+    val submodule = Files.createDirectories(superproject.resolve("lib"))
+    Files.writeString(submodule.resolve(".git"), "gitdir: ../.git/modules/lib\n")
+    assertEquals(
+      noGit(submodule),
+      Some(NoGit.Gitdir("../.git/modules/lib", moduleGitdir, Some(superproject))),
+    )
+    // A linked worktree names its gitdir absolutely, under the main worktree's .git — which is
+    // another checkout, not a tree holding this one, so there is no launch to offer.
+    val main = Files.createDirectories(root.resolve("main"))
+    val mainGitdir = gitdirAt(main.resolve(".git"))
+    val worktreeGitdir = worktreeGitdirAt(mainGitdir.resolve("worktrees/feature"), mainGitdir)
+    val linked = Files.createDirectories(root.resolve("feature"))
+    Files.writeString(linked.resolve(".git"), s"gitdir: $worktreeGitdir\n")
+    assertEquals(noGit(linked), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, None)))
+    // --separate-git-dir: no tree holds the project, so the warning has no launch to offer.
+    val separate = gitdirAt(root.resolve("repo.git"))
+    val project = Files.createDirectories(root.resolve("project"))
+    Files.writeString(project.resolve(".git"), s"gitdir: $separate\n")
+    assertEquals(noGit(project), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    assert(noGitWarning(noGit(project).get).contains("stay on the host"))
+    // An absolute gitdir is a host path even where it lands inside the project, which the
+    // container has at /workspace and not where the host keeps it.
+    val absolute = Files.createDirectories(root.resolve("absolute"))
+    val ownGitdir = gitdirAt(absolute.resolve("real.git"))
+    Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
+    assertEquals(noGit(absolute), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
+    // A `.git` symlink is the same absence when it leads out of the project: only the mount pins
+    // of WORKSPACE_GUARD=none refuse that shape, and the filter serves it as the host wrote it.
+    val symlinked = Files.createDirectories(root.resolve("symlinked"))
+    Files.createSymbolicLink(symlinked.resolve(".git"), separate)
+    assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    // Launched below the repository root: the host finds .git above, and the container has
+    // neither it nor anything else above the project.
+    val below = Files.createDirectories(superproject.resolve("src/main"))
+    assertEquals(noGit(below), Some(NoGit.Above(superproject, Some(superproject))))
+    assert(noGitWarning(noGit(below).get).contains(superproject.toString))
+    // Below a submodule checkout, and below a linked worktree: host git discovers a repository
+    // whose control directory is elsewhere, which the launch predicate would never call one. The
+    // launch offered is the nearest tree that holds the project and has git of its own.
+    assertEquals(
+      noGit(Files.createDirectories(submodule.resolve("src"))),
+      Some(NoGit.Above(submodule, Some(superproject))),
+    )
+    assertEquals(
+      noGit(Files.createDirectories(linked.resolve("src"))),
+      Some(NoGit.Above(linked, None)),
+    )
+    // A hollow .git is no repository: the search passes it as git's does, and reaches the one
+    // above, which is also the launch offered.
+    val hollow = Files.createDirectories(superproject.resolve("hollow"))
+    Files.createDirectories(hollow.resolve(".git"))
+    assertEquals(noGit(hollow), Some(NoGit.Above(superproject, Some(superproject))))
+    assertEquals(
+      noGit(Files.createDirectories(hollow.resolve("deep"))),
+      Some(NoGit.Above(superproject, Some(superproject))),
+    )
+    // Nothing said where the host's own git fails: a `.git` naming a gitdir git rejects — absent,
+    // or an unrelated directory — ends git's search inside the superproject, and so ends this one;
+    // a pointer that is not a path at all never reaches the filesystem.
+    val dangling = Files.createDirectories(superproject.resolve("dangling"))
+    Files.writeString(dangling.resolve(".git"), "gitdir: ../gone/.git/modules/x\n")
+    assertEquals(noGit(dangling), None)
+    val stray = Files.createDirectories(superproject.resolve("stray"))
+    Files.createDirectories(superproject.resolve("unrelated"))
+    Files.writeString(stray.resolve(".git"), "gitdir: ../unrelated\n")
+    assertEquals(noGit(stray), None)
+    val unparseable = Files.createDirectories(root.resolve("unparseable"))
+    Files.writeString(unparseable.resolve(".git"), "gitdir: ../mod" + 0.toChar + "ule\n")
+    assertEquals(noGit(unparseable), None)
+    // A `.git` file git does not read as a pointer at all — the spelling is not at its start — is
+    // the same silence: git fails there rather than searching above.
+    val prefixed = Files.createDirectories(superproject.resolve("prefixed"))
+    Files.writeString(prefixed.resolve(".git"), "# note\ngitdir: ../.git/modules/lib\n")
+    assertEquals(noGit(prefixed), None)
+    // And the same silence from below each of them: git's search ends at the `.git` it rejects,
+    // so the superproject above is not the repository it would have used, nor a launch to offer.
+    for rejected <- Vector(dangling, stray, prefixed) do
+      assertEquals(noGit(Files.createDirectories(rejected.resolve("src"))), None, rejected.toString)
+    // A nested repository whose pointer is absolute stays as absolute under its parent, so the
+    // parent's own good `.git` earns it no suggestion — from the nested root, or from below it.
+    val nested = Files.createDirectories(superproject.resolve("nested"))
+    Files.writeString(nested.resolve(".git"), s"gitdir: $separate\n")
+    assertEquals(noGit(nested), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    assertEquals(noGit(Files.createDirectories(nested.resolve("src"))), Some(NoGit.Above(nested, None)))
+    // A parent with no repository of its own is still the launch when the pointer stays inside it.
+    val siblings = Files.createDirectories(root.resolve("siblings"))
+    val sibling = gitdirAt(siblings.resolve("b/real.git"))
+    val pointing = Files.createDirectories(siblings.resolve("a"))
+    Files.writeString(pointing.resolve(".git"), "gitdir: ../b/real.git\n")
+    assertEquals(noGit(pointing), Some(NoGit.Gitdir("../b/real.git", sibling, Some(siblings))))
+    // A launch the launcher would refuse is none: the home directory and its ancestors, the
+    // filesystem root, a dot-prefixed directory. A pointer that climbs to one of those and back
+    // is reachable from there and nowhere nearer, so from the first two nothing is offered, and
+    // past the third the next directory up is.
+    val underHome = Files.createDirectories(home.resolve("proj"))
+    gitdirAt(underHome.resolve("real.git"))
+    Files.writeString(underHome.resolve(".git"), "gitdir: ../proj/real.git\n")
+    assertEquals(launchOf(underHome), Some(None))
+    val climber = Files.createDirectories(root.resolve("climber"))
+    gitdirAt(climber.resolve("real.git"))
+    val toRoot = "../" * (root.getNameCount + 1) + root.toString.stripPrefix("/")
+    Files.writeString(climber.resolve(".git"), s"gitdir: $toRoot/climber/real.git\n")
+    assertEquals(launchOf(climber), Some(None))
+    val hidden = Files.createDirectories(root.resolve(".hidden/proj"))
+    gitdirAt(hidden.resolve("real.git"))
+    Files.writeString(hidden.resolve(".git"), "gitdir: ../proj/real.git\n")
+    assertEquals(launchOf(hidden), Some(Some(root)))
+    // A `.git` file past git's 1 MiB bound is not read, whatever it begins with.
+    val oversized = Files.createDirectories(superproject.resolve("oversized"))
+    Files.writeString(oversized.resolve(".git"), "gitdir: " + "x" * (1 << 20))
+    assertEquals(noGit(oversized), None)
+    // A relative gitdir that climbs out and re-enters the project by its host name lands inside on
+    // the host and nowhere in the container, whose base is /workspace — and one level up it climbs
+    // nowhere, so the parent is the launch.
+    val reentrant = Files.createDirectories(root.resolve("reentrant"))
+    val reentered = gitdirAt(reentrant.resolve("real.git"))
+    Files.writeString(reentrant.resolve(".git"), "gitdir: ../reentrant/real.git\n")
+    assertEquals(noGit(reentrant), Some(NoGit.Gitdir("../reentrant/real.git", reentered, Some(root))))
+    // A `.git` symlink to a pointer file in a subdirectory: the OS follows the link to read the
+    // file, and the gitdir it names resolves against the directory holding `.git` — the project —
+    // not against the pointer's own, which would land inside and hide that the container cannot
+    // follow it. From the parent both steps stay inside, so the parent is the launch.
+    val chained = Files.createDirectories(root.resolve("chained"))
+    val elsewhere = gitdirAt(root.resolve("elsewhere.git"))
+    Files.createDirectories(chained.resolve("metadata"))
+    Files.writeString(chained.resolve("metadata/pointer"), "gitdir: ../elsewhere.git\n")
+    Files.createSymbolicLink(chained.resolve(".git"), Paths.get("metadata/pointer"))
+    assertEquals(noGit(chained), Some(NoGit.Gitdir("../elsewhere.git", elsewhere, Some(root))))
+    // The warning names the pointer as written, the resolved gitdir and the launch; the agent's
+    // sentence names the path git fails on inside.
+    val warning = noGitWarning(noGit(submodule).get)
+    assert(warning.contains("../.git/modules/lib"), warning)
+    assert(warning.contains(moduleGitdir.toString), warning)
+    assert(warning.contains(superproject.toString), warning)
+    assert(noGitInstruction(noGit(submodule).get).contains("`/workspace/.git`"))
+    assert(noGitInstruction(noGit(below).get).contains("above the project directory"))
+    // Nothing said where git works: a relative pointer into the project, a symlink to one, a .git
+    // directory, and a directory in no repository at all.
+    val inside = Files.createDirectories(root.resolve("inside"))
+    gitdirAt(inside.resolve("real.git"))
+    Files.writeString(inside.resolve(".git"), "gitdir: real.git\n")
+    assertEquals(noGit(inside), None)
+    val relinked = Files.createDirectories(root.resolve("relinked"))
+    gitdirAt(relinked.resolve("real.git"))
+    Files.createSymbolicLink(relinked.resolve(".git"), Paths.get("real.git"))
+    assertEquals(noGit(relinked), None)
+    val plain = Files.createDirectories(root.resolve("plain"))
+    gitdirAt(plain.resolve(".git"))
+    assertEquals(noGit(plain), None)
+    assertEquals(noGit(Files.createDirectories(root.resolve("none"))), None)
+
   test("a refused symlink form leaves no artifact through the link"):
     // bazelbuild/bazel#28515: setup must not write through a pre-seeded symlink, so the refusal comes before any
     // creation.

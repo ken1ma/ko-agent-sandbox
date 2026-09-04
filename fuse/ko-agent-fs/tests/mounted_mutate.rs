@@ -65,7 +65,7 @@ fn openat_write(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
 
 /// `linkat(2)` from a held directory handle to a name at the mount root: the same stale-handle
 /// question asked of the source-side rule that refuses aliasing a control inode out to a writable
-/// name (`doc/git-metadata.md`, "Operations that carry these mutations").
+/// name (`doc/git-metadata.md`, "Operations that make these mutations").
 fn linkat_out(dirfd: &File, relative: &str, root: &OwnedFd, newname: &str) -> nix::Result<()> {
     let old = CString::new(relative).expect("a relative path without a NUL");
     let new = CString::new(newname).expect("a name without a NUL");

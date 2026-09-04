@@ -348,7 +348,7 @@ object RunOnHostPolicy:
     // guessed would fail open.
     def topLevel(all: Seq[String]): Option[String] =
       // mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
-      // and a key there would be recognized here and ignored there. Refused, carried as the value.
+      // and a key there would be recognized here and ignored there. Refused, and the refusal is the value.
       if all.exists(line => DocumentMarker.matches(line)) then Some("multi-document YAML")
       else all.collect { case TopLevelJvmKey(value) => value } match
         case Seq()      => None
@@ -357,7 +357,7 @@ object RunOnHostPolicy:
         case _ => Some("duplicate mill-jvm-version keys")
     // The //| lines as readBuildHeader takes them: `//|` alone is an empty line, `//| ...` is
     // data, anything else starting `//|` is an error, and so is a `//|` line after the initial
-    // run — it scans the whole file. An error there is a refusal here, carried as the value.
+    // run — it scans the whole file. An error there is a refusal here, returned as the value.
     def header(name: String): Option[Option[String]] =
       lines(name).map: all =>
         val run = if name.endsWith(".yaml") then Right(all)

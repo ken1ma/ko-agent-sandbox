@@ -7,8 +7,7 @@ The AI agents in this sandbox, by default,
 1. reach no user files except the project directory (current directory)
 1. reach no network except the launcher-owned defaults:
     1. the model providers of the agents
-    1. a curated set of sites, limited to reads and named grants, such as `git clone`/`pull`,
-       modified per project by `.ko-agent-sandbox/egress/rule`
+    1. a curated set of sites, limited to reads and named grants, such as `git clone`/`pull`
 
 How it is put together:
 
@@ -27,7 +26,7 @@ How it is put together:
     │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
     │        │ live, the default) with git control   │                             │
     │        │ state (including hooks) frozen at any │                             │
-    │        │ depth, or read-only (--write=reject)  │                             │
+    │        │ depth                                 │                             │
     │        │                                       │                             │
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
@@ -251,8 +250,7 @@ checkout — [Development](#development).
 
 ### `--build`
 
-1. Builds the containers in the diagram with `podman build`, after refreshing every remote image
-   source with a fail-closed pull.
+1. Builds the containers in the diagram with `podman build`.
     1. Image-producing verbs require their source registries on every run: `--build` reaches
        Docker Hub, `ghcr.io` and `gcr.io`; `--update` reaches `ghcr.io`; `--self-test` reaches
        Docker Hub. A warm cache does not provide an offline mode.
@@ -272,10 +270,8 @@ checkout — [Development](#development).
        `/etc/fuse.conf.ko-agent-sandbox.orig`, and declining prints the script to run yourself.
        One-time until the machine is recreated. Your native Linux host is never touched or
        prompted for.
-    1. Every `--write=live` session mounts through it unless
-       `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` (above) selects the mount pins, and a session that
-       does says so on its `workspace:` line; `--write=reject` binds the tree read-only and needs
-       neither.
+    1. A session under the mount pins (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, above) instead of
+       the filter says so on its `workspace:` line.
     1. One filter daemon per project, shared by that project's concurrent sessions and never
        across projects ("workspace: live; ko-agent-fs filter in the podman machine, reusing the
        mount shared by sessions in the same project directory"; "on the host" on Linux); when the
@@ -333,9 +329,9 @@ agents' model providers as opaque tunnels, a curated catalog of TLS-inspected do
 package-registry and forge hosts — under the `--egress=` profile selected at launch, modified by
 the project's `.ko-agent-sandbox/egress/rule`, one line per rule:
 
-    deny https://github.com/                     # the forge, whole
+    deny https://github.com/                         # the forge, whole
     allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
-    allow https://api.example/ tunnel            # an opaque tunnel: the widest word
+    allow https://api.example/ tunnel                # an opaque tunnel: the widest word
 
 `doc/egress-proxy.md` is the reference: the profiles, the rule grammar and what each word grants,
 the policy a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
@@ -349,10 +345,9 @@ replace only the working conventions for a project, put yours at
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's parts in
 `container/ko-agent-sandbox/` are the starting point. The sandbox facts and session authority are
 not overridable, and the file cannot be empty — delete it to return to the image's. The
-directory's rules above apply: one filename, no symlinks, read on the host at launch, uneditable
-from the sandbox, committed and reviewed with the rest. Instructions that should merely *add* to
-the image's belong in the agent's own project-level instruction file, such as `CLAUDE.md`,
-`AGENTS.md`, or `GEMINI.md`.
+directory's rules apply (SECURITY.md, "Why the policy is per project, in the project, and
+read-only"). Instructions that should merely *add* to the image's belong in the agent's own
+project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`.
 
 ## Development
 
@@ -435,7 +430,7 @@ the image's belong in the agent's own project-level instruction file, such as `C
     sbt dist
     cd target/dist
     native-image --enable-native-access=ALL-UNNAMED \
-      -H:IncludeResources='sandbox-build/.*|default/.*|agentsandbox/.*' \
+      -H:IncludeResources='sandbox-build/.*|defaults/.*|agentsandbox/.*' \
       -o ko-agent-sandbox -jar ko-agent-sandbox.jar
 
 1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting

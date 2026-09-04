@@ -144,7 +144,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("the CONNECT gate refuses everything but an allowlisted host on 443"):
     inSession()
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
-    // as an error carrying the proxy's status instead of as an HTTP code.
+    // as an error with the proxy's status instead of as an HTTP code.
     Vector(
       "https://unlisted.invalid/",  // reserved (RFC 6761): never an admitted host
       "https://8.8.8.8/",

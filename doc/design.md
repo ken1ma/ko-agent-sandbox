@@ -27,7 +27,7 @@ this project's operating model deliberately avoids:
 ### No per-repository `GitRead(repository)` policy
 
 The policy names destinations and its grant words name operations; nothing names a repository,
-because public reading is meant to be broad and the sandbox carries no credential a finer grant
+because public reading is meant to be broad and the sandbox holds no credential a finer grant
 would attenuate. SECURITY.md, "Why the policy is not a capability system", has the argument and
 the one condition that would reopen it.
 
@@ -96,7 +96,7 @@ A URL is the form every comparable project's operator already writes, and a path
 side is what every one of them has been asked for — the multi-tenant host a project adds for one
 tenant's content, its own bucket, one owner on a forge: sandbox-runtime's open request names
 `storage.googleapis.com` and `raw.githubusercontent.com`, Copilot's coding-agent firewall accepts
-a URL entry beside a domain, coder/boundary carries path rules:
+a URL entry beside a domain, coder/boundary has path rules:
 
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/468
 - https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall
@@ -104,7 +104,7 @@ a URL entry beside a domain, coder/boundary carries path rules:
 - OpenBSD pf.conf(5), relayd.conf(5), doas.conf(5) and doas(1); relayd's move to last-matching
   rules, 2014-07-09: https://github.com/openbsd/src/commit/cb8b0e5645
 
-SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
+SECURITY.md ("Adding hosts, not patterns") has the reasoning;
 `resolvePolicy` enforces it, and the tests hold the resolved policy to a plain ordered evaluator
 over a drawn domain. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
@@ -153,7 +153,7 @@ and its `podman create`, where the marker exists and the container does not (`Ko
 workspace FUSE filter's mount lifecycle"). Arranging that interleaving at an arbitrary instant
 would need the launcher pausable from outside — a variable read on the launch path. It would need
 to be known, documented in `--help`, and fail closed like every other variable: boundary code
-carrying scaffolding for a test, on the path that decides whether the filter is mounted at all.
+containing scaffolding for a test, on the path that decides whether the filter is mounted at all.
 
 `MountLifecycleTest` reaches the same evidence without it; its header has how. What stays out of
 reach is an interleaving at some other instant — which a pause hook would not enumerate either.
@@ -262,7 +262,7 @@ Conflating them is what makes verification look larger than it is.
 
 - **The code's own logic** depends on neither of the others. The privileged dev rig settles it once,
   on whichever host a developer has (`../fuse/ko-agent-fs/doc/testing.md`).
-- **The kernel** is not one kernel: every podman machine carries its own — Fedora CoreOS on macOS, a
+- **The kernel** is not one kernel: every podman machine runs its own — Fedora CoreOS on macOS, a
   Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on what
   a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
   (`../fuse/ko-agent-fs/doc/architecture.md`).
@@ -313,8 +313,9 @@ the plural marker with the rest of the word (`doc`, like `bin`, `lib`, `src`), a
 names the directory's role in the singular (`probe`, like `spec`, `vendor`, `container`), never its
 contents' count. An abbreviation is cut as short as it stays unambiguous — `conf`, not `config`.
 Where a tool mandates the name, the tool wins: Cargo's `tests/` and `examples/`, sbt's
-`src/main/resources` and `src/test`, XDG's `~/.config`. The accepted prices of `doc` over
-`docs`: SECURITY.md stays at the repository root (GitHub's community-health lookup reads only
+`src/main/resources` and `src/test`, XDG's `~/.config`; where a grammar spells it, the grammar
+wins: the proxy's `defaults/` is the `defaults` of `deny defaults`. The accepted prices of `doc`
+over `docs`: SECURITY.md stays at the repository root (GitHub's community-health lookup reads only
 root, `.github/` and `docs/`); a future GitHub Pages site publishes through an Actions workflow
 rather than the branch-folder setting; a future mdoc build sets `mdocIn` instead of inheriting
 its default.

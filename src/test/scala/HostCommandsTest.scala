@@ -1,7 +1,7 @@
 // How the launcher runs host executables and what its scripts may resolve: trusted-path lookup,
 // and the fixed PATH every generated script declares before anything else. Then how it writes the
 // state files those runs mount: the mode they are never briefly without, and the name they are
-// never briefly missing. Then how its own lines carry severity: one label, one place it is
+// never briefly missing. Then how its own lines show severity: one label, one place it is
 // spelled, and colour only where a terminal will render it.
 
 package agentsandbox.launcher
@@ -37,12 +37,12 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(emphasized(warning, color = false), warning)
     assertEquals(
       emphasized(warning, color = true),
-      "\u001b[33mwarning:\u001b[0m podman runs on 3 GiB of memory\n  raise it with `podman machine set`",
+      "\u001b[38;5;208mwarning:\u001b[0m podman runs on 3 GiB of memory\n  raise it with `podman machine set`",
     )
-    // A block carries a label per line, and a line that has none keeps its own spelling.
+    // A block has a label per line, and a line that has none keeps its own spelling.
     assertEquals(
       emphasized("error: no\nplain\nwarning: yes", color = true),
-      "\u001b[31merror:\u001b[0m no\nplain\n\u001b[33mwarning:\u001b[0m yes",
+      "\u001b[38;5;208merror:\u001b[0m no\nplain\n\u001b[38;5;208mwarning:\u001b[0m yes",
     )
     // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
     assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
@@ -84,7 +84,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(stampedEntry(hosts, "stamp-c"), Some(""))
 
   // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
-  // directories, which on a Windows runner carry their own ':' after the drive letter — the
+  // directories, which on a Windows runner have their own ':' after the drive letter — the
   // string cannot be built there, not merely the branch untested. The Windows branch has its own
   // test, which runs everywhere.
   private val isWindows = scala.util.Properties.isWin
@@ -93,7 +93,7 @@ class HostCommandsTest extends munit.FunSuite:
     PosixFilePermissions.toString(Files.getPosixFilePermissions(path))
 
   test("executables resolve only through absolute PATH entries"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     val dir = Files.createTempDirectory("path-resolve").toRealPath()
     val tool = dir.resolve("mytool")
     Files.createFile(tool)
@@ -105,7 +105,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("mytool", "", Os.Linux), None)
 
   test("an absolute PATH entry inside the project is skipped, not preferred"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     // The absolute-entry-inside-the-project case (HostCommands.findOnPath's doc, design.md "No
     // repository-controlled host executable resolution").
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
@@ -131,7 +131,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("podman", sibling.toString, Os.Linux, project), Some(neighbour))
 
   test("an executable symlinked out of the project is skipped, and the real path is returned"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
     val shipped = Files.createDirectories(project.resolve("bin"))
     val planted = shipped.resolve("podman")

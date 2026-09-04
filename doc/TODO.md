@@ -46,12 +46,12 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
   banner the same way.
 - [ ] The vetting admits those addresses and nothing else of the private space, and only when
   the CONNECT names the address itself: a public name resolving to a private address stays
-  refused, or a name whose answer changes, or carries one public and one private record, reaches
+  refused, or a name whose answer changes, or has one public and one private record, reaches
   the LAN through the name.
 - [ ] An exception to the lifecycle's step 10 for the listed addresses, and only those: a
   ClientHello with no SNI is the form a client sends to an address and is admitted there, one
   naming any host stays refused. Opaque, as the simplest form; an inspected address is
-  possible — the leaf can carry an `iPAddress` name — and is its own further decision. Opaque,
+  possible — the leaf can include an `iPAddress` name — and is its own further decision. Opaque,
   the consequence is stated with it: nothing binds the tunnel to a name, so the origin's
   identity rests on the client's own certificate check, which the client may skip, and the
   grant reaches every application endpoint selectable at the address — by `Host`, by HTTP/2's
@@ -124,14 +124,14 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
 
 `--self-test` runs share rows after the crate's suites (`SelfTestShare.scala`,
 `../fuse/ko-agent-fs/doc/testing.md`): the share is what the container suites cannot reach,
-and the coherency rows cross it launcher-driven and venue-recorded, the scratch gone on
+and the coherency rows cross it launcher-driven and machine-recorded, the scratch gone on
 success and kept on failure — its files are how a row that measured a refusal is told apart from a
 row where the probe broke — with a killed run leaving nothing outside the mounts/ sweep,
 `--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
 
 - [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
   folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
-  halves are deleted when their rows land. Their venue record adds the upper volume's filesystem,
+  halves are deleted when their rows land. Their machine record adds the upper volume's filesystem,
   which is what the staged design needs the answers for (`plan-staged.md`).
 - [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
   the container — a host-native build turns host writes from an occasional human edit into
@@ -213,12 +213,12 @@ binary identity, and the installed filter's mount self-test.
   on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
   its moving external database must not gate installation.
 - [ ] Keep the artifact-local gates above in `--build`, and keep the mounted filter suites in
-  `--self-test`; CI does not prove a user's FUSE venue.
+  `--self-test`; CI does not prove the filter on a user's own machine.
 
 ## Before the first release — the published identity
 
 - [ ] One decision, several names that must fall out of it together: the jar's artifact name and
-  publication coordinates; the Scala package names (`agentsandbox.*`, carrying neither the
+  publication coordinates; the Scala package names (`agentsandbox.*`, containing neither the
   `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` —
   OCI convention wants a reverse-DNS key, and the right prefix is this same identity, so deciding
   the key alone would decide the identity by accident). Until then a changed key self-heals

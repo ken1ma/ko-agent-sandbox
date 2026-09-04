@@ -1,7 +1,7 @@
-// The bundle version lock, end to end: a default-named image whose label does not carry this
+// The bundle version lock, end to end: a default-named image whose label does not hold this
 // jar's digest refuses the launch with the rebuild hint, while an explicitly overridden image
 // only warns (AgentSandboxLauncher.bundleMismatch decides both; this drives real launches). The
-// sandbox image carries the whole demonstration — the proxy image goes through the same
+// sandbox image is the whole demonstration — the proxy image goes through the same
 // bundleMismatch, unit-pinned in AgentSandboxLauncherTest.
 //
 // The mislabelled fixture is built here, FROM the real image with only the label replaced, so

@@ -2,7 +2,7 @@
 
 `--run-on-host` (`run-on-host.md`) meets part of this plan's goal: an agent's sbt and `mill`
 builds run on the host against a per-project cache of their own, so they neither warm nor need the
-container's. What this plan still carries is the container's own Scala tooling — which runs
+container's. What this plan still covers is the container's own Scala tooling — which runs
 `scala-cli`, `scalafmt`, `cs install`, and sbt when the host channel is not in force — and the
 image-home relocation that removes the copy-up cost.
 

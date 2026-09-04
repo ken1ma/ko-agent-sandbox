@@ -236,7 +236,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
   test("a dead shim ends the running command: teardown follows the descriptor"):
     channel((_, cwd, _) =>
       // The validated working directory arrives as an argument, so the markers spell it out; the
-      // child's own cwd is the broker's and carries nothing.
+      // child's own cwd is the broker's and says nothing.
       Seq(
         "sh", "-c",
         s"echo started > $cwd/started; trap 'echo 143 > $cwd/ended; exit 143' TERM; " +

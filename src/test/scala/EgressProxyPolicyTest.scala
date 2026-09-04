@@ -36,7 +36,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     )
 
   private def summary(inspected: Int, opaque: Int, denied: Int, widening: Int = 0): String =
-    s"policy summary: $inspected inspected hosts; $opaque opaque hosts; $denied ambient denials; " +
+    s"policy summary: $inspected inspected hosts; $opaque opaque hosts; $denied denial patterns; " +
       s"$widening widening lines"
 
   // The profile reads as the policy spells it; case is not emphasis (HostCommands, "Emphasis").
@@ -98,7 +98,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("a terminal reads the profile as the mode it is, and never in the severity hue"):
     assertEquals(
       egressBanner("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0), color = true),
-      "egress: \u001b[38;5;208mdeny-unless-allowed\u001b[0m; 1 inspected, 0 opaque",
+      "egress: \u001b[38;5;207mdeny-unless-allowed\u001b[0m; 1 inspected, 0 opaque",
     )
     // The counts are what the profile resolved to, not a mode of their own.
     assertEquals(
@@ -106,7 +106,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
         "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1, 0),
         color = true,
       ),
-      "egress: \u001b[38;5;208mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 opaque",
+      "egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 opaque",
     )
     // The permissive line is tinted whole by the caller, so nothing inside it ends that colour.
     assertEquals(
@@ -182,7 +182,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
     assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
 
-  test("the policy env args carry the authority selection and each file's variable"):
+  test("the policy env args pass the authority selection and each file's variable"):
     assertEquals(
       policyEnvArgs(
         "deny-unless-allowed",
@@ -229,7 +229,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       wideningEntries("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0)),
       Vector.empty,
     )
-    // The consumers carrying the policy alone get the text up to the first metadata line, whatever
+    // The consumers holding the policy alone get the text up to the first metadata line, whatever
     // follows it, and unchanged when nothing does.
     val policy = "egress profile: deny-unless-allowed\nallow https://a/ read"
     assertEquals(

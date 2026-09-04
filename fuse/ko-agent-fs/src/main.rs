@@ -60,20 +60,20 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
 
 /// Which stage a self-test failure came from, because only this code knows. Everything up to and
 /// including the mount is the environment's — the scratch tree it needs, and the mount itself — and
-/// a caller can answer it by changing the venue; everything after the mount is this filter's own
-/// behavior, which no venue change repairs. The stage reached is the whole of the classification,
-/// and it is not a claim about the cause: the accompanying message carries what detail there is —
+/// a caller can answer it with another machine or more privilege; everything after the mount is
+/// this filter's own behavior, which neither repairs. The stage reached is the whole of the classification,
+/// and it is not a claim about the cause: the accompanying message has what detail there is —
 /// sometimes the exact failure, sometimes an error and the usual suspects — so a caller passes it
 /// on rather than narrowing it into a diagnosis nothing here made. A caller that cannot tell the
-/// two apart either retries a defect with more privilege or reports a venue as a bug.
+/// two apart either retries a defect with more privilege or reports a setup failure as a bug.
 enum SelfTestFailure {
-    Venue(String),
+    Setup(String),
     Defect(String),
 }
 
-/// The exit code for [`SelfTestFailure::Venue`]. Also spelled in the launcher, which reads it to
+/// The exit code for [`SelfTestFailure::Setup`]. Also spelled in the launcher, which reads it to
 /// decide whether to retry; a test holds the two together (`KoAgentFsTest`).
-const SELF_TEST_VENUE_EXIT: u8 = 3;
+const SELF_TEST_SETUP_EXIT: u8 = 3;
 
 /// `--self-test`: prove, against a scratch tree that is never the user's workspace, that this
 /// binary can mount in *this* environment, that the policy actually refuses, and that a host write
@@ -90,9 +90,9 @@ fn self_test() -> ExitCode {
             println!("ko-agent-fs self-test ok");
             ExitCode::SUCCESS
         }
-        Err(SelfTestFailure::Venue(why)) => {
-            eprintln!("ko-agent-fs self-test failed, and the venue is why: {why}");
-            ExitCode::from(SELF_TEST_VENUE_EXIT)
+        Err(SelfTestFailure::Setup(why)) => {
+            eprintln!("ko-agent-fs self-test failed in its setup, before any check: {why}");
+            ExitCode::from(SELF_TEST_SETUP_EXIT)
         }
         Err(SelfTestFailure::Defect(why)) => {
             eprintln!("ko-agent-fs self-test failed: {why}");
@@ -108,13 +108,13 @@ fn self_test_run() -> Result<(), SelfTestFailure> {
     let mountpoint = base.join("mnt");
     for directory in [&backing, &mountpoint] {
         std::fs::create_dir_all(directory).map_err(|err| {
-            SelfTestFailure::Venue(format!(
+            SelfTestFailure::Setup(format!(
                 "cannot create scratch directory {directory:?}: {err}"
             ))
         })?;
     }
     std::fs::write(backing.join("seed"), b"seed\n").map_err(|err| {
-        SelfTestFailure::Venue(format!("cannot write to the scratch backing: {err}"))
+        SelfTestFailure::Setup(format!("cannot write to the scratch backing: {err}"))
     })?;
 
     let result = self_test_mounted(&backing, &mountpoint);
@@ -130,11 +130,11 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
         OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|err| SelfTestFailure::Venue(format!("cannot open the scratch backing: {err}")))?;
+    .map_err(|err| SelfTestFailure::Setup(format!("cannot open the scratch backing: {err}")))?;
 
     let session =
         fuser::spawn_mount(KoAgentFs::new(root), mountpoint, &mount_config()).map_err(|err| {
-            SelfTestFailure::Venue(format!(
+            SelfTestFailure::Setup(format!(
                 "mount failed: {err}\n\
                  Usual causes: no fusermount3 on PATH, or allow_other refused because\n\
                  /etc/fuse.conf lacks user_allow_other\n\
@@ -150,13 +150,13 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
             Ok(stat) if stat.filesystem_type() == FUSE_SUPER_MAGIC => break,
             _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(stat) => {
-                return Err(SelfTestFailure::Venue(format!(
+                return Err(SelfTestFailure::Setup(format!(
                     "the mountpoint never became a FUSE mount (type {:?})",
                     stat.filesystem_type()
                 )));
             }
             Err(err) => {
-                return Err(SelfTestFailure::Venue(format!(
+                return Err(SelfTestFailure::Setup(format!(
                     "statfs on the mountpoint kept failing: {err}"
                 )));
             }
@@ -296,7 +296,7 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
             if Instant::now() >= stamped {
                 return Err(
                     "the scratch backing did not move the file's mtime within 5 s of rewriting\n\
-                     it, so this venue cannot demonstrate the invalidation either way — its\n\
+                     it, so this scratch backing cannot demonstrate the invalidation either way — its\n\
                      timestamps are too coarse. Point the scratch tree at a filesystem with\n\
                      sub-second mtimes (doc/architecture.md, \"Coherency\")"
                         .to_string(),

@@ -15,7 +15,7 @@
 /// the real deny surface rather than a wish list. Everything that *creates* a name — `create`,
 /// `mkdir`, `mknod`, `symlink`, a rename's destination, a link's destination — goes through
 /// [`authorize_create`] instead, because the `.git` name rule has to see the new name. A truncate
-/// arrives as `open(O_TRUNC)` or a `setattr` carrying a size, so it is `Write` or `SetAttr` by the
+/// arrives as `open(O_TRUNC)` or a `setattr` with a size, so it is `Write` or `SetAttr` by the
 /// time it reaches here. Xattr variants belong here the day `setxattr`/`removexattr` are
 /// implemented at all (`doc/TODO.md`, "Non-TODOs") and not before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub enum Mutation {
     Link,
 }
 
-/// A decision, carrying a stable reason for the deny log (never file contents). A denial maps to
+/// A decision, with a stable reason for the deny log (never file contents). A denial maps to
 /// `EPERM` at the FUSE boundary — the immutable-inode / fanotify-deny convention for "this
 /// operation is forbidden regardless of file mode", not `EACCES` ("you lack access").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ pub enum GitContext {
     /// gitdir entry itself — the `.git` directory root or a `.git` pointer file — which is control.
     InGit(Vec<Vec<u8>>),
     /// A directory under `<gitdir>/modules` that is not itself a gitdir root — the namespace a
-    /// submodule whose name carries a `/` creates.
+    /// submodule whose name contains a `/` creates.
     ///
     /// It exists because a submodule's name defaults to its *path*, so `libs/foo` puts the real
     /// gitdir at `modules/libs/foo` and leaves `modules/libs` holding nothing but other gitdirs.
@@ -540,7 +540,7 @@ mod tests {
                 "protected-sandbox-config: refusing to remove the launcher's configuration"
             )
         );
-        // Every mutation the enum carries, so the deny surface is the type rather than the cases
+        // Every mutation the enum lists, so the deny surface is the type rather than the cases
         // thought of here. A rename's destination is not among them: it creates a name, so it goes
         // through authorize_create above.
         for op in [

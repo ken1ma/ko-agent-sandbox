@@ -81,7 +81,7 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
 The prefix form takes the policy's own matcher: the canonical-form rule for `PREFIX` and the
 literal comparison are the proxy's rule-path ones (doc/egress-proxy.md, "The rule file";
 SECURITY.md, "Adding hosts, not patterns"), and the policy's own path, if the host's line
-carries one, applies first. Where requests may go and where a credential may be spent are two facts
+has one, applies first. Where requests may go and where a credential may be spent are two facts
 and stay two lines; the comparison is one function.
 
 `EnvironmentName` admits no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
@@ -261,7 +261,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - Repository scoping (Claude Code cloud's "attached repositories" 403): needs path knowledge
   per forge API; a separate increment on top of this one.
 - Response rewriting, body rewriting, query rewriting: the recurring failure of broader
-  rewriters is breaking applications that carry their own tokens (docker/sbx-releases #8);
+  rewriters is breaking applications with tokens of their own (docker/sbx-releases #8);
   header-only is the durable form.
 - Brokering for tunnel hosts, hence the Claude/Codex logins ("Claude Code and Codex
   logins: excluded").

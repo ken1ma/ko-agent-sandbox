@@ -1,6 +1,6 @@
 // The prerequisite validator's exit criterion: supported and unsupported layouts are classified
 // correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
-// carries a percent-encoded '+', a literal '+' and a directory named like an archive, and the
+// contains a percent-encoded '+', a literal '+' and a directory named like an archive, and the
 // install directory contains a space, which is exactly the input a quoting or regex bug eats.
 
 package agentsandbox.launcher
@@ -370,7 +370,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       millVersion(project, env(), files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
       Right("1.1.8"),
     )
-    // build.mill exists and carries no marker: build.mill.scala is never consulted.
+    // build.mill exists and has no marker: build.mill.scala is never consulted.
     assertEquals(
       millVersion(
         project,

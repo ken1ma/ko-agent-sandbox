@@ -1,4 +1,4 @@
-// The share rows' pure half: the probe command carrying a session's own flags, the line protocol
+// The share rows' pure half: the probe command with a session's own flags, the line protocol
 // both sides speak, and the names that keep a killed run inside the reset sweep's reach.
 
 package agentsandbox.launcher
@@ -56,11 +56,11 @@ class SelfTestShareTest extends FunSuite:
     // (verification-log.md, "coherency on Windows"); the HELD refusal row stands in its place.
     assert(!WindowsSessionProbe.contains("mmap-visible"))
 
-  test("the machine venue script asks about the backing path without splicing it"):
-    val script = machineVenueScript("/Users/x/proj/self-test-share.1")
+  test("the machine view script asks about the backing path without splicing it"):
+    val script = machineViewScript("/Users/x/proj/self-test-share.1")
     assert(!script.contains("/Users/x/proj"))
     assert(script.contains("base64 -d"))
     assert(script.contains("uname -r"))
-    // findmnt, not stat: virtiofs registers under FUSE's statfs magic, and the venue line exists
+    // findmnt, not stat: virtiofs registers under FUSE's statfs magic, and the machine line exists
     // to tell the share from the filter's own mounts.
     assert(script.contains("findmnt"))

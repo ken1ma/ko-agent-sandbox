@@ -38,7 +38,7 @@ default. No configuration is required for this to fire — an executable of the 
 **Vector:** write or replace any file under a gitdir's `hooks/`.
 
 Hooks are not the only file whose *content* git executes. The rebase/cherry-pick **todo** —
-`rebase-merge/git-rebase-todo`, `rebase-apply/`, `sequencer/todo` — can carry `exec <command>`
+`rebase-merge/git-rebase-todo`, `rebase-apply/`, `sequencer/todo` — can contain `exec <command>`
 lines, and a later host `git rebase --continue` (or `cherry-pick --continue`) runs them. This is the
 same class as a hook, and easy to miss precisely because git writes these paths during ordinary
 operation: watching what git writes suggests "operational, keep writable", but the execution lens
@@ -182,8 +182,8 @@ being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the r
 
 **The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it. On
 each supported backing, create every candidate name through the mount and assert host
-`lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") carries the corpus, the
-procedure and the pass criterion; `verification-log.md` carries each run with its OS and filesystem
+`lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") has the corpus, the
+procedure and the pass criterion; `verification-log.md` records each run with its OS and filesystem
 versions, since a fold table is specific to both; a backing without a run there has this rule's
 coverage as an assumption, and `TODO.md` lists which those are.
 
@@ -207,7 +207,7 @@ which is also what stops the sandbox writing a `HEAD` into a namespace to be ask
 chose the answer to.
 
 
-## Operations that carry these mutations
+## Operations that make these mutations
 
 The immutable set must hold against *every* way to mutate a target, not just `write()`. For a
 protected path or a protected destination:
@@ -219,7 +219,7 @@ protected path or a protected destination:
 The last two are the exception, and listed anyway because this is the requirement rather than the
 implementation: `setxattr`/`removexattr` are unimplemented, so nothing reaches the backing store
 through them and no policy has to run (`fs.rs`'s deny-surface note has what a caller sees).
-`policy::Mutation` deliberately carries no xattr variant until that changes (`TODO.md`,
+`policy::Mutation` deliberately has no xattr variant until that changes (`TODO.md`,
 "Non-TODOs"), and the gate arrives with the implementation.
 
 Rename and exchange are the double-sided cases: `rename evil → <gitdir>/hooks/pre-commit` is a
@@ -357,7 +357,7 @@ project directory", has the security reason for each):
 - `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `~`.
   The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror`
   write only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name
-  rule can refuse without swallowing legitimate projects that carry them. The guard refuses a bare
+  rule can refuse without swallowing legitimate projects that have them. The guard refuses a bare
   layout standing at the workspace root at mount; one the sandbox creates — below the root, or at
   the root after that check — is the residue SECURITY.md records ("The project directory"): running
   host git inside an agent-created directory is running the agent's output.
@@ -371,7 +371,7 @@ project directory", has the security reason for each):
 - `git rebase` (any form — the merge backend writes `rebase-merge/` even for a clean rebase),
   `git am` (writes `rebase-apply/`), and `git cherry-pick`/`git revert` of a *range* or when a
   conflict makes git open a sequence (writes `sequencer/`) — all blocked, because their todo
-  can carry `exec` lines a later host `git rebase --continue` would run. A single, clean
+  can contain `exec` lines a later host `git rebase --continue` would run. A single, clean
   `cherry-pick`/`revert` (no sequence) still works. Do rebases on the host, or on a clone under
   `~`.
 
@@ -416,7 +416,7 @@ fail against it.
 **Hooks (group 1):** `write`, `pwrite`, `truncate`, `ftruncate`, `open O_TRUNC`, `chmod`, `chown`,
 `unlink`, `rmdir`, `rename` from/to, `link`, `symlink`, `mknod` against `<gitdir>/hooks/**` — each
 fails. Same suite against `modules/<n>/hooks/**` and `worktrees/<n>/hooks/**` to prove the
-recursion. Not `setxattr`/`removexattr` ("Operations that carry these mutations" has why).
+recursion. Not `setxattr`/`removexattr` ("Operations that make these mutations" has why).
 
 **Config (group 2):** direct mutation of `config`, `config.worktree`, `commondir` fails; real
 `git config --local core.hooksPath …` and `git config --local core.fsmonitor …` fail. An

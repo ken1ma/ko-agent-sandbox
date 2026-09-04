@@ -45,7 +45,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     assert(ca.getSubjectX500Principal.getName.contains("myproj"))
     ca.verify(ca.getPublicKey) // self-signed
 
-  test("the leaf carries exactly the inspected hosts and chains to the CA"):
+  test("the leaf names exactly the inspected hosts and chains to the CA"):
     val ca = mintCa("proj")
     // A sample list: which hosts the leaf must name is the proxy image's to say at launch; this
     // pins the mechanics — every requested name arrives as a DNS SAN, in order.
@@ -58,7 +58,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     assertEquals(eku, Vector("1.3.6.1.5.5.7.3.1")) // serverAuth
     leaf.verify(parse(ca.certificatePem).getPublicKey)
 
-  test("the chain carries the key identifiers strict verifiers require"):
+  test("the chain has the key identifiers strict verifiers require"):
     // The leaf's AKI must name the CA's SKI, or matching still fails.
     val SkiOid = "2.5.29.14"
     val AkiOid = "2.5.29.35"

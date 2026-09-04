@@ -18,7 +18,7 @@ never mounted — everything credentialed happens on the host (the README's priv
 workflow generalizes: push, publish, deploy, administer). The one exception is the agents' own
 provider logins, kept in the persistent volume because no agent functions without them.
 
-That is a claim about what the launcher carries in unasked. A credential the user puts in the
+That is a claim about what the launcher passes in unasked. A credential the user puts in the
 project directory themselves is in the sandbox like any other file, and one forwarded with
 `--env` is in its environment — tolerated rather than provided for, and reaching whatever this
 project's egress policy admits ("Exfiltration through an allowed host", below). `--env` is
@@ -44,7 +44,7 @@ address at connection time.
 
 **A session reaching another project, or persisting outside declared state.** Agent state is a
 per-project volume and deliberately affects later sessions of that project ("What the persistent
-volume carries", below); the rest of the sandbox home is discarded on exit. Claude Code's hooks
+volume holds", below); the rest of the sandbox home is discarded on exit. Claude Code's hooks
 are disabled (the sandbox Containerfile's `disableAllHooks` note has the reasoning). The networks
 and proxy are per run and removed with it, so concurrent sessions cannot reach one another through
 those networks and no network object is reused.
@@ -76,9 +76,15 @@ whose gitdir, config or hooks reach host git through a writable workspace path �
 gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktree, a `commondir`
 pointing back in — and a bare layout standing at the workspace root. A gitdir-shaped directory
 *without* a `.git` name elsewhere in the tree is the residue "The project directory" describes.
+A repository whose control directory is not inside the project — a submodule checkout, a linked
+worktree, a separate git dir, a `.git` naming one absolutely, a launch from a subdirectory of the
+repository — passes every guard, since no workspace path then holds control bytes, and gives the
+session no git at all: the container has the project directory and nothing above or beside it.
+The launch says so, and the agent's instructions with it; a warning rather than a refusal, because
+the host's git is untouched and a session that only edits files is a legitimate one.
 
 This is the default, with qualifications under Not defended: a session that sets
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, which do not carry the claim
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets mount pins instead, for which the claim does not hold
 ("The `.git` pins of `WORKSPACE_GUARD=none`"); and on some platforms the filter has no measured
 evidence ("The workspace filter, on the platforms where it is unverified").
 
@@ -101,10 +107,10 @@ a shortcut would be tempting:
 - the **project tree** is never written by the launcher, except for the empty directories that the
   read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode.
   An empty `.ko-agent-sandbox`, created when absent because that mode's read-only mount-back must
-  exist — without it its writable raw tree would let a session write the egress policy governing
-  the next one. And in a project with no repository, an empty `.git`: the launcher binds its own
-  empty directory read-only over that name (so a sandbox cannot fabricate a repository for host git
-  to discover), and the container runtime creates the mount target it needs in the project. The
+  exist ("A project loosening its own confinement", above). And in a project with no repository, an
+  empty `.git`: the launcher binds its own empty directory read-only over that name (so a sandbox
+  cannot fabricate a repository for host git to discover), and the container runtime creates the
+  mount target it needs in the project. The
   filter denies creating either name itself and needs no mount target, and reject's tree is
   read-only whole, so those modes write nothing;
 - the **project tree's SELinux labels**: on an enforcing host, the raw bind of
@@ -112,7 +118,7 @@ a shortcut would be tempting:
   directory recursively — a host-metadata write, said in that mode's `workspace:` line every
   session it happens. The filter's mountpoint needs no relabel, a permissive or disabled host
   reads unrelabeled and is never relabeled, and `--write=reject` refuses on an enforcing host
-  rather than relabeling, unless the tree already carries a shared container-accessible context —
+  rather than relabeling, unless the tree already has a shared container-accessible context —
   a container type with no MCS categories, since categories from a previous `:Z` are private to
   the container they were minted for;
 
@@ -206,10 +212,9 @@ for a contribution from a stranger. That includes a repository the agent created
 in both guard modes: under `WORKSPACE_GUARD=none` any layout is left unpinned, and the filter —
 which refuses creating a `.git` entry — cannot refuse a *bare layout*, built from ordinary names
 (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks are served as
-writable data anywhere in the writable workspace — the mount-time check catches only a layout
-already standing at the root, not one assembled there afterwards in a repository-less workspace —
-and git's ascending discovery adopts it for a host command run at or beneath it. Running host git
-*inside* a directory the agent created is running the agent's output.
+writable data anywhere in the writable workspace, and git's ascending discovery adopts it for a
+host command run at or beneath it. Running host git *inside* a directory the agent created is
+running the agent's output.
 
 A symlink is the sharpest case of that, because its meaning can change with the namespace reading
 it. `/workspace/x -> /etc/passwd` written inside resolves to the *container's* `/etc/passwd`, and a
@@ -227,14 +232,14 @@ meaning, so a target whose own components are symlinks resolves by whatever they
 side; and the shape is judged at creation, so a later `rename` or `link` can re-aim a conforming
 link outside the workspace. A session set on planting a link still can, and the diff is still what
 you review for symlinks. Hardlinking a *file* needs no such care: `/workspace` and the container
-root are different filesystems, so `link` to anything outside is `EXDEV` in both directions; it is
-aliasing a symlink that carries the risk.
+root are different filesystems, so `link` to anything outside is `EXDEV` in both directions; the
+risk is in aliasing a symlink.
 
 The tree is also shared live with the host: your editor, builds and git run against the same files
 the agent is writing, host and sandbox writes race like any two processes on one directory, and
 git's own lock files are the only arbiter the writable parts of `.git` get. On Windows the
-sharing carries one extra rule: a file a live session holds open cannot be written from the host —
-the machine's 9p handle carries Windows sharing semantics, so a host editor's save meets "used by
+sharing adds one rule: a file a live session holds open cannot be written from the host —
+the machine's 9p handle imposes Windows sharing semantics, so a host editor's save meets "used by
 another process" until the session lets go
 (`fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Concurrent sandbox
 sessions of one project race each other the same way — under the workspace filter too, where they
@@ -309,11 +314,11 @@ the inode hold: an in-place edit, and files appearing or disappearing inside the
 `.git/hooks`.
 
 Native Linux remains unmeasured. The integration test expects the macOS fall-through there until a
-Linux run supplies evidence, so this mode carries no stronger claim on that platform.
+Linux run supplies evidence, so this mode makes no stronger claim on that platform.
 
 So this mode holds the pinned paths against the sandbox for as long as nothing on the host rewrites
 them, which is not a property to rely on in a repository being worked in, and no mount over a path
-closes it. `WorkspaceGuardOffTest` carries the measurements.
+closes it. `WorkspaceGuardOffTest` records the measurements.
 
 **What is inside TLS, for the hosts that stay opaque.** A `tunnel` host is deliberately not
 inspected, so the proxy sees only the handshake and cannot tell a `GET` from a `POST`. In the
@@ -324,7 +329,7 @@ the `CONNECT` alone. Every other defaults host is inspected, the bulk package re
 at a known per-request handshake cost: security is not traded for performance (design.md's
 principles).
 
-**What the persistent volume carries.** Every session mounts every installed agent's state
+**What the persistent volume holds.** Every session mounts every installed agent's state
 read-write under the same uid, regardless of which agent the host launched. The launched command is
 not a security principal: any process in the sandbox can read another agent's provider login,
 history and session metadata, or change its configuration and MCP definitions for a later session.
@@ -498,9 +503,9 @@ The rest of the catalog is `read` alone — `GET` and `HEAD` with no body, and n
 GitHub content hosts, the documentation and reference sites, the content CDNs, and the
 container-image pull hosts. A grant's POST must not reach a host without it: on a content host
 whose paths are anyone's to choose, a path that mimics `git-upload-pack` would ride the git rule
-through. The proxy image's `default/host` file is the canonical built-in membership, grants
+through. The proxy image's `defaults/host` file is the canonical built-in membership, grants
 included, with the reason beside each line; what stays opaque, and why, is "What is inside TLS"
-below.
+above.
 
 So for every inspected host the proxy terminates TLS and decides the request inside it against
 the grants of the line it falls under (`doc/egress-proxy.md`, "The rule file"):
@@ -520,7 +525,7 @@ the grants of the line it falls under (`doc/egress-proxy.md`, "The rule file"):
   OAuth app; none can complete one without a person entering the code in a browser, on a page
   that names the app and its scopes
 - `method=` on a project's own line: the listed write methods at that path, inspected and
-  logged. The defaults carry no such line beyond the login pair. `doc/egress-rule-example/
+  logged. The defaults have no such line beyond the login pair. `doc/egress-rule-example/
   npm-audit/rule` is the measured case: `POST` to the one audit endpoint the image's npm uses at
   install time — an older npm's endpoint is refused and logged, non-fatally — off by default
   because the body is the package/version inventory, not dependency edges, including names the
@@ -540,10 +545,11 @@ Consequences:
 
 - The GraphQL endpoints are a `POST` even to read: a query and a mutation are the same request
   format, telling them apart means reading the body, and this proxy does not. GraphQL is therefore
-  refused; the REST read endpoints are not. On GitHub that costs nothing — its GraphQL API accepts
-  no unauthenticated query, and the sandbox carries no forge credential by design. GitLab's answers
-  anonymously, so the cost is real there; its REST API still reads with `GET`s. (Codeberg's
-  Forgejo has no GraphQL API, so no GraphQL read is lost there.)
+  refused; the REST read endpoints are not. GitHub's GraphQL API accepts no unauthenticated query,
+  so the refusal costs nothing there until Copilot's token is in the volume ("The web reached
+  through the model provider", above); GitLab's answers anonymously, so the cost is real there.
+  Either forge's REST API still reads with `GET`s. (Codeberg's Forgejo has no GraphQL API, so no
+  GraphQL read is lost there.)
 - The LFS batch endpoint is not opened. It is a `POST` whose body chooses between download and
   upload — another request whose meaning is in the body. Unlike GraphQL, this refusal is what
   actually stops something: LFS batch downloads on public repositories are anonymous, and git-lfs
@@ -590,7 +596,7 @@ tunnel.
 The sandbox trusts that CA through a bundle assembled on the host from the image's own CA bundle
 plus this project's CA, mounted over `/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
 `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO` point at the same
-file, for the tools that carry their own trust store rather than reading the system one.
+file, for the tools with a trust store of their own rather than the system's.
 
 The image's JDK is covered by the same technique one layer over, because it reads none of the
 above: a JVM consults a `cacerts` keystore and a `net.properties` file. The image ships
@@ -626,9 +632,9 @@ above. A symlinked policy directory, or anything other than a directory in its p
 rather than read, so what is read is what was reviewed. The directory is also a closed namespace:
 an entry the launcher does not read — a typo'd `egres/`, notes, a backup — refuses the launch
 instead of sitting as ignored config, the same rule `egress/` applies inside itself: one file,
-`rule`, singular as `default/host` is (design.md, "Naming"), the retired `allowed` and `denied`
-refused by name (dot-named editor and OS metadata excepted; no configuration will ever be named
-that way). What remains is "A repository that ships a wide egress policy", above.
+`rule`, the retired `allowed` and `denied` refused by name (dot-named editor and OS metadata
+excepted; no configuration will ever be named that way). What remains is "A repository that
+ships a wide egress policy", above.
 
 ### Adding hosts, not patterns
 
@@ -642,47 +648,44 @@ shared apex like a cloud provider's, names an attacker can register or take over
 in the grant, not the matcher, so no careful pattern syntax removes it. For an inspected host it
 is also unmintable: the leaf certificate must enumerate its names at launch, and a subtree has no
 enumeration. So grants stay exact. (`allow-unless-denied` is not this rule's exception but the
-user's own profile decision: it grants the public-HTTPS universe by name of the *profile*, on the
-launch command line, never through a pattern a repository ships.)
+user's own profile decision: the *profile* itself admits every host no line names, and it is
+chosen on the launch command line, never through a pattern a repository ships.)
 
-A line grants exactly the words it carries, under the path it names, and nothing else on the
-host (`doc/egress-proxy.md`, "The rule file", has the grammar); nothing is implied, so a line with
-no grant word is refused rather than read as `read`. The lines apply in the order written over
-the defaults — PF's and relayd's model — and for each grant the last applicable line decides: an
-`allow` adds at its path, a `deny` takes the grants it names from every scope on the host, or the
-host whole. A `deny` names a host or a subtree, never a path, because a grant by path needs one
-spelling that works while a denial by path needs every spelling that reaches the tenant, and the
-proxy, comparing literally, cannot know them. With the defaults granting `git-fetch` on
-`github.com`, a hypothetical `deny https://github.com/secret-org/` would be escaped by
-`/%73ecret-org/…`, which misses the deny, lands in the root and is admitted, GitHub decoding
-`%73` to `s`; by `/Secret-Org/…`, GitHub folding case; by `/secret-org./` and `/secret-org;v=1/`
-on an origin that strips a segment's trailing dot or a `;parameter`; and by `/orgs/secret-org`
-or a search page, reaching the organisation under paths the deny never named. Each escape gains
-access: a denial by path fails open. The shape the grammar gives instead — a host-wide `deny`
-with the narrower `allow` beneath it — fails closed: every spelling that misses the narrower
-allow stays governed by the host-wide deny, so an escape loses access. A case-folding keyword
-would close one of these on one origin and none of the others, so it is not a way in.
+A line grants exactly its words, under the path it names, and nothing else on the host; nothing is
+implied, so a line with no grant word is refused rather than read as `read`. The grammar, the
+order the lines apply in and how a request finds its line are `doc/egress-proxy.md`, "The rule
+file"; what follows is why the grammar has that shape. A `deny` names a host or a subtree, never a
+path, because a grant by path needs one spelling that works while a denial by path needs every
+spelling that reaches the tenant, and the proxy, comparing literally, cannot know them. With the
+defaults granting `git-fetch` on `github.com`, a hypothetical
+`deny https://github.com/secret-org/` would be escaped by `/%73ecret-org/…`, which misses the
+deny, lands in the root and is admitted, GitHub decoding `%73` to `s`; by `/Secret-Org/…`, GitHub
+folding case; by `/secret-org./` and `/secret-org;v=1/` on an origin that strips a segment's
+trailing dot or a `;parameter`; and by `/orgs/secret-org` or a search page, reaching the
+organisation under paths the deny never named. Each escape gains access: a denial by path fails
+open. The shape the grammar gives instead — a host-wide `deny` with the narrower `allow` beneath
+it — fails closed: every spelling that misses the narrower allow stays governed by the host-wide
+deny, so an escape loses access. A case-folding keyword would close one of these on one origin and
+none of the others, so it is not a way in.
 
-A path on an `allow` line is on the narrowing side: written beneath a host-wide `deny`, it
-removes reach from an exact host and adds none, so its worst case is over-blocking. The request
-path is not a name the proxy can vouch for: the origin decodes it, and how — percent-escapes,
-`..`, a backslash, an empty segment, letter case — is the one thing a proxy cannot know. So the
-matcher is literal by rule: a path is written in canonical form or the launch fails; where a
-request's longest match is a line other than the root, the request is refused for any of those
-spellings on every method, before the comparison, and the comparison folds nothing. Under the
-root the request has the host's least grants and gains nothing by any decoding, so a read there
-may carry `%` — what keeps npm's `/@scope%2fname` reading on a host that also has a `method=`
-line — while a write keeps the refusal everywhere, so a `method=` grant at the root opens no
-spelling the origin decodes. The cost is a path the origin would have accepted and this rule
-refuses, and a path only spellable encoded — a space, a non-ASCII name — that cannot be narrowed
-at all; the alternative, guessing the origin's canonicalization, is the bypass class. A path in
-the wrong case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS,
-where they are two buckets, alike. A redirect is the client's to follow: a same-host redirect out
-of the tree arrives as a fresh request, refused and logged like any other, and the proxy follows
-nothing itself. What a path bounds is which tenant of a shared host can be reached; it does not
-bound the message ("Exfiltration through an allowed host", above), and it attenuates no
-credential. The catalog forges stay whole by default, since reading public repositories is what
-the agents are for; a project that means one owner writes the deny and the owner's line.
+A path on an `allow` line is on the narrowing side: written beneath a host-wide `deny`, it removes
+reach from an exact host and adds none, so its worst case is over-blocking. The request path is
+not a name the proxy can vouch for: the origin decodes it, and how — percent-escapes, `..`, a
+backslash, an empty segment, letter case — is the one thing a proxy cannot know. So the matcher is
+literal by rule, a path is written in canonical form or the launch fails, and a request under a
+narrowed scope is refused for any of those spellings before it is compared; the alternative,
+guessing the origin's canonicalization, is the bypass class. Under the root a request has the
+host's least grants and gains nothing by any decoding, which is why a read there is exempt and a
+write is not: a `method=` grant at the root opens no spelling the origin decodes. The cost is a
+path the origin would have accepted and this rule refuses, and a path only spellable encoded — a
+space, a non-ASCII name — that cannot be narrowed at all. A path in the wrong case fails closed on
+GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where they are two buckets,
+alike. A redirect is the client's to follow: a same-host redirect out of the tree arrives as a
+fresh request, refused and logged like any other, and the proxy follows nothing itself. What a
+path bounds is which tenant of a shared host can be reached; it does not bound the message
+("Exfiltration through an allowed host", above), and it attenuates no credential. The catalog
+forges stay whole by default, since reading public repositories is what the agents are for; a
+project that means one owner writes the deny and the owner's line.
 
 Two costs are stated rather than forbidden. A `method=` line under a tree on a forge is one line
 that opens `git-receive-pack` under it — the push is then the project's own grant, and the
@@ -693,24 +696,21 @@ its whole policy; narrowing a tunnel to inspected reads is local, two lines on t
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
-drops `foo.com` and every host under it (the dot is part of the pattern, so never `barfoo.com`),
-which is the concise way to drop a provider that ships several subdomains without re-listing its
-current subdomains; `deny model-provider` goes one further and stays attached to the group's own
-lines as its concrete endpoints change. Unlike a grant, a removal can fail when a typo matches
-nothing, leaving a default in place while reading as though it were dropped: a `deny` matching
-nothing at its position is a warning at every launch, under every profile, since against the
-ambient host universe a typo cannot be told from a proactive denial. So is a redundant grant — a
-line granting nothing its enclosing scope lacks, where the deny-then-re-grant pair was meant —
-and a line every grant of which a later line takes back; a warning rather than a refusal because
-the check reads the defaults, and a file that launches today must not fail under a later image
-whose defaults grew to cover it.
+is the concise way to drop a provider that ships several subdomains without re-listing its
+current ones; `deny model-provider` goes one further and stays attached to the group's own lines
+as its concrete endpoints change. Unlike a grant, a removal can fail when a typo matches nothing,
+leaving a default in place while reading as though it were dropped: a `deny` matching nothing at
+its position is a warning at every launch, under every profile, since where every host no line
+names is admitted anyway, a typo cannot be told from a proactive denial. The other two warnings
+(`doc/egress-proxy.md`, "The rule file") are the same kind, a line that ends up granting nothing;
+a warning rather than a refusal because the check reads the defaults, and a file that launches
+today must not fail under a later image whose defaults grew to cover it.
 
 Every other ambiguity — `doc/egress-proxy.md` lists them — is a failed launch, never ignored
 config. The allow-versus-deny ordering that egress proxies get wrong is a bug family kept out by
-having one rule — the last applicable line decides, in the order written — and a denial that
-names a host or a subtree whole, so that no spelling of a path steps around it. Two files of
-different rules may resolve to one policy; the policy, not the file, is what the digest names
-and the leaf is minted from.
+having one rule and a denial no spelling of a path steps around. Two files of different rules
+may resolve to one policy; the policy, not the file, is what the digest names and the leaf is
+minted from.
 
 ### Why the policy is not a capability system
 
@@ -718,16 +718,21 @@ The policy names destinations, and the grants name operations — reading, plus 
 `git-fetch` hosts, plus a method at a path; nothing grants `GitRead(owner/repo)`-style
 capabilities. Deliberate: public
 reading is meant to be broad — discovering and reading arbitrary public repositories is much of what
-the agents are for — and the sandbox carries no credential whose authority a finer grant would
-attenuate ("Credential theft", above). The one distinction that matters at a forge, reading versus
-writing, is already enforced in the protocol. A line's path ("Adding hosts, not patterns",
-above) names a destination more precisely and still grants no operation beyond its words. Nor
-would capabilities fix exfiltration: a permitted read still carries its URL ("Exfiltration
-through an allowed host", above). What a capability vocabulary would add is a second policy
+the agents are for — and the launcher passes in no credential whose authority a finer grant would
+attenuate ("Credential theft", above). The one exception is a credential an agent stores itself:
+Copilot's `repo`-scope token ("The web reached through the model provider", above), which a
+per-repository grant would narrow to the repositories a project names. What bounds it today is the
+treatment, not a grant: every inspected host refuses writes, so through them the excess authority
+reads private repositories and does no more, the writes it can make ride the opaque Copilot tunnel
+priced in that item, and `deny model-provider github` or `--reset` removes it. The one distinction
+that matters at a forge, reading versus writing, is already enforced in the protocol. A line's
+path ("Adding hosts, not patterns", above) names a destination more precisely and still grants no
+operation beyond its words. Nor would capabilities fix exfiltration: a permitted read still
+carries its URL ("Exfiltration through an allowed host", above). What a capability vocabulary
+would add is a second policy
 language whose semantics must stay correct across every layer that reads it — precisely where
-richer sandbox policies fail in the field. Revisit only if an agent must someday perform an
-operation inside the sandbox with a credential materially more
-powerful than that operation.
+richer sandbox policies fail in the field. Revisit only if an agent must someday write inside the
+sandbox with a credential materially more powerful than that operation.
 
 ### DNS
 
@@ -795,12 +800,11 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   project's allow — a race where the deny must hold at every access. Seatbelt's access-time
   path filters give the guard exactly that, and the feature exists only where it holds.
 
-- **The sandbox asks; the host answers.** The clipboard channel's design, sized up to a build: a
-  broker the launcher spawns holds one `podman exec` reading a FIFO under the sandbox's `/tmp`,
+- **The sandbox asks; the host answers.** The clipboard channel's broker, sized up to a build: it
   runs each request as a child of its own, streams the build's output back, and hands over the
   build's exit code. No host listener, no port, and nothing runs that the host did not start
   (`RunOnHostChannel`, the image's `sandbox-run-on-host` shim).
-- **The profile is the boundary; the request is not.** A request carries a tool, a working
+- **The profile is the boundary; the request is not.** A request names a tool, a working
   directory and arguments. The tool must be one the launch named. The working directory — the one
   value arriving from inside the sandbox — is canonicalized and proven inside the project before
   anything derives from it, and never changes the profile's project grant. The arguments are
@@ -839,12 +843,12 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   themselves sandboxed, and no other project and no unsandboxed build. The separation is by root,
   because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches the same
   property for the container by a podman `:O` upper).
-- **The build's output names host paths.** Every compiler message carrying an absolute path tells
+- **The build's output names host paths.** Every compiler message containing an absolute path tells
   the container where the project lives on the host. Disclosure, not authority.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A
   host build writes `target/` and whatever else the profile's project grant admits. Composition
   rather than escape — both are authority the user typed — but a reject session meant to
-  prove the project untouched should not carry `--run-on-host`.
+  prove the project untouched should not include `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and

@@ -40,7 +40,7 @@ echo
 echo "=== project ==="
 project=$(pwd -P)
 say "canonical project root" "$project"
-probe_dir=$(mktemp -d "$project/.venue-probe.XXXXXX") || exit 1
+probe_dir=$(mktemp -d "$project/.layout-probe.XXXXXX") || exit 1
 : > "$probe_dir/casetest"
 if [ -e "$probe_dir/CASETEST" ]; then say "filesystem case" "INSENSITIVE (the fold rule binds)"
 else say "filesystem case" "sensitive"; fi

@@ -18,7 +18,7 @@
 //
 // That second measurement is per host family, and the test expects each family's own answer: the
 // macOS machine's share follows the replacement within seconds, the Windows machine's held against
-// it for the whole window (SECURITY.md carries both). Linux rootless is the row still missing
+// it for the whole window (SECURITY.md has both). Linux rootless is the row still missing
 // (SECURITY.md, "The `.git` pins of `WORKSPACE_GUARD=none`"); a failure there is the result worth
 // recording, not a red suite to silence.
 //

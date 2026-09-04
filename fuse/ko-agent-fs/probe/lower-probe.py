@@ -289,7 +289,7 @@ def main() -> int:
             print(f"{name if index == 0 else '':<{width}}  {observation}")
     print()
     print("Every line above is a measurement, not a pass or a fail: record them in")
-    print("doc/verification-log.md with this venue, and tick the rows in doc/TODO.md.")
+    print("doc/verification-log.md with this machine, and tick the rows in doc/TODO.md.")
     if broken:
         print()
         print("A row above says the probe itself failed: that one is unmeasured, not a finding.")

@@ -69,24 +69,24 @@ report() { # status label detail
 mill_project=$project/src/probe/mill-fixture
 project_of() { if [ "$1" = mill ]; then printf '%s\n' "$mill_project"; else printf '%s\n' "$project"; fi; }
 
-# The venue, before any row: a run with no venue recorded is not evidence for the next release.
-echo "venue"
-venue() { printf '  %s\n' "$1"; }
-venue "macOS $(sw_vers -productVersion), $(uname -m)"
+# The machine, before any row: a run with no machine recorded is not evidence for the next release.
+echo "machine"
+machine() { printf '  %s\n' "$1"; }
+machine "macOS $(sw_vers -productVersion), $(uname -m)"
 if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]
-then venue "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
-else venue "JAVA_HOME does not name a JDK"; fi
-venue "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
-venue "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
+else machine "JAVA_HOME does not name a JDK"; fi
+machine "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
+machine "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
 if command -v podman >/dev/null 2>&1
 then provider=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || echo unknown)
-    venue "$(podman --version), machine provider: $provider"
-else venue "podman: absent"; fi
+    machine "$(podman --version), machine provider: $provider"
+else machine "podman: absent"; fi
 # The guard's fold rule depends on which answer the project's volume gives.
 case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
 : > "$case_probe/a"
-if [ -e "$case_probe/A" ]; then venue "project filesystem: case-folding"
-else venue "project filesystem: case-sensitive"; fi
+if [ -e "$case_probe/A" ]; then machine "project filesystem: case-folding"
+else machine "project filesystem: case-sensitive"; fi
 rm -rf "$case_probe"
 
 emit() { # tool

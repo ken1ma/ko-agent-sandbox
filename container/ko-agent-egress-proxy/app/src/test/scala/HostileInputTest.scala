@@ -59,7 +59,7 @@ class HostileInputTest extends munit.FunSuite:
     "github.com]:443",
     "[[github.com]]:443",
 
-    // IPv6, IPv4-mapped IPv6 and zone identifiers. Every one carries a colon, which the hostname
+    // IPv6, IPv4-mapped IPv6 and zone identifiers. Every one contains a colon, which the hostname
     // rules refuse outright, so none of them reaches the IP-literal check behind it.
     "[2001:db8::1]:443",
     "[::ffff:127.0.0.1]:443",
@@ -203,7 +203,7 @@ class HostileInputTest extends munit.FunSuite:
     assert(reached > 0, "no mutation reached a host; the generator stopped producing near-misses")
     assert(refused > 0, "no mutation was refused; the generator stopped mutating")
 
-  test("a path that would select a refusal's advice is refused at the parser when it carries a control"):
+  test("a path that would select a refusal's advice is refused at the parser when it contains a control"):
     // RefusalAdvice.forRefusedPost reads HttpRequestHead.path, so no advice is ever chosen for a
     // target the audit log would refuse to print; and the absolute form is refused before the
     // path is looked at, with the origin-form step, not GraphQL's.
@@ -361,7 +361,7 @@ class HostileInputTest extends munit.FunSuite:
   // scope, property-tested against the resolved policy's authorization over a drawn domain that
   // names every equation: each profile, the provider selected and not, files with `deny defaults`
   // and without, groups allowed and denied, `tunnel` taken and re-granted, hosts the defaults lack
-  // and hosts they tunnel, and requests to ambient hosts, to inspected ones under a denied subtree,
+  // and hosts they tunnel, and requests to unlisted hosts, to inspected ones under a denied subtree,
   // and at both sides of a boundary.
   // ---------------------------------------------------------------------------
 
@@ -386,7 +386,7 @@ class HostileInputTest extends munit.FunSuite:
       ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
       ++ Option.when(grants("tunnel"))("tunnel")).mkString(" ")
 
-  /** One line's standing grants: what the evaluator carries, one per line, never folded. */
+  /** One line's standing grants: what the evaluator holds, one per line, never folded. */
   private case class Given(
     host: String,
     path: String,
@@ -448,7 +448,7 @@ class HostileInputTest extends munit.FunSuite:
   ): String =
     import Drawn.*
     val clears = lines.headOption.contains(DenyDefaults)
-    val ambient = profile == "allow-unless-denied"
+    val publicDefault = profile == "allow-unless-denied"
     if profile == "deny-all" then return "refused"
     var standing: Vector[Given] = profile match
       case "deny-unless-model"   => provider.fold(Vector.empty)(groupGiven)
@@ -463,9 +463,9 @@ class HostileInputTest extends munit.FunSuite:
       case ("allow-unless-denied", Allow(_, _, grants))        => !grants("tunnel")
       case _                                                   => true
     def add(entry: Given): Unit =
-      // Under the ambient profile with `deny defaults` written, the defaults' tunnel gives way to the
+      // Under `allow-unless-denied` with `deny defaults` written, the defaults' tunnel gives way to the
       // file's inspected line — the deny the file's first line implies for that host.
-      if ambient && clears && !entry.grants("tunnel") then
+      if publicDefault && clears && !entry.grants("tunnel") then
         standing = standing.map: g =>
           if g.host == entry.host && g.fromDefaults && g.grants("tunnel") then g.copy(grants = Set.empty) else g
       standing :+= entry
@@ -487,7 +487,7 @@ class HostileInputTest extends munit.FunSuite:
     val active = standing.filter(entry => entry.host == host && entry.grants.nonEmpty)
     if active.exists(_.grants("tunnel")) then return "tunnel"
     if active.isEmpty then
-      val open = ambient && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
+      val open = publicDefault && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
       return if open then "tunnel" else "refused"
     val path = request.target.takeWhile(_ != '?')
     val covering = active.filter(entry => pathContains(entry.path, path))

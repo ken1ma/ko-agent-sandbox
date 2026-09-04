@@ -45,28 +45,34 @@ object HostCommands:
    * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
    * severity label, a boundary weaker than the default, or the mode an authority line states, and
    * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
-   * alone, and this follows them. A mode takes a hue of its own so it is never read as a severity:
-   * yellow and red stay warning and error.
+   * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
+   * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
+   * apart; red is a boundary weaker than the default, in force for the session, the one line on
+   * the screen that can cost the reader something; a mode takes a hue of its own, purple, so it is
+   * never read as a severity.
    *
-   * Colour carries nothing of its own. These lines are read back from a redirected stream, from a
+   * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the two authority lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
-  def caution(text: String, color: Boolean = colorStderr): String = tinted("33", text, color)
+  def caution(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
 
-  /** A refusal, which in this launcher is only ever the `error:` label. */
-  def alarm(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
+  /** A boundary weaker than the default, in force: the raw workspace bind, the permissive egress
+    * profile, a rule file granting beyond the defaults. The whole line, so no line ever has
+    * two colours. */
+  def weakened(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
 
-  /** The mode an authority line states — `live`, `deny-unless-allowed`. Orange is not among
-    * ANSI's eight, so this is the 256-colour cube's. */
-  def statedMode(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
+  /** The mode an authority line states — `live`, `deny-unless-allowed`. Purple, and orange
+    * above, are not among the theme's sixteen — its magenta is as often pink, its yellow as often
+    * olive — so both are the 256-colour cube's. */
+  def statedMode(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
-  /** Each line's leading severity label tinted. Line by line, because a block carries a label on
+  /** Each line's leading severity label tinted. Line by line, because a block has a label on
     * some lines and not others — the proxy's policy warnings, a warning's continuation. */
   def emphasized(text: String, color: Boolean = colorStderr): String =
     text.linesIterator
       .map: line =>
-        if line.startsWith(ErrorLabel) then alarm(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
+        if line.startsWith(ErrorLabel) then caution(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
         else if line.startsWith(WarningLabel) then caution(WarningLabel, color) + line.stripPrefix(WarningLabel)
         else line
       .mkString("\n")
@@ -112,8 +118,8 @@ object HostCommands:
    * A command echoed before it runs, as `set -x` prints it: `+ ` and then the words, each shown
    * unambiguously on the one line — so a multi-line script argument prints as the one quoted
    * word it is, not as lines that look like commands of their own. The marker is what tells a
-   * command from the output that follows it; the launcher's own lines carry a `label:` instead,
-   * and a subprocess's carry neither.
+   * command from the output that follows it; the launcher's own lines have a `label:` instead,
+   * and a subprocess's have neither.
    *
    * The resolved podman is shown by its bare name, since the `using:` line said the path once
    * when it was resolved — and only then: an unannounced path stays spelled out.
@@ -383,7 +389,7 @@ object HostCommands:
    * copies are taken from (AgentSandboxLauncher, the locked TLS derivation), or per-run itself,
    * like the audit log — and a launch of the same project may be copying or assembling at this
    * moment: a name that disappears even briefly fails that launch, and a name that exists holding
-   * half a file is worse. Rename is what leaves neither state visible. The temporary carries a
+   * half a file is worse. Rename is what leaves neither state visible. The temporary has a
    * generated name, so two launches racing here cannot collide on it.
    *
    * A write that would change neither the content nor the mode is skipped: a cache stamp that

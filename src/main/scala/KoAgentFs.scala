@@ -115,7 +115,7 @@ object KoAgentFs:
    * user's remedy.
    *
    * The script saves the original beside the file first. The backup name
-   * carries the tool's name, not `.dist`: `.dist` would claim
+   * is the tool's name, not `.dist`: `.dist` would claim
    * as-distributed pristineness nobody verified, while this says who saved
    * it and when it is safe to delete. Saved only if no backup exists yet,
    * so a re-run cannot overwrite the true original with a modified copy.
@@ -275,7 +275,7 @@ object KoAgentFs:
     )
 
   /**
-   * The digest of one bundle directory as this jar carries it — the same
+   * The digest of one bundle directory as this jar bundles it — the same
    * bytes unpackBuildContext writes and contextSourceId hashes, read
    * straight from the jar so no unpack is needed. What the filter binary's
    * `--version` must report, and what --build stamps into the sandbox and
@@ -548,7 +548,7 @@ object KoAgentFs:
     )
 
   /**
-   * Which branch the mount script took, carried into the launch summary — the user should not
+   * Which branch the mount script took, passed into the launch summary — the user should not
    * have to infer "joined" from silence.
    */
   final case class KoAgentFsMount(mountpoint: String, joined: Boolean)

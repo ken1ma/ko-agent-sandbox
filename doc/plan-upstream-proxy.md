@@ -198,7 +198,7 @@ separate host-owned feature rather than treating corporate DNS as permission.
 
 The resolver list is fixed per run. A failed query may try the next configured resolver according
 to the system resolver, but it never falls back to podman, the host, a public resolver or DoH. DNS
-answers carry no authority of their own: policy admission happens by hostname and address admission
+answers grant nothing of their own: policy admission happens by hostname and address admission
 happens through `resolvePublic` after every lookup.
 
 No DNSSEC-validation claim is made. The explicitly selected corporate resolver and its network are
@@ -261,7 +261,7 @@ acceptable substitute.
 The launcher validates the profile and copies its files before creating resources. The proxy
 resolves and pins the endpoint and loads its trust material before opening its listening socket,
 and exits with the reason otherwise; the launcher's readiness gate
-(`AgentSandboxLauncher.awaitProxyReady`) turns that exit into a failed launch carrying the
+(`AgentSandboxLauncher.awaitProxyReady`) turns that exit into a failed launch that prints the
 proxy's own message, as it does every refusal the proxy makes before `bind`.
 
 Each HTTPS connection verifies endpoint identity before sending authentication.
@@ -384,7 +384,7 @@ References:
 - Prove profile deletion and replacement after launch do not affect the run, and normal exit,
   Ctrl-C, failed create/start and both resets remove every per-run copy and runtime resource.
 - Run the matrix on native Linux and in the macOS and Windows podman machines. Record whether each
-  venue can route to VPN/private resolver and proxy addresses; a venue that cannot must fail launch,
+  machine can route to VPN/private resolver and proxy addresses; one that cannot must fail launch,
   never bypass the upstream.
 
 ## Delivery order
