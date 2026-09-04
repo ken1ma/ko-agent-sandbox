@@ -438,42 +438,48 @@ object RunOnHostPolicy:
   // The build's egress allowlist
   // ---------------------------------------------------------------------------
 
-  /** The baseline repository allowlist: Coursier's and sbt's default Maven Central host. */
-  val BuildBaselineHosts: Vector[String] = Vector("repo1.maven.org")
+  /** Coursier's and sbt's default artifact repository: the one host every build's proxy admits. */
+  val MavenCentralHost = "repo1.maven.org"
 
   def buildAllowlistPath(project: Path, tool: Tool): Path =
     project.resolve(".ko-agent-sandbox").resolve("host-command")
-      .resolve(tool.toString.toLowerCase(java.util.Locale.ROOT)).resolve("egress").resolve("allowed")
+      .resolve(tool.toString.toLowerCase(java.util.Locale.ROOT)).resolve("egress").resolve("rule")
+
+  /** The one line form the build's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
+  val BuildAllowlistForm = "allow https://<host>/ read"
 
   /**
-   * The build allowlist file's grammar: `+host <host>` entries and `#` comments, nothing else —
-   * no tags, no treatment words, no providers, no removals. The proxy's full `allowed` grammar
-   * would let one `+model-provider` line expand into endpoints that are no artifact repository,
-   * and its treatment words mean nothing to a proxy running without inspection; anything outside
-   * the subset is refused here, never passed through for the proxy to interpret. Tokenization
-   * mirrors the proxy's `policyEntries` — strip from `#`, split on whitespace — so an entry read
-   * here is the entry the proxy would read.
+   * The build's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
+   * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
+   * `allow model-provider` line expand into endpoints that are no artifact repository, and a
+   * `tunnel` word means nothing to a proxy running without inspection; anything outside the subset
+   * is refused here, never passed through for the proxy to interpret. Tokenization mirrors the
+   * proxy's — split on whitespace, a comment from the first token starting with `#`, and a `#`
+   * inside a token refused — so a line read here is the line the proxy would read, and
+   * `read#typo` is not `read`; the host is what the proxy's own parser will normalize and vet.
    */
   def buildAllowlist(text: String): Either[Refusal, Vector[String]] =
     val entries = text.linesIterator
-      .map(_.takeWhile(_ != '#'))
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty))
+      .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
       .filter(_.nonEmpty)
       .toVector
-    entries.find {
-      case Vector("+host", host) => host.startsWith("+") || host.startsWith("-")
-      case _                     => true
-    } match
+    def hostOf(tokens: Vector[String]): Option[String] = tokens match
+      case Vector("allow", url, "read") if url.startsWith("https://") && url.endsWith("/") && !url.contains('#') =>
+        val host = url.drop("https://".length).dropRight(1)
+        Option.when(host.nonEmpty && !host.contains('/') && !host.startsWith("*"))(host)
+      case _ => None
+    entries.find(hostOf(_).isEmpty) match
       case Some(outside) => Left(Refusal.AllowlistEntryOutsideGrammar(outside.mkString(" ")))
-      case None          => Right(entries.map(_(1)).distinct)
+      case None          => Right(entries.flatMap(hostOf).distinct)
 
   /**
-   * The proxy's `allowed` input for a build: a complete replacement — `-**`, then the baseline,
-   * then the file's entries — so the container's host catalog contributes nothing. Deduplicated,
-   * because the proxy refuses a host added twice.
+   * The proxy's rule input for a build: `deny defaults`, then Maven Central, then the file's
+   * lines — the whole policy stated, so the container's catalog contributes nothing. Deduplicated,
+   * so a host the file restates is not warned as a redundant grant at every build.
    */
-  def egressAllowedText(fileHosts: Vector[String]): String =
-    ("-**" +: (BuildBaselineHosts ++ fileHosts).distinct.map("+host " + _)).mkString("\n")
+  def egressRuleText(fileHosts: Vector[String]): String =
+    ("deny defaults" +: (MavenCentralHost +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
+      .mkString("\n")
 
   // ---------------------------------------------------------------------------
   // The channel's working directory

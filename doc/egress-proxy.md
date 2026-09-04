@@ -1,0 +1,244 @@
+# The egress proxy
+
+Every sandbox session reaches the network through one HTTPS proxy in its own container, on a
+network the session cannot route out of. Which hosts a session reaches, and with what treatment,
+is a policy: the launcher-owned defaults, the profile selected at launch, and the project's rule
+file, resolved together by the proxy itself and printed at every start. This document is the
+reference for writing that file and reading that printout. SECURITY.md, "Egress proxy", is the
+security model — what the proxy defends and what it costs — and every "why" below points there.
+
+Two words, kept apart: a *rule* is a line of the project's file, and the file is the project's
+rules — what is written and reviewed; a *policy* is what a launch enforces — the defaults, the
+profile and the file resolved together, printed as the policy lines and named by a digest. Rules
+are written; a policy is resolved, and two files of different rules may resolve to one policy.
+
+## Choosing an egress profile
+
+Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. An admitted
+host has one of two treatments: a `tunnel`, opaque, nothing seen or logged past the `CONNECT`;
+or inspected — TLS terminated, each request decided against the grants of its resolved scope,
+and refused where no grant admits it ("The rule file" below; SECURITY.md, "Reading without being
+able to write", has what each grant opens and what inspection costs and buys).
+
+The launcher-owned defaults are every model-provider group — `anthropic`, `openai`, `google`,
+`github`, each that provider's model, authentication and control-plane endpoints as tunnels; the
+`github` group's forge lines are two login `POST`s and one token read, inspected — plus a curated
+catalog of inspected documentation, package-registry and forge hosts, every line a `read`, the
+three forges `read git-fetch`. The proxy image's `default/host` and `default/model-provider/*`
+files are the membership, with the reason beside each line.
+
+1. `deny-unless-allowed` (the default) — the defaults, then every line of the project's file.
+1. `deny-unless-model` — only the launched agent's own provider group, then the file's `deny`
+   lines: `claude` selects `anthropic`, `codex` selects `openai`, `agy` selects `google`,
+   `copilot` selects `github`. Only the basename of the directly launched command is classified;
+   anything else — `bash`, a wrapper script — selects no provider, admits no host, and says so at
+   startup.
+1. `allow-unless-denied` — every public hostname on port 443 as a tunnel, except that the
+   defaults' inspected hosts, and the file's inspected `allow` lines, stay inspected — the
+   narrowing set — and every `deny` line applies, a whole-host or `tunnel` deny refusing the
+   host outright. `deny defaults` and a `tunnel` line are not consulted: neither could narrow.
+1. `deny-all` — nothing.
+
+## The rule file
+
+One file, `.ko-agent-sandbox/egress/rule` in the project directory. One line per rule, in the
+order they apply; `#` starts a comment at the start of a line or after whitespace, and blank
+lines are ignored.
+
+```text
+deny defaults
+allow https://HOST/PREFIX/ GRANT...                       tree
+allow https://HOST/PATH    GRANT...                       one path
+allow https://HOST/        tunnel                         alone, at the root
+allow model-provider NAME
+deny  https://HOST/        [GRANT...]                     never a path
+deny  https://**.DOMAIN/   [GRANT...]
+deny  model-provider NAME
+
+GRANT: read | git-fetch | method=M,... | tunnel           at least one; each once
+```
+
+`HOST` is an exact hostname — IDN mapped, lowercased, one trailing dot removed — never an IP
+literal, a port, userinfo, a query or a fragment; `**.` is the deny side's only pattern, the apex
+and everything under it (`**.foo.com` covers `foo.com` and `api.foo.com`, never `barfoo.com`).
+The path is written unencoded, in printable ASCII, in canonical form: it begins with `/`, and
+has no `%`, `\`, empty, `.` or `..` segment, and no `?`. A trailing `/` names the tree under it;
+none names that one path; `https://HOST/` is the root, the whole host. Case is the origin's: the
+proxy folds nothing. `https://HOST` without its slash is refused, never read as the root.
+
+What a line grants is its words, and nothing is implied:
+
+- `read` — `GET` and `HEAD`, without a body.
+- `git-fetch` — a clone's two requests, the ref discovery (`GET .../info/refs?service=
+  git-upload-pack`) and the transfer (`POST .../git-upload-pack`). A `git-fetch` line without
+  `read` is clonable and not browsable; a `read` line without `git-fetch` is browsable, and a
+  clone fails at its first request. `git-fetch` never grants `git push`.
+- `method=POST,PUT,...` — the listed methods, from `POST`, `PUT`, `PATCH`, `DELETE`, at that
+  path. A `method=` line alone is write-only. `git push`'s ref discovery is refused except where
+  `POST` is granted at the repository.
+- `tunnel` — the opaque treatment. It stands alone on its line, and its URL ends at `/`.
+
+The lines apply in the order written, over the defaults — the PF and relayd model, whose lineage
+and limits design.md records under "No richer egress-policy format": an `allow` adds its grants
+under its path, a `deny` takes the named grants from every scope on each host it matches, or
+every grant when it names none, and for each grant the last applicable line decides. A `deny`
+names a host or a subtree whole, never a path (SECURITY.md, "Adding hosts, not patterns", has
+why a denial by path fails open). So the restrictive shape is a host-wide `deny` with the
+narrower `allow` beneath it, and the broad denial comes first:
+
+```text
+allow https://www.rfc-editor.org/ read                 # reads under the host
+deny https://codeberg.org/ git-fetch                   # the defaults' grant, taken back host-wide
+allow https://codeberg.org/my-org/ git-fetch           # re-granted under one owner only
+allow https://github.com/login/device/code method=POST # one method at one path, no read
+allow https://storage.googleapis.com/my-bucket/ read   # reads under one tree only
+allow https://api.example/ tunnel                      # an opaque tunnel: the widest word
+deny https://telemetry.example/                        # this host, whole
+deny https://**.googleapis.com/                        # the apex and everything under it
+deny https://github.com/ git-fetch                     # takes back a grant, keeps the reads
+deny model-provider google                             # the group's own lines
+```
+
+The same two lines the other way round deny the owner too, the deny being the last word. `deny
+https://github.com/` then `allow https://github.com/my-org/ read` reads one owner and nothing
+else on the forge; a clone there is refused at its first request.
+
+A request is decided against the resolved scope of its longest literal match: the scope at a path
+holds the union of the contributions still in force there once the lines have applied in order,
+so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope carry both.
+A request matching no line, on a host without a root line, is refused. Where the longest match is
+a scope other than the root, the request is first refused, on every method, for a spelling the
+origin might fold onto another path — `%`, a dot segment, a backslash, an empty segment — because
+the proxy compares literally and cannot know how the origin decodes; a wrong-case path fails
+closed on GitHub and GCS alike.
+Under the root a read may carry any of those, which is what keeps npm's `/@scope%2fname` reading
+beside a `method=` line; a write keeps that refusal everywhere. A line is therefore a boundary as
+well as a grant: one whose grants its enclosing scope already holds still changes what a request
+under it is refused for.
+
+`deny defaults`, the first line if present, means the defaults contribute nothing and the file is
+the whole policy. Any line above it is refused. `allow model-provider NAME` expands, at its
+position, to the group's lines; `deny model-provider NAME` removes the group's contributions in
+force at its position and no other line's — the catalog's `read` on `api.github.com` outlives
+the `github` group's token line — and a later `allow model-provider NAME` contributes them again.
+A lockdown is two lines:
+
+```text
+deny defaults
+allow model-provider anthropic
+```
+
+A host has one treatment. `deny https://api.example/ tunnel` takes the treatment, and an `allow`
+with `read`, `git-fetch` or `method=` then makes the host inspected; a `tunnel` line for a host
+the defaults inspect needs `deny defaults` and the whole policy after it, because an opaque
+tunnel ends inspection and the audit record for a host every project has.
+
+`doc/egress-rule-example/*/rule` holds complete files for common needs — a bucket, a container,
+a Pulumi AWS stack, the lockdown, npm's audit `POST` — to copy over `.ko-agent-sandbox/egress/rule`
+and trim.
+
+Every ambiguity is a failed launch with the reason and the line printed:
+
+- a filename in `egress/` other than `rule` — the retired `allowed` and `denied` are named as
+  such, with the pointer here — and in `.ko-agent-sandbox/` itself, an entry other than `egress`,
+  `agent` or `host-command`;
+- a token outside the grammar, an unknown profile, provider, grant word or method, a `#` inside a
+  token, a host that is an IP literal or is not a hostname;
+- a path outside canonical form; a `deny` or a `tunnel` with a path; `https://HOST` without its
+  slash; an `allow https://` line naming no grant, or a word twice; `tunnel` beside another word;
+- a line above `deny defaults`;
+- a resolved host holding `tunnel` beside an inspected grant, from the file's lines or the
+  defaults'; a `tunnel` line for a host the defaults inspect without `deny defaults`.
+
+Two lines disagreeing about a grant are the ordinary case, not a refusal: the later one decides,
+and a repeated line is the last word on its grants — `deny`, `allow`, `deny` takes an exception
+back; `allow`, `deny`, `allow` restores what the deny took.
+Three things are warned at every launch instead, under every profile, so a misspelling cannot
+fail silently: a `deny` matching nothing at its position; a redundant grant — a line granting
+nothing its enclosing scope lacks, `allow https://github.com/my-org/ git-fetch` under the
+defaults' root line, which usually means a host-wide `deny` before it was intended, though the
+boundary it opens stands; and a line every grant of which a later line takes back. A line
+restating a defaults line at its path is silent: that is how a file stays valid as the image
+adopts its hosts.
+
+1. An absent directory or rule file contributes no rules; the profile still starts from what it
+   starts from. `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may create an empty `.ko-agent-sandbox`
+   directory in the project (SECURITY.md, "Silent changes to what you own"). An empty *resolved*
+   policy is valid and reported as such — `deny-all` resolves empty by design, as does
+   `deny-unless-model` under `bash`.
+1. Editing the file takes effect on the next launch; a running session keeps its original policy.
+1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the policy is per
+   project, in the project, and read-only").
+1. The directory is meant to be committed. Review it in an unfamiliar repository before
+   launching, exactly as you would its build scripts — `tunnel` and `method=` lines most of all.
+
+## The printed policy
+
+`--egress-effective` and `--egress-check=<host>` (README, Reference) answer without starting a
+session; inside one, `sandbox-egress-check <host>` asks the running proxy. Every start prints the
+rule file as written, one line; then the launch banner — the profile and the counts, never a
+host name; then, when the file grants beyond the defaults for a host — a host the defaults lack,
+`tunnel`, `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more on
+a line of their own, `egress policy widens:`, so a file that only takes or narrows prints nothing
+extra.
+
+The policy itself is what the proxy prints at its start and `--egress-effective` shows whole: the
+profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree no ambient
+tunnel is admitted under, then one `allow` line per resolved scope, in the rule grammar, carrying
+the scope's whole grant set, hosts and paths sorted:
+
+```text
+egress profile: deny-unless-allowed
+allow https://api.anthropic.com/ tunnel
+allow https://github.com/ read git-fetch
+allow https://github.com/login/device/code read git-fetch method=POST
+...
+```
+
+Each `allow` and `deny` line uses the rule grammar so a reader learns one; but the printout is a
+serialization of
+the resolved policy, not a rule file: it carries no `deny defaults` header, nothing reads it as
+input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
+names — one stable log line per run, comparable across runs — what the leaf certificate's names
+are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY` carry,
+so two files resolving to one policy print one digest and the same lines, and the same file under
+two profiles never does. After them, outside the digest, the metadata: one summary line — the
+counts of inspected and opaque hosts, ambient denials and widening lines — and the widening line.
+`--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
+a `deny` line's pattern, and under the finite profiles the hosts the file's lines denied.
+
+## Audit what has been allowed or denied
+
+Run with `--proxy-log` from the project directory. Every proxy connection is logged,
+and the proxy appends the log to a per-run file on the host, under
+
+    ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
+    %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
+
+With no arguments, `--proxy-log` prints the retained files oldest first — the newest 20 runs, and
+any older one whose session is still running, since a live proxy is still appending to its file.
+The startup lines are the resolved policy, its digest, the metadata and whether inspection is
+active; every connection event after them is one line, with an inspected request's full target —
+query string included, which is what makes an exfiltrating `GET` visible. A refusal reads as
+
+    2026-08-26T11:59:38Z deny github.com POST /owner/repo.git/git-receive-pack POST not granted
+
+SECURITY.md, "The audit line grammar", has every field and reason.
+
+## TLS inspection
+
+The proxy terminates the TLS of every inspected host so that reading can be allowed and writing
+refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` the
+model providers, unless a project adds more; under `deny-unless-model` the selected group's
+tunnel lines; under `allow-unless-denied` every public host the narrowing set leaves out; under
+`deny-all` none.
+
+The per-project CA lives on the host, under
+
+    ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
+    %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
+
+1. The certificates are created and refreshed automatically for each project (SECURITY.md,
+   "Who holds the CA key").
+1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
+   launch's proxy starts with the certificates current at that moment.

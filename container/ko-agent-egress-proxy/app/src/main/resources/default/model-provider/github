@@ -1,0 +1,18 @@
+# Copilot CLI. Its model endpoint doubles as its GitHub MCP server (/mcp on the same host), a
+# write path to the forge that opacity cannot separate from model traffic — the trade SECURITY.md
+# prices under "The web reached through the model provider".
+# Model traffic goes to whichever of the four the token exchange below names for the account's
+# plan; the first is the generic host, and the MCP server.
+allow https://api.githubcopilot.com/            tunnel
+allow https://api.individual.githubcopilot.com/ tunnel  # individual plan
+allow https://api.business.githubcopilot.com/   tunnel  # business plan
+allow https://api.enterprise.githubcopilot.com/ tunnel  # enterprise plan
+
+# The forge stays TLS-inspected here as in the catalog, and this group grants no read of it: this
+# file is what deny-unless-model admits for copilot, and it must not admit git push or a browse of
+# the forge. The device flow Copilot CLI 1.0.80 drives: the first mints the user code the agent
+# prints, the second polls for the token once the browser has approved. Both bodies are fixed
+# forms naming a client id, so the grant carries no project data.
+allow https://github.com/login/device/code             method=POST
+allow https://github.com/login/oauth/access_token      method=POST
+allow https://api.github.com/copilot_internal/v2/token read         # the Copilot token exchange

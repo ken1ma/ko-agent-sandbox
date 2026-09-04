@@ -1,0 +1,19 @@
+# The .ko-agent-sandbox/egress/rule of a project that runs `pulumi up` against AWS: the CLI's
+# download host, then the state backend and each cloud API the stack writes to as opaque tunnels —
+# no wildcards, one host each.
+# This stack is in us-east-1 with VPC, EC2, ECS, Aurora, CloudWatch, IAM, Secrets Manager, and
+# stack secrets encrypted by KMS (--secrets-provider awskms://...). Launch with the credentials
+# forwarded: --env=PULUMI_ACCESS_TOKEN --env=AWS_ACCESS_KEY_ID --env=AWS_SECRET_ACCESS_KEY;
+# SECURITY.md, "Credential theft", is what that costs.
+# get.pulumi.com serves the CLI, and the plugins GitHub releases lack
+allow https://get.pulumi.com/ read
+allow https://api.pulumi.com/ tunnel                      # state backend; not for a local login
+allow https://sts.us-east-1.amazonaws.com/ tunnel         # the AWS provider's first call, always
+allow https://ec2.us-east-1.amazonaws.com/ tunnel         # EC2 and VPC
+allow https://ecs.us-east-1.amazonaws.com/ tunnel
+allow https://rds.us-east-1.amazonaws.com/ tunnel         # Aurora
+allow https://monitoring.us-east-1.amazonaws.com/ tunnel  # CloudWatch metrics and alarms
+allow https://logs.us-east-1.amazonaws.com/ tunnel        # CloudWatch Logs
+allow https://iam.amazonaws.com/ tunnel                   # global, no region
+allow https://secretsmanager.us-east-1.amazonaws.com/ tunnel
+allow https://kms.us-east-1.amazonaws.com/ tunnel         # the stack's secrets provider

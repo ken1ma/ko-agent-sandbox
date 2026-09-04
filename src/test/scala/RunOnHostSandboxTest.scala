@@ -29,17 +29,17 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("an absent host-command, or a complete one, is no stray"):
     assertEquals(hostCommandStray(Files.createTempDirectory("empty")), None)
     val project = projectWith(
-      ".ko-agent-sandbox/host-command/sbt/egress/allowed",
-      ".ko-agent-sandbox/host-command/mill/egress/allowed",
+      ".ko-agent-sandbox/host-command/sbt/egress/rule",
+      ".ko-agent-sandbox/host-command/mill/egress/rule",
     )
     assertEquals(hostCommandStray(project), None)
 
   test("a stray name at any level refuses, naming itself; metadata does not"):
     for
       stray <- Seq(
-        ".ko-agent-sandbox/host-command/gradle/egress/allowed",
-        ".ko-agent-sandbox/host-command/sbt/egres/allowed",
-        ".ko-agent-sandbox/host-command/sbt/egress/allowd",
+        ".ko-agent-sandbox/host-command/gradle/egress/rule",
+        ".ko-agent-sandbox/host-command/sbt/egres/rule",
+        ".ko-agent-sandbox/host-command/sbt/egress/rules",
       )
     do
       val refused = hostCommandStray(projectWith(stray))
@@ -47,12 +47,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(refused.exists(_.contains("update the launcher")), refused.toString)
     val metadata = projectWith(
       ".ko-agent-sandbox/host-command/.DS_Store",
-      ".ko-agent-sandbox/host-command/sbt/egress/allowed",
+      ".ko-agent-sandbox/host-command/sbt/egress/rule",
     )
     assertEquals(hostCommandStray(metadata), None)
+    // The retired grammar's file is named as such, with the pointer.
+    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed"))
+    assert(retired.exists(r => r.contains("retired grammar") && r.contains("egress/rule")), retired.toString)
 
   test("a symlinked component refuses by name"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed")
+    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
     val dir = project.resolve(".ko-agent-sandbox/host-command/mill")
     Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/host-command/sbt"))
     val refused = hostCommandStray(project)
@@ -66,34 +69,34 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val refused = hostCommandStray(project)
     assert(refused.exists(r => r.contains("sbt") && r.contains("not a directory")), refused.toString)
 
-  test("a non-regular file where allowed belongs refuses instead of being read"):
+  test("a non-regular file where rule belongs refuses instead of being read"):
     val project = Files.createTempDirectory("host-command")
     val egress = project.resolve(".ko-agent-sandbox/host-command/sbt/egress")
-    Files.createDirectories(egress.resolve("allowed")) // a directory; a FIFO would block a read
+    Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
     val refused = hostCommandStray(project)
     assert(
-      refused.exists(r => r.contains("allowed") && r.contains("not a regular file")),
+      refused.exists(r => r.contains("rule") && r.contains("not a regular file")),
       refused.toString,
     )
 
   test("readAllowlist reads the tool's file, refuses its strays, and defaults to nothing"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed")
+    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/allowed"),
-      "+host repo.example.org\n",
+      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      "allow https://repo.example.org/ read\n",
       UTF_8,
     )
     assertEquals(readAllowlist(project, Tool.Sbt), Right(Vector("repo.example.org")))
     assertEquals(readAllowlist(project, Tool.Mill), Right(Vector.empty), "mill has no file here")
 
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/allowed"),
-      "+model-provider openai\n",
+      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      "allow model-provider openai\n",
       UTF_8,
     )
     val refused = readAllowlist(project, Tool.Sbt)
-    assert(refused.swap.exists(_.contains("+model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains("+host <host>")), refused.toString)
+    assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
+    assert(refused.swap.exists(_.contains(RunOnHostPolicy.BuildAllowlistForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces
@@ -106,7 +109,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("awaitProxyPort is a bounded Left with what the proxy said"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
-    Files.writeString(log, "EGRESS_ALLOWED contains '+junk'\n", UTF_8)
+    Files.writeString(log, "rule: '+junk' is no line of the rule grammar\n", UTF_8)
     val refused = awaitProxyPort(log, deadlineMillis = 300)
     assert(refused.swap.exists(_.contains("+junk")), refused.toString)
 

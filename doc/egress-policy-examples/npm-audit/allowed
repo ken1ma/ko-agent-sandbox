@@ -1,9 +1,0 @@
-# The .ko-agent-sandbox/egress/allowed of a project that opts into npm's audit service.
-# npm sends a package/version inventory to the public registry, which may include
-# private-registry and git dependency names. The allowance also lets any sandbox process send
-# any body to that fixed path; every other registry POST and every PUT stays refused.
-# The response supplies install-time warnings; it does not fail npm install. Use an explicit
-# `npm audit --audit-level=high` when findings should fail a job.
-# Leaving this out blocks automatic inventory disclosure and the POST-body channel, not the
-# lower-bandwidth channel in allowed GET URLs. SECURITY.md, "Exfiltration through an allowed host".
-+host registry.npmjs.org allow=npm-audit

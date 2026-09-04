@@ -310,7 +310,7 @@ for p in $profiles; do
     if [ "$p" = mill ]; then scratch_mill=$scratch; else scratch_sbt=$scratch; fi
     mkdir -p "$scratch/sub/nested/.git/hooks" "$scratch/.ko-agent-sandbox/egress"
     printf 'fixture\n' > "$scratch/sub/nested/.git/config"
-    printf 'fixture\n' > "$scratch/.ko-agent-sandbox/egress/allowed"
+    printf 'fixture\n' > "$scratch/.ko-agent-sandbox/egress/rule"
     ln -s sub/nested/.git "$scratch/link"
     # The escapes, made on the host: a symlink must add no authority over its target.
     ln -s "$HOME" "$scratch/esc-home"
@@ -454,7 +454,7 @@ for p in $profiles; do
     expect_denied "$p" "create PROJECT/.git during the build" "mkdir '$scratch/.git'"
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
-    expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/allowed'"
+    expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/rule'"
     expect_denied "$p" "write the user's Coursier v1" ": > '$user_v1/$marker'"
     present_or_skip "write the user's mill download folder" "$mill_downloads" \
         && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"

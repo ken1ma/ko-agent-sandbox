@@ -1,13 +1,15 @@
 # Design decisions
 
-What was decided and must not silently drift: rejected ideas (Non-TODOs), recorded so they stop
+What was decided and must not silently drift: the standing decisions, recorded so they stop
 resurfacing; the axes verification has to separate; the prior art they were reviewed against; and
 the principles to preserve. The work that remains is TODO.md; the security model is SECURITY.md.
 
-## Non-TODOs / deliberate design choices
+## Standing design decisions
 
-These ideas were reviewed against broader prior art and relevant issue histories. Do not implement
-them without a new requirement.
+Each was reviewed against broader prior art and relevant issue histories, and says what is fixed
+and why. A named revisit condition records the anticipated reason to reopen it; otherwise
+reopening takes a new requirement, or evidence that an assumption or security argument the
+decision rests on no longer holds. Nothing less reopens one.
 
 ### No general capability broker
 
@@ -24,11 +26,14 @@ this project's operating model deliberately avoids:
 
 ### No per-repository `GitRead(repository)` policy
 
-SECURITY.md, "Why the policy is not a capability system".
+The policy names destinations and its grant words name operations; nothing names a repository,
+because public reading is meant to be broad and the sandbox carries no credential a finer grant
+would attenuate. SECURITY.md, "Why the policy is not a capability system", has the argument and
+the one condition that would reopen it.
 
 ### No generic "GET is safe, POST is dangerous" rule
 
-SECURITY.md, "Exfiltration through an allowed host". The restricted treatment removes a host's
+SECURITY.md, "Exfiltration through an allowed host". The inspected treatment removes a host's
 write API, never declares a GET safe.
 
 ### No command-name safe lists
@@ -47,33 +52,64 @@ loads unconditionally — a project file can add to the image's conventions but 
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
 session cannot rewrite the instructions governing the next one, as it could any file in the
 project directory. Prose governs nothing enforceable; the file sits in the boundary directory for
-that read-before-launch property alone, and is the directory's second entry, so its closed
-namespace admits `agent/` with the one filename.
+that read-before-launch property alone.
 
 ### No richer egress-policy format
 
-The policy stays four fixed profiles over two fixed files, `allowed` and `denied`, in the grammar
-the README's "Modifying the egress policy" spells out — no fields beyond `allow=` and `path=`, no
-globs beyond the taking-away subtree, no ranked rules, no open allowance vocabulary, no
-selected-provider-plus-extras profile variant. `path=` is the one narrowing admitted on the
-granting side, for the multi-tenant host a project adds for one tenant's content — its own
-bucket, one owner on a raw-content host — which every comparable project has been asked for:
-sandbox-runtime's open request names `storage.googleapis.com` and `raw.githubusercontent.com`,
-Copilot's coding-agent firewall accepts a URL entry beside a domain, coder/boundary carries path
-rules. It is a prefix and nothing more — no glob, no suffix, no regex, no query rule, no path on
-`denied`, no nesting with most-specific-wins — because a prefix is the one form whose worst case
-is over-blocking; each of the others reintroduces reach a reviewer did not enumerate, or a
-selection rule to get wrong:
+The policy stays four fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
+spells out: `allow` and `deny` lines naming URLs, four grant words, no pattern but the
+taking-away subtree, no open vocabulary, no selected-provider-plus-extras profile variant.
+
+Its design lineage is a small part of OpenBSD's policy-language tradition, chosen as precedent,
+not as a compatibility target. PF evaluates rules in textual order and lets the last matching
+one decide, the restrictive shape a broad block followed by its exceptions. relayd applies the
+same model at the application layer, to HTTP requests by method, path and host — and reached it
+by replacing its own earlier design: until 2014 its HTTP filtering was per-header protocol
+directives, matched by name with no order among them, which Reyk Floeter replaced with linear
+last-matching `pass`/`block` rules "inspired by pf" (the commit below). That history is why this
+grammar has textual order and no specificity precedence: a later root `deny` beats an earlier
+`/api/` allow of the same grant however specific the path, where a most-specific-wins rule
+would admit it. doas is the same house's smaller instance — `permit`/`deny`, last match wins, no
+match denies — and the precedent for keeping the vocabulary this small. The lessons kept: the
+file's order is its meaning; broad restrictions precede their narrower exceptions; the resolved
+policy may compile the rules into host and path scopes, and that compilation must not change
+their simple ordered meaning — PF's discipline for its skip steps, held here by the tests'
+plain ordered evaluator, which the resolved policy is checked against over a drawn domain.
+doas's `-C`, which evaluates the file against a hypothetical command through the code that
+would enforce it, is the precedent for the request-level explanation TODO.md defers: driven by
+the enforcing resolver, never by a second interpretation of the file.
+
+What is deliberately not borrowed: a path on `deny`, since a denial by path fails open against
+the origin's canonicalization — an HTTP origin, not the proxy, is the final authority on how a
+path reads — where PF's block on a network is safe, the kernel being the one authority on what
+an address means; PF's `quick` and relayd's `match`, and IAM's deny-overrides, each a second
+kind of rule behavior — a precedence apart from the order, a denial no later line can undo; the
+profile system in place of relayd's unmatched-filter default; first-match evaluation, Squid's
+and nginx's, which reads the exception before the rule; a wildcard on the granting side. The
+decision the grammar rests on: syntax buys the file's meaning — one parser, one resolver the
+launcher's dry run executes, exact hosts so a grant is enumerable and the leaf certificate can
+name it, every ambiguity a refused launch — and not the project's choices, which `tunnel` is
+right there to make; restricting the grammar further would buy no security about what a
+reviewed project may open.
+
+A URL is the form every comparable project's operator already writes, and a path on the granting
+side is what every one of them has been asked for — the multi-tenant host a project adds for one
+tenant's content, its own bucket, one owner on a forge: sandbox-runtime's open request names
+`storage.googleapis.com` and `raw.githubusercontent.com`, Copilot's coding-agent firewall accepts
+a URL entry beside a domain, coder/boundary carries path rules:
 
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/468
 - https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall
 - https://github.com/coder/boundary
+- OpenBSD pf.conf(5), relayd.conf(5), doas.conf(5) and doas(1); relayd's move to last-matching
+  rules, 2014-07-09: https://github.com/openbsd/src/commit/cb8b0e5645
 
 SECURITY.md ("Adding hosts, not patterns") carries the reasoning;
-`resolvePolicy` enforces it, tested rule by rule. The failure classes kept out — a
+`resolvePolicy` enforces it, and the tests hold the resolved policy to a plain ordered evaluator
+over a drawn domain. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
-the launcher's dry run executes), and an allow silently overriding a deny (one fixed order,
-`denied` last, every contradiction a refusal) — are well attested:
+the launcher's dry run executes), and an allow silently overriding a deny (the last word decides,
+in the order written, and a denial names a host or a subtree whole) — are well attested:
 
 - https://github.com/docker/sbx-releases/issues/410
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/434
@@ -82,8 +118,8 @@ the launcher's dry run executes), and an allow silently overriding a deny (one f
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/432
 - https://github.com/stripe/smokescreen/issues/236
 
-Do not add wildcard additions, ranked rules, a richer removal-pattern language, or an allowance
-outside the closed set without a concrete need that outweighs that surface.
+Do not add a wildcard on the granting side, a second precedence, a richer pattern language, or
+a grant word outside the closed set without a concrete need that outweighs that surface.
 
 ### No HTTP query surface on the proxy
 
@@ -97,16 +133,18 @@ would add is a second parsed request format at the enforcement point, against it
 CONNECT-only-one-request rule, for information already delivered. `Max-Forwards` itself creates
 no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE, and this one never does —
 non-CONNECT is refused at the proxy layer, both methods are refused inside inspected tunnels, and
-an unrestricted tunnel is not an HTTP hop at all.
+an opaque tunnel is not an HTTP hop at all.
 
 ### No Via header
 
-RFC 9110 §7.6.3 makes Via a MUST for an intermediary, and this proxy knowingly does not send it:
-Via exists for loop detection and protocol-capability discovery across proxy chains, and this hop
-is a single, terminal one — a loop through it cannot form. What Via would actually do here is
+A standards deviation, knowingly: RFC 9110 §7.6.3 makes Via a MUST for an intermediary, and the
+inspected forwarding omits it. Via exists for loop detection and protocol-capability discovery
+across proxy chains, and this hop is a single, terminal one — it forwards to the origin and never
+to another intermediary, so a loop through it cannot form. What Via would actually do here is
 stamp the proxy's presence and software onto every inspected request for every origin to read,
 metadata this design sends nowhere, and some origins vary caching behavior on it. The client side
-is not deceived: it addressed the proxy by CONNECT.
+is not deceived: it addressed the proxy by CONNECT. Revisit if this proxy ever forwards to another
+intermediary or joins a chain: the assumption above is then gone.
 
 ### No test hook that pauses a launch mid-flight
 
@@ -125,8 +163,11 @@ reach is an interleaving at some other instant — which a pause hook would not 
 `--self-test` runs when a person runs it. It does not run on a schedule, report anywhere, or start
 itself after detecting an upgrade. A stale stamp refusing a staged launch is the whole of the
 enforcement, and it acts at the moment the answer matters rather than at some earlier one.
+Revisit if an unattended workflow needs a stale verification detected before its next attempted
+launch, rather than a failed launch being enforcement enough — a CI failure a person reads
+later is still that enforcement.
 
-### No PATH-resolved host executables
+### No repository-controlled host executable resolution
 
 The launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries that are absolute
 **and** outside the project directory — `HostCommands.findOnPath` — and the reaper receives the
@@ -176,8 +217,10 @@ project to serve the undisciplined one: a default `.env` mask
 breaks tests that read `.env`, the first `-name .env` removes the protection, and the user who
 commits a credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
 Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
-under no well-known name. Keep the rule procedural: a credential in the project directory is the
-user's to keep out, and a forge token there is answered by denying the forge in `egress/denied`.
+under no well-known name. Keep the rule procedural: a credential in the project directory
+violates the operating model, and it is the user's to keep out. A `deny` of the forge in
+`egress/rule` removes one way to spend a forge token left there, not the risk — every admitted
+host is a possible recipient of what the sandbox holds.
 
 ### No gVisor or microVM isolation layer
 
@@ -196,9 +239,10 @@ design; it means the additional boundary should be purchased only when the threa
 
 Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
 a prompt to widen the policy. A prompt is a prompt-injection target, and a grant made through one
-is un-auditable afterwards. Authority here stays launch-only: a refusal's `403` body names the
-step (`RefusalAdvice` in the proxy), and the user widens `.ko-agent-sandbox/egress/allowed` on
-the host and relaunches.
+is authority added mid-session, harder to review than a line committed to the repository and
+applied at launch. Authority here stays launch-only: a refusal's `403` body names the
+step (`RefusalAdvice` in the proxy), and the user adds the `allow` line to
+`.ko-agent-sandbox/egress/rule` on the host and relaunches.
 
 - https://github.com/openai/codex/issues/22387 — no DNS inside the sandbox surprised users
 - https://github.com/google-gemini/gemini-cli/issues/23875 — network off by default read as
@@ -209,7 +253,8 @@ the host and relaunches.
 sandbox-runtime annotates the agent's context with a `<sandbox_violations>` block; Copilot's
 coding-agent firewall reports a blocked request with the address and the command that made it.
 Each needs integration per CLI release. The `403` body already lands in the tool output every
-agent reads, at the enforcement point, so nothing is integrated.
+agent reads, at the enforcement point, so nothing is integrated. Revisit if an agent stops
+surfacing its tools' output to the model, which is what the body's route relies on.
 
 ## The axes verification has to separate
 
@@ -286,6 +331,17 @@ unless the agent fundamentally cannot function without those credentials.
 ```text
 Repository-controlled execution stays inside the outer sandbox.
 Do not create a host-side execution path merely to make an agent workflow easier.
+```
+
+```text
+Policy syntax has one meaning. Compiling or optimizing a policy may change its representation,
+never its semantics: the plain ordered reading of the rules is the specification.
+```
+
+```text
+Authority is decided before launch and cannot be widened by the running sandbox: the rule file
+is read on the host and frozen, a refused request names the step but grants nothing, and a
+changed file applies at the next launch.
 ```
 
 ```text

@@ -31,11 +31,11 @@ class EgressPolicyTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(20, "min")
 
-  /** Write this project's policy files, as a repository would ship them. */
-  private def policy(project: Path, files: (String, String)*): Unit =
+  /** Write this project's rule file, as a repository would ship it. */
+  private def policy(project: Path, rule: Option[String]): Unit =
     val egress = project.resolve(".ko-agent-sandbox").resolve("egress")
     Files.createDirectories(egress)
-    files.foreach((name, text) => Files.writeString(egress.resolve(name), text))
+    rule.foreach(text => Files.writeString(egress.resolve("rule"), text))
 
   private def curl(session: Session, args: String*): Run =
     exec(session, (Vector("curl", "-sS", "--max-time", "25") ++ args)*)
@@ -79,11 +79,11 @@ class EgressPolicyTest extends munit.FunSuite:
       s"$host failed upstream, but not over its certificate — the origin may simply be down:\n$line",
     )
 
-  private def withSession(files: (String, String)*)(body: Session => Unit): Unit =
+  private def withSession(rule: Option[String])(body: Session => Unit): Unit =
     val project = scratchProject()
     var live: Option[Session] = None
     try
-      policy(project, files*)
+      policy(project, rule)
       val session = launch(project, project.resolve("session.log"))
       live = Some(session)
       body(session)
@@ -91,16 +91,17 @@ class EgressPolicyTest extends munit.FunSuite:
       live.foreach(stop)
       discard(project)
 
-  test("a restricted addition is inspected, verified upstream, and opens nothing else"):
+  test("a read line is inspected, verified upstream, and opens nothing else"):
     optIn()
 
     withSession(
-      "allowed" ->
-        """|+host example.com
-           |+host expired.badssl.com
-           |+host wrong.host.badssl.com
-           |+host 127.0.0.1.nip.io
-           |""".stripMargin
+      Some(
+        """|allow https://example.com/ read
+           |allow https://expired.badssl.com/ read
+           |allow https://wrong.host.badssl.com/ read
+           |allow https://127.0.0.1.nip.io/ read
+           |""".stripMargin,
+      ),
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
@@ -129,42 +130,54 @@ class EgressPolicyTest extends munit.FunSuite:
         "SECURITY: a name resolving to loopback was not refused after resolution",
       )
 
-      // The bound: adding four hosts adds four hosts. A reserved name (RFC 6761), so that no
-      // baseline growth can ever turn the sentinel into an admitted host.
+      // The bound: allowing four hosts allows four hosts. A reserved name (RFC 6761), so that no
+      // growth of the defaults can ever turn the sentinel into an admitted host.
       refusedAtConnect(session, "https://unlisted.invalid/", "a host the policy never named was allowed")
 
-  test("an addition states a host's complete allowances, dropping the built-in one"):
+  test("a deny of one grant takes that grant alone: the forge stays readable and stops being clonable"):
     optIn()
 
-    // github.com is `allow=git-fetch` in the baseline: restricted, plus the POST a clone's transfer
-    // leg needs. Re-adding it plain is documented to replace that entry outright.
+    // github.com is `read git-fetch` in the defaults: inspected reads, plus the clone's two
+    // requests. One deny line takes the clone back host-wide and leaves the reads.
     val clone = Vector(
       "git", "clone", "--depth", "1", "--quiet",
       "https://github.com/octocat/Hello-World.git", "/tmp/hello"
     )
 
-    withSession("allowed" -> "+host github.com\n"): session =>
-      assertEquals(status(session, "https://github.com/"), "200", "the re-added host lost its read access")
+    withSession(Some("deny https://github.com/ git-fetch\n")): session =>
+      assertEquals(status(session, "https://github.com/"), "200", "the deny of git-fetch took the reads too")
       val attempt = exec(session, clone*)
-      assert(!attempt.ok, "SECURITY: the clone succeeded; the built-in git-fetch tag outlived the addition")
+      assert(!attempt.ok, "SECURITY: the clone succeeded; the defaults' git-fetch outlived the deny")
+      // Refused at the clone's first request, and the log says so with the line that refused it.
+      val audit = run(podman, "logs", session.proxy)
+      assert(
+        (audit.text + "\n" + audit.err).linesIterator.exists: line =>
+          line.contains(" deny github.com GET /octocat/Hello-World.git/info/refs") &&
+            line.endsWith("git fetch ref discovery"),
+        "no deny line records the refused clone at ref discovery",
+      )
 
     // The control, and the only thing that makes the refusal above evidence: the same clone under
-    // the built-in policy, which the project did not touch.
-    withSession(): session =>
-      assert(exec(session, clone*).ok, "the clone fails under the built-in policy too; this fixture proves nothing")
+    // the defaults, which the project did not touch.
+    withSession(None): session =>
+      assert(exec(session, clone*).ok, "the clone fails under the defaults too; this fixture proves nothing")
 
-  test("a path= prefix admits one owner's content and refuses the rest of the host, clone included"):
+  test("a host-wide deny with a narrower allow beneath it admits one owner and refuses the rest, clone included"):
     optIn()
 
-    // One prefix for the clone, one for Copilot's device login, on the forge the baseline restricts
-    // whole; and one on the raw-content host. The requests outside are refused inside the tunnel,
-    // so curl reports the proxy's own status, and a clone of another owner fails at ref discovery.
+    // The forge denied whole, then one owner re-granted for the clone and the device login's path
+    // re-granted for its POST; the same shape on the raw-content host. The requests outside are
+    // refused inside the tunnel, so curl reports the proxy's own status, and a clone of another
+    // owner fails at ref discovery.
     withSession(
-      "allowed" ->
-        """|+host github.com path=/octocat/ allow=git-fetch
-           |+host github.com path=/login/ allow=github-login-device
-           |+host raw.githubusercontent.com path=/octocat/
-           |""".stripMargin
+      Some(
+        """|deny https://github.com/
+           |allow https://github.com/octocat/ read git-fetch
+           |allow https://github.com/login/device/code method=POST
+           |deny https://raw.githubusercontent.com/
+           |allow https://raw.githubusercontent.com/octocat/ read
+           |""".stripMargin,
+      ),
     ): session =>
       val readme = "https://raw.githubusercontent.com/octocat/Hello-World/master/README"
       assertEquals(status(session, readme), "200", "the read under the prefix is refused")
@@ -180,21 +193,21 @@ class EgressPolicyTest extends munit.FunSuite:
         status(session, "https://raw.githubusercontent.com/octocat/%2e%2e/github/docs/main/README.md"), "403",
         "SECURITY: a percent-encoded dot segment under the prefix was admitted",
       )
-      // The device flow's first POST, under its own prefix: GitHub answers a client-id error, which
-      // is the origin speaking — the proxy's refusal would be a 403 with its own body.
+      // The device flow's first POST, at its own path: GitHub answers a client-id error, which is
+      // the origin speaking — the proxy's refusal would be a 403 with its own body.
       val login = curl(
         session, "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-d", "client_id=x",
         "https://github.com/login/device/code",
       ).text.trim
-      assertNotEquals(login, "403", "the login allowance under /login/ is refused")
+      assertNotEquals(login, "403", "the login POST at its path is refused")
 
       def clone(repo: String): Run =
         val target = s"/tmp/${repo.replace('/', '-')}"
         exec(session, "git", "clone", "--depth", "1", "--quiet", s"https://github.com/$repo.git", target)
-      assert(clone("octocat/Hello-World").ok, "the clone under the fetch prefix fails")
-      assert(!clone("github/docs").ok, "SECURITY: a clone outside the fetch prefix succeeded")
+      assert(clone("octocat/Hello-World").ok, "the clone under the owner's line fails")
+      assert(!clone("github/docs").ok, "SECURITY: a clone outside the owner's line succeeded")
 
-      // The refusal is the prefix's, at the clone's first request, and the log says so.
+      // The refusal is the boundary's, at the clone's first request, and the log says so.
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator.exists: line =>
@@ -203,7 +216,7 @@ class EgressPolicyTest extends munit.FunSuite:
       )
 
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
-    // The restricted treatment's reason to exist (SECURITY.md, "Reading without being able to write").
+    // The inspected treatment's reason to exist (SECURITY.md, "Reading without being able to write").
     // The rule is host-independent, which is what lets any owner-minted bucket serve as the fixture.
     // For an S3 bucket:
     //
@@ -244,10 +257,10 @@ class EgressPolicyTest extends munit.FunSuite:
         s"${controlLines.dropRight(1).mkString(" ")} ${control.err}",
     )
 
-    withSession("allowed" -> s"+host $bucketHost\n"): session =>
+    withSession(Some(s"allow https://$bucketHost/ read\n")): session =>
       val attempt = curl(session, "-X", "PUT", "--data-binary", "from-the-sandbox", url)
       assert(
-        attempt.text.contains("restricted host"),
+        attempt.text.contains("PUT not granted"),
         s"SECURITY: the signed PUT was not refused by the proxy: ${attempt.text} ${attempt.err}",
       )
       val audit = run(podman, "logs", session.proxy)
@@ -257,18 +270,42 @@ class EgressPolicyTest extends munit.FunSuite:
         "no deny line records the refused PUT",
       )
 
-  test("a -** lockdown removes the built-in policy and still signs in"):
+  test("a deny defaults lockdown removes the defaults and still signs in"):
     optIn()
 
-    withSession(
-      "allowed" -> "-**\n+host api.anthropic.com unrestricted\n",
-    ): session =>
-      // An unrestricted host is an opaque tunnel: any status means the CONNECT was granted, and
-      // the agent endpoint answering at all is what "still signs in" means.
+    withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
+      // A tunnel is opaque: any status means the CONNECT was granted, and the agent endpoint
+      // answering at all is what "still signs in" means.
       assert(
         curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
-        "the re-added agent endpoint is unreachable under the lockdown",
+        "the group's agent endpoint is unreachable under the lockdown",
       )
-      // Nothing restricted survives, so this session inspects nothing — and the baseline is gone.
-      refusedAtConnect(session, "https://pypi.org/", "a built-in host survived `-**`")
-      refusedAtConnect(session, "https://github.com/", "a built-in host survived `-**`")
+      // Nothing inspected survives, so this session inspects nothing — and the defaults are gone.
+      refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
+      refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
+
+  test("the npm audit line admits the audit POST beside an install with a scoped package"):
+    optIn()
+
+    // The example's one line, over the defaults' root read: the install's reads under the root
+    // keep working with the `%2f` npm spells a scoped package's name with, and the audit POST at
+    // its exact path is admitted, logged as such.
+    withSession(Some("allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST\n")): session =>
+      val install = exec(
+        session,
+        "sh",
+        "-c",
+        "mkdir -p /tmp/npm && cd /tmp/npm && npm init -y >/dev/null && npm install @types/node",
+      )
+      assert(install.ok, s"the install failed: ${install.text} ${install.err}")
+      val audit = (
+        run(podman, "logs", session.proxy).text + "\n" + run(podman, "logs", session.proxy).err,
+      ).linesIterator.toVector
+      assert(
+        audit.exists(line => line.contains(" allow registry.npmjs.org GET /@types%2fnode")),
+        "the scoped package was not read under the root with its %2f spelling",
+      )
+      assert(
+        audit.exists(line => line.contains(" allow registry.npmjs.org POST /-/npm/v1/security/advisories/bulk")),
+        "the audit POST was not admitted at its path",
+      )

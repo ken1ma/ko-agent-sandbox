@@ -64,7 +64,7 @@ object IntegrationSession extends munit.Assertions:
 
   /**
    * The shared sessions state --egress=deny-unless-allowed rather than inheriting it as the
-   * default: the suites' assertions are written against the baseline policy and must not drift
+   * default: the suites' assertions are written against the defaults and must not drift
    * with the default. A suite asserting a profile's own behavior launches through launchWith
    * and passes its own options.
    */

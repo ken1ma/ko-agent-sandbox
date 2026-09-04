@@ -121,11 +121,12 @@ The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this sessi
 with what treatment, is the appended "Authority in force for this session" section;
 `KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
 
-On a restricted host a write — `git push`, a `POST` outside a named allowance, `PUT` — is
+On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run
 `sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
 A TLS error on an allowed host is the trust store (next paragraph), or a client the proxy
-closes on: no SNI, Encrypted ClientHello, or HTTP/2 only. Plain `curl`/`git` are none of these.
+closes on: no SNI, Encrypted ClientHello — a browser's GREASE included, so a browser-driven tool
+fails on every host — or HTTP/2 only. Plain `curl`/`git` are none of these.
 
 `getent hosts` and every other name lookup fail by design; that is never why a fetch failed.
 Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
@@ -154,9 +155,9 @@ At `same-uid` a runtime runs, within four limits:
   nonroot-by-default images with `--user 0`. For databases, run them as processes as above.
 - **Host network only.** `-p` does not exist; services bind 127.0.0.1 directly, and egress is
   still the proxy's.
-- **Most registries need the allowlist.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
-  baseline; for any other, ask the user to add `+host <registry>` to
-  `.ko-agent-sandbox/egress/allowed`. A stalled pull is a refused host.
+- **Most registries need a rule.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
+  defaults; for any other, ask the user to add `allow https://<registry>/ read` to
+  `.ko-agent-sandbox/egress/rule`. A stalled pull is a refused host.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
 podman is not preinstalled. `sandbox-install-podman` fetches and configures it:

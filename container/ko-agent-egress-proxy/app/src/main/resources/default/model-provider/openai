@@ -1,0 +1,7 @@
+# Codex.
+allow https://chatgpt.com/     tunnel  # model traffic for a ChatGPT plan
+allow https://api.openai.com/  tunnel  # API-key use
+allow https://auth.openai.com/ tunnel  # issues the device code and the tokens
+
+# ab.chatgpt.com — A/B configuration and telemetry — is absent: codex works without it, and a
+# refusal produces a log line.

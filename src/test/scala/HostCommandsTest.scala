@@ -107,7 +107,7 @@ class HostCommandsTest extends munit.FunSuite:
   test("an absolute PATH entry inside the project is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
     // The absolute-entry-inside-the-project case (HostCommands.findOnPath's doc, design.md "No
-    // PATH-resolved host executables").
+    // repository-controlled host executable resolution").
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
     val shipped = Files.createDirectories(project.resolve("node_modules/.bin"))
     val planted = shipped.resolve("podman")

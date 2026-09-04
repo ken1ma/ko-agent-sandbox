@@ -1,0 +1,10 @@
+# The .ko-agent-sandbox/egress/rule of a project that admits its model provider and nothing
+# else — the lockdown for a project whose dependency names, or hosts read, are themselves
+# secrets. Under --egress=deny-unless-allowed, the default: `deny defaults` takes the defaults,
+# not the public HTTPS that allow-unless-denied admits ambiently, so under that profile this file
+# narrows nothing. Nothing built in survives: no forge, no registry, no documentation site. The
+# agent builds only from what the project directory and the image already hold, and every
+# refusal is a line in the proxy log. Change the group to the agent launched: openai for codex,
+# google for agy, github for copilot.
+deny defaults
+allow model-provider anthropic

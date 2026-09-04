@@ -260,7 +260,7 @@ object HostCommands:
           """error: podman is not installed or not on PATH
             |
             |PATH entries inside the current directory are not searched: it is the
-            |project directory being sandboxed (design.md, "No PATH-resolved host executables").
+            |project directory being sandboxed (design.md, "No repository-controlled host executable resolution").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127,

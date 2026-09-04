@@ -108,8 +108,8 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
 
-The baseline repository allowlist is one host, `repo1.maven.org:443` — Coursier's and sbt's default
-Maven Central URL, not the `repo.maven.apache.org` alias almost nothing resolves against.
+Every build's proxy admits one host on its own, `repo1.maven.org:443` — Coursier's and sbt's
+default Maven Central URL, not the `repo.maven.apache.org` alias almost nothing resolves against.
 `repo.scala-sbt.org` is deliberately absent: it hosts the Ivy-style plugin repository and is not
 part of sbt's bootstrap — an uncached sbt version named in `project/build.properties` resolves from
 Maven Central. A build that needs more adds it explicitly ("Configuration", below); nothing is
@@ -312,7 +312,7 @@ server the client forks is what resolves, and it lives past the client until the
 Binding to the lock keeps the answer unchanged if a warm server spanning invocations is ever added.
 
 Its vehicle is the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/baseline` resources, and the wrapper starts the proxy by
+`dist` compiles them in beside their `/default` resources, and the wrapper starts the proxy by
 re-invoking whichever vehicle it is running in — `java -jar` or the native binary — under a private
 verb. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
 only in the container's own network namespace), and the wrapper reads the port from the same ready
@@ -335,15 +335,16 @@ A build that resolves beyond Maven Central names its repositories in a project f
 directory that already holds reviewed boundary configuration:
 
 ```text
-.ko-agent-sandbox/host-command/<tool>/egress/allowed
+.ko-agent-sandbox/host-command/<tool>/egress/rule
 ```
 
-One list per tool, so a repository that builds with both grants each only what it resolves. The
-grammar is its own, narrower than any the proxy has: `+host <host>` entries and comments, nothing
-else — no tags, no treatment words, no providers, no removals — refused at validation rather than
-passed through. The full `allowed` grammar would let one `+model-provider` line expand into
-endpoints that are no artifact repository, and its treatment words mean nothing to a proxy running
-without inspection.
+One file per tool, so a repository that builds with both grants each only what it resolves. The
+grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines and comments,
+nothing else — no other grant, no path, no provider, no deny — refused at validation rather than
+passed through. The full grammar would let one `allow model-provider` line expand into endpoints
+that are no artifact repository, and a `tunnel` word means nothing to a proxy running without
+inspection. The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
+(`RunOnHostPolicy.egressRuleText`), so the container's catalog contributes nothing.
 
 The file inherits the directory's properties: the workspace filter freezes it at any depth, the
 launcher reads it on the host, and it is reviewed in a pull request like any other file.

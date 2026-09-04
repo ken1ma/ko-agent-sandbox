@@ -3,7 +3,7 @@
 // is not here — it is a dozen flags in AgentSandboxLauncher.launch, and moving it would drag the
 // launch with it.
 //
-// The proxy owns the baseline, the profile equations and the delta arithmetic; nothing here
+// The proxy owns the defaults, the profile equations and the rule resolution; nothing here
 // re-implements any of them, so there is no second opinion about what is allowed. See
 // container/ko-agent-egress-proxy.
 
@@ -17,12 +17,12 @@ import HostCommands.*
 object EgressProxyPolicy:
 
   /**
-   * Comment-stripped, whitespace-collapsed policy text, one entry per line — the format the
-   * environment variables carry. Entries are multi-token lines (`+host x`), so line
+   * Comment-stripped, whitespace-collapsed rule text, one line per line — the format the
+   * environment variable carries. A rule is a multi-token line (`allow https://x/ read`), so line
    * structure is what separates them and must be preserved. A comment starts at the start of a
    * line or after whitespace; a `#` inside a token is kept, so the proxy's parser sees and
-   * refuses it rather than this pass turning `path=/a/#b/` into the wider `path=/a/`. What is
-   * in force is the proxy's to say — a delta file's resolved policy is not this text.
+   * refuses it rather than this pass turning `https://x/a/#b/` into the wider `https://x/a/`.
+   * What is in force is the proxy's to say — a rule file's resolved policy is not this text.
    */
   def normalizePolicyText(text: String): String =
     text.linesIterator
@@ -34,21 +34,21 @@ object EgressProxyPolicy:
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The `allowed` entries the resolved policy reports as reaching past the baseline — its
-   * `widening entries (N): ...` line, `; ` between entries — printed on a line of their own at
-   * launch, so that a policy which only removes or narrows prints nothing extra and the line is a
-   * signal rather than a habit. The proxy classifies against the baseline it ships (resolvePolicy
+   * The rule lines the resolved policy reports as granting beyond the defaults for their host —
+   * its `widening lines (N): ...` line, `; ` between lines — printed on a line of their own at
+   * launch, so that a file which only takes or narrows prints nothing extra and the line is a
+   * signal rather than a habit. The proxy classifies against the defaults it ships (resolvePolicy
    * has the classes), so a custom image reports against its own; an image printing no such line
-   * reports nothing, never a classification against a baseline it does not have.
+   * reports nothing, never a classification against defaults it does not have.
    */
   def wideningEntries(resolved: String): Vector[String] =
-    resolved.linesIterator.find(_.startsWith("widening entries (")).toVector.flatMap: line =>
+    resolved.linesIterator.find(_.startsWith("widening lines (")).toVector.flatMap: line =>
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
 
-  /** The lines the proxy prints after the policy lines, describing the project's file rather than
-    * the policy: today the widening line; a summary line joins it. Everything from the first of
-    * them on is metadata. */
-  val MetadataPrefixes: Vector[String] = Vector("widening entries (")
+  /** The lines the proxy prints after the policy lines, describing the policy's size and the
+    * project's file rather than the policy: the summary line, then the widening line. Everything
+    * from the first of them on is metadata (PolicyHelper.metadataLines). */
+  val MetadataPrefixes: Vector[String] = Vector("policy summary:", "widening lines (")
 
   /** The dry run's text up to its first metadata line — the policy alone — for the consumers that
     * carry nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY`. */
@@ -56,11 +56,12 @@ object EgressProxyPolicy:
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
   /**
-   * The launch banner's one-line summary of the resolved policy: the profile as the policy spells
-   * it, then the counts that say how wide it is. The full host lists are one `--egress-effective`
-   * away, and the proxy writes them into this session's own log; a thousand characters of
-   * hostnames in the banner is a line people learn to skip, and skipping it is how a policy nobody
-   * expected goes unnoticed. An unparseable resolution is printed whole rather than guessed at.
+   * The launch banner's one-line summary of the resolved policy: the profile as the policy's
+   * first line spells it, then the counts of the summary line, which say how wide it is — each
+   * source alone insufficient. The full lines are one `--egress-effective` away, and the proxy
+   * writes them into this session's own log; a thousand characters of hostnames in the banner is
+   * a line people learn to skip, and skipping it is how a policy nobody expected goes unnoticed.
+   * An unparseable resolution is printed whole rather than guessed at.
    *
    * @param color tints the profile, except under the permissive one, where the caller tints the
    *              whole line.
@@ -68,26 +69,28 @@ object EgressProxyPolicy:
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
 
-    def countOf(prefix: String): Option[Int] =
-      lines.find(_.startsWith(prefix)).flatMap: line =>
-        val open = line.indexOf('(')
-        val close = line.indexOf(')')
-        Option.when(open >= 0 && close > open)(line.substring(open + 1, close).toIntOption).flatten
+    val counts: Map[String, Int] =
+      lines.find(_.startsWith("policy summary:")).toVector
+        .flatMap(_.stripPrefix("policy summary:").split(";").toVector)
+        .flatMap: field =>
+          field.trim.split(" ", 2) match
+            case Array(count, name) => count.toIntOption.map(name -> _)
+            case _                  => None
+        .toMap
 
-    // The restricted line counts scopes; the banner counts hosts, as the leaf does.
     val parsed =
       for
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
-        restricted <- lines.find(_.startsWith("restricted hosts (")).flatMap(restrictedHostsOf(_).toOption).map(_.size)
-        denied <- countOf("denied rules (")
+        inspected <- counts.get("inspected hosts")
+        opaque <- counts.get("opaque hosts")
+        denied <- counts.get("ambient denials")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
-        val effective = restricted + countOf("unrestricted hosts (").getOrElse(0)
         profile match
           case "allow-unless-denied" =>
             // Plain: the caller tints this line whole, and a word tinted inside it would end that
             // colour at its own reset.
-            s"egress: $profile; public HTTPS; $restricted restricted, $denied denied"
+            s"egress: $profile; public HTTPS; $inspected inspected, $denied denied"
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -97,9 +100,9 @@ object EgressProxyPolicy:
               .getOrElse("none")
             val selected =
               if provider == "none" then "no provider selected" else s"model provider $provider"
-            s"egress: ${statedMode(profile, color)}; $selected; $effective effective hosts"
+            s"egress: ${statedMode(profile, color)}; $selected; $inspected inspected, $opaque opaque"
           case _ =>
-            s"egress: ${statedMode(profile, color)}; $effective effective hosts"
+            s"egress: ${statedMode(profile, color)}; $inspected inspected, $opaque opaque"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
@@ -126,10 +129,11 @@ object EgressProxyPolicy:
 
   val RetainedProxyLogs = 20
 
-  val PolicyFiles: Vector[(String, String)] = Vector(
-    "allowed" -> "EGRESS_ALLOWED",
-    "denied" -> "EGRESS_DENIED",
-  )
+  val PolicyFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
+
+  /** The two files of the grammar `rule` replaced, refused by name with the pointer: the guard
+    * freezes the directory, so nothing else tells a project its policy went unread. */
+  val RetiredPolicyFiles: Vector[String] = Vector("allowed", "denied")
 
   /**
    * The policy directory's files as (name, normalized text), present files
@@ -153,9 +157,8 @@ object EgressProxyPolicy:
     else if !Files.isDirectory(egressDir) then
       Left(
         s"""error: $egressDir is a file
-           |egress is a directory of policy files:
-           |${PolicyFiles.map(_(0)).mkString(", ")}. Split the entries and remove the
-           |file; README ("Modifying the egress policy") has the grammar.""".stripMargin
+           |egress is a directory holding the policy file ${PolicyFiles.map(_(0)).mkString(", ")}. Move the
+           |lines there and remove the file; doc/egress-proxy.md has the grammar.""".stripMargin
       )
     else
       val entries = Files
@@ -168,6 +171,9 @@ object EgressProxyPolicy:
 
       val refusal = entries
         .collectFirst:
+          case entry if RetiredPolicyFiles.contains(entry.getFileName.toString) =>
+            s"error: $entry is a file of the retired grammar\nThe policy is one file, egress/rule, " +
+              "in the rule grammar; doc/egress-proxy.md has it. Rewrite the lines there and delete this file."
           case entry if !PolicyFiles.exists(_(0) == entry.getFileName.toString) =>
             s"error: $entry is not a policy file\negress/ holds only " +
               s"${PolicyFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
@@ -204,10 +210,10 @@ object EgressProxyPolicy:
   /**
    * A --print-policy dry run of the proxy image (--rm, --network=none,
    * nothing mounted): the resolved policy, or the reason it is invalid. The
-   * proxy owns the baseline and the profile arithmetic; this one dry run is
+   * proxy owns the defaults and the profile arithmetic; this one dry run is
    * the authority both --egress-effective and every launch consult — for
    * the banner and for the leaf certificate's names alike. `provenance`
-   * additionally reports every entry's source (--egress-effective's view).
+   * additionally reports every line's sources (--egress-effective's view).
    */
   def resolvedPolicy(
     podman: String,
@@ -251,44 +257,28 @@ object EgressProxyPolicy:
         .sortBy(_.getFileName.toString)
 
   /**
-   * The inspected hosts out of a --print-policy answer: its `restricted
-   * hosts (N): ...` line, which names every inspected scope and nothing else
-   * (the allowances have lines of their own) — a token per scope, `host` or
-   * `host/prefix/` for an entry narrowed by `path=`, so the host is the token
-   * up to its first `/`, and a host under several prefixes is one name. This
-   * is how the launcher learns which names the leaf certificate must carry —
-   * the proxy image's own answer under this project's policy, so no second
-   * copy of any list exists to drift, and a proxy image or policy of the
-   * user's choosing gets a matching leaf too. Empty means the policy inspects
-   * nothing; the launcher then mints no leaf and hands the proxy no
-   * inspection material.
+   * The inspected hosts out of a --print-policy answer: the hosts of its `allow https://` lines,
+   * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
+   * between the scheme and its first `/`, and a host under several scopes is one name. This is
+   * how the launcher learns which names the leaf certificate must carry — the proxy image's own
+   * answer under this project's policy, so no second copy of any list exists to drift, and a proxy
+   * image or policy of the user's choosing gets a matching leaf too. Empty means the policy
+   * inspects nothing; the launcher then mints no leaf and hands the proxy no inspection material.
+   * A resolution without its profile line is another launcher version's format, refused.
    */
   def inspectedHostsOf(printPolicyOutput: String): Either[String, Vector[String]] =
-    printPolicyOutput.linesIterator.find(_.startsWith("restricted hosts (")) match
-      case None =>
-        Left(
-          "error: the proxy image's --print-policy has no 'restricted hosts' line\n" +
-            "An image built by another launcher version prints another format; rebuild with --build.",
-        )
-      case Some(line) => restrictedHostsOf(line)
-
-  /** The distinct hosts of one policy line's tokens, sorted; Left for a line without its `):`. */
-  private def restrictedHostsOf(line: String): Either[String, Vector[String]] =
-    line.indexOf("):") match
-      case -1 =>
-        Left(
-          s"error: unparseable policy line: $line\n" +
-            "An image built by another launcher version prints another format; rebuild with --build.",
-        )
-      case at =>
-        Right(
-          line
-            .drop(at + 2)
-            .trim
-            .split(" ")
-            .toVector
-            .filter(_.nonEmpty)
-            .map(_.takeWhile(_ != '/'))
-            .distinct
-            .sorted,
-        )
+    val lines = printPolicyOutput.linesIterator.toVector
+    if !lines.headOption.exists(_.startsWith("egress profile: ")) then
+      Left(
+        "error: the proxy image's --print-policy has no 'egress profile' line\n" +
+          "An image built by another launcher version prints another format; rebuild with --build.",
+      )
+    else
+      Right(
+        policyLinesOf(printPolicyOutput).linesIterator
+          .filter(line => line.startsWith("allow https://") && !line.endsWith(" tunnel"))
+          .map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
+          .toVector
+          .distinct
+          .sorted,
+      )

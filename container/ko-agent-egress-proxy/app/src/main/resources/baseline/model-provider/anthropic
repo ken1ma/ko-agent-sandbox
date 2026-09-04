@@ -1,6 +1,0 @@
-# Claude Code. The following are its model, authentication and control-plane endpoints, opaque
-# tunnels: unbounded, unlogged write access (SECURITY.md, "What is inside TLS", has why the model
-# endpoints are not TLS-inspected).
-+host api.anthropic.com unrestricted    # model traffic
-+host claude.ai unrestricted            # interactive login
-+host platform.claude.com unrestricted  # interactive login

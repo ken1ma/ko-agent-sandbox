@@ -5,10 +5,10 @@ Status: Beta on macOS, alpha on Linux and Windows
 The AI agents in this sandbox, by default,
 
 1. reach no user files except the project directory (current directory)
-1. reach no network except the launcher-owned baseline:
+1. reach no network except the launcher-owned defaults:
     1. the model providers of the agents
-    1. a curated set of sites, limited to reads and named operations, such as `git clone`/`pull`,
-       modified per project by `.ko-agent-sandbox/egress/`
+    1. a curated set of sites, limited to reads and named grants, such as `git clone`/`pull`,
+       modified per project by `.ko-agent-sandbox/egress/rule`
 
 How it is put together:
 
@@ -135,8 +135,8 @@ checkout — [Development](#development).
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
                          deny-unless-allowed, admits the launcher-owned
-                         baseline modified by .ko-agent-sandbox/egress/.
-                         Each profile: README "Choosing an egress profile"
+                         defaults modified by .ko-agent-sandbox/egress/rule.
+                         Each profile: doc/egress-proxy.md
       --run-on-host=<tools>
                          macOS only: sbt / mill can be run on the host. This buys
                          nothing on Linux, and cannot be securely
@@ -187,7 +187,7 @@ checkout — [Development](#development).
 
       --egress-effective [--] [<command> [args...]]
                          print the policy the accompanying --egress=<profile>
-                         resolves to for this project, with per-entry
+                         resolves to for this project, with per-line
                          provenance; the command selects the model provider
                          without being launched
       --egress-check=<host> [--] [<command> [args...]]
@@ -243,10 +243,10 @@ checkout — [Development](#development).
                                           also lets it set your clipboard (SECURITY.md). A
                                           Linux host needs xclip or wl-clipboard
 
-    Files in .ko-agent-sandbox/egress/ of the project directory modify the egress policy:
-    "allowed" is a delta over the launcher-owned baseline, "denied" removes hosts and
-    provider groups under every profile. .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces
-    the image's conventions in the agent instructions (README "Overriding the agent instructions").
+    .ko-agent-sandbox/egress/rule in the project directory modifies the egress policy: allow
+    and deny lines naming URLs, applied in order over the launcher-owned defaults
+    (doc/egress-proxy.md). .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces the image's
+    conventions in the agent instructions (README "Overriding the agent instructions").
 
 
 ### `--build`
@@ -289,7 +289,7 @@ checkout — [Development](#development).
 ### Running `<command>`
 
 1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
-   plus its policy files and any warning, then asks `[Y/n]` over the full command
+   plus its rule file and any warning, then asks `[Y/n]` over the full command
    (`KO_AGENT_SANDBOX_SESSION_START`, Reference).
 1. Agent state persists in a per-project named volume.
     1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
@@ -328,112 +328,20 @@ checkout — [Development](#development).
 
 ## Egress proxy
 
-### Choosing an egress profile
+Every session reaches the network through one HTTPS proxy: the launcher-owned defaults — the
+agents' model providers as opaque tunnels, a curated catalog of TLS-inspected documentation,
+package-registry and forge hosts — under the `--egress=` profile selected at launch, modified by
+the project's `.ko-agent-sandbox/egress/rule`, one line per rule:
 
-Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. A host is
-either `unrestricted` — an opaque tunnel — or `restricted` — the default, which an `allowed`
-entry selects by saying nothing — TLS-inspected, GET and HEAD only, except for a named allowance
-("Modifying the egress policy" below; SECURITY.md, "Reading without being able to write", has
-what each opens).
+    deny https://github.com/                     # the forge, whole
+    allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
+    allow https://api.example/ tunnel            # an opaque tunnel: the widest word
 
-The launcher-owned baseline is every model-provider group (`anthropic`, `openai`, `google`,
-`github` — each expanding to that provider's model, authentication and control-plane endpoints,
-unrestricted, except that `github`'s forge hosts stay restricted, with `allow=github-login-device`
-for the sign-in) plus a curated catalog of restricted documentation, package-registry and forge
-hosts.
+`doc/egress-proxy.md` is the reference: the profiles, the rule grammar and what each word grants,
+the policy a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
+the security model.
 
-1. `deny-unless-allowed` (the default) — the baseline, modified by the project's `allowed` delta.
-1. `deny-unless-model` — only the launched agent's own provider group: `claude` selects
-   `anthropic`, `codex` selects `openai`, `agy` selects `google`, `copilot` selects `github`.
-   Only the basename of the directly launched command is classified; anything else — `bash`, a
-   wrapper script — selects no provider, admits no host, and says so at startup.
-1. `allow-unless-denied` — every public hostname on port 443, unrestricted, except that the
-   baseline's restricted entries (plus restricted `allowed` additions) stay inspected,
-   allowances and all, and `denied` still applies.
-1. `deny-all` — nothing.
-
-### Modifying the egress policy
-
-Create `.ko-agent-sandbox/egress/` in the project directory, holding up to two files. Entries
-are one per line; `#` comments and blank lines ignored.
-
-`allowed` is a delta over the baseline, consulted by `deny-unless-allowed` (and, for its
-restricted additions, by `allow-unless-denied`'s narrowing set):
-
-    # egress/allowed
-    +host html.spec.whatwg.org             # a spec site this project reads: restricted
-    +host mirror.example allow=git-fetch   # a git mirror: clonable, never pushable
-    +host storage.googleapis.com path=/my-bucket/   # restricted, and only under that prefix
-    +host github.com path=/my-org/ allow=git-fetch  # clonable under one owner only
-    +host github.com path=/login/ allow=github-login-device  # a second prefix, its own allowance
-    +host api.example unrestricted         # an opaque tunnel: the one word that widens
-    -host github.com                       # a baseline host this project drops
-    -host **.example.com                   # a subtree removal: the apex and everything under it
-    -model-provider google                 # a provider group this project never uses
-
-An addition with no treatment word is restricted; `unrestricted` is the only word that widens,
-so the dangerous entry is the one that says more. An addition states its host's complete
-allowances and overrides the baseline entry for the same host — `+host gitlab.com` makes
-gitlab.com plain restricted, its baseline `allow=git-fetch` gone. The allowances are a closed
-set the proxy defines: `git-fetch`, `github-login-device` and `npm-audit`, each named for the
-one operation it opens; several go in one word, `allow=git-fetch,github-login-device`. `path=`
-narrows an entry to one tree; a request outside it is refused like a write, and so is one
-spelled with percent-encoding, a dot segment, a backslash or an empty segment, since the proxy
-compares the path literally and cannot know how the origin would decode it. Several `path=`
-entries for one host are several trees, disjoint, each with its own allowances; the prefix
-begins and ends with `/`, in the origin's own case. A provider entry adds or takes back the
-group's own contribution and no more: `github.com` is in the catalog (`allow=git-fetch`) and in
-the `github` group (`allow=github-login-device`), so `+model-provider github` merges the login
-allowance in and `-model-provider github` leaves the catalog's clonable host behind; to drop the
-host outright, deny the group. Widening cannot be written as a delta: re-adding a restricted
-baseline host as `unrestricted` is refused; a project that needs it writes `-**` — which removes
-the whole baseline, wherever in the file it appears; the file's own additions stand — and states
-its complete replacement policy:
-
-    # egress/allowed
-    -**                                    # nothing built-in survives
-    +model-provider anthropic              # re-added Claude Code's endpoints
-
-`doc/egress-policy-examples/` holds complete `egress/` directories for common needs, a Pulumi AWS
-stack among them, to copy over `.ko-agent-sandbox/egress/` and trim.
-
-`denied` applies under every profile and only ever takes away — no `+`/`-` prefixes, no
-allowances:
-
-    # egress/denied
-    host telemetry.example.com    # an exact host
-    host **.googleapis.com        # the apex and every subdomain, whatever their treatment
-    model-provider google         # the group, whatever its concrete endpoints become
-
-1. An absent directory or file is empty policy input. `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may
-   create an empty `.ko-agent-sandbox` directory in the project (SECURITY.md, "Silent changes to
-   what you own").
-   An empty *resolved* policy is valid and reported as such — `deny-all` resolves empty by
-   design, as does `deny-unless-model` under `bash`.
-1. Every ambiguity is a failed launch with the reason printed: an entry outside the grammar,
-   duplicate additions with different treatments, a host both added and removed, a removal
-   matching neither the baseline nor an addition, an unknown profile, provider, treatment or
-   allowance, a `path=` that is not in canonical form, on an `unrestricted` or `denied` entry,
-   nested in another prefix of the same host (an entry without `path=` included), or not
-   containing an allowance's fixed paths (`github-login-device` needs `/login/`, `npm-audit`
-   `/-/`), a filename that is neither `allowed` nor `denied` (and in `.ko-agent-sandbox/`
-   itself, an entry other than `egress`, `agent` or `host-command`). A `denied` entry matching
-   nothing the profile admits is a startup warning, not an error: it can still apply under
-   another profile.
-1. `--egress-effective` and `--egress-check=<host>` (Reference) answer without starting a
-   session. Every start prints your policy files as written, and the resolved hosts as counts;
-   when `allowed` reaches past the baseline — a host the baseline lacks, an `unrestricted`
-   addition, an allowance the baseline entry lacks, `-**` — those entries are printed once more
-   on a line of their own, `egress policy widens:`, so a file that only removes or narrows
-   prints nothing extra. A `#` starts a comment at the start of a line or after whitespace;
-   inside a token it is refused, never a cut.
-1. Editing the files takes effect on the next launch; a running session keeps its original policy.
-1. The sandbox cannot edit them, under either write mode ([SECURITY.md], "Why the policy is per
-   project, in the project, and read-only").
-1. The directory is meant to be committed. Review it in an unfamiliar repository before
-   launching, exactly as you would its build scripts — `unrestricted` additions most of all.
-
-### Overriding the agent instructions
+## Overriding the agent instructions
 
 Every agent receives one assembled instruction file: sandbox facts from `AGENTS-SANDBOX.md`,
 working conventions from `AGENTS-CUSTOM.md`, and the authority appended for this session. To
@@ -445,41 +353,6 @@ directory's rules above apply: one filename, no symlinks, read on the host at la
 from the sandbox, committed and reviewed with the rest. Instructions that should merely *add* to
 the image's belong in the agent's own project-level instruction file, such as `CLAUDE.md`,
 `AGENTS.md`, or `GEMINI.md`.
-
-### Audit what has been allowed or denied
-
-Run with `--proxy-log` from the project directory. Every proxy connection is logged,
-and the proxy appends the log to a per-run file on the host, under
-
-    ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
-    %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
-
-With no arguments, `--proxy-log` prints the retained files oldest first — the newest 20 runs, and
-any older one whose session is still running, since a live proxy is still appending to its file.
-The startup lines are the resolved policy and whether inspection is active;
-every connection event after them is one line, with an inspected request's full target — query
-string included, which is what makes an exfiltrating `GET` visible. A refusal reads as
-
-    2026-08-26T11:59:38Z deny github.com POST /owner/repo.git/git-receive-pack restricted path
-
-[SECURITY.md], "The audit line grammar", has every field and reason.
-
-### TLS inspection
-
-The proxy terminates the TLS of every `restricted` host so that reading can be allowed and
-writing refused. Only `unrestricted` hosts — the model providers, unless a project adds more —
-stay opaque.
-
-The per-project CA lives on the host, under
-
-    ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
-    %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
-
-1. The certificates are created and refreshed automatically for each project ([SECURITY.md],
-   "Who holds the CA key").
-1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
-   launch's proxy starts with the certificates current at that moment.
-
 
 ## Development
 
@@ -542,8 +415,8 @@ The per-project CA lives on the host, under
 1. `testFull` executes every test every time, unlike `test` which is incremental.
 1. The `find` removes the host sbt's cache links under `target/`, which dangle in the session
    (`container/ko-agent-sandbox/AGENTS-SANDBOX.md`). The session run adds `SessionBoundaryTest`,
-   which runs only inside a session and checks the baseline policy, so a broader
-   `--egress=` fails it.
+   which runs only inside a session and checks the defaults, so a broader `--egress=` fails
+   it.
 
 #### egress-proxy
 
@@ -562,13 +435,13 @@ The per-project CA lives on the host, under
     sbt dist
     cd target/dist
     native-image --enable-native-access=ALL-UNNAMED \
-      -H:IncludeResources='sandbox-build/.*|baseline/.*|agentsandbox/.*' \
+      -H:IncludeResources='sandbox-build/.*|default/.*|agentsandbox/.*' \
       -o ko-agent-sandbox -jar ko-agent-sandbox.jar
 
 1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting
    `ko-agent-sandbox` binary on PATH.
 1. Requires GraalVM (JDK 25) with `native-image` and a C toolchain.
-1. `-H:IncludeResources` embeds the bundled build context, the proxy's baseline policy, and the
+1. `-H:IncludeResources` embeds the bundled build context, the proxy's defaults, and the
    launcher's own resources (the `--help` text, the measured Seatbelt runtime authority) into the
    binary; native-image drops resources that are not explicitly requested.
 1. The FFM `execvp` handoff is supported by native-image on recent GraalVM releases (linux/macOS,

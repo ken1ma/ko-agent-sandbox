@@ -18,7 +18,7 @@ The credential residues SECURITY.md concedes are the target.
 
 - A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
   reaching whatever this project's egress policy admits". A `GET` carries its URL, and a URL is
-  a message, so a forwarded token leaves through any restricted host, or inside the opaque model
+  a message, so a forwarded token leaves through any inspected host, or inside the opaque model
   tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
 - Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every tool in
   the sandbox and by anything that captures the environment or the volume — the class Codex hit
@@ -34,15 +34,15 @@ header-only rewrite.
 
 What brokering does not change: the bound host still receives authenticated requests, within the
 method policy the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
-`allow=git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
+`git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
 an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
 
 ## Invariants
 
 1. The value reaches the proxy container only, never the sandbox's environment, the persistent
    volume, `/workspace`, the launch banner, or the audit log.
-1. An explicit `--env` binding names exactly one host, which must be `restricted` in the
-   resolved profile. An `unrestricted` host is an opaque tunnel where no substitution can
+1. An explicit `--env` binding names exactly one host, which must be inspected in the
+   resolved profile. A `tunnel` host is opaque, where no substitution can
    happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
    reason. A service instance (`plan-provider-credential-proxy.md`) spends on its finite
    target list instead, under the same rewrite.
@@ -79,9 +79,9 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
 ```
 
 The prefix form takes the policy's own matcher: the canonical-form rule for `PREFIX` and the
-literal comparison are the proxy's `path=` ones (README, "Modifying the egress policy";
-SECURITY.md, "Adding hosts, not patterns"), and the policy's own prefix, if the entry carries
-one, applies first. Where requests may go and where a credential may be spent are two facts
+literal comparison are the proxy's rule-path ones (doc/egress-proxy.md, "The rule file";
+SECURITY.md, "Adding hosts, not patterns"), and the policy's own path, if the host's line
+carries one, applies first. Where requests may go and where a credential may be spent are two facts
 and stay two lines; the comparison is one function.
 
 `EnvironmentName` admits no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
@@ -89,8 +89,9 @@ stays command-line-only; a repository file cannot bind a host. `KO_AGENT_SANDBOX
 
 Refusals, each fatal at launch and naming the fix:
 
-- `HOST` is not in the resolved profile: "add `+host HOST` to `.ko-agent-sandbox/egress/allowed`".
-- `HOST` is unrestricted: "an opaque tunnel cannot substitute; bind to a restricted host or
+- `HOST` is not in the resolved profile: "add `allow https://HOST/ read` to
+  `.ko-agent-sandbox/egress/rule`".
+- `HOST` is a tunnel: "an opaque tunnel cannot substitute; bind to an inspected host or
   forward unbrokered with `--env=NAME`".
 - `HOST` is denied: the denial wins, as for every other entry.
 - two bindings for one `NAME`: refused; one name, one host.
@@ -154,7 +155,7 @@ Not brokered, for reasons that hold independently of effort:
 - The Codex CLI is a statically linked binary with compiled-in roots ("Who holds the CA key").
   It cannot be shown the project CA, so nothing between it and `chatgpt.com` /
   `api.openai.com` can be inspected, and there is no substitution point.
-- Claude Code is a Node program and could be inspected, but its endpoints are unrestricted by
+- Claude Code is a Node program and could be inspected, but its endpoints are tunnels by
   design: model traffic has to write, and there is no policy to apply inside it beyond the swap.
   Its login is an OAuth pair with local expiry bookkeeping and a refresh exchange on the
   provider's hosts; the proxy would have to mirror that lifecycle per release, at every refresh,
@@ -163,7 +164,7 @@ Not brokered, for reasons that hold independently of effort:
   a per-release contract with the CLI.
 - `--env=ANTHROPIC_API_KEY@api.anthropic.com` is the one Claude case the mechanism would fit —
   API-key mode, a fixed header, no lifecycle — and it is refused by invariant 2 because the host
-  is unrestricted. If the model endpoints are ever inspected for another reason, the binding
+  is a tunnel. If the model endpoints are ever inspected for another reason, the binding
   works unchanged; nothing in this plan is built for it.
 
 ## Security model
@@ -188,7 +189,8 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 - `EnvForward` gains `binding: Option[(host, header)]`; `forwardedEnvironment` returns the
   sandbox `--env` list with placeholders and, separately, the proxy's secret-file contents.
-- Binding validation against the resolved profile, reusing the restricted line read from
+- Binding validation against the resolved profile, reusing the inspected hosts read from the
+  allow lines of
   `--print-policy` (the leaf certificate's source of truth, so no second host list).
 - `CredentialGrammar`: the value and header-name checks of invariant 4, one source file under
   `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
@@ -261,7 +263,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - Response rewriting, body rewriting, query rewriting: the recurring failure of broader
   rewriters is breaking applications that carry their own tokens (docker/sbx-releases #8);
   header-only is the durable form.
-- Brokering for unrestricted hosts, hence the Claude/Codex logins ("Claude Code and Codex
+- Brokering for tunnel hosts, hence the Claude/Codex logins ("Claude Code and Codex
   logins: excluded").
 - AWS SigV4 re-signing (sandbox-runtime does it): no AWS host is in the catalog; a signed
   request is a body-dependent signature, which is body inspection by another name.

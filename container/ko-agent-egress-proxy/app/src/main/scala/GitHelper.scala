@@ -39,6 +39,17 @@ object GitHelper:
         .exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == "service=git-receive-pack")
 
   /**
+   * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack, classified as
+   * receive-pack's is. It is the `git-fetch` grant's own request, not `read`'s
+   * (PolicyHelper.authorizeInspectedRequest); the decode can only widen that refusal.
+   */
+  def isUploadPackDiscovery(head: HttpRequestHead): Boolean =
+    percentDecoded(head.path).endsWith("/info/refs") &&
+      head.query
+        .split("&", -1)
+        .exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == "service=git-upload-pack")
+
+  /**
    * One decode pass — the forge router's semantics, not HTTP's, which
    * assigns no meaning to %-escapes in a target; the forwarded bytes stay
    * as sent. Private and deny-side on purpose: in HTTPHelper as a reusable
@@ -91,8 +102,8 @@ object GitHelper:
   private def problemOf(path: String, spellings: Vector[(String, String => Boolean)]): Option[String] =
     spellings.collectFirst { case (name, present) if present(path) => name }
 
-  /** Why `path` cannot be compared literally to a prefix, or None: the one
-    * rule for a `path=` prefix at launch and for a request under one. */
+  /** Why `path` cannot be compared literally to a rule's path, or None: the one
+    * rule for a rule's path at launch and for a request under one. */
   def literalPathProblem(path: String): Option[String] =
     problemOf(path, DecodedSpellings ++ FoldedSpellings)
 
@@ -105,7 +116,7 @@ object GitHelper:
   def requireUnambiguousPath(path: String): Unit =
     requireSpelledPlainly(path, DecodedSpellings)
 
-  /** A path on a prefixed host, on every method: refused for any spelling
-    * literalPathProblem names. */
+  /** A path whose longest match is a line other than the root, on every
+    * method: refused for any spelling literalPathProblem names. */
   def requireLiteralPath(path: String): Unit =
     requireSpelledPlainly(path, DecodedSpellings ++ FoldedSpellings)

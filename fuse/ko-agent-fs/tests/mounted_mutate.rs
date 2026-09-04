@@ -217,30 +217,30 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         repository(backing);
         fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();
         fs::write(
-            backing.join(".ko-agent-sandbox/egress/allowed"),
-            b"+host docs.python.org\n",
+            backing.join(".ko-agent-sandbox/egress/rule"),
+            b"allow https://docs.python.org/ read\n",
         )
         .unwrap();
     });
 
     allowed(
         "read the policy the host wrote",
-        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/allowed")).map(|_| ()),
+        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/rule")).map(|_| ()),
     );
     denied(
         "rewrite a policy file",
         fs::write(
-            mount.at(".ko-agent-sandbox/egress/allowed"),
-            b"+host evil.example unrestricted\n",
+            mount.at(".ko-agent-sandbox/egress/rule"),
+            b"allow https://evil.example/ tunnel\n",
         ),
     );
     denied(
         "add a policy file",
-        File::create(mount.at(".ko-agent-sandbox/egress/denied")),
+        File::create(mount.at(".ko-agent-sandbox/egress/extra")),
     );
     denied(
         "remove a policy file",
-        fs::remove_file(mount.at(".ko-agent-sandbox/egress/allowed")),
+        fs::remove_file(mount.at(".ko-agent-sandbox/egress/rule")),
     );
     denied(
         "remove the directory",

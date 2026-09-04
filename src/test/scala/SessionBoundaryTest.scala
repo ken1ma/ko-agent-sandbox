@@ -160,7 +160,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the two treatments are told apart by the certificate each host presents"):
     inSession()
-    // The decisive in-session test for "an unrestricted host is still an opaque tunnel": an
+    // The decisive in-session test for "a tunnel host is still opaque": an
     // inspected host presents a leaf this project's CA signed, an opaque one the origin's own chain.
     val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-ca.crt")
       .text.stripPrefix("subject=").trim
@@ -178,7 +178,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     Vector("pypi.org", "github.com").foreach: host =>
       assertEquals(issuer(host), ca, s"$host is not inspected")
     Vector("api.anthropic.com", "chatgpt.com").foreach: host =>
-      assertNotEquals(issuer(host), ca, s"$host was inspected; an unrestricted host must stay opaque")
+      assertNotEquals(issuer(host), ca, s"$host was inspected; a tunnel host must stay opaque")
 
   test("an inspected tunnel permits reading and refuses writing"):
     inSession()

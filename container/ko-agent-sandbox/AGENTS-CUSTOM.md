@@ -19,6 +19,11 @@ Before reasoning, designing, or experimenting about how anything works, read wha
 it — the official documentation, the source, the issue tracker, this repository's own documents.
 Experiments and reasoning are for what those leave open, never a substitute for reading them.
 
+Correct the user when the premise, the plan or the wording is wrong: before the work,
+with the reason, and once the disagreement is heard, do the work as asked.
+Disagreement is expected, not merely allowed; an intention guessed and conformed to in silence
+is the failure this rule prevents.
+
 
 # Writing style
 

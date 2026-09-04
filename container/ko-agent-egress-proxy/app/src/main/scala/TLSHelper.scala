@@ -214,7 +214,10 @@ object TLSHelper:
      * mean anything: with ECH the visible outer SNI is a public name the CDN
      * shares, and the name that actually selects a backend is encrypted. A
      * connection whose outer SNI is an allowed host could then be served as
-     * any other host on the same CDN.
+     * any other host on the same CDN. GREASE ECH (RFC 9849, 6.2) — the dummy
+     * extension an ECH-capable client without a config sends, browsers by
+     * default — is made indistinguishable from the real one, so it is refused
+     * with it; doc/TODO.md has the narrowing an inspected host would admit.
      */
     val EncryptedClientHelloExtension = 0xfe0d
     val MaxTlsRecordPayloadBytes = 18 * 1024

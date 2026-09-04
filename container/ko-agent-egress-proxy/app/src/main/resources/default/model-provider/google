@@ -1,0 +1,7 @@
+# Antigravity.
+allow https://cloudcode-pa.googleapis.com/ tunnel  # model traffic and account state
+allow https://accounts.google.com/         tunnel  # printed sign-in URL
+allow https://oauth2.googleapis.com/       tunnel  # exchanges the pasted code and refreshes tokens
+
+# play.googleapis.com — telemetry and experiment polling — is absent, as ab.chatgpt.com is in
+# model-provider/openai.
