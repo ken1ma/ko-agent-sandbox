@@ -252,7 +252,8 @@ object AgentSandboxLauncher:
    * declines, EOF at the prompt counts as n, and any other answer asks again; Ctrl-C ends the JVM
    * through the shutdown hook, which is the same outcome as n. The full command is shown, since
    * its arguments are part of what is agreed to. With no reader — no terminal, or a mode other
-   * than pause — there is nothing to hold.
+   * than pause — there is nothing to hold. When the hold returns, its line is closed: by the
+   * reader's Enter, or by the hold itself at EOF, which echoes nothing.
    */
   def holdForReader(mode: String, command: Seq[String], reader: Option[Reader]): Boolean =
     reader.filter(_ => mode == "pause") match
@@ -261,7 +262,9 @@ object AgentSandboxLauncher:
         def ask(): Boolean =
           reader.prompt(s"\nstart: ${command.map(renderArgument).mkString(" ")} [Y/n] ")
           reader.readLine() match
-            case None => false
+            case None =>
+              reader.prompt("\n")
+              false
             case Some(answer) =>
               answer.trim.toLowerCase(java.util.Locale.ROOT) match
                 case "" | "y" | "yes" => true
@@ -391,6 +394,30 @@ object AgentSandboxLauncher:
    */
   val BuildMemoryWarnThreshold: Long = 3L << 30
 
+  /**
+   * The memory figure's scale at a launch, where the session is the concern: orange under
+   * MinimumCeiling, where the sandbox takes more than the machine has and the entrypoint's warning
+   * follows; red under half of it, where the session starts starved rather than merely
+   * overcommitted. The image build's gate is not on this scale: a session does not build the
+   * image, and --build's own warning states the gate where it applies.
+   */
+  def launchMemoryHeadroom(available: Long): Headroom =
+    if available >= MinimumCeiling then Headroom.Ample
+    else if available >= MinimumCeiling / 2 then Headroom.Warned
+    else Headroom.Short
+
+  /**
+   * The scale where an image build is the concern — the build verbs, and the `--stats` report,
+   * which is read before deciding on one: green from BuildMemoryWarnThreshold up — also the
+   * ceiling a 4 GiB machine gives, the least a JVM build in the sandbox fits in
+   * (SmallMachineMemory); orange below it, where a session starts but a build is warned; red
+   * under MinimumCeiling, as at a launch.
+   */
+  def buildMemoryHeadroom(available: Long): Headroom =
+    if available >= BuildMemoryWarnThreshold then Headroom.Ample
+    else if available >= MinimumCeiling then Headroom.Warned
+    else Headroom.Short
+
   def buildMemoryWarning(available: Option[Long]): Option[String] =
     available.filter(_ < BuildMemoryWarnThreshold).map: bytes =>
       s"the machine has ${gib(bytes)} of memory available; a cold image build peaks near 3.3 GiB\n" +
@@ -398,13 +425,26 @@ object AgentSandboxLauncher:
 
   /** After requirePodman's gate, every podman verb says the machine's headroom once, beside the
     * `using:` line — the figure the memory ceiling and the build gate act on, visible before
-    * they act. A figure the machine cannot give prints nothing. */
-  def machineMemoryLine(os: Os, total: Option[Long], available: Option[Long]): Option[String] =
+    * they act, and tinted on the verb's scale (launchMemoryHeadroom, buildMemoryHeadroom). A
+    * figure the machine cannot give prints nothing. */
+  def machineMemoryLine(
+    os: Os,
+    total: Option[Long],
+    available: Option[Long],
+    color: Boolean = colorStderr,
+    scale: Long => Headroom = launchMemoryHeadroom,
+  ): Option[String] =
     val label = if os == Os.Linux then "memory" else "podman machine memory"
     for
       totalBytes <- total
       availableBytes <- available
-    yield SandboxStats.shareLine(label, availableBytes, totalBytes, "available")
+    yield SandboxStats.shareLine(
+      label,
+      availableBytes,
+      totalBytes,
+      "available",
+      gauged(_, scale(availableBytes), color),
+    )
 
   /**
    * MemAvailable of the machine the image builds run on: this host on native Linux, the VM
@@ -531,7 +571,7 @@ object AgentSandboxLauncher:
    * so `machine init` stays the one manual step of a fresh install: the next verb, usually
    * --build, brings the machine up itself.
    */
-  def requirePodman(os: Os): Unit =
+  def requirePodman(os: Os, memoryScale: Long => Headroom = launchMemoryHeadroom): Unit =
     if !runOk(podman, "--version") then
       fail(
         s"""error: $podman does not run
@@ -560,6 +600,7 @@ object AgentSandboxLauncher:
       os,
       memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}")),
       probedMachineAvailable(os),
+      scale = memoryScale,
     ).foreach(System.err.println)
 
   def probedMachineAvailable(os: Os): Option[Long] =
@@ -1905,7 +1946,7 @@ object AgentSandboxLauncher:
       case Some(("--build", rest)) =>
         noAuthorityOptions("--build")
         if rest.nonEmpty then fail("error: --build takes no further arguments")
-        requirePodman(currentOs)
+        requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
         withImageBuildLock(currentOs): journal =>
           val context = unpackBuildContext()
@@ -1952,7 +1993,7 @@ object AgentSandboxLauncher:
       case Some(("--update", rest)) =>
         noAuthorityOptions("--update")
         if rest.nonEmpty then fail("error: --update takes no further arguments")
-        requirePodman(currentOs)
+        requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
         withImageBuildLock(currentOs): journal =>
           val context = unpackBuildContext()
@@ -2023,7 +2064,7 @@ object AgentSandboxLauncher:
 
       case Some(("--self-test", rest)) =>
         noAuthorityOptions("--self-test")
-        requirePodman(currentOs)
+        requirePodman(currentOs, buildMemoryHeadroom)
         selfTest(currentOs, rest)
 
       case Some(("--egress-effective", rest)) =>
@@ -2355,12 +2396,19 @@ object AgentSandboxLauncher:
 
     // Everything this run creates, in one place: the shutdown hook and the resident teardown both
     // run exactly this, so the two cannot drift into removing different sets.
+    //
+    // The notice opens on a fresh line unless the line is known closed. The terminal echoes a
+    // Ctrl-C as `^C` and stops there, a signal leaves the cursor wherever it was, a child may end
+    // mid-line, and the hook cannot see any of it; the one line the launcher knows closed is the
+    // hold's, ended by the reader's Enter or by the hold itself (holdForReader). Elsewhere an
+    // empty line is the price, a refusal's among them.
+    var heldLineClosed = false
     val removeWhatThisRunCreated = () =>
       // Said rather than left silent, here and at the start below: podman takes about a second
       // either way, and on every path that reaches this one — a Ctrl-C, a refused launch, the
       // resident model's ordinary end — the terminal is the user's again, so a silent second reads
       // as a hang.
-      System.err.println("\nremoving this run's containers and networks")  // newline after Ctrl-C
+      System.err.println((if heldLineClosed then "" else "\n") + "removing this run's containers and networks")
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them (its
       // argument surface stays fixed); a run it cleans up leaves its copies to the next launch's
@@ -2776,8 +2824,8 @@ object AgentSandboxLauncher:
     // Each line tints the mode it states; a branch weaker than the default is tinted whole
     // instead, red (HostCommands.weakened), so no line ever has two colours.
     System.err.println((writeMode, filteredWorkspace) match
-      case ("reject", _) => s"workspace: ${statedMode("reject")}; /workspace is read-only this session"
-      case (_, Some(_)) => s"workspace: ${statedMode("live")}; ${koAgentFsLabel(os)}"
+      case ("reject", _) => s"workspace: ${chosen("reject")}; /workspace is read-only this session"
+      case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}"
       case (_, None) =>
         weakened(
           s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
@@ -2849,7 +2897,7 @@ object AgentSandboxLauncher:
       case "none" => Vector(nestingEnv)
       case mode =>
         System.err.println(
-          s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
+          s"nested containers: ${chosen(mode)} by $NestingVariable; /proc unmasked, SELinux label " +
             "disabled and CAP_SYS_CHROOT added, for the whole session",
         )
         NestingLoosenings :+ nestingEnv
@@ -2861,7 +2909,7 @@ object AgentSandboxLauncher:
       case "off" => Vector.empty
       case mode =>
         System.err.println(
-          s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
+          s"clipboard: ${chosen(mode)} by $ClipboardVariable; the agent can read an image you copy" +
             (if mode == "bidirectional" then " and set your clipboard" else ""),
         )
         Vector(s"--env=$ClipboardVariable=$mode") ++
@@ -2873,7 +2921,7 @@ object AgentSandboxLauncher:
       if runOnHost.isEmpty then Vector.empty
       else
         System.err.println(
-          s"run on host: ${runOnHost.mkString(", ")} by --run-on-host; sandbox-run-on-host " +
+          s"run on host: ${chosen(runOnHost.mkString(", "))} by --run-on-host; sandbox-run-on-host " +
             "relays builds to a Seatbelt-confined wrapper on this host" +
             (if parsed.autoShutdownForeignSbt
              then s"; your own live sbt server is ended when it holds the project, by ${
@@ -2996,6 +3044,7 @@ object AgentSandboxLauncher:
     // of the container. The cost is that the notes below — the reaper could not be spawned, which
     // branch the mount took — print after the release, and the TUI then clears them with the rest.
     if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
+      heldLineClosed = true
       sys.exit(0)
 
     val created = run(createCommand*)

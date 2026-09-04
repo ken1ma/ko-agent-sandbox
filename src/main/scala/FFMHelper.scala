@@ -8,9 +8,10 @@ object FFMHelper:
 
   object libc:
 
-    /** `isatty`. The launcher asks it about stderr, where its own lines go and which a reader
-      * redirects to keep them, so `System.console()` — which answers for stdin — is a different
-      * question. Restricted, as execvp below.
+    /** `isatty`. The launcher asks it about the stream a line goes to — stderr for its own lines,
+      * stdout for the `--stats` report — which a reader redirects to keep them, so
+      * `System.console()` — which answers for stdin — is a different question. Restricted, as
+      * execvp below.
       *
       * Every failure answers "not a terminal": the first caller is `fail`, and a platform without
       * the symbol, or one that denies the call, must lose the colour rather than the refusal text.

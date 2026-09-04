@@ -23,6 +23,16 @@ class SandboxStatsTest extends munit.FunSuite:
   test("a share line says the percentage first and the figure the thresholds act on beside it"):
     assertEquals(shareLine("storage", (9367L << 30) / 10, (16L << 40) / 10, "free"), "storage: 57% (936.7 GiB) free")
     assertEquals(shareLine("memory", 6L << 30, 8L << 30, "available"), "memory: 75% (6.0 GiB) available")
+    // The tint wraps the figure alone, so the words hold where the escape does not.
+    assertEquals(
+      shareLine("memory", 6L << 30, 8L << 30, "available", "<" + _ + ">"),
+      "memory: <75% (6.0 GiB)> available",
+    )
+
+  test("a count line is the section over each table, and the whole section when there is nothing to tabulate"):
+    assertEquals(counted(0, "live session"), "0 live sessions")
+    assertEquals(counted(1, "live session"), "1 live session")
+    assertEquals(counted(2, "project"), "2 projects")
 
   test("the live rows are this launcher's containers only, read as raw figures"):
     val id = "app-0123456789ab"
@@ -57,13 +67,15 @@ class SandboxStatsTest extends munit.FunSuite:
     )
     assertEquals(
       rendered,
-      """  run       role                memory    cpu  project
+      """2 live sessions
+        |  run       role                memory    cpu  project
         |  5e6f7a8b  sandbox  2.0 GiB / 6.7 GiB  42.5%  /home/me/big
         |  5e6f7a8b  proxy     50 MiB / 256 MiB   0.0%  /home/me/big
         |  1a2b3c4d  sandbox   30 MiB / 6.7 GiB   8.0%  small-0123456789ab
         |  1a2b3c4d  proxy     40 MiB / 256 MiB   0.1%  small-0123456789ab
         |""".stripMargin,
     )
+    assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
 
   test("volume sizes are read back from the verbose df table, in podman's decimal units"):
     val df =
@@ -140,7 +152,8 @@ class SandboxStatsTest extends munit.FunSuite:
     // A project with no record, last launched before records existed, is named by its id.
     assertEquals(
       rendered,
-      """    total  state    cache   volume  project
+      """3 projects
+        |    total  state    cache   volume  project
         |  2.0 GiB    0 B  2.0 GiB      0 B  big-000000000000  <- cache over 1% of free space; a --reset-cache candidate
         |  1.6 GiB  2 MiB  445 MiB  1.2 GiB  /home/me/agents
         |   11 KiB  1 KiB   10 KiB      0 B  /home/me/small
@@ -150,7 +163,7 @@ class SandboxStatsTest extends munit.FunSuite:
     val edge = projectTable(Vector(ProjectUsage("p-0", None, 0, 1L << 30, None)), 100L << 30)
     assert(!edge.contains("--reset-cache"), edge)
     assert(edge.contains("  -  p-0"), edge)
-    assertEquals(projectTable(Vector.empty, 5L << 30), "projects: none\n")
+    assertEquals(projectTable(Vector.empty, 5L << 30), "0 projects\n")
 
   test("a run container's name reads back as kind, project id and run suffix"):
     assertEquals(

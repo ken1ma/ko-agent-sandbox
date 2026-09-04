@@ -48,8 +48,10 @@ object HostCommands:
    * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
    * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
    * apart; red is a boundary weaker than the default, in force for the session, the one line on
-   * the screen that can cost the reader something; a mode takes a hue of its own, purple, so it is
-   * never read as a severity.
+   * the screen that can cost the reader something; what the user chose — a mode, the tools run on
+   * host — takes a hue of its own, purple, so it is never read as a severity. A headroom figure
+   * is outside the ranking: it is a measurement, and green, orange and red are its scale
+   * (Headroom).
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the two authority lines — from the instructions the agent is
@@ -62,10 +64,22 @@ object HostCommands:
     * two colours. */
   def weakened(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
 
-  /** The mode an authority line states — `live`, `deny-unless-allowed`. Purple, and orange
-    * above, are not among the theme's sixteen — its magenta is as often pink, its yellow as often
-    * olive — so both are the 256-colour cube's. */
-  def statedMode(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
+  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`,
+    * `sbt, mill`. Purple, and orange above, are not among the theme's sixteen — its magenta is as
+    * often pink, its yellow as often olive — so both are the 256-colour cube's. */
+  def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
+
+  /** The scale of a headroom figure: green while what the verb is about fits, orange where it is
+    * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and
+    * buildMemoryHeadroom have the thresholds, one scale per concern). On the figure alone, so the
+    * words hold where the escape does not. */
+  enum Headroom(val code: String):
+    case Ample extends Headroom("32")
+    case Warned extends Headroom("38;5;208")
+    case Short extends Headroom("31")
+
+  def gauged(text: String, headroom: Headroom, color: Boolean = colorStderr): String =
+    tinted(headroom.code, text, color)
 
   /** Each line's leading severity label tinted. Line by line, because a block has a label on
     * some lines and not others — the proxy's policy warnings, a warning's continuation. */
@@ -100,6 +114,11 @@ object HostCommands:
    */
   lazy val colorStderr: Boolean =
     colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
+
+  /** For the `--stats` report, the one thing the launcher writes to stdout: the stream a reader
+    * pipes as readily as watches, so it is asked for itself. */
+  lazy val colorStdout: Boolean =
+    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
 
   /** `NO_COLOR` and `TERM=dumb` are what a tool is expected to honour; the launcher adds no
     * variable of its own. */
