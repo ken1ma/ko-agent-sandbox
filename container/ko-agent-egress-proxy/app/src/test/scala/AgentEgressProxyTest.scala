@@ -503,11 +503,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val resolved = policyOf(profile = "allow-unless-denied", rule = "deny https://telemetry.example.com/")
     assert(resolved.publicDefault)
     assertEquals(authorize("anything.example.org", 443, resolved), "anything.example.org")
-    // The narrowing set is every inspected default, the groups' scopes included: a catalog host stays
-    // inspected rather than widening to the default, and copilot still signs in.
+    // Every inspected default keeps its scopes, the groups' included: a catalog host holds its
+    // grants rather than the public default's read, and copilot still signs in.
     assertEquals(resolved.inspectedScopes, policyOf().inspectedScopes)
-    // No finite tunnel set: the tunnels are the default for unlisted hosts.
-    assertEquals(resolved.tunnelHosts, Set.empty[String])
+    // The tunnel hosts are the exception set, listed as the defaults list them.
+    assertEquals(resolved.tunnelHosts, policyOf().tunnelHosts)
     assertEquals(authorize("api.anthropic.com", 443, resolved), "api.anthropic.com")
     assertEquals(resolved.denialPatterns, Vector(HostPattern.Exact("telemetry.example.com")))
     assertEquals(
@@ -517,15 +517,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // The port and IP-literal rules hold for unlisted hosts too.
     intercept[PolicyViolation](authorize("anything.example.org", 8443, resolved))
     intercept[PolicyViolation](authorize("8.8.8.8", 443, resolved))
-    // A tunnel line and deny defaults are not consulted: nothing widens or narrows by them.
-    assertEquals(
-      policyOf(
-        profile = "allow-unless-denied",
-        rule = "deny defaults\nallow https://api.example/ tunnel\nallow model-provider anthropic",
-      ).policy,
-      policyOf(profile = "allow-unless-denied").policy,
-    )
-    // An inspected line extends the narrowing set.
+    // Every line is consulted — deny-unless-allowed's fold, with the public default on top: deny
+    // defaults clears the map, a tunnel line adds a tunnel host, a group its lines.
+    val stated = "deny defaults\nallow https://api.example/ tunnel\nallow model-provider anthropic"
+    val open = policyOf(profile = "allow-unless-denied", rule = stated)
+    assertEquals(open.hosts, policyOf(rule = stated).hosts)
+    assertEquals(open.hosts("api.example"), Treatment.Tunnel)
+    assertEquals(authorize("github.com", 443, open), "github.com")
+    intercept[PolicyViolation](authorize("github.com", 443, policyOf(rule = stated)))
+    // An inspected line lists a host with its grants.
     assertEquals(
       policyOf(
         profile = "allow-unless-denied",
@@ -658,11 +658,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(lockdown.inspectedScopes, Map.empty)
     assertEquals(lockdown.warnings, Vector.empty)
     intercept[PolicyViolation](authorize("github.com", 443, lockdown))
-    // Under `allow-unless-denied` the lockdown narrows nothing: neither line is consulted.
-    assertEquals(
-      policyOf(profile = "allow-unless-denied", rule = "deny defaults\nallow model-provider anthropic").policy,
-      policyOf(profile = "allow-unless-denied").policy,
-    )
+    // Under `allow-unless-denied` the lockdown is the same map with the public default on top: one
+    // provider opaque, every other host unlisted.
+    val open = policyOf(profile = "allow-unless-denied", rule = "deny defaults\nallow model-provider anthropic")
+    assertEquals(open.hosts, lockdown.hosts)
+    assertEquals(authorize("github.com", 443, open), "github.com")
     // Under every profile a group's lines meet the one-treatment check like any line.
     val ex = intercept[IllegalArgumentException](
       policyOf(rule = "deny defaults\nallow model-provider anthropic\nallow https://api.anthropic.com/ read"),
@@ -694,8 +694,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val taken = policyOf(profile = "allow-unless-denied", rule = "deny https://api.anthropic.com/ tunnel")
     assertEquals(taken.denialPatterns, Vector(HostPattern.Exact("api.anthropic.com")))
     intercept[PolicyViolation](authorize("api.anthropic.com", 443, taken))
-    // deny defaults with an inspected line on a defaults tunnel is valid under every profile: the
-    // `allow-unless-denied` keeps the defaults' tunnels standing, and there the tunnel gives way.
+    // deny defaults with an inspected line on a defaults tunnel is valid under both profiles that
+    // consult it: the defaults are cleared before the line meets them.
     Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
       val resolved = policyOf(profile = profile, rule = "deny defaults\nallow https://api.anthropic.com/ read")
       assertEquals(resolved.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")), profile)
@@ -750,15 +750,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
     get("/%2e%2e/x")
     assertEquals(intercept[PolicyViolation](get("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
 
-  test("deny defaults is the whole policy under deny-unless-allowed and is not consulted elsewhere"):
+  test("deny defaults is the whole policy under the two profiles consulting it, and is not consulted elsewhere"):
     val own = policyOf(rule = "deny defaults\nallow https://docs.python.org/ read")
     assertEquals(own.hosts, Map("docs.python.org" -> Treatment.Inspected(Map("/" -> Set("read")))))
     assert(own.clearsDefaults)
     assertEquals(own.warnings, Vector.empty)
-    assertEquals(
-      policyOf(profile = "allow-unless-denied", rule = "deny defaults").policy,
-      policyOf(profile = "allow-unless-denied").policy,
-    )
+    // Under allow-unless-denied the map is cleared and the public default stands alone.
+    val cleared = policyOf(profile = "allow-unless-denied", rule = "deny defaults")
+    assertEquals(cleared.hosts, Map.empty)
+    assertEquals(cleared.denialPatterns, Vector.empty)
+    assertEquals(authorize("api.anthropic.com", 443, cleared), "api.anthropic.com")
     assertEquals(
       policyOf(profile = "deny-unless-model", provider = "anthropic", rule = "deny defaults").policy,
       policyOf(profile = "deny-unless-model", provider = "anthropic").policy,
@@ -779,17 +780,20 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "deny https://github.com/\ndeny https://api.github.com/",
       provider = "github",
     )
+    val exactGithub =
+      "deny https://github.com/ read\ndeny https://api.github.com/ read\ndeny https://codeload.github.com/ read\n" +
+        "deny https://docs.github.com/ read"
+    // A grant subtree against its exact lines, over a finite map; under the public default the
+    // subtree also reaches the unlisted hosts beneath it, which hold `read` and nothing else.
+    same("deny-unless-allowed", "deny https://**.github.com/ read", exactGithub)
+    differ("allow-unless-denied", "deny https://**.github.com/ read", exactGithub)
     Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
-      // A grant subtree against its exact lines.
-      same(
-        profile, "deny https://**.github.com/ read",
-        "deny https://github.com/ read\ndeny https://api.github.com/ read\ndeny https://codeload.github.com/ read\n" +
-          "deny https://docs.github.com/ read",
-      )
       // A grant list emptying a host against a whole-host line.
       same(profile, "deny https://docs.python.org/ read", "deny https://docs.python.org/")
-    // A whole-host subtree against its tunnel form over unlisted hosts, and apart from it over an inspected one.
-    same("allow-unless-denied", "deny https://**.example.com/", "deny https://**.example.com/ tunnel")
+    // A whole-host subtree against its read form over unlisted hosts — an unlisted host holds `read`
+    // and nothing else — and its tunnel form takes nothing there, so it is the empty file.
+    same("allow-unless-denied", "deny https://**.example.com/", "deny https://**.example.com/ read")
+    same("allow-unless-denied", "deny https://**.example.com/ tunnel", "")
     differ("allow-unless-denied", "deny https://**.python.org/", "deny https://**.python.org/ tunnel")
     // A deny list against its reordering where no grant depends on the order.
     same(
@@ -884,22 +888,22 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Vector("policy summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 0 widening lines"),
     )
     // Under allow-unless-denied the deny lines come before the allow lines, so a host surviving
-    // beneath one reads as the exception the grammar's order makes it; no tunnel line is printed,
-    // the profile line with the public-HTTPS default instead.
+    // beneath one reads as the exception the grammar's order makes it; the tunnel hosts are printed,
+    // the exception set to the profile line's public default.
     val publicDefault = policyOf(
       profile = "allow-unless-denied",
       rule = "deny https://**.example.com/\nallow https://docs.example.com/ read\ndeny https://x.example/",
     )
     val unlistedLines = policyLines(publicDefault)
-    assertEquals(unlistedLines(0), "egress profile: allow-unless-denied; default: public HTTPS tunnel")
+    assertEquals(unlistedLines(0), "egress profile: allow-unless-denied; default: public HTTPS read")
     assertEquals(unlistedLines(1), "deny https://**.example.com/")
     assertEquals(unlistedLines(2), "deny https://x.example/")
     assert(unlistedLines.contains("allow https://docs.example.com/ read"), unlistedLines.toString)
-    assert(!unlistedLines.exists(line => line.startsWith("allow") && line.endsWith(" tunnel")), unlistedLines.toString)
+    assert(unlistedLines.contains("allow https://api.anthropic.com/ tunnel"), unlistedLines.toString)
     assertEquals(
       metadataLines(publicDefault)(0),
-      s"policy summary: ${publicDefault.inspected.size} inspected hosts; 0 opaque hosts; 2 denial patterns; " +
-        "0 widening lines",
+      s"policy summary: ${publicDefault.inspected.size} inspected hosts; ${publicDefault.tunnelHosts.size} opaque " +
+        "hosts; 2 denial patterns; 0 widening lines",
     )
     assertEquals(authorize("docs.example.com", 443, publicDefault), "docs.example.com")
     intercept[PolicyViolation](authorize("api.example.com", 443, publicDefault))
@@ -956,7 +960,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val publicDefault = policyOf(
       profile = "allow-unless-denied",
       rule = "deny model-provider google\ndeny https://**.example.com/\ndeny https://api.example.com/\n" +
-        "deny https://x.example/\ndeny https://x.example/ tunnel",
+        "deny https://x.example/\ndeny https://x.example/ read",
     )
     val unlistedLines = provenanceLines(publicDefault)
     assert(unlistedLines.contains("deny https://accounts.google.com/"), unlistedLines.toString)
@@ -969,7 +973,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assert(!unlistedLines.contains("deny https://api.example.com/"), unlistedLines.toString)
     assert(
-      unlistedLines.contains("  pattern: rule: deny https://x.example/; rule: deny https://x.example/ tunnel"),
+      unlistedLines.contains("  pattern: rule: deny https://x.example/; rule: deny https://x.example/ read"),
       unlistedLines.toString,
     )
     assertEquals(
@@ -1535,6 +1539,34 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val both = TlsInspection.inspectedNamesError(Set("github.com", "gist.github.com"), required)
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
+
+  test("the material a proxy starts with is keyed by profile: a leaf under the finite ones, the run CA under the public default"):
+    val now = java.time.Instant.now()
+    val (ca, caKey) = X509HelperTest.testCa(now, days = 825)
+    val directory = java.nio.file.Files.createTempDirectory("material")
+    val (caFile, caKeyFile) = X509HelperTest.writePem(directory, "ca", ca, caKey)
+    val leaf = X509Helper.mintLeaf("docs.example", ca, caKey, now)
+    val (leafFile, leafKeyFile) = X509HelperTest.writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
+    val leafPair = Map(CertificateVariable -> leafFile.toString, PrivateKeyVariable -> leafKeyFile.toString)
+    val caPair = Map(CaCertificateVariable -> caFile.toString, CaPrivateKeyVariable -> caKeyFile.toString)
+    val one = policyOf(rule = "deny defaults\nallow https://docs.example/ read")
+    val open = policyOf(profile = "allow-unless-denied")
+    def refusal(resolved: ResolvedEgress, variables: Map[String, String]): String =
+      intercept[IllegalArgumentException](loadInspection(resolved, variables.get)).getMessage
+
+    // The finite profiles: the leaf exactly when a host is inspected; both absent is inspection off.
+    assert(loadInspection(one, leafPair.get).nonEmpty)
+    assertEquals(loadInspection(one, Map.empty[String, String].get), None)
+    assert(refusal(policyOf(profile = "deny-all"), leafPair).contains("restricts no host"))
+    assert(refusal(one, leafPair - PrivateKeyVariable).contains("must be set together"))
+    assert(refusal(one, caPair).contains("mints nothing"))
+    assert(refusal(one, leafPair ++ caPair).contains("mints nothing"))
+    // The public default: the run CA exactly, and nothing else.
+    assert(loadInspection(open, caPair.get).nonEmpty)
+    assert(refusal(open, Map.empty).contains("are unset under allow-unless-denied"))
+    assert(refusal(open, leafPair).contains("takes none"))
+    assert(refusal(open, leafPair ++ caPair).contains("takes none"))
+    assert(refusal(open, caPair - CaPrivateKeyVariable).contains("must be set together"))
 
   test("a request is decided against the resolved scope of its longest literal match, and no match is refused"):
     def get(path: String, scopes: Map[String, Set[String]]): Unit =

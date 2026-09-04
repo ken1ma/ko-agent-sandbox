@@ -63,9 +63,9 @@ class ProxyContainerTest extends munit.FunSuite:
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector.sorted
       assertEquals(attached, Vector(live.egressNetwork, live.sandboxNetwork).sorted)
 
-      // What is mounted in: the leaf certificate and its own key, and this run's audit log. The CA
-      // key stays on the host — "Who holds the CA key" is the whole of SECURITY.md's argument —
-      // and an earlier run's log would hand this proxy a record it never wrote.
+      // What is mounted in: the leaf certificate and its own key, and this run's audit log. The
+      // project CA's key stays on the host — "Who holds the CA key" is the whole of SECURITY.md's
+      // argument — and an earlier run's log would hand this proxy a record it never wrote.
       val binds = inspect(proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       val sources = binds.map(_.takeWhile(_ != ':'))
@@ -74,7 +74,8 @@ class ProxyContainerTest extends munit.FunSuite:
 
       assert(sources.exists(_.endsWith("leaf.crt")), s"no leaf certificate is mounted: $binds")
       assert(sources.exists(_.endsWith("leaf.key")), s"no leaf key is mounted: $binds")
-      assert(!sources.exists(_.endsWith("ca.key")), s"SECURITY: the CA private key is mounted: $binds")
+      assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the CA private key is mounted: $binds")
+      assert(!sources.exists(_.endsWith("ca.key")), s"a CA key is mounted under the default profile: $binds")
       assertEquals(writableMounts, Vector("/var/log/agent-egress-proxy/proxy.log"))
 
       val logs = sources.filter(_.endsWith(".log"))
@@ -84,6 +85,30 @@ class ProxyContainerTest extends munit.FunSuite:
         s"the mounted log ${logs.head} belongs to another run, not ${live.suffix}",
       )
 
+    finally
+      session.foreach(stop)
+      discard(project)
+
+  /** The project CA's key, by its path: what no proxy of any profile may mount. */
+  private def projectCaKey(live: Session): java.nio.file.Path =
+    AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
+
+  test("under allow-unless-denied the proxy holds this run's own CA and key, and no leaf"):
+    optIn()
+
+    val project = scratchProject()
+    var session: Option[Session] = None
+    try
+      val live = launchWith(project, project.resolve("session.log"), Vector("--egress=allow-unless-denied"))
+      session = Some(live)
+      val sources = inspect(live.proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
+        .linesIterator.map(_.trim).filter(_.nonEmpty).map(_.takeWhile(_ != ':')).toVector
+      val runCaDir = AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id)
+        .resolve(s"run-${live.suffix}").resolve("agent-egress-proxy").resolve("allow-unless-denied")
+      assert(sources.contains(runCaDir.resolve("ca.crt").toString), s"the run CA is not mounted: $sources")
+      assert(sources.contains(runCaDir.resolve("ca.key").toString), s"the run CA's key is not mounted: $sources")
+      assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the project CA's key is mounted: $sources")
+      assert(!sources.exists(_.endsWith("leaf.crt")), s"a leaf is mounted beside the run CA: $sources")
     finally
       session.foreach(stop)
       discard(project)

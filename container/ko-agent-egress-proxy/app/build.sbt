@@ -15,6 +15,16 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
+// X509Helper mints leaves with the JDK's internal certificate builder, which the JVM keeps behind
+// the module boundary at run time; scalac compiles against it unasked. The Containerfile passes the
+// same two exports to native-image, and the launcher's manifest carries them for the host build's
+// proxy.
+Test / fork := true
+Test / javaOptions ++= Seq(
+  "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
+  "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
+)
+
 // Native Image follows the jar's manifest Class-Path, resolved relative to the application jar. `dist` puts the
 // application and every library jar in one directory so the container build needs no sbt-specific target paths.
 Compile / packageBin / packageOptions += {

@@ -132,8 +132,8 @@ fails on every host — or HTTP/2 only. Plain `curl`/`git` are none of these.
 Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
 -servername host -proxy egress-proxy:3128`.
 
-A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-ca.crt`, or
-the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
+A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-proxy-ca.crt`,
+or the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
 run `sandbox-jdk-use-proxy <jdk-home>` on one you installed yourself. A native-image tool has no
 `conf/` to prepare and reads no environment variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in
 its own spelling — `scala-cli $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,

@@ -392,11 +392,10 @@ class HostileInputTest extends munit.FunSuite:
     path: String,
     grants: Set[String],
     group: Option[String],
-    fromDefaults: Boolean,
   )
 
   private def givenOf(line: Line, group: Option[String]): Given = line.rule match
-    case Rule.Allow(host, path, grants) => Given(host, path, grants, group, fromDefaults = true)
+    case Rule.Allow(host, path, grants) => Given(host, path, grants, group)
     case other                          => throw IllegalStateException(other.toString)
 
   private lazy val defaultsGiven: Vector[Given] =
@@ -451,49 +450,44 @@ class HostileInputTest extends munit.FunSuite:
     val publicDefault = profile == "allow-unless-denied"
     if profile == "deny-all" then return "refused"
     var standing: Vector[Given] = profile match
-      case "deny-unless-model"   => provider.fold(Vector.empty)(groupGiven)
-      case "deny-unless-allowed" => if clears then Vector.empty else defaultsGiven
-      case _                     => defaultsGiven
+      case "deny-unless-model" => provider.fold(Vector.empty)(groupGiven)
+      case _                   => if clears then Vector.empty else defaultsGiven
     var patterns = Vector.empty[(String, Boolean)]
     var touched = standing.map(_.host).toSet
     def consult(line: Drawn): Boolean = (profile, line) match
       case ("deny-unless-model", Deny(_, _, _) | DenyGroup(_)) => true
       case ("deny-unless-model", _)                            => false
-      case ("allow-unless-denied", DenyDefaults)               => false
-      case ("allow-unless-denied", Allow(_, _, grants))        => !grants("tunnel")
       case _                                                   => true
     def add(entry: Given): Unit =
-      // Under `allow-unless-denied` with `deny defaults` written, the defaults' tunnel gives way to the
-      // file's inspected line — the deny the file's first line implies for that host.
-      if publicDefault && clears && !entry.grants("tunnel") then
-        standing = standing.map: g =>
-          if g.host == entry.host && g.fromDefaults && g.grants("tunnel") then g.copy(grants = Set.empty) else g
       standing :+= entry
       touched += entry.host
     lines.filter(consult).foreach:
       case DenyDefaults => ()
-      case Allow(h, p, g) => add(Given(h, p, g, None, fromDefaults = false))
+      case Allow(h, p, g) => add(Given(h, p, g, None))
       case AllowGroup(name) =>
         groupGiven(
           name,
-        ).filter(g => consult(Allow(g.host, g.path, g.grants))).foreach(g => add(g.copy(fromDefaults = false)))
+        ).filter(g => consult(Allow(g.host, g.path, g.grants))).foreach(add)
       case Deny(h, subtree, g) =>
         standing = standing.map: entry =>
           if !hostMatches(h, subtree, entry.host) then entry
           else entry.copy(grants = if g.isEmpty then Set.empty else entry.grants -- g)
-        if g.isEmpty || g("tunnel") then patterns :+= (h, subtree)
+        // An unlisted host holds `read` and nothing else, so those are the denies that reach it.
+        if g.isEmpty || g("read") then patterns :+= (h, subtree)
       case DenyGroup(name) =>
         standing = standing.map(entry => if entry.group.contains(name) then entry.copy(grants = Set.empty) else entry)
-    val active = standing.filter(entry => entry.host == host && entry.grants.nonEmpty)
-    if active.exists(_.grants("tunnel")) then return "tunnel"
-    if active.isEmpty then
-      val open = publicDefault && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
-      return if open then "tunnel" else "refused"
+    val listed = standing.filter(entry => entry.host == host && entry.grants.nonEmpty)
+    if listed.exists(_.grants("tunnel")) then return "tunnel"
+    // An unlisted host under the public default holds `read` at the root and nothing else.
+    val open = publicDefault && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
+    val active =
+      if listed.nonEmpty then listed else if open then Vector(Given(host, "/", Set("read"), None)) else Vector()
+    if active.isEmpty then return "refused"
     val path = request.target.takeWhile(_ != '?')
     val covering = active.filter(entry => pathContains(entry.path, path))
     if covering.isEmpty then return "refused"
     val grants = covering.flatMap(_.grants).toSet
-    val longest = standing.filter(
+    val longest = (standing ++ active).filter(
       entry => entry.host == host && pathContains(entry.path, path),
     ).map(_.path).maxBy(_.length)
     if longest != "/" && request.ambiguous then return "refused"
@@ -508,15 +502,14 @@ class HostileInputTest extends munit.FunSuite:
   private def production(resolved: ResolvedEgress, host: String, request: Request): String =
     try
       authorizeRequest(ConnectRequest(host, 443), resolved)
-      resolved.inspectedScopes.get(host) match
-        case None => "tunnel"
-        case Some(scopes) =>
-          val framing = if request.method == "GET" then "" else "Content-Length: 0\r\n"
-          val head = HttpRequestHead.parse(
-            ascii(s"${request.method} ${request.target} HTTP/1.1\r\nHost: $host\r\n$framing\r\n"),
-          )
-          authorizeInspectedRequest(host, head, scopes)
-          "admitted"
+      if resolved.tunnelHosts(host) then "tunnel"
+      else
+        val framing = if request.method == "GET" then "" else "Content-Length: 0\r\n"
+        val head = HttpRequestHead.parse(
+          ascii(s"${request.method} ${request.target} HTTP/1.1\r\nHost: $host\r\n$framing\r\n"),
+        )
+        authorizeInspectedRequest(host, head, resolved.scopesOf(host))
+        "admitted"
     catch case _: PolicyViolation => "refused"
 
   test("the resolved policy authorizes exactly what the plain ordered evaluator does, over the drawn domain"):

@@ -1157,8 +1157,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
     // was chosen: the agent is not sent to ask for an allow line it already has.
     val publicDefault =
-      authoritySection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS tunnel")
-    assert(publicDefault.contains("reachable as an opaque tunnel, except"), publicDefault)
+      authoritySection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
+    assert(publicDefault.contains("reachable for reading"), publicDefault)
+    assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
     assert(!publicDefault.contains("Anything not admitted below is refused"), publicDefault)
     assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)

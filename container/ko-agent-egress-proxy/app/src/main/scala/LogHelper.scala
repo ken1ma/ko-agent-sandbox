@@ -46,8 +46,8 @@ object LogHelper:
     override def flush(): Unit = out.flush()
 
   /**
-   * Both sinks, flushes included; line-currency matters because the reaper
-   * removes this container the moment its sandbox exits.
+   * Both sinks, flushes included: every line must reach the file as it is written,
+   * because the reaper removes this container the moment its sandbox exits.
    */
   def teeOutput(a: OutputStream, b: OutputStream): OutputStream = new OutputStream:
     override def write(byte: Int): Unit =

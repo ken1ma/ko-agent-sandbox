@@ -218,7 +218,8 @@ With it, append the supplied certificates to these existing launch-built stores:
 - the certificate supplied to `sandbox-jdk-use-proxy` for a JDK installed during the session.
 
 Keep the project's inspection CA separate and continue mounting only its leaf and leaf key into the
-proxy. The corporate CA is public material, but its inclusion is authority: it lets the corporate
+proxy — under `allow-unless-denied`, the run CA and its key, as SECURITY.md, "Who holds the CA
+key", has it. The corporate CA is public material, but its inclusion is authority: it lets the corporate
 proxy read and change TLS for opaque model endpoints. Every affected launch prints:
 
 ```text

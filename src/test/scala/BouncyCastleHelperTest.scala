@@ -115,13 +115,29 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     assert(!signedBy(leaf.certificatePem, other.certificatePem))
     assert(!signedBy(leaf.certificatePem, ""))
 
+  test("a leaf the proxy mints from a run CA chains to it, answers its key and names its host alone"):
+    // The two builders meet here: the CA BouncyCastle minted on the host, the leaf the JDK's own
+    // builder minted as the proxy does (X509Helper); curl in the sandbox is the third reader,
+    // EgressPolicyTest's.
+    val ca = mintCa("run-1a2b3c4d")
+    val minted = agentsandbox.egress.X509Helper.mintLeaf(
+      "docs.example", parse(ca.certificatePem), parseEcPrivateKey(ca.privateKeyPem),
+    )
+    val leafPem = toPem("CERTIFICATE", minted.certificate.getEncoded)
+    assert(signedBy(leafPem, ca.certificatePem))
+    assert(!signedBy(leafPem, mintCa("run-1a2b3c4d").certificatePem))
+    assert(keyMatchesCertificate(leafPem, toPem("PRIVATE KEY", minted.privateKey.getEncoded)))
+    val leaf = parse(leafPem)
+    assertEquals(leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector, Vector("docs.example"))
+    assertEquals(leaf.getBasicConstraints, -1)
+
   test("expiring, absent and unparsable certificates all require reissue"):
     val now = Instant.now()
     val deadline = now.plusSeconds(2592000)
     val longLived = mintCa("proj", now).certificatePem
     val expiring = mintCa("proj", now, days = 7).certificatePem
-    assert(certificateCurrent(Some(longLived), deadline))
-    assert(!certificateCurrent(Some(expiring), deadline))
-    assert(!certificateCurrent(None, deadline))
-    assert(!certificateCurrent(Some(""), deadline))
-    assert(!certificateCurrent(Some("not a certificate"), deadline))
+    assert(certificateExpiresAfter(Some(longLived), deadline))
+    assert(!certificateExpiresAfter(Some(expiring), deadline))
+    assert(!certificateExpiresAfter(None, deadline))
+    assert(!certificateExpiresAfter(Some(""), deadline))
+    assert(!certificateExpiresAfter(Some("not a certificate"), deadline))

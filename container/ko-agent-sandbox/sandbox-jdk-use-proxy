@@ -39,7 +39,7 @@ if [ -z "$PROXY_HOST" ] || [ "$PROXY_HOST" = "$PROXY_PORT" ]; then
     exit 2
 fi
 
-CA=/etc/ko-agent-sandbox/egress-ca.crt
+CA=/etc/ko-agent-sandbox/egress-proxy-ca.crt
 ALIAS=ko-agent-sandbox-egress
 # The password every JDK ships cacerts under; not a secret, and the store holds only certificates.
 STOREPASS=changeit

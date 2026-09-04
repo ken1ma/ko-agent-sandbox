@@ -69,12 +69,12 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     )
     assertEquals(
       egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" +
+        "egress profile: allow-unless-denied; default: public HTTPS read\n" +
           "deny https://w/\ndeny https://x/\ndeny https://**.y/\ndeny https://z/\n" +
           "allow https://a/ read\nallow https://b/ read\n" + summary(2, 0, 4),
         color = false,
       ),
-      "egress: allow-unless-denied; public HTTPS; 2 inspected, 4 denied",
+      "egress: allow-unless-denied; public HTTPS read; 0 opaque, 4 denied",
     )
     assertEquals(
       egressBanner("egress profile: deny-all\n" + summary(0, 0, 0), color = false),
@@ -111,16 +111,16 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // The permissive line is tinted whole by the caller, so nothing inside it ends that colour.
     assertEquals(
       egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" + summary(0, 0, 0),
+        "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),
         color = true,
       ),
-      "egress: allow-unless-denied; public HTTPS; 0 inspected, 0 denied",
+      "egress: allow-unless-denied; public HTTPS read; 0 opaque, 0 denied",
     )
 
   test("the permissive profile is the one the banner tints, whatever follows it on the line"):
     assert(
       permissiveProfile(
-        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" + summary(0, 0, 0),
+        "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),
       ),
     )
     assert(!permissiveProfile("egress profile: deny-unless-allowed\n" + summary(0, 0, 0)))
@@ -203,7 +203,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
   test("the inspected hosts are the allow lines' hosts, a tunnel line never among them"):
     assertEquals(
       inspectedHostsOf(
-        "egress profile: allow-unless-denied; default: public HTTPS tunnel\n" +
+        "egress profile: allow-unless-denied; default: public HTTPS read\n" +
           "deny https://x.example/\n" +
           "allow https://pypi.org/ read\nallow https://github.com/ read git-fetch\n" +
           "allow https://github.com/login/device/code read git-fetch method=POST\n" +

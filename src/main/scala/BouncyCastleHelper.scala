@@ -53,19 +53,18 @@ object BouncyCastleHelper:
       .map(b => f"$b%02X")
       .mkString(":")
 
-  /**
-   * An absent, empty or unparsable certificate is treated exactly like an expiring one.
-   */
-  def certificateCurrent(pem: Option[String], deadline: Instant): Boolean =
+  /** Whether the certificate expires after `deadline`; an absent, empty or unparsable one
+    * answers as an expiring one does. */
+  def certificateExpiresAfter(pem: Option[String], deadline: Instant): Boolean =
     pem.filter(_.nonEmpty).exists: text =>
       try parseCertificate(text).getNotAfter.toInstant.isAfter(deadline)
       catch case _: Exception => false
 
   /**
    * Whether the private key is the one this certificate's public key answers, proven by a
-   * sign-and-verify round trip; false on anything unparsable or empty. Currency alone cannot see a
-   * key beside a certificate it does not match — the state a launch that died between writing the
-   * two leaves behind — and such a pair fails every TLS handshake while looking current.
+   * sign-and-verify round trip; false on anything unparsable or empty. The expiry check alone cannot
+   * see a key beside a certificate it does not match — the state a launch that died between
+   * writing the two leaves behind — and such a pair fails every TLS handshake while looking fine.
    */
   def keyMatchesCertificate(certificatePem: String, privateKeyPem: String): Boolean =
     try
@@ -150,7 +149,7 @@ object BouncyCastleHelper:
     caPrivateKeyPem: String,
     hosts: Seq[String],
     now: Instant = Instant.now(),
-    days: Long = 825,
+    days: Long = agentsandbox.egress.X509Helper.LeafValidityDays,
   ): Minted =
     val issuer = parseCertificate(caCertificatePem)
     val issuerKey = parseEcPrivateKey(caPrivateKeyPem)

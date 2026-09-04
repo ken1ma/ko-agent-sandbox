@@ -33,7 +33,7 @@ object JdkTrust:
   /** The CA's path inside a container: sandbox-jdk-use-proxy reads it there, in a session and in
     * the launcher's throwaway run alike. Use .crt for the Linux/BSD convention; keytool accepts it
     * despite its usual .cer examples. */
-  val SandboxEgressCaPath = "/etc/ko-agent-sandbox/egress-ca.crt"
+  val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
@@ -76,7 +76,7 @@ object JdkTrust:
         // is for this container anyway.
         val created = run(
           podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-          s"--volume=$caCertFile:$SandboxEgressCaPath:ro",
+          s"--volume=$caCertFile:$SandboxEgressProxyCaPath:ro",
           s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
           image, "sh", "-euc",
           s"""sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared"""

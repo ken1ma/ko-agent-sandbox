@@ -89,8 +89,9 @@ object EgressProxyPolicy:
         profile match
           case "allow-unless-denied" =>
             // Plain: the caller tints this line whole, and a word tinted inside it would end that
-            // colour at its own reset.
-            s"egress: $profile; public HTTPS; $inspected inspected, $denied denied"
+            // colour at its own reset. The opaque hosts are the exception set; the inspected count
+            // says nothing where every unlisted host is inspected too.
+            s"egress: $profile; public HTTPS read; $opaque opaque, $denied denied"
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -264,6 +265,7 @@ object EgressProxyPolicy:
    * answer under this project's policy, so no second copy of any list exists to drift, and a proxy
    * image or policy of the user's choosing gets a matching leaf too. Empty means the policy
    * inspects nothing; the launcher then mints no leaf and hands the proxy no inspection material.
+   * Under allow-unless-denied no leaf is minted at all: the proxy mints its own from the run CA.
    * A resolution without its profile line is another launcher version's format, refused.
    */
   def inspectedHostsOf(printPolicyOutput: String): Either[String, Vector[String]] =
