@@ -33,11 +33,11 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(colorAllowed(Os.Linux, None, Some("dumb")), false)
 
   test("emphasis tints the severity label and leaves every other word as it was written"):
-    val warning = "warning: podman runs on 3 GiB of memory\n  raise it with `podman machine set`"
+    val warning = "warning: podman runs on 3.0G of memory\n  raise it with `podman machine set`"
     assertEquals(emphasized(warning, color = false), warning)
     assertEquals(
       emphasized(warning, color = true),
-      "\u001b[38;5;208mwarning:\u001b[0m podman runs on 3 GiB of memory\n  raise it with `podman machine set`",
+      "\u001b[38;5;208mwarning:\u001b[0m podman runs on 3.0G of memory\n  raise it with `podman machine set`",
     )
     // A block has a label per line, and a line that has none keeps its own spelling.
     assertEquals(

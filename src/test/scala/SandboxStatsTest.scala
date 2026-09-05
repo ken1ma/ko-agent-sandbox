@@ -7,26 +7,40 @@ import SandboxStats.*
 
 class SandboxStatsTest extends munit.FunSuite:
 
-  test("sizes are whole up to MiB, one decimal from GiB, and carry into the next unit at 1024"):
-    assertEquals(humanBytes(0), "0 B")
-    assertEquals(humanBytes(1023), "1023 B")
-    assertEquals(humanBytes(1024), "1 KiB")
-    assertEquals(humanBytes(1536), "2 KiB")
-    assertEquals(humanBytes(937L * 1024), "937 KiB")
-    assertEquals(humanBytes((15L << 20) / 10), "2 MiB")
-    assertEquals(humanBytes(2L << 30), "2.0 GiB")
-    assertEquals(humanBytes((72L << 30) / 10), "7.2 GiB")
-    assertEquals(humanBytes((10236L << 20) / 10), "1.0 GiB")
-    assertEquals(humanBytes((102396L << 30) / 100), "1.0 TiB")
-    assertEquals(humanBytes(3L << 40), "3.0 TiB")
+  test("sizes print as `numfmt --to=iec` prints them, the rule of df, du and ls -h"):
+    // Each expected string is numfmt's own output for the same byte count.
+    assertEquals(humanBytes(0), "0")
+    assertEquals(humanBytes(1023), "1023")
+    assertEquals(humanBytes(1024), "1.0K")
+    assertEquals(humanBytes(1025), "1.1K")
+    assertEquals(humanBytes(1536), "1.5K")
+    assertEquals(humanBytes(10188), "10K")
+    assertEquals(humanBytes(10240), "10K")
+    assertEquals(humanBytes(10241), "11K")
+    assertEquals(humanBytes(1047552), "1023K")
+    assertEquals(humanBytes(1048064), "1.0M")
+    assertEquals(humanBytes(1048575), "1.0M")
+    assertEquals(humanBytes(1073321984), "1.0G")
+    assertEquals(humanBytes(11381243904L), "11G")
+    assertEquals(humanBytes(1L << 40), "1.0T")
+    assertEquals(humanBytes(3L << 40), "3.0T")
+    assertEquals(humanBytes(3L << 50), "3.0P")
+    assertEquals(humanBytes((1L << 62) - 1), "4.0E")
+    assertEquals(humanBytes(Long.MaxValue), "8.0E")
+    // A part in its whole's unit, rounded by the same rule at that unit.
+    assertEquals(humanPair(237L << 20, 11381243904L), ("0.3", "11G"))
+    assertEquals(humanPair(8L << 20, 256L << 20), ("8.0", "256M"))
+    assertEquals(humanPair(15L << 20, 256L << 20), ("15", "256M"))
+    assertEquals(humanPair(0, 256L << 20), ("0.0", "256M"))
+    assertEquals(humanPair(1048064, 1048064), ("1.0", "1.0M"))
 
   test("a share line says the percentage first and the figure the thresholds act on beside it"):
-    assertEquals(shareLine("storage", (9367L << 30) / 10, (16L << 40) / 10, "free"), "storage: 57% (936.7 GiB) free")
-    assertEquals(shareLine("memory", 6L << 30, 8L << 30, "available"), "memory: 75% (6.0 GiB) available")
+    assertEquals(shareLine("storage", (9367L << 30) / 10, (16L << 40) / 10, "free"), "storage: 57% (937G) free")
+    assertEquals(shareLine("memory", 6L << 30, 8L << 30, "available"), "memory: 75% (6.0G) available")
     // The tint wraps the figure alone, so the words hold where the escape does not.
     assertEquals(
       shareLine("memory", 6L << 30, 8L << 30, "available", "<" + _ + ">"),
-      "memory: <75% (6.0 GiB)> available",
+      "memory: <75% (6.0G)> available",
     )
 
   test("a count line is the section over each table, and the whole section when there is nothing to tabulate"):
@@ -68,11 +82,11 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(
       rendered,
       """2 live sessions
-        |  run       role                memory    cpu  project
-        |  5e6f7a8b  sandbox  2.0 GiB / 6.7 GiB  42.5%  /home/me/big
-        |  5e6f7a8b  proxy     50 MiB / 256 MiB   0.0%  /home/me/big
-        |  1a2b3c4d  sandbox   30 MiB / 6.7 GiB   8.0%  small-0123456789ab
-        |  1a2b3c4d  proxy     40 MiB / 256 MiB   0.1%  small-0123456789ab
+        |  run       role     memory        cpu  project
+        |  5e6f7a8b  sandbox  2.0 / 6.7G  42.5%  /home/me/big
+        |  5e6f7a8b  proxy     50 / 256M   0.0%  /home/me/big
+        |  1a2b3c4d  sandbox  0.1 / 6.7G   8.0%  small-0123456789ab
+        |  1a2b3c4d  proxy     40 / 256M   0.1%  small-0123456789ab
         |""".stripMargin,
     )
     assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
@@ -120,17 +134,17 @@ class SandboxStatsTest extends munit.FunSuite:
     val state = HostRoot(Paths.get("/home/me/.local/state/x"), "/home (/dev/sda2)", 936L << 30, 1610L << 30)
     val cache = HostRoot(Paths.get("/home/me/.cache/x"), "/home (/dev/sda2)", 936L << 30, 1610L << 30)
     val store = HostRoot(Paths.get("/var/lib/containers"), "/var (/dev/sda3)", 30L << 30, 250L << 30)
-    assertEquals(storageLines(Os.Linux, Vector(state, cache), None), Vector("storage: 58% (936.0 GiB) free"))
+    assertEquals(storageLines(Os.Linux, Vector(state, cache), None), Vector("storage: 58% (936G) free"))
     assertEquals(
       storageLines(Os.Linux, Vector(state, cache, store), None),
       Vector(
-        "storage: 58% (936.0 GiB) free at /home/me/.local/state/x, /home/me/.cache/x",
-        "storage: 12% (30.0 GiB) free at /var/lib/containers",
+        "storage: 58% (936G) free at /home/me/.local/state/x, /home/me/.cache/x",
+        "storage: 12% (30G) free at /var/lib/containers",
       ),
     )
     assertEquals(
       storageLines(Os.Mac, Vector(state, cache), Some((71L << 30, 100L << 30))),
-      Vector("host storage: 58% (936.0 GiB) free", "podman machine storage: 71% (71.0 GiB) free"),
+      Vector("host storage: 58% (936G) free", "podman machine storage: 71% (71G) free"),
     )
     assertEquals(storageLines(Os.Windows, Vector.empty, None), Vector.empty)
 
@@ -153,10 +167,10 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(
       rendered,
       """3 projects
-        |    total  state    cache   volume  project
-        |  2.0 GiB    0 B  2.0 GiB      0 B  big-000000000000  <- cache over 1% of free space; a --reset-cache candidate
-        |  1.6 GiB  2 MiB  445 MiB  1.2 GiB  /home/me/agents
-        |   11 KiB  1 KiB   10 KiB      0 B  /home/me/small
+        |  total  state  cache  volume  project
+        |   2.0G      0   2.0G       0  big-000000000000  <- cache over 1% of free space; a --reset-cache candidate
+        |   1.7G   1.5M   445M    1.2G  /home/me/agents
+        |    11K   1.0K    10K       0  /home/me/small
         |""".stripMargin,
     )
     // At exactly 1% nothing is flagged, and an unsized volume reads as unknown, not as empty.

@@ -41,7 +41,27 @@ fi
 
 # kB, as /proc/meminfo counts; empty when the field is absent.
 meminfo() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/meminfo" 2>/dev/null; }
-gib() { awk -v kb="$1" 'BEGIN { printf "%.1f GiB", kb / 1048576 }'; }
+# A size in bytes as `df -h`, `du -h` and `ls -lh` print it, humanBytes in SandboxStats.scala
+# spelled in awk: the largest unit reached, one decimal below 10 of it and none from 10 up, rounded
+# up, 1023.6M carrying to 1.0G. Given a second size, the first in the second's unit, no suffix.
+# awk counts in doubles, and the remainder's fivefold keeps every step exact to 2^53 bytes, 8 PiB:
+# past every figure a machine reports here, short of what the Scala renderer takes.
+human() {
+    awk -v bytes="$1" -v whole="${2:-}" '
+        function ceil(x) { return int(x) + (x > int(x)) }
+        function figure(bytes, unit,   tenths) {
+            if (unit == 1) return bytes
+            tenths = int(bytes / unit) * 10 + ceil((bytes % unit) * 5 / (unit / 2))
+            return tenths < 100 ? sprintf("%d.%d", tenths / 10, tenths % 10) : ceil(bytes / unit)
+        }
+        BEGIN {
+            reference = whole == "" ? bytes : whole
+            unit = 1; power = 0
+            while (reference >= unit * 1024 && power < 6) { unit *= 1024; power++ }
+            if (ceil(reference / unit) >= 1024 && power < 6) { unit *= 1024; power++ }
+            printf "%s%s\n", figure(bytes, unit), (whole == "" && power > 0 ? substr("KMGTPE", power, 1) : "")
+        }'
+}
 
 warnings=
 warn() { warnings="$warnings  $1
@@ -50,7 +70,7 @@ warn() { warnings="$warnings  $1
 available=$(meminfo MemAvailable)
 total=$(meminfo MemTotal)
 if [ -n "$available" ] && [ "$available" -lt 1048576 ]; then
-    warn "$(gib "$available") of $(gib "$total") memory available"
+    warn "$(human $((available * 1024)) $((total * 1024))) of $(human $((total * 1024))) memory available"
 fi
 
 # Pages left in swap after pressure has passed stay there until touched, so occupied swap alone
@@ -59,7 +79,7 @@ swap_total=$(meminfo SwapTotal)
 swap_free=$(meminfo SwapFree)
 if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_free" ] \
     && [ -n "$available" ] && [ "$available" -lt $((total / 4)) ]; then
-    warn "$(gib $((swap_total - swap_free))) of swap in use"
+    warn "$(human $(((swap_total - swap_free) * 1024))) of swap in use"
 fi
 
 # A kernel built with PSI disabled has the file and refuses the read (RHEL); then no line.
@@ -73,14 +93,14 @@ fi
 # and containers fill; the root here is an overlay whose free space is one step removed.
 disk=$(df -Pk "$volume" 2>/dev/null | awk 'NR == 2 { print $4 }')
 if [ -n "$disk" ] && [ "$disk" -lt 2097152 ]; then
-    warn "$(gib "$disk") of disk left on the machine"
+    warn "$(human $((disk * 1024))) of disk left on the machine"
 fi
 
 if [ -n "$warnings" ]; then
     ceiling=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
     case "$ceiling" in
         ''|max) ceiling= ;;
-        *) ceiling=" This session may use up to $(gib $((ceiling / 1024))) of it"
+        *) ceiling=" This session may use up to $(human "$ceiling") of it"
            ceiling="$ceiling (KO_AGENT_SANDBOX_MEMORY)." ;;
     esac
     {
