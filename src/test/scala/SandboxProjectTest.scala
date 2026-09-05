@@ -1,6 +1,6 @@
 // The project directory as the launcher judges it: identity, the refused directories, and the
 // .git / .ko-agent-sandbox mount guards — where a wrong answer either exposes the host or lets a
-// session write the policy governing the next one. The .git pin tests cover
+// session write the configuration governing the next one. The .git pin tests cover
 // KO_AGENT_SANDBOX_WORKSPACE_GUARD=none; default sessions get the FUSE filter, whose policy is
 // tested in fuse/ko-agent-fs.
 
@@ -448,58 +448,58 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(gitGuardVolumes(linkedGit, emptyFixture.file, emptyFixture.dir).isLeft)
     assert(Files.list(target).count() == 0, "wrote through the .git link")
 
-    val linkedPolicy =
+    val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(policyDirError(linkedPolicy).isDefined)
-    assert(Files.list(target).count() == 0, "wrote through the policy link")
+    assert(boundaryDirError(linkedBoundary).isDefined)
+    assert(Files.list(target).count() == 0, "wrote through the boundary link")
 
-  test("an absent policy directory is empty policy input, never a directory to materialize"):
-    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
-    assertEquals(policyDirError(dir), None)
+  test("an absent boundary directory is empty configuration, never a directory to materialize"):
+    val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
+    assertEquals(boundaryDirError(dir), None)
     assert(!Files.exists(dir))
-    assertEquals(policyGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
+    assertEquals(boundaryGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
     assert(Files.isDirectory(dir))
     // The directory it just created passes the next launch unchanged.
-    assertEquals(policyDirError(dir), None)
+    assertEquals(boundaryDirError(dir), None)
 
-  test("a file where the policy directory belongs refuses the launch"):
-    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+  test("a file where the boundary directory belongs refuses the launch"):
+    val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
-    assert(policyDirError(dir).isDefined)
+    assert(boundaryDirError(dir).isDefined)
     // Refused, not replaced: whatever sits there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
   test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
-    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+    val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("egress"))
     Files.createFile(dir.resolve(".DS_Store"))
-    assertEquals(policyDirError(dir), None)
+    assertEquals(boundaryDirError(dir), None)
 
     Files.createDirectory(dir.resolve("egres"))
-    val refused = policyDirError(dir)
+    val refused = boundaryDirError(dir)
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
     // The other entries are admitted by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
     Files.createDirectory(dir.resolve("host-command"))
-    assertEquals(policyDirError(dir), None)
+    assertEquals(boundaryDirError(dir), None)
     Files.delete(dir.resolve("host-command"))
     Files.createSymbolicLink(dir.resolve("host-command"), dir.resolve("egress"))
-    val linkedTenant = policyDirError(dir)
+    val linkedTenant = boundaryDirError(dir)
     assert(linkedTenant.exists(_.contains("host-command")), linkedTenant.toString)
     Files.delete(dir.resolve("host-command"))
     Files.delete(dir.resolve("agent"))
     Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
-    val linked = policyDirError(dir)
+    val linked = boundaryDirError(dir)
     assert(linked.exists(_.contains("agent")), linked.toString)
 
   test("a stray entry's refusal says it may be a newer launcher's file, not only a typo"):
-    val dir = Files.createTempDirectory("policy-guard").resolve(".ko-agent-sandbox")
+    val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
-    Files.createDirectory(dir.resolve("future-policy"))
-    val refused = policyDirError(dir)
+    Files.createDirectory(dir.resolve("future-config"))
+    val refused = boundaryDirError(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
   test("agent/ holds one file, with the forms egress/ refuses refused for the same reasons"):
@@ -532,16 +532,16 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createSymbolicLink(dir.resolve("AGENTS-CUSTOM.md"), parent.resolve("elsewhere"))
     assert(readAgentInstructions(dir).swap.exists(_.contains("symlink")))
 
-  test("a symlinked policy directory or egress refuses the launch"):
-    val project = Files.createTempDirectory("policy-guard")
+  test("a symlinked boundary directory or egress refuses the launch"):
+    val project = Files.createTempDirectory("boundary-guard")
     val target = Files.createDirectory(project.resolve("target"))
 
     val linked = Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(policyDirError(linked).isDefined)
+    assert(boundaryDirError(linked).isDefined)
 
     val dir = Files.createDirectory(project.resolve("real.ko-agent-sandbox"))
     Files.createSymbolicLink(dir.resolve("egress"), project.resolve("secret"))
-    val refused = policyDirError(dir)
+    val refused = boundaryDirError(dir)
     assert(refused.isDefined)
-    // The refusal names the symlink itself, not merely the policy directory around it.
+    // The refusal names the symlink itself, not merely the boundary directory around it.
     assert(refused.exists(_.contains("egress")), refused.toString)

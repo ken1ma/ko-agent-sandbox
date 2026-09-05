@@ -198,7 +198,7 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         "case-folded spelling",
         fs::create_dir(mount.at(".KO-AGENT-SANDBOX")),
     );
-    // A launch takes its policy from the directory it starts in, so a subdirectory's copy is
+    // A launch takes its boundary configuration from the directory it starts in, so a subdirectory's copy is
     // boundary configuration too.
     denied(
         "mkdir a nested .ko-agent-sandbox",
@@ -224,22 +224,22 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
     });
 
     allowed(
-        "read the policy the host wrote",
+        "read the rule file the host wrote",
         fs::read_to_string(mount.at(".ko-agent-sandbox/egress/rule")).map(|_| ()),
     );
     denied(
-        "rewrite a policy file",
+        "rewrite the rule file",
         fs::write(
             mount.at(".ko-agent-sandbox/egress/rule"),
             b"allow https://evil.example/ tunnel\n",
         ),
     );
     denied(
-        "add a policy file",
+        "add a file beside the rule file",
         File::create(mount.at(".ko-agent-sandbox/egress/extra")),
     );
     denied(
-        "remove a policy file",
+        "remove the rule file",
         fs::remove_file(mount.at(".ko-agent-sandbox/egress/rule")),
     );
     denied(
@@ -247,7 +247,7 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         fs::remove_dir_all(mount.at(".ko-agent-sandbox/egress")),
     );
     denied(
-        "rename the policy directory away",
+        "rename the boundary directory away",
         fs::rename(
             mount.at(".ko-agent-sandbox"),
             mount.at(".ko-agent-sandbox-old"),

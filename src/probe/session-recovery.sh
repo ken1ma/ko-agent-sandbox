@@ -3,7 +3,7 @@
 # them. Five measurements:
 #
 #   M1  the egress proxy runs on macOS from its dist jars, admits repo1.maven.org through a
-#       replacement policy (deny defaults plus one read line), refuses everything else, and binds where the
+#       replacement rules (deny defaults plus one read line), refuses everything else, and binds where the
 #       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
@@ -23,7 +23,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
     echo "This probe measures a macOS host; this is $(uname -s). Run it on the Mac." >&2
     exit 2
 fi
-if [ -n "${KO_AGENT_SANDBOX_EGRESS_POLICY:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
+if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
     echo "This looks like a sandbox session. Run the probe in a host terminal instead." >&2
     exit 2
 fi
@@ -86,14 +86,14 @@ allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
         code=$(curl -sS -x http://127.0.0.1:3128 -o /dev/null -w '%{http_code}' \
             https://repo1.maven.org/maven2/ 2>"$work/curl-allow.err") \
             && [ "$code" = 200 ] \
-            && report PASS "M1 repo1.maven.org through replacement policy" "HTTP $code" \
-            || report FAIL "M1 repo1.maven.org through replacement policy" \
+            && report PASS "M1 repo1.maven.org through replacement rules" "HTTP $code" \
+            || report FAIL "M1 repo1.maven.org through replacement rules" \
                 "code=${code:-none} $(head -1 "$work/curl-allow.err" 2>/dev/null)"
         if curl -sS -m 10 -x http://127.0.0.1:3128 -o /dev/null \
             https://example.com/ 2>"$work/curl-deny.err"; then
-            report FAIL "M1 non-allowlisted host refused" "example.com connected"
+            report FAIL "M1 unlisted host refused" "example.com connected"
         else
-            report PASS "M1 non-allowlisted host refused" \
+            report PASS "M1 unlisted host refused" \
                 "$(grep 'deny.*example.com' "$work/proxy.log" | head -1 || head -1 "$work/curl-deny.err")"
         fi
         kill "$proxy_pid" 2>/dev/null; wait "$proxy_pid" 2>/dev/null; proxy_pid=""

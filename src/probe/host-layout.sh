@@ -15,7 +15,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
     echo "This probe reports a macOS host's layout; this is $(uname -s). Run it on the Mac." >&2
     exit 2
 fi
-if [ -n "${KO_AGENT_SANDBOX_EGRESS_POLICY:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
+if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
     echo "This looks like a sandbox session. Run the probe in a host terminal instead." >&2
     exit 2
 fi

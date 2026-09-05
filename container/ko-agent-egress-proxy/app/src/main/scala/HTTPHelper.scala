@@ -13,7 +13,7 @@ import IPAddrHelper.normalizeHost
  * it — folded headers, Content-Length beside Transfer-Encoding, conflicting
  * Content-Lengths, bare CR or LF — because a proxy and an origin reading
  * the same bytes differently is what request smuggling exploits. (The
- * duplicate-Host refusal is the policy's: authorizeInspectedRequest.)
+ * duplicate-Host refusal is the ruleset's: authorizeInspectedRequest.)
  *
  * Clients speak HTTP/1.1, and an HTTP/1.0 request is refused by name: no
  * such client exists here, and half-supporting one — it could not parse a
@@ -261,7 +261,7 @@ object HTTPHelper:
       .filter(_.nonEmpty)
       .toSet
 
-  /** The headers this hop reads for itself — the framing pair, and the Host the policy checked. A
+  /** The headers this hop reads for itself — the framing pair, and the Host the ruleset checked. A
     * Connection header nominating one asks this hop to strip a header it has already acted on: the
     * body would go out framed by a header the message no longer carries, which is a smuggling
     * primitive, not a hop-by-hop courtesy. Both bodyFraming implementations refuse it — they are
@@ -333,7 +333,7 @@ object HTTPHelper:
    * The response head, parsed for status and framing only — just enough to tell a completed body
    * from a truncated one — and relayed with only its hop-by-hop headers replaced (toClientBytes):
    * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
-   * response content, because that would grow into the policy language this proxy refuses to
+   * response content, because that would grow into the rule language this proxy refuses to
    * have. Origin-side malformations are IOExceptions, never BadRequests: the world failed, and
    * the 502 should blame the origin.
    */
@@ -612,7 +612,7 @@ object HTTPHelper:
     loop(false)
 
   /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
-    * the policy's (PolicyViolation.advice). One line each, so a client that prints the body —
+    * the ruleset's (Refusal.advice). One line each, so a client that prints the body —
     * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
   def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
     (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))

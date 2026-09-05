@@ -2,15 +2,14 @@
 
 Every sandbox session reaches the network through one HTTPS proxy in its own container, on a
 network the session cannot route out of. Which hosts a session reaches, and with what treatment,
-is a policy: the launcher-owned defaults, the profile selected at launch, and the project's rule
+is a ruleset: the launcher-owned defaults, the profile selected at launch, and the project's rule
 file, resolved together by the proxy itself and printed at every start. This document is the
 reference for writing that file and reading that printout. SECURITY.md, "Egress proxy", is the
 security model — what the proxy defends and what it costs — and every "why" below points there.
 
-Two words, kept apart: a *rule* is a line of the project's file, and the file is the project's
-rules — what is written and reviewed; a *policy* is what a launch enforces — the defaults, the
-profile and the file resolved together, printed as the policy lines and named by a digest. Rules
-are written; a policy is resolved, and two files of different rules may resolve to one policy.
+A *rule* is a line of the project's file, what is written and reviewed; the *ruleset* is what a
+launch enforces: the defaults, the profile and the file resolved together, printed as the ruleset
+lines and named by a digest. Two files of different rules may resolve to one ruleset.
 
 ## Choosing an egress profile
 
@@ -33,7 +32,7 @@ files are the membership, with the reason beside each line.
    `copilot` selects `github`. Only the basename of the directly launched command is classified;
    anything else — `bash`, a wrapper script — selects no provider, admits no host, and says so at
    startup.
-1. `allow-unless-denied` — `deny-unless-allowed`'s policy, and every public hostname on port
+1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
    443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, every write
    refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
    `read` and nothing else, so a `tunnel` deny takes nothing from it. Choose it for work whose
@@ -85,7 +84,7 @@ What a line grants is its words, and nothing is implied:
 - `tunnel` — the opaque treatment. It stands alone on its line, and its URL ends at `/`.
 
 The lines apply in the order written, over the defaults — the PF and relayd model, whose lineage
-and limits design.md records under "No richer egress-policy format": an `allow` adds its grants
+and limits design.md records under "No richer rule format": an `allow` adds its grants
 under its path, a `deny` takes the named grants from every scope on each host it matches, or
 every grant when it names none, and for each grant the last applicable line decides. A `deny`
 names a host or a subtree whole, never a path (SECURITY.md, "Adding hosts, not patterns", has
@@ -125,7 +124,7 @@ well as a grant: one whose grants its enclosing scope already holds still change
 under it is refused for.
 
 `deny defaults`, the first line if present, means the defaults contribute nothing and the file is
-the whole policy. Any line above it is refused. `allow model-provider NAME` expands, at its
+the whole ruleset. Any line above it is refused. `allow model-provider NAME` expands, at its
 position, to the group's lines; `deny model-provider NAME` removes the group's contributions in
 force at its position and no other line's — the catalog's `read` on `api.github.com` outlives
 the `github` group's token line — and a later `allow model-provider NAME` contributes them again.
@@ -138,7 +137,7 @@ allow model-provider anthropic
 
 A host has one treatment. `deny https://api.example/ tunnel` takes the treatment, and an `allow`
 with `read`, `git-fetch` or `method=` then makes the host inspected; a `tunnel` line for a host
-the defaults inspect needs `deny defaults` and the whole policy after it (SECURITY.md, "Adding
+the defaults inspect needs `deny defaults` and the whole ruleset after it (SECURITY.md, "Adding
 hosts, not patterns", has why).
 
 `doc/egress-rule-example/*/rule` holds complete files for common needs — a bucket, a container,
@@ -171,26 +170,26 @@ adopts its hosts.
 
 1. An absent directory or rule file contributes no rules; the profile still starts from what it
    starts from. `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may create an empty `.ko-agent-sandbox`
-   directory in the project (SECURITY.md, "Silent changes to what you own"). An empty *resolved*
-   policy is valid and reported as such — `deny-all` resolves empty by design, as does
+   directory in the project (SECURITY.md, "Silent changes to what you own"). An empty
+   ruleset is valid and reported as such — `deny-all` resolves empty by design, as does
    `deny-unless-model` under `bash`.
-1. Editing the file takes effect on the next launch; a running session keeps its original policy.
-1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the policy is per
+1. Editing the file takes effect on the next launch; a running session keeps its original ruleset.
+1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the rules are per
    project, in the project, and read-only").
 1. The directory is meant to be committed, and read before an unfamiliar project is launched
-   (SECURITY.md, "A repository that ships a wide egress policy").
+   (SECURITY.md, "A repository that ships wide egress rules").
 
-## The printed policy
+## The printed ruleset
 
 `--egress-effective` and `--egress-check=<host>` (README, Reference) answer without starting a
 session; inside one, `sandbox-egress-check <host>` asks the running proxy. Every start prints the
 rule file as written, one line; then the launch banner — the profile and the counts, never a
 host name; then, when the file grants beyond the defaults for a host — a host the defaults lack,
 `tunnel`, `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more on
-a line of their own, `egress policy widens:`, so a file that only takes or narrows prints nothing
+a line of their own, `egress rules widen:`, so a file that only takes or narrows prints nothing
 extra.
 
-The policy itself is what the proxy prints at its start and `--egress-effective` shows whole: the
+The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole: the
 profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree the public
 default does not reach, then one `allow` line per resolved scope, in the rule grammar, with the
 scope's whole grant set, hosts and paths sorted:
@@ -204,12 +203,11 @@ allow https://github.com/login/device/code read git-fetch method=POST
 ```
 
 Each `allow` and `deny` line uses the rule grammar so a reader learns one; but the printout is a
-serialization of
-the resolved policy, not a rule file: it has no `deny defaults` header, nothing reads it as
-input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
+serialization of the ruleset, not a rule file: it has no `deny defaults` header, nothing reads it
+as input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
 names — one stable log line per run, comparable across runs — what the leaf certificate's names
-are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY` give,
-so two files resolving to one policy print one digest and the same lines, and the same file under
+are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_RULESET` give,
+so two files resolving to one ruleset print one digest and the same lines, and the same file under
 two profiles never does. After them, outside the digest, the metadata: one summary line — the
 counts of inspected and opaque hosts, denial patterns and widening lines — and the widening line.
 `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
@@ -225,7 +223,7 @@ and the proxy appends the log to a per-run file on the host, under
 
 With no arguments, `--proxy-log` prints the retained files oldest first — the newest 20 runs, and
 any older one whose session is still running, since a live proxy is still appending to its file.
-The startup lines are the resolved policy, its digest, the metadata and whether inspection is
+The startup lines are the ruleset, its digest, the metadata and whether inspection is
 active; every connection event after them is one line, with an inspected request's full target —
 query string included, which is what makes an exfiltrating `GET` visible. A refusal reads as
 
@@ -265,7 +263,7 @@ that is wrong and never the value. `--build`'s pulls and builds, and `podman mac
 the host's variables as podman does on its own; of a session's containers only the proxy receives
 the one selected variable, and the sandbox none of them.
 
-What changes is only how an admitted address is reached: the policy decides every destination as
+What changes is only how an admitted address is reached: the ruleset decides every destination as
 before, the name is resolved once and every answer must be public, and the upstream proxy is
 asked for a tunnel to that numeric address — never for the hostname, which it would resolve
 itself, outside the check. A failure on that path is an `error` line and a 502, never a direct

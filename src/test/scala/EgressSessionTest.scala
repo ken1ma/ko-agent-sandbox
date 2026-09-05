@@ -1,4 +1,4 @@
-// The egress policy a project ships, end to end. A session reads its policy once at startup, so
+// The egress rules a project ships, end to end. A session reads its rules once at startup, so
 // each test here launches its own.
 //
 // Two of these are the refusals no session can demonstrate about itself, because both happen on the
@@ -9,9 +9,9 @@
 //
 // Opt-in like the other container-launching suites (IntegrationSession has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *EgressPolicyTest"
+//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *EgressSessionTest"
 //
-// The assertions use hosts outside the built-in policy, and the suite is only as good as their
+// The assertions use hosts outside the built-in ruleset, and the suite is only as good as their
 // reachability from the host running it: `example.com` (a plain addition), `expired.badssl.com` and
 // `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
 // a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address
@@ -27,12 +27,12 @@ import java.nio.file.{Files, Path}
 import HostCommands.*
 import IntegrationSession.*
 
-class EgressPolicyTest extends munit.FunSuite:
+class EgressSessionTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(20, "min")
 
   /** Write this project's rule file, as a repository would ship it. */
-  private def policy(project: Path, rule: Option[String]): Unit =
+  private def ruleFile(project: Path, rule: Option[String]): Unit =
     val egress = project.resolve(".ko-agent-sandbox").resolve("egress")
     Files.createDirectories(egress)
     rule.foreach(text => Files.writeString(egress.resolve("rule"), text))
@@ -54,7 +54,7 @@ class EgressPolicyTest extends munit.FunSuite:
           line.substring(line.indexOf("issuer:") + "issuer:".length).trim
       .getOrElse("(no issuer line)")
 
-  /** A host the policy never admitted, or a name resolving outside public address space: both are
+  /** A host the ruleset never admitted, or a name resolving outside public address space: both are
     * refused at the CONNECT, before a tunnel exists, so curl reports the proxy's status as an error
     * rather than as an HTTP code. */
   private def refusedAtConnect(session: Session, url: String, why: String): Unit =
@@ -83,7 +83,7 @@ class EgressPolicyTest extends munit.FunSuite:
     val project = scratchProject()
     var live: Option[Session] = None
     try
-      policy(project, rule)
+      ruleFile(project, rule)
       val session = launch(project, project.resolve("session.log"))
       live = Some(session)
       body(session)
@@ -106,7 +106,7 @@ class EgressPolicyTest extends munit.FunSuite:
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
       // Inspected on the project's own CA, like a catalog host: one leaf, minted at launch
-      // from the resolved policy, or the addition would be a treatment the proxy does not police.
+      // from the ruleset, or the addition would be a treatment the proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
         "the added host is not inspected by this project's CA",
@@ -132,7 +132,7 @@ class EgressPolicyTest extends munit.FunSuite:
 
       // The bound: allowing four hosts allows four hosts. A reserved name (RFC 6761), so that no
       // growth of the defaults can ever turn the sentinel into an admitted host.
-      refusedAtConnect(session, "https://unlisted.invalid/", "a host the policy never named was allowed")
+      refusedAtConnect(session, "https://unlisted.invalid/", "a host the ruleset never named was allowed")
 
   test("a deny of one grant takes that grant alone: the forge stays readable and stops being clonable"):
     optIn()
@@ -211,7 +211,7 @@ class EgressPolicyTest extends munit.FunSuite:
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator.exists: line =>
-          line.contains(" deny github.com GET /github/docs.git/info/refs") && line.endsWith("path outside allowance"),
+          line.contains(" deny github.com GET /github/docs.git/info/refs") && line.endsWith("path under no line"),
         "no deny line records the refused clone at ref discovery",
       )
 
@@ -229,7 +229,7 @@ class EgressPolicyTest extends munit.FunSuite:
     //     print(boto3.client("s3", config=botocore.config.Config(signature_version="s3v4"))
     //         .generate_presigned_url("put_object",
     //         Params={"Bucket": "YOUR-BUCKET", "Key": "ko-agent-sandbox-probe"}, ExpiresIn=1800))')" \
-    //         KO_AGENT_SANDBOX_INTEGRATION=1 sbt --server "testOnly *EgressPolicyTest"
+    //         KO_AGENT_SANDBOX_INTEGRATION=1 sbt --server "testOnly *EgressSessionTest"
     //
     // The URL's query string is a capability, and it lands whole in this run's owner-only audit
     // log; it expires on its own, and the probe object is the owner's to delete.

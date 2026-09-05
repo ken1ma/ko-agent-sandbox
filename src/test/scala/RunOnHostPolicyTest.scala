@@ -521,17 +521,17 @@ class RunOnHostPolicyTest extends munit.FunSuite:
         |allow https://repo.example.org/ read
         |""".stripMargin
     assertEquals(
-      buildAllowlist(text),
+      buildRuleHosts(text),
       Right(Vector("repo.example.org", "mirror.example.org")),
     )
 
-  test("an empty or comment-only allowlist is valid and contributes nothing"):
+  test("an empty or comment-only rule file is valid and contributes nothing"):
     for text <- Seq("", "\n\n", "# nothing yet\n") do
-      assertEquals(buildAllowlist(text), Right(Vector.empty))
+      assertEquals(buildRuleHosts(text), Right(Vector.empty))
 
   test("every line of the proxy's wider grammar is outside the file's"):
     for
-      entry <- Seq(
+      line <- Seq(
         "deny defaults",
         "allow model-provider openai",
         "deny model-provider openai",
@@ -553,23 +553,23 @@ class RunOnHostPolicyTest extends munit.FunSuite:
         "allow",
       )
     do
-      buildAllowlist(entry) match
-        case Left(Refusal.AllowlistEntryOutsideGrammar(seen)) => assertEquals(seen, entry)
-        case other => fail(s"'$entry' -> $other")
+      buildRuleHosts(line) match
+        case Left(Refusal.RuleOutsideBuildGrammar(seen)) => assertEquals(seen, line)
+        case other => fail(s"'$line' -> $other")
 
-  test("a refused entry names itself even after a comment is stripped"):
+  test("a refused line names itself even after a comment is stripped"):
     assertEquals(
-      buildAllowlist("deny https://x/ # a removal\n"),
-      Left(Refusal.AllowlistEntryOutsideGrammar("deny https://x/")),
+      buildRuleHosts("deny https://x/ # a removal\n"),
+      Left(Refusal.RuleOutsideBuildGrammar("deny https://x/")),
     )
-    // A comment starts at a token, as in the proxy: a `#` inside one is the entry, not a comment.
+    // A comment starts at a token, as in the proxy: a `#` inside one is the line, not a comment.
     assertEquals(
-      buildAllowlist("allow https://repo.example.org/ read#comment\n"),
-      Left(Refusal.AllowlistEntryOutsideGrammar("allow https://repo.example.org/ read#comment")),
+      buildRuleHosts("allow https://repo.example.org/ read#comment\n"),
+      Left(Refusal.RuleOutsideBuildGrammar("allow https://repo.example.org/ read#comment")),
     )
-    assertEquals(buildAllowlist("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
+    assertEquals(buildRuleHosts("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
 
-  test("the composed rule input is the whole policy: deny defaults, Maven Central, then the file"):
+  test("the composed rule input is the whole ruleset: deny defaults, Maven Central, then the file"):
     assertEquals(
       egressRuleText(Vector("repo.example.org")),
       "deny defaults\nallow https://repo1.maven.org/ read\nallow https://repo.example.org/ read",
@@ -592,14 +592,14 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       agentCoursierV1(cacheRoot, "proj-abc123").getParent.getParent,
     )
 
-  test("the allowlist path is per tool under the frozen boundary directory"):
+  test("the rule file path is per tool under the frozen boundary directory"):
     val project = Paths.get("/Users/u/proj")
     assertEquals(
-      buildAllowlistPath(project, Tool.Sbt),
+      buildRulePath(project, Tool.Sbt),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/rule"),
     )
     assertEquals(
-      buildAllowlistPath(project, Tool.Mill),
+      buildRulePath(project, Tool.Mill),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/rule"),
     )
 
@@ -609,5 +609,5 @@ class RunOnHostPolicyTest extends munit.FunSuite:
 
   test("realPath answers None for an absent path rather than throwing"):
     assertEquals(realPath(Paths.get("/definitely/not/here")), None)
-    val real = realPath(Files.createTempDirectory("build-sandbox-policy"))
+    val real = realPath(Files.createTempDirectory("build-sandbox"))
     assert(real.isDefined)

@@ -240,7 +240,7 @@ its private Git metadata cannot be applied.
    `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration message: `fuse` needs
    no replacement — the filter is `--write=live`'s only mechanism then — and the weaker `none`
    mode has no equivalent. Remove the pin mode's launcher branch, Git pin construction,
-   `WorkspaceGuardOffTest` and its policy mount-back; retain launcher-owned empty mount sources
+   `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned empty mount sources
    only where another mount still needs one; and update the surfaces that document the pin mode
    and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
    pins of `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same change. Persistent stages

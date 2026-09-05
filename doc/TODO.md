@@ -36,7 +36,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 ## Deferred — LAN destinations, as launch-time authority
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
-policy grammar refuses an IP literal, so a corporate site on the LAN without a public name is
+rule grammar refuses an IP literal, so a corporate site on the LAN without a public name is
 unreachable from a session. If that is ever needed, the shape that keeps the security model:
 
 - [ ] A launch option naming exact addresses — never a range, never a line in
@@ -77,13 +77,13 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
 - [ ] Explicit resolvers for the proxy container, only when podman's resolver — which follows the
   host's on Linux and the host's through the machine elsewhere — stops answering for someone.
   Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
-  name is a refusal naming the non-public answer, never a private-address allowance.
+  name is a refusal naming the non-public answer, never a private address admitted.
 - [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
   podman machines, and record whether each can route to a private endpoint; one that cannot must
   fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
   reaches a loopback helper such as cntlm under rootless podman is part of the same run.
 
-## Deferred — `--explain-request`, the ordered policy traced for one request
+## Deferred — `--explain-request`, the ordered rules traced for one request
 
 The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an
 operator

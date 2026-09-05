@@ -8,7 +8,7 @@ import HTTPHelper.HttpRequestHead
 /**
  * What requests mean in git's smart-HTTP protocol. The decisions about them
  * — what is allowed to reach a forge — stay in
- * PolicyHelper.authorizeInspectedRequest; this file only names the
+ * RulesetHelper.authorizeInspectedRequest; this file only names the
  * requests.
  */
 object GitHelper:
@@ -41,7 +41,7 @@ object GitHelper:
   /**
    * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack, classified as
    * receive-pack's is. It is the `git-fetch` grant's own request, not `read`'s
-   * (PolicyHelper.authorizeInspectedRequest); the decode can only widen that refusal.
+   * (RulesetHelper.authorizeInspectedRequest); the decode can only widen that refusal.
    */
   def isUploadPackDiscovery(head: HttpRequestHead): Boolean =
     percentDecoded(head.path).endsWith("/info/refs") &&
@@ -78,7 +78,7 @@ object GitHelper:
     loop(0)
 
   /**
-   * The spellings a forge's router decodes before routing, so that a policy
+   * The spellings a forge's router decodes before routing, so that a ruleset
    * comparing the path as sent would disagree with the origin about which
    * path it names. Forge names never need escaping, so neither is a request
    * git would make.
@@ -109,7 +109,7 @@ object GitHelper:
 
   private def requireSpelledPlainly(path: String, spellings: Vector[(String, String => Boolean)]): Unit =
     problemOf(path, spellings).foreach: problem =>
-      throw PolicyViolation(s"$problem in the path", RefusalAdvice.ambiguousPath)
+      throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath)
 
   /** A write-capable method's path, refused rather than normalized when a
     * forge would decode it first. */

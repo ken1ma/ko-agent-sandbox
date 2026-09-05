@@ -1,5 +1,5 @@
 // The egress proxy: the listening loop, the flow from CONNECT to tunnel, and the one-request
-// inspected session. The policy and its decisions live in PolicyHelper.scala, the audit log's form
+// inspected session. The ruleset and its decisions live in RulesetHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
 // HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf minting in X509Helper.scala, git protocol
 // knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
@@ -20,7 +20,7 @@ import scala.util.control.NonFatal
 import HTTPHelper.*
 import IPAddrHelper.*
 import LogHelper.*
-import PolicyHelper.*
+import RulesetHelper.*
 import TLSHelper.*
 import TransportHelper.*
 
@@ -28,7 +28,7 @@ object AgentEgressProxy:
 
   val ListenPort = 3128
 
-  /** Printed after `bind` and before any policy line, so a reader that saw it has a proxy
+  /** Printed after `bind` and before any ruleset line, so a reader that saw it has a proxy
     * accepting connections; every refusal made before then ends the process instead. The
     * launcher gates the sandbox on this spelling, after the stamp every line here starts with
     * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
@@ -64,35 +64,35 @@ object AgentEgressProxy:
   def main(args: Array[String]): Unit =
     args.toList match
       case Nil                                       => serve()
-      case "--print-policy" :: Nil                   => printPolicy(provenance = false)
-      case "--print-policy" :: "--provenance" :: Nil => printPolicy(provenance = true)
+      case "--print-ruleset" :: Nil                   => printRuleset(provenance = false)
+      case "--print-ruleset" :: "--provenance" :: Nil => printRuleset(provenance = true)
       case "--check-host" :: host :: Nil             => checkHost(host)
       case _ =>
         System.err.println(
-          "agent-egress-proxy takes no arguments, --print-policy [--provenance] to " +
-            "resolve the policy, print it, and exit, or --check-host <host> to report " +
-            "one host's policy decision and current resolution",
+          "agent-egress-proxy takes no arguments, --print-ruleset [--provenance] to " +
+            "resolve the ruleset, print it, and exit, or --check-host <host> to report " +
+            "one host's ruleset decision and current DNS resolution",
         )
         sys.exit(2)
 
   /*
    * The dry run behind --egress-effective and every launch: no port, no log, a
    * pure computation the launcher runs --network=none to read back what would
-   * be enforced. The policy lines are also where the launcher reads the leaf
+   * be enforced. The ruleset lines are also where the launcher reads the leaf
    * certificate's names from. Warnings — a deny matching nothing, a redundant
    * grant, a selected provider the profile does not fully admit — go to
    * stderr, so the data lines pipe cleanly.
    *
-   * The lines say what this policy *would* inspect, not what a given
+   * The lines say what this ruleset *would* inspect, not what a given
    * run will: unlike serve() this reads no certificate, because the dry run
    * is not given one. Every launch mounts the leaf, or under allow-unless-denied
    * the run CA, so the two agree there; only the standalone image run without
    * material logs the inspected hosts as opaque.
    */
-  def printPolicy(provenance: Boolean): Unit =
+  def printRuleset(provenance: Boolean): Unit =
     try
-      val resolved = configuredPolicy()
-      policyLines(resolved).foreach(println)
+      val resolved = configuredRuleset()
+      rulesetLines(resolved).foreach(println)
       metadataLines(resolved).foreach(println)
       if provenance then provenanceLines(resolved).foreach(println)
       resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
@@ -102,8 +102,8 @@ object AgentEgressProxy:
         sys.exit(2)
 
   /*
-   * One host's fate under the resolved policy, plus the current resolution
-   * evidence — separately, because the policy decision is fixed per run
+   * One host's fate under the resolved ruleset, plus the current DNS resolution
+   * evidence — separately, because the ruleset's decision is fixed per run
    * while a connection resolves and validates the destination again when it
    * is made. Run by the launcher's --egress-check through a one-shot
    * container on a network built as the session's egress network is, so the
@@ -111,7 +111,7 @@ object AgentEgressProxy:
    */
   def checkHost(rawHost: String): Unit =
     val resolved =
-      try configuredPolicy()
+      try configuredRuleset()
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -135,8 +135,8 @@ object AgentEgressProxy:
         resolved.hosts.get(authorized) match
           case Some(treatment) => ruleLines(authorized, treatment)
           case None            => Vector("read (the public-HTTPS default)")
-      catch case ex: PolicyViolation => Vector(s"refused: ${ex.getMessage}")
-    decisions.foreach(decision => println(s"policy: $host $decision"))
+      catch case ex: Refusal => Vector(s"refused: ${ex.getMessage}")
+    decisions.foreach(decision => println(s"ruleset: $host $decision"))
 
     val addresses =
       try
@@ -144,7 +144,7 @@ object AgentEgressProxy:
         println(s"resolves: ${resolved.map(_.getHostAddress).mkString(" ")}")
         resolved
       catch
-        case ex: PolicyViolation =>
+        case ex: Refusal =>
           println(s"resolves: refused: ${ex.getMessage}")
           Vector.empty
         case ex: IOException =>
@@ -168,12 +168,12 @@ object AgentEgressProxy:
           println(s"upstream tunnel: established to ${address.getHostAddress}")
         catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
-  def configuredPolicy(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
+  def configuredRuleset(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
     RetiredVariables.filter(variable => read(variable).nonEmpty).foreach: variable =>
       throw IllegalArgumentException(
-        s"$variable is set, which this proxy no longer reads; the policy is one file, in $RuleVariable",
+        s"$variable is set, which this proxy no longer reads; the rules are one file, in $RuleVariable",
       )
-    resolvePolicy(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
+    resolveRuleset(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
 
   /**
    * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an
@@ -217,16 +217,16 @@ object AgentEgressProxy:
     System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
-     * Resolved before binding the port: a malformed policy or bind address is
+     * Resolved before binding the port: a malformed ruleset or bind address is
      * a container that fails to start, with the one-line reason — a stack
      * trace would read as a proxy bug. Launches never get here (the launcher
      * dry-runs the same variables first); this is the standalone-image path,
      * or inspection material that cannot be read or names a set other than
-     * the one this policy inspects.
+     * the one this ruleset inspects.
      */
-    val (policy, bind) =
+    val (run, bind) =
       try
-        val resolved = configuredPolicy()
+        val resolved = configuredRuleset()
         val inspection = loadInspection(resolved)
         // Last, so a variable refusal is reported before an endpoint the proxy cannot resolve is.
         val transport =
@@ -235,7 +235,7 @@ object AgentEgressProxy:
             case ex: IOException =>
               System.err.println(ex.getMessage)
               sys.exit(2)
-        (EgressPolicy(resolved, inspection, transport), parseBind(Option(System.getenv(BindVariable))))
+        (Run(resolved, inspection, transport), parseBind(Option(System.getenv(BindVariable))))
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -247,30 +247,30 @@ object AgentEgressProxy:
           sys.exit(2)
 
     // Before the ready line: the launcher reads the log once that line lands, and relays this one.
-    System.err.println(policy.transport.summary)
+    System.err.println(run.transport.summary)
 
     val server = ServerSocket()
     server.setReuseAddress(true)
     server.bind(bind)
 
     System.err.println(readyLine(server.getLocalPort))
-    val lines = policyLines(policy.resolved)
+    val lines = rulesetLines(run.resolved)
     lines.foreach(System.err.println)
-    // The digest gives the audit log one stable, grep-able line naming which policy this run
+    // The digest gives the audit log one stable, grep-able line naming which ruleset this run
     // enforced, comparable across runs without diffing the lines above.
-    System.err.println(s"resolved-policy digest: ${sha256Hex(lines.mkString("\n"))}")
-    metadataLines(policy.resolved).foreach(System.err.println)
-    policy.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
-    System.err.println(policy.inspectionSummary)
+    System.err.println(s"ruleset digest: ${sha256Hex(lines.mkString("\n"))}")
+    metadataLines(run.resolved).foreach(System.err.println)
+    run.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
+    System.err.println(run.inspectionSummary)
 
-    acceptForever(server, policy)
+    acceptForever(server, run)
 
   /*
    * The material a proxy starts with is keyed by profile. Under the three finite profiles the
-   * leaf and its key are present exactly when the policy inspects a host: both absent is the
-   * image running on its own, inspection off and said so; material for a policy that inspects
-   * nothing is an error, not a narrower policy, since the launcher never mints a leaf for such a
-   * policy and a supplied one means the two disagree about what this policy is. Under
+   * leaf and its key are present exactly when the ruleset inspects a host: both absent is the
+   * image running on its own, inspection off and said so; material for a ruleset that inspects
+   * nothing is an error, not a narrower ruleset, since the launcher never mints a leaf for such a
+   * ruleset and a supplied one means the two disagree about what this ruleset is. Under
    * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
    * inspected, and without the CA each would be the writable tunnel this profile no longer admits,
    * so their absence refuses the start. Either pair under the other profile is refused likewise
@@ -310,12 +310,12 @@ object AgentEgressProxy:
       leaf.map: (certificate, key) =>
         if resolved.inspected.isEmpty then
           throw IllegalArgumentException(
-            s"$CertificateVariable is set, but this policy restricts no host; " +
+            s"$CertificateVariable is set, but this ruleset inspects no host; " +
               "with nothing to inspect the material can only be a mistake",
           )
         TlsInspection.load(certificate, key, resolved.inspected)
 
-  case class EgressPolicy(
+  case class Run(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
     transport: OriginTransport,
@@ -330,7 +330,7 @@ object AgentEgressProxy:
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
 
   @tailrec
-  def acceptForever(server: ServerSocket, policy: EgressPolicy): Unit =
+  def acceptForever(server: ServerSocket, run: Run): Unit =
     /*
      * A failed accept must not take the proxy down: every agent behind it
      * would lose network access until someone noticed. A closed listening
@@ -344,18 +344,18 @@ object AgentEgressProxy:
           System.err.println(s"accept failed: ${ex.getMessage}")
           None
 
-    accepted.foreach(client => dispatch(client, policy))
+    accepted.foreach(client => dispatch(client, run))
 
-    if !server.isClosed then acceptForever(server, policy)
+    if !server.isClosed then acceptForever(server, run)
 
-  def dispatch(client: Socket, policy: EgressPolicy): Unit =
+  def dispatch(client: Socket, run: Run): Unit =
     if !connectionSlots.tryAcquire() then
       try respondQuietly(client, 503, "Service Unavailable")
       finally closeQuietly(client)
     else
       try
         executor.execute(() =>
-          try handle(client, policy)
+          try handle(client, run)
           finally connectionSlots.release(),
         )
       catch
@@ -365,10 +365,10 @@ object AgentEgressProxy:
           closeQuietly(client)
           System.err.println(s"could not start connection handler: ${ex.getMessage}")
 
-  def handle(client: Socket, policy: EgressPolicy): Unit =
+  def handle(client: Socket, run: Run): Unit =
     // The audit context, filled in as parsing learns it: a `-` in the line marks a field the
     // connection ended before revealing. The host is the target as the sandbox requested it —
-    // what was asked for, not a name the policy vouches for. auditLine has the grammar.
+    // what was asked for, not a name the ruleset vouches for. auditLine has the grammar.
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
@@ -386,11 +386,11 @@ object AgentEgressProxy:
             throw BadRequest(s"unreadable CONNECT request: ${ex.getMessage}")
 
       host = request.host
-      host = authorizeRequest(request, policy.resolved)
+      host = authorizeRequest(request, run.resolved)
       addresses = resolvePublic(host)
-      val origin = policy.transport.connect(addresses, request.port)
+      val origin = run.transport.connect(addresses, request.port)
 
-      try runEstablishedTunnel(client, origin, host, policy)
+      try runEstablishedTunnel(client, origin, host, run)
       finally closeQuietly(origin.socket)
 
     catch
@@ -403,7 +403,7 @@ object AgentEgressProxy:
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
         respondQuietly(client, 400, "Bad Request")
 
-      case ex: PolicyViolation =>
+      case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
         // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). No client
         // shows it; the image's sandbox-egress-check reads it, and is the only way this refusal's
@@ -416,7 +416,7 @@ object AgentEgressProxy:
           case _ if addresses.isEmpty    => "resolution:"
           case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
-        // The stage in the body, as a refusal's reason is: the policy admitted this host, so the
+        // The stage in the body, as a refusal's reason is: the ruleset admitted this host, so the
         // agent's next step is to report what failed, and only sandbox-egress-check shows it.
         respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
 
@@ -433,7 +433,7 @@ object AgentEgressProxy:
     client: Socket,
     origin: OriginSocket,
     connectHost: String,
-    policy: EgressPolicy,
+    run: Run,
   ): Unit =
     writeAscii(client.getOutputStream, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
@@ -447,13 +447,13 @@ object AgentEgressProxy:
       validateTlsIdentity(connectHost, hello)
 
       // A tunnel host is opaque; every other admitted host is inspected, with its lines' scopes or
-      // the public default's (ResolvedPolicy.scopesOf) — unless this run has no material at all.
-      policy.inspection.filter(_ => !policy.resolved.tunnelHosts.contains(connectHost)) match
+      // the public default's (Ruleset.scopesOf) — unless this run has no material at all.
+      run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedSession(
             client, origin, connectHost, hello, inspection,
-            policy.resolved.scopesOf(connectHost),
-            policy.resolved.admits,
+            run.resolved.scopesOf(connectHost),
+            run.resolved.admits,
           )
 
         case None =>
@@ -485,7 +485,7 @@ object AgentEgressProxy:
       case ex: BadRequest =>
         System.err.println(auditLine("deny", connectHost, "CONNECT", "", ex.getMessage))
 
-      case ex: PolicyViolation =>
+      case ex: Refusal =>
         System.err.println(auditLine("deny", connectHost, "CONNECT", "", ex.getMessage))
 
       case ex: IOException =>
@@ -565,7 +565,7 @@ object AgentEgressProxy:
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
           respondInsideTls(clientTls, 400, "Bad Request", ex.getMessage)
 
-        case ex: PolicyViolation =>
+        case ex: Refusal =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
           respondInsideTls(clientTls, 403, "Forbidden", ex.getMessage, Some(ex.advice))
 

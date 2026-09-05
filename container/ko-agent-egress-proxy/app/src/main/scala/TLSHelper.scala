@@ -22,7 +22,7 @@ object TLSHelper:
     hello: TlsClientHello,
   ): Unit =
     if hello.echPresent then
-      throw PolicyViolation("encrypted ClientHello", RefusalAdvice.clientHello)
+      throw Refusal("encrypted ClientHello", RefusalAdvice.clientHello)
 
     val sni =
       hello.serverName match
@@ -30,13 +30,13 @@ object TLSHelper:
           try normalizeHost(raw)
           catch
             case ex: BadRequest =>
-              throw PolicyViolation(s"invalid TLS SNI: ${ex.getMessage}", RefusalAdvice.clientHello)
+              throw Refusal(s"invalid TLS SNI: ${ex.getMessage}", RefusalAdvice.clientHello)
 
         case None =>
-          throw PolicyViolation("TLS ClientHello has no SNI", RefusalAdvice.clientHello)
+          throw Refusal("TLS ClientHello has no SNI", RefusalAdvice.clientHello)
 
     if sni != connectHost then
-      throw PolicyViolation(s"SNI $sni differs from target", RefusalAdvice.clientHello)
+      throw Refusal(s"SNI $sni differs from target", RefusalAdvice.clientHello)
 
   /**
    * The MITM, and the one place holding a private key. Under the finite profiles that is the
@@ -102,7 +102,7 @@ object TLSHelper:
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
 
-      // Either direction is a leaf that does not match this policy (SECURITY.md, "Who holds the CA key").
+      // Either direction is a leaf that does not match this ruleset (SECURITY.md, "Who holds the CA key").
       inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 
@@ -187,7 +187,7 @@ object TLSHelper:
             Option.when(extra.nonEmpty)(
               s"names ${extra.mkString(" ")}, which this proxy does not inspect",
             )
-        Some(s"must name exactly the hosts this policy inspects; it ${reasons.mkString(", and ")}")
+        Some(s"must name exactly the hosts this ruleset inspects; it ${reasons.mkString(", and ")}")
 
     def readCertificateChain(path: Path): Vector[X509Certificate] =
       val stream = Files.newInputStream(path)

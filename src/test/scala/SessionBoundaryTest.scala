@@ -2,7 +2,7 @@
 // inside the container rather than on the host.
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
-// everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_POLICY is
+// everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
 // the gate because the launcher sets it for every session and nothing else does — a host checkout
 // that happens to have a /workspace directory is not a session.
 //
@@ -20,7 +20,7 @@ import HostCommands.*
 class SessionBoundaryTest extends munit.FunSuite:
 
   private val insideSession =
-    Files.isDirectory(Paths.get("/workspace")) && env("KO_AGENT_SANDBOX_EGRESS_POLICY").isDefined
+    Files.isDirectory(Paths.get("/workspace")) && env("KO_AGENT_SANDBOX_EGRESS_RULESET").isDefined
 
   private def inSession(): Unit =
     assume(insideSession, "not inside a sandbox session")
@@ -52,7 +52,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     * the same distinction the mounted Rust suites draw. Java surfaces `EPERM` as a bare
     * `FileSystemException`; `AccessDeniedException` is `EACCES`, a different answer that would mean
     * the tree was shaped differently than the test assumed. */
-  private def deniedByPolicy(what: String)(thunk: => Any): Unit =
+  private def deniedByFilter(what: String)(thunk: => Any): Unit =
     val refusal = intercept[java.nio.file.FileSystemException](thunk)
     assert(
       refusal.getMessage.contains("Operation not permitted"),
@@ -141,7 +141,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     Vector("example.com", "secret-payload.attacker.example").foreach: name =>
       assert(!run("getent", "hosts", name).ok, s"$name resolved; a resolver is reachable")
 
-  test("the CONNECT gate refuses everything but an allowlisted host on 443"):
+  test("the CONNECT gate refuses everything but a listed host on 443"):
     inSession()
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error with the proxy's status instead of as an HTTP code.
@@ -196,11 +196,11 @@ class SessionBoundaryTest extends munit.FunSuite:
     )
     assertEquals(status("-X", "POST", "https://api.github.com/graphql"), "403")
     assertEquals(status("-X", "POST", "https://github.com/o/r.git/info/lfs/objects/batch"), "403")
-    // allow=npm-audit ships disabled, so even the audit endpoint is a POST like any other.
+    // No line grants a POST at npm's audit endpoint, so it is a POST like any other.
     assertEquals(
       status("-X", "POST", "-H", "Content-Type: application/json", "-d", "{}",
              "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"), "403",
-      "npm's audit endpoint, its allowance off by default",
+      "npm's audit endpoint, no line granting its POST",
     )
     assertEquals(status("-X", "POST", "-d", "{}", "https://registry.npmjs.org/lodash"), "403")
 
@@ -233,7 +233,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(refused.text.contains("403"), refused.text)
     assert(
       refused.text.contains(
-        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.PolicyHelper.DefaultProfile),
+        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.RulesetHelper.DefaultProfile),
       ),
       refused.text,
     )
@@ -298,7 +298,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(clone.ok, s"an anonymous clone failed: ${clone.err}")
     finally deleteRecursively(into)
 
-  test("the workspace is filtered, writable, and its policy directory is not"):
+  test("the workspace is filtered, writable, and its boundary directory is not"):
     inSession()
     val filtered = run("stat", "-f", "-c", "%T", "/workspace").text == "fuse"
 
@@ -310,43 +310,43 @@ class SessionBoundaryTest extends munit.FunSuite:
       if filtered then
         val deep = Files.createDirectories(work.resolve("deep/nested"))
         Vector(work, deep).foreach: at =>
-          deniedByPolicy(s"creating .git under ${at.getFileName}"):
+          deniedByFilter(s"creating .git under ${at.getFileName}"):
             Files.createDirectory(at.resolve(".git"))
 
         val config = Paths.get("/workspace/.git/config")
         if Files.exists(config) then
           // Appending nothing rather than truncating: the question is whether a write is
           // permitted, and asking it must not perform one on the user's own repository.
-          deniedByPolicy("opening this repository's .git/config for writing"):
+          deniedByFilter("opening this repository's .git/config for writing"):
             Files.newOutputStream(config, StandardOpenOption.APPEND).close()
     finally deleteRecursively(work)
 
-  test("the session cannot write the policy directory governing the next launch"):
+  test("the session cannot write the boundary directory governing the next launch"):
     inSession()
     // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
     // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
     // included; guard=none's read-only mount-back answers EROFS. Either way the write must
-    // fail — a session able to create or edit the policy writes the allowlist governing the
+    // fail — a session able to create or edit the directory writes the rules governing the
     // *next* session (SECURITY.md).
-    val policyDir = Paths.get("/workspace/.ko-agent-sandbox")
+    val boundaryDir = Paths.get("/workspace/.ko-agent-sandbox")
     val probe =
-      if Files.isDirectory(policyDir) then policyDir.resolve("probe")
-      else policyDir
+      if Files.isDirectory(boundaryDir) then boundaryDir.resolve("probe")
+      else boundaryDir
     val refused = intercept[java.nio.file.FileSystemException]:
-      if probe == policyDir then Files.createDirectory(policyDir): Unit
+      if probe == boundaryDir then Files.createDirectory(boundaryDir): Unit
       else Files.newOutputStream(probe).close()
     assert(
       refused.getMessage.contains("Operation not permitted")
         || refused.getMessage.contains("Read-only file system"),
-      s"the policy write was refused with '${refused.getMessage}', not by a boundary mechanism",
+      s"the boundary write was refused with '${refused.getMessage}', not by a boundary mechanism",
     )
 
     // guard=none's mount, where present, must be read-only; under the filter there is no
     // mount to check — the rule lives in the filesystem itself.
-    mountOptions(policyDir.toString).foreach: options =>
+    mountOptions(boundaryDir.toString).foreach: options =>
       assert(
         options.split(",").contains("ro"),
-        s"the policy mount is not read-only: $options",
+        s"the boundary mount is not read-only: $options",
       )
 
   test("no host path is mounted into the session beyond the launcher's set"):
@@ -381,7 +381,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     //
     // Listed rather than walked, and every entry accounted for: a mount whose host source the user
     // removed mid-session leaves the name in place but unresolvable, which a walk reports as an
-    // opaque UncheckedIOException. Naming it is the same diagnosis the policy-directory test above
+    // opaque UncheckedIOException. Naming it is the same diagnosis the boundary-directory test above
     // gives, and refusing to skip it is what keeps this assertion about every file that is there.
     val entries = Files.list(Paths.get("/etc/ko-agent-sandbox")).iterator().asScala.toVector
     val unresolvable = entries.filterNot(Files.exists(_))

@@ -146,24 +146,24 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       refused.toString,
     )
 
-  test("readAllowlist reads the tool's file, refuses its strays, and defaults to nothing"):
+  test("readBuildRules reads the tool's file, refuses its strays, and defaults to nothing"):
     val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
     Files.writeString(
       project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
       "allow https://repo.example.org/ read\n",
       UTF_8,
     )
-    assertEquals(readAllowlist(project, Tool.Sbt), Right(Vector("repo.example.org")))
-    assertEquals(readAllowlist(project, Tool.Mill), Right(Vector.empty), "mill has no file here")
+    assertEquals(readBuildRules(project, Tool.Sbt), Right(Vector("repo.example.org")))
+    assertEquals(readBuildRules(project, Tool.Mill), Right(Vector.empty), "mill has no file here")
 
     Files.writeString(
       project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
       "allow model-provider openai\n",
       UTF_8,
     )
-    val refused = readAllowlist(project, Tool.Sbt)
+    val refused = readBuildRules(project, Tool.Sbt)
     assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains(RunOnHostPolicy.BuildAllowlistForm)), refused.toString)
+    assert(refused.swap.exists(_.contains(RunOnHostPolicy.BuildRuleForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces

@@ -174,7 +174,7 @@ checkout — [Development](#development).
 
       --reset            remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
-                         TLS inspection CA, cached policy resolution, logs,
+                         TLS inspection CA, cached ruleset resolution, logs,
                          and workspace-filter mount; images, any shared
                          volume and the host-build caches are left
                          untouched
@@ -185,12 +185,12 @@ checkout — [Development](#development).
                          whole build-cache root with them
 
       --egress-effective [--] [<command> [args...]]
-                         print the policy the accompanying --egress=<profile>
+                         print the ruleset the accompanying --egress=<profile>
                          resolves to for this project, with per-line
                          provenance; the command selects the model provider
                          without being launched
       --egress-check=<host> [--] [<command> [args...]]
-                         one host's policy decision plus its current DNS
+                         one host's ruleset decision plus its current DNS
                          resolution, through a one-shot proxy container on
                          enforcement's own resolver path, and with HTTPS_PROXY
                          whether the upstream proxy opens a tunnel to it;
@@ -246,11 +246,11 @@ checkout — [Development](#development).
       HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
                                           http[s]://[user:password@]host:port with an explicit
                                           port; the lowercase name is read when the uppercase
-                                          is unset or empty. The egress policy still decides every
+                                          is unset or empty. The egress ruleset still decides every
                                           destination and NO_PROXY is ignored
                                           (doc/egress-proxy.md)
 
-    .ko-agent-sandbox/egress/rule in the project directory modifies the egress policy: allow
+    .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
     (doc/egress-proxy.md). .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces the image's
     conventions in the agent instructions (README "Overriding the agent instructions").
@@ -342,7 +342,7 @@ the project's `.ko-agent-sandbox/egress/rule`, one line per rule:
     allow https://api.example/ tunnel                # an opaque tunnel: the widest word
 
 `doc/egress-proxy.md` is the reference: the profiles, the rule grammar and what each word grants,
-the policy a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
+the ruleset a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
 the security model.
 
 Behind an upstream proxy, `HTTPS_PROXY` in the launcher's environment (Reference, Environment)
@@ -358,7 +358,7 @@ replace only the working conventions for a project, put yours at
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's parts in
 `container/ko-agent-sandbox/` are the starting point. The sandbox facts and session authority are
 not overridable, and the file cannot be empty — delete it to return to the image's. The
-directory's rules apply (SECURITY.md, "Why the policy is per project, in the project, and
+directory's rules apply (SECURITY.md, "Why the rules are per project, in the project, and
 read-only"). Instructions that should merely *add* to the image's belong in the agent's own
 project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`.
 

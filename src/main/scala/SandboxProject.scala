@@ -509,64 +509,64 @@ object SandboxProject:
     (file, dir)
 
   /**
-   * Why .ko-agent-sandbox cannot serve as this project's policy directory, or None. Checked in
-   * every write mode before the policy is read — the read is a host-side read either way.
+   * Why .ko-agent-sandbox cannot serve as this project's boundary directory, or None. Checked in
+   * every write mode before the rules are read — the read is a host-side read either way.
    * Refused forms: a symlink of the directory or of an entry (podman resolves mount sources on
-   * the host, and the policy read must see the bytes a mounted-back directory would show);
+   * the host, and the rule read must see the bytes a mounted-back directory would show);
    * anything that is not a directory; or an entry that is no configuration of this launcher's —
    * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
-   * agent/ are vetted where they are read (EgressProxyPolicy.readPolicyFiles,
+   * agent/ are vetted where they are read (EgressRules.readRuleFiles,
    * readAgentInstructions), and host-command/ where the host build wrapper reads it
-   * (RunOnHostPolicy.buildAllowlist). An absent directory is empty policy input, never a
+   * (RunOnHostPolicy.buildRuleHosts). An absent directory is empty configuration, never a
    * directory to materialize.
    */
-  def policyDirError(policyDir: Path): Option[String] =
+  def boundaryDirError(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
+      s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
 
-    val linkedEntry = PolicyDirEntries.toVector.sorted.map(policyDir.resolve).find(Files.isSymbolicLink)
-    if Files.isSymbolicLink(policyDir) then Some(symlinkRefusal(policyDir))
+    val linkedEntry = BoundaryDirEntries.toVector.sorted.map(boundaryDir.resolve).find(Files.isSymbolicLink)
+    if Files.isSymbolicLink(boundaryDir) then Some(symlinkRefusal(boundaryDir))
     else if linkedEntry.isDefined then linkedEntry.map(symlinkRefusal)
-    else if Files.exists(policyDir) && !Files.isDirectory(policyDir) then
+    else if Files.exists(boundaryDir) && !Files.isDirectory(boundaryDir) then
       Some(
-        s"error: $policyDir must be a directory\n" +
+        s"error: $boundaryDir must be a directory\n" +
           "Remove what is in its place; the directory holds this project's boundary configuration.",
       )
-    else if !Files.exists(policyDir) then None
+    else if !Files.exists(boundaryDir) then None
     else
-      strayPolicyEntries(policyDir) match
+      strayBoundaryEntries(boundaryDir) match
         case Vector() => None
         case stray =>
           Some(
-            s"""error: $policyDir contains ${stray.mkString(", ")}, which this launcher does not read
+            s"""error: $boundaryDir contains ${stray.mkString(", ")}, which this launcher does not read
                |The directory is boundary configuration and holds only:
-               |${PolicyDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
-               |launch, never sit as ignored config — and it is either a typo or a policy file a
+               |${BoundaryDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
+               |launch, never sit as ignored config — and it is either a typo or a boundary file a
                |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
           )
 
   /**
    * guard=none's mount at /workspace/.ko-agent-sandbox, which must exist even with no
-   * policy shipped so that session cannot fabricate the policy governing the next one
-   * (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only thing
-   * standing between the session and the policy files. Created here when absent, not by podman,
+   * configuration shipped so that session cannot fabricate the configuration governing the next
+   * one (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only thing
+   * standing between the session and the boundary files. Created here when absent, not by podman,
    * whose machine path refuses a missing bind source — a residue of guard=none alone: the
    * FUSE filter enforces the same rule by name (protected-sandbox-config) with no mount and no
-   * created path, and reject mode's read-only tree needs neither. Call after policyDirError.
+   * created path, and reject mode's read-only tree needs neither. Call after boundaryDirError.
    */
-  def policyGuardVolume(policyDir: Path): String =
-    if !Files.exists(policyDir) then Files.createDirectory(policyDir)
-    s"--volume=$policyDir:/workspace/.ko-agent-sandbox:ro"
+  def boundaryGuardVolume(boundaryDir: Path): String =
+    if !Files.exists(boundaryDir) then Files.createDirectory(boundaryDir)
+    s"--volume=$boundaryDir:/workspace/.ko-agent-sandbox:ro"
 
-  val PolicyDirEntries: Set[String] = Set("egress", "agent", "host-command")
+  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "host-command")
 
   /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
   val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"
 
   /**
    * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
-   * Read on the host, so the same forms egress/ refuses (EgressProxyPolicy.readPolicyFiles) are
+   * Read on the host, so the same forms egress/ refuses (EgressRules.readRuleFiles) are
    * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
    * file, an empty file. Not normalized — it is prose, mounted as written.
    */
@@ -608,21 +608,21 @@ object SandboxProject:
       refusal.toLeft(readIfPresent(file))
 
   /**
-   * Whether an entry of a closed policy namespace is exempt from its unknown-name refusal:
+   * Whether an entry of the closed boundary namespace is exempt from its unknown-name refusal:
    * dot-named editor and OS metadata (.DS_Store, .gitkeep). No configuration will ever be named
    * that way, so the typo protection loses nothing. One predicate for .ko-agent-sandbox and for
-   * egress/ inside it (EgressProxyPolicy.readPolicyFiles), so browsing the tree on macOS cannot
+   * egress/ inside it (EgressRules.readRuleFiles), so browsing the tree on macOS cannot
    * fail the next launch at either level.
    */
   def isMetadataEntry(name: String): Boolean = name.startsWith(".")
 
-  private def strayPolicyEntries(policyDir: Path): Vector[String] =
+  private def strayBoundaryEntries(boundaryDir: Path): Vector[String] =
     Files
-      .list(policyDir)
+      .list(boundaryDir)
       .iterator()
       .asScala
       .map(_.getFileName.toString)
       .filterNot(isMetadataEntry)
-      .filterNot(PolicyDirEntries)
+      .filterNot(BoundaryDirEntries)
       .toVector
       .sorted

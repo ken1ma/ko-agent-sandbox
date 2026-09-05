@@ -1,15 +1,15 @@
-// The launcher's side of the egress proxy: policy normalization (what the proxy is handed), the
+// The launcher's side of the egress proxy: rule normalization (what the proxy is handed), the
 // launch banner's format, command classification, and audit-log retention.
 
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
 
-import EgressProxyPolicy.*
+import EgressRules.*
 
-class EgressProxyPolicyTest extends munit.FunSuite:
+class EgressRulesTest extends munit.FunSuite:
 
-  test("policy normalization strips comments and collapses whitespace but keeps lines"):
+  test("rule normalization strips comments and collapses whitespace but keeps lines"):
     val text =
       """# Reads public Python documentation.
         |allow https://docs.python.org/ read
@@ -18,16 +18,16 @@ class EgressProxyPolicyTest extends munit.FunSuite:
         |allow model-provider anthropic  # trailing comment
         |""".stripMargin
     assertEquals(
-      normalizePolicyText(text),
+      normalizeRuleText(text),
       "allow https://docs.python.org/ read\ndeny https://pypi.org/\nallow model-provider anthropic",
     )
 
-  test("a policy of only comments and blanks normalizes to empty"):
-    assertEquals(normalizePolicyText("# nothing\n\n   \n# more\n"), "")
+  test("a rule file of only comments and blanks normalizes to empty"):
+    assertEquals(normalizeRuleText("# nothing\n\n   \n# more\n"), "")
 
-  test("normalization is idempotent, so a normalized policy re-reads unchanged"):
-    val normalized = normalizePolicyText("allow https://a.example/ read\n\ndeny defaults # x\n")
-    assertEquals(normalizePolicyText(normalized), normalized)
+  test("normalization is idempotent, so a normalized rule file re-reads unchanged"):
+    val normalized = normalizeRuleText("allow https://a.example/ read\n\ndeny defaults # x\n")
+    assertEquals(normalizeRuleText(normalized), normalized)
 
   test("HTTPS_PROXY reaches the proxy container by name alone, uppercase before lowercase"):
     assertEquals(upstreamProxyArgs(Map.empty[String, String].get), Vector.empty)
@@ -47,17 +47,17 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(transportLineOf(s"2026-08-26T11:59:38Z $line\n$ready"), Some(line))
     assertEquals(transportLineOf(ready), None)
 
-  test("the banner summary joins a file's entries on one line"):
+  test("the banner summary joins a file's lines on one line"):
     assertEquals(
-      entriesSummary("allow https://a.example/ read\ndeny https://b.example/"),
+      lineSummary("allow https://a.example/ read\ndeny https://b.example/"),
       "allow https://a.example/ read; deny https://b.example/",
     )
 
   private def summary(inspected: Int, opaque: Int, denied: Int, widening: Int = 0): String =
-    s"policy summary: $inspected inspected hosts; $opaque opaque hosts; $denied denial patterns; " +
+    s"ruleset summary: $inspected inspected hosts; $opaque opaque hosts; $denied denial patterns; " +
       s"$widening widening lines"
 
-  // The profile reads as the policy spells it; case is not emphasis (HostCommands, "Emphasis").
+  // The profile reads as the ruleset spells it; case is not emphasis (HostCommands, "Emphasis").
   test("the launch banner names the profile off the profile line and the counts off the summary line, never a host"):
     assertEquals(
       egressBanner(
@@ -157,52 +157,52 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)
 
-  test("the policy directory reads the rule file, normalized"):
+  test("the egress directory reads the rule file, normalized"):
     val dir = Files.createTempDirectory("egress")
     Files.writeString(dir.resolve("rule"), "allow https://ghcr.io/ read\ndeny https://**.example.org/ # a comment\n")
     Files.createFile(dir.resolve(".DS_Store"))
     assertEquals(
-      readPolicyFiles(dir),
+      readRuleFiles(dir),
       Right(Vector("rule" -> "allow https://ghcr.io/ read\ndeny https://**.example.org/")),
     )
 
-  test("a missing policy directory is an empty policy"):
-    assertEquals(readPolicyFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
+  test("a missing egress directory is an empty rule file"):
+    assertEquals(readRuleFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
-  test("the policy directory's refused forms each name their reason"):
-    val parent = Files.createTempDirectory("policy-shapes")
+  test("the egress directory's refused forms each name their reason"):
+    val parent = Files.createTempDirectory("rule-shapes")
 
     val asFile = parent.resolve("egress")
     Files.writeString(asFile, "allow https://ghcr.io/ read\n")
-    assert(readPolicyFiles(asFile).swap.exists(_.contains("is a file")))
+    assert(readRuleFiles(asFile).swap.exists(_.contains("is a file")))
     Files.delete(asFile)
 
     val dir = Files.createDirectory(parent.resolve("egress"))
     Files.writeString(dir.resolve("rules"), "allow https://ghcr.io/ read\n")
-    assert(readPolicyFiles(dir).swap.exists(_.contains("not a policy file")))
+    assert(readRuleFiles(dir).swap.exists(_.contains("not a rule file")))
     Files.delete(dir.resolve("rules"))
 
     // The retired grammar's files are named as such, with the pointer.
     Vector("allowed", "denied").foreach: retired =>
       Files.writeString(dir.resolve(retired), "+host ghcr.io\n")
-      val refusal = readPolicyFiles(dir).swap.getOrElse(fail(s"$retired was read"))
+      val refusal = readRuleFiles(dir).swap.getOrElse(fail(s"$retired was read"))
       assert(refusal.contains("retired grammar") && refusal.contains("egress/rule"), refusal)
       Files.delete(dir.resolve(retired))
 
     Files.createDirectory(dir.resolve("rule"))
-    assert(readPolicyFiles(dir).swap.exists(_.contains("not a regular file")))
+    assert(readRuleFiles(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("rule"))
 
     Files.createSymbolicLink(dir.resolve("rule"), parent.resolve("elsewhere"))
-    assert(readPolicyFiles(dir).swap.exists(_.contains("symlink")))
+    assert(readRuleFiles(dir).swap.exists(_.contains("symlink")))
     Files.delete(dir.resolve("rule"))
 
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
-    assert(readPolicyFiles(dir).swap.exists(_.contains("lists no entries")))
+    assert(readRuleFiles(dir).swap.exists(_.contains("lists no lines")))
 
-  test("the policy env args pass the authority selection and each file's variable"):
+  test("the ruleset env args pass the authority selection and each file's variable"):
     assertEquals(
-      policyEnvArgs(
+      rulesetEnvArgs(
         "deny-unless-allowed",
         Some("anthropic"),
         Vector("rule" -> "allow https://api.example/ tunnel\ndeny https://x.example/"),
@@ -214,7 +214,7 @@ class EgressProxyPolicyTest extends munit.FunSuite:
       ),
     )
     assertEquals(
-      policyEnvArgs("deny-unless-model", None, Vector.empty),
+      rulesetEnvArgs("deny-unless-model", None, Vector.empty),
       Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none"),
     )
 
@@ -237,29 +237,29 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     // Which lines widen is the proxy's classification against the defaults it ships
     // (AgentEgressProxyTest has the classes); the launcher only reads the line back.
     assertEquals(
-      wideningEntries(
+      wideningLines(
         "egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0, 2) + "\n" +
           "widening lines (2): allow https://api.example/ tunnel; allow https://pypi.org/ git-fetch",
       ),
       Vector("allow https://api.example/ tunnel", "allow https://pypi.org/ git-fetch"),
     )
     assertEquals(
-      wideningEntries("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0)),
+      wideningLines("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0)),
       Vector.empty,
     )
-    // The consumers holding the policy alone get the text up to the first metadata line, whatever
+    // The consumers holding the ruleset alone get the text up to the first metadata line, whatever
     // follows it, and unchanged when nothing does.
-    val policy = "egress profile: deny-unless-allowed\nallow https://a/ read"
+    val ruleset = "egress profile: deny-unless-allowed\nallow https://a/ read"
     assertEquals(
-      policyLinesOf(policy + "\n" + summary(1, 0, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
-      policy,
+      rulesetLinesOf(ruleset + "\n" + summary(1, 0, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
+      ruleset,
     )
-    assertEquals(policyLinesOf(policy), policy)
-    MetadataPrefixes.foreach(prefix => assertEquals(policyLinesOf(policy + "\n" + prefix + "x"), policy))
+    assertEquals(rulesetLinesOf(ruleset), ruleset)
+    MetadataPrefixes.foreach(prefix => assertEquals(rulesetLinesOf(ruleset + "\n" + prefix + "x"), ruleset))
 
-  test("normalizing keeps a # inside a token, so the proxy refuses it instead of reading a wider entry"):
+  test("normalizing keeps a # inside a token, so the proxy refuses it instead of reading a wider line"):
     assertEquals(
-      normalizePolicyText(
+      normalizeRuleText(
         "# whole line\nallow https://a.example/ read   # trailing\n  allow https://b.example/x/#y/ read\n" +
           "allow https://c.example/#d read",
       ),

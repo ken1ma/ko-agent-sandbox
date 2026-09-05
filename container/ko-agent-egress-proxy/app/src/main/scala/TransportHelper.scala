@@ -1,5 +1,5 @@
 // How an authorized origin address is reached: directly, or through the upstream proxy
-// HTTPS_PROXY names. The policy decides before either runs, and neither resolves a name: both take
+// HTTPS_PROXY names. The ruleset decides before either runs, and neither resolves a name: both take
 // the addresses resolvePublic vetted. The upstream proxy is a transport the host user's
 // environment selected, never an authority — it cannot add a destination, and a failure through
 // it is a 502, never a direct retry (SECURITY.md, "Egress proxy").

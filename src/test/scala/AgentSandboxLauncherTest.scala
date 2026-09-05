@@ -14,7 +14,7 @@ import HostCommands.Os
 import ContainerfileSources.*
 import LauncherImages.*
 import KoAgentFs.bundledSourceId
-import agentsandbox.egress.PolicyHelper.resolvePolicy
+import agentsandbox.egress.RulesetHelper.resolveRuleset
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
 
@@ -270,7 +270,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       path.toFile.setExecutable(true)
       path.toString
     val bound = java.time.Duration.ofSeconds(2)
-    // Stamped as the proxy writes it, and with a policy line after it: the line, not the last line.
+    // Stamped as the proxy writes it, and with a ruleset line after it: the line, not the last line.
     val listened = dir.resolve("listened.log")
     Files.writeString(
       listened,
@@ -278,7 +278,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right(()))
     val refused = dir.resolve("refused.log")
-    Files.writeString(refused, "2026-08-29T00:00:00Z the leaf certificate names 2 hosts; the policy inspects 3\n")
+    Files.writeString(refused, "2026-08-29T00:00:00Z the leaf certificate names 2 hosts; the ruleset inspects 3\n")
     val reason = awaitProxyReady(podman(running = false), "proxy", refused, bound).swap
       .getOrElse(fail("a refusal must fail"))
     assert(reason.startsWith("the egress proxy exited before listening\n"), reason)
@@ -298,7 +298,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("this build includes the proxy for --serve-proxy-on-host: resources load, spellings agree"):
     // Class initialization reads /defaults eagerly, so nonEmpty proves the resources are on this
     // classpath — the same classpath the assembled jar packages.
-    assert(agentsandbox.egress.PolicyHelper.CatalogLines.nonEmpty)
+    assert(agentsandbox.egress.RulesetHelper.CatalogLines.nonEmpty)
     assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
@@ -312,7 +312,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       KnownSandboxVariables -- documented,
       Set(
-        "KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_JAVA_OPTS",
+        "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_JAVA_OPTS",
         RunOnHostChannel.RunOnHostVariable,
       ),
     )
@@ -1062,7 +1062,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("SECURITY.md names exactly the git-fetch hosts the proxy ships"):
     // The git-host list has two homes: the git-fetch lines of the proxy's defaults/host and the
     // SECURITY.md section that reasons about them (the launcher holds no copy — the leaf's
-    // names come from the image's own --print-policy at launch). This scrapes both texts; it
+    // names come from the image's own --print-ruleset at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
     // SECURITY.md — prose or a different marker keeps this green.
     val Listed = """^1\. `([^`]+)`$""".r
@@ -1090,7 +1090,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     examples.foreach: directory =>
       val files = entries(directory)
       assertEquals(files.map(_.getFileName.toString), Vector("rule"), directory.toString)
-      val resolved = resolvePolicy(Some("deny-unless-allowed"), None, Some(Files.readString(files.head)))
+      val resolved = resolveRuleset(Some("deny-unless-allowed"), None, Some(Files.readString(files.head)))
       assertEquals(resolved.warnings, Vector.empty, directory.toString)
 
   test("agent egress instructions use the proxy's grant vocabulary, every word and no other"):
@@ -1099,7 +1099,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
     // list above, because the launcher holds no copy of the grant words.
     val proxySource = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/PolicyHelper.scala"),
+      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/RulesetHelper.scala"),
     )
     val grantObject = """object Grant:\n([\s\S]*?)\n\n""".r
       .findFirstMatchIn(proxySource)
@@ -1109,20 +1109,20 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(words, Set("read", "git-fetch", "tunnel"))
     assert(grantObject.group(1).contains("method="), "the proxy no longer spells the method word `method=`")
 
-    // A resolved policy with no lines of its own, so every grant word found is the prose's own.
+    // A ruleset with no lines of its own, so every grant word found is the prose's own.
     val emptyResolution = "egress profile: deny-all"
     val section = authoritySection("live", "fuse", emptyResolution)
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
-    // The section holds the policy alone: the dry run's metadata, which describes the policy's
-    // size and the project's file, stays with the terminal (EgressProxyPolicy.policyLinesOf).
+    // The section holds the ruleset alone: the dry run's metadata, which describes the ruleset's
+    // size and the project's file, stays with the terminal (EgressRules.rulesetLinesOf).
     val widened = authoritySection(
       "live", "fuse",
-      emptyResolution + "\npolicy summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
+      emptyResolution + "\nruleset summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
     )
-    assert(!widened.contains("widening lines") && !widened.contains("policy summary"), widened)
+    assert(!widened.contains("widening lines") && !widened.contains("ruleset summary"), widened)
     assert(widened.contains("egress profile: deny-all"), widened)
     val baseInstructions = Files.readString(
       Paths.get("container/ko-agent-sandbox/AGENTS-SANDBOX.md"),
@@ -1144,7 +1144,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(raw.contains("Nested repository control state"), raw)
     assert(raw.contains("non-portable"), raw)
     assert(raw.contains("symlinks remain writable"), raw)
-    // Both name the relaunch path for a host the policy does not admit.
+    // Both name the relaunch path for a host the ruleset does not admit.
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
@@ -1201,18 +1201,18 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       imageId: String = "image-a",
       writeMode: String = "live",
       guard: String = "fuse",
-      policy: String = "policy-a",
+      ruleset: String = "ruleset-a",
       instructions: Option[String] = None,
       runOnHost: Vector[String] = Vector.empty,
       noGit: Option[String] = None,
-    ) = agentDocumentStamp(imageId, writeMode, guard, policy, instructions, runOnHost, noGit)
+    ) = agentDocumentStamp(imageId, writeMode, guard, ruleset, instructions, runOnHost, noGit)
 
     val variants = Vector(
       stamp(),
       stamp(imageId = "image-b"),
       stamp(writeMode = "reject"),
       stamp(guard = "none"),
-      stamp(policy = "policy-b"),
+      stamp(ruleset = "ruleset-b"),
       stamp(instructions = Some("project instructions")),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),
@@ -1312,7 +1312,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       forwardedEnvironment(Vector(EnvForward("MISSING", Some("x"))), host.get),
       Right(Vector("--env=MISSING=x")),
     )
-    Vector("KO_AGENT_SANDBOX_EGRESS_POLICY", "KO_AGENT_SANDBOX_NESTING", "KO_AGENT_SANDBOX_MEMORY").foreach: name =>
+    Vector("KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_NESTING", "KO_AGENT_SANDBOX_MEMORY").foreach: name =>
       val refused = forwardedEnvironment(Vector(EnvForward(name, Some("x"))), host.get)
       assert(refused.swap.exists(_.contains("KO_AGENT_SANDBOX_*")), s"$name: $refused")
     // Everything else the launcher or the image sets is the user's to override, by name.
@@ -1321,19 +1321,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("what the launcher tells the sandbox is in force is all KO_AGENT_SANDBOX_*, the prefix --env refuses"):
     // The refusal is a prefix, so a variable the launcher passes to say what is enforced must
-    // start with it: the interpolated `--env=$Constant=` forms are those, and EgressProxyPolicy's
-    // `$variable` names the proxy container's policy files, which no forward reaches.
+    // start with it: the interpolated `--env=$Constant=` forms are those, and EgressRules's
+    // `$variable` names the proxy container's rule files, which no forward reaches.
     val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
       .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
     val interpolated = sources.flatMap("\"--env=\\$([A-Za-z]+)".r.findAllMatchIn(_).map(_.group(1))).toSet
     // `name` is upstreamProxyArgs's HTTPS_PROXY pass-through to the proxy container: a name with
     // no value, which no sandbox receives.
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
-    Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_POLICY").foreach: name =>
+    Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_RULESET").foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
-    // The variable holds the policy lines alone: the dry run's metadata after them describes the
-    // project's file, and stays with the terminal (EgressProxyPolicy.policyLinesOf).
-    assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_POLICY=${policyLinesOf(")))
+    // The variable holds the ruleset lines alone: the dry run's metadata after them describes the
+    // project's file, and stays with the terminal (EgressRules.rulesetLinesOf).
+    assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(")))
 
   test("--self-test's container leaves nothing behind and has what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and

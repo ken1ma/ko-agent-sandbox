@@ -104,7 +104,7 @@ object RunOnHostSandbox:
 
   /**
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
-   * applies (SandboxProject.policyDirError): the tools this wrapper serves, egress/ inside each,
+   * applies (SandboxProject.boundaryDirError): the tools this wrapper serves, egress/ inside each,
    * rule inside that — a stray name, the retired grammar's file among them, a symlinked component,
    * or a component of the wrong type refuses the build, never sits as ignored config. The type rule
    * prevents real failures: a file where a directory belongs would read as absent configuration,
@@ -139,8 +139,8 @@ object RunOnHostSandbox:
         .orElse(ruleFiles.find(wrongType(_, directory = false))
           .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
         .orElse(retiredFiles.find(Files.exists(_, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-          .map(p => s"$p is a file of the retired grammar; the build's policy is egress/rule, one " +
-            s"`$BuildAllowlistForm` per line — rewrite the lines there and delete this file"))
+          .map(p => s"$p is a file of the retired grammar; the build's rules are egress/rule, one " +
+            s"`$BuildRuleForm` per line — rewrite the lines there and delete this file"))
         .orElse:
           val stray = strays(dir, tools.toSet) ++ tools.flatMap: name =>
             strays(dir.resolve(name), Set("egress")) ++
@@ -151,15 +151,15 @@ object RunOnHostSandbox:
 
   /** The project file's hosts, validated to the build's rule grammar (run-on-host.md
     * "Configuration"); an absent file contributes nothing. */
-  def readAllowlist(project: Path, tool: Tool): Either[String, Vector[String]] =
+  def readBuildRules(project: Path, tool: Tool): Either[String, Vector[String]] =
     hostCommandStray(project).toLeft(()).flatMap: _ =>
-      val file = buildAllowlistPath(project, tool)
+      val file = buildRulePath(project, tool)
       if !Files.exists(file) then Right(Vector.empty)
       else
         try
-          buildAllowlist(Files.readString(file, UTF_8)).left.map:
-            case Refusal.AllowlistEntryOutsideGrammar(entry) =>
-              s"$file: '$entry' is outside the build's rule grammar — one `$BuildAllowlistForm` per line"
+          buildRuleHosts(Files.readString(file, UTF_8)).left.map:
+            case Refusal.RuleOutsideBuildGrammar(line) =>
+              s"$file: '$line' is outside the build's rule grammar — one `$BuildRuleForm` per line"
             case other => s"$file: $other"
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
@@ -478,7 +478,7 @@ object RunOnHostSandbox:
           try Right(projectArg.toAbsolutePath.toRealPath())
           catch case ex: IOException => Left(s"$projectArg: ${ex.getMessage}")
         assembled <- assemble(project, tool, env)
-        fileHosts <- readAllowlist(project, tool)
+        fileHosts <- readBuildRules(project, tool)
         _ <- RunOnHostSession.ensureRoot(root, uid)
         // Scavenge before the one-server refusal: an orphan a kill left is ours to end here,
         // and only a server that survives the scavenge belongs to someone else.
@@ -776,5 +776,5 @@ object RunOnHostSandbox:
       val toolName = tool.toString.toLowerCase(java.util.Locale.ROOT)
       log((("Build requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the Scala build sandbox. If the build should reach it, add an" +
-          s" `$BuildAllowlistForm` line to .ko-agent-sandbox/host-command/$toolName/egress/rule."))
+          s" `$BuildRuleForm` line to .ko-agent-sandbox/host-command/$toolName/egress/rule."))
         .mkString("\n"))

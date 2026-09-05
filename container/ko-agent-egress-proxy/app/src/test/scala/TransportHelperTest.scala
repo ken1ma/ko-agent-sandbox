@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 import AgentEgressProxy.*
 import HTTPHelper.*
-import PolicyHelper.*
+import RulesetHelper.*
 import TLSHelper.*
 import TransportHelper.*
 
@@ -320,9 +320,9 @@ class TransportHelperTest extends munit.FunSuite:
     System.setErr(PrintStream(log, true))
     val received =
       try
-        val policy =
-          EgressPolicy(resolvePolicy(Some("deny-unless-allowed"), None, None), None, proxy.endpoint(Some(Basic)))
-        val handling = Thread.startVirtualThread(() => handle(server, policy))
+        val run =
+          Run(resolveRuleset(Some("deny-unless-allowed"), None, None), None, proxy.endpoint(Some(Basic)))
+        val handling = Thread.startVirtualThread(() => handle(server, run))
         client.getOutputStream.write(ascii("CONNECT tracker.example:443 HTTP/1.1\r\nHost: tracker.example:443\r\n\r\n"))
         val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
         handling.join()

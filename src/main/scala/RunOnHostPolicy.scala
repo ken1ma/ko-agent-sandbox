@@ -35,7 +35,7 @@ object RunOnHostPolicy:
     case CacheRootUnusable(reason: String)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
-    case AllowlistEntryOutsideGrammar(entry: String)
+    case RuleOutsideBuildGrammar(line: String)
 
   /** Everything settled before a build is asked for; every path canonical. */
   case class BuildPolicy(
@@ -433,18 +433,18 @@ object RunOnHostPolicy:
     else Left(Refusal.SessionTmpTooLong(path, SessionTmpMaxLength))
 
   // ---------------------------------------------------------------------------
-  // The build's egress allowlist
+  // The build's egress rules
   // ---------------------------------------------------------------------------
 
   /** Coursier's and sbt's default artifact repository: the one host every build's proxy admits. */
   val MavenCentralHost = "repo1.maven.org"
 
-  def buildAllowlistPath(project: Path, tool: Tool): Path =
+  def buildRulePath(project: Path, tool: Tool): Path =
     project.resolve(".ko-agent-sandbox").resolve("host-command")
       .resolve(tool.toString.toLowerCase(java.util.Locale.ROOT)).resolve("egress").resolve("rule")
 
   /** The one line form the build's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
-  val BuildAllowlistForm = "allow https://<host>/ read"
+  val BuildRuleForm = "allow https://<host>/ read"
 
   /**
    * The build's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
@@ -456,8 +456,8 @@ object RunOnHostPolicy:
    * inside a token refused — so a line read here is the line the proxy would read, and
    * `read#typo` is not `read`; the host is what the proxy's own parser will normalize and vet.
    */
-  def buildAllowlist(text: String): Either[Refusal, Vector[String]] =
-    val entries = text.linesIterator
+  def buildRuleHosts(text: String): Either[Refusal, Vector[String]] =
+    val lines = text.linesIterator
       .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
       .filter(_.nonEmpty)
       .toVector
@@ -466,13 +466,13 @@ object RunOnHostPolicy:
         val host = url.drop("https://".length).dropRight(1)
         Option.when(host.nonEmpty && !host.contains('/') && !host.startsWith("*"))(host)
       case _ => None
-    entries.find(hostOf(_).isEmpty) match
-      case Some(outside) => Left(Refusal.AllowlistEntryOutsideGrammar(outside.mkString(" ")))
-      case None          => Right(entries.flatMap(hostOf).distinct)
+    lines.find(hostOf(_).isEmpty) match
+      case Some(outside) => Left(Refusal.RuleOutsideBuildGrammar(outside.mkString(" ")))
+      case None          => Right(lines.flatMap(hostOf).distinct)
 
   /**
    * The proxy's rule input for a build: `deny defaults`, then Maven Central, then the file's
-   * lines — the whole policy stated, so the container's catalog contributes nothing. Deduplicated,
+   * lines — the whole ruleset stated, so the container's catalog contributes nothing. Deduplicated,
    * so a host the file restates is not warned as a redundant grant at every build.
    */
   def egressRuleText(fileHosts: Vector[String]): String =

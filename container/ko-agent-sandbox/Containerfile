@@ -426,7 +426,7 @@ RUN set -euxo pipefail; \
 # AGENTS-SANDBOX.md tells the running agent what this container is;
 # AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
 # every link below. The launcher mounts its own assembly over AGENTS.md — the
-# policy in force appended, and a project's
+# ruleset in force appended, and a project's
 # .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
 # why the parts ship beside the whole.
 # Without them an agent reads `Read-only file system` as breakage, or writes
