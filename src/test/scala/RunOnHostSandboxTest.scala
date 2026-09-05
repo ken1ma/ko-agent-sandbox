@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import RunOnHostSandbox.*
-import RunOnHostPolicy.Tool
+import RunOnHostPrereqs.Tool
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
@@ -16,9 +16,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("the build's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
-    val policy = RunOnHostPolicy.BuildPolicy(
+    val prereqs = RunOnHostPrereqs.BuildPrereqs(
       project = Path.of("/Users/u/project"), jdkHome = jdk, coursierV1 = Path.of("/cache/v1"),
-      tool = Tool.Sbt, launcher = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
+      tool = Tool.Sbt, executable = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
     )
     val host = Map(
       "HOME" -> "/Users/u", "LANG" -> "en_US.UTF-8", "PATH" -> "/usr/bin:/bin",
@@ -32,7 +32,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
         "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
       ),
-      policy, sbtGlobal = Path.of("/cache/sbt"), millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
+      prereqs, sbtGlobal = Path.of("/cache/sbt"), millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
     )
     // Passed through as they are.
@@ -64,7 +64,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       ) ++ buildProxyVariables(4711).keySet,
     )
     // Without a derivable download folder the variable is simply absent.
-    val noFolder = buildEnvironment(host.get, Vector.empty, policy, Path.of("/s"), None, Path.of("/t"), 1, "u")
+    val noFolder = buildEnvironment(host.get, Vector.empty, prereqs, Path.of("/s"), None, Path.of("/t"), 1, "u")
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
 
   test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):
@@ -163,7 +163,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     val refused = readBuildRules(project, Tool.Sbt)
     assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains(RunOnHostPolicy.BuildRuleForm)), refused.toString)
+    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.BuildRuleForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces

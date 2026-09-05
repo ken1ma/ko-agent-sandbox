@@ -274,7 +274,7 @@ object SandboxStats:
         None
 
     val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
-    val cacheDir = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
+    val cacheDir = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
 
     // Where the volumes live is podman's store: a host path on native Linux, the VM's disk
     // elsewhere, which only the machine itself can size.

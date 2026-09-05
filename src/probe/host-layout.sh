@@ -1,9 +1,9 @@
 #!/bin/sh
-# What is installed on this host and where — the layout RunOnHostPolicy encodes.
+# What is installed on this host and where — the layout RunOnHostPrereqs encodes.
 #
 # Run it on a new machine, and after upgrading Coursier or the JDK. Every "MISSING" line is a
 # case the prerequisite classifier has to name, not a gap to fill in silently; a line that
-# disagrees with RunOnHostPolicyTest's fixtures is a finding, not a test to relax.
+# disagrees with RunOnHostPrereqsTest's fixtures is a finding, not a test to relax.
 #
 # Run from the project directory. Read-only but for one temporary directory it removes.
 
@@ -98,5 +98,5 @@ echo "=== what a Seatbelt profile would name ==="
 say "PROJECT" "$project"
 say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"
 say "MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/mill/download"
-say "AGENT_CACHE_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
+say "BUILD_CACHE_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
 printf '\nThe sbt distribution is the other half of TOOL; src/probe/sbt-exec-chain.sh finds it.\n'

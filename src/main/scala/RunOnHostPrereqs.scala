@@ -1,5 +1,5 @@
 // What a host build is allowed to touch, decided before any of it runs: where this project's
-// disposable build caches live, which JDK and launcher are the Coursier-managed ones, and which
+// disposable build caches live, which JDK and sbt are the Coursier-managed ones, and which
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
@@ -16,13 +16,13 @@ import java.util.Locale
 
 import HostCommands.Os
 
-object RunOnHostPolicy:
+object RunOnHostPrereqs:
 
   enum Tool:
     case Sbt, Mill
 
   /**
-   * Why a build cannot run, one case per category (run-on-host.md "Failure policy"). A value, not a
+   * Why a build cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
    * message: the wrapper prints one wording, the channel another, and the tests match on neither.
    */
   enum Refusal:
@@ -30,7 +30,7 @@ object RunOnHostPolicy:
     case PrereqSbtNotCoursier(found: Path)
     case PrereqMillBootstrapMissing
     case PrereqMillVersionUnpinned
-    case PrereqMillLauncherMissing(version: String, downloadDir: Path)
+    case PrereqMillExecutableMissing(version: String, downloadDir: Path)
     case PrereqMillJvmNotSystem(found: Option[String])
     case CacheRootUnusable(reason: String)
     case WorkingDirectoryOutsideProject(requested: String)
@@ -38,12 +38,12 @@ object RunOnHostPolicy:
     case RuleOutsideBuildGrammar(line: String)
 
   /** Everything settled before a build is asked for; every path canonical. */
-  case class BuildPolicy(
+  case class BuildPrereqs(
     project: Path,
     jdkHome: Path,
     coursierV1: Path,
     tool: Tool,
-    launcher: Path,
+    executable: Path,
   )
 
   // ---------------------------------------------------------------------------
@@ -80,14 +80,14 @@ object RunOnHostPolicy:
    * This project's build caches, under one directory so `--reset-cache` for a project is a single
    * removal and a further cache kind can join without moving anything.
    *
-   * Coursier's, and sbt's global base. mill's launcher is provisioned by the user rather than
-   * fetched here, so it has no writable home (RunOnHostPolicy.millLauncher).
+   * Coursier's, and sbt's global base. mill's executable is provisioned by the user rather than
+   * fetched here, so it has no writable home (RunOnHostPrereqs.millExecutable).
    */
-  def agentCacheDir(cacheRoot: Path, projectId: String): Path =
+  def buildCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
 
-  def agentCoursierV1(cacheRoot: Path, projectId: String): Path =
-    agentCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
+  def buildCoursierV1(cacheRoot: Path, projectId: String): Path =
+    buildCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
 
   /**
    * The confined build's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
@@ -97,8 +97,8 @@ object RunOnHostPolicy:
    * moment the session directory is removed. Beside the Coursier cache, it shares that cache's poison
    * scope (later builds of the same project, themselves sandboxed) and `--reset-cache`'s removal.
    */
-  def agentSbtGlobal(cacheRoot: Path, projectId: String): Path =
-    agentCacheDir(cacheRoot, projectId).resolve("sbt-global")
+  def buildSbtGlobal(cacheRoot: Path, projectId: String): Path =
+    buildCacheDir(cacheRoot, projectId).resolve("sbt-global")
 
   /**
    * Refused when the cache root would sit inside the project, the check
@@ -138,7 +138,7 @@ object RunOnHostPolicy:
           case Os.Mac => home.resolve("Library/Caches/Coursier")
           case _      => home.resolve(".cache/coursier")
 
-  /** Where `cs install` puts launchers. The macOS spelling contains a space. */
+  /** Where `cs install` puts what it installs. The macOS spelling contains a space. */
   def coursierInstallDir(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_BIN_DIR").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
       env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
@@ -194,25 +194,25 @@ object RunOnHostPolicy:
               case _ => Left(Refusal.PrereqJvmNotCoursier(value))
 
   /**
-   * The `sbt` the build runs, which must be the one `cs install sbt` produced. A launcher found on
+   * The `sbt` the build runs, which must be the one `cs install sbt` produced. An `sbt` found on
    * PATH is accepted only when it canonicalizes into the Coursier install directory, so a symlink
    * from PATH into that directory works and one pointing anywhere else does not.
    */
-  def validateSbtLauncher(
+  def validateSbtExecutable(
     candidate: Path,
     installDir: Path,
     canonicalize: Path => Option[Path],
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     (canonicalize(candidate), canonicalize(installDir)) match
-      case (Some(launcher), Some(dir)) if launcher.startsWith(dir) && isExecutableFile(launcher) =>
-        Right(launcher)
-      case (Some(launcher), _) => Left(Refusal.PrereqSbtNotCoursier(launcher))
+      case (Some(executable), Some(dir)) if executable.startsWith(dir) && isExecutableFile(executable) =>
+        Right(executable)
+      case (Some(executable), _) => Left(Refusal.PrereqSbtNotCoursier(executable))
       case _                   => Left(Refusal.PrereqSbtNotCoursier(candidate))
 
   /**
-   * The sbt distribution home to grant, from the inner launcher the wrapper execs
-   * (SeatbeltProfile.sbtDistribution names it). The executable is checked as the wrapper itself is —
+   * The sbt distribution home to grant, from the distribution's `sbt` the cs-installed script execs
+   * (SeatbeltProfile.sbtDistribution names it). It is checked as the script itself is —
    * canonical, an executable file, still inside the cache once symlinks are followed — and its
    * layout is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
    * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
@@ -248,7 +248,7 @@ object RunOnHostPolicy:
     else Left(Refusal.PrereqMillBootstrapMissing)
 
   /**
-   * Where a provisioned mill launcher lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
+   * Where a provisioned mill executable lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
    * if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`. `MILL_USER_CACHE_DIR` is not an
    * input — the script assigns it and never reads it. No platform branch: the fallback is spelled
    * the same everywhere, which is why a macOS host keeps mill's cache under ~/.cache while
@@ -263,15 +263,15 @@ object RunOnHostPolicy:
 
   /**
    * The mill version, read the way the bootstrap reads it — and only *read*. The script's own
-   * dry-run mode would report the launcher path exactly, but running the project's script is
+   * dry-run mode would report the executable's path exactly, but running the project's script is
    * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
    *
    * The fallback is the assignment at the top of the script, which mill documents as the
    * recommended way to manage the version (`./mill updateMillScripts`). The script also honours
    * `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this deliberately does
    * not: the build's environment is a closed set (RunOnHostSandbox.buildEnvironment) that carries
-   * neither, so the script resolves from the project alone, and reading them here would grant a
-   * launcher the script then does not run.
+   * neither, so the script resolves from the project alone, and reading them here would grant an
+   * executable the script then does not run.
    */
   def millVersion(
     project: Path,
@@ -310,7 +310,7 @@ object RunOnHostPolicy:
    * `arch` is `uname -m`'s answer: `arm64` on Apple silicon, `x86_64` otherwise. macOS only, as
    * the feature is.
    */
-  def millLauncherName(version: String, arch: String): String =
+  def millExecutableName(version: String, arch: String): String =
     val native = if arch == "arm64" then "-native-mac-aarch64" else "-native-mac-amd64"
     val jarEra = raw"0\.([1-9]|1[0-2])\..*".r
     if version.endsWith("-native") then version.stripSuffix("-native") + native
@@ -322,7 +322,7 @@ object RunOnHostPolicy:
    * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
    * index, a JDK fetched by the build, where `system` takes `java` from the PATH the wrapper sets.
    *
-   * Read as the launcher reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
+   * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
    * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
    * not blank or a `#` comment, compared as written, so `" system "` is not `system` — else the
    * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
@@ -383,15 +383,15 @@ object RunOnHostPolicy:
   private val SystemSpelling = raw"""\s*(?:system|"system"|'system')(?:\s+#.*)?\s*""".r
 
   /** That file, provisioned: present and executable, or a refusal naming what `./mill` would fix. */
-  def millLauncher(
+  def millExecutable(
     downloadDir: Path,
     version: String,
     arch: String,
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
-    val launcher = downloadDir.resolve(millLauncherName(version, arch))
-    if isExecutableFile(launcher) then Right(launcher)
-    else Left(Refusal.PrereqMillLauncherMissing(version, downloadDir))
+    val executable = downloadDir.resolve(millExecutableName(version, arch))
+    if isExecutableFile(executable) then Right(executable)
+    else Left(Refusal.PrereqMillExecutableMissing(version, downloadDir))
 
   /** `DEFAULT_MILL_VERSION="1.1.8"` as the bootstrap spells it, inside its `if [ -z … ]` guard. */
   private val DefaultAssignment = raw""".*\bDEFAULT_MILL_VERSION="([^"]+)".*""".r

@@ -10,7 +10,7 @@ how host builds work and what they require; each piece's enforcement lives with 
 | the option, the command, what a build may write | README Reference, `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the session lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
-| prerequisite validation and path policy | `RunOnHostPolicy.scala` |
+| prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | the wrapper: proxy, environment, diagnostics | `RunOnHostSandbox.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/build-profile-gate.sh` |
@@ -115,27 +115,27 @@ part of sbt's bootstrap — an uncached sbt version named in `project/build.prop
 Maven Central. A build that needs more adds it explicitly ("Configuration", below); nothing is
 inferred or silently permitted.
 
-## Failure policy
+## Refusals
 
 Missing prerequisites and denied accesses fail clearly, nothing expands authority, and nothing
 falls back: a host build that cannot run is reported to the user, never re-run in the
 container — the same rule the egress refusal follows.
 
-Every pre-build refusal is a `RunOnHostPolicy.Refusal` value, one case per category, so the wrapper
+Every pre-build refusal is a `RunOnHostPrereqs.Refusal` value, one case per category, so the wrapper
 and the channel word the same refusal for their own readers without the tests matching on either
-wording. A denial that happens mid-build falls under no launcher category: a filesystem denial
+wording. A denial that happens mid-build falls under no refusal category: a filesystem denial
 reaches the build's own stderr as the OS error, and a network denial is the proxy's audit line,
 which the wrapper reads and reports per host after the build ("Build requested network access
 to: …"). It never adds the host itself.
 
 ## Tool prerequisites
 
-The rule that explains both tools: **the user provisions the launcher; the sandbox fetches only
-artifacts.** sbt's launcher comes from `cs install sbt`, and everything else it needs is a jar the
-JDK reads, fetched into the writable agent cache through the proxy. `mill`'s launcher *is* the
-fetched thing, and it is an executable — so it is provisioned, not fetched, and a version bump
+The rule that explains both tools: **the user provisions the executable; the sandbox fetches only
+artifacts.** sbt's comes from `cs install sbt`, and everything else it needs is a jar the JDK
+reads, fetched into the writable build cache through the proxy. `mill`'s executable *is* the
+fetched thing — so it is provisioned, not fetched, and a version bump
 becomes an explicit host step rather than something a build definition performs on itself.
-`RunOnHostPolicy.scala` validates all of the below before a build starts; a violation is a refusal
+`RunOnHostPrereqs.scala` validates all of the below before a build starts; a violation is a refusal
 naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 ### The JVM
@@ -154,54 +154,55 @@ hundreds of megabytes for nothing.
 
 ### sbt
 
-`cs install sbt`, and no arbitrary `sbt` from `PATH`: the wrapper verifies the launcher belongs to
+`cs install sbt`, and no arbitrary `sbt` from `PATH`: the wrapper verifies the executable belongs to
 the Coursier application-install directory — on macOS `~/Library/Application Support/Coursier/bin`,
-whose space every interpolated path must survive. The launcher is two files: the 1.2 KB wrapper on
+whose space every interpolated path must survive. That `sbt` is two files: the 1.2 KB script on
 `PATH` execs a second `sbt` inside an unpacked distribution in the archive cache, and the profile
-grants the distribution's *home* — the inner launcher reads `sbt-launch.jar` and `conf/` relative
-to itself. The home is read from the wrapper's text (`SeatbeltProfile.sbtDistribution`); running
-the wrapper to ask would execute what the profile exists to contain, on the host, unconfined.
+grants the distribution's *home* — the distribution's `sbt` reads `sbt-launch.jar` and `conf/`
+relative to itself. The home is read from the script's text (`SeatbeltProfile.sbtDistribution`);
+running the script to ask would execute what the profile exists to contain, on the host,
+unconfined.
 
 sbt 2 is client/server by construction — there is no one-shot mode — so the server starts *inside*
-the profile and its state follows `-Dsbt.global.base` into the project's agent cache. The base must
+the profile and its state follows `-Dsbt.global.base` into the project's build cache. The base must
 be persistent, not session-temporary: sbt 2 leaves `target/` outputs as symlinks into its
 content-addressed store, so a base removed with the session would dangle the build's own outputs.
 The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a
 store the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted
 roots before each build. `~/.sbt/boot` is not granted and has no consumer — with the global base
-redirected, the launcher boots from the agent cache, warm across sessions. `~/.sbt/1.0`,
+redirected, sbt boots from the build cache, warm across sessions. `~/.sbt/1.0`,
 `~/.sbt/2.0`, `~/.ivy2` and `~/.m2` are not granted either.
 
 The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints that it
 is starting the server and returns with no build run — a gate row keeps measuring it, and if it
-starts passing, the pin becomes a choice. The inner launcher resolves `java` from `PATH`, so the
-wrapper puts the granted JDK's `bin` first: the client starts the server by re-running the script,
-and `-java-home` reaches the client alone.
+starts passing, the pin becomes a choice. The distribution's `sbt` resolves `java` from `PATH`, so
+the wrapper puts the granted JDK's `bin` first: the client starts the server by re-running the
+script, and `-java-home` reaches the client alone.
 
 ### `mill`
 
-A project-local bootstrap script (`<PROJECT>/mill`); no globally installed `mill`. The launcher for
-the pinned version must already be provisioned — `./mill --version` once, in a host terminal,
-whenever the pinned version changes — because `mill` 1.x publishes *native launchers*, and fetching
-one would put an executable the sandbox chose into a directory the user's own `./mill` runs from,
-outside any sandbox. What is granted is that one file, never the download folder around it, which
-holds every launcher the user ever ran. A version the user never ran `./mill` for is a refusal
-naming the file to run.
+A project-local bootstrap script (`<PROJECT>/mill`); no globally installed `mill`. The executable
+for the pinned version must already be provisioned — `./mill --version` once, in a host terminal,
+whenever the pinned version changes — because `mill` 1.x publishes native executables, and
+fetching one would put an executable the sandbox chose into a directory the user's own `./mill`
+runs from, outside any sandbox. What is granted is that one file, never the download folder around
+it, which holds every executable the user ever ran. A version the user never ran `./mill` for is a
+refusal naming the file to run.
 
 The wrapper resolves the version the way the bootstrap does from the project — `.mill-version`,
 `.config/mill-version`, `build.mill.yaml`, the build script's `//|` header, then the script's own
-default — and derives the launcher file the way the bootstrap does (`RunOnHostPolicy.millVersion`,
-`millLauncher`). The script's `MILL_VERSION` and `DEFAULT_MILL_VERSION` environment overrides are
-not read, because the build's environment carries neither, so the script and the wrapper resolve
-alike. Reading the version is a read; asking the script by running it would execute agent-authored
-shell on the host.
+default — and derives the executable's file name the way the bootstrap does
+(`RunOnHostPrereqs.millVersion`, `millExecutable`). The script's `MILL_VERSION` and
+`DEFAULT_MILL_VERSION` environment overrides are not read, because the build's environment carries
+neither, so the script and the wrapper resolve alike. Reading the version is a read; asking the
+script by running it would execute agent-authored shell on the host.
 
 Three more things `mill` needs, each measured by the gate against `src/probe/mill-fixture`:
 `mill-jvm-version: system` in the project — its default provisions a JVM through Coursier's index
-into a writable, executable place, which is what the JVM rule refuses; `--no-daemon` — the launcher
-and the daemon talk over a loopback TCP socket, which the profile denies ("Network"); and
-`out/mill-daemon/` cleared at session start — the launcher memoizes its resolved classpath against
-the cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
+into a writable, executable place, which is what the JVM rule refuses; `--no-daemon` — the
+executable and the daemon talk over a loopback TCP socket, which the profile denies ("Network");
+and `out/mill-daemon/` cleared at session start — mill memoizes its resolved classpath against the
+cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
 denies.
 
 ## The session
@@ -210,47 +211,43 @@ denies.
 seen half-made, a lock stating the wrapper's liveness, records owning the children's, condemnation
 before collection, and the portfile-attributed shutdown of an orphaned server. The wrapper root is
 `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
-socket's `sun_path` (`RunOnHostPolicy.SessionTmpMaxLength`).
+socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
 
-The build's environment is the contract, not its command line: the JVM settings travel in
-`JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and inherits, for the reason
-`RunOnHostSandbox` states where it assembles it. The whole environment is a closed set the wrapper
-supplies (`RunOnHostSandbox.buildEnvironment`), never the launcher's own; SECURITY.md, "Run on
-host", has why. The gate's `build_env` supplies the same set, minus the proxy settings, since its
-rows run without a proxy. What the wrapper supplies:
+The build's environment is the contract, not its command line: a closed set the wrapper supplies
+(`RunOnHostSandbox.buildEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
+why. The gate's `build_env` supplies the same set, minus the proxy settings, since its rows run
+without a proxy. What the wrapper supplies:
 
-| Variable | Value |
+| Environment Variable | Value |
 |---|---|
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
+| `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
-| `JAVA_TOOL_OPTIONS` | the `-D` properties listed below |
 | `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<session>/tmp` |
 | `COURSIER_CACHE` | `<build cache>/coursier/v1` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
-| `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the build's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
+| `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
 | a name `--env` gave | the value `--env` gave, unless a row above sets that name |
 | `HOME`, `LANG`, `LC_ALL` | the launcher's, when set and `--env` gave none |
 
-Nothing else is supplied. The `-D` properties in `JAVA_TOOL_OPTIONS`, which every JVM the build
-forks reads:
+The `java -D` properties:
 
-    -Djava.io.tmpdir=$TMPDIR
-    -Djava.util.prefs.userRoot=$TMPDIR
-    -Dsbt.global.base=<build cache>/sbt-global
-    -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=<port>
-    -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=<port>
-    -Djava.net.preferIPv4Stack=true
+| Java Property | Value |
+|---|---|
+| `java.io.tmpdir`, `java.util.prefs.userRoot` | `$TMPDIR` |
+| `https.proxyHost`, `http.proxyHost` | `127.0.0.1` |
+| `https.proxyPort`, `http.proxyPort` | `<port>` |
+| `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
+| `sbt.global.base` | `<build cache>/sbt-global` |
 
 `<session>` is this build's directory under the wrapper root above, `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<build cache>` the
 project's own build-cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The build
-cache" below). The mill folder is the one the wrapper granted the launcher in; sbt
-ignores it. The last property makes the JVM reach the proxy as `127.0.0.1` rather than as the
-v4-mapped IPv6 address, which the confinement's loopback rule does not cover. The sbt global base is
-named for a mill build too, where nothing reads it and it is neither created nor granted, as the
-mill folder is for sbt: one environment for both tools.
+cache" below). One environment serves both tools: the sbt global base is named for a mill build
+too, where nothing reads it and it is neither created nor granted, and the mill download folder —
+the one the wrapper granted the executable in — for an sbt build, which ignores it.
 
 Why the rows are what they are. The host's `TMPDIR` names a directory the build is not granted,
 so the session's replaces it for forked shell tools, as `java.io.tmpdir` does for JVMs. `HOME` is
@@ -258,11 +255,11 @@ passed because the tools' scripts derive paths from it, and nothing under it is 
 is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
 pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
 `JAVA_TOOL_OPTIONS` or `HTTPS_PROXY` does not replace the build's own. `MILL_VERSION` and
-`DEFAULT_MILL_VERSION` are dropped even when forwarded, because the wrapper granted the launcher
+`DEFAULT_MILL_VERSION` are dropped even when forwarded, because the wrapper granted the executable
 of the version the project pins. Among what is not supplied: `TERM`, `SBT_OPTS`, `JAVA_OPTS`, the
 other `COURSIER_*` variables, `SBT_CREDENTIALS`, `ALL_PROXY`, `FTP_PROXY`, the launcher's own
 `HTTPS_PROXY`, and whatever secret the launching shell exported. A build's own processes see this
-set plus what the tools' shell launchers create on the way — `PWD`, `SHLVL`, `_`; a variable does
+set plus what the tools' shell scripts create on the way — `PWD`, `SHLVL`, `_`; a variable does
 not come back merely because the launching shell exported it.
 
 ## The channel and the command
@@ -399,7 +396,7 @@ nothing else — no other grant, no path, no provider, no deny — refused at va
 passed through. The full grammar would let one `allow model-provider` line expand into endpoints
 that are no artifact repository, and a `tunnel` word means nothing to a proxy running without
 inspection. The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
-(`RunOnHostPolicy.egressRuleText`), so the container's catalog contributes nothing.
+(`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 
 The file inherits the directory's properties: the workspace filter freezes it at any depth, the
 launcher reads it on the host, and it is reviewed in a pull request like any other file.
@@ -408,7 +405,7 @@ never sits as ignored config (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
 Neither tool needs a GitHub release CDN: the only fetch that ever used one is the `mill`
-bootstrap's own launcher download, which the user provisions on the host instead.
+bootstrap's own executable download, which the user provisions on the host instead.
 
 Derived paths come from Coursier conventions and environment APIs; advanced overrides
 (`cache-root`, `jvm-root`, `install-root`) are not added until needed.
@@ -432,7 +429,7 @@ there; a separate root makes its job structural — no path the build is ever gr
 ancestor or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache belongs.
 
 The build reaches its cache through one variable: the wrapper sets `COURSIER_CACHE` to the `v1`
-directory, which the sbt launcher, sbt's own resolution and Coursier all honour.
+directory, which the sbt script, sbt's own resolution and Coursier all honour.
 
 ## Sources
 

@@ -1327,7 +1327,7 @@ object AgentSandboxLauncher:
     // Last, as in --reset-all: the record outlives the cache alone, and the generated volume a
     // shared one left in place. The cache root is read as --stats reads it: where --stats can
     // show no cache, none keeps the record.
-    val cache = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(RunOnHostPolicy.agentCacheDir(_, id))
+    val cache = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.buildCacheDir(_, id))
     dropRecordUnless(projectsStateRoot(os), id, cache.toSeq, volumeKept)
     sys.exit(0)
 
@@ -1416,17 +1416,17 @@ object AgentSandboxLauncher:
    * resolution can refuse. The canonical answer either way, since deletion follows it.
    */
   private def buildCacheRoot(os: Os, project: Path): Path =
-    RunOnHostPolicy
+    RunOnHostPrereqs
       .cacheRootOf(os, env)
       .flatMap: root =>
         if couldBeAProject(os, project) then
-          RunOnHostPolicy.cacheRootOutsideProject(root, project, os, canonicalizedFuturePath)
+          RunOnHostPrereqs.cacheRootOutsideProject(root, project, os, canonicalizedFuturePath)
         else
-          canonicalizedFuturePath(root).left.map(RunOnHostPolicy.Refusal.CacheRootUnusable(_))
+          canonicalizedFuturePath(root).left.map(RunOnHostPrereqs.Refusal.CacheRootUnusable(_))
       .fold(
         refusal =>
           val reason = refusal match
-            case RunOnHostPolicy.Refusal.CacheRootUnusable(text) => text
+            case RunOnHostPrereqs.Refusal.CacheRootUnusable(text) => text
             case other                                           => other.toString
           fail(s"error: cache root: $reason"),
         identity,
@@ -1442,7 +1442,7 @@ object AgentSandboxLauncher:
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
     val id = projectIdOf(project, os)
-    val caches = RunOnHostPolicy.agentCacheDir(buildCacheRoot(os, project), id)
+    val caches = RunOnHostPrereqs.buildCacheDir(buildCacheRoot(os, project), id)
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind

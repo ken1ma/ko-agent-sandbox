@@ -1,6 +1,6 @@
 // The wrapper: from a project and a tool to a confined build's exit code, through the thirteen
 // steps — validate, scavenge, publish, proxy, profile, run, end what was started, remove. macOS
-// only, like everything it drives; the assembly and refusal logic lives in RunOnHostPolicy and
+// only, like everything it drives; the assembly and refusal logic lives in RunOnHostPrereqs and
 // is unit-tested there, so this file is choreography plus the host observations no Linux test can
 // make.
 
@@ -12,7 +12,7 @@ import java.nio.file.{Files, Path}
 
 import scala.jdk.CollectionConverters.*
 
-import RunOnHostPolicy.*
+import RunOnHostPrereqs.*
 import RunOnHostSession.{ServerAnswer, Session}
 import HostCommands.Os
 import SandboxProject.{isMetadataEntry, projectIdOf}
@@ -20,7 +20,7 @@ import SandboxProject.{isMetadataEntry, projectIdOf}
 object RunOnHostSandbox:
 
   case class Assembled(
-    policy: BuildPolicy,
+    prereqs: BuildPrereqs,
     sbtDistribution: Option[Path],
     /** The per-project sbt global base: created and granted for an sbt build (`sbtGlobalGranted`),
       * and for a mill build a path nothing reads, named all the same so the environment is one
@@ -30,7 +30,7 @@ object RunOnHostSandbox:
       * build is granted, and what the build's own script is pointed at (buildEnvironment). */
     millDownloads: Option[Path],
   ):
-    def sbtGlobalGranted: Option[Path] = Option.when(policy.tool == Tool.Sbt)(sbtGlobal)
+    def sbtGlobalGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(sbtGlobal)
 
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
@@ -48,14 +48,14 @@ object RunOnHostSandbox:
     for
       coursierCache <- coursierCacheRoot(os, env).toRight("no Coursier cache root")
       jdk <- context("jvm")(resolveJdkHome(env, coursierCache, realPath, isExecutableFile))
-      launcherAndDistribution <- tool match
+      executableAndDistribution <- tool match
         case Tool.Sbt =>
           for
             installDir <- coursierInstallDir(os, env).toRight("no Coursier install directory")
-            sbt <- context("sbt launcher")(
-              validateSbtLauncher(installDir.resolve("sbt"), installDir, realPath, isExecutableFile),
+            sbt <- context("sbt executable")(
+              validateSbtExecutable(installDir.resolve("sbt"), installDir, realPath, isExecutableFile),
             )
-            // ISO-8859-1, not UTF-8: cs appends a jar to its launchers, so the file is not text.
+            // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text.
             // Every byte maps to a char, which leaves the ASCII path this searches for intact.
             inner <- SeatbeltProfile
               .sbtDistribution(String(Files.readAllBytes(sbt), ISO_8859_1), coursierCache)
@@ -73,29 +73,29 @@ object RunOnHostSandbox:
             arch = System.getProperty("os.arch") match
               case "aarch64" => "arm64"
               case other     => other
-            provisioned <- context("mill launcher")(
-              millLauncher(downloads, version, arch, isExecutableFile),
+            provisioned <- context("mill executable")(
+              millExecutable(downloads, version, arch, isExecutableFile),
             )
             real <- realPath(provisioned).toRight(s"$provisioned vanished")
           yield (real, None)
-      (launcher, distribution) = launcherAndDistribution
+      (executable, distribution) = executableAndDistribution
       configuredRoot <- context("cache root")(cacheRootOf(os, env))
       cacheRoot <- context("cache root")(
         cacheRootOutsideProject(configuredRoot, project, os, HostCommands.canonicalizedFuturePath),
       )
       projectId = projectIdOf(project, os)
-      v1 = agentCoursierV1(cacheRoot, projectId)
+      v1 = buildCoursierV1(cacheRoot, projectId)
       _ = Files.createDirectories(v1)
       sbtGlobal =
-        if tool == Tool.Sbt then Files.createDirectories(agentSbtGlobal(cacheRoot, projectId)).toRealPath()
-        else agentSbtGlobal(cacheRoot, projectId)
+        if tool == Tool.Sbt then Files.createDirectories(buildSbtGlobal(cacheRoot, projectId)).toRealPath()
+        else buildSbtGlobal(cacheRoot, projectId)
     yield Assembled(
-      BuildPolicy(
+      BuildPrereqs(
         project = project,
         jdkHome = jdk,
         coursierV1 = v1.toRealPath(),
         tool = tool,
-        launcher = launcher,
+        executable = executable,
       ),
       distribution,
       sbtGlobal,
@@ -496,7 +496,7 @@ object RunOnHostSandbox:
                 // in a cache is no more a shutdown target than one planted in the project.
                 autoShutdownForeignServer(
                   project, socket, env, log,
-                  buildCaches = Seq(assembled.policy.coursierV1) ++ assembled.sbtGlobalGranted,
+                  buildCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtGlobalGranted,
                 )
               case Some(socket) =>
                 Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
@@ -507,7 +507,7 @@ object RunOnHostSandbox:
         log(s"refused: $reason")
         2
       case Right((assembled, fileHosts)) =>
-        RunOnHostSession.publish(root, assembled.policy.project) match
+        RunOnHostSession.publish(root, assembled.prereqs.project) match
           case Left(reason) =>
             log(s"refused: $reason")
             2
@@ -559,7 +559,7 @@ object RunOnHostSandbox:
     forwards: Vector[(String, String)],
   ): Either[String, Int] =
     assembled.sbtGlobalGranted.foreach: sbtGlobal =>
-      val swept = cleanForeignTargetLinks(assembled.policy.project, Seq(assembled.policy.project, sbtGlobal))
+      val swept = cleanForeignTargetLinks(assembled.prereqs.project, Seq(assembled.prereqs.project, sbtGlobal))
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
     for
@@ -567,7 +567,7 @@ object RunOnHostSandbox:
       port <- awaitProxyPort(session.directory.resolve("proxy.log"), deadlineMillis = 30_000)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
-          policy = assembled.policy,
+          prereqs = assembled.prereqs,
           sessionTmp = session.tmp,
           sbtDistribution = assembled.sbtDistribution,
           sbtGlobal = assembled.sbtGlobalGranted,
@@ -577,7 +577,7 @@ object RunOnHostSandbox:
       )
       exit <- runBuild(session, assembled, profile, port, buildArgs, workingDirectory, forwards)
     yield
-      reportDenied(session.directory.resolve("proxy.log"), assembled.policy.tool, log)
+      reportDenied(session.directory.resolve("proxy.log"), assembled.prereqs.tool, log)
       exit
 
   private def startProxy(session: Session, fileHosts: Vector[String]): Either[String, Process] =
@@ -607,16 +607,16 @@ object RunOnHostSandbox:
     workingDirectory: Option[Path],
     forwards: Vector[(String, String)],
   ): Either[String, Int] =
-    val policy = assembled.policy
+    val prereqs = assembled.prereqs
     val profileFile = session.directory.resolve("profile.sb")
     Files.writeString(profileFile, profile, UTF_8)
 
-    val toolCommand = policy.tool match
+    val toolCommand = prereqs.tool match
       case Tool.Sbt =>
-        Seq(policy.launcher.toString, "--jvm-client", "-batch",
-          "-java-home", policy.jdkHome.toString) ++ buildArgs
+        Seq(prereqs.executable.toString, "--jvm-client", "-batch",
+          "-java-home", prereqs.jdkHome.toString) ++ buildArgs
       case Tool.Mill =>
-        Seq(policy.project.resolve("mill").toString, "--no-daemon") ++ buildArgs
+        Seq(prereqs.project.resolve("mill").toString, "--no-daemon") ++ buildArgs
 
     val record = session.records.resolve("client")
     val command = RunOnHostSession.registeredSpawn(
@@ -624,32 +624,32 @@ object RunOnHostSandbox:
       Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ toolCommand,
     )
     val builder = ProcessBuilder(command*)
-    builder.directory(workingDirectory.getOrElse(policy.project).toFile)
+    builder.directory(workingDirectory.getOrElse(prereqs.project).toFile)
     builder.inheritIO()
     builder.environment.clear()
     builder.environment.putAll(
       buildEnvironment(
-        name => Option(System.getenv(name)), forwards, policy, assembled.sbtGlobal, assembled.millDownloads,
+        name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.millDownloads,
         session.tmp, proxyPort, System.getProperty("user.name"),
       ).asJava,
     )
 
-    // The shim publishes the build's exit status and then stays as the group's provable leader
-    // (RunOnHostSession), so the answer is the exit file, never the shim's own end.
+    // The spawn publishes the build's exit status and then stays as the group's provable leader
+    // (RunOnHostSession), so the answer is the exit file, never the spawn's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
   /** Absent even when forwarded: the wrapper resolved the version from the project alone and
-    * granted that launcher (RunOnHostPolicy.millVersion), and either of these would make the
+    * granted that executable (RunOnHostPrereqs.millVersion), and either of these would make the
     * bootstrap select another. */
   val MillVersionOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION")
 
   /** The variable the host-served proxy leaves through, as the proxy itself selects it
-    * (TransportHelper.ProxyVariables): uppercase first, an empty value as unset. */
+    * (TransportHelper.UpstreamProxyVariables): uppercase first, an empty value as unset. */
   def upstreamProxyVariable(read: String => Option[String]): Option[(String, String)] =
-    agentsandbox.egress.TransportHelper.ProxyVariables.iterator
+    agentsandbox.egress.TransportHelper.UpstreamProxyVariables.iterator
       .flatMap(name => read(name).filter(_.nonEmpty).map(name -> _))
       .nextOption()
 
@@ -661,7 +661,7 @@ object RunOnHostSandbox:
   def buildEnvironment(
     host: String => Option[String],
     forwards: Vector[(String, String)],
-    policy: BuildPolicy,
+    prereqs: BuildPrereqs,
     sbtGlobal: Path,
     millDownloads: Option[Path],
     sessionTmp: Path,
@@ -671,8 +671,8 @@ object RunOnHostSandbox:
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
     // The settings must reach the JVMs the build forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
-    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill launcher do read, would confine
-    // the launcher's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
+    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would confine
+    // the tool's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
     // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
     val javaToolOptions = (Seq(
       s"-Djava.io.tmpdir=$sessionTmp",
@@ -691,19 +691,19 @@ object RunOnHostSandbox:
       // a version manager's shim or a Homebrew tool ahead of the system one, fails the lookup
       // with EPERM at that entry, and the shell tries no further, so a build the system PATH
       // serves would break on the shell's.
-      "PATH" -> s"${policy.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
-      "JAVA_HOME" -> policy.jdkHome.toString,
+      "PATH" -> s"${prereqs.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
+      "JAVA_HOME" -> prereqs.jdkHome.toString,
       "JAVA_TOOL_OPTIONS" -> javaToolOptions,
       "TMPDIR" -> sessionTmp.toString,
       "XDG_RUNTIME_DIR" -> sessionTmp.toString,
       "SBT_GLOBAL_SERVER_DIR" -> sessionTmp.toString,
-      "COURSIER_CACHE" -> policy.coursierV1.toString,
+      "COURSIER_CACHE" -> prereqs.coursierV1.toString,
       "USER" -> userName,
       "LOGNAME" -> userName,
     ) ++
       // Set for every tool, not mill alone: sbt ignores it, and one unconditional setting is
       // simpler than a conditional. Mill's bootstrap otherwise derives the folder from HOME and
-      // XDG_CACHE_HOME, and this pins it to the folder holding the launcher the build is granted.
+      // XDG_CACHE_HOME, and this pins it to the folder holding the executable the build is granted.
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
       buildProxyVariables(proxyPort)
     passed ++ (forwards.toMap -- MillVersionOverrides) ++ own

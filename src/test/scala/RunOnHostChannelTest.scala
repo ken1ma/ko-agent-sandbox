@@ -28,7 +28,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
 
   /** Never the production path, for the reason ClipboardBrokerTest's own gives: both sides are
-    * pointed here instead — the broker by its endpoint, the shim by the line rewritten below. */
+    * pointed here instead — the broker by its transport, the shim by the line rewritten below. */
   private val FifoDir = Files.createTempDirectory("channel-fifos")
 
   /** The image's shim with its directory line rewritten and nothing else. A spelling this no
@@ -160,12 +160,12 @@ class RunOnHostChannelTest extends munit.FunSuite:
     )
     deleteRecursively(FifoDir)
     val running = AtomicBoolean(true)
-    val endpoint =
-      Endpoint(Seq(host.resolve("podman").toString, "exec", "-i", "C"), () => running.get, FifoDir.toString)
+    val transport =
+      Transport(Seq(host.resolve("podman").toString, "exec", "-i", "C"), () => running.get, FifoDir.toString)
     val log = StringBuilder()
     val broker = Thread(() =>
       serve(
-        endpoint,
+        transport,
         service(project, mount = project.toString, deadline = deadline)
           .copy(buildCommand = buildCommand),
         line => log.synchronized { log.append(line).append('\n'); () },

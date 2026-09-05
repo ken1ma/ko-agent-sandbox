@@ -239,7 +239,7 @@ object EgressRules:
    * Empty for a direct run.
    */
   def upstreamProxyArgs(read: String => Option[String]): Vector[String] =
-    agentsandbox.egress.TransportHelper.ProxyVariables
+    agentsandbox.egress.TransportHelper.UpstreamProxyVariables
       .find(name => read(name).exists(_.nonEmpty))
       .map(name => s"--env=$name")
       .toVector

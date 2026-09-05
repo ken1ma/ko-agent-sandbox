@@ -161,7 +161,7 @@ object RunOnHostChannel:
    * How the broker reaches the sandbox, as data so the gate and the tests can substitute a local
    * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
    */
-  final case class Endpoint(
+  final case class Transport(
     execPrefix: Seq[String],
     sandboxRunning: () => Boolean,
     /** Where the FIFOs live inside the sandbox: the shim's own constant, and a parameter only so
@@ -176,7 +176,7 @@ object RunOnHostChannel:
     tools: Set[String],
     buildCommand: (String, Path, Seq[String]) => Seq[String],
     os: Os,
-    canonicalize: Path => Option[Path] = RunOnHostPolicy.realPath,
+    canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long a handshake may sit without a complete request before it is stillborn. */
     requestDeadlineMillis: Long = 30_000,
@@ -188,22 +188,22 @@ object RunOnHostChannel:
    * cycle is one reader exec and every transaction its stream delivers. Both waits are bounded
    * pacing, not correctness: an idle cycle blocks in the handshake reader's own open.
    */
-  def serve(endpoint: Endpoint, service: Service, log: String => Unit): Unit =
+  def serve(transport: Transport, service: Service, log: String => Unit): Unit =
     var waited = 0
-    while !endpoint.sandboxRunning() && waited < 600 do
+    while !transport.sandboxRunning() && waited < 600 do
       Thread.sleep(1000)
       waited += 1
-    while endpoint.sandboxRunning() do
+    while transport.sandboxRunning() do
       val served =
-        try cycle(endpoint, service, log)
+        try cycle(transport, service, log)
         catch
           case ex: IOException =>
             log(s"cycle failed: ${ex.getMessage}")
             false
       if !served then Thread.sleep(1000)
 
-  private def sandboxShell(endpoint: Endpoint, script: String): ProcessBuilder =
-    ProcessBuilder((endpoint.execPrefix ++ Seq("sh", "-c", script))*)
+  private def sandboxShell(transport: Transport, script: String): ProcessBuilder =
+    ProcessBuilder((transport.execPrefix ++ Seq("sh", "-c", script))*)
 
   /**
    * A transport exec is killed whole, descendants first: the shell behind it may have forked the
@@ -222,8 +222,8 @@ object RunOnHostChannel:
    * and consumed here in order rather than discarded with the exec. False is a cycle that served
    * nothing, the caller's cue to pace; garbage still dies with its reader.
    */
-  private def cycle(endpoint: Endpoint, service: Service, log: String => Unit): Boolean =
-    val reader = sandboxShell(endpoint, handshakeReader(endpoint.sandboxDir))
+  private def cycle(transport: Transport, service: Service, log: String => Unit): Boolean =
+    val reader = sandboxShell(transport, handshakeReader(transport.sandboxDir))
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()
@@ -233,7 +233,7 @@ object RunOnHostChannel:
       while open do
         readLine(reader.getInputStream) match
           case Right(Some(id)) if TransactionId.matches(id) =>
-            transact(endpoint, service, id, log)
+            transact(transport, service, id, log)
             served = true
           case Right(Some(other)) =>
             log(s"dropped a handshake that is no transaction id: ${other.take(80)}")
@@ -254,14 +254,14 @@ object RunOnHostChannel:
   def endCurrentCommand(): Unit = currentCommand.foreach(_.destroy())
 
   private def transact(
-    endpoint: Endpoint,
+    transport: Transport,
     service: Service,
     id: String,
     log: String => Unit,
   ): Unit =
     // The transaction's liveness and its request are one stream: the exec ends when the shim
     // does, or when the container dies — the same signal either way.
-    val ctl = sandboxShell(endpoint, s"cat ${endpoint.sandboxDir}/ctl.$id")
+    val ctl = sandboxShell(transport, s"cat ${transport.sandboxDir}/ctl.$id")
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     ctl.getOutputStream.close()
@@ -283,19 +283,19 @@ object RunOnHostChannel:
           // Answered, never silently dropped: the requester is real and at its FIFOs — over the
           // argument bound is the reachable case — and a drop would leave it waiting for streams
           // nothing will open.
-          refuse(endpoint, id, s"CHANNEL_UNAVAILABLE: the request could not be read: $reason", log)
+          refuse(transport, id, s"CHANNEL_UNAVAILABLE: the request could not be read: $reason", log)
         case Right(None) =>
           log(s"stillborn transaction $id: the requester never sent a request")
         case Right(Some(request)) =>
           requestArrived.set(true)
-          answer(endpoint, service, id, ctl, request, log)
+          answer(transport, service, id, ctl, request, log)
     finally
       requestArrived.set(true) // the deadline has nothing left to bound
       end(ctl)
       ctl.waitFor(10, TimeUnit.SECONDS)
 
-  private def writer(endpoint: Endpoint, id: String, name: String): Process =
-    sandboxShell(endpoint, s"cat > ${endpoint.sandboxDir}/$name.$id")
+  private def writer(transport: Transport, id: String, name: String): Process =
+    sandboxShell(transport, s"cat > ${transport.sandboxDir}/$name.$id")
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
@@ -308,27 +308,27 @@ object RunOnHostChannel:
 
   /** Bounded, and safe to bound: it runs only after the output writers have drained, so a live
     * shim is already at its exit read, and a dead one has nobody waiting. */
-  private def writeExit(endpoint: Endpoint, id: String, code: Int): Unit =
+  private def writeExit(transport: Transport, id: String, code: Int): Unit =
     try
-      val exitWriter = writer(endpoint, id, "exit")
+      val exitWriter = writer(transport, id, "exit")
       writeAll(exitWriter.getOutputStream, s"$code\n")
       if !exitWriter.waitFor(10, TimeUnit.SECONDS) then end(exitWriter)
     catch case _: IOException => ()
 
   /** No command ran: the message on stderr, exit 2, every wait bounded — a requester that died
     * mid-request cannot hold this open. */
-  private def refuse(endpoint: Endpoint, id: String, message: String, log: String => Unit): Unit =
+  private def refuse(transport: Transport, id: String, message: String, log: String => Unit): Unit =
     log(s"refused: $message")
-    val outWriter = writer(endpoint, id, "out")
-    val errWriter = writer(endpoint, id, "err")
+    val outWriter = writer(transport, id, "out")
+    val errWriter = writer(transport, id, "err")
     writeAll(outWriter.getOutputStream, "")
     writeAll(errWriter.getOutputStream, message + "\n")
     Seq(outWriter, errWriter).foreach: process =>
       if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
-    writeExit(endpoint, id, 2)
+    writeExit(transport, id, 2)
 
   private def answer(
-    endpoint: Endpoint,
+    transport: Transport,
     service: Service,
     id: String,
     ctl: Process,
@@ -336,10 +336,10 @@ object RunOnHostChannel:
     log: String => Unit,
   ): Unit =
     validated(service, request) match
-      case Left(refusal) => refuse(endpoint, id, refusal, log)
+      case Left(refusal) => refuse(transport, id, refusal, log)
       case Right(workingDirectory) =>
-        val outWriter = writer(endpoint, id, "out")
-        val errWriter = writer(endpoint, id, "err")
+        val outWriter = writer(transport, id, "out")
+        val errWriter = writer(transport, id, "err")
         val command = service.buildCommand(request.tool, workingDirectory, request.arguments)
         log(s"${request.tool} in $workingDirectory: ${request.arguments.mkString(" ")}")
         try
@@ -373,7 +373,7 @@ object RunOnHostChannel:
             // shim blocked on a FIFO no writer will ever open.
             outWriter.waitFor()
             errWriter.waitFor()
-            writeExit(endpoint, id, exit)
+            writeExit(transport, id, exit)
             log(s"exit $exit")
           ended.set(true)
         catch
@@ -381,7 +381,7 @@ object RunOnHostChannel:
             log(s"could not start the wrapper: ${ex.getMessage}")
             writeAll(outWriter.getOutputStream, "")
             writeAll(errWriter.getOutputStream, s"could not start the build wrapper: ${ex.getMessage}\n")
-            writeExit(endpoint, id, 2)
+            writeExit(transport, id, 2)
         finally
           currentCommand = None
           Seq(outWriter, errWriter).foreach: process =>
@@ -408,7 +408,7 @@ object RunOnHostChannel:
           s"it serves ${service.tools.toSeq.sorted.mkString(", ")}",
       )
     else
-      RunOnHostPolicy
+      RunOnHostPrereqs
         .workingDirectory(
           request.workingDirectory, service.mount, service.project, service.canonicalize, service.os,
         )
@@ -492,7 +492,7 @@ object RunOnHostChannel:
               log(s"project $projectArg: ${ex.getMessage}")
               sys.exit(1)
         Runtime.getRuntime.addShutdownHook(Thread(() => endCurrentCommand()))
-        val endpoint = Endpoint(
+        val transport = Transport(
           execPrefix = Seq(podman, "exec", "-i", container),
           sandboxRunning = () =>
             try
@@ -515,7 +515,7 @@ object RunOnHostChannel:
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
         log(s"serving $toolsCsv for $project in $container")
-        serve(endpoint, service, log)
+        serve(transport, service, log)
         log("the sandbox is gone; exiting")
       case other =>
         Console.err.println(s"--serve-run-on-host: unexpected arguments: ${other.mkString(" ")}")

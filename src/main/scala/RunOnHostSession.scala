@@ -4,10 +4,10 @@
 // injected filesystem-and-processes interface, so the kill interleavings are unit tests rather than
 // something only a Mac under kill -9 can check.
 //
-// The rule the records keep: no process may outlive its record. A spawn's shim becomes its
+// The rule the records keep: no process may outlive its record. A spawn becomes its
 // own group's leader and publishes `<pgid> <leader start time>` by rename before it runs the
 // command, aborting when the rename fails — so a kill at any instant leaves a complete record or
-// a child that ends itself. The shim stays after the command ends, publishing its exit status
+// a child that ends itself. The spawn stays after the command ends, publishing its exit status
 // beside the record, so the group stays provable through teardown. The scavenger condemns a
 // directory (rename out of the scanned root) before it reads records, ends what they name, and
 // only then deletes.
@@ -154,7 +154,7 @@ object RunOnHostSession:
    * The wrapper's own step 11, on the scavenger's machinery: condemn the session first — the
    * build's grants are path-based and name the original pathname, so after the rename no process
    * it started can redirect what `collect`'s canonicalization proves — then collect it: recorded
-   * groups ended behind their live shim leaders, the server with them, the directory deleted.
+   * groups ended behind their live spawn leaders, the server with them, the directory deleted.
    * Asking the server by protocol is the scavenger's tool for the leaderless orphan; here the
    * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
    * TERM). The session's own lock is held through the collection — the exclusivity every other
@@ -319,9 +319,9 @@ object RunOnHostSession:
    * The registration, as the command the wrapper spawns. perl — present on every macOS —
    * makes itself its own group's leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
-   * instead, which is the shim ending itself after a condemnation won the race. When the command
+   * instead, which is the spawn ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
-   * the same way as `<record>.exit`, and the shim stays until its group is ended: a group is
+   * the same way as `<record>.exit`, and the spawn stays until its group is ended: a group is
    * signalled only behind a live leader, and a build can fork a helper and return, so
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
@@ -351,26 +351,26 @@ object RunOnHostSession:
       |rename("$record.exit.pending", "$record.exit") or exit 71;
       |sleep 3600 while 1;""".stripMargin
 
-  /** Where the shim publishes the command's exit status, beside its record. */
+  /** Where the spawn publishes the command's exit status, beside its record. */
   def exitRecord(record: Path): Path = record.resolveSibling(s"${record.getFileName}.exit")
 
   /**
-   * The command's exit status. The shim stays alive after publishing it, so the file, not the
-   * process, holds the answer; a shim gone without one was killed, or ended itself (exit 71)
+   * The command's exit status. The spawn stays alive after publishing it, so the file, not the
+   * process, holds the answer; a spawn gone without one was killed, or ended itself (exit 71)
    * after losing a condemnation race.
    */
-  def awaitExit(exitFile: Path, shim: Process): Either[String, Int] =
+  def awaitExit(exitFile: Path, spawn: Process): Either[String, Int] =
     var result: Option[Either[String, Int]] = None
     while result.isEmpty do
-      val shimEnded = !shim.isAlive // read before the file: a shim dying after its rename still answers
+      val spawnEnded = !spawn.isAlive // read before the file: a spawn dying after its rename still answers
       if Files.exists(exitFile) then
         result = Some(
           try Files.readString(exitFile, UTF_8).trim.toIntOption.toRight(s"$exitFile holds no status")
           catch case ex: IOException => Left(s"$exitFile: ${ex.getMessage}"),
         )
-      else if shimEnded then
+      else if spawnEnded then
         result =
-          Some(Left(s"the spawn ended (exit ${shim.exitValue}) without publishing an exit status"))
+          Some(Left(s"the spawn ended (exit ${spawn.exitValue}) without publishing an exit status"))
       else Thread.sleep(20)
     result.get
 

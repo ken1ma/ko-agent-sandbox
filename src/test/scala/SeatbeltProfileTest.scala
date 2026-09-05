@@ -6,7 +6,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Path, Paths}
 
-import RunOnHostPolicy.{BuildPolicy, Tool}
+import RunOnHostPrereqs.{BuildPrereqs, Tool}
 import SeatbeltProfile.*
 
 class SeatbeltProfileTest extends munit.FunSuite:
@@ -18,17 +18,17 @@ class SeatbeltProfileTest extends munit.FunSuite:
     "arc/https/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%252B7/" +
       "OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.4_7.tar.gz/jdk-25.0.4+7/Contents/Home",
   )
-  private val launcher = Paths.get(s"$home/Library/Application Support/Coursier/bin/sbt")
+  private val executable = Paths.get(s"$home/Library/Application Support/Coursier/bin/sbt")
   private val distributionExec =
     cacheRoot.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
   private val distribution = distributionExec.getParent.getParent
 
-  private val policy = BuildPolicy(
+  private val prereqs = BuildPrereqs(
     project = project,
     jdkHome = jdkHome,
     coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/coursier/v1"),
     tool = Tool.Sbt,
-    launcher = launcher,
+    executable = executable,
   )
 
   private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/sbt-global")
@@ -37,7 +37,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
-  ) = ProfileInputs(policy, tmp, Some(distribution), Some(sbtGlobal), port, runtime)
+  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), port, runtime)
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
@@ -64,11 +64,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("the tool and the distribution agree: sbt needs it, mill has none"):
     assert(render(inputs().copy(sbtDistribution = None)).isLeft)
-    assert(render(inputs().copy(policy = millPolicy)).isLeft)
+    assert(render(inputs().copy(prereqs = millPrereqs)).isLeft)
 
   test("the tool and the global base agree the same way"):
     assert(render(inputs().copy(sbtGlobal = None)).isLeft)
-    assert(render(inputs().copy(policy = millPolicy, sbtDistribution = None)).isLeft)
+    assert(render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None)).isLeft)
 
   test("the sbt global base is granted read-write and, like the Coursier cache, never exec"):
     val text = rendered()
@@ -131,11 +131,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("the tool's two halves are both granted, and neither is writable"):
     val text = rendered()
-    val executable = text.linesIterator.filter(_.startsWith("(allow process-exec*")).mkString("\n")
-    assert(clue(executable).contains(launcher.toString))
-    assert(executable.contains(distribution.toString))
+    val executionRules = text.linesIterator.filter(_.startsWith("(allow process-exec*")).mkString("\n")
+    assert(clue(executionRules).contains(executable.toString))
+    assert(executionRules.contains(distribution.toString))
     val writable = text.linesIterator.filter(_.contains("file-write*")).filter(_.startsWith("(allow")).mkString("\n")
-    assert(!writable.contains(launcher.toString))
+    assert(!writable.contains(executable.toString))
     assert(!writable.contains(distribution.toString))
     assert(!writable.contains(jdkHome.toString))
 
@@ -198,47 +198,47 @@ class SeatbeltProfileTest extends munit.FunSuite:
     )
 
   // --------------------------------------------------------------------------
-  // The sbt launcher's second half
+  // The cs-installed sbt script's second half
   // --------------------------------------------------------------------------
 
-  test("the distribution is read out of the wrapper, not derived from a convention"):
-    val wrapper =
+  test("the distribution is read out of the script, not derived from a convention"):
+    val script =
       s"""#!/usr/bin/env sh
          |exec "$distributionExec" "$$@"
          |""".stripMargin
-    assertEquals(sbtDistribution(wrapper, cacheRoot), Some(distributionExec))
+    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
 
   test("the longest cache path wins, so a grant never lands on a prefix"):
-    val wrapper =
+    val script =
       s"""CACHE="$cacheRoot"
          |exec "$distributionExec" "$$@"
          |""".stripMargin
-    assertEquals(sbtDistribution(wrapper, cacheRoot), Some(distributionExec))
+    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
 
   test("a path escaping the cache root is not accepted"):
     val escaping = s"$cacheRoot/../../../etc/passwd"
     assertEquals(sbtDistribution(s"""exec "$escaping"""", cacheRoot), None)
 
-  test("a wrapper naming no cache path yields nothing rather than a guess"):
+  test("a script naming no cache path yields nothing rather than a guess"):
     assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", cacheRoot), None)
 
   test("the distribution grant is its home, not the executable: sbt-launch.jar lives beside it"):
     assert(rendered().contains(s"(subpath \"$distribution\")"))
     assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
 
-  private val millPolicy = policy.copy(
+  private val millPrereqs = prereqs.copy(
     tool = Tool.Mill,
-    launcher = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
+    executable = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
   )
 
   private def millText: String =
-    render(inputs().copy(policy = millPolicy, sbtDistribution = None, sbtGlobal = None))
+    render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None))
       .fold(reason => fail(reason), identity)
 
   test("mill renders without the sbt distribution"):
     val text = millText
     assert(!clue(text).contains("sbt-2.0.4.zip"))
-    assert(text.contains(millPolicy.launcher.toString))
+    assert(text.contains(millPrereqs.executable.toString))
 
   test("mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):
     val text = millText

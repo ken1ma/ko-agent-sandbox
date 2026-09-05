@@ -42,7 +42,7 @@ emit() {
     mv "$work/build.sb.env" "$work/build.env"
 }
 
-# -java-home because the sbt launcher declares `java_cmd=java` and would otherwise resolve
+# -java-home because the sbt script declares `java_cmd=java` and would otherwise resolve
 # /usr/bin/java from PATH, which the profile does not grant.
 #
 # No -Dsbt.server.autostart=false, which sbt 2 cannot honour: its own --no-server
@@ -50,13 +50,13 @@ emit() {
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # session temp with everything else.
 # The environment is the build's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
-# agent cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
+# build cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the session temp.
 build() {
     . "$work/build.env"
     tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"
     PATH="$JAVA_HOME/bin:$PATH" \
-    COURSIER_CACHE=$(sed -n 's/^agent cache: //p' "$work/emit.log") \
+    COURSIER_CACHE=$(sed -n 's/^build cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
     JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global" \
     /usr/bin/sandbox-exec -f "$work/build.sb" \
@@ -125,7 +125,7 @@ ops)
 
     echo "measuring: $probe_command"
     if ! try_ops "$keep"; then
-        echo "every family granted and it still fails — the command is broken, not the policy." >&2
+        echo "every family granted and it still fails — the command is broken, not the profile." >&2
         dump_profile "$work/ops.sb"
         exit 1
     fi
@@ -217,7 +217,7 @@ paths)
     # suffices decides how much this costs — a literal names the directory entry alone and reveals
     # nothing about its contents.
     # What is already granted, so the measurement answers "what *else*" rather than rediscovering
-    # the policy's own paths. The command under test defaults to a shell.
+    # the prerequisites' paths. The command under test defaults to a shell.
     probe_command=${2:-"/bin/sh -c 'echo ok'"}
     granted=""
     while IFS= read -r line; do
@@ -319,11 +319,11 @@ floor)
     # Only binaries the profile grants: a rung that fails because the ladder reached for something
     # ungranted says nothing about the layer it claims to test.
     rung "the loader, through a granted shell"           /bin/sh -c 'echo hello'
-    rung "the launcher's interpreter: /usr/bin/env sh"   /usr/bin/env sh -c 'echo hello'
+    rung "the sbt script's interpreter: /usr/bin/env sh"   /usr/bin/env sh -c 'echo hello'
     rung "bash, which the inner sbt script needs"        /bin/bash -c 'echo hello'
     rung "the coreutils that script calls"               /bin/bash -c 'uname -s; dirname /a/b; basename /a/b'
     rung "the JDK"                                       "$JAVA_HOME/bin/java" -version
-    rung "the sbt wrapper, no build"                     sbt -java-home "$JAVA_HOME" --script-version
+    rung "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
     echo "every rung passed; the gate is next: sh src/probe/build-profile-gate.sh quick"
     ;;

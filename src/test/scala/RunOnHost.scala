@@ -13,7 +13,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Paths
 
-import RunOnHostPolicy.Tool
+import RunOnHostPrereqs.Tool
 
 object RunOnHost:
 
