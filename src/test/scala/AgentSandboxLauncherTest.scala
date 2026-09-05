@@ -1326,7 +1326,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
       .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
     val interpolated = sources.flatMap("\"--env=\\$([A-Za-z]+)".r.findAllMatchIn(_).map(_.group(1))).toSet
-    assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable"))
+    // `name` is upstreamProxyArgs's HTTPS_PROXY pass-through to the proxy container: a name with
+    // no value, which no sandbox receives.
+    assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
     Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_POLICY").foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
     // The variable holds the policy lines alone: the dry run's metadata after them describes the

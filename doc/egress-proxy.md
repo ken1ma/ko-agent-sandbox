@@ -253,3 +253,32 @@ The per-project CA lives on the host, under
    `run-<suffix>/agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
    directory, and removes it with the run; the proxy mints each host's certificate from it at the
    host's first connection. Nothing is rotated: no session trusts another's.
+
+## Through an upstream proxy
+
+`HTTPS_PROXY` in the launcher's environment, `http[s]://[user:password@]host:port`, sends every
+origin connection of the session's proxy through that upstream proxy; lowercase `https_proxy` is
+read when the uppercase is unset, and `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and OS proxy settings
+are not read at all. The port is explicit because clients disagree on the default: curl assumes
+1080, Go, Python and Node assume 80. A malformed value refuses the launch, naming the part that is
+wrong and never the value. `--build`'s pulls and builds, and `podman machine start`, use the host's
+variables as podman does on its own; of a session's containers only the proxy receives the one
+selected variable, and the sandbox none of them.
+
+What changes is only how an admitted address is reached: the policy decides every destination as
+before, the name is resolved once and every answer must be public, and the upstream proxy is
+asked for a tunnel to that numeric address — never for the hostname, which it would resolve
+itself, outside the check. A failure on that path is an `error` line and a 502, never a direct
+retry; `sandbox-egress-check <host>` prints the stage.
+
+The launch banner and the proxy's startup lines name the endpoint without its userinfo, which
+stays in the proxy container's environment (SECURITY.md, "Egress proxy"). `--egress-check=<host>`
+reports whether a tunnel to the host's first address could be opened.
+
+Not supported yet: an upstream proxy that terminates TLS with its own certificate, whose re-signed
+origin certificates fail validation in the proxy and in the sandbox's clients alike, and an
+`https` endpoint under a private CA. Both fail closed with a certificate error. In the proxy
+container a loopback endpoint is the container's own loopback, not the host's, so a helper such as
+cntlm listening on the host's `127.0.0.1` is out of reach; the same variable does reach it from a
+`--run-on-host` build's proxy, which runs on the host (`run-on-host.md`, "The build's egress
+proxy").

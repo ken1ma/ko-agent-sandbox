@@ -215,7 +215,7 @@ object HTTPHelper:
 
     /** The client is waiting for a 100 before it sends its body (RFC 9110 §10.1.1). This proxy
       * answers the 100 itself (relayInspected) and forwards the body unconditionally, so
-      * toUpstreamBytes drops the Expect — an origin must not be left waiting for a body this
+      * toOriginBytes drops the Expect — an origin must not be left waiting for a body this
       * proxy sends regardless. Without this, the client stalls until its own 100 timeout on
       * every large POST (git's fetch negotiation past http.postBuffer sends it). */
     def expectsContinue: Boolean =
@@ -224,7 +224,7 @@ object HTTPHelper:
     /** HTTP/1.1, this hop's headers removed — the fixed hop-by-hop set plus whatever the
       * message's own Connection header names — and `Connection: close` added: end-of-stream
       * then frames the response. */
-    def toUpstreamBytes: Array[Byte] =
+    def toOriginBytes: Array[Byte] =
       val builder = StringBuilder()
 
       builder.append(s"$method $target HTTP/1.1\r\n")
@@ -372,7 +372,7 @@ object HTTPHelper:
 
     /** RFC 9112 §6.3 for the one-request sessions this proxy runs. Mirrors the request side's
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
-      * UntilClose, because this proxy sends `Connection: close` upstream. */
+      * UntilClose, because this proxy sends `Connection: close` to the origin. */
     def bodyFraming(requestMethod: String): BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
@@ -406,9 +406,9 @@ object HTTPHelper:
         else BodyFraming.UntilClose
 
   object HttpResponseHead:
-    def parse(bytes: Array[Byte]): HttpResponseHead =
+    def parse(bytes: Array[Byte], subject: String = "origin response head"): HttpResponseHead =
       def malformed(reason: String): Nothing =
-        throw IOException(s"origin response head: $reason")
+        throw IOException(s"$subject: $reason")
 
       val text = String(bytes, StandardCharsets.ISO_8859_1)
 
@@ -489,7 +489,7 @@ object HTTPHelper:
         throw IllegalStateException("request bodies cannot be close-delimited")
 
   /**
-   * The response-body relay, framing enforced: an upstream EOF inside a declared length or an
+   * The response-body relay, framing enforced: an origin EOF inside a declared length or an
    * unterminated chunk sequence is TruncatedResponse — the caller must end the connection so the
    * stump cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
    * is the terminator.

@@ -1238,7 +1238,7 @@ object AgentSandboxLauncher:
       try
         run(
           (Vector(podman, "run", "--rm", "--pull=never", s"--network=$network")
-            ++ policyEnvArgs(profile, provider, policyFiles)
+            ++ policyEnvArgs(profile, provider, policyFiles) ++ upstreamProxyArgs(env)
             ++ Vector(proxyImage, "--check-host", host))*
         )
       finally
@@ -2793,7 +2793,7 @@ object AgentSandboxLauncher:
             "--pids-limit=512",
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
-          ) ++ policyEnvArgs(egressProfile, provider, policyFiles)
+          ) ++ policyEnvArgs(egressProfile, provider, policyFiles) ++ upstreamProxyArgs(env)
           ++ proxyTls ++ proxyLogArgs ++ Vector(proxyImage)*
       )
       if !proxyCreated.ok then
@@ -2841,6 +2841,17 @@ object AgentSandboxLauncher:
     printWidening(policyResolvedText)
     val egressLine = egressBanner(policyResolvedText)
     System.err.println(if publicDefault then weakened(egressLine) else egressLine)
+    // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
+    // parse, so what is on the screen is what is used — never a launcher-side reading of the
+    // variable.
+    if upstreamProxyArgs(env).nonEmpty then
+      val said =
+        try Files.readString(hostLogFile)
+        catch case ex: IOException => fail(s"error: cannot read $hostLogFile: ${ex.getMessage}")
+      val transport = transportLineOf(said).getOrElse(
+        fail("error: the egress proxy reported no transport line before listening; the image is not this launcher's"),
+      )
+      System.err.println(transport.replace("upstream proxy", chosen("upstream proxy")))
     if policyWarnings.nonEmpty then System.err.println(emphasized(policyWarnings))
     if inspectedHosts.isEmpty && !publicDefault then
       System.err.println("egress tls inspection: this policy inspects no hosts; no leaf minted")

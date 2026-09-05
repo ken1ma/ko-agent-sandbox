@@ -73,10 +73,10 @@ object TLSHelper:
      * hostname checked, SNI set. Terminating the client's TLS is no excuse
      * to stop checking the server's.
      */
-    def connect(upstream: Socket, host: String): SSLSocket =
+    def connect(origin: Socket, host: String): SSLSocket =
       val socket =
         SSLContext.getDefault.getSocketFactory
-          .createSocket(upstream, host, 443, false)
+          .createSocket(origin, host, 443, false)
           .asInstanceOf[SSLSocket]
 
       val parameters = socket.getSSLParameters

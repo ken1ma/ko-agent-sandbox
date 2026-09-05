@@ -29,6 +29,24 @@ class EgressProxyPolicyTest extends munit.FunSuite:
     val normalized = normalizePolicyText("allow https://a.example/ read\n\ndeny defaults # x\n")
     assertEquals(normalizePolicyText(normalized), normalized)
 
+  test("HTTPS_PROXY reaches the proxy container by name alone, uppercase before lowercase"):
+    assertEquals(upstreamProxyArgs(Map.empty[String, String].get), Vector.empty)
+    assertEquals(upstreamProxyArgs(Map("HTTPS_PROXY" -> "").get), Vector.empty)
+    assertEquals(
+      upstreamProxyArgs(Map("https_proxy" -> "http://alice:secret@proxy.corp.example:3128").get),
+      Vector("--env=https_proxy"),
+    )
+    assertEquals(
+      upstreamProxyArgs(Map("HTTPS_PROXY" -> "http://a.example:1", "https_proxy" -> "http://b.example:1").get),
+      Vector("--env=HTTPS_PROXY"),
+    )
+
+  test("the transport line is read back from the proxy's stamped log"):
+    val line = "egress transport: upstream proxy http://proxy.corp.example:3128 -> 10.1.2.3 (HTTPS_PROXY)"
+    val ready = "2026-08-26T11:59:38Z agent-egress-proxy listening on :3128\n"
+    assertEquals(transportLineOf(s"2026-08-26T11:59:38Z $line\n$ready"), Some(line))
+    assertEquals(transportLineOf(ready), None)
+
   test("the banner summary joins a file's entries on one line"):
     assertEquals(
       entriesSummary("allow https://a.example/ read\ndeny https://b.example/"),

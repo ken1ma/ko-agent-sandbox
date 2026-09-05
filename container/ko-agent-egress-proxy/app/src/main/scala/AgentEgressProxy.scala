@@ -2,7 +2,9 @@
 // inspected session. The policy and its decisions live in PolicyHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
 // HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf minting in X509Helper.scala, git protocol
-// knowledge in GitHelper.scala, and hostname/address vetting in IPAddrHelper.scala.
+// knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
+// address is reached — directly or through the upstream proxy HTTPS_PROXY names — in
+// TransportHelper.scala.
 
 package agentsandbox.egress
 
@@ -20,6 +22,7 @@ import IPAddrHelper.*
 import LogHelper.*
 import PolicyHelper.*
 import TLSHelper.*
+import TransportHelper.*
 
 object AgentEgressProxy:
 
@@ -135,10 +138,35 @@ object AgentEgressProxy:
       catch case ex: PolicyViolation => Vector(s"refused: ${ex.getMessage}")
     decisions.foreach(decision => println(s"policy: $host $decision"))
 
-    try println(s"resolves: ${resolvePublic(host).map(_.getHostAddress).mkString(" ")}")
-    catch
-      case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
-      case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
+    val addresses =
+      try
+        val resolved = resolvePublic(host)
+        println(s"resolves: ${resolved.map(_.getHostAddress).mkString(" ")}")
+        resolved
+      catch
+        case ex: PolicyViolation =>
+          println(s"resolves: refused: ${ex.getMessage}")
+          Vector.empty
+        case ex: IOException =>
+          println(s"resolves: failed: ${ex.getMessage}")
+          Vector.empty
+
+    // The transport a launch would use, through the same parser, resolution and CONNECT: one
+    // tunnel to the first vetted address, closed before any TLS — enough to say whether the
+    // upstream proxy admits a numeric CONNECT to this host, without asking the origin anything.
+    UpstreamEndpoint.configured(variable => Option(System.getenv(variable))).foreach: endpoint =>
+      val transport =
+        try UpstreamProxy(endpoint, endpoint.resolve())
+        catch
+          case ex: (IllegalArgumentException | IOException) =>
+            println(s"upstream proxy: refused: ${ex.getMessage}")
+            sys.exit(2)
+      println(transport.summary.stripPrefix("egress transport: "))
+      addresses.headOption.foreach: address =>
+        try
+          closeQuietly(transport.connect(Vector(address), 443).socket)
+          println(s"upstream tunnel: established to ${address.getHostAddress}")
+        catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
   def configuredPolicy(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
     RetiredVariables.filter(variable => read(variable).nonEmpty).foreach: variable =>
@@ -199,7 +227,15 @@ object AgentEgressProxy:
     val (policy, bind) =
       try
         val resolved = configuredPolicy()
-        (EgressPolicy(resolved, loadInspection(resolved)), parseBind(Option(System.getenv(BindVariable))))
+        val inspection = loadInspection(resolved)
+        // Last, so a variable refusal is reported before an endpoint the proxy cannot resolve is.
+        val transport =
+          try originTransport(variable => Option(System.getenv(variable)))
+          catch
+            case ex: IOException =>
+              System.err.println(ex.getMessage)
+              sys.exit(2)
+        (EgressPolicy(resolved, inspection, transport), parseBind(Option(System.getenv(BindVariable))))
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -209,6 +245,9 @@ object AgentEgressProxy:
         case ex: (IOException | GeneralSecurityException) =>
           System.err.println(s"cannot load the TLS inspection material: ${ex.getMessage}")
           sys.exit(2)
+
+    // Before the ready line: the launcher reads the log once that line lands, and relays this one.
+    System.err.println(policy.transport.summary)
 
     val server = ServerSocket()
     server.setReuseAddress(true)
@@ -279,6 +318,7 @@ object AgentEgressProxy:
   case class EgressPolicy(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
+    transport: OriginTransport,
   ):
     def inspectionSummary: String =
       inspection match
@@ -332,8 +372,8 @@ object AgentEgressProxy:
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
-      // An IO failure while reading the request is the client's, not upstream's; rethrown as a
-      // BadRequest so the log does not blame an upstream the proxy never dialled, with a 502.
+      // An IO failure while reading the request is the client's, not the origin's; rethrown as a
+      // BadRequest so the log does not blame an origin the proxy never dialled, with a 502.
       val request =
         try
           client.setSoTimeout(HandshakeTimeoutMillis)
@@ -348,10 +388,10 @@ object AgentEgressProxy:
       host = request.host
       host = authorizeRequest(request, policy.resolved)
       addresses = resolvePublic(host)
-      val upstream = connect(addresses, request.port)
+      val origin = policy.transport.connect(addresses, request.port)
 
-      try runEstablishedTunnel(client, upstream, host, policy)
-      finally closeQuietly(upstream)
+      try runEstablishedTunnel(client, origin, host, policy)
+      finally closeQuietly(origin.socket)
 
     catch
       case _: ClosedWithoutRequest =>
@@ -371,11 +411,14 @@ object AgentEgressProxy:
         respondQuietly(client, 403, "Forbidden", refusalBody(ex.getMessage, Some(ex.advice)))
 
       case ex: IOException =>
-        val stage =
-          if addresses.isEmpty then "resolution:"
-          else s"tried ${addresses.map(_.getHostAddress).mkString(" ")}:"
+        val stage = ex match
+          case failure: TransportFailure => s"tried ${failure.attempted.map(_.getHostAddress).mkString(" ")}:"
+          case _ if addresses.isEmpty    => "resolution:"
+          case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
-        respondQuietly(client, 502, "Bad Gateway")
+        // The stage in the body, as a refusal's reason is: the policy admitted this host, so the
+        // agent's next step is to report what failed, and only sandbox-egress-check shows it.
+        respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
 
       case NonFatal(ex) =>
         System.err.println(
@@ -388,7 +431,7 @@ object AgentEgressProxy:
 
   def runEstablishedTunnel(
     client: Socket,
-    upstream: Socket,
+    origin: OriginSocket,
     connectHost: String,
     policy: EgressPolicy,
   ): Unit =
@@ -408,14 +451,14 @@ object AgentEgressProxy:
       policy.inspection.filter(_ => !policy.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedSession(
-            client, upstream, connectHost, hello, inspection,
+            client, origin, connectHost, hello, inspection,
             policy.resolved.scopesOf(connectHost),
             policy.resolved.admits,
           )
 
         case None =>
           System.err.println(
-            auditLine("allow", connectHost, "CONNECT", "", s"-> ${upstream.getInetAddress.getHostAddress}"),
+            auditLine("allow", connectHost, "CONNECT", "", s"-> ${origin.address.getHostAddress}"),
           )
 
           /*
@@ -423,13 +466,13 @@ object AgentEgressProxy:
            * ClientHello. Forward those exact bytes unchanged before switching
            * to an opaque bidirectional tunnel.
            */
-          upstream.getOutputStream.write(hello.wireBytes)
-          upstream.getOutputStream.flush()
+          origin.socket.getOutputStream.write(hello.wireBytes)
+          origin.socket.getOutputStream.flush()
 
           client.setSoTimeout(0)
-          upstream.setSoTimeout(0)
+          origin.socket.setSoTimeout(0)
 
-          tunnel(client, upstream)
+          tunnel(client, origin.socket)
 
     catch
       /*
@@ -458,7 +501,7 @@ object AgentEgressProxy:
 
   /*
    * One request and its response, then the connection ends — and both peers are told: the
-   * request goes upstream with `Connection: close` (end-of-stream then frames the response),
+   * request goes to the origin with `Connection: close` (end-of-stream then frames the response),
    * and the response reaches the client with this proxy's own `Connection: close`, whatever the
    * origin's hop said (toClientBytes). Keeping the connection alive would mean agreeing with
    * the origin about where each message ends — the exact disagreement request smuggling
@@ -467,7 +510,7 @@ object AgentEgressProxy:
    */
   def runInspectedSession(
     client: Socket,
-    upstream: Socket,
+    origin: OriginSocket,
     host: String,
     hello: TlsClientHello,
     inspection: TlsInspection,
@@ -493,15 +536,15 @@ object AgentEgressProxy:
 
         authorizeInspectedRequest(host, head, hostScopes, admitted)
 
-        val upstreamTls = inspection.connect(upstream, host)
+        val originTls = inspection.connect(origin.socket, host)
 
         try
           System.err.println(
-            auditLine("allow", host, method, target, s"-> ${upstream.getInetAddress.getHostAddress}"),
+            auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
           )
 
-          relayInspected(clientTls, upstreamTls, host, head)
-        finally closeQuietly(upstreamTls)
+          relayInspected(clientTls, originTls, host, head)
+        finally closeQuietly(originTls)
 
       catch
         case _: ClosedWithoutRequest =>
@@ -543,30 +586,30 @@ object AgentEgressProxy:
   // inside the tunnel — and plain sockets are what lets the relay be tested on loopback pairs.
   def relayInspected(
     clientTls: Socket,
-    upstreamTls: Socket,
+    originTls: Socket,
     host: String,
     head: HttpRequestHead,
   ): Unit =
-    val toUpstream = upstreamTls.getOutputStream
+    val toOrigin = originTls.getOutputStream
 
     clientTls.setSoTimeout(InspectedIdleTimeoutMillis)
-    upstreamTls.setSoTimeout(InspectedIdleTimeoutMillis)
+    originTls.setSoTimeout(InspectedIdleTimeoutMillis)
 
-    toUpstream.write(head.toUpstreamBytes)
-    // The 100 the client is waiting for is this proxy's to send: the Expect never goes upstream
-    // (toUpstreamBytes has the why), and without an answer the client stalls before its body.
+    toOrigin.write(head.toOriginBytes)
+    // The 100 the client is waiting for is this proxy's to send: the Expect never goes to the origin
+    // (toOriginBytes has the why), and without an answer the client stalls before its body.
     if head.expectsContinue then
       writeAscii(clientTls.getOutputStream, "HTTP/1.1 100 Continue\r\n\r\n")
-    forwardRequestBody(clientTls.getInputStream, toUpstream, head.bodyFraming)
-    toUpstream.flush()
+    forwardRequestBody(clientTls.getInputStream, toOrigin, head.bodyFraming)
+    toOrigin.flush()
 
-    val fromUpstream = upstreamTls.getInputStream
+    val fromOrigin = originTls.getInputStream
     val toClient = clientTls.getOutputStream
 
     @tailrec
     def finalResponseHead(): HttpResponseHead =
       val bytes =
-        try readHttpHeader(fromUpstream, MaxHttpHeaderBytes)
+        try readHttpHeader(fromOrigin, MaxHttpHeaderBytes)
         catch
           case _: ClosedWithoutRequest => throw IOException("origin closed before the response head")
           case ex: BadRequest          => throw IOException(s"origin response head: ${ex.getMessage}")
@@ -582,7 +625,7 @@ object AgentEgressProxy:
 
     toClient.write(response.toClientBytes)
     try
-      forwardResponseBody(fromUpstream, toClient, framing)
+      forwardResponseBody(fromOrigin, toClient, framing)
       toClient.flush()
       drainClient(clientTls)
     catch
@@ -614,38 +657,7 @@ object AgentEgressProxy:
       loop(64 * 1024)
     catch case _: IOException => ()
 
-  def connect(
-    addresses: Vector[InetAddress],
-    port: Int,
-  ): Socket =
-    @tailrec
-    def loop(
-      remaining: List[InetAddress],
-      lastFailure: Option[IOException],
-    ): Socket =
-      remaining match
-        case Nil =>
-          throw lastFailure.getOrElse(
-            IOException("no resolved address could be connected"),
-          )
-
-        case address :: rest =>
-          val socket = Socket()
-          try
-            socket.connect(
-              InetSocketAddress(address, port),
-              ConnectTimeoutMillis,
-            )
-            socket.setTcpNoDelay(true)
-            socket
-          catch
-            case ex: IOException =>
-              closeQuietly(socket)
-              loop(rest, Some(ex))
-
-    loop(addresses.toList, None)
-
-  def tunnel(client: Socket, upstream: Socket): Unit =
+  def tunnel(client: Socket, origin: Socket): Unit =
     val done = CountDownLatch(2)
 
     def pump(
@@ -667,14 +679,14 @@ object AgentEgressProxy:
     executor.execute(() =>
       pump(
         client.getInputStream,
-        upstream.getOutputStream,
-        () => upstream.shutdownOutput(),
+        origin.getOutputStream,
+        () => origin.shutdownOutput(),
       ),
     )
 
     executor.execute(() =>
       pump(
-        upstream.getInputStream,
+        origin.getInputStream,
         client.getOutputStream,
         () => client.shutdownOutput(),
       ),
@@ -684,7 +696,3 @@ object AgentEgressProxy:
     catch
       case _: InterruptedException =>
         Thread.currentThread().interrupt()
-
-  def closeQuietly(socket: Socket): Unit =
-    try socket.close()
-    catch case _: IOException => ()

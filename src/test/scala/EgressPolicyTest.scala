@@ -2,7 +2,7 @@
 // each test here launches its own.
 //
 // Two of these are the refusals no session can demonstrate about itself, because both happen on the
-// proxy's *upstream* leg, which inspection moves out of the client's sight: an origin whose
+// proxy's *origin* leg, which inspection moves out of the client's sight: an origin whose
 // certificate does not verify, and a name that resolves into private address space. Skipping either
 // check is invisible in normal operation — the sandbox sees a valid leaf minted by this project's
 // CA whatever the origin presented — which is the classic TLS-interception failure.
@@ -65,18 +65,18 @@ class EgressPolicyTest extends munit.FunSuite:
       s"$url failed, but not with a refusal from the proxy: ${attempt.err}",
     )
 
-  /** An admitted host whose *upstream* leg the proxy would not complete. Its CONNECT succeeded and
+  /** An admitted host whose *origin* leg the proxy would not complete. Its CONNECT succeeded and
     * the proxy terminated the client's TLS, so the refusal arrives as a status inside the tunnel
     * and curl exits 0 — which is precisely why an unverified origin would be indistinguishable from
     * a verified one in here, and why the proxy's own audit line is what settles the cause. */
-  private def refusedUpstream(session: Session, host: String, markers: Seq[String], why: String): Unit =
+  private def refusedAtOrigin(session: Session, host: String, markers: Seq[String], why: String): Unit =
     assertEquals(status(session, s"https://$host/"), "502", s"$host: $why")
 
     val audit = run(podman, "logs", session.proxy)
     val line = (audit.text + "\n" + audit.err).linesIterator.filter(_.contains(host)).mkString("\n")
     assert(
       markers.exists(line.contains),
-      s"$host failed upstream, but not over its certificate — the origin may simply be down:\n$line",
+      s"$host failed at the origin, but not over its certificate — the origin may simply be down:\n$line",
     )
 
   private def withSession(rule: Option[String])(body: Session => Unit): Unit =
@@ -91,7 +91,7 @@ class EgressPolicyTest extends munit.FunSuite:
       live.foreach(stop)
       discard(project)
 
-  test("a read line is inspected, verified upstream, and opens nothing else"):
+  test("a read line is inspected, verified at the origin, and opens nothing else"):
     optIn()
 
     withSession(
@@ -113,13 +113,13 @@ class EgressPolicyTest extends munit.FunSuite:
       )
       assertEquals(status(session, "-X", "POST", "https://example.com/"), "403", "the addition allowed a write")
 
-      // The upstream leg. The sandbox cannot tell a verified origin from an unverified one — both
+      // The origin leg. The sandbox cannot tell a verified origin from an unverified one — both
       // arrive under a leaf it trusts — so the refusal has to come from the proxy or not at all.
-      refusedUpstream(
+      refusedAtOrigin(
         session, "expired.badssl.com", Seq("PKIX", "validity", "expired"),
         "SECURITY: the proxy accepted an expired origin certificate",
       )
-      refusedUpstream(
+      refusedAtOrigin(
         session, "wrong.host.badssl.com", Seq("subject alternative", "No name matching", "PKIX"),
         "SECURITY: the proxy accepted an origin certificate issued for another name",
       )

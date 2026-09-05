@@ -192,8 +192,10 @@ checkout — [Development](#development).
       --egress-check=<host> [--] [<command> [args...]]
                          one host's policy decision plus its current DNS
                          resolution, through a one-shot proxy container on
-                         enforcement's own resolver path; inside a session,
-                         sandbox-egress-check <host> asks the running proxy
+                         enforcement's own resolver path, and with HTTPS_PROXY
+                         whether the upstream proxy opens a tunnel to it;
+                         inside a session, sandbox-egress-check <host> asks
+                         the running proxy
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
@@ -241,6 +243,11 @@ checkout — [Development](#development).
                                           lets the agent read a copied image; "bidirectional"
                                           also lets it set your clipboard (SECURITY.md). A
                                           Linux host needs xclip or wl-clipboard
+      HTTPS_PROXY                         an upstream proxy the session's egress leaves through,
+                                          http[s]://[user:password@]host:port with an explicit
+                                          port; lowercase https_proxy is read when it is unset.
+                                          The egress policy still decides every destination and
+                                          NO_PROXY is ignored (doc/egress-proxy.md)
 
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress policy: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
@@ -336,6 +343,11 @@ the project's `.ko-agent-sandbox/egress/rule`, one line per rule:
 `doc/egress-proxy.md` is the reference: the profiles, the rule grammar and what each word grants,
 the policy a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
 the security model.
+
+Behind an upstream proxy, `HTTPS_PROXY` in the launcher's environment (Reference, Environment)
+sends every origin connection of the session's proxy through it, and the launch banner prints the
+endpoint. A proxy that terminates TLS with its own certificate is not supported yet: the session
+fails closed with certificate errors (`doc/egress-proxy.md`, "Through an upstream proxy").
 
 ## Overriding the agent instructions
 

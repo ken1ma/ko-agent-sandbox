@@ -604,6 +604,8 @@ object RunOnHostSandbox:
       // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
       "-Djava.net.preferIPv4Stack=true",
     )).mkString(" "))
+    buildProxyVariables(proxyPort).foreach: (name, value) =>
+      value.fold(environment.remove(name))(environment.put(name, _))
     environment.put("XDG_RUNTIME_DIR", session.tmp.toString)
     environment.put("SBT_GLOBAL_SERVER_DIR", session.tmp.toString)
     environment.put("COURSIER_CACHE", policy.coursierV1.toString)
@@ -612,6 +614,21 @@ object RunOnHostSandbox:
     // (RunOnHostSession), so the answer is the exit file, never the shim's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
+
+  /**
+   * The proxy variables the build's environment gets, both spellings, as the sandbox container
+   * gets its own: the build's proxy for the tools that read the environment rather than the JVM
+   * properties, loopback exempt so a test server on it is reached directly, and the rest of the
+   * family removed — the launcher's own HTTPS_PROXY names the upstream proxy Seatbelt refuses,
+   * with a credential the build has no business reading. `None` is a removal.
+   */
+  def buildProxyVariables(proxyPort: Int): Map[String, Option[String]] =
+    val proxy = Some(s"http://127.0.0.1:$proxyPort")
+    Map(
+      "HTTPS_PROXY" -> proxy, "https_proxy" -> proxy, "HTTP_PROXY" -> proxy, "http_proxy" -> proxy,
+      "NO_PROXY" -> Some("localhost,127.0.0.1"), "no_proxy" -> Some("localhost,127.0.0.1"),
+      "ALL_PROXY" -> None, "all_proxy" -> None, "FTP_PROXY" -> None, "ftp_proxy" -> None,
+    )
 
   /**
    * The cost of switching where a build runs, paid before each confined build. sbt 2 leaves `target/` outputs as
