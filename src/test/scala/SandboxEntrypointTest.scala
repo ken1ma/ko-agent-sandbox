@@ -170,19 +170,21 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   test("a machine short of memory, swapping, stalled, or out of disk is said before the command, once"):
     val (seed, home) = fixture()
+    // Sizes as numfmt --to=iec prints them, at the rule's edges: 65 MiB in its 10.6 GiB total's
+    // unit, 9.95 MiB of swap rounding up to a whole 10, and 1023.5 MiB of disk carrying to 1.0G.
     val sick = proc(
-      available = 512L << 10,
-      total = 8L << 20,
-      swapUsed = 1L << 20,
+      available = 65L << 10,
+      total = (106L << 20) / 10,
+      swapUsed = 10188,
       pressure = Some("some avg10=40.00 avg60=25.50 avg300=3.00 total=1"),
     )
-    val (status, output) = finish(start(seed, home, sick, Some(fakeDf(1L << 20))))
+    val (status, output) = finish(start(seed, home, sick, Some(fakeDf(1048064))))
     assertEquals(status, 0, output)
     assert(output.startsWith("warning: the machine podman runs on is under pressure"), output)
-    assert(output.contains("  0.5 GiB of 8.0 GiB memory available\n"), output)
-    assert(output.contains("  1.0 GiB of swap in use\n"), output)
+    assert(output.contains("  0.1 of 11G memory available\n"), output)
+    assert(output.contains("  10M of swap in use\n"), output)
     assert(output.contains("  memory pressure: tasks stalled on memory 25.50% of the last minute\n"), output)
-    assert(output.contains("  1.0 GiB of disk left on the machine\n"), output)
+    assert(output.contains("  1.0G of disk left on the machine\n"), output)
     assert(output.contains("podman machine set --memory"), output)
     // No terminal on stdin, so no hold: the command still ran.
     assert(!output.contains("[Y/n]"), output)
@@ -197,7 +199,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     // The same swap with memory tight now — under a quarter available, not yet under 1 GiB — is.
     val tight = proc(available = 3L << 20, total = 16L << 20, swapUsed = 1L << 20)
     val (_, warned) = finish(start(seed, home, tight))
-    assert(warned.contains("  1.0 GiB of swap in use\n"), warned)
+    assert(warned.contains("  1.0G of swap in use\n"), warned)
     assert(!warned.contains("memory available"), warned)
 
   test("a pressure file the kernel refuses to serve, or lacks, costs only its line"):

@@ -102,7 +102,7 @@ recovery transition is active; it never tears down a stage underneath its contro
 The startup banner gains the stage's state, in the format the implemented authorities already use:
 
 ```text
-workspace: STAGED; 17 paths, 42 KiB; 3 attached sessions
+workspace: STAGED; 17 paths, 42K; 3 attached sessions
 ```
 
 ## Apply while sessions run

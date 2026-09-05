@@ -22,25 +22,45 @@ object SandboxStats:
   // Figures
   // -------------------------------------------------------------------------
 
-  /**
-   * Sizes from bytes to TiB in one column: a Coursier cache is gigabytes while a ruleset cache is
-   * kilobytes, and one fixed unit would flatten one of them. Whole numbers up to MiB and one
-   * decimal from GiB: no figure under 10 MiB changes what the reader does, and the decimal then
-   * marks the gigabyte rows. A figure that rounds to 1024 of its unit takes the next one, so
-   * 1023.6 MiB reads 1.0 GiB.
-   */
-  def humanBytes(bytes: Long): String =
-    val units = Vector("B", "KiB", "MiB", "GiB", "TiB")
-    val wholeUnits = 3
-    def rounded(index: Int): Double =
-      val value = bytes.toDouble / (1L << (10 * index))
-      if index < wholeUnits then Math.round(value).toDouble else Math.round(value * 10) / 10.0
-    val index = units.indices.find(i => i == units.size - 1 || rounded(i) < 1024).get
-    val figure = if index < wholeUnits then rounded(index).toLong.toString else f"${rounded(index)}%.1f"
-    s"$figure ${units(index)}"
+  private val Units = Vector("", "K", "M", "G", "T", "P", "E")
 
   /**
-   * `memory: 58% (4.2 GiB) available`, `storage: 58% (936.7 GiB) free`: the share first, for a
+   * A size as `df -h`, `du -h` and `ls -lh` print it, so a reader brings the rule with them:
+   * bytes bare, otherwise the largest unit the size reaches, one decimal below 10 of it and none
+   * from 10 up, rounded up, with 1023.6M carrying to 1.0G. That is two or three significant
+   * figures; the four of `podman stats` are what make `16.67MB / 268.4MB` hard to read. Every
+   * figure the launcher prints is this rule, and the entrypoint's `human` is its awk spelling.
+   */
+  def humanBytes(bytes: Long): String =
+    val index = unitIndex(bytes)
+    figure(bytes, index) + Units(index)
+
+  /**
+   * `0.3 / 11G` as (`0.3`, `11G`): a part beside its whole reads as a ratio when both are in
+   * the whole's unit, so the part is rendered there — rounded as any figure, and the unit
+   * written once, on the whole. The part is then known to a tenth of the whole's unit, a tenth
+   * of a 1.0G ceiling at worst: the ratio's precision, on purpose, not the part's, so 30 MiB
+   * under 6.7G reads 0.1.
+   */
+  def humanPair(part: Long, whole: Long): (String, String) =
+    val index = unitIndex(whole)
+    (figure(part, index), figure(whole, index) + Units(index))
+
+  private def unitIndex(bytes: Long): Int =
+    val reached = (1 until Units.size).count(index => bytes >= (1L << (10 * index)))
+    if reached == Units.size - 1 || Math.ceilDiv(bytes, 1L << (10 * reached)) < 1024 then reached
+    else reached + 1
+
+  private def figure(bytes: Long, index: Int): String =
+    if index == 0 then bytes.toString
+    else
+      val unit = 1L << (10 * index)
+      // The remainder's tenths as fifths of half the unit: bytes * 10 overflows from 0.8 EiB.
+      val tenths = (bytes / unit) * 10 + Math.ceilDiv((bytes % unit) * 5, unit / 2)
+      if tenths < 100 then s"${tenths / 10}.${tenths % 10}" else Math.ceilDiv(bytes, unit).toString
+
+  /**
+   * `memory: 58% (4.2G) available`, `storage: 58% (937G) free`: the share first, for a
    * reader who knows the machine's size, and beside it the figure the ceilings and the
    * `--reset-cache` flag act on, `tint` applied to just those. `whole` is positive; a machine that
    * cannot say its size gets no line.
@@ -96,6 +116,7 @@ object SandboxStats:
    * its proxy: the one the reader acts on, whatever an idle sandbox happens to use. A project
    * is named as the project table names it: by its recorded directory, or by its id where none
    * is recorded. Under a line counting the sessions, not the rows: a session is two containers.
+   * The memory column aligns on its slash, so used and limit each read down as a column.
    */
   def liveTable(containers: Vector[LiveContainer], directories: Map[String, String]): String =
     if containers.isEmpty then counted(0, "live session") + "\n"
@@ -107,18 +128,19 @@ object SandboxStats:
       .toVector
       .sortBy((session, group) => (-group.map(_.memoryBytes).sum, session))
     val ordered = sessions.flatMap((_, group) => group.sortBy(container => container.role != "sandbox"))
-    val usedWidth = ordered.map(container => humanBytes(container.memoryBytes).length).max
-    val rows = ordered.map: container =>
-      val used = humanBytes(container.memoryBytes).reverse.padTo(usedWidth, ' ').reverse
-      Vector(
-        container.run,
-        container.role,
-        s"$used / ${humanBytes(container.limitBytes)}",
-        f"${container.cpuPercent}%.1f%%",
-        directories.getOrElse(container.projectId, container.projectId),
-      )
+    val pairs = ordered.map(container => humanPair(container.memoryBytes, container.limitBytes))
+    val usedWidth = pairs.map(_._1.length).max
+    val rows = ordered.zip(pairs).map:
+      case (container, (used, limit)) =>
+        Vector(
+          container.run,
+          container.role,
+          s"${used.reverse.padTo(usedWidth, ' ').reverse} / $limit",
+          f"${container.cpuPercent}%.1f%%",
+          directories.getOrElse(container.projectId, container.projectId),
+        )
     counted(sessions.size, "live session") + "\n" +
-      table(Vector("run", "role", "memory", "cpu", "project"), rows, rightAligned = Set(2, 3))
+      table(Vector("run", "role", "memory", "cpu", "project"), rows, rightAligned = Set(3))
 
   // -------------------------------------------------------------------------
   // Volumes and storage

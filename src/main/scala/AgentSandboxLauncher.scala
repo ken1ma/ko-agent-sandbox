@@ -420,7 +420,7 @@ object AgentSandboxLauncher:
 
   def buildMemoryWarning(available: Option[Long]): Option[String] =
     available.filter(_ < BuildMemoryWarnThreshold).map: bytes =>
-      s"the machine has ${gib(bytes)} of memory available; a cold image build peaks near 3.3 GiB\n" +
+      s"the machine has ${SandboxStats.humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
   /** After requirePodman's gate, every podman verb says the machine's headroom once, beside the
@@ -472,8 +472,6 @@ object AgentSandboxLauncher:
       case None =>
         machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
-
-  def gib(bytes: Long): String = f"${bytes.toDouble / (1L << 30)}%.1f GiB"
 
   /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_RULESET,
@@ -2973,7 +2971,7 @@ object AgentSandboxLauncher:
       warn("podman info reports no machine memory; the sandbox runs without a memory ceiling")
     machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
       warn(
-        s"podman runs on ${gib(total)} of memory; builds in the sandbox OOM below about 4 GiB\n" +
+        s"podman runs on ${SandboxStats.humanBytes(total)} of memory; builds in the sandbox OOM below about 4.0G\n" +
           "  on a podman machine, raise it with `podman machine set --memory` (machine stopped)",
       )
     val memoryArgs = memoryArguments(explicitMemory, machineMemory, availableMemory)
