@@ -13,7 +13,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path, Paths}
 
-import RunOnHostPolicy.*
+import RunOnHostPrereqs.*
 
 object EmitBuildProfile:
 
@@ -39,7 +39,7 @@ object EmitBuildProfile:
     val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
 
     val inputs = SeatbeltProfile.ProfileInputs(
-      policy = assembled.policy,
+      prereqs = assembled.prereqs,
       sessionTmp = sessionTmp,
       sbtDistribution = assembled.sbtDistribution,
       sbtGlobal = assembled.sbtGlobalGranted,
@@ -55,9 +55,9 @@ object EmitBuildProfile:
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
     Console.err.println(s"session temp: $sessionTmp")
-    Console.err.println(s"agent cache: ${assembled.policy.coursierV1}")
+    Console.err.println(s"build cache: ${assembled.prereqs.coursierV1}")
     Console.err.println(s"tool: $tool")
-    Console.err.println(s"launcher: ${assembled.policy.launcher}")
+    Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's

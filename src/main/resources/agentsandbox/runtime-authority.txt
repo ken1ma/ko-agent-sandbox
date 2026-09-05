@@ -1,5 +1,5 @@
 # The runtime authority (run-on-host.md "The Seatbelt profile"): paths the toolchain needs that
-# are not the policy's own. One absolute path per line; prefix with "x " if it must also be
+# are not the prerequisites' own. One absolute path per line; prefix with "x " if it must also be
 # executable. Entries resolve through realPath, so a symlink entry becomes a grant on its target;
 # list a symlink's directory instead.
 #

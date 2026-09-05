@@ -20,7 +20,7 @@ object TransportHelper:
 
   /** Read in that order: the launcher passes through whichever of the two its own environment
     * has, uppercase first, and this is the same order. */
-  val ProxyVariables = Vector("HTTPS_PROXY", "https_proxy")
+  val UpstreamProxyVariables = Vector("HTTPS_PROXY", "https_proxy")
 
   /** A connected origin socket and the vetted address behind it. The address is carried apart
     * from the socket because through the upstream proxy the socket's peer is the proxy, and the
@@ -104,7 +104,7 @@ object TransportHelper:
   object UpstreamEndpoint:
 
     def configured(read: String => Option[String]): Option[UpstreamEndpoint] =
-      ProxyVariables.iterator
+      UpstreamProxyVariables.iterator
         .flatMap(variable => read(variable).filter(_.nonEmpty).map(value => parse(value, variable)))
         .nextOption()
 

@@ -7,10 +7,10 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path, Paths}
 
-import RunOnHostPolicy.*
+import RunOnHostPrereqs.*
 import HostCommands.Os
 
-class RunOnHostPolicyTest extends munit.FunSuite:
+class RunOnHostPrereqsTest extends munit.FunSuite:
 
   private val home = "/Users/kenichi"
   private val project = Paths.get(s"$home/ko-agent-sandbox")
@@ -76,9 +76,9 @@ class RunOnHostPolicyTest extends munit.FunSuite:
 
   test("the project's caches sit under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(agentCoursierV1(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
+    assertEquals(buildCoursierV1(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
     // One removal reaches all of them: what --reset-cache relies on.
-    assert(agentCoursierV1(root, "abc123").startsWith(agentCacheDir(root, "abc123")))
+    assert(buildCoursierV1(root, "abc123").startsWith(buildCacheDir(root, "abc123")))
 
   // --------------------------------------------------------------------------
   // Discovery
@@ -191,24 +191,24 @@ class RunOnHostPolicyTest extends munit.FunSuite:
   // sbt and mill
   // --------------------------------------------------------------------------
 
-  test("an sbt launcher inside the install directory is accepted"):
-    val launcher = installDir.resolve("sbt")
-    val known = exists(launcher, installDir)
-    assertEquals(validateSbtLauncher(launcher, installDir, known, _ => true), Right(launcher))
-    assert(validateSbtLauncher(launcher, installDir, exists(launcher, installDir), _ => false).isLeft)
+  test("an sbt executable inside the install directory is accepted"):
+    val executable = installDir.resolve("sbt")
+    val known = exists(executable, installDir)
+    assertEquals(validateSbtExecutable(executable, installDir, known, _ => true), Right(executable))
+    assert(validateSbtExecutable(executable, installDir, exists(executable, installDir), _ => false).isLeft)
 
   test("a PATH symlink resolving into the install directory is accepted"):
     val linked = Paths.get("/usr/local/bin/sbt")
     val real = installDir.resolve("sbt")
     val canonical: Path => Option[Path] =
       path => if path == linked then Some(real) else exists(real, installDir)(path)
-    assertEquals(validateSbtLauncher(linked, installDir, canonical, _ => true), Right(real))
+    assertEquals(validateSbtExecutable(linked, installDir, canonical, _ => true), Right(real))
 
   test("an sbt from anywhere else is refused"):
     val other = Paths.get("/usr/local/bin/sbt")
-    assert(validateSbtLauncher(other, installDir, exists(other, installDir), _ => true).isLeft)
+    assert(validateSbtExecutable(other, installDir, exists(other, installDir), _ => true).isLeft)
 
-  test("the inner sbt launcher yields its home: <home>/bin/sbt, strictly inside arc"):
+  test("the distribution's sbt yields its home: <home>/bin/sbt, strictly inside arc"):
     val home = coursierCache.resolve("arc/sbt-2.0.4.zip/sbt")
     val inner = home.resolve("bin/sbt")
     val known = exists(inner, coursierCache)
@@ -218,7 +218,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
       path => if path == inner then Some(Paths.get("/opt/sbt/bin/sbt")) else known(path)
     assert(validateSbtDistribution(inner, coursierCache, escaping, _ => true).isLeft)
 
-  test("a launcher whose home would be the cache root, arc, a v1 entry or a non-bin path is refused"):
+  test("an executable whose home would be the cache root, arc, a v1 entry or a non-bin path is refused"):
     for bad <- Seq("bin/sbt", "arc/bin/sbt", "v1/x/bin/sbt", "arc/sbt-2.0.4.zip/sbt/sbt", "arc/x/bin/sbtn") do
       val inner = coursierCache.resolve(bad)
       assert(validateSbtDistribution(inner, coursierCache, exists(inner, coursierCache), _ => true).isLeft, clue(bad))
@@ -281,7 +281,7 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
       Left(Refusal.PrereqMillJvmNotSystem(None)))
 
-  test("the JVM source is the launcher's loadMillConfig order, the first existing file authoritative"):
+  test("the JVM source is mill's loadMillConfig order, the first existing file authoritative"):
     assertEquals(millJvmIsSystem(project, files(".config/mill-jvm-version" -> Seq("system"))), Right(()))
     // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer.
     val dotBeatsConfig = files(".mill-jvm-version" -> Seq("temurin:25"), ".config/mill-jvm-version" -> Seq("system"))
@@ -402,30 +402,30 @@ class RunOnHostPolicyTest extends munit.FunSuite:
         clue(bad),
       )
 
-  test("the launcher name is the bootstrap's own derivation, suffix rules included"):
+  test("the executable name is the bootstrap's own derivation, suffix rules included"):
     // The `case "$MILL_VERSION"` block of the official script, one row per branch.
-    assertEquals(millLauncherName("1.1.8", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millLauncherName("1.1.8", "x86_64"), "1.1.8-native-mac-amd64")
-    assertEquals(millLauncherName("1.1.8-jvm", "arm64"), "1.1.8")
-    assertEquals(millLauncherName("1.1.8-native", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millLauncherName("0.11.5", "arm64"), "0.11.5")
-    assertEquals(millLauncherName("0.12.14", "arm64"), "0.12.14")
-    assertEquals(millLauncherName("0.13.0-M1", "arm64"), "0.13.0-M1-native-mac-aarch64")
-    assertEquals(millLauncherName("1.1.6-104-5bbe1e", "arm64"), "1.1.6-104-5bbe1e-native-mac-aarch64")
+    assertEquals(millExecutableName("1.1.8", "arm64"), "1.1.8-native-mac-aarch64")
+    assertEquals(millExecutableName("1.1.8", "x86_64"), "1.1.8-native-mac-amd64")
+    assertEquals(millExecutableName("1.1.8-jvm", "arm64"), "1.1.8")
+    assertEquals(millExecutableName("1.1.8-native", "arm64"), "1.1.8-native-mac-aarch64")
+    assertEquals(millExecutableName("0.11.5", "arm64"), "0.11.5")
+    assertEquals(millExecutableName("0.12.14", "arm64"), "0.12.14")
+    assertEquals(millExecutableName("0.13.0-M1", "arm64"), "0.13.0-M1-native-mac-aarch64")
+    assertEquals(millExecutableName("1.1.6-104-5bbe1e", "arm64"), "1.1.6-104-5bbe1e-native-mac-aarch64")
 
-  test("a provisioned launcher is that exact file, present and executable"):
-    val launcher = millDownload.resolve("1.1.8-native-mac-aarch64")
-    assertEquals(millLauncher(millDownload, "1.1.8", "arm64", _ == launcher), Right(launcher))
+  test("a provisioned executable is that exact file, present and executable"):
+    val executable = millDownload.resolve("1.1.8-native-mac-aarch64")
+    assertEquals(millExecutable(millDownload, "1.1.8", "arm64", _ == executable), Right(executable))
     // A similarly prefixed neighbour is not it.
     assertEquals(
-      millLauncher(millDownload, "1.1.8", "arm64", _ == millDownload.resolve("1.1.8-native-mac-aarch64.part")),
-      Left(Refusal.PrereqMillLauncherMissing("1.1.8", millDownload)),
+      millExecutable(millDownload, "1.1.8", "arm64", _ == millDownload.resolve("1.1.8-native-mac-aarch64.part")),
+      Left(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)),
     )
 
-  test("an unprovisioned launcher is a refusal naming the version and the folder to fix"):
+  test("an unprovisioned executable is a refusal naming the version and the folder to fix"):
     assertEquals(
-      millLauncher(millDownload, "1.2.0", "arm64", _ => false),
-      Left(Refusal.PrereqMillLauncherMissing("1.2.0", millDownload)),
+      millExecutable(millDownload, "1.2.0", "arm64", _ => false),
+      Left(Refusal.PrereqMillExecutableMissing("1.2.0", millDownload)),
     )
 
   // --------------------------------------------------------------------------
@@ -584,12 +584,12 @@ class RunOnHostPolicyTest extends munit.FunSuite:
   test("the sbt global base sits beside the project's Coursier cache, one --reset-cache removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
-      agentSbtGlobal(cacheRoot, "proj-abc123"),
+      buildSbtGlobal(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
     )
     assertEquals(
-      agentSbtGlobal(cacheRoot, "proj-abc123").getParent,
-      agentCoursierV1(cacheRoot, "proj-abc123").getParent.getParent,
+      buildSbtGlobal(cacheRoot, "proj-abc123").getParent,
+      buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent,
     )
 
   test("the rule file path is per tool under the frozen boundary directory"):

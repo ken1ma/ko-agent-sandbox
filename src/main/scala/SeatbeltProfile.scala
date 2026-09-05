@@ -1,12 +1,12 @@
 // The Seatbelt profile a host build runs under (run-on-host.md "The Seatbelt profile"). Pure — a
-// BuildPolicy in, SBPL out — so what the profile says is a unit test rather than something only a
+// BuildPrereqs in, SBPL out — so what the profile says is a unit test rather than something only a
 // Mac can check.
 //
 // Two properties of SBPL shape everything here, both measured by src/probe/seatbelt-semantics.sh:
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
 //     non-canonical path therefore matches nothing, which grants rather than denies. Every path
-//     that reaches `render` is refused unless it is absolute and normalized, and RunOnHostPolicy
+//     that reaches `render` is refused unless it is absolute and normalized, and RunOnHostPrereqs
 //     resolves symlinks before it gets here.
 //   - Rules are last-match-wins, so the guard denies are emitted after every allow. A generator
 //     that appended a grant later would silently reopen the guard, which is why nothing here takes
@@ -17,7 +17,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import RunOnHostPolicy.{BuildPolicy, Tool}
+import RunOnHostPrereqs.{BuildPrereqs, Tool}
 
 object SeatbeltProfile:
 
@@ -83,13 +83,13 @@ object SeatbeltProfile:
     """(allow file-read* file-write-data (literal "/dev/null"))""" + "\n" +
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
-  /** What the build may reach, beyond the policy's own paths, to start a JVM at all. Discovered by
+  /** What the build may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
     * running a real build under this profile and reading the denials, never guessed: the contract admits a
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
   case class ProfileInputs(
-    policy: BuildPolicy,
+    prereqs: BuildPrereqs,
     sessionTmp: Path,
     sbtDistribution: Option[Path],
     sbtGlobal: Option[Path],
@@ -102,27 +102,29 @@ object SeatbeltProfile:
    * profile with one unusable rule is a profile with one silent grant.
    */
   def render(inputs: ProfileInputs): Either[String, String] =
-    val policy = inputs.policy
-    val readOnly = Seq(policy.jdkHome) ++ inputs.sbtDistribution ++ Seq(policy.launcher)
+    val prereqs = inputs.prereqs
+    val readOnly = Seq(prereqs.jdkHome) ++ inputs.sbtDistribution ++ Seq(prereqs.executable)
     // Writable implies executable for the project and the session temp, never for the cache:
     // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
     // JVM reads, and nothing there is run.
-    val readWriteExec = Seq(policy.project, inputs.sessionTmp)
+    val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
     // The sbt global base is a cache like the Coursier one — artifacts the JVM reads, nothing
-    // run — and persistent for the same reason target/ links into it (RunOnHostPolicy.
-    // agentSbtGlobal).
-    val readWrite = Seq(policy.coursierV1) ++ inputs.sbtGlobal
+    // run — and persistent for the same reason target/ links into it (RunOnHostPrereqs.
+    // buildSbtGlobal).
+    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     everyPath.find(path => !usable(path)) match
-      case _ if policy.tool == Tool.Sbt && inputs.sbtDistribution.isEmpty =>
-        Left("an sbt profile needs the distribution the wrapper execs; without it the build cannot find sbt-launch.jar")
-      case _ if policy.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
+      case _ if prereqs.tool == Tool.Sbt && inputs.sbtDistribution.isEmpty =>
+        Left(
+          "an sbt profile needs the distribution the sbt script execs; without it the build cannot find sbt-launch.jar",
+        )
+      case _ if prereqs.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
-      case _ if policy.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
+      case _ if prereqs.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
         Left("a mill profile has no sbt distribution to grant")
-      case _ if policy.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
+      case _ if prereqs.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
         Left("a mill profile has no sbt global base to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
@@ -181,23 +183,24 @@ object SeatbeltProfile:
         lines += ";; a .git a test builds in the session temp is reclaimed with the session, and no"
         lines += ";; host git ever runs there."
         GuardedNames.foreach: name =>
-          lines += s"(deny file-write* file-read* file-link (require-all ${subpath(policy.project)} ${anyDepth(name)}))"
+          lines +=
+            s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.project)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
 
   /**
-   * The second half of the sbt launcher: what the `cs`-installed wrapper execs, which is an
-   * unpacked distribution inside the Coursier archive cache. Its path encodes the download URL of
-   * whichever sbt Coursier installed, so it is read out of the wrapper rather than derived — and
-   * read rather than obtained by running it: running the wrapper is executing on the host, unconfined.
+   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
+   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
+   * so it is read out of the script rather than derived — and read rather than obtained by running
+   * it: running the script is executing on the host, unconfined.
    *
-   * The longest cache path the wrapper names, because a shorter one is a prefix of the real answer
+   * The longest cache path the script names, because a shorter one is a prefix of the real answer
    * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
    */
-  def sbtDistribution(wrapperText: String, coursierCacheRoot: Path): Option[Path] =
+  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
     val prefix = coursierCacheRoot.toString
     val candidates =
       for
-        line <- wrapperText.linesIterator
+        line <- scriptText.linesIterator
         start <- indexesOf(line, prefix)
         raw = line.drop(start).takeWhile(ch => ch != '"' && ch != '\'' && ch != ';' && ch != '\n')
         trimmed = raw.trim
@@ -215,7 +218,7 @@ object SeatbeltProfile:
           case index => Some((index, index + 1))
       .toSeq
 
-  /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPolicy:
+  /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPrereqs:
     * it needs the filesystem, and this stays pure. */
   private def usable(path: Path): Boolean =
     path.isAbsolute && path.normalize() == path

@@ -391,7 +391,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       while !Files.exists(record) && System.nanoTime < deadline do Thread.sleep(20)
       val parsed = parseRecord(Files.readString(record, UTF_8))
       assert(parsed.isDefined, "the record was published")
-      assertEquals(parsed.get.pgid, process.pid, "the shim is the leader it registers")
+      assertEquals(parsed.get.pgid, process.pid, "the spawn is the leader it registers")
       assertEquals(HostProcesses.startOf(process.pid), Some(parsed.get.leaderStart))
     finally process.destroyForcibly().waitFor()
 
@@ -413,7 +413,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     try assertEquals(awaitExit(exitRecord(record), process), Right(137))
     finally process.destroyForcibly().waitFor()
 
-  test("a shim gone without an exit status is a Left, not a hang"):
+  test("a spawn gone without an exit status is a Left, not a hang"):
     notUnderBuildProfile()
     val record = Files.createTempDirectory("spawn").resolve("record")
     val process =

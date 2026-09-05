@@ -15,7 +15,7 @@
 # through `sbt Test/runMain`, whose own server would hold this project's portfile against the
 # wrapper (one server per project). Each wrapper row scavenges, publishes a session, starts the
 # build's own proxy, builds under the profile and ends what it started, so the rows measure the
-# lifecycle as well as the profile; there is no warm-up block, and a cold agent cache resolves
+# lifecycle as well as the profile; there is no warm-up block, and a cold build cache resolves
 # through the proxy inside the profile, which is the measurement.
 #
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, a one-module mill
@@ -103,7 +103,7 @@ emit() { # tool
 #
 # The JVM settings travel in JAVA_TOOL_OPTIONS, which the server sbt's client forks inherits; the
 # same -D flags on the command line reach the client alone. XDG_RUNTIME_DIR and
-# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the session temp (RunOnHostPolicy.
+# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the session temp (RunOnHostPrereqs.
 # SessionTmpMaxLength says why its length matters).
 #
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
@@ -140,7 +140,7 @@ with_timeout() { # seconds command...
 # Under a profile, through the contract, with the timeout. $1 is the profile's tool.
 sandboxed() { # tool command...
     profile=$work/gate-$1.sb; shift
-    with_timeout "${GATE_ROW_TIMEOUT:-600}" build_env "$agent_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
+    with_timeout "${GATE_ROW_TIMEOUT:-600}" build_env "$build_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
 }
 run_sbt() { # client command...
     client=$1; shift
@@ -182,7 +182,7 @@ present_or_skip() { # label path
 # --- servers and daemons ------------------------------------------------------------------------
 
 # Processes whose working directory is this project: the gate never learns the pid of a server
-# sbt's client forks or the daemon mill's launcher starts, but each belongs to the project it
+# sbt's client forks or the daemon mill executable starts, but each belongs to the project it
 # runs in.
 with_cwd() { # pattern dir exact|under
     for pid in $(pgrep -f -- "$1" 2>/dev/null); do
@@ -222,7 +222,7 @@ if want mill && [ -n "$existing" ]; then
 fi
 # Every server or daemon this run starts — `emit`'s included — is ended at exit, whether or not
 # `shutdown` could reach it: a server whose client hung is one `shutdown` cannot find. mill's
-# daemon holds out/mill-daemon/daemonLock and a loopback port that a launcher under the profile
+# daemon holds out/mill-daemon/daemonLock and a loopback port that a mill executable under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
     for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done
@@ -256,33 +256,33 @@ profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
 [ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
-# Each profile has its own session temp and agent cache — the fixture is another project, so
+# Each profile has its own session temp and build cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
 use_profile() { # tool
     . "$work/gate-$1.env"
-    agent_v1=$(sed -n 's/^agent cache: //p' "$work/emit-$1.log")
+    build_v1=$(sed -n 's/^build cache: //p' "$work/emit-$1.log")
     sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
-    cache_root=${agent_v1%/cache/*}
+    cache_root=${build_v1%/cache/*}
     safe_path "SESSION_TMP" "$SESSION_TMP"
-    safe_path "the agent cache" "$agent_v1"
+    safe_path "the build cache" "$build_v1"
     safe_path "the sbt global base" "$sbt_global"
 }
 for p in $profiles; do
-    echo "$p: $(grep -E '^(session temp|agent cache):' "$work/emit-$p.log" | tr '\n' ' ')"
+    echo "$p: $(grep -E '^(session temp|build cache):' "$work/emit-$p.log" | tr '\n' ' ')"
 done
 use_profile "$first"
 state_root=${XDG_STATE_HOME:-$HOME/.local/state}/ko-agent-sandbox
 user_v1=${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}/v1
 user_arc=${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}/arc
-sbt_launcher=${COURSIER_BIN_DIR:-$HOME/Library/Application Support/Coursier/bin}/sbt
-# As the bootstrap derives it (RunOnHostPolicy.millDownloadDir): MILL_USER_CACHE_DIR is not an input.
+sbt_executable=${COURSIER_BIN_DIR:-$HOME/Library/Application Support/Coursier/bin}/sbt
+# As the bootstrap derives it (RunOnHostPrereqs.millDownloadDir): MILL_USER_CACHE_DIR is not an input.
 mill_downloads=${MILL_FINAL_DOWNLOAD_FOLDER:-${XDG_CACHE_HOME:-$HOME/.cache}/mill/download}
 # The concrete derived paths, after every environment override has had its say.
 safe_path "the launcher state root" "$state_root"
 safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}"
-safe_path "the sbt launcher path" "$sbt_launcher"
+safe_path "the sbt executable path" "$sbt_executable"
 safe_path "the mill download folder" "$mill_downloads"
-mill_launcher=$(sed -n 's/^launcher: //p' "$work/emit-mill.log" 2>/dev/null)
+mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
 
 # A scratch tree per profile, inside that profile's project, standing in for a project with
 # nested repositories. Made on the host, outside the profile, so the rows test the guard and not
@@ -296,7 +296,7 @@ cleanup() {
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     [ -n "$sibling_repo" ] && rm -rf "$sibling_repo"
-    for p in $profiles; do use_profile "$p"; rm -f "$agent_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
+    for p in $profiles; do use_profile "$p"; rm -f "$build_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
     rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" 2>/dev/null
     # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
     # session's live inside its container.
@@ -329,7 +329,7 @@ done
 
 # --- positive rows ------------------------------------------------------------------------------
 #
-# The wrapper rows come first: a cold agent cache resolves through the build proxy inside the
+# The wrapper rows come first: a cold build cache resolves through the build proxy inside the
 # profile, warming what the emit-profile rows after them read.
 
 echo
@@ -349,7 +349,7 @@ if want sbt; then
     done
 
     # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
-    # the agent cache through it. Both clients run so the --jvm-client pin stays measured. The server's
+    # the build cache through it. Both clients run so the --jvm-client pin stays measured. The server's
     # java.home is checked against the JDK the profile granted: the server is forked by the
     # client, so nothing about the client's own JVM proves which one the build runs in.
     for client in "--jvm-client" ""; do
@@ -391,12 +391,12 @@ fi
 
 if want mill; then
     use_profile mill
-    # mill's launcher memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
+    # mill's executable memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
     # and reuses them while the files they name exist (CoursierClient.scala). Written by a run
     # against the user's cache, they name paths the profile denies; the memo goes, so the
     # wrapper's COURSIER_CACHE takes effect.
     rm -rf "$mill_project/out/mill-daemon"
-    # --no-daemon: the launcher and the daemon talk over a loopback TCP socket
+    # --no-daemon: the executable and the daemon talk over a loopback TCP socket
     # (out/mill-daemon/socketPort), which the profile grants to nothing, since loopback is every
     # local service. Without the daemon there is no socket — mill's --jvm-client.
     for command in --version __.compile __.test; do
@@ -430,7 +430,7 @@ for p in $profiles; do
     present_or_skip "read ~/.ssh" "$HOME/.ssh" && expect_denied "$p" "read ~/.ssh" "ls '$HOME/.ssh'"
     present_or_skip "read the launcher state root" "$state_root" \
         && expect_denied "$p" "read the launcher state root" "ls '$state_root'"
-    expect_denied "$p" "read another project's agent cache" "ls '$cache_root/cache'"
+    expect_denied "$p" "read another project's build cache" "ls '$cache_root/cache'"
     expect_denied "$p" "read the user's Coursier v1" "ls '$user_v1/'"
     expect_denied "$p" "read the user's other Coursier arc entries" "ls '$user_arc'"
     # The profile's ancestor chain is file-read-metadata: a listing would reveal sibling names.
@@ -454,7 +454,7 @@ for p in $profiles; do
     else expect_denied "$p" "write the Coursier JDK home (no jvm/; the home is in arc/)" \
         ": > '$JAVA_HOME/$marker'"; fi
     expect_denied "$p" "write ~/.sbt/boot" ": > '$HOME/.sbt/boot/$marker'"
-    expect_denied "$p" "write the Coursier-installed sbt launcher" ": >> '$sbt_launcher'"
+    expect_denied "$p" "write the Coursier-installed sbt script" ": >> '$sbt_executable'"
     expect_denied "$p" "write PROJECT/.git/config" ": >> '$project/.git/config'"
     expect_denied "$p" "create under PROJECT/.git" ": > '$project/.git/$marker'"
     expect_denied "$p" "write PROJECT/sub/nested/.git/hooks/x" ": > '$scratch/sub/nested/.git/hooks/x'"
@@ -468,15 +468,16 @@ for p in $profiles; do
         && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"
     if [ "$p" = mill ]; then
         # The one provisioned file is executable; its neighbours in the download folder are not.
-        if ( cd "$mill_project" && sandboxed mill "$mill_launcher" --no-daemon --version ) >/dev/null 2>"$work/row.err"
-        then report PASS "read and execute the mill launcher"
-        else report FAIL "read and execute the mill launcher" "$(first_error)"; fi
+        if ( cd "$mill_project" && sandboxed mill "$mill_executable" --no-daemon --version ) \
+            >/dev/null 2>"$work/row.err"
+        then report PASS "read and execute the mill executable"
+        else report FAIL "read and execute the mill executable" "$(first_error)"; fi
         expect_denied mill "list the mill download folder" "ls '$mill_downloads'"
     fi
 
     echo
     echo "allowed writes, under the $p profile"
-    expect_allowed "$p" "write agent cache coursier/v1/..." ": > '$agent_v1/$marker'"
+    expect_allowed "$p" "write build cache coursier/v1/..." ": > '$build_v1/$marker'"
     expect_allowed "$p" "write PROJECT/..." ": > '$scratch/ok'"
     expect_allowed "$p" "write session temporary directory" ": > '$SESSION_TMP/$marker'"
     # The guard is scoped to the project: a build's tests may make throwaway repositories in the
@@ -505,10 +506,10 @@ if ! want sbt; then
     report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
 else
     use_profile sbt
-    # Made cold on purpose: with the artifact gone from the agent cache, a successful compile can
+    # Made cold on purpose: with the artifact gone from the build cache, a successful compile can
     # only have fetched it — and the direct-connect row already showed the profile's only route is
     # the proxy.
-    rm -rf "$agent_v1/https/repo1.maven.org/maven2/org/scalameta"
+    rm -rf "$build_v1/https/repo1.maven.org/maven2/org/scalameta"
     if wrapper sbt "$project" Test/compile >"$work/refetch.log" 2>&1
     then report PASS "fetch allowed Maven artifact via proxy" "munit re-fetched, Test/compile ok"
     else report FAIL "fetch allowed Maven artifact via proxy" \
@@ -541,7 +542,7 @@ skip_lifecycle() {
 $lifecycle_rows
 EOF
 }
-# The victim's own client record, bound to it directly: the recorded shim is spawned by the
+# The victim's own client record, bound to it directly: the recorded spawn is started by the
 # wrapper, so its parent pid is the victim's, and the recorded start time must match the live
 # process — the same pid-plus-start proof the wrapper's own scavenger uses, so a stale record
 # whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
@@ -561,7 +562,7 @@ await_client_record() { # victim-pid
     done
 }
 # Always launched with `&`, and exec so $! IS the wrapper JVM: without it the background pid is
-# the subshell running this function, java is its child, and every staged kill — and the shim's
+# the subshell running this function, java is its child, and every staged kill — and the spawn's
 # parent-pid check above — would land on or look at the wrong process.
 victim_wrapper() { # log-name
     exec "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
@@ -609,7 +610,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
         fi
     fi
 
-    # SIGKILL mid-build: the shim leader survives the wrapper, so the next start ends the whole
+    # SIGKILL mid-build: the spawn, the leader, survives the wrapper, so the next start ends the whole
     # running group provably instead of refusing a leaderless one.
     victim_wrapper killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
@@ -626,9 +627,9 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
-    # The true orphan needs the shim gone too: SIGKILL the wrapper mid-build, let the client
-    # finish its command cleanly — the shim publishes its exit beside the record, and a
-    # cleanly-left server survives (session-recovery.sh M3) — then SIGKILL the shim alone.
+    # The true orphan needs the spawn gone too: SIGKILL the wrapper mid-build, let the client
+    # finish its command cleanly — the spawn publishes its exit beside the record, and a
+    # cleanly-left server survives (session-recovery.sh M3) — then SIGKILL the spawn alone.
     # Proxy recorded and ended, client group leaderless and refused, server alive behind the
     # portfile for attribution (RunOnHostSession). Killing any of the client's processes instead stages the
     # wrong state: a server whose client dies mid-exec dies with it — measured, as was the
@@ -651,7 +652,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             report SKIP "orphan server ended by portfile attribution" "no orphan was staged"
             pkill -9 -g "$client_pgid" 2>/dev/null
         else
-            kill -9 "$client_pgid" 2>/dev/null   # the shim alone: the build is done, the server stays
+            kill -9 "$client_pgid" 2>/dev/null   # the spawn alone: the build is done, the server stays
             sleep 1
             # The recovery run's own build is beside the point (and --version is the cheap one);
             # its stderr carries the scavenge of the victim's session.

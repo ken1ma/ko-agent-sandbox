@@ -518,7 +518,7 @@ object SandboxProject:
    * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
    * agent/ are vetted where they are read (EgressRules.readRuleFiles,
    * readAgentInstructions), and host-command/ where the host build wrapper reads it
-   * (RunOnHostPolicy.buildRuleHosts). An absent directory is empty configuration, never a
+   * (RunOnHostPrereqs.buildRuleHosts). An absent directory is empty configuration, never a
    * directory to materialize.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =
