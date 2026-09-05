@@ -21,7 +21,7 @@ provider logins, kept in the persistent volume because no agent functions withou
 That is a claim about what the launcher passes in unasked. A credential the user puts in the
 project directory themselves is in the sandbox like any other file, and one forwarded with
 `--env` is in its environment — tolerated rather than provided for, and reaching whatever this
-project's egress policy admits ("Exfiltration through an allowed host", below). `--env` is
+project's egress rules admit ("Exfiltration through an allowed host", below). `--env` is
 therefore named only on the command line, never in a project file, so the project cannot choose
 which host variables it receives; it refuses `KO_AGENT_SANDBOX_*`, the launcher's own account of
 what is enforced; and the launch prints every forwarded name.
@@ -37,7 +37,7 @@ either a `tunnel`, opaque, for model traffic that has to write, or inspected, TL
 where `git push` and every operation no line grants at its path is refused. "Reading without
 being able to write" below has the rules, costs, and limits.
 
-**Being used to attack someone else.** The same policy. Whatever the profile — the widest admits
+**Being used to attack someone else.** The same rules. Whatever the profile — the widest admits
 any public hostname on port 443 — the agent cannot reach an arbitrary port or a private address,
 cloud metadata services such as 169.254.169.254 included: the proxy validates every resolved
 address at connection time.
@@ -52,13 +52,14 @@ those networks and no network object is reused.
 **A project loosening its own confinement.** Managed settings sit in the read-only image above every
 scope a repository can write, so a repository's own settings cannot weaken them; only an
 organization's server-managed settings outrank the file, and they replace it whole (the sandbox
-Containerfile's managed-settings note has what that costs). The egress policy and the project's
+Containerfile's managed-settings note has what that costs). The egress rules and the project's
 agent instructions in `.ko-agent-sandbox` are read on the host before the container starts, and the
-session's write mode is what keeps a session from writing the policy governing the next launch:
-under `--write=reject` the whole tree is read-only, and under the filter `.ko-agent-sandbox` is
-control state — the name cannot be created at any depth, under the same fold rule `.git` gets, and
-nothing under an existing one can be written. Only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose
-raw tree is writable, still needs the directory mounted back over itself read-only.
+session's write mode is what keeps a session from writing the configuration governing the next
+launch: under `--write=reject` the whole tree is read-only, and under the filter
+`.ko-agent-sandbox` is control state — the name cannot be created at any depth, under the same
+fold rule `.git` gets, and nothing under an existing one can be written. Only
+`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is writable, still needs the directory
+mounted back over itself read-only.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the pager.
@@ -176,7 +177,7 @@ its own `egress/rule`.
 **The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
 on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
 the provider's infrastructure does the searching. The proxy sees one connection to
-`api.anthropic.com` or `chatgpt.com`, so neither the policy nor the audit log (`--proxy-log`)
+`api.anthropic.com` or `chatgpt.com`, so neither the ruleset nor the audit log (`--proxy-log`)
 applies to the domains searched — a query is outbound information the provider relays onward.
 Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
 proxy, answered only by an allowed host and logged like any other connection.
@@ -348,7 +349,7 @@ wins — same repository, same trust domain, so a data-integrity caveat, not a n
 `--reset` from another terminal ends live sessions by design; one racing a launch mid-start fails
 that launch loudly rather than weakening it.
 
-**A repository that ships a wide egress policy.** Reading `.ko-agent-sandbox/egress/rule` before
+**A repository that ships wide egress rules.** Reading `.ko-agent-sandbox/egress/rule` before
 running an unfamiliar project is the user's job, exactly like reading its build scripts — its
 `tunnel` lines most of all, since every such host is an opaque tunnel, and its `method=` lines,
 each a write channel.
@@ -369,7 +370,7 @@ generally are not comprehensively bounded.
 
 ## Egress proxy
 
-An HTTP proxy in its own container, so the policy is enforced somewhere the agent cannot edit, on
+An HTTP proxy in its own container, so the ruleset is enforced somewhere the agent cannot edit, on
 the far side of a network the agent cannot route out of. The container is created per sandbox run
 and removed when the run ends, named in the reserved name patterns ("Silent changes to what you
 own", above). Its log — every allow and every refusal — is appended through a bind mount to a
@@ -412,7 +413,7 @@ With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through 
 proxy"), step 5's connection is a `CONNECT` to that upstream proxy naming the resolved numeric
 address, so steps 4 to 6 decide as before and the upstream proxy never resolves the name; the
 tunnel it returns carries the same steps 8 to 11. The upstream proxy is a
-transport, not an authority: it cannot admit a destination the policy refused, and its refusal or
+transport, not an authority: it cannot admit a destination the ruleset refused, and its refusal or
 absence is a 502, never a direct connection. The variable reaches the proxy container's
 environment by name — podman copies a value-less `--env` from the launcher's process — so its
 userinfo is in no argument, and the proxy keeps the credential in memory and prints the endpoint
@@ -434,7 +435,7 @@ own to be local to. Every line the proxy writes carries it, the startup lines in
 samples below omit it.
 
 The host is the `CONNECT` target as the sandbox requested it — what was asked for, not a name the
-policy vouches for. The method is `CONNECT` for tunnel-level events and the inspected method
+ruleset vouches for. The method is `CONNECT` for tunnel-level events and the inspected method
 inside one; `-` fills a field the connection ended before revealing, so the field never carries a
 token the proxy did not admit — a refused method is named in the text instead. The target appears
 exactly when a parsed inspected request exists, query string included: the URL is the message an
@@ -442,8 +443,8 @@ allowed `GET` can carry ("Exfiltration through an allowed host", above), so the 
 whole, which is also why the log files are owner-only. Whole, but not arbitrary — a control
 character in a request target, a field value or a `CONNECT` authority is refused at the parser, so
 nothing that reaches this log can split a line's fields with a tab or rewrite it with an escape
-sequence on the terminal reading it. `deny` is a decision — the policy refused;
-`error` is the world failing where the policy had not refused — so a count of `deny` lines is a
+sequence on the terminal reading it. `deny` is a decision — the ruleset refused;
+`error` is the world failing where the ruleset had not refused — so a count of `deny` lines is a
 true refusal count, never inflated by network weather. What each stage can emit, with
 representative reasons:
 
@@ -470,7 +471,7 @@ representative reasons:
     deny github.com GET /owner/repo request body
     deny registry.npmjs.org PUT /lodash PUT not granted
     deny github.com GET /owner/repo Host header evil.example
-    deny storage.googleapis.com GET /other-bucket/key path outside allowance
+    deny storage.googleapis.com GET /other-bucket/key path under no line
     deny storage.googleapis.com GET /my-bucket/../other-bucket/key a dot segment in the path
 
     # infrastructure — error, never deny
@@ -496,14 +497,13 @@ for the person who has this document.
 
 The startup lines precede these and sit outside the grammar: the transport — direct, or the
 upstream proxy and its pinned addresses, said once because it is a constant of the run — then the
-listening port, the resolved policy (the policy lines of `--print-policy`, in the rule grammar),
-its digest — one stable line naming which policy this run enforced, comparable across runs —
-then the metadata, about the
-policy's size and the project's file rather than the policy, printed after the digest and outside
-it, so two files resolving to one policy keep one digest: the summary line's counts, and, when
-the file grants beyond the defaults for a host, the widening lines; then any warnings, and the
-inspection summary. There is no peer-address field anywhere: the per-run internal network has
-exactly one client, so it would be a constant.
+listening port, the ruleset (the ruleset lines of `--print-ruleset`, in the rule grammar), its
+digest — one stable line naming which ruleset this run enforced, comparable across runs — then
+the metadata, about the ruleset's size and the project's file rather than the ruleset, printed
+after the digest and outside it, so two files resolving to one ruleset keep one digest: the
+summary line's counts, and, when the file grants beyond the defaults for a host, the widening
+lines; then any warnings, and the inspection summary. There is no peer-address field anywhere:
+the per-run internal network has exactly one client, so it would be a constant.
 
 ### Reading without being able to write
 
@@ -530,7 +530,7 @@ the grants of the line it falls under (`doc/egress-proxy.md`, "The rule file"):
 - `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and `POST` to a
   path ending `/git-upload-pack` — the transfer step of `clone` and `fetch`: after discovering
   refs, git sends its wants as a `POST` and the packfile comes back in the response. A download
-  that travels as a `POST`, so a read-only policy would still read as "reads allowed" while
+  that travels as a `POST`, so a read-only ruleset would still read as "reads allowed" while
   every `git clone https://…` failed. The discovery is this grant's own request, not `read`'s,
   so a clone that could not transfer fails at its first request rather than its second
 - `method=POST` on the `github` group's two lines, `/login/device/code` and
@@ -602,10 +602,10 @@ before the leaf expires, or when the resolved inspected set changes.
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
 read-only. The leaf names exactly this project's resolved inspected set — the inspected hosts
 after its profile and `egress/rule` apply — which the launcher does not keep a copy of: it reads
-the hosts off the `allow` lines of the proxy image's own `--print-policy` under the same policy
+the hosts off the `allow` lines of the proxy image's own `--print-ruleset` under the same rules
 at launch, so a custom proxy image, or a project adding an inspected host, gets a matching leaf
 and there is no second list to drift. The proxy still refuses to start unless the certificate
-names exactly the inspected set of the policy it resolved, in either direction: a leaf missing a
+names exactly the inspected set of the ruleset it resolved, in either direction: a leaf missing a
 name would surface as an inexplicable TLS error inside the sandbox, and one naming an extra host
 means an inspection the proxy will not perform — that host would have been an opaque, writable
 tunnel.
@@ -656,22 +656,22 @@ settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent
 A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
 uninspected OpenAI.
 
-### Why the policy is per project, in the project, and read-only
+### Why the rules are per project, in the project, and read-only
 
-A host-wide allowlist has to be the union of what every project needs — the widest policy,
-applied everywhere, permanently. Per project, a repository that reads public documentation and one
-holding credentials get different answers, and the answer is reviewed in a pull request like any
-other file.
+A host-wide rule file would have to be the union of what every project needs — the widest
+ruleset, applied everywhere, permanently. Per project, a repository that reads public
+documentation and one holding credentials get different answers, and the answer is reviewed in a
+pull request like any other file.
 
 Where `/workspace` is writable, the rule file would be the agent's to rewrite for the next
 session; what refuses that is the write mode itself — "A project loosening its own confinement",
-above. A symlinked policy directory, or anything other than a directory in its place, is refused
+above. A symlinked boundary directory, or anything other than a directory in its place, is refused
 rather than read, so what is read is what was reviewed. The directory is also a closed namespace:
 an entry the launcher does not read — a typo'd `egres/`, notes, a backup — refuses the launch
 instead of sitting as ignored config, the same rule `egress/` applies inside itself: one file,
 `rule`, the retired `allowed` and `denied` refused by name (dot-named editor and OS metadata
 excepted; no configuration will ever be named that way). What remains is "A repository that
-ships a wide egress policy", above.
+ships wide egress rules", above.
 
 ### Adding hosts, not patterns
 
@@ -729,9 +729,9 @@ project that means one owner writes the deny and the owner's line.
 Two costs are stated rather than forbidden. A `method=` line under a tree on a forge is one line
 that opens `git-receive-pack` under it — the push is then the project's own grant, and the
 launch's widening line and `--egress-effective` surface it. And a `tunnel` line for a host the
-defaults inspect takes `deny defaults` and the whole policy after it: an opaque tunnel ends the
+defaults inspect takes `deny defaults` and the whole ruleset after it: an opaque tunnel ends the
 inspection and the audit record for a host every project has, so a project deciding that states
-its whole policy; narrowing a tunnel to inspected reads is local, two lines on that host alone.
+its whole ruleset; narrowing a tunnel to inspected reads is local, two lines on that host alone.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst
 case is over-blocking something wanted — fail-closed — never reaching something new. `**.foo.com`
@@ -748,12 +748,12 @@ today must not fail under a later image whose defaults grew to cover it.
 Every other ambiguity — `doc/egress-proxy.md` lists them — is a failed launch, never ignored
 config. The allow-versus-deny ordering that egress proxies get wrong is a bug family kept out by
 having one rule and a denial no spelling of a path steps around. Two files of different rules
-may resolve to one policy; the policy, not the file, is what the digest names and the leaf is
+may resolve to one ruleset; the ruleset, not the file, is what the digest names and the leaf is
 minted from.
 
-### Why the policy is not a capability system
+### Why the ruleset is not a capability system
 
-The policy names destinations, and the grants name operations — reading, plus git fetch at the
+The ruleset names destinations, and the grants name operations — reading, plus git fetch at the
 `git-fetch` hosts, plus a method at a path; nothing grants `GitRead(owner/repo)`-style
 capabilities. Deliberate: public
 reading is meant to be broad — discovering and reading arbitrary public repositories is much of what
@@ -768,10 +768,10 @@ that matters at a forge, reading versus writing, is already enforced in the prot
 path ("Adding hosts, not patterns", above) names a destination more precisely and still grants no
 operation beyond its words. Nor would capabilities fix exfiltration: a permitted read still
 carries its URL ("Exfiltration through an allowed host", above). What a capability vocabulary
-would add is a second policy
-language whose semantics must stay correct across every layer that reads it — precisely where
-richer sandbox policies fail in the field. Revisit only if an agent must someday write inside the
-sandbox with a credential materially more powerful than that operation.
+would add is a second rule language whose semantics must stay correct across every layer that
+reads it — precisely where richer sandbox policy languages fail in the field. Revisit only if an
+agent must someday write inside the sandbox with a credential materially more powerful than that
+operation.
 
 ### DNS
 
@@ -952,7 +952,7 @@ blocks the setuid `newuidmap`, which caps a nested namespace at a single mapped 
 switches `USER` or chowns to a second uid fails by design — this repository's own images among
 them, so the sandbox still cannot build itself. The egress topology is inherited, not escaped:
 inner containers share the sandbox's network namespace, their only route out is still the proxy,
-and an image pull is an ordinary logged CONNECT to a registry the policy admits — Docker Hub,
+and an image pull is an ordinary logged CONNECT to a registry the ruleset admits — Docker Hub,
 `gcr.io` and ECR Public are built in, any other registry is the project's `egress/rule` to
 add.
 No runtime is preinstalled; podman arrives through the image's `sandbox-install-podman` — which

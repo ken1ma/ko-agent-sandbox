@@ -1,6 +1,6 @@
 // The second layer over AgentEgressProxyTest: the parsers under hostile and randomized input,
-// aimed at parser disagreement, canonicalization and fail-open policy parsing rather than at more
-// examples of rules that file already pins — and the reference evaluator the resolved policy is
+// aimed at parser disagreement, canonicalization and fail-open rule parsing rather than at more
+// examples of rules that file already pins — and the reference evaluator the ruleset is
 // property-tested against. Where a rule is pinned there, this file asserts only
 // what it adds — the two Smokescreen bypasses and the alternate IPv4 spellings live there, and this
 // is the wider corpus around them.
@@ -18,7 +18,7 @@ import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 import scala.util.Random
 
-import PolicyHelper.*
+import RulesetHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import TLSHelper.*
@@ -30,11 +30,11 @@ class HostileInputTest extends munit.FunSuite:
   private def connect(authority: Array[Byte]): Array[Byte] =
     ascii("CONNECT ") ++ authority ++ ascii(" HTTP/1.1\r\n\r\n")
 
-  private lazy val defaultsPolicy: ResolvedEgress =
-    resolvePolicy(Some("deny-unless-allowed"), None, None)
+  private lazy val defaultsRuleset: ResolvedEgress =
+    resolveRuleset(Some("deny-unless-allowed"), None, None)
 
   private def authorize(authority: Array[Byte]): String =
-    authorizeRequest(ConnectRequest.parse(connect(authority)), defaultsPolicy)
+    authorizeRequest(ConnectRequest.parse(connect(authority)), defaultsRuleset)
 
   /** "refused" for either typed refusal, the reached host otherwise. An untyped exception escapes
     * and fails the test: a parser that throws something else has read hostile bytes badly, which is
@@ -43,7 +43,7 @@ class HostileInputTest extends munit.FunSuite:
     try s"reached ${authorize(authority)}"
     catch
       case _: BadRequest      => "refused"
-      case _: PolicyViolation => "refused"
+      case _: Refusal => "refused"
 
   private def printable(value: String): String =
     value.map(ch => if ch < 0x20 || ch > 0x7e then f"\\u${ch.toInt}%04x" else ch).mkString
@@ -89,7 +89,7 @@ class HostileInputTest extends munit.FunSuite:
     "github.com:44 3",
 
     // Canonicalization: normalizeHost strips one trailing dot, so a doubled one leaves a name the
-    // policy does not hold. Refused rather than reduced again — the fail-closed direction.
+    // ruleset does not hold. Refused rather than reduced again — the fail-closed direction.
     "github.com..:443",
 
     // Percent-encoding means nothing in an authority, and a punycode label nobody allowed is
@@ -124,7 +124,7 @@ class HostileInputTest extends munit.FunSuite:
     // ideographic full stop to a dot, and drops zero-width characters — so on paper these spell
     // `github.com`. Over the wire they never get that far: the bytes arrive as UTF-8, decode as
     // ISO-8859-1 into characters above 0x7f, and the authority is refused before any mapping.
-    // The mapping is reachable only from a policy file, where an operator wrote the name.
+    // The mapping is reachable only from a rule file, where an operator wrote the name.
     Vector("\uff47ithub.com:443", "GITHUB\u3002com:443", "github\u200b.com:443", "\u00adgithub.com:443")
       .foreach: authority =>
         assertEquals(
@@ -139,7 +139,7 @@ class HostileInputTest extends munit.FunSuite:
   test("an authorized host is a fixed point of normalization, and never an IP literal"):
     // Not "normalization is idempotent" — it is not. One trailing dot is stripped per pass, so
     // `github.com..` becomes `github.com.`, which another pass would reduce again. That
-    // non-idempotence fails closed, because the once-normalized form is what the policy is
+    // non-idempotence fails closed, because the once-normalized form is what the ruleset is
     // compared against and it is not in it. What has to hold is the property enforcement rests
     // on: whatever authorizeRequest returns is unchanged by normalizing it again, since that is
     // the name later resolved and bound to SNI.
@@ -149,7 +149,7 @@ class HostileInputTest extends munit.FunSuite:
       assertEquals(normalizeHost(host), host, host)
       assert(!isIpLiteral(host), host)
 
-  test("the hostname policy authorized is the one SNI is bound to"):
+  test("the hostname the ruleset authorized is the one SNI is bound to"):
     // A mismatched SNI and an encrypted one are AgentEgressProxyTest's; what is added here is the
     // join between the two halves — that the name authorizeRequest *returned* is the one the
     // binding is made against, whichever spelling asked for it.
@@ -199,7 +199,7 @@ class HostileInputTest extends munit.FunSuite:
         assertEquals(normalizeHost(host), host, s"'$host' is not a fixed point")
         reached += 1
       catch
-        case _: BadRequest | _: PolicyViolation => refused += 1
+        case _: BadRequest | _: Refusal => refused += 1
     assert(reached > 0, "no mutation reached a host; the generator stopped producing near-misses")
     assert(refused > 0, "no mutation was refused; the generator stopped mutating")
 
@@ -210,7 +210,7 @@ class HostileInputTest extends munit.FunSuite:
     Vector("/graphql\u0007", "/graphql\u001b[0m", "/o/r.git/info/lfs/objects/batch\t").foreach: path =>
       intercept[BadRequest]:
         HttpRequestHead.parse(ascii(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"))
-    val absolute = intercept[PolicyViolation]:
+    val absolute = intercept[Refusal]:
       authorizeInspectedRequest(
         "github.com",
         HttpRequestHead.parse(
@@ -287,7 +287,7 @@ class HostileInputTest extends munit.FunSuite:
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
   test("no rule file, however malformed, admits a host or a grant nobody named"):
-    // The fail-open direction for policy parsing: a file that resolves at all must resolve to
+    // The fail-open direction for rule parsing: a file that resolves at all must resolve to
     // defaults hosts plus the ones its own text spells, never to something the arithmetic invented,
     // and every grant on a resolved scope is a word some line wrote.
     val lines = Vector(
@@ -312,11 +312,11 @@ class HostileInputTest extends munit.FunSuite:
     (1 to 1000).foreach: _ =>
       val value = (0 to random.nextInt(4)).map(_ => lines(random.nextInt(lines.size))).mkString("\n")
       try
-        val policy = resolvePolicy(Some("deny-unless-allowed"), None, Some(value))
+        val ruleset = resolveRuleset(Some("deny-unless-allowed"), None, Some(value))
         val named = value.toLowerCase
-        policy.hosts.keySet.foreach: host =>
+        ruleset.hosts.keySet.foreach: host =>
           assert(DefaultHosts.contains(host) || named.contains(host), s"'$value' admitted the unnamed host '$host'")
-        policy.inspectedScopes.foreach: (host, scopes) =>
+        ruleset.inspectedScopes.foreach: (host, scopes) =>
           scopes.foreach: (path, grants) =>
             assert(grants.nonEmpty && grants.subsetOf(words), s"'$value' granted '$host' $grants")
             assert(!grants("tunnel"), s"'$value' tunnelled inside the inspected $host")
@@ -336,8 +336,8 @@ class HostileInputTest extends munit.FunSuite:
         resolved += 1
       catch case _: IllegalArgumentException => refused += 1
     // The same guard as the authority draws: a line set that only ever refused would assert nothing
-    // about what a resolved policy may contain.
-    assert(resolved > 0, "no file ever resolved; the line set stopped producing valid policies")
+    // about what a ruleset may contain.
+    assert(resolved > 0, "no file ever resolved; the line set stopped producing valid rulesets")
     assert(refused > 0, "no file was ever refused; the line set stopped producing invalid ones")
 
   test("no URL of the hostile corpus reaches a rule: ports, userinfo, query, fragment, literals, patterns, spellings"):
@@ -352,13 +352,13 @@ class HostileInputTest extends munit.FunSuite:
       "allow https://github.com/é/ read", "allow https://github.com/a\tb read", "allow https://gith ub.com/ read",
       "deny https://github.com/a/", "deny https://**.github.com/a/", "deny https://github.com:443/",
     ).foreach: line =>
-      intercept[IllegalArgumentException](resolvePolicy(Some("deny-unless-allowed"), None, Some(line)))
+      intercept[IllegalArgumentException](resolveRuleset(Some("deny-unless-allowed"), None, Some(line)))
 
   // ---------------------------------------------------------------------------
   // The reference evaluator: the simple order is the specification, and the fold must be invisible
   // to it — PF's own discipline for its skip steps. A deliberately plain evaluator, applying each
   // line's contributions and removals to one request in textual order and building no resolved
-  // scope, property-tested against the resolved policy's authorization over a drawn domain that
+  // scope, property-tested against the ruleset's authorization over a drawn domain that
   // names every equation: each profile, the provider selected and not, files with `deny defaults`
   // and without, groups allowed and denied, `tunnel` taken and re-granted, hosts the defaults lack
   // and hosts they tunnel, and requests to unlisted hosts, to inspected ones under a denied subtree,
@@ -510,9 +510,9 @@ class HostileInputTest extends munit.FunSuite:
         )
         authorizeInspectedRequest(host, head, resolved.scopesOf(host))
         "admitted"
-    catch case _: PolicyViolation => "refused"
+    catch case _: Refusal => "refused"
 
-  test("the resolved policy authorizes exactly what the plain ordered evaluator does, over the drawn domain"):
+  test("the ruleset authorizes exactly what the plain ordered evaluator does, over the drawn domain"):
     import Drawn.*
     val grantSets = Vector(
       Set("read"),
@@ -550,16 +550,16 @@ class HostileInputTest extends munit.FunSuite:
       val lines = if random.nextInt(4) == 0 then DenyDefaults +: body else body
       val text = lines.map(_.text).mkString("\n")
       val resolved =
-        try Some(resolvePolicy(Some(profile), provider, Some(text)))
+        try Some(resolveRuleset(Some(profile), provider, Some(text)))
         catch case _: IllegalArgumentException => None
       resolved match
         case None => refusedFiles += 1
-        case Some(policy) =>
+        case Some(ruleset) =>
           files += 1
           Hosts.foreach: host =>
             Requests.foreach: request =>
               val expected = evaluate(profile, provider, lines, host, request)
-              val actual = production(policy, host, request)
+              val actual = production(ruleset, host, request)
               assertEquals(
                 actual,
                 expected,

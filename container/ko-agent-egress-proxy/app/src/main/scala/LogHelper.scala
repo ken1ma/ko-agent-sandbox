@@ -1,5 +1,5 @@
 // The audit log's form: the line grammar, the per-line UTC stamp, the tee into the host file, and
-// the digest naming the enforced policy. What is logged when is the proxy's (AgentEgressProxy).
+// the digest naming the enforced ruleset. What is logged when is the proxy's (AgentEgressProxy).
 
 package agentsandbox.egress
 

@@ -17,7 +17,7 @@ reached through the model provider") is a provider instance of
 The credential residues SECURITY.md concedes are the target.
 
 - A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
-  reaching whatever this project's egress policy admits". A `GET` carries its URL, and a URL is
+  reaching whatever this project's egress rules admit". A `GET` carries its URL, and a URL is
   a message, so a forwarded token leaves through any inspected host, or inside the opaque model
   tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
 - Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every tool in
@@ -33,7 +33,7 @@ inside). This plan keeps the recurring rules: sentinel inside, one host per secr
 header-only rewrite.
 
 What brokering does not change: the bound host still receives authenticated requests, within the
-method policy the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
+method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
 `git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
 an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
 
@@ -63,7 +63,7 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
    `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Tools that validate
    token syntax before sending keep working; nothing can be derived from it.
 1. The placeholder, its name and its bound host are printed at launch beside the forwarded
-   names, and shown by `--egress-effective`; the policy has one home and one display.
+   names, and shown by `--egress-effective`; the rules have one home and one display.
 1. A request that spent a credential is marked in the audit line, so `--proxy-log` shows every
    authenticated request the session made and to where.
 
@@ -78,9 +78,9 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
 --env=NAME@HOST/PREFIX/    substitute only for requests whose path is under /PREFIX/
 ```
 
-The prefix form takes the policy's own matcher: the canonical-form rule for `PREFIX` and the
+The prefix form takes the ruleset's own matcher: the canonical-form rule for `PREFIX` and the
 literal comparison are the proxy's rule-path ones (doc/egress-proxy.md, "The rule file";
-SECURITY.md, "Adding hosts, not patterns"), and the policy's own path, if the host's line
+SECURITY.md, "Adding hosts, not patterns"), and the ruleset's own path, if the host's line
 has one, applies first. Where requests may go and where a credential may be spent are two facts
 and stay two lines; the comparison is one function.
 
@@ -104,7 +104,7 @@ Refusals, each fatal at launch and naming the fix:
 The value takes the CA leaf's route ("Who holds the CA key"): written by the launcher to a
 per-run file under the project's state directory, owner-only, bind-mounted read-only into the
 proxy container, removed with the run. Not an environment variable on the proxy container:
-`KO_AGENT_SANDBOX_EGRESS_POLICY` is public by design and `podman inspect` shows environment;
+`KO_AGENT_SANDBOX_EGRESS_RULESET` is public by design and `podman inspect` shows environment;
 a secret does not belong beside it.
 
 The proxy reads the file once at start and refuses to start if a value or header fails the
@@ -156,7 +156,7 @@ Not brokered, for reasons that hold independently of effort:
   It cannot be shown the project CA, so nothing between it and `chatgpt.com` /
   `api.openai.com` can be inspected, and there is no substitution point.
 - Claude Code is a Node program and could be inspected, but its endpoints are tunnels by
-  design: model traffic has to write, and there is no policy to apply inside it beyond the swap.
+  design: model traffic has to write, and there are no rules to apply inside it beyond the swap.
   Its login is an OAuth pair with local expiry bookkeeping and a refresh exchange on the
   provider's hosts; the proxy would have to mirror that lifecycle per release, at every refresh,
   for a token that "can only spend model quota". A stolen model token is a nuisance to the
@@ -174,8 +174,8 @@ Additions to SECURITY.md, each at its binding site:
 - "Exfiltration through an allowed host": a brokered `--env` value is not in the sandbox; the
   residue narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
-  container, nowhere else; the proxy was already the policy's single point of trust and becomes
-  a holder of what the policy admits spending. Compromising it compromises both policy and
+  container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
+  a holder of what the ruleset admits spending. Compromising it compromises both ruleset and
   credential — one boundary.
 - "The audit line grammar": the `inject` field.
 
@@ -191,12 +191,12 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   sandbox `--env` list with placeholders and, separately, the proxy's secret-file contents.
 - Binding validation against the resolved profile, reusing the inspected hosts read from the
   allow lines of
-  `--print-policy` (the leaf certificate's source of truth, so no second host list).
+  `--print-ruleset` (the leaf certificate's source of truth, so no second host list).
 - `CredentialGrammar`: the value and header-name checks of invariant 4, one source file under
   `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
   launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
   — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
-  policy arithmetic: the gate must fire in `plan-provider-credential-proxy.md`'s management
+  rule arithmetic: the gate must fire in `plan-provider-credential-proxy.md`'s management
   verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
   would be one more custody site. The executable-source result there passes through the same
   object.
@@ -280,7 +280,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - anthropic-experimental/sandbox-runtime README, "credential masking" (`injectHosts`)
 - docs.docker.com/ai/sandboxes — secrets and the `proxy-managed` sentinel;
   docker/sbx-releases #8 (header rewriting broke an application's own bearer tokens),
-  #121 (a forwarded SSH agent reached a private repository under a public-reads policy)
+  #121 (a forwarded SSH agent reached a private repository under a public-reads ruleset)
 - GreyhavenHQ/greywall — placeholder format, headers-and-query-only rule
 - 89luca89/clampdown — auth-proxy container holding the real key
 - openai/codex #30971, #32327 — shell snapshots persisted secret environment variables

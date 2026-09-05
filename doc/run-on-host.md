@@ -352,10 +352,10 @@ Each build runs its own proxy process, from the same codebase as the container's
 
 Not the session's proxy: that one is per run, on a network created `--internal`, inside the podman
 machine. There is no host route to it, and making one would either publish the session's full
-`--egress` allowlist — `api.anthropic.com` and forges included — to any host process, or relay each
-connection through `podman exec`, paying the VM round trip on exactly the path the build was moved
-out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable either
-way; what is worth controlling is the policy behind it, and a proxy admitting one artifact
+`--egress` ruleset — `api.anthropic.com` and forges included — to any host process, or relay
+each connection through `podman exec`, paying the VM round trip on exactly the path the build was
+moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
+either way; what is worth controlling is the rules behind it, and a proxy admitting one artifact
 repository is a prize barely worth stealing.
 
 Its lifetime is the session's, bound to the session lock rather than to the client process: the
@@ -404,7 +404,8 @@ inspection. The wrapper hands the proxy `deny defaults`, Maven Central, then the
 The file inherits the directory's properties: the workspace filter freezes it at any depth, the
 launcher reads it on the host, and it is reviewed in a pull request like any other file.
 `host-command/` extends `.ko-agent-sandbox`'s closed namespace — a stray entry fails the launch and
-never sits as ignored config (`SandboxProject.policyDirError`, `RunOnHostSandbox.hostCommandStray`).
+never sits as ignored config (`SandboxProject.boundaryDirError`,
+`RunOnHostSandbox.hostCommandStray`).
 
 Neither tool needs a GitHub release CDN: the only fetch that ever used one is the `mill`
 bootstrap's own launcher download, which the user provisions on the host instead.

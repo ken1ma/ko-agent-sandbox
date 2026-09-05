@@ -60,7 +60,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(offenders, Vector.empty)
 
   test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
-    // Concurrent launches of one project under different authority selections write the policy
+    // Concurrent launches of one project under different authority selections write the ruleset
     // cache without a lock. With the stamp in a file of its own, one launch's content could end up
     // under the other's stamp and stay there; with it inside each file, the pairing a caller
     // requires simply does not match and the cache re-derives.

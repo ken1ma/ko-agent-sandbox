@@ -11,7 +11,7 @@ import java.nio.file.attribute.BasicFileAttributes
 import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.{
-  logStateRoot, machineMemoryAvailable, machineMemoryLine, memoryTotal, persistentVolumes, policyStateRoot,
+  logStateRoot, machineMemoryAvailable, machineMemoryLine, memoryTotal, persistentVolumes, rulesetStateRoot,
   projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom, tlsStateRoot,
 }
 import HostCommands.*
@@ -23,7 +23,7 @@ object SandboxStats:
   // -------------------------------------------------------------------------
 
   /**
-   * Sizes from bytes to TiB in one column: a Coursier cache is gigabytes while a policy cache is
+   * Sizes from bytes to TiB in one column: a Coursier cache is gigabytes while a ruleset cache is
    * kilobytes, and one fixed unit would flatten one of them. Whole numbers up to MiB and one
    * decimal from GiB: no figure under 10 MiB changes what the reader does, and the decimal then
    * marks the gigabyte rows. A figure that rounds to 1024 of its unit takes the next one, so
@@ -273,7 +273,7 @@ object SandboxStats:
         System.out.print(s"volumes: podman system df failed: ${firstLine(answer.err)}\n")
         None
 
-    val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), policyStateRoot(os), projectsStateRoot(os))
+    val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
     val cacheDir = RunOnHostPolicy.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
 
     // Where the volumes live is podman's store: a host path on native Linux, the VM's disk

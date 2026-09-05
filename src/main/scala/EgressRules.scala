@@ -1,5 +1,5 @@
-// The egress proxy as the launcher deals with it: reading this project's policy, asking the proxy
-// image what that policy resolves to, and keeping the audit log. The proxy *container's* lifecycle
+// The egress proxy as the launcher deals with it: reading this project's rules, asking the proxy
+// image what they resolve to, and keeping the audit log. The proxy *container's* lifecycle
 // is not here — it is a dozen flags in AgentSandboxLauncher.launch, and moving it would drag the
 // launch with it.
 //
@@ -14,7 +14,7 @@ import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 
-object EgressProxyPolicy:
+object EgressRules:
 
   /**
    * Comment-stripped, whitespace-collapsed rule text, one line per line — the format the
@@ -22,45 +22,45 @@ object EgressProxyPolicy:
    * structure is what separates them and must be preserved. A comment starts at the start of a
    * line or after whitespace; a `#` inside a token is kept, so the proxy's parser sees and
    * refuses it rather than this pass turning `https://x/a/#b/` into the wider `https://x/a/`.
-   * What is in force is the proxy's to say — a rule file's resolved policy is not this text.
+   * What is in force is the proxy's to say — a rule file's ruleset is not this text.
    */
-  def normalizePolicyText(text: String): String =
+  def normalizeRuleText(text: String): String =
     text.linesIterator
       .map(_.trim.split("\\s+").filter(_.nonEmpty).takeWhile(!_.startsWith("#")).mkString(" "))
       .filter(_.nonEmpty)
       .mkString("\n")
 
-  def entriesSummary(normalized: String): String =
+  def lineSummary(normalized: String): String =
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The rule lines the resolved policy reports as granting beyond the defaults for their host —
+   * The rule lines the ruleset reports as granting beyond the defaults for their host —
    * its `widening lines (N): ...` line, `; ` between lines — printed on a line of their own at
    * launch, so that a file which only takes or narrows prints nothing extra and the line is a
-   * signal rather than a habit. The proxy classifies against the defaults it ships (resolvePolicy
+   * signal rather than a habit. The proxy classifies against the defaults it ships (resolveRuleset
    * has the classes), so a custom image reports against its own; an image printing no such line
    * reports nothing, never a classification against defaults it does not have.
    */
-  def wideningEntries(resolved: String): Vector[String] =
+  def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith("widening lines (")).toVector.flatMap: line =>
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
 
-  /** The lines the proxy prints after the policy lines, describing the policy's size and the
-    * project's file rather than the policy: the summary line, then the widening line. Everything
-    * from the first of them on is metadata (PolicyHelper.metadataLines). */
-  val MetadataPrefixes: Vector[String] = Vector("policy summary:", "widening lines (")
+  /** The lines the proxy prints after the ruleset lines, describing the ruleset's size and the
+    * project's file rather than the ruleset: the summary line, then the widening line. Everything
+    * from the first of them on is metadata (RulesetHelper.metadataLines). */
+  val MetadataPrefixes: Vector[String] = Vector("ruleset summary:", "widening lines (")
 
-  /** The dry run's text up to its first metadata line — the policy alone — for the consumers that
-    * hold nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_POLICY`. */
-  def policyLinesOf(resolved: String): String =
+  /** The dry run's text up to its first metadata line — the ruleset alone — for the consumers that
+    * hold nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_RULESET`. */
+  def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
   /**
-   * The launch banner's one-line summary of the resolved policy: the profile as the policy's
+   * The launch banner's one-line summary of the ruleset: the profile as the ruleset's
    * first line spells it, then the counts of the summary line, which say how wide it is — each
    * source alone insufficient. The full lines are one `--egress-effective` away, and the proxy
    * writes them into this session's own log; a thousand characters of hostnames in the banner is
-   * a line people learn to skip, and skipping it is how a policy nobody expected goes unnoticed.
+   * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
    * An unparseable resolution is printed whole rather than guessed at.
    *
    * @param color tints the profile, except under the permissive one, where the caller tints the
@@ -70,8 +70,8 @@ object EgressProxyPolicy:
     val lines = resolved.linesIterator.toVector
 
     val counts: Map[String, Int] =
-      lines.find(_.startsWith("policy summary:")).toVector
-        .flatMap(_.stripPrefix("policy summary:").split(";").toVector)
+      lines.find(_.startsWith("ruleset summary:")).toVector
+        .flatMap(_.stripPrefix("ruleset summary:").split(";").toVector)
         .flatMap: field =>
           field.trim.split(" ", 2) match
             case Array(count, name) => count.toIntOption.map(name -> _)
@@ -130,35 +130,35 @@ object EgressProxyPolicy:
 
   val RetainedProxyLogs = 20
 
-  val PolicyFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
+  val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
   /** The two files of the grammar `rule` replaced, refused by name with the pointer: the guard
-    * freezes the directory, so nothing else tells a project its policy went unread. */
-  val RetiredPolicyFiles: Vector[String] = Vector("allowed", "denied")
+    * freezes the directory, so nothing else tells a project its rules went unread. */
+  val RetiredRuleFiles: Vector[String] = Vector("allowed", "denied")
 
   /**
-   * The policy directory's files as (name, normalized text), present files
+   * The egress directory's files as (name, normalized text), present files
    * only. Refused forms, each of which would otherwise be silently ignored
    * or misread config: egress as a regular file rather than a directory,
-   * fatal so a policy written that way is never skipped unseen; a filename
-   * that is no policy file (a typo'd name configures nothing); a symlinked
-   * policy file (podman resolves mount sources on the host, and this read
-   * must see the bytes a mounted-back directory would show); a policy name
+   * fatal so rules written that way are never skipped unseen; a filename
+   * that is no rule file (a typo'd name configures nothing); a symlinked
+   * rule file (podman resolves mount sources on the host, and this read
+   * must see the bytes a mounted-back directory would show); a rule file's name
    * that is not a regular file, which would leave its file silently unread;
    * a present-but-empty file, more likely a forgotten edit than a
-   * deliberate no-op — an intentionally empty policy is an absent file.
+   * deliberate no-op — an intentionally empty rule file is an absent file.
    * Dot-named metadata is exempt from all of it (SandboxProject.isMetadataEntry).
    */
-  def readPolicyFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
+  def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
     def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's egress policy through one."
+      s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
 
     if Files.isSymbolicLink(egressDir) then Left(symlinkRefusal(egressDir))
     else if !Files.exists(egressDir) then Right(Vector.empty)
     else if !Files.isDirectory(egressDir) then
       Left(
         s"""error: $egressDir is a file
-           |egress is a directory holding the policy file ${PolicyFiles.map(_(0)).mkString(", ")}. Move the
+           |egress is a directory holding the rule file ${RuleFiles.map(_(0)).mkString(", ")}. Move the
            |lines there and remove the file; doc/egress-proxy.md has the grammar.""".stripMargin
       )
     else
@@ -172,29 +172,29 @@ object EgressProxyPolicy:
 
       val refusal = entries
         .collectFirst:
-          case entry if RetiredPolicyFiles.contains(entry.getFileName.toString) =>
-            s"error: $entry is a file of the retired grammar\nThe policy is one file, egress/rule, " +
+          case entry if RetiredRuleFiles.contains(entry.getFileName.toString) =>
+            s"error: $entry is a file of the retired grammar\nThe rules are one file, egress/rule, " +
               "in the rule grammar; doc/egress-proxy.md has it. Rewrite the lines there and delete this file."
-          case entry if !PolicyFiles.exists(_(0) == entry.getFileName.toString) =>
-            s"error: $entry is not a policy file\negress/ holds only " +
-              s"${PolicyFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
+          case entry if !RuleFiles.exists(_(0) == entry.getFileName.toString) =>
+            s"error: $entry is not a rule file\negress/ holds only " +
+              s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          // The one stray form the name check cannot see: a policy file's own name on something
+          // The one stray form the name check cannot see: a rule file's own name on something
           // the read below skips, which would leave that file silently unread.
           case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\negress/ holds a text file per policy; " +
+            s"error: $entry is not a regular file\negress/ holds a text file per rule file; " +
               "anything else would leave this file silently unread."
         .orElse:
-          PolicyFiles
+          RuleFiles
             .map(_(0))
             .collectFirst:
-              case name if readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).contains("") =>
-                s"error: ${egressDir.resolve(name)} lists no entries\n" +
-                  "Delete the file; an intentionally empty policy is an absent file."
+              case name if readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).contains("") =>
+                s"error: ${egressDir.resolve(name)} lists no lines\n" +
+                  "Delete the file; an intentionally empty rule file is an absent file."
 
       refusal.toLeft(
-        PolicyFiles.flatMap: (name, _) =>
-          readIfPresent(egressDir.resolve(name)).map(normalizePolicyText).map(name -> _),
+        RuleFiles.flatMap: (name, _) =>
+          readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).map(name -> _),
       )
 
   /**
@@ -209,25 +209,25 @@ object EgressProxyPolicy:
     command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)
 
   /**
-   * A --print-policy dry run of the proxy image (--rm, --network=none,
-   * nothing mounted): the resolved policy, or the reason it is invalid. The
+   * A --print-ruleset dry run of the proxy image (--rm, --network=none,
+   * nothing mounted): the ruleset, or the reason it is invalid. The
    * proxy owns the defaults and the profile arithmetic; this one dry run is
    * the authority both --egress-effective and every launch consult — for
    * the banner and for the leaf certificate's names alike. `provenance`
    * additionally reports every line's sources (--egress-effective's view).
    */
-  def resolvedPolicy(
+  def resolvedRuleset(
     podman: String,
     proxyImage: String,
     profile: String,
     provider: Option[String],
-    policyFiles: Vector[(String, String)],
+    ruleFiles: Vector[(String, String)],
     provenance: Boolean = false,
   ): Run =
     run(
       (Vector(podman, "run", "--rm", "--pull=never", "--network=none")
-        ++ policyEnvArgs(profile, provider, policyFiles)
-        ++ Vector(proxyImage, "--print-policy")
+        ++ rulesetEnvArgs(profile, provider, ruleFiles)
+        ++ Vector(proxyImage, "--print-ruleset")
         ++ Option.when(provenance)("--provenance"))*
     )
 
@@ -249,18 +249,18 @@ object EgressProxyPolicy:
   def transportLineOf(log: String): Option[String] =
     log.linesIterator.map(_.dropWhile(_ != ' ').drop(1)).find(_.startsWith("egress transport: "))
 
-  /** The --env arguments passing the authority selection and policy files to the proxy — the
+  /** The --env arguments passing the authority selection and rule files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
-  def policyEnvArgs(
+  def rulesetEnvArgs(
     profile: String,
     provider: Option[String],
-    policyFiles: Vector[(String, String)],
+    ruleFiles: Vector[(String, String)],
   ): Vector[String] =
     Vector(
       s"--env=EGRESS_PROFILE=$profile",
       s"--env=EGRESS_MODEL_PROVIDER=${provider.getOrElse("none")}",
-    ) ++ policyFiles.map: (name, text) =>
-      val variable = PolicyFiles.find(_(0) == name).fold(fail(s"error: no policy file $name"))(_(1))
+    ) ++ ruleFiles.map: (name, text) =>
+      val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
 
   def retainedLogs(logDir: Path, prefix: String = "proxy-"): Vector[Path] =
@@ -276,26 +276,26 @@ object EgressProxyPolicy:
         .sortBy(_.getFileName.toString)
 
   /**
-   * The inspected hosts out of a --print-policy answer: the hosts of its `allow https://` lines,
+   * The inspected hosts out of a --print-ruleset answer: the hosts of its `allow https://` lines,
    * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
    * between the scheme and its first `/`, and a host under several scopes is one name. This is
    * how the launcher learns which names the leaf certificate must list — the proxy image's own
-   * answer under this project's policy, so no second copy of any list exists to drift, and a proxy
-   * image or policy of the user's choosing gets a matching leaf too. Empty means the policy
+   * answer under this project's rules, so no second copy of any list exists to drift, and a proxy
+   * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
    * inspects nothing; the launcher then mints no leaf and hands the proxy no inspection material.
    * Under allow-unless-denied no leaf is minted at all: the proxy mints its own from the run CA.
    * A resolution without its profile line is another launcher version's format, refused.
    */
-  def inspectedHostsOf(printPolicyOutput: String): Either[String, Vector[String]] =
-    val lines = printPolicyOutput.linesIterator.toVector
+  def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =
+    val lines = dryRunOutput.linesIterator.toVector
     if !lines.headOption.exists(_.startsWith("egress profile: ")) then
       Left(
-        "error: the proxy image's --print-policy has no 'egress profile' line\n" +
+        "error: the proxy image's --print-ruleset has no 'egress profile' line\n" +
           "An image built by another launcher version prints another format; rebuild with --build.",
       )
     else
       Right(
-        policyLinesOf(printPolicyOutput).linesIterator
+        rulesetLinesOf(dryRunOutput).linesIterator
           .filter(line => line.startsWith("allow https://") && !line.endsWith(" tunnel"))
           .map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
           .toVector

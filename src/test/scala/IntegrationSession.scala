@@ -131,7 +131,7 @@ object IntegrationSession extends munit.Assertions:
     val id = SandboxProject.projectIdOf(project.toRealPath(), currentOs)
     AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(id)
 
-  /** What a session leaves behind is the state every project accumulates — a volume, a CA, a policy
+  /** What a session leaves behind is the state every project accumulates — a volume, a CA, a ruleset
     * cache, logs and the mount tree — so a scratch project is reset before it is deleted. A scratch
     * project never builds on the host, so the reset takes its --stats record with the rest. */
   def discard(project: Path): Unit =

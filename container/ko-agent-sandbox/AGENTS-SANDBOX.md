@@ -119,7 +119,7 @@ so — only they can add it to the image.
 
 The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this session reaches, and
 with what treatment, is the appended "Authority in force for this session" section;
-`KO_AGENT_SANDBOX_EGRESS_POLICY` holds the same lines.
+`KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run

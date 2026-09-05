@@ -21,7 +21,7 @@
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, a one-module mill
 # project that exists for them: this repository is sbt-built, and a mill build of it would be a
 # second build definition rather than a measurement. src/probe/deny-fixture exists for the
-# non-allowlisted-host row: its resolution must reach a host the proxy refuses.
+# unlisted-host row: its resolution must reach a host the proxy refuses.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker lives in a scratch tree this script makes and
@@ -502,7 +502,7 @@ echo
 echo "the build proxy"
 if ! want sbt; then
     report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
-    report SKIP "fetch non-allowlisted host via proxy" "sbt rows not selected"
+    report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
 else
     use_profile sbt
     # Made cold on purpose: with the artifact gone from the agent cache, a successful compile can
@@ -517,11 +517,11 @@ else
     # deny-fixture's resolution reaches a refused host; the build must fail and the wrapper must
     # say which host — the wrapper's denied-host report.
     if wrapper sbt "$deny_project" update >"$work/deny.log" 2>&1
-    then report FAIL "fetch non-allowlisted host via proxy" "the build succeeded"
+    then report FAIL "fetch unlisted host via proxy" "the build succeeded"
     elif grep -q 'Build requested network access' "$work/deny.log" \
         && grep -q 'denied.example.com' "$work/deny.log"
-    then report PASS "fetch non-allowlisted host via proxy" "refused; wrapper named denied.example.com"
-    else report FAIL "fetch non-allowlisted host via proxy" \
+    then report PASS "fetch unlisted host via proxy" "refused; wrapper named denied.example.com"
+    else report FAIL "fetch unlisted host via proxy" \
         "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
 fi
 

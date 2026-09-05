@@ -41,7 +41,7 @@ object HostCommands:
 
   /**
    * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
-   * `deny-unless-allowed` — so the banner, `--egress-effective` and the policy file read and grep
+   * `deny-unless-allowed` — so the banner, `--egress-effective` and the rule file read and grep
    * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
    * severity label, a boundary weaker than the default, or the mode an authority line states, and
    * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
@@ -82,7 +82,7 @@ object HostCommands:
     tinted(headroom.code, text, color)
 
   /** Each line's leading severity label tinted. Line by line, because a block has a label on
-    * some lines and not others — the proxy's policy warnings, a warning's continuation. */
+    * some lines and not others — the proxy's rule warnings, a warning's continuation. */
   def emphasized(text: String, color: Boolean = colorStderr): String =
     text.linesIterator
       .map: line =>

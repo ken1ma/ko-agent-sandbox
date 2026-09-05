@@ -92,14 +92,14 @@ RUN set -euxo pipefail; \
 # Runtime
 # ---------------------------------------------------------------------------
 #
-# A policy enforcement point should hold nothing an attacker could use:
+# An enforcement point should hold nothing an attacker could use:
 # distroless has no shell, package manager, interpreter or JVM, so an ad-hoc
 # command cannot run inside it. The cost is no HEALTHCHECK; liveness is the log
 # (--proxy-log). `nonroot` is a mutable tag resolving to uid 65532.
 FROM gcr.io/distroless/base-debian13:nonroot
 
 LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
-LABEL org.opencontainers.image.description="CONNECT-only allowlisting egress proxy for ko-agent-sandbox"
+LABEL org.opencontainers.image.description="CONNECT-only egress proxy for ko-agent-sandbox, enforcing a project's rules"
 LABEL org.opencontainers.image.base.name="gcr.io/distroless/base-debian13:nonroot"
 
 # The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
@@ -121,7 +121,7 @@ COPY --from=build /build/tls /etc/agent-egress-proxy
 # The per-run audit log lands here, a bind-mounted host file that outlives the container.
 COPY --from=build /build/var-log /var/log/agent-egress-proxy
 
-# Documentation only; not published, so a workstation process cannot borrow the sandbox's egress allowance.
+# Documentation only; not published, so a workstation process cannot borrow the sandbox's egress rules.
 EXPOSE 3128
 
 # The base already runs as 65532; restated as a security property of this image.

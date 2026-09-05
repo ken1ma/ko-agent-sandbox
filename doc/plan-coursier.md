@@ -109,8 +109,8 @@ future reviewed cache kinds do not require a comma-list grammar.
 - Resolve symlinks and aliases to the canonical existing directory before boundary checks and
   before constructing the podman argument. This follows a path the user explicitly supplied as
   launch authority, like project-directory canonicalization; it does not follow a
-  repository-controlled symlink while discovering sandbox policy. Any overlap with the canonical
-  project is refused below.
+  repository-controlled symlink while discovering the boundary configuration. Any overlap with the
+  canonical project is refused below.
 - Management verbs reject this launch-only option, as they reject launch authority they do not
   consume.
 - Once the sandbox command starts, a token with the same spelling is passed to that command rather

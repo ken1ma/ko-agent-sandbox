@@ -156,10 +156,10 @@ impl Workspace {
         Some(rel.as_os_str().as_bytes().to_vec())
     }
 
-    fn refuse_operational(&self, origin: &str, component: &Path) -> Refusal {
+    fn refuse_operational(&self, subject: &str, component: &Path) -> Refusal {
         Refusal {
             reason: format!(
-                "{origin} resolves through {component:?}, inside the workspace and writable by \
+                "{subject} resolves through {component:?}, inside the workspace and writable by \
                  the sandbox"
             ),
             remedy: "Hooks and configuration reachable through a writable workspace path would \
@@ -173,9 +173,9 @@ impl Workspace {
     /// walks: each named component that lies inside the workspace must classify `Control` before
     /// it is even looked up — existence cannot weaken the answer, because a missing operational
     /// name is one the sandbox can create. Returns the resolved path, or `None` when it does not
-    /// exist, which is reached only through components the rule admitted. `origin` names what is
+    /// exist, which is reached only through components the rule admitted. `subject` names what is
     /// being resolved, for the refusal an operator reads.
-    fn resolve_checked(&self, path: &Path, origin: &str) -> Result<Option<PathBuf>, Refusal> {
+    fn resolve_checked(&self, path: &Path, subject: &str) -> Result<Option<PathBuf>, Refusal> {
         let roots: Vec<&[u8]> = self.gitdir_roots.iter().map(Vec::as_slice).collect();
         let mut pending: VecDeque<OsString> = components_of(path).into();
         let mut current = PathBuf::from("/");
@@ -192,7 +192,7 @@ impl Workspace {
                 if let Some(rel) = self.relative_bytes(&next)
                     && classify_relative_path(&rel, &roots) != GitPathClass::Control
                 {
-                    return Err(self.refuse_operational(origin, &next));
+                    return Err(self.refuse_operational(subject, &next));
                 }
                 if missing {
                     current = next;
@@ -206,7 +206,7 @@ impl Workspace {
                     Err(err) => {
                         return Err(Refusal {
                             reason: format!(
-                                "cannot resolve {next:?} while locating {origin}: {err}"
+                                "cannot resolve {next:?} while locating {subject}: {err}"
                             ),
                             remedy: "The filter will not serve control state it cannot resolve."
                                 .to_string(),
@@ -217,7 +217,7 @@ impl Workspace {
                         if hops > MAX_SYMLINK_HOPS {
                             return Err(Refusal {
                                 reason: format!(
-                                    "{origin} takes more than {MAX_SYMLINK_HOPS} symlink hops to \
+                                    "{subject} takes more than {MAX_SYMLINK_HOPS} symlink hops to \
                                      resolve"
                                 ),
                                 remedy: "The filter will not serve control state it cannot \
@@ -289,8 +289,8 @@ impl Workspace {
             });
         };
         let named = resolve_against(&self.root, target.trim());
-        let origin = format!("the gitdir {dotgit:?} names");
-        match self.resolve_checked(&named, &origin)? {
+        let subject = format!("the gitdir {dotgit:?} names");
+        match self.resolve_checked(&named, &subject)? {
             None => Err(Refusal {
                 reason: format!("{dotgit:?} names a gitdir that does not exist: {named:?}"),
                 remedy: "The filter will not serve a repository whose gitdir it cannot locate."
@@ -316,8 +316,8 @@ impl Workspace {
     /// the gitdir's `commondir` file names, or the gitdir itself when there is none.
     fn common_of(&self, gitdir: &Path) -> Result<PathBuf, Refusal> {
         let commondir_path = gitdir.join("commondir");
-        let origin = format!("the commondir file {commondir_path:?}");
-        let Some(resolved) = self.resolve_checked(&commondir_path, &origin)? else {
+        let subject = format!("the commondir file {commondir_path:?}");
+        let Some(resolved) = self.resolve_checked(&commondir_path, &subject)? else {
             return Ok(gitdir.to_path_buf());
         };
         let text = match fs::read_to_string(&resolved) {
@@ -333,8 +333,8 @@ impl Workspace {
             Ok(text) => text,
         };
         let named = resolve_against(gitdir, text.trim());
-        let origin = format!("the common gitdir {commondir_path:?} names");
-        match self.resolve_checked(&named, &origin)? {
+        let subject = format!("the common gitdir {commondir_path:?} names");
+        match self.resolve_checked(&named, &subject)? {
             None => Err(Refusal {
                 reason: format!(
                     "{commondir_path:?} names a directory that does not exist: {named:?}"
@@ -379,8 +379,8 @@ impl Workspace {
         // `config.worktree` — so scanning `gitdir/config` alone misses the file that names the
         // hooks git actually runs.
         for config_path in [common.join("config"), gitdir.join("config.worktree")] {
-            let origin = format!("the config file {config_path:?}");
-            let Some(resolved) = self.resolve_checked(&config_path, &origin)? else {
+            let subject = format!("the config file {config_path:?}");
+            let Some(resolved) = self.resolve_checked(&config_path, &subject)? else {
                 continue;
             };
             let bytes = match fs::read(&resolved) {
@@ -438,9 +438,9 @@ impl Workspace {
                     for value in values {
                         for base in &bases {
                             let named = resolve_against(base, &value);
-                            let origin =
+                            let subject =
                                 format!("{config_path:?} sets a hooksPath to {value:?}, which");
-                            if let Some(dir) = self.resolve_checked(&named, &origin)?
+                            if let Some(dir) = self.resolve_checked(&named, &subject)?
                                 && !hooks_dirs.contains(&dir)
                             {
                                 hooks_dirs.push(dir);
@@ -461,8 +461,8 @@ impl Workspace {
     /// directory may legitimately live outside the workspace, but an individual hook that is a
     /// symlink back into ordinary workspace data is the same relocation one level down.
     fn check_hook_entries(&self, dir: &Path) -> Result<(), Refusal> {
-        let origin = format!("the hook directory {dir:?}");
-        let Some(resolved) = self.resolve_checked(dir, &origin)? else {
+        let subject = format!("the hook directory {dir:?}");
+        let Some(resolved) = self.resolve_checked(dir, &subject)? else {
             return Ok(());
         };
         let entries = match fs::read_dir(&resolved) {
@@ -484,8 +484,8 @@ impl Workspace {
                 remedy: "The filter will not serve hooks it cannot inspect.".to_string(),
             })?;
             let hook = resolved.join(entry.file_name());
-            let origin = format!("the hook {hook:?}");
-            self.resolve_checked(&hook, &origin)?;
+            let subject = format!("the hook {hook:?}");
+            self.resolve_checked(&hook, &subject)?;
         }
         Ok(())
     }

@@ -1,8 +1,8 @@
-// The egress policy: the rule grammar, the launcher-owned defaults, the ordered resolution that
-// turns them into the policy a profile enforces, the lines that print it, and the decisions made
+// The egress rules: the grammar, the launcher-owned defaults, the ordered resolution that turns
+// them into the ruleset a profile enforces, the lines that print it, and the decisions made
 // against it — at the CONNECT and inside an inspected tunnel. Pure: nothing here reads a socket or
 // the environment, which is what lets the launcher run the same code for its dry run
-// (--print-policy) and the tests resolve policies by the thousand.
+// (--print-ruleset) and the tests resolve rulesets by the thousand.
 
 package agentsandbox.egress
 
@@ -10,10 +10,10 @@ import GitHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
 
-object PolicyHelper:
+object RulesetHelper:
   /*
-   * A rule is a line of the project's `rule` file; a policy is what a launch enforces — the
-   * defaults, the profile and the file resolved together (resolvePolicy). Two words, kept apart.
+   * A rule is a line of the project's `rule` file; the ruleset is what a launch enforces — the
+   * defaults, the profile and the file resolved together (resolveRuleset).
    *
    * A line grants exactly its words, under the path it names, and nothing else on the
    * host. The lines apply in the order written over the defaults, PF's and relayd's model: an
@@ -29,9 +29,9 @@ object PolicyHelper:
    * seen or logged past the CONNECT, or inspected: TLS terminated, each request decided against
    * the resolved scope of its longest literal match (authorizeInspectedRequest).
    *
-   * Which lines count is the selected profile's answer (resolvePolicy): the defaults — every
+   * Which lines count is the selected profile's answer (resolveRuleset): the defaults — every
    * model-provider group plus the curated catalog — modified by the project's file. Whichever
-   * policy is in force is printed at startup and every denial is logged, which is how you find out
+   * ruleset is in force is printed at startup and every denial is logged, which is how you find out
    * what an agent actually wanted.
    *
    * Inspection is off unless the launcher supplies a certificate and key: a leaf naming exactly
@@ -95,10 +95,10 @@ object PolicyHelper:
 
   /** One parsed line, with where it was written — `rule` for the project's file, `defaults/…` for
     * the launcher-owned files — and its text as written, tokens joined by one space. */
-  case class Line(origin: String, text: String, rule: Rule):
-    def spelled: String = s"$origin: $text"
+  case class Line(file: String, text: String, rule: Rule):
+    def spelled: String = s"$file: $text"
 
-  val RuleOrigin = "rule"
+  val RuleFile = "rule"
   val RuleVariable = "EGRESS_RULE"
 
   /** The variables of the grammar this one replaced: set, a refused start naming RuleVariable, so a
@@ -135,8 +135,8 @@ object PolicyHelper:
    * refusal: after an intervening line of the other verb it is the last word on its grants, and
    * one changing nothing is warned like any other (contribute, take).
    */
-  def parseRules(origin: String, text: String): Vector[Line] =
-    val lines = tokenized(origin, text).map(tokens => Line(origin, tokens.mkString(" "), parseRule(origin, tokens)))
+  def parseRules(file: String, text: String): Vector[Line] =
+    val lines = tokenized(file, text).map(tokens => Line(file, tokens.mkString(" "), parseRule(file, tokens)))
     lines.zipWithIndex.foreach: (line, index) =>
       if line.rule == Rule.DenyDefaults && index > 0 then
         throw IllegalArgumentException(
@@ -144,32 +144,32 @@ object PolicyHelper:
         )
     lines
 
-  private def tokenized(origin: String, text: String): Vector[Vector[String]] =
+  private def tokenized(file: String, text: String): Vector[Vector[String]] =
     text.linesIterator
       .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
       .filter(_.nonEmpty)
       .map: tokens =>
         tokens.find(_.contains('#')).foreach: token =>
           throw IllegalArgumentException(
-            s"$origin contains '$token', a token with '#' inside it; a comment starts at the " +
+            s"$file contains '$token', a token with '#' inside it; a comment starts at the " +
               "start of a line or after whitespace, and nothing else contains '#'",
           )
         tokens
       .toVector
 
-  private def parseRule(origin: String, tokens: Vector[String]): Rule =
+  private def parseRule(file: String, tokens: Vector[String]): Rule =
     val text = tokens.mkString(" ")
-    def refuse(problem: String): Nothing = throw IllegalArgumentException(s"$origin: '$text' $problem")
+    def refuse(problem: String): Nothing = throw IllegalArgumentException(s"$file: '$text' $problem")
 
     tokens match
       case Vector("deny", "defaults")              => Rule.DenyDefaults
       case "deny" +: "defaults" +: _               => refuse("takes no word after defaults")
-      case Vector("allow", "model-provider", name) => Rule.AllowGroup(requireProvider(origin, name))
-      case Vector("deny", "model-provider", name)  => Rule.DenyGroup(requireProvider(origin, name))
+      case Vector("allow", "model-provider", name) => Rule.AllowGroup(requireProvider(file, name))
+      case Vector("deny", "model-provider", name)  => Rule.DenyGroup(requireProvider(file, name))
       case "allow" +: url +: words if url.startsWith("https://") =>
         val (authority, path) = splitUrl(refuse, url)
         if authority.startsWith("**.") then refuse("names a pattern; an allow names an exact host")
-        val host = normalizeEntry(origin, authority)
+        val host = ruleHost(file, authority)
         val grants = parseGrants(refuse, words)
         if grants.isEmpty then refuse(s"names no grant; an allow line says what it grants: ${Grant.Forms}")
         if grants(Grant.Tunnel) && grants.size > 1 then
@@ -183,8 +183,8 @@ object PolicyHelper:
           refuse("denies a path; a deny names a host or a subtree whole, and its URL ends at / (SECURITY.md, " +
             "\"Adding hosts, not patterns\")")
         val pattern =
-          if authority.startsWith("**.") then HostPattern.Subtree(normalizeEntry(origin, authority.drop(3)))
-          else HostPattern.Exact(normalizeEntry(origin, authority))
+          if authority.startsWith("**.") then HostPattern.Subtree(ruleHost(file, authority.drop(3)))
+          else HostPattern.Exact(ruleHost(file, authority))
         Rule.Deny(pattern, parseGrants(refuse, words))
       case _ => refuse(s"is no line of the rule grammar: $GrammarForms")
 
@@ -222,22 +222,22 @@ object PolicyHelper:
       named.find(grants).foreach(twice => refuse(s"names $twice twice"))
       grants ++ named
 
-  private def requireProvider(origin: String, name: String): String =
+  private def requireProvider(file: String, name: String): String =
     if !ModelProviders.contains(name) then
       throw IllegalArgumentException(
-        s"$origin names the model provider '$name', which this proxy does not define; " +
+        s"$file names the model provider '$name', which this proxy does not define; " +
           s"the providers are ${ModelProviders.sorted.mkString(", ")}",
       )
     name
 
-  private def normalizeEntry(origin: String, entry: String): String =
+  private def ruleHost(file: String, spelled: String): String =
     val host =
-      try normalizeHost(entry)
+      try normalizeHost(spelled)
       catch
         case ex: BadRequest =>
-          throw IllegalArgumentException(s"$origin contains an invalid hostname '$entry': ${ex.getMessage}")
+          throw IllegalArgumentException(s"$file contains an invalid hostname '$spelled': ${ex.getMessage}")
     if isIpLiteral(host) then
-      throw IllegalArgumentException(s"$origin contains an IP literal '$entry'; only hostnames are allowed")
+      throw IllegalArgumentException(s"$file contains an IP literal '$spelled'; only hostnames are allowed")
     host
 
   // ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ object PolicyHelper:
   // ---------------------------------------------------------------------------
 
   /**
-   * The defaults are policy, so they are written as policy: resource files in the rule grammar,
+   * The defaults are rules, so they are written as rules: resource files in the grammar,
    * read through the parser a project's file goes through, with the reasoning for each host as a
    * comment beside it. `defaults/host` is the curated catalog — what deny-unless-allowed admits on
    * its own; `defaults/model-provider/<name>` is what `allow model-provider <name>` expands to: the
@@ -255,23 +255,23 @@ object PolicyHelper:
    * has why the model endpoints are not TLS-inspected.
    *
    * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
-   * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-policy
+   * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
    * (the launcher's dry run) is where a malformed defaults file surfaces.
    */
   private def readDefault(name: String): Vector[Line] =
-    val origin = s"defaults/$name"
+    val file = s"defaults/$name"
     val stream = getClass.getResourceAsStream(s"/defaults/$name")
-    if stream == null then throw IllegalStateException(s"the defaults file $origin is missing from the proxy jar")
+    if stream == null then throw IllegalStateException(s"the defaults file $file is missing from the proxy jar")
     val text =
       try String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
       finally stream.close()
-    val lines = parseRules(origin, text)
+    val lines = parseRules(file, text)
     lines.foreach: line =>
       line.rule match
         case Rule.Allow(_, _, _) => ()
         case _ =>
           throw IllegalStateException(
-            s"$origin contains '${line.text}'; a defaults file holds allow https:// lines only",
+            s"$file contains '${line.text}'; a defaults file holds allow https:// lines only",
           )
     lines
 
@@ -324,11 +324,11 @@ object PolicyHelper:
     def spelled: String = via.fold(line.spelled)(expanded => s"${expanded.spelled} (${line.spelled})")
 
     /** Whether the project's file wrote it, directly or by expanding a group. */
-    def fromRule: Boolean = via.exists(_.origin == RuleOrigin) || line.origin == RuleOrigin
+    def fromRule: Boolean = via.exists(_.file == RuleFile) || line.file == RuleFile
 
   /** One allow line's standing grants at its path; a group's line has its group's name, which
     * is what `deny model-provider` removes. Emptied by denies, it stays in the state as the
-    * boundary its path opened (invariant 5 of the plan: a line is a boundary as well as a grant). */
+    * boundary its path opened: a line is a boundary as well as a grant. */
   private case class Contribution(
     host: String,
     path: String,
@@ -448,7 +448,7 @@ object PolicyHelper:
     * This table is a compilation of the ordered lines, PF's skip steps: the longest match a
     * request looks up selects a state the order already settled, never a precedence among lines.
     * A change here must keep HostileInputTest's plain ordered evaluator agreeing with it
-    * (design.md, "No richer egress-policy format"). */
+    * (design.md, "No richer rule format"). */
   private def hostsOf(state: State): Map[String, Treatment] =
     val active = state.active
     active.groupBy(_.host).map: (host, held) =>
@@ -461,8 +461,8 @@ object PolicyHelper:
         host -> Treatment.Inspected(scopes.toMap)
 
   /**
-   * The policy in force: the whole of what enforcement reads, and the whole of what the digest
-   * names. Equality of this structure is what "one policy" means: two files resolving to it print
+   * The ruleset in force: the whole of what enforcement reads, and the whole of what the digest
+   * names. Equality of this structure is what "one ruleset" means: two files resolving to it print
    * one digest and the same lines, and the same file under two profiles never does — the profile
    * is in it, and the selected provider under deny-unless-model alone, where it changes authority.
    * `denialPatterns` exists under allow-unless-denied alone: the patterns, exact hosts and
@@ -472,7 +472,7 @@ object PolicyHelper:
    * the map holds dropped as inert, sorted. Under the finite profiles the host map embodies every
    * denial and none is kept.
    */
-  case class ResolvedPolicy(
+  case class Ruleset(
     profile: String,
     publicDefault: Boolean,
     provider: Option[String],
@@ -502,7 +502,7 @@ object PolicyHelper:
   case class ScopeProvenance(boundary: Vector[String], grants: Map[String, Vector[String]])
 
   /**
-   * Kept beside the policy, never in it: what the structure's equality must not see. `scopes` per
+   * Kept beside the ruleset, never in it: what the structure's equality must not see. `scopes` per
    * inspected scope; `patterns` per whole-host or `tunnel` deny and per host a deny emptied, under
    * every profile, so a refusal can say `host denied (<line>)` where a file line matched the host;
    * `widening`, the project lines granting beyond the defaults for their host — a host the
@@ -520,24 +520,24 @@ object PolicyHelper:
       Option.when(matched.nonEmpty)(matched)
 
   case class ResolvedEgress(
-    policy: ResolvedPolicy,
+    ruleset: Ruleset,
     provenance: Provenance,
     warnings: Vector[String],
     clearsDefaults: Boolean,
   ):
-    def profile: String = policy.profile
-    def publicDefault: Boolean = policy.publicDefault
-    def provider: Option[String] = policy.provider
-    def hosts: Map[String, Treatment] = policy.hosts
-    def denialPatterns: Vector[HostPattern] = policy.denialPatterns
-    def inspectedScopes: Map[String, Map[String, Set[String]]] = policy.inspectedScopes
-    def tunnelHosts: Set[String] = policy.tunnelHosts
-    def inspected: Set[String] = policy.inspected
-    def admits(host: String): Boolean = policy.admits(host)
-    def scopesOf(host: String): Map[String, Set[String]] = policy.scopesOf(host)
+    def profile: String = ruleset.profile
+    def publicDefault: Boolean = ruleset.publicDefault
+    def provider: Option[String] = ruleset.provider
+    def hosts: Map[String, Treatment] = ruleset.hosts
+    def denialPatterns: Vector[HostPattern] = ruleset.denialPatterns
+    def inspectedScopes: Map[String, Map[String, Set[String]]] = ruleset.inspectedScopes
+    def tunnelHosts: Set[String] = ruleset.tunnelHosts
+    def inspected: Set[String] = ruleset.inspected
+    def admits(host: String): Boolean = ruleset.admits(host)
+    def scopesOf(host: String): Map[String, Set[String]] = ruleset.scopesOf(host)
 
   /**
-   * The variables resolved to the policy in force.
+   * The variables resolved to the ruleset in force.
    *
    * Every profile runs the same fold, from its own start and consulting its own lines:
    *
@@ -560,10 +560,10 @@ object PolicyHelper:
    * line for a host the defaults inspect without `deny defaults`. Warns at every launch, under
    * every profile: a `deny` matching nothing at its position — the misspelled deny must not fail
    * silently — a redundant grant, and a line every grant of which a later line takes back. An
-   * empty resolved policy is valid and reported as such — deny-all resolves empty by design, as
+   * empty ruleset is valid and reported as such — deny-all resolves empty by design, as
    * does deny-unless-model with no provider selected.
    */
-  def resolvePolicy(
+  def resolveRuleset(
     profileValue: Option[String],
     providerValue: Option[String],
     ruleText: Option[String],
@@ -573,7 +573,7 @@ object PolicyHelper:
       throw IllegalArgumentException(s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}")
     val provider = providerValue.filterNot(_ == "none").map(requireProvider(ModelProviderVariable, _))
 
-    val lines = parseRules(RuleOrigin, ruleText.getOrElse(""))
+    val lines = parseRules(RuleFile, ruleText.getOrElse(""))
     val clearsDefaults = lines.headOption.exists(_.rule == Rule.DenyDefaults)
 
     // Widening to a tunnel is global: it reads the defaults, not the file's state, because an opaque
@@ -584,7 +584,7 @@ object PolicyHelper:
             if grants(Grant.Tunnel) && !clearsDefaults && DefaultHosts.get(host).exists(_ != Treatment.Tunnel) =>
           throw IllegalArgumentException(
             s"${line.spelled} makes $host an opaque tunnel, which the defaults inspect; a tunnel there takes " +
-              "deny defaults as the first line and the whole policy after it",
+              "deny defaults as the first line and the whole ruleset after it",
           )
         case _ => ()
 
@@ -633,7 +633,7 @@ object PolicyHelper:
             case HostPattern.Subtree(_)  => false
           !inert && !patternSet.exists(other => other != pattern && pattern.within(other))
 
-    val policy = ResolvedPolicy(
+    val ruleset = Ruleset(
       profile, publicDefault, Option.when(profile == "deny-unless-model")(provider).flatten, hosts, denialPatterns,
     )
 
@@ -679,7 +679,7 @@ object PolicyHelper:
         )
 
     ResolvedEgress(
-      policy,
+      ruleset,
       Provenance(scopes.toMap, patterns, widening),
       validated.warnings ++ takenBack ++ reachability,
       clearsDefaults,
@@ -689,15 +689,15 @@ object PolicyHelper:
   // Output
   // ---------------------------------------------------------------------------
 
-  /** One host's treatment as rule lines, one per scope: the form --check-host and the policy lines share. */
+  /** One host's treatment as rule lines, one per scope: the form --check-host and the ruleset lines share. */
   def ruleLines(host: String, treatment: Treatment): Vector[String] = treatment match
     case Treatment.Tunnel => Vector(s"allow https://$host/ ${Grant.Tunnel}")
     case Treatment.Inspected(scopes) =>
       scopes.toVector.sortBy(_(0)).map((path, grants) => s"allow https://$host$path ${Grant.spelled(grants)}")
 
   /**
-   * The resolved policy, one line each, in the rule grammar so a reader learns one grammar — the
-   * deterministic serialization of ResolvedPolicy, which the digest names, --print-policy prints
+   * The ruleset, one line each, in the rule grammar so a reader learns one grammar — the
+   * deterministic serialization of Ruleset, which the digest names, --print-ruleset prints
    * and serve() logs identically, the launcher reads the leaf's names off and the agent's authority
    * section holds. It is a serialization, not a rule file: no `deny defaults` header, no promise
    * to re-parse to itself, and nothing reads it as input. First the profile line — the grammar
@@ -706,7 +706,7 @@ object PolicyHelper:
    * that a host surviving beneath one reads as the exception the grammar's order makes it, then
    * one allow line per resolved scope with its whole grant set, hosts and paths sorted.
    */
-  def policyLines(resolved: ResolvedEgress): Vector[String] =
+  def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
       case "deny-unless-model" =>
         s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
@@ -717,12 +717,12 @@ object PolicyHelper:
     val allowLines = resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
     profileLine +: (denyLines ++ allowLines)
 
-  /** The lines after the policy lines, outside the digest: they describe the policy's size and
-    * how the file arrived at it, not the policy. The launcher splits the dry run's text at the
-    * first of them (EgressProxyPolicy.MetadataPrefixes). */
+  /** The lines after the ruleset lines, outside the digest: they describe the ruleset's size and
+    * how the file arrived at it, not the ruleset. The launcher splits the dry run's text at the
+    * first of them (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
-      s"policy summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} opaque hosts; " +
+      s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} opaque hosts; " +
         s"${resolved.denialPatterns.size} denial patterns; ${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
@@ -733,10 +733,10 @@ object PolicyHelper:
     Option.when(widening.nonEmpty)(s"widening lines (${widening.size}): " + widening.map(_.text).mkString("; "))
 
   /**
-   * Each policy line followed by its sources — an allow line's boundary and each of its grants, a
+   * Each ruleset line followed by its sources — an allow line's boundary and each of its grants, a
    * deny line's pattern, with the lines of every denied pattern the normal form folded into it —
    * then, under the finite profiles, the hosts the file's lines denied, which the structure keeps
-   * no line for. Printed by `--print-policy --provenance`, which is what `--egress-effective` runs.
+   * no line for. Printed by `--print-ruleset --provenance`, which is what `--egress-effective` runs.
    */
   def provenanceLines(resolved: ResolvedEgress): Vector[String] =
     val provenance = resolved.provenance
@@ -802,17 +802,17 @@ object PolicyHelper:
     admitted: String => Boolean = _ => false,
   ): Unit =
     if !head.target.startsWith("/") then
-      throw PolicyViolation("only origin-form request targets are allowed", RefusalAdvice.originForm)
+      throw Refusal("only origin-form request targets are allowed", RefusalAdvice.originForm)
 
     if head.values("Upgrade").nonEmpty then
-      throw PolicyViolation("HTTP Upgrade is not allowed", RefusalAdvice.upgrade)
+      throw Refusal("HTTP Upgrade is not allowed", RefusalAdvice.upgrade)
 
     head.values("Host") match
       case Vector(value) =>
         val declared = normalizeHostHeader(value)
 
         if declared != host then
-          throw PolicyViolation(s"Host header $declared", RefusalAdvice.hostHeader)
+          throw Refusal(s"Host header $declared", RefusalAdvice.hostHeader)
 
       case Vector() => throw BadRequest("missing Host header")
       case _        => throw BadRequest("duplicate Host header")
@@ -823,39 +823,39 @@ object PolicyHelper:
     val matched = scopes.keys.filter(scope => RulePath.contains(scope, path)).maxByOption(_.length)
     val grants = matched match
       case Some(scope) => scopes(scope)
-      case None        => throw PolicyViolation("path outside allowance", RefusalAdvice.pathOutside(scopes.keySet))
+      case None        => throw Refusal("path under no line", RefusalAdvice.pathOutside(scopes.keySet))
     if matched.get != RulePath.Root then requireLiteralPath(path)
 
     head.method match
       case "GET" | "HEAD" =>
         // a body on a read method would be an unbounded, unlogged client-to-server channel
         if head.bodyFraming != BodyFraming.Empty then
-          throw PolicyViolation("request body", RefusalAdvice.requestBody)
+          throw Refusal("request body", RefusalAdvice.requestBody)
 
         if isReceivePackDiscovery(head) then
-          if !grants("POST") then throw PolicyViolation("git push ref discovery", RefusalAdvice.gitPush)
+          if !grants("POST") then throw Refusal("git push ref discovery", RefusalAdvice.gitPush)
         else if isUploadPackDiscovery(head) then
-          if !grants(Grant.GitFetch) then throw PolicyViolation("git fetch ref discovery", RefusalAdvice.gitFetch)
+          if !grants(Grant.GitFetch) then throw Refusal("git fetch ref discovery", RefusalAdvice.gitFetch)
         else if !grants(Grant.Read) then
-          throw PolicyViolation("read not granted", RefusalAdvice.noRead)
+          throw Refusal("read not granted", RefusalAdvice.noRead)
 
       case method if Grant.Methods.contains(method) =>
         requireUnambiguousPath(path)
 
         val opened = grants(method) || (method == "POST" && grants(Grant.GitFetch) && isUploadPack(path))
         if !opened then
-          throw PolicyViolation(
+          throw Refusal(
             s"$method not granted",
             if method == "POST" then RefusalAdvice.forRefusedPost(host, path, admitted) else RefusalAdvice.readOnly,
           )
 
       case method =>
-        throw PolicyViolation(s"$method not granted", RefusalAdvice.readOnly)
+        throw Refusal(s"$method not granted", RefusalAdvice.readOnly)
 
   /*
    * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
    * contain one and resolvePublic rejects private answers — and under `allow-unless-denied` it is
-   * the named refusal a literal target gets. Admission is ResolvedPolicy.admits. The refusal's
+   * the named refusal a literal target gets. Admission is Ruleset.admits. The refusal's
    * reason is presentation: `host denied (<line>)` where a file line matched the host, from
    * provenance, `host not allowed` otherwise.
    */
@@ -864,18 +864,18 @@ object PolicyHelper:
     resolved: ResolvedEgress,
   ): String =
     if request.port != 443 then
-      throw PolicyViolation(s"port ${request.port}", RefusalAdvice.port)
+      throw Refusal(s"port ${request.port}", RefusalAdvice.port)
 
     val host = normalizeHost(request.host)
 
     if isIpLiteral(host) then
-      throw PolicyViolation("IP-literal target", RefusalAdvice.ipLiteral)
+      throw Refusal("IP-literal target", RefusalAdvice.ipLiteral)
 
     if !resolved.admits(host) then
       resolved.provenance.denialOf(host) match
         case Some(sources) =>
-          throw PolicyViolation(s"host denied (${sources.mkString("; ")})", RefusalAdvice.hostDenied)
+          throw Refusal(s"host denied (${sources.mkString("; ")})", RefusalAdvice.hostDenied)
         case None =>
-          throw PolicyViolation("host not allowed", RefusalAdvice.hostNotAllowed(host, resolved.profile))
+          throw Refusal("host not allowed", RefusalAdvice.hostNotAllowed(host, resolved.profile))
 
     host

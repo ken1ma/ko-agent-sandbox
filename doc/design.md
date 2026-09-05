@@ -38,11 +38,11 @@ project, which is what the run scope exists to prevent. A launch-minted leaf bes
 proves nothing either: a missing or extra name, the two things the "names exactly" check exists
 for, cannot happen when the proxy mints what it inspects.
 
-### No per-repository `GitRead(repository)` policy
+### No per-repository `GitRead(repository)` grant
 
-The policy names destinations and its grant words name operations; nothing names a repository,
+The ruleset names destinations and its grant words name operations; nothing names a repository,
 because public reading is meant to be broad and the sandbox holds no credential a finer grant
-would attenuate. SECURITY.md, "Why the policy is not a capability system", has the argument and
+would attenuate. SECURITY.md, "Why the ruleset is not a capability system", has the argument and
 the one condition that would reopen it.
 
 ### No generic "GET is safe, POST is dangerous" rule
@@ -59,7 +59,7 @@ of trying to classify command names as safe.
 ### The agent-instruction override replaces only the conventions
 
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` replaces the image's `AGENTS-CUSTOM.md` and nothing
-else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and the policy section is
+else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and the authority section is
 what it must not be trusted to declare. It is not an agent's own project-level instructions,
 which that agent reads with no launcher help, because the managed-policy location
 loads unconditionally — a project file can add to the image's conventions but never drop them —
@@ -68,9 +68,9 @@ session cannot rewrite the instructions governing the next one, as it could any 
 project directory. Prose governs nothing enforceable; the file sits in the boundary directory for
 that read-before-launch property alone.
 
-### No richer egress-policy format
+### No richer rule format
 
-The policy stays four fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
+The rules stay four fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
 spells out: `allow` and `deny` lines naming URLs, four grant words, no pattern but the
 taking-away subtree, no open vocabulary, no selected-provider-plus-extras profile variant.
 
@@ -86,9 +86,9 @@ grammar has textual order and no specificity precedence: a later root `deny` bea
 would admit it. doas is the same house's smaller instance — `permit`/`deny`, last match wins, no
 match denies — and the precedent for keeping the vocabulary this small. The lessons kept: the
 file's order is its meaning; broad restrictions precede their narrower exceptions; the resolved
-policy may compile the rules into host and path scopes, and that compilation must not change
+ruleset may compile the rules into host and path scopes, and that compilation must not change
 their simple ordered meaning — PF's discipline for its skip steps, held here by the tests'
-plain ordered evaluator, which the resolved policy is checked against over a drawn domain.
+plain ordered evaluator, which the ruleset is checked against over a drawn domain.
 doas's `-C`, which evaluates the file against a hypothetical command through the code that
 would enforce it, is the precedent for the request-level explanation TODO.md defers: driven by
 the enforcing resolver, never by a second interpretation of the file.
@@ -119,7 +119,7 @@ a URL entry beside a domain, coder/boundary has path rules:
   rules, 2014-07-09: https://github.com/openbsd/src/commit/cb8b0e5645
 
 SECURITY.md ("Adding hosts, not patterns") has the reasoning;
-`resolvePolicy` enforces it, and the tests hold the resolved policy to a plain ordered evaluator
+`resolveRuleset` enforces it, and the tests hold the ruleset to a plain ordered evaluator
 over a drawn domain. The failure classes kept out — a
 validator and a runtime reading one configuration differently (one resolver, in the proxy, which
 the launcher's dry run executes), and an allow silently overriding a deny (the last word decides,
@@ -138,10 +138,10 @@ a grant word outside the closed set without a concrete need that outweighs that 
 ### No HTTP query surface on the proxy
 
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
-header, answering the effective policy from the live proxy. Rejected, because every consumer
-already gets that answer from the proxy's own `--print-policy` dry run — `--egress-effective`, the
-launch banner, `KO_AGENT_SANDBOX_EGRESS_POLICY`, and the appended agent instructions — and the
-launcher cannot use a live query anyway: the policy must be validated and the leaf minted before
+header, answering the ruleset in force from the live proxy. Rejected, because every consumer
+already gets that answer from the proxy's own `--print-ruleset` dry run — `--egress-effective`,
+the launch banner, `KO_AGENT_SANDBOX_EGRESS_RULESET`, and the appended agent instructions — and
+the launcher cannot use a live query anyway: the rules must be validated and the leaf minted before
 the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
 would add is a second parsed request format at the enforcement point, against its
 CONNECT-only-one-request rule, for information already delivered. `Max-Forwards` itself creates
@@ -221,7 +221,7 @@ art:
 ### No following symlinks at sandbox setup
 
 A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a file
-inside them refuses the launch (`gitGuardVolumes`, `policyDirError`, `readPolicyFiles`,
+inside them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`,
 `readAgentInstructions`, tested). podman resolves mount sources on the host, so mounting through a
 repository-controlled link would expose its target into the sandbox, and following the link to pin
 its resolved target would make the pinned surface depend on where the link points at launch time.
@@ -253,7 +253,7 @@ where it is and hides one class of files by name, without strengthening the boun
 under any other name, in `config.yaml`, or in git history stays visible. It also costs every
 project to serve the undisciplined one: a default `.env` mask
 breaks tests that read `.env`, the first `-name .env` removes the protection, and the user who
-commits a credential is the one least likely to review a third policy file in `.ko-agent-sandbox`.
+commits a credential is the one least likely to review a third boundary file in `.ko-agent-sandbox`.
 Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
 under no well-known name. Keep the rule procedural: a credential in the project directory
 violates the operating model, and it is the user's to keep out. A `deny` of the forge in
@@ -276,7 +276,7 @@ design; it means the additional boundary should be purchased only when the threa
 ### No approve-on-miss prompt for a refused host
 
 Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
-a prompt to widen the policy. A prompt is a prompt-injection target, and a grant made through one
+a prompt to widen the rules. A prompt is a prompt-injection target, and a grant made through one
 is authority added mid-session, harder to review than a line committed to the repository and
 applied at launch. Authority here stays launch-only: a refusal's `403` body names the
 step (`RefusalAdvice` in the proxy), and the user adds the `allow` line to
@@ -341,7 +341,7 @@ are linked inline where that decision is recorded; these are the broader sources
   https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
 - Refusal reasons handed to the agent — sandbox-runtime's `deniedDomainReasons`, Codex's
   `codex.network_proxy.policy_decision` reasons, Copilot's firewall report; here fixed and
-  launcher-owned, since the policy admits hosts, not patterns:
+  launcher-owned, since the ruleset admits hosts, not patterns:
   https://github.com/anthropic-experimental/sandbox-runtime
   https://github.com/openai/codex/tree/main/codex-rs/network-proxy
   https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall
@@ -375,7 +375,7 @@ Do not create a host-side execution path merely to make an agent workflow easier
 ```
 
 ```text
-Policy syntax has one meaning. Compiling or optimizing a policy may change its representation,
+Rule syntax has one meaning. Compiling or optimizing a ruleset may change its representation,
 never its semantics: the plain ordered reading of the rules is the specification.
 ```
 
@@ -411,6 +411,6 @@ one loosened for speed is not.
 
 ```text
 Security configuration must fail closed.
-Unknown, malformed, or ambiguously interpreted policy must not silently weaken the
+Unknown, malformed, or ambiguously interpreted configuration must not silently weaken the
 effective boundary.
 ```

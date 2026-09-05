@@ -8,7 +8,7 @@ Add a host-selected service layer above the substitution primitive in
 ```text
 credential instance -> source and lifecycle
 service definition   -> sandbox adapter and approved injection targets
-egress policy        -> whether each target is reachable
+egress ruleset       -> whether each target is reachable
 ```
 
 The existing plan remains canonical for placeholder construction, exact-token header
@@ -27,10 +27,10 @@ Facts have one binding site:
 
 - `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
 - This document owns service composition, credential sources, refresh and mediated TLS.
-- The egress policy owns literal path-prefix matching — SECURITY.md, "Adding hosts, not
-  patterns", and `plan-egress-rules.md` for its next form. A credential target may refer to that
-  matcher but does not define another one.
-- The resolved egress policy owns reachability. A credential service never adds a host.
+- The egress ruleset owns literal path-prefix matching — SECURITY.md, "Adding hosts, not
+  patterns", and doc/egress-proxy.md, "The rule file", for the grammar. A credential target may
+  refer to that matcher but does not define another one.
+- The egress ruleset owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
 
 ## Required use cases
@@ -51,7 +51,7 @@ not requirements of this plan.
 
 ## Invariants
 
-1. A credential has two independent authorities: the resolved egress policy admits a destination,
+1. A credential has two independent authorities: the egress ruleset admits a destination,
    and the host launch selects a credential instance. Neither authority implies the other.
 2. A repository, agent command, persisted agent state and service response cannot create, select,
    retarget or refresh a credential instance.
@@ -65,7 +65,7 @@ not requirements of this plan.
    refuses launch rather than widening egress or silently falling back to an unbrokered value.
 7. The real value exists only in its host source, protected host store, launcher's bounded refresh
    memory, private per-run generation and proxy memory. It never enters sandbox-visible state.
-8. Only the credential coordinator invokes or refreshes a source. Listing, policy inspection,
+8. Only the credential coordinator invokes or refreshes a source. Listing, ruleset inspection,
    diagnostics and a locally denied request are read-only and cannot trigger a refresh.
 9. Refresh is single-flight per instance across concurrent launchers. A new generation becomes
    visible atomically; a reader sees the complete old or complete new generation, never a mixture.
@@ -74,7 +74,7 @@ not requirements of this plan.
 11. Selecting one service cannot change another service's mechanism, adapter, source, targets,
     placeholder or cache generation.
 12. TLS mediation of an otherwise opaque provider endpoint is explicit in the launch banner and
-    effective-policy output. Without a selected credential, its standing opaque behavior is
+    `--egress-effective` output. Without a selected credential, its standing opaque behavior is
     unchanged.
 13. The proxy never sends a real credential before origin TLS identity is validated, and never
     forwards it across an origin redirect unless the new target independently matches the service.
@@ -91,7 +91,7 @@ A **service definition** is trusted, versioned data shipped in the proxy image. 
   placeholder;
 - injection targets, each an exact normalized host, one header and one fixed value format with a
   single placeholder slot;
-- an optional standing literal path prefix and method set, using existing policy matchers;
+- an optional standing literal path prefix and method set, using the ruleset's existing matchers;
 - the client and image compatibility probes required before that service is offered.
 
 A **credential instance** is host-owned state:
@@ -104,11 +104,11 @@ Both identifiers match `[a-z][a-z0-9-]{0,62}`. `default` is the omitted instance
 separates accounts or scopes without copying a service definition: `github/work` and
 `github/personal` may share targets but never a placeholder or source.
 
-An **active binding** is the intersection of a selected instance's targets with the resolved
-egress policy. Denied targets are removed first. Every remaining target must be TLS-inspected by
-the existing restricted path or by the mediated-provider path below.
+An **active binding** is the intersection of a selected instance's targets with the egress
+ruleset. Denied targets are removed first. Every remaining target must be TLS-inspected by the
+existing inspected treatment or by the mediated-provider path below.
 
-The service catalog is a closed image resource, parsed by `--print-policy` and the serving proxy.
+The service catalog is a closed image resource, parsed by `--print-ruleset` and the serving proxy.
 The launcher consumes that answer and does not keep a second provider-domain table.
 
 ## Host command contract
@@ -173,10 +173,10 @@ The serialized form is internal to the image, not project configuration. Its par
   and space: catalog text, trusted for the space `Bearer %s` needs, and the field is built by
   placing a value that has separately passed the raw-value grammar into the format;
 - a method set and optional literal prefix that cannot be wider than the target's standing
-  restricted policy;
+  inspected scope;
 - unique `(host, header, format, matcher)` entries inside one service.
 
-For a standing unrestricted provider host, the target deliberately has no method or path policy:
+For a standing tunnel host, the target deliberately has no method or path grants:
 the existing authority already permits writable traffic. Mediation parses enough HTTP to inject
 and relay, but it does not claim to make model traffic read-only.
 
@@ -314,25 +314,25 @@ built-in GitHub MCP server sends the OAuth token itself, brokering breaks that s
 
 ## Mediated provider traffic
 
-The project policy treatments are:
+The rule grammar's treatments are:
 
 ```text
-restricted   TLS-terminated; fixed read and named-operation policy
-unrestricted opaque writable tunnel
+inspected    TLS-terminated; the grants of its resolved scope
+tunnel       opaque writable tunnel
 ```
 
-A selected credential adds a per-run overlay, not a third project policy spelling:
+A selected credential adds a per-run overlay, not a third treatment in the rule grammar:
 
 ```text
 mediated     TLS-terminated writable relay for an admitted provider target
 ```
 
 The overlay applies only to exact targets in the selected service. A denied host remains absent.
-A restricted host stays restricted and is authorized before injection. An unrestricted host is
+An inspected host stays inspected and is authorized before injection. A tunnel host is
 mediated only for that run and otherwise remains an opaque tunnel.
 
-The launch leaf certificate names the union of restricted hosts and active mediated targets. The
-effective-policy answer and startup banner list the mediated targets and say:
+The launch leaf certificate names the union of inspected hosts and active mediated targets. The
+`--egress-effective` answer and startup banner list the mediated targets and say:
 
 ```text
 credential mediation: proxy reads provider HTTP for <service>/<instance>: <hosts>
@@ -347,7 +347,7 @@ For one mediated connection:
 1. Preserve CONNECT authorization, public-address validation, SNI equality and origin pinning.
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
-4. Apply standing restricted authorization when the resolved policy says restricted.
+4. Apply standing inspected authorization when the ruleset says inspected.
 5. Replace only the selected instance's complete placeholder in the declared header format.
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when spent.
@@ -362,7 +362,7 @@ agent gets the same measured compatibility gate before its service is listed as 
 
 ## Failure and audit contract
 
-Credential failures are transport errors after local egress admission, never policy denials:
+Credential failures are transport errors after local egress admission, never ruleset denials:
 
 ```text
 error api.example.com POST /v1 credential unavailable service/instance
@@ -435,7 +435,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Reuse the base plan's entire substitution suite for every supported header format.
 - Generate many concurrent runs and instances; assert all placeholders are distinct, including
   multiple credentials for one host, and each selects only its own value.
-- Run every target through denial, restricted authorization and mediated relay. Assert redirects,
+- Run every target through denial, inspected authorization and mediated relay. Assert redirects,
   aliases, wrong paths and wrong headers receive no credential.
 - Scan every sandbox environment, filesystem, persistent volume, argument, log, error and retained
   artifact for all real values and mappings after each lifecycle exit.
@@ -461,7 +461,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### TLS and clients
 
-- Test restricted and standing-unrestricted targets with no credential, a selected credential and
+- Test inspected and standing-tunnel targets with no credential, a selected credential and
   a denied overlay; no selection preserves byte-for-byte opaque behavior.
 - Prove origin identity, SNI and public-address checks precede injection and remain the original
   hostname across every target and upstream-proxy mode.
@@ -476,7 +476,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.
 2. Implement host storage, management verbs and per-run generations for static API keys. Reuse the
-   existing plan's exact-token rewrite on restricted hosts.
+   existing plan's exact-token rewrite on inspected hosts.
 3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the
    crash and concurrency matrix before adding OAuth.
@@ -484,7 +484,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
    when plaintext provider traffic first enters proxy memory.
 6. Add provider OAuth implementations one at a time, each with a host-owned client identity,
    compatibility fixture and refresh/revocation tests.
-7. Update README, launcher help, agent instructions and the effective-policy reference. Remove
+7. Update README, launcher help, agent instructions and the `--egress-effective` reference. Remove
    completed plan facts after their canonical code and security sites bind them.
 
 Do not expose provider mediation as complete until multi-domain isolation, cross-service

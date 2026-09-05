@@ -118,7 +118,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
   test("a leaf the proxy mints from a run CA chains to it, answers its key and names its host alone"):
     // The two builders meet here: the CA BouncyCastle minted on the host, the leaf the JDK's own
     // builder minted as the proxy does (X509Helper); curl in the sandbox is the third reader,
-    // EgressPolicyTest's.
+    // EgressSessionTest's.
     val ca = mintCa("run-1a2b3c4d")
     val minted = agentsandbox.egress.X509Helper.mintLeaf(
       "docs.example", parse(ca.certificatePem), parseEcPrivateKey(ca.privateKeyPem),

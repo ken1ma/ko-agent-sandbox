@@ -6,7 +6,7 @@ package agentsandbox.egress
 case class BadRequest(message: String) extends RuntimeException(message)
 
 /** A connection that closed after zero bytes: routine pooled-client behavior after admission,
-  * logged as `error`; policy refused nothing (SECURITY.md, "The audit line grammar"). */
+  * logged as `error`; the ruleset refused nothing (SECURITY.md, "The audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
 /** An origin EOF where response framing promised more. Distinct from IOException because the
@@ -14,42 +14,42 @@ case class ClosedWithoutRequest() extends RuntimeException("closed without sendi
   * the client connection abortively so the stump cannot read as a completed response. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
-/** A refusal the policy made, told to the refused party as a 403 body of two lines
+/** A refusal the ruleset made, told to the refused party as a 403 body of two lines
   * (HTTPHelper.refusalBody): `message` is the audit line's `<why>`, `advice` the next step,
   * RefusalAdvice's. Both are required, so no refusal site can ship without its step. */
-case class PolicyViolation(message: String, advice: String) extends RuntimeException(message)
+case class Refusal(message: String, advice: String) extends RuntimeException(message)
 
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
- * can take there, or the one thing to tell the user. Never a way around the policy, and never a
- * host this session's policy does not admit — forRefusedPost checks before naming one. Fixed text
+ * can take there, or the one thing to tell the user. Never a way around the ruleset, and never a
+ * host this session's ruleset does not admit — forRefusedPost checks before naming one. Fixed text
  * plus what the request itself named, so a body never carries project data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
 object RefusalAdvice:
   /** The step depends on why the host is refused. The rule file's allow lines count under
-    * deny-unless-allowed alone (resolvePolicy), so under deny-all or deny-unless-model the step is
+    * deny-unless-allowed alone (resolveRuleset), so under deny-all or deny-unless-model the step is
     * a relaunch — named as necessary, never as sufficient: this session's resolution says nothing
     * about what that profile would apply from the project's file, a denial of this very host
     * included. A defaults host reaches this refusal under the default profile only through `deny
     * defaults` — a host a deny line emptied is refused as denied, naming the line — so the step
     * names that. allow-unless-denied never reaches this refusal. */
   def hostNotAllowed(host: String, profile: String): String =
-    val default = PolicyHelper.DefaultProfile
-    val defaults = PolicyHelper.DefaultHosts.contains(host)
+    val default = RulesetHelper.DefaultProfile
+    val defaults = RulesetHelper.DefaultHosts.contains(host)
     val addition = s"'allow https://$host/ read' in .ko-agent-sandbox/egress/rule"
     if profile == default then
       if defaults then
         "This project's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
           "for another route."
-      else s"Not in this session's egress policy. Ask the user to add $addition on the host."
+      else s"Not in this session's egress rules. Ask the user to add $addition on the host."
     else
       s"This session's egress profile, $profile, admits no project hosts. Ask the user; a relaunch under " +
         (if defaults then s"$default can admit it." else s"$default with $addition can admit it.")
 
   // The line is on the body's first line already (`host denied (<line>)`); a `**.domain` pattern
-  // repeated here would name a host the policy does not admit.
-  val hostDenied = "Denied by this project's policy. Ask the user; do not look for another route."
+  // repeated here would name a host the ruleset does not admit.
+  val hostDenied = "Denied by this project's rules. Ask the user; do not look for another route."
 
   val port = "Only port 443 is reachable."
 
@@ -66,7 +66,7 @@ object RefusalAdvice:
   val graphql = "GraphQL is a POST. Read through the REST API."
 
   /** Where GitHub serves LFS file contents read-only, one URL per file (SECURITY.md, "Reading
-    * without being able to write"). Named in advice only while the policy admits it. */
+    * without being able to write"). Named in advice only while the ruleset admits it. */
   val LfsContentHost = "media.githubusercontent.com"
 
   val lfsBatchGithub =
@@ -86,7 +86,7 @@ object RefusalAdvice:
 
   val ambiguousPath = "Spell the path without percent-encoding, dot segments, backslashes or empty segments."
 
-  /** The paths are the policy's own words for this host, so naming them names nothing new. */
+  /** The paths are the ruleset's own words for this host, so naming them names nothing new. */
   def pathOutside(paths: Set[String]): String =
     s"This host is admitted under ${paths.toVector.sorted.mkString(" and ")} only. " +
       "Ask the user; do not look for another route."
