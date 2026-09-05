@@ -258,12 +258,12 @@ The per-project CA lives on the host, under
 
 `HTTPS_PROXY` in the launcher's environment, `http[s]://[user:password@]host:port`, sends every
 origin connection of the session's proxy through that upstream proxy; lowercase `https_proxy` is
-read when the uppercase is unset, and `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and OS proxy settings
-are not read at all. The port is explicit because clients disagree on the default: curl assumes
-1080, Go, Python and Node assume 80. A malformed value refuses the launch, naming the part that is
-wrong and never the value. `--build`'s pulls and builds, and `podman machine start`, use the host's
-variables as podman does on its own; of a session's containers only the proxy receives the one
-selected variable, and the sandbox none of them.
+read when the uppercase is unset or empty, and `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and OS proxy
+settings are not read at all. The port is explicit because clients disagree on the default: curl
+assumes 1080, Go, Python and Node assume 80. A malformed value refuses the launch, naming the part
+that is wrong and never the value. `--build`'s pulls and builds, and `podman machine start`, use
+the host's variables as podman does on its own; of a session's containers only the proxy receives
+the one selected variable, and the sandbox none of them.
 
 What changes is only how an admitted address is reached: the policy decides every destination as
 before, the name is resolved once and every answer must be public, and the upstream proxy is

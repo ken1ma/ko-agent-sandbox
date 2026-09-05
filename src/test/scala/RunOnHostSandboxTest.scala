@@ -14,15 +14,72 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val authority = RunOnHostSandbox.bundledRuntimeAuthority()
     assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
 
-  test("the build's proxy variables name its own proxy, and the launcher's reach no build"):
-    val variables = buildProxyVariables(4711)
-    Vector("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy").foreach: name =>
-      assertEquals(variables(name), Some("http://127.0.0.1:4711"), name)
-    Vector("NO_PROXY", "no_proxy").foreach(name => assertEquals(variables(name), Some("localhost,127.0.0.1"), name))
-    // Every spelling podman's own --http-proxy passes through is covered, set or removed.
-    Vector("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy").foreach: name =>
-      assertEquals(variables(name), None, name)
-    assertEquals(variables.keySet, agentsandbox.egress.TransportHelper.ProxyVariables.toSet ++ variables.keySet)
+  test("the build's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
+    val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
+    val policy = RunOnHostPolicy.BuildPolicy(
+      project = Path.of("/Users/u/project"), jdkHome = jdk, coursierV1 = Path.of("/cache/v1"),
+      tool = Tool.Sbt, launcher = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
+    )
+    val host = Map(
+      "HOME" -> "/Users/u", "LANG" -> "en_US.UTF-8", "PATH" -> "/usr/bin:/bin",
+      "TERM" -> "xterm", "TMPDIR" -> "/var/folders/xy/T", "JAVA_HOME" -> "/Users/u/jdk-link",
+      "HTTPS_PROXY" -> "http://alice:s3cret@proxy.example:3128", "AWS_SECRET_ACCESS_KEY" -> "hunter2",
+      "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "TOKEN" -> "t0ken", "USER" -> "shellname",
+    )
+    val environment = buildEnvironment(
+      host.get,
+      Vector(
+        "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
+        "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+      ),
+      policy, sbtGlobal = Path.of("/cache/sbt"), millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
+      sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
+    )
+    // Passed through as they are.
+    assertEquals(environment("HOME"), "/Users/u")
+    assertEquals(environment("LANG"), "en_US.UTF-8")
+    // Set by the wrapper, from what it proved or made, never from the shell.
+    assertEquals(environment("JAVA_HOME"), jdk.toString)
+    assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+    assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
+    assertEquals(environment("USER"), "u")
+    assertEquals(environment("LOGNAME"), "u")
+    assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
+    assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
+    // A forward reaches the build; one naming a variable the wrapper sets loses to the wrapper.
+    assertEquals(environment("TOKEN"), "t0ken")
+    assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
+    assert(!environment("JAVA_TOOL_OPTIONS").contains("javaagent"))
+    // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
+    // tools' own overrides — the mill version ones even when forwarded.
+    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "MILL_VERSION", "TERM", "ALL_PROXY").foreach: name =>
+      assert(!environment.contains(name), name)
+    assert(!environment.values.exists(_.contains("s3cret")), environment.toString)
+    assertEquals(
+      environment.keySet,
+      Set(
+        "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
+        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
+      ) ++ buildProxyVariables(4711).keySet,
+    )
+    // Without a derivable download folder the variable is simply absent.
+    val noFolder = buildEnvironment(host.get, Vector.empty, policy, Path.of("/s"), None, Path.of("/t"), 1, "u")
+    assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
+
+  test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):
+    val both = Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://proxy.example:3128")
+    assertEquals(upstreamProxyVariable(both.get), Some("https_proxy" -> "http://proxy.example:3128"))
+    assertEquals(upstreamProxyVariable(Map("HTTPS_PROXY" -> "http://a.example:1").get), Some("HTTPS_PROXY" -> "http://a.example:1"))
+    assertEquals(upstreamProxyVariable(Map.empty[String, String].get), None)
+    assertEquals(carrierName("TOKEN"), "KO_AGENT_RUN_ON_HOST_ENV_TOKEN")
+
+  test("--env names travel as options and come back as names; nothing else is an option"):
+    assertEquals(
+      forwardedNames(Seq("--env=TOKEN", AutoShutdownForeignSbtOption, "--env=OTHER")),
+      Vector("TOKEN", "OTHER"),
+    )
+    assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
   // --------------------------------------------------------------------------
   // host-command/, the closed namespace inside the closed namespace

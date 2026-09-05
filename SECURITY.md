@@ -856,14 +856,21 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   `.ko-agent-sandbox/host-command/<tool>/egress/rule` names (`allow https://<host>/ read` lines
   only, a closed namespace like its parent) plus Maven Central. Everything else user-owned is
   invisible — the launcher state root and the user's own caches included.
-- **The build's environment is the launcher's, minus the proxy family.** The proxy variables
-  name the build's own proxy (`RunOnHostSandbox.buildProxyVariables`), so a tool reading them
-  reaches what the profile permits, and the launcher's `HTTPS_PROXY` — an upstream proxy's
-  credential, when there is one ("Egress proxy") — never reaches build code. The rest of the
-  environment is inherited whole, unlike the sandbox's, which gets only what `--env` names: a
-  secret exported in the shell that launched the session is readable by the build definition.
-  Accepted for now, as the cost of a build that runs as the user; the closed alternative is an
-  allowlist of what sbt, mill, Coursier and the JDK read, which is a change of its own.
+- **The build's environment is a closed set, not the launcher's.** The wrapper builds it whole
+  (`doc/run-on-host.md`, "The session", has the table): its own settings, three pass-throughs,
+  and what `--env` named at launch — the same forward the sandbox gets, the same refusal of
+  `KO_AGENT_SANDBOX_*`. Closed because the build definition is the one place agent-chosen code
+  runs as the user: a secret exported in the shell that launched the session, or the launcher's
+  own `HTTPS_PROXY` with an upstream proxy's credential ("Egress proxy"), would otherwise be the
+  build's to read. The wrapper's settings win over a forward, so a forwarded `HTTPS_PROXY` cannot
+  redirect the build past its proxy and a forwarded `JAVA_TOOL_OPTIONS` cannot add to its JVM
+  options; the tools' own overrides — `SBT_OPTS`, `JAVA_OPTS`, `MILL_VERSION` — stay out,
+  forwarded or not, so the build is the one the wrapper granted for. Below the launcher, whose
+  own arguments are what the user typed, forwarded names travel to the broker and each build as
+  arguments and the values through their environments under carrier names
+  (`RunOnHostSandbox.carrierName`), so an explicit value is read by no unconfined helper before
+  the build's environment is built. The broker inherits the launcher's environment as the
+  launcher's own JVM ran in it, so a name-only forward names a variable already there.
 - **One sbt server per project, and only this session's own.** A thin sbt client attaches to
   whatever server the project's portfile names and then runs with *that server's* environment —
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live

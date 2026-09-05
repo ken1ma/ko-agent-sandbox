@@ -266,15 +266,15 @@ object RunOnHostPolicy:
    * dry-run mode would report the launcher path exactly, but running the project's script is
    * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
    *
-   * The fallback is the bootstrap's: `DEFAULT_MILL_VERSION` from the environment, else the
-   * assignment at the top of the script, which mill documents as the recommended way to manage
-   * the version (`./mill updateMillScripts`). The file sources are all project files and the two
-   * environment overrides are the wrapper's; whichever names the version, what is granted is a
-   * launcher the user provisioned.
+   * The fallback is the assignment at the top of the script, which mill documents as the
+   * recommended way to manage the version (`./mill updateMillScripts`). The script also honours
+   * `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this deliberately does
+   * not: the build's environment is a closed set (RunOnHostSandbox.buildEnvironment) that carries
+   * neither, so the script resolves from the project alone, and reading them here would grant a
+   * launcher the script then does not run.
    */
   def millVersion(
     project: Path,
-    env: String => Option[String],
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, String] =
     // The script's `elif` chain: the first file that *exists* decides, and what it yields is the
@@ -290,16 +290,14 @@ object RunOnHostPolicy:
     def scriptDefault: Option[String] =
       lines("mill").flatMap(_.collectFirst { case DefaultAssignment(version) => version })
 
-    val found: Option[String] = env("MILL_VERSION").filter(_.nonEmpty)
-      .orElse:
-        versionFile(".mill-version")
-          .orElse(versionFile(".config/mill-version"))
-          .orElse(markerFile("build.mill.yaml", _.contains("mill-version:")))
-          .orElse(buildScript.flatMap(markerFile(_, ScriptMarker.matches)))
-          .flatten
-          .filter(_.nonEmpty)
-      .orElse(env("DEFAULT_MILL_VERSION").filter(_.nonEmpty))
-      .orElse(scriptDefault)
+    val found: Option[String] =
+      versionFile(".mill-version")
+        .orElse(versionFile(".config/mill-version"))
+        .orElse(markerFile("build.mill.yaml", _.contains("mill-version:")))
+        .orElse(buildScript.flatMap(markerFile(_, ScriptMarker.matches)))
+        .flatten
+        .filter(_.nonEmpty)
+        .orElse(scriptDefault)
     found.filter(plausibleVersion) match
       case Some(version) => Right(version)
       case None          => Left(Refusal.PrereqMillVersionUnpinned)

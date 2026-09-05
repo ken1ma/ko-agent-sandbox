@@ -109,16 +109,24 @@ emit() { # tool
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
-# exec, because with_timeout backgrounds this function and kills $!: without it that pid is a
-# subshell and the timeout kill would orphan the build instead of ending it. The exports are
-# contained in that subshell.
+# `env -i`, because the wrapper's environment is a closed set (RunOnHostSandbox.buildEnvironment;
+# run-on-host.md, "The session", has the table) and a row passing on a variable or a PATH entry
+# production withholds would measure nothing. The proxy settings are the one omission: these rows
+# run without a proxy, the network rows measuring the denial itself. exec, because with_timeout
+# backgrounds this function and kills $!: without it that pid is a subshell and the timeout kill
+# would orphan the build instead of ending it.
 build_env() { # agent-v1 command...
     cache=$1; shift
-    export PATH="$JAVA_HOME/bin:$PATH" \
-        COURSIER_CACHE="$cache" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
+    account=$(id -un)
+    exec env -i \
+        PATH="$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin" JAVA_HOME="$JAVA_HOME" \
+        HOME="$HOME" ${LANG:+"LANG=$LANG"} ${LC_ALL:+"LC_ALL=$LC_ALL"} \
+        TMPDIR="$SESSION_TMP" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
+        COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
+        MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" \
         JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=${sbt_global:-$SESSION_TMP/sbt-global} -Djava.net.preferIPv4Stack=true"
-    exec "$@"
+-Dsbt.global.base=$sbt_global -Djava.net.preferIPv4Stack=true" \
+        "$@"
 }
 # A hang is a FAIL, not a stalled run: a client whose server never came up waits forever.
 with_timeout() { # seconds command...

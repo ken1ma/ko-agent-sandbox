@@ -3103,6 +3103,7 @@ object AgentSandboxLauncher:
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
           autoShutdownForeignSbt = parsed.autoShutdownForeignSbt,
+          forwards = parsed.env,
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")
       System.err.println(s"host command log: $channelLogFile")
