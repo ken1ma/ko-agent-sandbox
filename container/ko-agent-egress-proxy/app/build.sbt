@@ -5,7 +5,7 @@ scalaVersion := "3.9.0"
 Compile / mainClass := Some("agentsandbox.egress.AgentEgressProxy")
 
 libraryDependencies +=
-  "org.scalameta" %% "munit" % "1.3.5" % Test
+  "org.scalameta" %% "munit" % "1.3.6" % Test
 
 scalacOptions ++= Seq(
   "-deprecation",

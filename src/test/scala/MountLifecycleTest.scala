@@ -22,7 +22,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
-import IntegrationSession.*
+import IntegrationSession.{*, given}
 import KoAgentFs.*
 
 class MountLifecycleTest extends munit.FunSuite:
@@ -78,7 +78,7 @@ class MountLifecycleTest extends munit.FunSuite:
         aLog.contains("workspace filter: mounted") && !aLog.contains("reusing the mount"),
         s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
-      assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")
+      polling.withMaxRetries(30).eventually(assertEquals(markers(), a, "markers after A"))
       assertEquals(mounted(), 1, "A is running but its mountpoint is not mounted")
       assertEquals(daemonPids().size, 1, s"expected one daemon for $id")
 
@@ -90,7 +90,7 @@ class MountLifecycleTest extends munit.FunSuite:
         s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
-      assertEquals(eventually(30)(markers())(_ == both), both, "markers with both up")
+      polling.withMaxRetries(30).eventually(assertEquals(markers(), both, "markers with both up"))
       assertEquals(daemonPids().size, 1, "B started a second daemon")
       // A daemon holding the project lock would block every later reap for the session's whole
       // life; the mount script closes fd 9 across the fork to prevent exactly that.
@@ -112,7 +112,7 @@ class MountLifecycleTest extends munit.FunSuite:
 
       run(podman, "stop", "--time", "2", a)
       started = started.filterNot(_.container == a)
-      assertEquals(eventually(Patience)(markers())(_ == b), b, "markers after A exits")
+      eventually(assertEquals(markers(), b, "markers after A exits"))
       assertEquals(mounted(), 1, "the mount went away while B was still using it")
       assert(run(podman, "exec", b, "sh", "-c", "ls /workspace > /dev/null").ok,
              "B's /workspace stopped serving when A exited")
@@ -129,10 +129,8 @@ class MountLifecycleTest extends munit.FunSuite:
       vm(s"""touch "$$HOME/$Mounts/$id/sessions/$planted"""")
       run(podman, "stop", "--time", "2", b)
       started = started.filterNot(_.container == b)
-      assertEquals(
-        eventually(Patience)(markers())(_ == planted), planted,
-        "the planted marker did not survive the last real session's reap",
-      )
+      eventually:
+        assertEquals(markers(), planted, "the planted marker did not survive the last real session's reap")
       assertEquals(mounted(), 1, "the mount was pulled out from under a launch in flight")
       assertEquals(daemonPids().size, 1, "the daemon exited under a launch in flight")
 
@@ -161,18 +159,15 @@ class MountLifecycleTest extends munit.FunSuite:
 
       run(podman, "stop", "--time", "2", c)
       started = started.filterNot(_.container == c)
-      assert(
-        eventually(Patience)(lockWaiters())(_ >= 1) >= 1,
-        "no reap ever blocked on the project lock; it is not serializing",
-      )
+      eventually(assert(lockWaiters() >= 1, "no reap ever blocked on the project lock; it is not serializing"))
       assertEquals(mounted(), 1, "the mount went down while the lock was held")
       assertEquals(markers(), planted, "expected only the planted marker while the reap is blocked")
 
       vm(s"kill $lockHolder 2>/dev/null || true")
       lockHolder = ""
-      assertEquals(eventually(Patience)(markers())(_.isEmpty), "", "the planted marker was collected")
-      assertEquals(eventually(60)(mounted())(_ == 0), 0, "the mountpoint is still mounted")
-      assertEquals(eventually(60)(daemonPids().size)(_ == 0), 0, "the daemon is still running")
+      eventually(assertEquals(markers(), "", "the planted marker was collected"))
+      polling.withMaxRetries(60).eventually(assertEquals(mounted(), 0, "the mountpoint is still mounted"))
+      polling.withMaxRetries(60).eventually(assertEquals(daemonPids().size, 0, "the daemon is still running"))
 
     finally
       if lockHolder.nonEmpty then vm(s"kill $lockHolder 2>/dev/null || true")

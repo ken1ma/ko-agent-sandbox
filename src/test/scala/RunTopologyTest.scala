@@ -16,7 +16,7 @@ package agentsandbox.launcher
 
 import AgentSandboxLauncher.addressOn
 import HostCommands.*
-import IntegrationSession.*
+import IntegrationSession.{*, given}
 
 class RunTopologyTest extends munit.FunSuite:
 
@@ -50,10 +50,8 @@ class RunTopologyTest extends munit.FunSuite:
   private def killReaper(session: Session): Unit =
     val pattern = s"ko-agent-sandbox-reaper ${session.container}"
     assert(run("pkill", "-KILL", "-f", pattern).ok, s"no reaper matched `$pattern`")
-    assertEquals(
-      eventually(30)(run("pgrep", "-f", pattern).ok)(_ == false), false,
-      s"still running after SIGKILL:\n${run("pgrep", "-fl", pattern).text}",
-    )
+    polling.withMaxRetries(30).eventually:
+      assert(!run("pgrep", "-f", pattern).ok, s"still running after SIGKILL:\n${run("pgrep", "-fl", pattern).text}")
 
   private def exists(container: String): Boolean = run(podman, "container", "exists", container).ok
 
@@ -71,10 +69,7 @@ class RunTopologyTest extends munit.FunSuite:
       // The reaper removes them after `podman wait`, retrying while the --rm sandbox is still
       // mid-removal, so this is a wait rather than a check.
       expected.foreach: network =>
-        assertEquals(
-          eventually(Patience)(networks().contains(network))(_ == false), false,
-          s"$network outlived the session that created it",
-        )
+        eventually(assert(!networks().contains(network), s"$network outlived the session that created it"))
     finally discard(project)
 
   test("a session reaches its own proxy and no other session's"):

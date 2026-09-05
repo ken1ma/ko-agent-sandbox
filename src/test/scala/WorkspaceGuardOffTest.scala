@@ -31,7 +31,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 
 import HostCommands.*
-import IntegrationSession.*
+import IntegrationSession.{*, given}
 
 class WorkspaceGuardOffTest extends munit.FunSuite:
 
@@ -181,10 +181,11 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         val hooks = project.resolve(".git").resolve("hooks")
         Files.move(hooks, hooks.resolveSibling("hooks.renamed"))
         Files.createDirectories(hooks)
-        assert(
-          eventually(120)(hookWritable(session))(identity),
-          "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not",
-        )
+        polling.withMaxRetries(120).eventually:
+          assert(
+            hookWritable(session),
+            "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not",
+          )
     finally
       live.foreach(stop)
       discard(project)
