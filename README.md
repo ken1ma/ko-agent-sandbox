@@ -160,10 +160,10 @@ checkout — [Development](#development).
                          next sbt command starts a fresh one
       --env=<name>[=<value>]
                          forward the host's <name>, which must be set, into
-                         the sandbox — or with <value>, set it to that
-                         without exporting it on the host. Repeatable;
-                         only KO_AGENT_SANDBOX_* is refused. Before
-                         forwarding a secret, read SECURITY.md
+                         the sandbox and into every --run-on-host build — or
+                         with <value>, set it to that without exporting it
+                         on the host. Repeatable; only KO_AGENT_SANDBOX_* is
+                         refused. Before forwarding a secret, read SECURITY.md
 
     Management verbs, each recognized before the command; whatever follows
     belongs to the verb:
@@ -243,11 +243,12 @@ checkout — [Development](#development).
                                           lets the agent read a copied image; "bidirectional"
                                           also lets it set your clipboard (SECURITY.md). A
                                           Linux host needs xclip or wl-clipboard
-      HTTPS_PROXY                         an upstream proxy the session's egress leaves through,
+      HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
                                           http[s]://[user:password@]host:port with an explicit
-                                          port; lowercase https_proxy is read when it is unset.
-                                          The egress policy still decides every destination and
-                                          NO_PROXY is ignored (doc/egress-proxy.md)
+                                          port; the lowercase name is read when the uppercase
+                                          is unset or empty. The egress policy still decides every
+                                          destination and NO_PROXY is ignored
+                                          (doc/egress-proxy.md)
 
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress policy: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults

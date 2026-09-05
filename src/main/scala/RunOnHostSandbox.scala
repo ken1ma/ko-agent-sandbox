@@ -22,8 +22,15 @@ object RunOnHostSandbox:
   case class Assembled(
     policy: BuildPolicy,
     sbtDistribution: Option[Path],
-    sbtGlobal: Option[Path],
-  )
+    /** The per-project sbt global base: created and granted for an sbt build (`sbtGlobalGranted`),
+      * and for a mill build a path nothing reads, named all the same so the environment is one
+      * shape for both tools — as `millDownloads` is for sbt. */
+    sbtGlobal: Path,
+    /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
+      * build is granted, and what the build's own script is pointed at (buildEnvironment). */
+    millDownloads: Option[Path],
+  ):
+    def sbtGlobalGranted: Option[Path] = Option.when(policy.tool == Tool.Sbt)(sbtGlobal)
 
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
@@ -61,7 +68,7 @@ object RunOnHostSandbox:
           for
             _ <- context("mill bootstrap")(validateMillBootstrap(project, isExecutableFile))
             _ <- context("mill jvm")(millJvmIsSystem(project, readLines))
-            version <- context("mill version")(millVersion(project, env, readLines))
+            version <- context("mill version")(millVersion(project, readLines))
             downloads <- millDownloadDir(env).toRight("no mill download folder")
             arch = System.getProperty("os.arch") match
               case "aarch64" => "arm64"
@@ -79,8 +86,9 @@ object RunOnHostSandbox:
       projectId = projectIdOf(project, os)
       v1 = agentCoursierV1(cacheRoot, projectId)
       _ = Files.createDirectories(v1)
-      sbtGlobal = Option.when(tool == Tool.Sbt):
-        Files.createDirectories(agentSbtGlobal(cacheRoot, projectId)).toRealPath()
+      sbtGlobal =
+        if tool == Tool.Sbt then Files.createDirectories(agentSbtGlobal(cacheRoot, projectId)).toRealPath()
+        else agentSbtGlobal(cacheRoot, projectId)
     yield Assembled(
       BuildPolicy(
         project = project,
@@ -91,6 +99,7 @@ object RunOnHostSandbox:
       ),
       distribution,
       sbtGlobal,
+      millDownloadDir(env),
     )
 
   /**
@@ -195,7 +204,7 @@ object RunOnHostSandbox:
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ verbAndArguments
 
-  /** `--run-build-on-host <tool> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] --
+  /** `--run-build-on-host <tool> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] --
     * <args...>`: one channel request as a process of its own, so the broker's cancel is a
     * SIGTERM whose answer is this wrapper's shutdown hook. */
   def runBuildMain(args: Seq[String]): Unit =
@@ -203,7 +212,7 @@ object RunOnHostSandbox:
       toolName: String,
       project: String,
       workingDirectory: String,
-      autoShutdown: Boolean,
+      options: List[String],
       buildArgs: List[String],
     ): Unit =
       val tool = toolName match
@@ -213,21 +222,40 @@ object RunOnHostSandbox:
           Console.err.println(s"--run-build-on-host: unknown tool $other")
           sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+      val stray = options.filterNot(option => option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption))
+      if stray.nonEmpty then
+        Console.err.println(s"--run-build-on-host: unexpected arguments: ${stray.mkString(" ")}")
+        sys.exit(2)
       sys.exit(
         run(
           Path.of(project), tool, buildArgs, bundledRuntimeAuthority(), uid,
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
-          autoShutdownForeignSbt = autoShutdown,
+          autoShutdownForeignSbt = options.contains(AutoShutdownForeignSbtOption),
+          forwarded = forwardedNames(options),
         ),
       )
     args.toList match
-      case toolName :: project :: workingDirectory :: "--" :: buildArgs =>
-        start(toolName, project, workingDirectory, autoShutdown = false, buildArgs)
-      case toolName :: project :: workingDirectory :: AutoShutdownForeignSbtOption :: "--" :: buildArgs =>
-        start(toolName, project, workingDirectory, autoShutdown = true, buildArgs)
+      case toolName :: project :: workingDirectory :: rest if rest.contains("--") =>
+        val (options, buildArgs) = rest.span(_ != "--")
+        start(toolName, project, workingDirectory, options, buildArgs.drop(1))
       case other =>
         Console.err.println(s"--run-build-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
+
+  /** `--env=<name>` as the broker and the build receive it: the name alone, the value read from
+    * the receiving process's own environment under `carrierName` (RunOnHostChannel.spawnBroker).
+    * A forward is thus never an argument with a secret in it below the launcher. */
+  val EnvOption = "--env="
+
+  def forwardedNames(options: Seq[String]): Vector[String] =
+    options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
+
+  /** Where a forwarded value rides from the launcher to the confined build: a name nothing reads
+    * by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
+    * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
+    * read by them first; the requested name is restored inside the build's environment alone,
+    * where the wrapper's own settings still win over it. */
+  def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is the tee
     * of its stderr, so the line lands where this polls. */
@@ -437,6 +465,9 @@ object RunOnHostSandbox:
     workingDirectory: Option[Path] = None,
     // Launch-typed consent, never a request's: the channel forwards what the user launched with.
     autoShutdownForeignSbt: Boolean = false,
+    // What `--env` named at launch, the same authority; the values are in this process's
+    // environment under carrierName.
+    forwarded: Vector[String] = Vector.empty,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = Path.of(s"/private/tmp/ko-agent-$uid")
@@ -465,7 +496,7 @@ object RunOnHostSandbox:
                 // in a cache is no more a shutdown target than one planted in the project.
                 autoShutdownForeignServer(
                   project, socket, env, log,
-                  buildCaches = Seq(assembled.policy.coursierV1) ++ assembled.sbtGlobal,
+                  buildCaches = Seq(assembled.policy.coursierV1) ++ assembled.sbtGlobalGranted,
                 )
               case Some(socket) =>
                 Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
@@ -503,7 +534,10 @@ object RunOnHostSandbox:
                 sessionTmpFits(session.tmp) match
                   case Left(reason) => Left(reason.toString)
                   case Right(_) =>
-                    runInSession(session, assembled, fileHosts, buildArgs, runtime, workingDirectory, log)
+                    runInSession(
+                      session, assembled, fileHosts, buildArgs, runtime, workingDirectory, log,
+                      forwarded.flatMap(name => env(carrierName(name)).map(name -> _)),
+                    )
               finally
                 teardown()
                 try Runtime.getRuntime.removeShutdownHook(hook)
@@ -522,8 +556,9 @@ object RunOnHostSandbox:
     runtime: SeatbeltProfile.RuntimeAuthority,
     workingDirectory: Option[Path],
     log: String => Unit,
+    forwards: Vector[(String, String)],
   ): Either[String, Int] =
-    assembled.sbtGlobal.foreach: sbtGlobal =>
+    assembled.sbtGlobalGranted.foreach: sbtGlobal =>
       val swept = cleanForeignTargetLinks(assembled.policy.project, Seq(assembled.policy.project, sbtGlobal))
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
@@ -535,12 +570,12 @@ object RunOnHostSandbox:
           policy = assembled.policy,
           sessionTmp = session.tmp,
           sbtDistribution = assembled.sbtDistribution,
-          sbtGlobal = assembled.sbtGlobal,
+          sbtGlobal = assembled.sbtGlobalGranted,
           proxyPort = port,
           runtime = runtime,
         ),
       )
-      exit <- runBuild(session, assembled, profile, port, buildArgs, workingDirectory)
+      exit <- runBuild(session, assembled, profile, port, buildArgs, workingDirectory, forwards)
     yield
       reportDenied(session.directory.resolve("proxy.log"), assembled.policy.tool, log)
       exit
@@ -549,6 +584,11 @@ object RunOnHostSandbox:
     val command = RunOnHostSession
       .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
+    // Closed like the build's: the proxy needs its own settings and, to leave through an upstream
+    // proxy as the container's copy does, the one selected variable. Nothing else of the
+    // launcher's environment has a reader here.
+    builder.environment.clear()
+    upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
     builder.environment.put("EGRESS_RULE", egressRuleText(fileHosts))
     builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
@@ -565,6 +605,7 @@ object RunOnHostSandbox:
     proxyPort: Int,
     buildArgs: Seq[String],
     workingDirectory: Option[Path],
+    forwards: Vector[(String, String)],
   ): Either[String, Int] =
     val policy = assembled.policy
     val profileFile = session.directory.resolve("profile.sb")
@@ -585,49 +626,101 @@ object RunOnHostSandbox:
     val builder = ProcessBuilder(command*)
     builder.directory(workingDirectory.getOrElse(policy.project).toFile)
     builder.inheritIO()
-    val environment = builder.environment
-    environment.put("PATH",
-      s"${policy.jdkHome.resolve("bin")}:${Option(System.getenv("PATH")).getOrElse("/usr/bin:/bin")}")
-    // The settings must reach the JVMs the build forks — a forked test or `run` — and such a JVM
-    // inherits the environment and nothing else: its options come from the build definition, so
-    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill launcher do read, would confine
-    // the launcher's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
-    // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
-    environment.put("JAVA_TOOL_OPTIONS", (Seq(
-      s"-Djava.io.tmpdir=${session.tmp}",
-      s"-Djava.util.prefs.userRoot=${session.tmp}",
-    ) ++ assembled.sbtGlobal.map(base => s"-Dsbt.global.base=$base") ++ Seq(
-      "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
-      "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
-      // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
-      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover: the connect to
-      // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
-      "-Djava.net.preferIPv4Stack=true",
-    )).mkString(" "))
-    buildProxyVariables(proxyPort).foreach: (name, value) =>
-      value.fold(environment.remove(name))(environment.put(name, _))
-    environment.put("XDG_RUNTIME_DIR", session.tmp.toString)
-    environment.put("SBT_GLOBAL_SERVER_DIR", session.tmp.toString)
-    environment.put("COURSIER_CACHE", policy.coursierV1.toString)
+    builder.environment.clear()
+    builder.environment.putAll(
+      buildEnvironment(
+        name => Option(System.getenv(name)), forwards, policy, assembled.sbtGlobal, assembled.millDownloads,
+        session.tmp, proxyPort, System.getProperty("user.name"),
+      ).asJava,
+    )
 
     // The shim publishes the build's exit status and then stays as the group's provable leader
     // (RunOnHostSession), so the answer is the exit file, never the shim's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
 
+  val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
+
+  /** Absent even when forwarded: the wrapper resolved the version from the project alone and
+    * granted that launcher (RunOnHostPolicy.millVersion), and either of these would make the
+    * bootstrap select another. */
+  val MillVersionOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION")
+
+  /** The variable the host-served proxy leaves through, as the proxy itself selects it
+    * (TransportHelper.ProxyVariables): uppercase first, an empty value as unset. */
+  def upstreamProxyVariable(read: String => Option[String]): Option[(String, String)] =
+    agentsandbox.egress.TransportHelper.ProxyVariables.iterator
+      .flatMap(name => read(name).filter(_.nonEmpty).map(name -> _))
+      .nextOption()
+
+  /**
+   * The build's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
+   * the wrapper's own settings, which win. doc/run-on-host.md, "The session", has the table of
+   * what is in it; SECURITY.md, "Run on host", has why it is closed.
+   */
+  def buildEnvironment(
+    host: String => Option[String],
+    forwards: Vector[(String, String)],
+    policy: BuildPolicy,
+    sbtGlobal: Path,
+    millDownloads: Option[Path],
+    sessionTmp: Path,
+    proxyPort: Int,
+    userName: String,
+  ): Map[String, String] =
+    val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
+    // The settings must reach the JVMs the build forks — a forked test or `run` — and such a JVM
+    // inherits the environment and nothing else: its options come from the build definition, so
+    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill launcher do read, would confine
+    // the launcher's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
+    // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
+    val javaToolOptions = (Seq(
+      s"-Djava.io.tmpdir=$sessionTmp",
+      s"-Djava.util.prefs.userRoot=$sessionTmp",
+      s"-Dsbt.global.base=$sbtGlobal",
+      "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
+      "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
+      // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
+      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover: the connect to
+      // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
+      "-Djava.net.preferIPv4Stack=true",
+    )).mkString(" ")
+    val own = Map(
+      // The JDK, then the system directories the runtime authority lets a build execute from
+      // (runtime-authority.txt) — never the host's PATH: an entry of it the confinement refuses,
+      // a version manager's shim or a Homebrew tool ahead of the system one, fails the lookup
+      // with EPERM at that entry, and the shell tries no further, so a build the system PATH
+      // serves would break on the shell's.
+      "PATH" -> s"${policy.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
+      "JAVA_HOME" -> policy.jdkHome.toString,
+      "JAVA_TOOL_OPTIONS" -> javaToolOptions,
+      "TMPDIR" -> sessionTmp.toString,
+      "XDG_RUNTIME_DIR" -> sessionTmp.toString,
+      "SBT_GLOBAL_SERVER_DIR" -> sessionTmp.toString,
+      "COURSIER_CACHE" -> policy.coursierV1.toString,
+      "USER" -> userName,
+      "LOGNAME" -> userName,
+    ) ++
+      // Set for every tool, not mill alone: sbt ignores it, and one unconditional setting is
+      // simpler than a conditional. Mill's bootstrap otherwise derives the folder from HOME and
+      // XDG_CACHE_HOME, and this pins it to the folder holding the launcher the build is granted.
+      millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
+      buildProxyVariables(proxyPort)
+    passed ++ (forwards.toMap -- MillVersionOverrides) ++ own
+
   /**
    * The proxy variables the build's environment gets, both spellings, as the sandbox container
    * gets its own: the build's proxy for the tools that read the environment rather than the JVM
-   * properties, loopback exempt so a test server on it is reached directly, and the rest of the
-   * family removed — the launcher's own HTTPS_PROXY names the upstream proxy Seatbelt refuses,
-   * with a credential the build has no business reading. `None` is a removal.
+   * properties, loopback exempt so a test server on it is reached directly. The rest of the
+   * family — ALL_PROXY, FTP_PROXY — is simply absent, as the launcher's own HTTPS_PROXY is: that
+   * one names an upstream proxy the confinement refuses, with a credential the build has no
+   * business reading.
    */
-  def buildProxyVariables(proxyPort: Int): Map[String, Option[String]] =
-    val proxy = Some(s"http://127.0.0.1:$proxyPort")
+  def buildProxyVariables(proxyPort: Int): Map[String, String] =
+    val proxy = s"http://127.0.0.1:$proxyPort"
     Map(
       "HTTPS_PROXY" -> proxy, "https_proxy" -> proxy, "HTTP_PROXY" -> proxy, "http_proxy" -> proxy,
-      "NO_PROXY" -> Some("localhost,127.0.0.1"), "no_proxy" -> Some("localhost,127.0.0.1"),
-      "ALL_PROXY" -> None, "all_proxy" -> None, "FTP_PROXY" -> None, "ftp_proxy" -> None,
+      "NO_PROXY" -> "localhost,127.0.0.1", "no_proxy" -> "localhost,127.0.0.1",
     )
 
   /**

@@ -188,11 +188,13 @@ outside any sandbox. What is granted is that one file, never the download folder
 holds every launcher the user ever ran. A version the user never ran `./mill` for is a refusal
 naming the file to run.
 
-The wrapper resolves the version the way the bootstrap does — `MILL_VERSION`, `.mill-version`,
+The wrapper resolves the version the way the bootstrap does from the project — `.mill-version`,
 `.config/mill-version`, `build.mill.yaml`, the build script's `//|` header, then the script's own
 default — and derives the launcher file the way the bootstrap does (`RunOnHostPolicy.millVersion`,
-`millLauncher`). Reading the version is a read; asking the script by running it would execute
-agent-authored shell on the host.
+`millLauncher`). The script's `MILL_VERSION` and `DEFAULT_MILL_VERSION` environment overrides are
+not read, because the build's environment carries neither, so the script and the wrapper resolve
+alike. Reading the version is a read; asking the script by running it would execute agent-authored
+shell on the host.
 
 Three more things `mill` needs, each measured by the gate against `src/probe/mill-fixture`:
 `mill-jvm-version: system` in the project — its default provisions a JVM through Coursier's index
@@ -212,9 +214,56 @@ socket's `sun_path` (`RunOnHostPolicy.SessionTmpMaxLength`).
 
 The build's environment is the contract, not its command line: the JVM settings travel in
 `JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and inherits, for the reason
-`RunOnHostSandbox` states where it assembles it. The gate's `build_env` mirrors it. The proxy
-variables are the build's own proxy, both spellings, and the rest of that family is removed
-(`RunOnHostSandbox.buildProxyVariables`); everything else is the launcher's environment, inherited.
+`RunOnHostSandbox` states where it assembles it. The whole environment is a closed set the wrapper
+supplies (`RunOnHostSandbox.buildEnvironment`), never the launcher's own; SECURITY.md, "Run on
+host", has why. The gate's `build_env` supplies the same set, minus the proxy settings, since its
+rows run without a proxy. What the wrapper supplies:
+
+| Variable | Value |
+|---|---|
+| `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
+| `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
+| `JAVA_TOOL_OPTIONS` | the `-D` properties listed below |
+| `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<session>/tmp` |
+| `COURSIER_CACHE` | `<build cache>/coursier/v1` |
+| `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
+| `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
+| `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the build's proxy |
+| `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
+| a name `--env` gave | the value `--env` gave, unless a row above sets that name |
+| `HOME`, `LANG`, `LC_ALL` | the launcher's, when set and `--env` gave none |
+
+Nothing else is supplied. The `-D` properties in `JAVA_TOOL_OPTIONS`, which every JVM the build
+forks reads:
+
+    -Djava.io.tmpdir=$TMPDIR
+    -Djava.util.prefs.userRoot=$TMPDIR
+    -Dsbt.global.base=<build cache>/sbt-global
+    -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=<port>
+    -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=<port>
+    -Djava.net.preferIPv4Stack=true
+
+`<session>` is this build's directory under the wrapper root above, `<cache home>` is
+`${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<build cache>` the
+project's own build-cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The build
+cache" below). The mill folder is the one the wrapper granted the launcher in; sbt
+ignores it. The last property makes the JVM reach the proxy as `127.0.0.1` rather than as the
+v4-mapped IPv6 address, which the confinement's loopback rule does not cover. The sbt global base is
+named for a mill build too, where nothing reads it and it is neither created nor granted, as the
+mill folder is for sbt: one environment for both tools.
+
+Why the rows are what they are. The host's `TMPDIR` names a directory the build is not granted,
+so the session's replaces it for forked shell tools, as `java.io.tmpdir` does for JVMs. `HOME` is
+passed because the tools' scripts derive paths from it, and nothing under it is granted. `--env`
+is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
+pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
+`JAVA_TOOL_OPTIONS` or `HTTPS_PROXY` does not replace the build's own. `MILL_VERSION` and
+`DEFAULT_MILL_VERSION` are dropped even when forwarded, because the wrapper granted the launcher
+of the version the project pins. Among what is not supplied: `TERM`, `SBT_OPTS`, `JAVA_OPTS`, the
+other `COURSIER_*` variables, `SBT_CREDENTIALS`, `ALL_PROXY`, `FTP_PROXY`, the launcher's own
+`HTTPS_PROXY`, and whatever secret the launching shell exported. A build's own processes see this
+set plus what the tools' shell launchers create on the way — `PWD`, `SHLVL`, `_`; a variable does
+not come back merely because the launching shell exported it.
 
 ## The channel and the command
 
@@ -366,9 +415,9 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 ## The build cache
 
 Agent-invoked builds get their own build-cache root, per project —
-`${XDG_CACHE_HOME:-~/.cache}/ko-agent-sandbox/cache/<projectId>/`, Coursier's `v1` and sbt's global
-base under one directory, so `--reset-cache` is a single removal and a further cache kind can join
-without moving anything. It is discovered exactly as the launcher's state root is, so the two
+`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`, Coursier's `v1` and sbt's
+global base under one directory, so `--reset-cache` is a single removal and a further cache kind can
+join without moving anything. It is discovered exactly as the launcher's state root is, so the two
 answer alike on one machine; a relative override is refused because it would resolve against the
 repository being sandboxed, and a root inside the project is refused outright.
 

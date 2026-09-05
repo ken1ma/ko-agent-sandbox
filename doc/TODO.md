@@ -83,15 +83,6 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
   fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
   reaches a loopback helper such as cntlm under rootless podman is part of the same run.
 
-## Deferred — an environment allowlist for host builds
-
-- [ ] A `--run-on-host` build inherits the launcher's whole environment, minus the proxy family
-  (SECURITY.md, "Run on host"); the closed form is an allowlist. Its inventory: what sbt, mill,
-  Coursier and the JDK read (HOME, JAVA_HOME, LANG, TERM, TMPDIR, SBT_OPTS, JAVA_OPTS,
-  COURSIER_*, SBT_CREDENTIALS, MILL_VERSION), a named way in for what a build needs beyond it,
-  the Seatbelt grants derived from HOME and the cache roots kept in agreement with what the
-  build sees, and verification on macOS, the one platform the feature exists on.
-
 ## Deferred — `--explain-request`, the ordered policy traced for one request
 
 The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an

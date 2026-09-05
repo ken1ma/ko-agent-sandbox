@@ -42,7 +42,7 @@ object EmitBuildProfile:
       policy = assembled.policy,
       sessionTmp = sessionTmp,
       sbtDistribution = assembled.sbtDistribution,
-      sbtGlobal = assembled.sbtGlobal,
+      sbtGlobal = assembled.sbtGlobalGranted,
       proxyPort = 51234,
       runtime = runtime,
     )
@@ -58,7 +58,7 @@ object EmitBuildProfile:
     Console.err.println(s"agent cache: ${assembled.policy.coursierV1}")
     Console.err.println(s"tool: $tool")
     Console.err.println(s"launcher: ${assembled.policy.launcher}")
-    assembled.sbtGlobal.foreach(base => Console.err.println(s"sbt global base: $base"))
+    Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
     // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran

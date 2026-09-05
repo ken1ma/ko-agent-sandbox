@@ -435,6 +435,12 @@ object RunOnHostChannel:
     tools: Seq[String],
     logFile: Path,
     autoShutdownForeignSbt: Boolean = false,
+    // `--env` as launched: the names travel as arguments down to each build, the values through
+    // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
+    // argument below the launcher carries a value and an explicit one is read by no trusted
+    // helper. A name-only forward's own variable is in this environment regardless, inherited as
+    // the launcher's whole environment is.
+    forwards: Vector[AgentSandboxLauncher.EnvForward] = Vector.empty,
   ): Boolean =
     try
       val builder = ProcessBuilder(
@@ -443,9 +449,13 @@ object RunOnHostChannel:
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               tools.mkString(","), logFile.toString,
-            ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption))*,
+            ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+              ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
           ))*,
       )
+      forwards.foreach: forward =>
+        forward.value.orElse(Option(System.getenv(forward.name))).foreach: value =>
+          builder.environment.put(RunOnHostSandbox.carrierName(forward.name), value)
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
       builder.redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -454,15 +464,17 @@ object RunOnHostChannel:
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <tools-csv> <log-file>
-    * [--auto-shutdown-foreign-sbt-on-host] [mount]`: spawned by the launcher before it hands over
-    * to podman, detached like the reaper. The trailing mount override is the gate's, whose shim
-    * runs at the project's own path rather than /workspace. */
+    * [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] [mount]`: spawned by the launcher
+    * before it hands over to podman, detached like the reaper. The trailing mount override is the
+    * gate's, whose shim runs at the project's own path rather than /workspace. */
   def serveMain(args: Seq[String]): Unit =
+    def isOption(arg: String) =
+      arg == RunOnHostSandbox.AutoShutdownForeignSbtOption || arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
-      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*)
-          if rest.filterNot(_ == RunOnHostSandbox.AutoShutdownForeignSbtOption).sizeIs <= 1 =>
+      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
         val autoShutdownForeignSbt = rest.contains(RunOnHostSandbox.AutoShutdownForeignSbtOption)
-        val trailing = rest.filterNot(_ == RunOnHostSandbox.AutoShutdownForeignSbtOption)
+        val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
+        val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
         def log(line: String): Unit =
           try
@@ -496,6 +508,7 @@ object RunOnHostChannel:
             RunOnHostSandbox.selfInvocation(
               (Seq("--run-build-on-host", tool, project.toString, workingDirectory.toString)
                 ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+                ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
                 ++ Seq("--"))*,
             ) ++ arguments,
           os = Os.Mac,

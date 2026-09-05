@@ -249,28 +249,23 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     )
 
   test("the pinned version is read from each place the bootstrap reads, in its order"):
-    assertEquals(millVersion(project, env(), files(".mill-version" -> Seq("1.1.8"))), Right("1.1.8"))
+    assertEquals(millVersion(project, files(".mill-version" -> Seq("1.1.8"))), Right("1.1.8"))
     assertEquals(
-      millVersion(project, env(), files(".config/mill-version" -> Seq("1.1.8"))),
+      millVersion(project, files(".config/mill-version" -> Seq("1.1.8"))),
       Right("1.1.8"),
     )
     assertEquals(
-      millVersion(project, env(), files("build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
+      millVersion(project, files("build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
       Right("1.1.8"),
     )
     assertEquals(
-      millVersion(project, env(), files("build.mill" -> Seq("//| mill-version: 1.1.8", "package build"))),
+      millVersion(project, files("build.mill" -> Seq("//| mill-version: 1.1.8", "package build"))),
       Right("1.1.8"),
-    )
-    // The environment wins, as it does in the script.
-    assertEquals(
-      millVersion(project, env("MILL_VERSION" -> "1.0.0"), files(".mill-version" -> Seq("1.1.8"))),
-      Right("1.0.0"),
     )
 
   test("the bootstrap's own trimming is reproduced: quotes and trailing comments"):
     assertEquals(
-      millVersion(project, env(), files("build.mill.yaml" -> Seq("  mill-version: \"1.1.8\"  # pinned"))),
+      millVersion(project, files("build.mill.yaml" -> Seq("  mill-version: \"1.1.8\"  # pinned"))),
       Right("1.1.8"),
     )
 
@@ -339,9 +334,9 @@ class RunOnHostPolicyTest extends munit.FunSuite:
     assertEquals(millJvmIsSystem(project, yamlFirst), Left(Refusal.PrereqMillJvmNotSystem(None)))
 
   test("no version anywhere is a refusal"):
-    assertEquals(millVersion(project, env(), files()), Left(Refusal.PrereqMillVersionUnpinned))
+    assertEquals(millVersion(project, files()), Left(Refusal.PrereqMillVersionUnpinned))
     assertEquals(
-      millVersion(project, env(), files(".mill-version" -> Seq(""))),
+      millVersion(project, files(".mill-version" -> Seq(""))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
@@ -351,38 +346,35 @@ class RunOnHostPolicyTest extends munit.FunSuite:
   )
 
   test("with nothing else pinned, the version is the bootstrap's own DEFAULT_MILL_VERSION"):
-    assertEquals(millVersion(project, env(), files("mill" -> bootstrap)), Right("1.1.8"))
-    val fromEnv = env("DEFAULT_MILL_VERSION" -> "1.1.9")
-    assertEquals(millVersion(project, fromEnv, files("mill" -> bootstrap)), Right("1.1.9"))
+    assertEquals(millVersion(project, files("mill" -> bootstrap)), Right("1.1.8"))
     // A pin anywhere in the chain wins over the default, as in the script.
     val pinned = files("mill" -> bootstrap, ".mill-version" -> Seq("1.1.7"))
-    assertEquals(millVersion(project, env(), pinned), Right("1.1.7"))
+    assertEquals(millVersion(project, pinned), Right("1.1.7"))
     val noDefault = files("mill" -> Seq("#!/bin/sh"))
-    assertEquals(millVersion(project, env(), noDefault), Left(Refusal.PrereqMillVersionUnpinned))
+    assertEquals(millVersion(project, noDefault), Left(Refusal.PrereqMillVersionUnpinned))
 
   test("the first existing file decides, empty or not: the bootstrap's elif chain has no fall-through"):
     assertEquals(
-      millVersion(project, env(), files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
+      millVersion(project, files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
     // An empty chain result falls to the default, as the script's `if [ -z "$MILL_VERSION" ]` does.
     assertEquals(
-      millVersion(project, env(), files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
+      millVersion(project, files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
       Right("1.1.8"),
     )
     // build.mill exists and has no marker: build.mill.scala is never consulted.
     assertEquals(
       millVersion(
         project,
-        env(),
         files("build.mill" -> Seq("package build"), "build.mill.scala" -> Seq("//| mill-version: 1.1.8")),
       ),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
-    assertEquals(millVersion(project, env(), files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
+    assertEquals(millVersion(project, files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
     // grep's `//\|.*mill-version`: the marker before the key, never after it.
     assertEquals(
-      millVersion(project, env(), files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
+      millVersion(project, files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
@@ -394,18 +386,18 @@ class RunOnHostPolicyTest extends munit.FunSuite:
 
   test("two markers are no version, and a version file's whitespace is kept as the script keeps it"):
     assertEquals(
-      millVersion(project, env(), files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-version: 1.1.9"))),
+      millVersion(project, files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-version: 1.1.9"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
     assertEquals(
-      millVersion(project, env(), files(".mill-version" -> Seq("1.1.8 "))),
+      millVersion(project, files(".mill-version" -> Seq("1.1.8 "))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
   test("a version that could name something other than a directory entry is refused"):
     for bad <- Seq("../../etc", "a/b", "1.1.8 --flag") do
       assertEquals(
-        millVersion(project, env("MILL_VERSION" -> bad), files()),
+        millVersion(project, files(".mill-version" -> Seq(bad))),
         Left(Refusal.PrereqMillVersionUnpinned),
         clue(bad),
       )
