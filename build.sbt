@@ -7,7 +7,7 @@ Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 libraryDependencies ++= Seq(
   "org.bouncycastle" % "bcpkix-jdk18on" % "1.85",  // JCA cannot build X.509 certificates
 
-  "org.scalameta" %% "munit" % "1.3.5" % Test,
+  "org.scalameta" %% "munit" % "1.3.6" % Test,
 )
 
 scalacOptions ++= Seq(

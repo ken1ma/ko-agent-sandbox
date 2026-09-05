@@ -8,6 +8,9 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Path, Paths}
+import scala.concurrent.duration.DurationInt
+
+import munit.EventuallyOptions
 
 import HostCommands.*
 
@@ -32,6 +35,9 @@ object IntegrationSession extends munit.Assertions:
     * runs; a teardown waits on `podman wait` and retries the network removals. */
   val Patience = 180
 
+  /** One poll a second, for as long as a launch or a teardown can take. */
+  given polling: EventuallyOptions = EventuallyOptions(Patience, 1.second)
+
   /** One live session, the names of everything its run created, and the launcher process that
     * owns its teardown. */
   case class Session(
@@ -53,14 +59,6 @@ object IntegrationSession extends munit.Assertions:
     run(podman, "network", "ls", "--format", "{{.Name}}").text.linesIterator.map(_.trim).toVector
 
   def scratchProject(): Path = Files.createTempDirectory("ko-agent-integration")
-
-  def eventually[A](seconds: Int)(what: => A)(until: A => Boolean): A =
-    val deadline = System.nanoTime() + seconds.toLong * 1000000000L
-    var seen = what
-    while !until(seen) && System.nanoTime() < deadline do
-      Thread.sleep(1000)
-      seen = what
-    seen
 
   /**
    * The shared sessions state --egress=deny-unless-allowed rather than inheriting it as the
@@ -96,12 +94,12 @@ object IntegrationSession extends munit.Assertions:
     builder.redirectOutput(log.toFile)
     val launcher = builder.start()
 
-    val appeared =
-      eventually(Patience)(running().diff(before).filter(_.startsWith(prefix)))(_.nonEmpty)
-    if appeared.isEmpty then
-      throw AssertionError(s"a session never started; its output:\n${Files.readString(log)}")
+    val container = polling.eventually:
+      val appeared = running().diff(before).filter(_.startsWith(prefix))
+      assert(appeared.nonEmpty, s"a session never started; its output:\n${Files.readString(log)}")
+      appeared.head
 
-    Session(appeared.head, id, appeared.head.stripPrefix(prefix), project, log, launcher)
+    Session(container, id, container.stripPrefix(prefix), project, log, launcher)
 
   def stop(session: Session): Unit =
     run(podman, "stop", "--time", "2", session.container)
