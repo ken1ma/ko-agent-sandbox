@@ -14,6 +14,16 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val authority = RunOnHostSandbox.bundledRuntimeAuthority()
     assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
 
+  test("the build's proxy variables name its own proxy, and the launcher's reach no build"):
+    val variables = buildProxyVariables(4711)
+    Vector("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy").foreach: name =>
+      assertEquals(variables(name), Some("http://127.0.0.1:4711"), name)
+    Vector("NO_PROXY", "no_proxy").foreach(name => assertEquals(variables(name), Some("localhost,127.0.0.1"), name))
+    // Every spelling podman's own --http-proxy passes through is covered, set or removed.
+    Vector("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy").foreach: name =>
+      assertEquals(variables(name), None, name)
+    assertEquals(variables.keySet, agentsandbox.egress.TransportHelper.ProxyVariables.toSet ++ variables.keySet)
+
   // --------------------------------------------------------------------------
   // host-command/, the closed namespace inside the closed namespace
   // --------------------------------------------------------------------------

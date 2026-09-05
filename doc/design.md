@@ -157,8 +157,31 @@ across proxy chains, and this hop is a single, terminal one — it forwards to t
 to another intermediary, so a loop through it cannot form. What Via would actually do here is
 stamp the proxy's presence and software onto every inspected request for every origin to read,
 metadata this design sends nowhere, and some origins vary caching behavior on it. The client side
-is not deceived: it addressed the proxy by CONNECT. Revisit if this proxy ever forwards to another
-intermediary or joins a chain: the assumption above is then gone.
+is not deceived: it addressed the proxy by CONNECT. The upstream proxy `HTTPS_PROXY` selects
+(`egress-proxy.md`, "Through an upstream proxy") changes none of this: the CONNECT that opens a
+tunnel through it is this proxy's own request as a client, not a forwarded one, carries no Via
+either, and the sandbox's requests pass inside that tunnel unchanged; a loop still cannot form,
+since nothing routes into the per-run network. Revisit if this proxy ever forwards a request to
+another intermediary.
+
+### No upstream-proxy discovery, exclusions, chaining or negotiated authentication
+
+`HTTPS_PROXY` is the whole upstream-proxy contract (`egress-proxy.md`, "Through an upstream
+proxy"), and each of these stays out of it for a reason of its own:
+
+- OS proxy discovery and PAC files: ambient or executable host state would choose a launch's
+  transport without that choice appearing anywhere the user reads.
+- `NO_PROXY` and per-origin direct exceptions: a second path around the upstream transport, and
+  one a failure could widen.
+- Hostname-form upstream CONNECT: some upstream proxies admit only a hostname authority and refuse
+  a numeric one. That incompatibility is reported, never worked around by sending the name: the
+  upstream proxy would then resolve the origin itself, severing the proof that the address checked
+  for private ranges is the one reached, and its resolver would join the trusted computing base.
+- More than one hop, SOCKS, NTLM, Kerberos and Negotiate: each adds a handshake, an identity broker
+  or a chain-attribution question that no present deployment pays for. A static `Basic` value is the
+  only authentication.
+- A credential outside the variable's own userinfo: the launcher never parses it, so it is in no
+  argument, banner, log line or error, and the proxy is its one reader.
 
 ### No test hook that pauses a launch mid-flight
 
@@ -302,6 +325,8 @@ are linked inline where that decision is recorded; these are the broader sources
 - Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
   model: https://www.anthropic.com/engineering/claude-code-sandboxing
   https://docs.anthropic.com/en/docs/claude-code/settings
+- Docker AI sandboxes' upstream-proxy configuration — the comparison point for `HTTPS_PROXY`:
+  https://docs.docker.com/ai/sandboxes/configuration/upstream-proxy/
 - Stripe Smokescreen — mature egress-proxy prior art; its ACL-bypass advisories are permanent
   regression inputs, in the proxy's `AgentEgressProxyTest`:
   https://github.com/stripe/smokescreen

@@ -231,6 +231,24 @@ object EgressProxyPolicy:
         ++ Option.when(provenance)("--provenance"))*
     )
 
+  /**
+   * The upstream proxy HTTPS_PROXY names, handed to the proxy container as the variable itself,
+   * with no value: podman fills a value-less `--env` from this process's environment, so the URL
+   * — its userinfo included — is in no argument and no process listing, and the proxy is its one
+   * parser (TransportHelper.UpstreamEndpoint). Uppercase then lowercase, the proxy's own order.
+   * Empty for a direct run.
+   */
+  def upstreamProxyArgs(read: String => Option[String]): Vector[String] =
+    agentsandbox.egress.TransportHelper.ProxyVariables
+      .find(name => read(name).exists(_.nonEmpty))
+      .map(name => s"--env=$name")
+      .toVector
+
+  /** The proxy's transport line out of its log, the instant stamp removed. Written before the
+    * ready line (AgentEgressProxy.serve), so it is there once the launch is. */
+  def transportLineOf(log: String): Option[String] =
+    log.linesIterator.map(_.dropWhile(_ != ' ').drop(1)).find(_.startsWith("egress transport: "))
+
   /** The --env arguments passing the authority selection and policy files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
   def policyEnvArgs(

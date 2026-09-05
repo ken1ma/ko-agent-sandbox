@@ -408,6 +408,17 @@ rather than answering with a status the client would no longer accept. A refusal
 `403` to the `CONNECT`, its body the reason and the next step — which no client shows, so the
 sandbox image's `sandbox-egress-check <host>` reads it (README, `--egress-check`).
 
+With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through an upstream
+proxy"), step 5's connection is a `CONNECT` to that upstream proxy naming the resolved numeric
+address, so steps 4 to 6 decide as before and the upstream proxy never resolves the name; the
+tunnel it returns carries the same steps 8 to 11. The upstream proxy is a
+transport, not an authority: it cannot admit a destination the policy refused, and its refusal or
+absence is a 502, never a direct connection. The variable reaches the proxy container's
+environment by name — podman copies a value-less `--env` from the launcher's process — so its
+userinfo is in no argument, and the proxy keeps the credential in memory and prints the endpoint
+alone. The sandbox never sees the variable: its own proxy variables name the per-run proxy, as
+`SessionBoundaryTest` asserts.
+
 ### The audit line grammar
 
 Every connection event is one log line, and the line's head is stable — tooling may rely on it;
@@ -465,6 +476,8 @@ representative reasons:
     # infrastructure — error, never deny
     error internal.example CONNECT resolution: unknown host
     error api.anthropic.com CONNECT tried 160.79.104.10 203.0.113.7: connection timed out
+    error github.com CONNECT tried 140.82.112.3: upstream proxy returned 403
+    error github.com CONNECT tried 140.82.112.3: upstream proxy http://proxy.example:3128: refused
     error github.com GET /owner/repo origin: certificate expired
     error github.com GET /owner/repo relay: connection reset
     error github.com GET /big.tar relay: 8192-byte response truncated: body ended 100 bytes early
@@ -481,9 +494,11 @@ A refused request's `403` body is the agent's copy of `<why>`, with the next ste
 (`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
 for the person who has this document.
 
-The startup lines precede these and sit outside the grammar: the listening port, the resolved
-policy (the policy lines of `--print-policy`, in the rule grammar), its digest — one stable line
-naming which policy this run enforced, comparable across runs — then the metadata, about the
+The startup lines precede these and sit outside the grammar: the transport — direct, or the
+upstream proxy and its pinned addresses, said once because it is a constant of the run — then the
+listening port, the resolved policy (the policy lines of `--print-policy`, in the rule grammar),
+its digest — one stable line naming which policy this run enforced, comparable across runs —
+then the metadata, about the
 policy's size and the project's file rather than the policy, printed after the digest and outside
 it, so two files resolving to one policy keep one digest: the summary line's counts, and, when
 the file grants beyond the defaults for a host, the widening lines; then any warnings, and the
@@ -565,11 +580,11 @@ Consequences:
 The session is one request and its response, then the connection closes. That is what lets the proxy
 avoid agreeing with the origin server about where a message ends, which is precisely what request
 smuggling exploits: the request body is framed once and forwarded, the proxy then stops reading from
-the client entirely, and `Connection: close` upstream makes end-of-stream the end of the response.
-Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, two `Content-Length`s that
-disagree — are refused rather than resolved. ALPN is pinned to `http/1.1` so the request is one the
-proxy can read at all, and `Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the
-one inspected request into a stream the proxy no longer reads.
+the client entirely, and `Connection: close` to the origin makes end-of-stream the end of the
+response. Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, two
+`Content-Length`s that disagree — are refused rather than resolved. ALPN is pinned to `http/1.1`
+so the request is one the proxy can read at all, and `Upgrade` is refused, so no WebSocket or
+cleartext HTTP/2 can turn the one inspected request into a stream the proxy no longer reads.
 
 ### Who holds the CA key
 
@@ -841,6 +856,14 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   `.ko-agent-sandbox/host-command/<tool>/egress/rule` names (`allow https://<host>/ read` lines
   only, a closed namespace like its parent) plus Maven Central. Everything else user-owned is
   invisible — the launcher state root and the user's own caches included.
+- **The build's environment is the launcher's, minus the proxy family.** The proxy variables
+  name the build's own proxy (`RunOnHostSandbox.buildProxyVariables`), so a tool reading them
+  reaches what the profile permits, and the launcher's `HTTPS_PROXY` — an upstream proxy's
+  credential, when there is one ("Egress proxy") — never reaches build code. The rest of the
+  environment is inherited whole, unlike the sandbox's, which gets only what `--env` names: a
+  secret exported in the shell that launched the session is readable by the build definition.
+  Accepted for now, as the cost of a build that runs as the user; the closed alternative is an
+  allowlist of what sbt, mill, Coursier and the JDK read, which is a change of its own.
 - **One sbt server per project, and only this session's own.** A thin sbt client attaches to
   whatever server the project's portfile names and then runs with *that server's* environment —
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live

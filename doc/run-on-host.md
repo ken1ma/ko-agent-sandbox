@@ -212,7 +212,9 @@ socket's `sun_path` (`RunOnHostPolicy.SessionTmpMaxLength`).
 
 The build's environment is the contract, not its command line: the JVM settings travel in
 `JAVA_TOOL_OPTIONS`, which every JVM in the chain reads and inherits, for the reason
-`RunOnHostSandbox` states where it assembles it. The gate's `build_env` mirrors it.
+`RunOnHostSandbox` states where it assembles it. The gate's `build_env` mirrors it. The proxy
+variables are the build's own proxy, both spellings, and the rest of that family is removed
+(`RunOnHostSandbox.buildProxyVariables`); everything else is the launcher's environment, inherited.
 
 ## The channel and the command
 
@@ -328,6 +330,10 @@ It runs without inspection material: no-material mode enforces the destination h
 CONNECT time and tunnels opaquely, so the build needs no extra trust material and the read-only
 JDK's own trust store suffices. If inspection is ever wanted, point the JVM at a wrapper-owned
 store with `-Djavax.net.ssl.trustStore` rather than touching the JDK.
+
+It reads `HTTPS_PROXY` as the container's copy does (`egress-proxy.md`, "Through an upstream
+proxy"): on a host behind an upstream proxy the build's artifact fetches leave through it, and a
+loopback helper on the host is reachable from here, unlike from the container.
 
 ## Configuration
 

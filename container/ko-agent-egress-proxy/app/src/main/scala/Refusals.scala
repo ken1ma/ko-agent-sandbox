@@ -9,7 +9,7 @@ case class BadRequest(message: String) extends RuntimeException(message)
   * logged as `error`; policy refused nothing (SECURITY.md, "The audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
-/** An upstream EOF where response framing promised more. Distinct from IOException because the
+/** An origin EOF where response framing promised more. Distinct from IOException because the
   * response head has already been forwarded by then: no 502 can follow, and the handler must end
   * the client connection abortively so the stump cannot read as a completed response. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)

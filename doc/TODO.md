@@ -19,7 +19,7 @@ without a concrete gain live in design.md as standing design decisions so they s
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
   framing is parsed and enforced, so the design is a request loop per client connection with a
-  fresh upstream connection per request; the price is a larger state machine at the enforcement
+  fresh origin connection per request; the price is a larger state machine at the enforcement
   point and the one-request rule's smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
@@ -63,6 +63,34 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
   the host's network position against services that authenticate by location — router and NAS
   pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
   the same class. Port 443 and the one-client network bound the surface, not the trust.
+
+## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
+
+- [ ] Trust an upstream proxy's interception CA, so a TLS-terminating one stops failing closed
+  with certificate errors (`egress-proxy.md`, "Through an upstream proxy"). Its inclusion is
+  authority — it lets that proxy read and change opaque model traffic — so it needs a
+  launch-time selection and a banner line of its own, and four stores extended: the proxy's
+  origin trust, the sandbox PEM bundle, the image JDK's `cacerts`, and `sandbox-jdk-use-proxy`'s
+  certificate. An endpoint CA, for an `https` endpoint under a private CA, is carried the same
+  way but extends one store only, the trust the proxy verifies the endpoint against: in any of
+  the four it would be interception authority.
+- [ ] Explicit resolvers for the proxy container, only when podman's resolver — which follows the
+  host's on Linux and the host's through the machine elsewhere — stops answering for someone.
+  Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
+  name is a refusal naming the non-public answer, never a private-address allowance.
+- [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
+  podman machines, and record whether each can route to a private endpoint; one that cannot must
+  fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
+  reaches a loopback helper such as cntlm under rootless podman is part of the same run.
+
+## Deferred — an environment allowlist for host builds
+
+- [ ] A `--run-on-host` build inherits the launcher's whole environment, minus the proxy family
+  (SECURITY.md, "Run on host"); the closed form is an allowlist. Its inventory: what sbt, mill,
+  Coursier and the JDK read (HOME, JAVA_HOME, LANG, TERM, TMPDIR, SBT_OPTS, JAVA_OPTS,
+  COURSIER_*, SBT_CREDENTIALS, MILL_VERSION), a named way in for what a build needs beyond it,
+  the Seatbelt grants derived from HOME and the cache roots kept in agreement with what the
+  build sees, and verification on macOS, the one platform the feature exists on.
 
 ## Deferred — `--explain-request`, the ordered policy traced for one request
 

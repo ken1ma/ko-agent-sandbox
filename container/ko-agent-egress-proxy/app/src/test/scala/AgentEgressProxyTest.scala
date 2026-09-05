@@ -11,6 +11,7 @@ import PolicyHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import TLSHelper.*
+import TransportHelper.*
 
 class AgentEgressProxyTest extends munit.FunSuite:
 
@@ -1085,7 +1086,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       BodyFraming.Chunked,
     )
     // No framing header: the body runs to the connection's end — this proxy sends
-    // Connection: close upstream, so EOF is the terminator there, not a truncation.
+    // `Connection: close` to the origin, so EOF is the terminator there, not a truncation.
     assertEquals(head("HTTP/1.1 200 OK\r\n\r\n").bodyFraming("GET"), BodyFraming.UntilClose)
     assertEquals(head("HTTP/1.1 100 Continue\r\n\r\n").bodyFraming("GET"), BodyFraming.Empty)
     // The request side's ambiguity refusals, as origin faults.
@@ -1123,9 +1124,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "X-Tracing: abc\r\nAccept: */*\r\n\r\n",
       ),
     )
-    val upstream = String(request.toUpstreamBytes, StandardCharsets.ISO_8859_1)
-    assert(!upstream.contains("X-Tracing"), upstream)
-    assert(upstream.contains("Accept: */*\r\n"), upstream)
+    val sent = String(request.toOriginBytes, StandardCharsets.ISO_8859_1)
+    assert(!sent.contains("X-Tracing"), sent)
+    assert(sent.contains("Accept: */*\r\n"), sent)
 
     val response = HttpResponseHead.parse(
       ascii("HTTP/1.1 200 OK\r\nConnection: x-server-hint\r\nX-Server-Hint: h2\r\nVary: A\r\n\r\n"),
@@ -1136,7 +1137,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a Connection header may not nominate a header this hop reads, on either side"):
     // The nomination would strip the framing the proxy already trusted — the body forwarded by
-    // the original framing, its header gone, readable upstream as a second request — or the Host
+    // the original framing, its header gone, readable by the origin as a second request — or the Host
     // the policy checked. Every name in the protected set, both directions, so the set and the
     // rule cannot drift apart; the spelling is the peer's, so one is mixed-case.
     ConnectionProtectedHeaders.foreach: name =>
@@ -1147,14 +1148,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
       val refused = intercept[BadRequest](request.bodyFraming)
       assert(refused.getMessage.contains(name), refused.getMessage)
-      // The relay's own gate, before any byte goes upstream.
+      // The relay's own gate, before any byte goes to the origin.
       intercept[BadRequest](authorizeInspectedRequest("github.com", request, whole("git-fetch")))
 
       val response = HttpResponseHead.parse(
         ascii(s"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: $spelled\r\n\r\n"),
       )
-      val origin = intercept[IOException](response.bodyFraming("GET"))
-      assert(origin.getMessage.contains(name), origin.getMessage)
+      val unframed = intercept[IOException](response.bodyFraming("GET"))
+      assert(unframed.getMessage.contains(name), unframed.getMessage)
 
     // A nomination of anything else still frames as before.
     assertEquals(
@@ -1168,9 +1169,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // On the wire: the refusal has to land before toClientBytes, while a 502 is still possible —
     // afterwards the client would read chunk markers as payload.
     val (client, clientPeer) = socketPair()
-    val (upstream, upstreamPeer) = socketPair()
-    val origin = playOrigin(
-      upstreamPeer,
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
       ascii(
         "HTTP/1.1 200 OK\r\nConnection: Transfer-Encoding\r\nTransfer-Encoding: chunked\r\n\r\n" +
           "5\r\nhello\r\n0\r\n\r\n",
@@ -1180,9 +1181,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[IOException]:
-      relayInspected(client, upstream, "docs.python.org", head)
+      relayInspected(client, origin, "docs.python.org", head)
     client.close()
-    origin.join()
+    served.join()
     assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
 
   test("HTTP/1.0 is refused by name, at CONNECT and inside the tunnel"):
@@ -1203,12 +1204,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
     assert(head.expectsContinue)
-    val upstream = String(head.toUpstreamBytes, StandardCharsets.ISO_8859_1)
-    assert(!upstream.toLowerCase.contains("expect"), upstream)
+    val sent = String(head.toOriginBytes, StandardCharsets.ISO_8859_1)
+    assert(!sent.toLowerCase.contains("expect"), sent)
     assert(!HttpRequestHead.parse(ascii("GET /x HTTP/1.1\r\nHost: a.example\r\n\r\n")).expectsContinue)
 
   test("forwardResponseBody relays complete bodies and turns early EOF into TruncatedResponse"):
-    // An upstream close inside a declared length must become a loggable
+    // An origin close inside a declared length must become a loggable
     // failure, never a quiet end the client can mistake for a completed response.
     def relay(bytes: Array[Byte], framing: BodyFraming): Array[Byte] =
       val out = java.io.ByteArrayOutputStream()
@@ -1276,9 +1277,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("relayInspected puts this hop's close on the wire and survives a pipelined straggler"):
     val (client, clientPeer) = socketPair()
-    val (upstream, upstreamPeer) = socketPair()
-    val origin = playOrigin(
-      upstreamPeer,
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
       ascii("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhello"),
     )
     // The client pipelines a second request past the close notice, then half-closes: the drain
@@ -1287,9 +1288,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, upstream, "docs.python.org", head)
+    relayInspected(client, origin, "docs.python.org", head)
     client.close()
-    origin.join()
+    served.join()
 
     val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
     assert(received.contains("Connection: close\r\n"), received)
@@ -1298,30 +1299,30 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("relayInspected turns an origin that quits mid-body into TruncatedResponse"):
     val (client, clientPeer) = socketPair()
-    val (upstream, upstreamPeer) = socketPair()
-    val origin = playOrigin(
-      upstreamPeer,
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
       ascii("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf"),
     )
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[TruncatedResponse]:
-      relayInspected(client, upstream, "docs.python.org", head)
-    origin.join()
+      relayInspected(client, origin, "docs.python.org", head)
+    served.join()
 
   test("relayInspected answers Expect: 100-continue before the origin says anything"):
     val (client, clientPeer) = socketPair()
-    val (upstream, upstreamPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
     // The origin answers only after the whole request (head and body) arrives, so a 100 in front
     // of its response can only have come from the proxy.
-    val origin = Thread.startVirtualThread: () =>
+    val served = Thread.startVirtualThread: () =>
       try
-        readHttpHeader(upstreamPeer.getInputStream, 64 * 1024)
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
         val body = new Array[Byte](4)
-        upstreamPeer.getInputStream.readNBytes(body, 0, 4)
-        upstreamPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
-        upstreamPeer.getOutputStream.close()
+        originPeer.getInputStream.readNBytes(body, 0, 4)
+        originPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+        originPeer.getOutputStream.close()
       catch case _: Exception => ()
     clientPeer.getOutputStream.write(ascii("ping"))
     clientPeer.shutdownOutput()
@@ -1332,9 +1333,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "Content-Length: 4\r\n\r\n",
       ),
     )
-    relayInspected(client, upstream, "github.com", head)
+    relayInspected(client, origin, "github.com", head)
     client.close()
-    origin.join()
+    served.join()
 
     val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
     assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
@@ -1342,9 +1343,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("relayInspected forwards an origin's own 1xx and frames the body by the final head"):
     val (client, clientPeer) = socketPair()
-    val (upstream, upstreamPeer) = socketPair()
-    val origin = playOrigin(
-      upstreamPeer,
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
       ascii(
         "HTTP/1.1 100 Continue\r\n\r\n" +
           "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata",
@@ -1353,9 +1354,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, upstream, "docs.python.org", head)
+    relayInspected(client, origin, "docs.python.org", head)
     client.close()
-    origin.join()
+    served.join()
 
     val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
     assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
@@ -1390,12 +1391,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val head = HttpRequestHead.parse(ascii(request))
       authorizeInspectedRequest("docs.python.org", head, scopes)
       val (client, clientPeer) = socketPair()
-      val (upstream, upstreamPeer) = socketPair()
-      val (origin, received) = recordingOrigin(upstreamPeer)
+      val (origin, originPeer) = socketPair()
+      val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, upstream, "docs.python.org", head)
+      relayInspected(client, origin, "docs.python.org", head)
       client.close()
-      origin.join()
+      served.join()
       assertEquals(received.get.linesIterator.next(), requestLine, request)
     Vector(
       "Host:  docs.python.org \t" -> "Host: docs.python.org",
@@ -1406,12 +1407,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val head = HttpRequestHead.parse(ascii(s"GET /x HTTP/1.1\r\n$sent\r\n\r\n"))
       authorizeInspectedRequest("docs.python.org", head, scopes)
       val (client, clientPeer) = socketPair()
-      val (upstream, upstreamPeer) = socketPair()
-      val (origin, received) = recordingOrigin(upstreamPeer)
+      val (origin, originPeer) = socketPair()
+      val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, upstream, "docs.python.org", head)
+      relayInspected(client, origin, "docs.python.org", head)
       client.close()
-      origin.join()
+      served.join()
       assert(received.get.linesIterator.contains(forwarded), s"$sent: ${received.get}")
 
   test("a header value edged with a control is refused on a request and a response head; SP and HTAB are stripped"):
@@ -1949,7 +1950,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
             "Keep-Alive: timeout=5\r\n" +
             "Accept: */*\r\n" +
             "\r\n",
-        ).toUpstreamBytes,
+        ).toOriginBytes,
         StandardCharsets.ISO_8859_1,
       )
 
@@ -2334,7 +2335,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val saved = System.err
       System.setErr(java.io.PrintStream(log, true))
       try
-        val handling = Thread.startVirtualThread(() => handle(server, EgressPolicy(defaultsPolicy, None)))
+        val handling = Thread.startVirtualThread(() => handle(server, EgressPolicy(defaultsPolicy, None, Direct)))
         client.getOutputStream.write(ascii(request))
         client.getOutputStream.flush()
         val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)

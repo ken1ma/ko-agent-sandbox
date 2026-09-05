@@ -116,7 +116,7 @@ fails with the message.
 
 ## Substitution
 
-In the inspected relay, after the request head is parsed and before `toUpstreamBytes`:
+In the inspected relay, after the request head is parsed and before `toOriginBytes`:
 
 1. Take the header the binding names. `Authorization` is parsed by scheme:
     - `Bearer <token>`, `token <token>`: the whole `<token>` must equal a placeholder.
@@ -128,7 +128,7 @@ In the inspected relay, after the request head is parsed and before `toUpstreamB
    a placeholder.
 1. Only bindings whose host is the request's authorized host are consulted. A placeholder bound
    to `api.github.com` inside a request to `gitlab.com` stays a placeholder.
-1. The substituted head is what goes upstream; the client never sees the value in any response.
+1. The substituted head is what goes to the origin; the client never sees the value in any response.
    Response bodies are not rewritten — a server echoing a credential is out of scope, as it is
    without brokering.
 
@@ -137,7 +137,7 @@ otherwise. The value and the placeholder never appear in the log.
 
 A credential sent any other way — `https://user:token@host/` in a URL (git puts that into
 `Authorization: Basic`, so the URL form is rewritten too; curl likewise), a query parameter, a
-multipart field — reaches upstream as the placeholder and fails with the origin's 401. The
+multipart field — reaches the origin as the placeholder and fails with the origin's 401. The
 proxy cannot tell that case from a wrong token, so the launch banner says it once: "brokered
 values are substituted in `Authorization` only".
 
