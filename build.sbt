@@ -1,6 +1,6 @@
 name := "ko-agent-sandbox"
 version := "0.1.0"
-scalaVersion := "3.8.4"
+scalaVersion := "3.9.0"
 
 Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 
