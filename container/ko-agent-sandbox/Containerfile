@@ -365,10 +365,21 @@ RUN set -euxo pipefail; \
     HOME=/tmp/agy-smoke agy --version >/dev/null; \
     rm -rf /tmp/agy-smoke
 
-# All agy state is under ~/.gemini, a symlink into
-# the persistent volume. Unlike the others, permission prompts are not
-# pre-disabled: agy has no settings key for it, only
-# --dangerously-skip-permissions or the in-app /permissions, which persists.
+# All agy state is under ~/.gemini, a symlink into the persistent volume.
+# toolPermission=always-proceed auto-approves tool execution (the counterpart of
+# Claude's bypassPermissions and Codex's approval_policy="never"), and
+# /workspace is pre-trusted so agy prompts neither on startup.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0700 \
+        $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
+    printf '%s\n' \
+        '{' \
+        '  "toolPermission": "always-proceed",' \
+        '  "trustedWorkspaces": [' \
+        '    "/workspace"' \
+        '  ]' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli/settings.json
 
 
 # ---------------------------------------------------------------------------
