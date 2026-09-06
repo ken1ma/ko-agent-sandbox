@@ -31,5 +31,15 @@ allow https://aiplatform.eu.rep.googleapis.com/   tunnel  # eu
 allow https://accounts.google.com/                tunnel  # printed sign-in URL
 allow https://oauth2.googleapis.com/              tunnel  # code exchange and token refresh
 
+# Eligibility check. Signed in, agy reads the account at userinfo, then the profile picture at
+# the URL the `picture` field names; a refusal at either is its "Eligibility check failed" banner,
+# with the model list loaded. Google constrains `picture` only to a URL, not a host or path; its
+# examples use this host with differently shaped paths, so the whole host is admitted:
+# https://developers.google.com/identity/openid-connect/reference
+# https://developers.google.com/identity/siwg/security-bundle
+# https://developers.google.com/identity/gsi/web/reference/js-reference
+allow https://www.googleapis.com/oauth2/v2/userinfo read
+allow https://lh3.googleusercontent.com/            read
+
 # play.googleapis.com — telemetry and experiment polling — is absent, as ab.chatgpt.com is in
 # model-provider/openai.

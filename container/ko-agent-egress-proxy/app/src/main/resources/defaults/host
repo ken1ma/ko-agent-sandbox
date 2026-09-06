@@ -164,6 +164,7 @@ allow https://docs.docker.com/          read
 allow https://docs.aws.amazon.com/   read  # AWS
 allow https://cloud.google.com/      read  # GCP
 allow https://docs.cloud.google.com/ read  # GCP docs; cloud.google.com/.../docs redirects here
+allow https://developers.google.com/ read  # Google APIs and sign-in: OAuth 2.0, OpenID Connect
 allow https://learn.microsoft.com/   read  # Azure
 
 # infrastructure as code: the docs
