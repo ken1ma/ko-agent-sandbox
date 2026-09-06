@@ -581,16 +581,18 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
-  test("the sbt global base is stored beside the project's Coursier cache, one --reset-run-on-host removal"):
+  test("the sbt global base and Ivy home sit beside the project's Coursier cache, one --reset-run-on-host removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
       buildSbtGlobal(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
     )
     assertEquals(
-      buildSbtGlobal(cacheRoot, "proj-abc123").getParent,
-      buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent,
+      buildIvyHome(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/ivy-home"),
     )
+    for cache <- Seq(buildSbtGlobal(cacheRoot, "proj-abc123"), buildIvyHome(cacheRoot, "proj-abc123")) do
+      assertEquals(cache.getParent, buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent)
 
   test("the rule file path is per tool under the frozen boundary directory"):
     val project = Paths.get("/Users/u/proj")

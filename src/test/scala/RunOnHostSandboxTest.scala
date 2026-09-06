@@ -32,7 +32,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
         "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
       ),
-      prereqs, sbtGlobal = Path.of("/cache/sbt"), millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
+      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
+      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
     )
     // Passed through as they are.
@@ -47,6 +48,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
     // A forward reaches the build; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
@@ -64,7 +66,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       ) ++ buildProxyVariables(4711).keySet,
     )
     // Without a derivable download folder the variable is simply absent.
-    val noFolder = buildEnvironment(host.get, Vector.empty, prereqs, Path.of("/s"), None, Path.of("/t"), 1, "u")
+    val noFolder =
+      buildEnvironment(host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), None, Path.of("/t"), 1, "u")
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
 
   test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):

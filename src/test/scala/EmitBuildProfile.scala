@@ -43,6 +43,7 @@ object EmitBuildProfile:
       sessionTmp = sessionTmp,
       sbtDistribution = assembled.sbtDistribution,
       sbtGlobal = assembled.sbtGlobalGranted,
+      ivyHome = assembled.ivyHomeGranted,
       proxyPort = 51234,
       runtime = runtime,
     )
@@ -59,6 +60,7 @@ object EmitBuildProfile:
     Console.err.println(s"tool: $tool")
     Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
+    Console.err.println(s"ivy home: ${assembled.ivyHome}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
     // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran

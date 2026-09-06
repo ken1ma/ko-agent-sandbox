@@ -83,8 +83,8 @@ object RunOnHostPrereqs:
    * This project's build caches, under one directory so `--reset-run-on-host` for a project is a
    * single removal and a further cache kind can join without moving anything.
    *
-   * Coursier's, and sbt's global base. mill's executable is provisioned by the user rather than
-   * fetched here, so it has no writable home (RunOnHostPrereqs.millExecutable).
+   * Coursier's, sbt's global base and sbt's Ivy home. mill's executable is provisioned by the user
+   * rather than fetched here, so it has no writable home (RunOnHostPrereqs.millExecutable).
    */
   def buildCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
@@ -102,6 +102,14 @@ object RunOnHostPrereqs:
    */
   def buildSbtGlobal(cacheRoot: Path, projectId: String): Path =
     buildCacheDir(cacheRoot, projectId).resolve("sbt-global")
+
+  /**
+   * The confined build's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path
+   * the profile denies. What sbt writes there, and when the redirect may be retired, is
+   * run-on-host.md "sbt". Beside the global base for the same reasons it is there.
+   */
+  def buildIvyHome(cacheRoot: Path, projectId: String): Path =
+    buildCacheDir(cacheRoot, projectId).resolve("ivy-home")
 
   /**
    * Refused when the cache root would be inside the project, the check
