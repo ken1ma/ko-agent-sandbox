@@ -398,6 +398,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "allow https://aiplatform.eu.rep.googleapis.com/ tunnel",
         "allow https://accounts.google.com/ tunnel",
         "allow https://oauth2.googleapis.com/ tunnel",
+        "allow https://www.googleapis.com/oauth2/v2/userinfo read",
+        "allow https://lh3.googleusercontent.com/ read",
       ),
     )
     assertEquals(
