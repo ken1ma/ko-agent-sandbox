@@ -26,7 +26,7 @@ per project" has the security argument) — so every invocation pays JVM start a
 while the on-disk state stays warm: the caches, and the incremental-compile outputs under
 `target/`. This is why the agent instructions say to batch commands into one invocation.
 
-Out of scope, deliberately: arbitrary build tools (`scala-cli`, `scalafmt` and ad-hoc `scala` stay
+Out of scope, deliberately: arbitrary build tools (`scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
 direct Internet access from the build; any automatic expansion of permissions when a build fails,
 and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH

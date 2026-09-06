@@ -649,7 +649,7 @@ installs itself (`cs java --jvm ...`) brings its own untouched store —
 `sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, so the gap is one command
 rather than a dead end; the certificate it reads is mounted beside the agent instructions, and is
 the same public one already inside the bundle. A GraalVM native image — the
-`cs` and `scala-cli` launchers — has no `conf/` and reads no variable, so the proxy and CA
+`cs` and `scala` launchers — has no `conf/` and reads no variable, so the proxy and CA
 settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand.
 A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
 uninspected OpenAI.
