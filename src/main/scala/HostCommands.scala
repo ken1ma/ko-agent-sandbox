@@ -29,8 +29,27 @@ object HostCommands:
     * these lines are consent or refusal text a reader must be able to trust
     * verbatim. */
   def fail(message: String, code: Int = 1): Nothing =
+    if shuttingDown then
+      val interrupted = "the launch was interrupted; the failure below is its consequence, not a fault of its own"
+      System.err.println(emphasized(s"$ErrorLabel $interrupted"))
     System.err.println(emphasized(message))
     sys.exit(code)
+
+  /**
+   * Whether this JVM's shutdown has begun. A child podman shares the terminal's process group and
+   * dies of the same Ctrl-C, so the refusal the main thread raises on its exit status is the
+   * interruption's, not the child's, and `fail` says so first. The JDK reports the state only by
+   * refusing: `addShutdownHook` and `removeShutdownHook` throw IllegalStateException once the hooks
+   * have started, and removing needs no hook of this probe's to exist. The exit that `fail` then
+   * makes blocks indefinitely — Runtime.exit's contract: "all other invocations will perform no
+   * action and block indefinitely" — and the JVM ends when the hooks finish, with the shutdown's
+   * own status.
+   */
+  def shuttingDown: Boolean =
+    try
+      Runtime.getRuntime.removeShutdownHook(Thread(() => ()))
+      false
+    catch case _: IllegalStateException => true
 
   def env(name: String): Option[String] =
     Option(System.getenv(name)).filter(_.nonEmpty)

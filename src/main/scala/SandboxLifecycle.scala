@@ -36,8 +36,9 @@ object SandboxLifecycle:
     System.err.flush()
     // Claimed before either way of starting podman, and before the `start()` that can throw.
     if !cleanup.handingOver() then
-      // A shutdown got there first and this run's resources are already gone. The JVM is mid-halt,
-      // and a non-zero exit during shutdown halts rather than re-running the sequence.
+      // A shutdown got there first and this run's resources are already gone. This exit blocks
+      // indefinitely; the JVM ends when the hook finishes, with the shutdown's own status
+      // (HostCommands.shuttingDown has the contract).
       sys.exit(1)
     if viaExec && currentOs != Os.Windows then
       try FFMHelper.libc.execvp(command)

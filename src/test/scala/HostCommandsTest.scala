@@ -47,6 +47,32 @@ class HostCommandsTest extends munit.FunSuite:
     // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
     assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
 
+  test("a refusal raised while the JVM is shutting down names the interruption first, and waits"):
+    assert(!shuttingDown, "a JVM with no shutdown under way reported one")
+    // The true case needs a shutdown under way, so it runs in a JVM of its own on this test's
+    // classes (FailDuringShutdown). The exit status is the shutdown's, not the refusal's: the
+    // refusal's exit blocked indefinitely, and the JVM ended when the hook finished.
+    def location(of: Class[?]) = Paths.get(of.getProtectionDomain.getCodeSource.getLocation.toURI).toString
+    val classpath = Vector(
+      FailDuringShutdown.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]],
+    ).map(location).distinct.mkString(java.io.File.pathSeparator)
+    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+    // Native access as the jar's manifest grants it, for the isatty behind colorStderr. What the
+    // JVM prints before the first refusal line is its own: JAVA_TOOL_OPTIONS echoed back.
+    val staged = run(
+      jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, "agentsandbox.launcher.FailDuringShutdown",
+    )
+    assertEquals(
+      staged.err.linesIterator.dropWhile(!_.startsWith("error:")).toVector,
+      Vector(
+        "error: the launch was interrupted; the failure below is its consequence, not a fault of its own",
+        "error: podman failed",
+        "its stderr",
+        "hook: removed",
+      ),
+    )
+    assertEquals(staged.exit, 130)
+
   test("every warning and refusal the launcher writes goes through the one label"):
     // warn and fail are where the label is spelled and tinted; a println of its own prints it
     // plain on a terminal and drifts the day the rule changes.
