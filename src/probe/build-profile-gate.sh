@@ -21,7 +21,9 @@
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, a one-module mill
 # project that exists for them: this repository is sbt-built, and a mill build of it would be a
 # second build definition rather than a measurement. src/probe/deny-fixture exists for the
-# unlisted-host row: its resolution must reach a host the proxy refuses.
+# unlisted-host row: its resolution must reach a host the proxy refuses. src/probe/ivy-fixture
+# exists for the inter-project row: resolving a dependsOn edge enters Ivy, whose lock file lives
+# in the Ivy home, and this repository has no such edge.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker is in a scratch tree this script makes and
@@ -125,7 +127,7 @@ build_env() { # agent-v1 command...
         COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
         MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" \
         JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=$sbt_global -Djava.net.preferIPv4Stack=true" \
+-Dsbt.global.base=$sbt_global -Dsbt.ivy.home=$ivy_home -Djava.net.preferIPv4Stack=true" \
         "$@"
 }
 # A hang is a FAIL, not a stalled run: a client whose server never came up waits forever.
@@ -158,6 +160,7 @@ wrapper() { # tool project command...
         src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
 }
 deny_project=$project/src/probe/deny-fixture
+ivy_project=$project/src/probe/ivy-fixture
 session_root=/private/tmp/ko-agent-$(id -u)
 
 # A shell command under a profile, so a row runs exactly what a build's script would.
@@ -193,6 +196,7 @@ with_cwd() { # pattern dir exact|under
 # An sbt server's cwd is its project, exactly: a nested project's server is another project's.
 project_servers() { with_cwd '-Dsbt.script=' "$project" exact; }
 deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
+ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
 # A build proxy a timed-out or killed wrapper left: the wrapper's own scavenger ends these at its
@@ -227,6 +231,7 @@ fi
 end_project_servers() {
     for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done
     for pid in $(deny_servers); do kill "$pid" 2>/dev/null && echo "ended deny-fixture server $pid"; done
+    for pid in $(ivy_servers); do kill "$pid" 2>/dev/null && echo "ended ivy-fixture server $pid"; done
     for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended mill daemon $pid"; done
     for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray build proxy $pid"; done
 }
@@ -262,10 +267,12 @@ use_profile() { # tool
     . "$work/gate-$1.env"
     build_v1=$(sed -n 's/^build cache: //p' "$work/emit-$1.log")
     sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
+    ivy_home=$(sed -n 's/^ivy home: //p' "$work/emit-$1.log")
     cache_root=${build_v1%/cache/*}
     safe_path "SESSION_TMP" "$SESSION_TMP"
     safe_path "the build cache" "$build_v1"
     safe_path "the sbt global base" "$sbt_global"
+    safe_path "the Ivy home" "$ivy_home"
 }
 for p in $profiles; do
     echo "$p: $(grep -E '^(session temp|build cache):' "$work/emit-$p.log" | tr '\n' ' ')"
@@ -347,6 +354,13 @@ if want sbt; then
         else report FAIL "sbt $command (wrapper)" \
             "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70)"; fi
     done
+    # A build with an inter-project edge: Ivy's lock file must land in the redirected home, or
+    # the build dies canonicalizing ~/.ivy2 (RunOnHostPrereqs.buildIvyHome).
+    version=$(sed -n 's/^sbt.version=//p' "$ivy_project/project/build.properties")
+    if wrapper sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
+    then report PASS "sbt $version packageBin across dependsOn" "$(grep -m1 '^\[success\]' "$work/ivy.log")"
+    else report FAIL "sbt $version packageBin across dependsOn" \
+        "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/ivy.log" | cut -c1-70)"; fi
 
     # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
     # the build cache through it. Both clients run so the --jvm-client pin stays measured. The server's
@@ -454,6 +468,8 @@ for p in $profiles; do
     else expect_denied "$p" "write the Coursier JDK home (no jvm/; the home is in arc/)" \
         ": > '$JAVA_HOME/$marker'"; fi
     expect_denied "$p" "write ~/.sbt/boot" ": > '$HOME/.sbt/boot/$marker'"
+    present_or_skip "write ~/.ivy2" "$HOME/.ivy2" \
+        && expect_denied "$p" "write ~/.ivy2" ": > '$HOME/.ivy2/$marker'"
     expect_denied "$p" "write the Coursier-installed sbt script" ": >> '$sbt_executable'"
     expect_denied "$p" "write PROJECT/.git/config" ": >> '$project/.git/config'"
     expect_denied "$p" "create under PROJECT/.git" ": > '$project/.git/$marker'"
@@ -816,6 +832,7 @@ fi
 leftover=""
 [ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"
+[ -n "$(ivy_servers)" ] && leftover="$leftover ivy-fixture server: $(ivy_servers | tr '\n' ' ')"
 [ -n "$(stray_proxies)" ] && leftover="$leftover proxy: $(stray_proxies | tr '\n' ' ')"
 [ "$(sessions_now)" -gt 0 ] && leftover="$leftover session dirs: $(sessions_now)"
 if [ -z "$leftover" ]

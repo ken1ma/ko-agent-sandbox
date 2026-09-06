@@ -170,7 +170,23 @@ The same fact cuts the other way at entry: a tree the user's unconfined sbt buil
 store the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted
 roots before each build. `~/.sbt/boot` is not granted and has no consumer — with the global base
 redirected, sbt boots from the build cache, warm across sessions. `~/.sbt/1.0`,
-`~/.sbt/2.0`, `~/.ivy2` and `~/.m2` are not granted either.
+`~/.sbt/2.0` and `~/.m2` are not granted either.
+
+The Ivy home follows `-Dsbt.ivy.home` into the build cache the same way, and `~/.ivy2` is not
+granted. What reaches that home, read from the sources of sbt 1.12.13 and 2.0.8: resolving an
+inter-project dependency builds Ivy module descriptors (`projectDescriptors`), which enters Ivy
+and takes `<ivy home>/.sbt.ivy.lock` before every `update` of a multi-project build;
+`<ivy home>/local` is the `local` resolver, read on every resolution and written by
+`publishLocal`; and `updateSbtClassifiers` keeps its excludes file there. Canonicalizing the
+denied `~/.ivy2` for that lock is where an sbt 1.12.13 `packageBin` across a `dependsOn` edge
+died under the profile; this repository's own build has no such edge, so its gate rows never
+reached the path, and `src/probe/ivy-fixture` is that build, on sbt 1.
+
+sbt 2 after 2.0.8 has no Ivy library (sbt/sbt#9615, merged 2026-08-24): no lock is taken, and
+the fixture measures nothing a release from there on does, so it is not duplicated for sbt 2
+and retires with sbt 1. `local` and the excludes file still derive from `sbt.ivy.home` there, so
+the redirect and its grant outlive the lock; retire them only when a released sbt stops
+deriving those two paths, which is a re-read of `Defaults.scala`, not a gate run.
 
 The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints that it
 is starting the server and returns with no build run — a gate row keeps measuring it, and if it
@@ -240,13 +256,15 @@ The `java -D` properties:
 | `https.proxyPort`, `http.proxyPort` | `<port>` |
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
 | `sbt.global.base` | `<build cache>/sbt-global` |
+| `sbt.ivy.home` | `<build cache>/ivy-home` |
 
 `<session>` is this build's directory under the wrapper root above, `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<build cache>` the
 project's own build-cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The build
-cache" below). One environment serves both tools: the sbt global base is named for a mill build
-too, where nothing reads it and it is neither created nor granted, and the mill download folder —
-the one the wrapper granted the executable in — for an sbt build, which ignores it.
+cache" below). One environment serves both tools: the sbt global base and Ivy home are named for
+a mill build too, where nothing reads them and they are neither created nor granted, and the mill
+download folder — the one the wrapper granted the executable in — for an sbt build, which ignores
+it.
 
 Why the rows are what they are. The host's `TMPDIR` names a directory the build is not granted,
 so the session's replaces it for forked shell tools, as `java.io.tmpdir` does for JVMs. `HOME` is
@@ -413,12 +431,12 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 ## The build cache
 
 Agent-invoked builds get their own build-cache root, per project —
-`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`, Coursier's `v1` and sbt's
-global base under one directory, so `--reset-run-on-host` is a single removal, `--reset` takes it
-with the project's other state, and a further cache kind can join without moving anything. It is
-discovered exactly as the launcher's state root is, so the two answer alike on one machine; a
-relative override is refused because it would resolve against the repository being sandboxed, and
-a root inside the project is refused outright.
+`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`, Coursier's `v1`, sbt's
+global base and its Ivy home under one directory, so `--reset-run-on-host` is a single removal,
+`--reset` takes it with the project's other state, and a further cache kind can join without
+moving anything. It is discovered exactly as the launcher's state root is, so the two answer alike
+on one machine; a relative override is refused because it would resolve against the repository
+being sandboxed, and a root inside the project is refused outright.
 
 Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it. The cost
 is a cold cache on a project's first agent build, warm from the second onward.
@@ -429,8 +447,9 @@ uid, which owns that key, so file permissions protect nothing and only the profi
 separate root makes its job structural — no path the build is ever granted has a sensitive ancestor
 or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache belongs.
 
-The build reaches its cache through one variable: the wrapper sets `COURSIER_CACHE` to the `v1`
-directory, which the sbt script, sbt's own resolution and Coursier all honour.
+The build reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to
+the `v1` directory, which the sbt script, sbt's own resolution and Coursier all honour. sbt's own
+two caches travel as the `java -D` properties above, which its launcher reads.
 
 ## Sources
 

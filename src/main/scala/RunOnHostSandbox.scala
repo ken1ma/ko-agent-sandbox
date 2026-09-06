@@ -22,15 +22,19 @@ object RunOnHostSandbox:
   case class Assembled(
     prereqs: BuildPrereqs,
     sbtDistribution: Option[Path],
-    /** The per-project sbt global base: created and granted for an sbt build (`sbtGlobalGranted`),
-      * and for a mill build a path nothing reads, named all the same so the environment has the same
-      * variable names for both tools — as `millDownloads` is for sbt. */
+    /** The per-project sbt global base and Ivy home: created and granted for an sbt build
+      * (`sbtCachesGranted`), and for a mill build paths nothing reads, named all the same so the
+      * environment has the same variable names for both tools — as `millDownloads` is for sbt. */
     sbtGlobal: Path,
+    ivyHome: Path,
     /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
       * build is granted, and what the build's own script is pointed at (buildEnvironment). */
     millDownloads: Option[Path],
   ):
     def sbtGlobalGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(sbtGlobal)
+    def ivyHomeGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(ivyHome)
+    /** The persistent caches an sbt build writes besides Coursier's. */
+    def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
 
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
@@ -86,9 +90,9 @@ object RunOnHostSandbox:
       projectId = projectIdOf(project, os)
       v1 = buildCoursierV1(cacheRoot, projectId)
       _ = Files.createDirectories(v1)
-      sbtGlobal =
-        if tool == Tool.Sbt then Files.createDirectories(buildSbtGlobal(cacheRoot, projectId)).toRealPath()
-        else buildSbtGlobal(cacheRoot, projectId)
+      sbtCache = (dir: Path) => if tool == Tool.Sbt then Files.createDirectories(dir).toRealPath() else dir
+      sbtGlobal = sbtCache(buildSbtGlobal(cacheRoot, projectId))
+      ivyHome = sbtCache(buildIvyHome(cacheRoot, projectId))
     yield Assembled(
       BuildPrereqs(
         project = project,
@@ -99,6 +103,7 @@ object RunOnHostSandbox:
       ),
       distribution,
       sbtGlobal,
+      ivyHome,
       millDownloadDir(env),
     )
 
@@ -496,7 +501,7 @@ object RunOnHostSandbox:
                 // in a cache is no more a shutdown target than one planted in the project.
                 autoShutdownForeignServer(
                   project, socket, env, log,
-                  buildCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtGlobalGranted,
+                  buildCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtCachesGranted,
                 )
               case Some(socket) =>
                 Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
@@ -558,8 +563,9 @@ object RunOnHostSandbox:
     log: String => Unit,
     forwards: Vector[(String, String)],
   ): Either[String, Int] =
-    assembled.sbtGlobalGranted.foreach: sbtGlobal =>
-      val swept = cleanForeignTargetLinks(assembled.prereqs.project, Seq(assembled.prereqs.project, sbtGlobal))
+    if assembled.prereqs.tool == Tool.Sbt then
+      val swept =
+        cleanForeignTargetLinks(assembled.prereqs.project, assembled.prereqs.project +: assembled.sbtCachesGranted)
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
     for
@@ -571,6 +577,7 @@ object RunOnHostSandbox:
           sessionTmp = session.tmp,
           sbtDistribution = assembled.sbtDistribution,
           sbtGlobal = assembled.sbtGlobalGranted,
+          ivyHome = assembled.ivyHomeGranted,
           proxyPort = port,
           runtime = runtime,
         ),
@@ -629,8 +636,8 @@ object RunOnHostSandbox:
     builder.environment.clear()
     builder.environment.putAll(
       buildEnvironment(
-        name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.millDownloads,
-        session.tmp, proxyPort, System.getProperty("user.name"),
+        name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
+        assembled.millDownloads, session.tmp, proxyPort, System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -663,6 +670,7 @@ object RunOnHostSandbox:
     forwards: Vector[(String, String)],
     prereqs: BuildPrereqs,
     sbtGlobal: Path,
+    ivyHome: Path,
     millDownloads: Option[Path],
     sessionTmp: Path,
     proxyPort: Int,
@@ -678,6 +686,7 @@ object RunOnHostSandbox:
       s"-Djava.io.tmpdir=$sessionTmp",
       s"-Djava.util.prefs.userRoot=$sessionTmp",
       s"-Dsbt.global.base=$sbtGlobal",
+      s"-Dsbt.ivy.home=$ivyHome",
       "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
       "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
       // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped

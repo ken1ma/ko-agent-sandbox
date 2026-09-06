@@ -32,12 +32,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
   )
 
   private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/sbt-global")
+  private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/ivy-home")
 
   private def inputs(
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
-  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), port, runtime)
+  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), port, runtime)
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
@@ -66,14 +67,17 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(sbtDistribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs)).isLeft)
 
-  test("the tool and the global base agree the same way"):
+  test("the tool and the global base agree the same way, and the Ivy home with them"):
     assert(render(inputs().copy(sbtGlobal = None)).isLeft)
+    assert(render(inputs().copy(ivyHome = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None)).isLeft)
+    assert(render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None)).isLeft)
 
-  test("the sbt global base is granted read-write and, like the Coursier cache, never exec"):
+  test("the sbt global base and Ivy home are granted read-write and, like the Coursier cache, never exec"):
     val text = rendered()
-    assert(text.contains(s"""(allow file-read* file-write* (subpath "$sbtGlobal"))"""), text)
-    assert(!text.contains(s"""process-exec* (subpath "$sbtGlobal")"""), text)
+    for cache <- Seq(sbtGlobal, ivyHome) do
+      assert(text.contains(s"""(allow file-read* file-write* (subpath "$cache"))"""), text)
+      assert(!text.contains(s"""process-exec* (subpath "$cache")"""), text)
 
   test("a port outside the range is refused"):
     assert(render(inputs(port = 0)).isLeft)
@@ -143,10 +147,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
-    assertEquals(writable.size, 4)
+    assertEquals(writable.size, 5)
     assert(writable.exists(_.contains(project.toString)))
     assert(writable.exists(_.contains("coursier/v1")))
     assert(writable.exists(_.contains("sbt-global")))
+    assert(writable.exists(_.contains("ivy-home")))
     assert(writable.exists(_.contains("/tmp/")))
 
   test("writable implies executable for the project and the session temp, never for the cache"):
@@ -232,7 +237,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   )
 
   private def millText: String =
-    render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None))
+    render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None, ivyHome = None))
       .fold(reason => fail(reason), identity)
 
   test("mill renders without the sbt distribution"):

@@ -905,12 +905,15 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   `git status`, outside every sandbox. That property has two producers — the workspace filter
   for writes through `/workspace`, this profile's deny rows for writes by the build — and both are
   named where it is stated ("The host's git executing what the sandbox wrote", above).
-- **Cache poisoning stops at the project.** The build writes its own per-project Coursier cache,
-  never yours: a poisoned artifact reaches later agent builds of the same project, which are
-  themselves sandboxed, and no other project and no unsandboxed build — and `--reset` discards
-  it with the project's other state. The separation is by root,
-  because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches the same
-  property for the container by a podman `:O` upper).
+- **Cache poisoning stops at the project.** The build writes its own per-project caches, never
+  yours: the Coursier cache, sbt's global base — its boot directory and content-addressed
+  store — and sbt's Ivy home, where `publishLocal` lands. A poisoned artifact in any of them
+  reaches later agent builds of the same project, which are themselves sandboxed, and no other
+  project and no unsandboxed build — and `--reset` discards all three with the project's other
+  state; `--reset-run-on-host` discards those caches alone. The separation is by root, one
+  directory holding the three (`doc/run-on-host.md`, "The build cache"), because Seatbelt has no
+  mount namespace to overlay with (`plan-coursier.md` reaches the same property for the
+  container by a podman `:O` upper).
 - **The build's output names host paths.** Every compiler message containing an absolute path tells
   the container the project's path on the host. Disclosure, not authority.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A

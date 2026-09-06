@@ -58,7 +58,7 @@ build() {
     PATH="$JAVA_HOME/bin:$PATH" \
     COURSIER_CACHE=$(sed -n 's/^build cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
-    JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global" \
+    JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global -Dsbt.ivy.home=$SESSION_TMP/ivy-home" \
     /usr/bin/sandbox-exec -f "$work/build.sb" \
         sbt --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
 }

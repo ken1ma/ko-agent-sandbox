@@ -94,6 +94,7 @@ object SeatbeltProfile:
     sessionTmp: Path,
     sbtDistribution: Option[Path],
     sbtGlobal: Option[Path],
+    ivyHome: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
   )
@@ -110,10 +111,10 @@ object SeatbeltProfile:
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
     // JVM reads, and nothing there is run.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
-    // The sbt global base is a cache like the Coursier one — artifacts the JVM reads, nothing
-    // run — and persistent for the same reason target/ links into it (RunOnHostPrereqs.
-    // buildSbtGlobal).
-    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal
+    // The sbt global base and Ivy home are caches like the Coursier one — artifacts the JVM
+    // reads, nothing run — and persistent for the same reason target/ links into the base
+    // (RunOnHostPrereqs.buildSbtGlobal, buildIvyHome).
+    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     everyPath.find(path => !usable(path)) match
@@ -123,10 +124,14 @@ object SeatbeltProfile:
         )
       case _ if prereqs.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
+      case _ if prereqs.tool == Tool.Sbt && inputs.ivyHome.isEmpty =>
+        Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
       case _ if prereqs.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
         Left("a mill profile has no sbt distribution to grant")
       case _ if prereqs.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
         Left("a mill profile has no sbt global base to grant")
+      case _ if prereqs.tool == Tool.Mill && inputs.ivyHome.isDefined =>
+        Left("a mill profile has no Ivy home to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
