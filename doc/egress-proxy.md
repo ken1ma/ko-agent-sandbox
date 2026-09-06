@@ -27,11 +27,11 @@ three forges `read git-fetch`. The proxy image's `defaults/host` and `defaults/m
 files are the membership, with the reason beside each line.
 
 1. `deny-unless-allowed` (the default) — the defaults, then every line of the project's file.
-1. `deny-unless-model` — only the launched agent's own provider group, then the file's `deny`
+1. `deny-unless-model` — only the launched agent's provider groups, then the file's `deny`
    lines: `claude` selects `anthropic`, `codex` selects `openai`, `agy` selects `google`,
-   `copilot` selects `github`. Only the basename of the directly launched command is classified;
-   anything else — `bash`, a wrapper script — selects no provider, admits no host, and says so at
-   startup.
+   `copilot` selects `github`; `opencode`, which has no fixed provider, selects every group
+   under `defaults/model-provider/`. Only the basename of the directly launched command is
+   classified; anything else selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
    443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, every write
    refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
@@ -236,7 +236,7 @@ SECURITY.md, "The audit line grammar", has every field and reason.
 The proxy terminates the TLS of every inspected host so that reading can be allowed and writing
 refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` and
 `allow-unless-denied` the model providers, unless a project adds more; under `deny-unless-model`
-the selected group's tunnel lines; under `deny-all` none.
+the selected groups' tunnel lines; under `deny-all` none.
 
 The per-project CA is stored on the host, under
 

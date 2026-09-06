@@ -86,6 +86,10 @@ class EgressRulesTest extends munit.FunSuite:
       "egress: deny-unless-model; no provider selected; 0 inspected, 0 opaque",
     )
     assertEquals(
+      egressBanner("egress profile: deny-unless-model; model provider: all\n" + summary(4, 17, 0), color = false),
+      "egress: deny-unless-model; every model provider; 4 inspected, 17 opaque",
+    )
+    assertEquals(
       egressBanner(
         "egress profile: allow-unless-denied; default: public HTTPS read\n" +
           "deny https://w/\ndeny https://x/\ndeny https://**.y/\ndeny https://z/\n" +
@@ -153,6 +157,7 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("/usr/local/bin/codex")), Some("openai"))
     assertEquals(commandProvider(Some("C:\\tools\\agy")), Some("google"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
+    assertEquals(commandProvider(Some("opencode")), Some("all"))
     assertEquals(commandProvider(Some("bash")), None)
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)

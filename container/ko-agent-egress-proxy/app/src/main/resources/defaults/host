@@ -30,6 +30,11 @@ allow https://developers.openai.com/  read  # codex
 allow https://antigravity.google/     read  # agy
 allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
 allow https://docs.github.com/        read  # copilot
+# opencode: the docs, and the model catalog it refreshes hourly, from a copy built into the binary.
+# opencode.ai also serves the Zen model API and the console sign-in, both writes, which `read`
+# refuses; a model-provider group for Zen would tunnel the host, and this line would have to go.
+allow https://opencode.ai/            read
+allow https://models.opencode.ai/     read
 
 # public documents / repositories
 allow https://www.rfc-editor.org/   read  # published RFCs

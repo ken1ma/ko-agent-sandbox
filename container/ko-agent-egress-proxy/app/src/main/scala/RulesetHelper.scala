@@ -116,6 +116,11 @@ object RulesetHelper:
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "github")
 
+  /** The EGRESS_MODEL_PROVIDER value that selects every group above. The launcher sends it for an
+    * agent with no fixed provider, opencode, and this file alone expands it, so the launcher keeps
+    * no list of groups. A rule file's `model-provider` lines name one group and refuse it. */
+  val AllProviders = "all"
+
   // ---------------------------------------------------------------------------
   // The grammar
   // ---------------------------------------------------------------------------
@@ -542,7 +547,8 @@ object RulesetHelper:
    * Every profile runs the same fold, from its own start and consulting its own lines:
    *
    *   deny-all            = nothing
-   *   deny-unless-model   = the selected group's lines, then the file's deny lines
+   *   deny-unless-model   = the selected groups' lines — one group, or every group under
+   *                         AllProviders — then the file's deny lines
    *   deny-unless-allowed = the defaults — none after `deny defaults` — then every line
    *   allow-unless-denied = deny-unless-allowed's fold, and every public hostname on port 443 the
    *                         map leaves out admitted as an inspected `read` unless a denial
@@ -571,7 +577,10 @@ object RulesetHelper:
     val profile = profileValue.getOrElse(DefaultProfile)
     if !Profiles.contains(profile) then
       throw IllegalArgumentException(s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}")
-    val provider = providerValue.filterNot(_ == "none").map(requireProvider(ModelProviderVariable, _))
+    val provider = providerValue.filterNot(_ == "none").map: value =>
+      if value == AllProviders then value else requireProvider(ModelProviderVariable, value)
+    val selectedGroups =
+      provider.toVector.flatMap(name => if name == AllProviders then ModelProviders else Vector(name))
 
     val lines = parseRules(RuleFile, ruleText.getOrElse(""))
     val clearsDefaults = lines.headOption.exists(_.rule == Rule.DenyDefaults)
@@ -604,8 +613,7 @@ object RulesetHelper:
 
     val (initial, consult, publicDefault) = profile match
       case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false, false)
-      case "deny-unless-model" =>
-        (provider.fold(Vector.empty[Contribution])(groupContributions(_, None)), isDeny, false)
+      case "deny-unless-model" => (selectedGroups.flatMap(groupContributions(_, None)), isDeny, false)
       case "deny-unless-allowed" => (defaults, (_: Rule) => true, false)
       case "allow-unless-denied" => (defaults, (_: Rule) => true, true)
     val enforced =
@@ -668,7 +676,7 @@ object RulesetHelper:
             case _ => false
 
     val reachability =
-      provider.toVector.flatMap: selected =>
+      selectedGroups.flatMap: selected =>
         val unreachable = ModelProviderLines(selected).map(_.rule)
           .collect { case Rule.Allow(host, _, _) => host }
           .distinct.sorted

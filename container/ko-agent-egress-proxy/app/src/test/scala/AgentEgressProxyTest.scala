@@ -462,6 +462,25 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(none.hosts, Map.empty[String, Treatment])
     assertEquals(rulesetLines(none), Vector("egress profile: deny-unless-model; model provider: none"))
 
+  test("deny-unless-model under `all` admits every group the proxy defines, and no catalog host"):
+    val every = rulesetOf(profile = "deny-unless-model", provider = AllProviders)
+    // The same hosts that `deny defaults` followed by every group's allow line resolves to.
+    val spelled = ("deny defaults" +: ModelProviders.map(name => s"allow model-provider $name")).mkString("\n")
+    assertEquals(every.hosts, rulesetOf(rule = spelled).hosts)
+    assert(!every.hosts.contains("pypi.org"))
+    assertEquals(rulesetLines(every).head, "egress profile: deny-unless-model; model provider: all")
+    // A group deny takes its own group's lines and no other's.
+    val github = rulesetOf(profile = "deny-unless-model", provider = "github").hosts.keySet
+    assertEquals(
+      rulesetOf(profile = "deny-unless-model", provider = AllProviders, rule = "deny model-provider github").hosts,
+      every.hosts -- github,
+    )
+    // Every other profile ignores the selection, as it does a named group.
+    Vector("deny-all", "deny-unless-allowed", "allow-unless-denied").foreach: profile =>
+      assertEquals(rulesetOf(profile, AllProviders).ruleset, rulesetOf(profile).ruleset, profile)
+    // The variable's word, not the grammar's.
+    assert(refusalOf("allow model-provider all").contains("names the model provider 'all'"))
+
   test("deny-unless-model for copilot admits the precise group: two login POSTs, one token read, four tunnels"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "github")
     assertEquals(
