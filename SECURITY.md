@@ -195,6 +195,22 @@ GitHub's web UI. Both are copilot's own switches, `--disable-builtin-mcps` and
 `--no-remote-export`; the proxy's is `deny model-provider github`, which takes the model
 traffic with them; `--reset` discards the token.
 
+agy's Business sign-in stores a Google Cloud credential for the licensed project, and the
+`google` group tunnels the Agent Platform API — Vertex AI's — at `aiplatform.googleapis.com`
+and its `us` and `eu` multi-region hosts; the API manages the project's resources as well as
+serving its model endpoints. Through those opaque tunnels, which the proxy cannot tell from
+model traffic, the credential does in the signed-in project whatever the user's IAM roles there
+allow. For a user with the project Editor role, that includes deploying or deleting model
+endpoints, starting training, tuning or batch-prediction jobs the project pays for, deploying an
+agent whose code then runs inside the project, and — since those jobs read and write Cloud
+Storage server-side — moving data between buckets the user can reach without the sandbox ever
+contacting a storage host. A user with a license seat and no broader IAM role in the project can
+do little beyond inference. The `google` group admits no other Google Cloud API: Storage, Compute
+and IAM are separate hosts, reachable only where the profile or a project rule admits them. The
+proxy's switches are a project's `deny` line for each of the three aiplatform hosts, which keeps
+the Business AI Code API, or `deny model-provider google`, which takes the model traffic with
+it; `--reset` discards the token.
+
 **Low-bandwidth channels.** Which allowed host is contacted, when, and in what order all carry
 information. Nothing measures that.
 

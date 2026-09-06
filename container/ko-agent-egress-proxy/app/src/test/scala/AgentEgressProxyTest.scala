@@ -390,6 +390,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       lines("google"),
       Vector(
         "allow https://cloudcode-pa.googleapis.com/ tunnel",
+        "allow https://daily-cloudcode-pa.googleapis.com/ tunnel",
+        "allow https://generativelanguage.googleapis.com/ tunnel",
+        "allow https://businessaicode.googleapis.com/ tunnel",
+        "allow https://aiplatform.googleapis.com/ tunnel",
+        "allow https://aiplatform.us.rep.googleapis.com/ tunnel",
+        "allow https://aiplatform.eu.rep.googleapis.com/ tunnel",
         "allow https://accounts.google.com/ tunnel",
         "allow https://oauth2.googleapis.com/ tunnel",
       ),
