@@ -72,7 +72,7 @@ allow https://typelevel.org/ read  # cats, cats-effect
 allow https://fs2.io/        read
 allow https://http4s.org/    read
 
-allow https://scala-cli.virtuslab.org/ read  # scala-cli
+allow https://scala-cli.virtuslab.org/ read  # Scala CLI, the runner behind `scala`
 
 # build tools
 allow https://www.scala-sbt.org/            read

@@ -3,7 +3,7 @@
 `--run-on-host` (`run-on-host.md`) meets part of this plan's goal: an agent's sbt and `mill`
 builds run on the host against a per-project cache of their own, so they neither warm nor need the
 container's. What this plan still covers is the container's own Scala tooling — which runs
-`scala-cli`, `scalafmt`, `cs install`, and sbt when the host channel is not in force — and the
+`scala`, `scalafmt`, `cs install`, and sbt when the host channel is not in force — and the
 image-home relocation that removes the copy-up cost.
 
 Both plans hold one property for the user's own Coursier cache — a sandboxed build never changes
@@ -50,7 +50,7 @@ those contracts without material startup cost.
 ## Cold default
 
 The launchers installed by `cs setup` are bootstraps. With no cache overlay, the first `sbt`,
-`scala-cli`, `scalafmt` or other Scala-tool invocation in every session can download a substantial
+`scala`, `scalafmt` or other Scala-tool invocation in every session can download a substantial
 part of the removed 830 MB again. A narrow egress profile can make that invocation fail when it
 does not admit the required repositories. This cost is accepted: host artifacts remain unexposed
 unless the user opts in, and all unshared downloads remain disposable.
@@ -64,8 +64,8 @@ this plan.
 
 ## Guarantees
 
-1. `sbt`, `scala-cli`, `cs`, `scalafmt`, and every other launcher produced by `cs setup` remain
-   installed in the sandbox image.
+1. The launchers the `cs setup --apps` line in `container/debian-coursier/Containerfile` selects,
+   and no others, remain installed in the sandbox image.
 2. No Coursier installation artifact or cache content is stored under image `/home/nonroot`; only
    the empty, nonroot-owned `.cache/coursier` parent remains as writable home structure.
 3. The image contains no Coursier download cache in a hidden lower layer. Installation and cache
@@ -168,7 +168,7 @@ explicit authority as a credential boundary.
 
 Change `container/debian-coursier/Containerfile`, the canonical producer of the Scala toolchain:
 
-1. Install the same launcher set as `cs setup` into `/opt/coursier/bin`.
+1. Install the launchers the existing `cs setup --apps` line selects into `/opt/coursier/bin`.
 2. Make the installed tree root-owned and non-writable by UID 65532.
 3. Perform setup with a temporary `HOME`, then delete that home and every Coursier download cache
    in the same `RUN` instruction. A later `RUN rm` leaves the bytes in an earlier image layer and

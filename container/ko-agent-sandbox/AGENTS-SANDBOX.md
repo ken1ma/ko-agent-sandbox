@@ -38,9 +38,9 @@ find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
 
 ## Use what is already installed
 
-Java 25, Scala (`sbt`, `scala-cli`, `cs`, `scalafmt`), Python 3.14 (`uv`, `uvx`), Node 24, Rust
-stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`, `patch`, `zstd`,
-`openssl`, binutils, and the usual GNU text and process commands.
+Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Python 3.14 (`uv`,
+`uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`,
+`patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — for that last one use `python3 -c "import sqlite3; ..."`.
@@ -136,7 +136,7 @@ A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egr
 or the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
 run `sandbox-jdk-use-proxy <jdk-home>` on one you installed yourself. A native-image tool has no
 `conf/` to prepare and reads no environment variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in
-its own spelling — `scala-cli $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
+its own spelling — `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
 `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs nothing.
 
 
