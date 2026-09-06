@@ -3,7 +3,7 @@
 // the channel — reads the bundled copy. src/probe/build-profile-gate.sh is its caller.
 //
 //   java -cp <the classpath EmitBuildProfile prints> \
-//     agentsandbox.launcher.RunOnHost <sbt|mill> <project> [authority-file] -- <args...>
+//     agentsandbox.launcher.RunOnHost <tool> <project> [authority-file] -- <args...>
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
 // server holds the target project's portfile — the one-server-per-project refusal — and whose exit is sys.exit's.
@@ -22,13 +22,12 @@ object RunOnHost:
       case (before, "--" :: rest) => (before, rest)
       case (before, _)            => (before, Nil)
 
-    val usage = "usage: RunOnHost <sbt|mill> <project> [authority-file] -- <args...>"
+    val usage = s"usage: RunOnHost <${Tool.values.map(_.name).mkString("|")}> <project> [authority-file] -- <args...>"
     front match
       case toolName :: projectName :: rest if rest.sizeIs <= 1 =>
-        val tool = toolName.toLowerCase match
-          case "sbt"  => Tool.Sbt
-          case "mill" => Tool.Mill
-          case other  => Console.err.println(s"unknown tool $other\n$usage"); sys.exit(2)
+        val tool = Tool.values.find(_.name == toolName.toLowerCase).getOrElse:
+          Console.err.println(s"unknown tool $toolName\n$usage")
+          sys.exit(2)
         val runtime = RunOnHostSandbox.readRuntimeAuthority(rest.headOption.map(Paths.get(_)))
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         sys.exit(

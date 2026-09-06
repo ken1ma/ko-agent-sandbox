@@ -208,6 +208,44 @@ on podman-less machines and kills the test JVM.
   (`(allow mach-lookup (global-name …))`, the pattern Apple's profiles use); the gate's
   forked-process rows are where the answer is checked.
 
+## Deferred — Gradle under `--run-on-host`
+
+Gradle does not fit the host build profile, because its processes talk to each other over
+loopback TCP and the profile allows loopback only to the build's own proxy port
+(`run-on-host.md`, "Network"). These facts come from Gradle 9.7.1's sources and its daemon
+documentation, read on 2026-09-06:
+
+- Every process Gradle forks — a test executor, a process-isolated worker, the Kotlin compiler
+  daemon — connects back to the build over TCP: `DefaultWorkerProcessBuilder` gets the address
+  from `MessagingServer.accept`, and the messaging server is `TcpIncomingConnector`
+  (`platforms/core-runtime/messaging`).
+- The Gradle client talks to the daemon over TCP too. `--no-daemon` avoids the daemon only when
+  `GRADLE_OPTS` matches the build's `org.gradle.jvmargs`; otherwise Gradle forks a single-use
+  daemon.
+- Seatbelt cannot allow loopback for "this build's processes" only. The narrowest rule is
+  `(local ip "localhost:*")` and `(remote ip "localhost:*")`, which is every service on the host
+  that listens on loopback. The network section refuses that, and this project's own proxy tests
+  run in the container for the same reason.
+
+Everything else a Gradle backend needs is known, so the open decision is the loopback rule alone:
+
+- The project has a `gradlew` script, and the user has run it once on the host, so the Gradle
+  it downloaded is already under `GRADLE_USER_HOME` (default `~/.gradle`). The wrapper finds
+  that directory the way Gradle's `PathAssembler` does: `wrapper/dists/<name>/<hash>/<one
+  directory>`, where the hash is the MD5 of the distribution URL written in base 36. The build
+  is granted that directory read-only.
+- The build runs `bin/gradle --no-daemon` from that directory, not `gradlew`: with
+  `GRADLE_USER_HOME` moved into the build cache, `gradlew` would download Gradle again into a
+  directory that is writable and not executable.
+- `GRADLE_USER_HOME` is set to a directory in the build cache. `JAVA_HOME` is the JDK, and
+  `org.gradle.java.installations.auto-download=false` stops Gradle from downloading another one.
+- Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy admits that host by default,
+  as it does for Maven. `plugins.gradle.org` goes in the rule file.
+
+- [ ] Decide: a Gradle-only profile that allows loopback both ways, with the cost stated in
+  `SECURITY.md`; Gradle under the proxy-only rule, with `gradle test` documented as failing with
+  `EPERM`; or no Gradle.
+
 ## Deferred — same-path workspace mounting under `--run-on-host`
 
 Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's

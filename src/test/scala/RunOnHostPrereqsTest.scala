@@ -571,13 +571,13 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the composed rule input is the whole ruleset: deny defaults, Maven Central, then the file"):
     assertEquals(
-      egressRuleText(Vector("repo.example.org")),
+      egressRuleText(Tool.Sbt, Vector("repo.example.org")),
       "deny defaults\nallow https://repo1.maven.org/ read\nallow https://repo.example.org/ read",
     )
 
   test("a file restating Maven Central composes it once"):
     assertEquals(
-      egressRuleText(Vector("repo1.maven.org")),
+      egressRuleText(Tool.Sbt, Vector("repo1.maven.org")),
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
@@ -591,8 +591,126 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       buildIvyHome(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/ivy-home"),
     )
-    for cache <- Seq(buildSbtGlobal(cacheRoot, "proj-abc123"), buildIvyHome(cacheRoot, "proj-abc123")) do
-      assertEquals(cache.getParent, buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent)
+    assertEquals(
+      buildM2Repository(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/m2/repository"),
+    )
+    for cache <- Seq(buildSbtGlobal(cacheRoot, "proj-abc123"), buildIvyHome(cacheRoot, "proj-abc123"),
+        buildM2Repository(cacheRoot, "proj-abc123").getParent)
+    do assertEquals(cache.getParent, buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent)
+
+  test("the central host is the tool's own: Coursier's for sbt and mill, the super POM's for mvn"):
+    assertEquals(centralHost(Tool.Sbt), "repo1.maven.org")
+    assertEquals(centralHost(Tool.Mill), "repo1.maven.org")
+    assertEquals(centralHost(Tool.Mvn), "repo.maven.apache.org")
+    assertEquals(egressRuleText(Tool.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
+
+  // --------------------------------------------------------------------------
+  // Maven
+  // --------------------------------------------------------------------------
+
+  private val mvnUrl =
+    "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"
+
+  test("mvn needs the project's own wrapper; a global mvn is not a fallback"):
+    val wrapper = project.resolve("mvnw")
+    assertEquals(validateMvnWrapper(project, _ == wrapper), Right(wrapper))
+    assertEquals(validateMvnWrapper(project, _ => false), Left(Refusal.PrereqMvnWrapperMissing))
+
+  test("only the only-script wrapper, recognized by the script that runs; any other type is refused"):
+    assertEquals(validateMvnWrapperScript(Seq("#!/bin/sh", "hash_string() {", "}")), Right(()))
+    assertEquals(
+      validateMvnWrapperScript(Seq("#!/bin/sh", "exec java -classpath .mvn/wrapper/maven-wrapper.jar")),
+      Left(Refusal.PrereqMvnWrapperNotOnlyScript),
+    )
+
+  test("the distribution URL is read as the script reads it, MVNW_REPOURL applied"):
+    def read(lines: String*) = mvnDistributionUrl(lines.mkString("", "\n", "\n"), None)
+    assertEquals(read("wrapperVersion=3.3.4", s"distributionUrl= $mvnUrl "), Right(mvnUrl))
+    // The key is matched exactly; the value loses every whitespace character, inside included;
+    // the last line wins; a last line without a newline is never read.
+    assert(read(s" distributionUrl=$mvnUrl").isLeft)
+    assertEquals(
+      read("distributionUrl=https://x.example/apache -\tmaven-3.9.16-bin.zip"),
+      Right("https://x.example/apache-maven-3.9.16-bin.zip"),
+    )
+    assertEquals(read("distributionUrl=https://first.example/a-bin.zip", s"distributionUrl=$mvnUrl"), Right(mvnUrl))
+    assert(mvnDistributionUrl(s"distributionUrl=$mvnUrl", None).isLeft)
+    assertEquals(mvnDistributionUrl(s"distributionUrl=$mvnUrl\r\n", None), Right(mvnUrl))
+    // The shell takes the line as is, escapes included, and hashes it as is.
+    val escaped = mvnUrl.replace(":", "\\:")
+    assertEquals(read(s"distributionUrl=$escaped"), Right(escaped))
+    assertEquals(
+      mvnDistributionUrl(s"distributionUrl=$mvnUrl\n", Some("https://mirror.example/repo")),
+      Right("https://mirror.example/repo/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"),
+    )
+    // The script's `${distributionUrl#*"$pattern"}` strips nothing when the pattern is absent.
+    assertEquals(
+      mvnDistributionUrl("distributionUrl=https://x.example/apache-maven-3.9.16-bin.zip\n", Some("https://m.example")),
+      Right("https://m.example/org/apache/maven/https://x.example/apache-maven-3.9.16-bin.zip"),
+    )
+    assertEquals(mvnDistributionUrl(s"distributionUrl=$mvnUrl\n", Some("")), Right(mvnUrl))
+    assert(read("wrapperVersion=3.3.4").isLeft)
+    assert(read("distributionUrl=https://example.org/apache-maven-3.9.16.zip").isLeft)
+    assert(read("distributionUrl=https://example.org/mavén-bin.zip").isLeft)
+    // tr's [:space:] is six ASCII characters: a control character stays, and Java's wider
+    // notion of whitespace must not remove what tr keeps.
+    assert(read("distributionUrl=https://example.org/apache\u001c-maven-3.9.16-bin.zip").isLeft)
+    assertEquals(
+      read("distributionUrl=https://example.org/apache\u000b-maven-3.9.16-bin.zip"),
+      Right("https://example.org/apache-maven-3.9.16-bin.zip"),
+    )
+    // The effective URL is what is checked: a mirror that breaks the URL is refused.
+    assert(mvnDistributionUrl(s"distributionUrl=$mvnUrl\n", Some("https://mirrör.example")).isLeft)
+    val mvnd = "https://example.org/maven/mvnd/1.0.2/maven-mvnd-1.0.2-bin.zip"
+    assertEquals(read(s"distributionUrl=$mvnd"), Left(Refusal.PrereqMvnDistributionIsMvnd(mvnd)))
+    // A refusal quotes a URL only once it is printable ASCII, so no control character reaches
+    // the terminal through it — through the mvnd branch, the -bin.zip branch, or MVNW_REPOURL.
+    for value <- Seq(s"https://x.example/\u001b[31mmaven-mvnd-1.0.2-bin.zip", "https://x.example/\u001b[31ma.zip") do
+      val refused = read(s"distributionUrl=$value")
+      assert(refused.left.exists(refusal => !wording(refusal).contains('\u001b')), refused.toString)
+    val badMirror = mvnDistributionUrl(s"distributionUrl=$mvnUrl\n", Some("https://\u001b[31mm.example"))
+    assert(badMirror.left.exists(refusal => !wording(refusal).contains('\u001b')), badMirror.toString)
+
+  test("the distribution directory is the script's own derivation, hash function included"):
+    val m2 = Paths.get("/Users/kenichi/.m2")
+    // The vector is String.hashCode computed with Java 25, which the script's hash_string reproduces.
+    assertEquals(mvnDistributionDir(m2, mvnUrl), m2.resolve("wrapper/dists/apache-maven-3.9.16/56ba1f9f"))
+
+  test("the home is that directory, provisioned; else a refusal naming what ./mvnw would fix"):
+    val derived = Paths.get("/Users/kenichi/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
+    assertEquals(mvnDistributionHome(derived, mvnUrl, _ == derived.resolve("bin/mvn")), Right(derived))
+    assertEquals(
+      mvnDistributionHome(derived, mvnUrl, _ => false),
+      Left(Refusal.PrereqMvnDistributionMissing(mvnUrl, derived)),
+    )
+    assert(wording(Refusal.PrereqMvnDistributionMissing(mvnUrl, derived)).contains("./mvnw --version"))
+
+  test("every refusal is worded for the blocked reader, never through its enum spelling"):
+    val cases = Seq(
+      Refusal.PrereqJvmNotCoursier("/usr/bin/java"), Refusal.PrereqSbtNotCoursier(Paths.get("/usr/local/bin/sbt")),
+      Refusal.PrereqMillBootstrapMissing, Refusal.PrereqMillVersionUnpinned,
+      Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmNotSystem(None),
+      Refusal.PrereqMvnWrapperMissing, Refusal.PrereqMvnWrapperNotOnlyScript,
+      Refusal.PrereqMvnDistributionIsMvnd(mvnUrl),
+      Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),
+      Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
+      Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
+      Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
+      Refusal.RuleOutsideBuildGrammar("allow x tunnel"),
+    )
+    for refusal <- cases do
+      assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
+    // The ones a host command fixes name that command.
+    assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)).contains("./mill --version"))
+    assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))
+    val mvndWording = wording(Refusal.PrereqMvnDistributionIsMvnd(mvnUrl))
+    assert(mvndWording.contains(".mvn/wrapper/maven-wrapper.properties"))
+    assert(mvndWording.contains("apache-maven-…-bin.zip URL"))
+
+  test("the Maven user home is MAVEN_USER_HOME, else ~/.m2, as the script takes it"):
+    assertEquals(mvnUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.m2")))
+    assertEquals(mvnUserHome(env("HOME" -> home, "MAVEN_USER_HOME" -> "/opt/m2")), Some(Paths.get("/opt/m2")))
 
   test("the rule file path is per tool under the frozen boundary directory"):
     val project = Paths.get("/Users/u/proj")

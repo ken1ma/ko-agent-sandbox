@@ -6,7 +6,7 @@
 # what the contract claims — and, in the channel rows, whether the channel carries a build and
 # tears down with its requester.
 #
-#   sh src/probe/build-profile-gate.sh [sbt|mill|all] [quick]
+#   sh src/probe/build-profile-gate.sh [sbt|mill|mvn|all] [quick]
 #
 # The tool selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
@@ -18,12 +18,12 @@
 # lifecycle as well as the profile; there is no warm-up block, and a cold build cache resolves
 # through the proxy inside the profile, which is the measurement.
 #
-# The sbt rows build this repository. The mill rows build src/probe/mill-fixture, a one-module mill
-# project that exists for them: this repository is sbt-built, and a mill build of it would be a
-# second build definition rather than a measurement. src/probe/deny-fixture exists for the
-# unlisted-host row: its resolution must reach a host the proxy refuses. src/probe/ivy-fixture
-# exists for the inter-project row: resolving a dependsOn edge enters Ivy, whose lock file lives
-# in the Ivy home, and this repository has no such edge.
+# The sbt rows build this repository. The mill rows build src/probe/mill-fixture and the mvn rows
+# src/probe/mvn-fixture, one-module projects that exist for them: this repository is sbt-built,
+# and a mill or Maven build of it would be a second build definition rather than a measurement.
+# src/probe/deny-fixture exists for the unlisted-host row: its resolution must reach a host the
+# proxy refuses. src/probe/ivy-fixture exists for the inter-project row: resolving a dependsOn
+# edge enters Ivy, whose lock file lives in the Ivy home, and this repository has no such edge.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker is in a scratch tree this script makes and
@@ -32,11 +32,11 @@
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 tool=${1:-all}
-case "$tool" in sbt|mill|all) ;; *) echo "usage: $0 [sbt|mill|all] [quick]" >&2; exit 2 ;; esac
+case "$tool" in sbt|mill|mvn|all) ;; *) echo "usage: $0 [sbt|mill|mvn|all] [quick]" >&2; exit 2 ;; esac
 case "${2:-full}" in
     full) quick=0 ;;
     quick) quick=1 ;;
-    *) echo "usage: $0 [sbt|mill|all] [quick]" >&2; exit 2 ;;
+    *) echo "usage: $0 [sbt|mill|mvn|all] [quick]" >&2; exit 2 ;;
 esac
 want() { [ "$tool" = all ] || [ "$tool" = "$1" ]; }
 
@@ -69,7 +69,14 @@ report() { # status label detail
 
 # The project each profile is for.
 mill_project=$project/src/probe/mill-fixture
-project_of() { if [ "$1" = mill ]; then printf '%s\n' "$mill_project"; else printf '%s\n' "$project"; fi; }
+mvn_project=$project/src/probe/mvn-fixture
+project_of() {
+    case "$1" in
+        mill) printf '%s\n' "$mill_project" ;;
+        mvn) printf '%s\n' "$mvn_project" ;;
+        *) printf '%s\n' "$project" ;;
+    esac
+}
 
 # The machine, before any row: a run with no machine recorded is not evidence for the next release.
 echo "machine"
@@ -80,6 +87,9 @@ then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
 else machine "JAVA_HOME does not name a JDK"; fi
 machine "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
 machine "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+mvn_version=$(sed -n 's|^distributionUrl=.*/apache-maven-\(.*\)-bin.zip$|\1|p' \
+    "$mvn_project/.mvn/wrapper/maven-wrapper.properties")
+machine "maven $mvn_version"
 if command -v podman >/dev/null 2>&1
 then provider=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || echo unknown)
     machine "$(podman --version), machine provider: $provider"
@@ -127,7 +137,8 @@ build_env() { # agent-v1 command...
         COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
         MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" \
         JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=$sbt_global -Dsbt.ivy.home=$ivy_home -Djava.net.preferIPv4Stack=true" \
+-Dsbt.global.base=$sbt_global -Dsbt.ivy.home=$ivy_home -Dmaven.repo.local=$m2_repository \
+-Daether.connector.http.useSystemProperties=true -Djava.net.preferIPv4Stack=true" \
         "$@"
 }
 # A hang is a FAIL, not a stalled run: a client whose server never came up waits forever.
@@ -254,6 +265,11 @@ if want mill; then
     emit mill || exit 1
     profiles="$profiles mill"
 fi
+if want mvn; then
+    echo "emitting the mvn profile, for $mvn_project"
+    emit mvn || exit 1
+    profiles="$profiles mvn"
+fi
 # `emit`'s own sbt server goes before any wrapper or build_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
@@ -268,11 +284,13 @@ use_profile() { # tool
     build_v1=$(sed -n 's/^build cache: //p' "$work/emit-$1.log")
     sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
     ivy_home=$(sed -n 's/^ivy home: //p' "$work/emit-$1.log")
+    m2_repository=$(sed -n 's/^m2 repository: //p' "$work/emit-$1.log")
     cache_root=${build_v1%/cache/*}
     safe_path "SESSION_TMP" "$SESSION_TMP"
     safe_path "the build cache" "$build_v1"
     safe_path "the sbt global base" "$sbt_global"
     safe_path "the Ivy home" "$ivy_home"
+    safe_path "the Maven local repository" "$m2_repository"
 }
 for p in $profiles; do
     echo "$p: $(grep -E '^(session temp|build cache):' "$work/emit-$p.log" | tr '\n' ' ')"
@@ -290,6 +308,8 @@ safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Co
 safe_path "the sbt executable path" "$sbt_executable"
 safe_path "the mill download folder" "$mill_downloads"
 mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
+# The distribution ./mvnw unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.mvnDistributionDir).
+mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/dev/null)
 
 # A scratch tree per profile, inside that profile's project, standing in for a project with
 # nested repositories. Made on the host, outside the profile, so the rows test the guard and not
@@ -297,14 +317,16 @@ mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""; sibling_repo=""
+scratch_sbt=""; scratch_mill=""; scratch_mvn=""; sibling_repo=""
 marker=gate-marker.${work##*.}
 cleanup() {
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
+    [ -n "$scratch_mvn" ] && rm -rf "$scratch_mvn"
     [ -n "$sibling_repo" ] && rm -rf "$sibling_repo"
     for p in $profiles; do use_profile "$p"; rm -f "$build_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
-    rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" 2>/dev/null
+    rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" \
+        "$HOME/.m2/repository/$marker" 2>/dev/null
     # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
     # session's live inside its container.
     if [ -n "${channel_broker:-}" ]; then
@@ -315,14 +337,20 @@ cleanup() {
     end_project_servers
 }
 trap cleanup EXIT
-scratch_of() { if [ "$1" = mill ]; then printf '%s\n' "$scratch_mill"; else printf '%s\n' "$scratch_sbt"; fi; }
+scratch_of() {
+    case "$1" in
+        mill) printf '%s\n' "$scratch_mill" ;;
+        mvn) printf '%s\n' "$scratch_mvn" ;;
+        *) printf '%s\n' "$scratch_sbt" ;;
+    esac
+}
 # An unrelated repository outside the project, target of the symlink-escape rows.
 sibling_repo=$(mktemp -d "${TMPDIR:-/tmp}/gate-sibling.XXXXXX") || exit 1
 mkdir "$sibling_repo/.git"
 printf 'fixture\n' > "$sibling_repo/.git/config"
 for p in $profiles; do
     scratch=$(mktemp -d "$(project_of "$p")/gate-scratch.XXXXXX") || exit 1
-    if [ "$p" = mill ]; then scratch_mill=$scratch; else scratch_sbt=$scratch; fi
+    case "$p" in mill) scratch_mill=$scratch ;; mvn) scratch_mvn=$scratch ;; *) scratch_sbt=$scratch ;; esac
     mkdir -p "$scratch/sub/nested/.git/hooks" "$scratch/.ko-agent-sandbox/egress"
     printf 'fixture\n' > "$scratch/sub/nested/.git/config"
     printf 'fixture\n' > "$scratch/.ko-agent-sandbox/egress/rule"
@@ -354,7 +382,7 @@ if want sbt; then
         else report FAIL "sbt $command (wrapper)" \
             "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70)"; fi
     done
-    # A build with an inter-project edge: Ivy's lock file must land in the redirected home, or
+    # A build with an inter-project edge: Ivy must take its lock file in the redirected home, or
     # the build dies canonicalizing ~/.ivy2 (RunOnHostPrereqs.buildIvyHome).
     version=$(sed -n 's/^sbt.version=//p' "$ivy_project/project/build.properties")
     if wrapper sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
@@ -432,6 +460,19 @@ if want mill; then
     end_project_servers
 fi
 
+if want mvn; then
+    use_profile mvn
+    # One-shot, no daemon: each row is one Maven JVM under the profile, resolving plugins and the
+    # test dependency from Central through the proxy into the build cache's local repository.
+    for goal in --version test; do
+        [ "$goal" = test ] && [ "$quick" = 1 ] && { report SKIP "mvn test (wrapper)" "quick mode"; continue; }
+        if wrapper mvn "$mvn_project" "$goal" >"$work/mvn.log" 2>&1
+        then report PASS "mvn $goal (wrapper)" "$(grep -m1 'BUILD SUCCESS\|^Apache Maven' "$work/mvn.log" | cut -c1-40)"
+        else report FAIL "mvn $goal (wrapper)" \
+            "$(grep -m1 '^\[ERROR\]\|^refused\|Exception' "$work/mvn.log" | cut -c1-70)"; fi
+    done
+fi
+
 # --- negative rows, under every selected profile -----------------------------------------------
 
 for p in $profiles; do
@@ -470,6 +511,8 @@ for p in $profiles; do
     expect_denied "$p" "write ~/.sbt/boot" ": > '$HOME/.sbt/boot/$marker'"
     present_or_skip "write ~/.ivy2" "$HOME/.ivy2" \
         && expect_denied "$p" "write ~/.ivy2" ": > '$HOME/.ivy2/$marker'"
+    present_or_skip "write ~/.m2/repository" "$HOME/.m2/repository" \
+        && expect_denied "$p" "write ~/.m2/repository" ": > '$HOME/.m2/repository/$marker'"
     expect_denied "$p" "write the Coursier-installed sbt script" ": >> '$sbt_executable'"
     expect_denied "$p" "write PROJECT/.git/config" ": >> '$project/.git/config'"
     expect_denied "$p" "create under PROJECT/.git" ": > '$project/.git/$marker'"
@@ -482,6 +525,15 @@ for p in $profiles; do
     expect_denied "$p" "write the user's Coursier v1" ": > '$user_v1/$marker'"
     present_or_skip "write the user's mill download folder" "$mill_downloads" \
         && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"
+    if [ "$p" = mvn ]; then
+        # The one provisioned distribution runs; its neighbours under wrapper/dists are unreadable.
+        if ( cd "$mvn_project" && sandboxed mvn "$mvn_home/bin/mvn" --batch-mode --version ) \
+            >/dev/null 2>"$work/row.err"
+        then report PASS "read and execute the Maven distribution"
+        else report FAIL "read and execute the Maven distribution" "$(first_error)"; fi
+        expect_denied mvn "list the wrapper's dists folder" "ls '${mvn_home%/*/*}'"
+        expect_denied mvn "write the Maven distribution" ": >> '$mvn_home/bin/mvn'"
+    fi
     if [ "$p" = mill ]; then
         # The one provisioned file is executable; its neighbours in the download folder are not.
         if ( cd "$mill_project" && sandboxed mill "$mill_executable" --no-daemon --version ) \

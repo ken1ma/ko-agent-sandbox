@@ -10,11 +10,11 @@
 # attach to another's streams. RunOnHostChannel.scala is the other side and documents the framing.
 set -eu
 
-usage() { echo "usage: sandbox-run-on-host <sbt|mill> [args...]" >&2; exit 64; }
+usage() { echo "usage: sandbox-run-on-host <sbt|mill|mvn> [args...]" >&2; exit 64; }
 [ "$#" -ge 1 ] || usage
 tool=$1
 shift
-case "$tool" in sbt|mill) ;; *) usage ;; esac
+case "$tool" in sbt|mill|mvn) ;; *) usage ;; esac
 
 # The launcher's broker creates "$dir/req".
 dir=/tmp/ko-agent-sandbox/host-command

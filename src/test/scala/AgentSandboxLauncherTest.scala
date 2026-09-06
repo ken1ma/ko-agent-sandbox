@@ -1155,7 +1155,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val hostBuilds = authoritySection("live", "fuse", resolution, Vector("sbt", "mill"))
     assert(hostBuilds.contains("sandbox-run-on-host sbt"), hostBuilds)
     assert(hostBuilds.contains("sandbox-run-on-host mill"), hostBuilds)
-    assert(hostBuilds.contains("starts and ends its own sbt server"), hostBuilds)
+    assert(hostBuilds.contains("Each sbt invocation starts and ends its own server"), hostBuilds)
     // The batching example is quoted: the JVM client hands its arguments to sbt as one command
     // line, so `compile test` is a parse error and `'compile; test'` is two commands (measured on
     // sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening test suite — is
@@ -1170,7 +1170,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val discoverable =
       authoritySection("live", "fuse", resolution, Vector.empty, hostBuildsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
-    assert(discoverable.contains("--run-on-host=sbt,mill"), discoverable)
+    assert(discoverable.contains("--run-on-host=sbt,mill,mvn"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host build can write the project (the --run-on-host composition):
@@ -1253,7 +1253,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Some(Vector("sbt", "mill"))),
     )
     assertEquals(parseCommandLine(List("claude")).map(_.runOnHost), Right(None))
-    assert(parseCommandLine(List("--run-on-host=gradle")).swap.exists(_.contains("sbt, mill")))
+    assert(parseCommandLine(List("--run-on-host=gradle")).swap.exists(_.contains("sbt, mill, mvn")))
     assert(parseCommandLine(List("--run-on-host=")).isLeft)
     assert(parseCommandLine(List("--run-on-host=sbt,sbt")).swap.exists(_.contains("twice")))
     assert(

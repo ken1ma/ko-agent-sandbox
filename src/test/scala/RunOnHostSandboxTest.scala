@@ -32,7 +32,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
         "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
       ),
-      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
+      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"), m2Repository = Path.of("/cache/m2"),
       millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
     )
@@ -49,6 +49,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=/cache/m2"))
     // A forward reaches the build; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
@@ -67,8 +68,36 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     // Without a derivable download folder the variable is simply absent.
     val noFolder =
-      buildEnvironment(host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), None, Path.of("/t"), 1, "u")
+      buildEnvironment(
+        host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"), 1, "u",
+      )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
+
+  test("a prerequisite file that cannot be read is a worded refusal at the assembly, not a stack trace"):
+    import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
+    assume(System.getProperty("user.name") != "root", "root reads everything")
+    // A Coursier layout the JVM rule accepts, so the assembly reaches the tool's own files.
+    val root = Files.createTempDirectory("unreadable")
+    val cache = Files.createDirectories(root.resolve("coursier"))
+    val jdk = Files.createDirectories(cache.resolve("arc/jdk.tar.gz/jdk"))
+    Files.createDirectories(jdk.resolve("bin"))
+    Files.setPosixFilePermissions(Files.createFile(jdk.resolve("bin/java")), permissions("rwxr-xr-x"))
+    val project = Files.createDirectories(root.resolve("project"))
+    val env = Map("HOME" -> root.toString, "COURSIER_CACHE" -> cache.toString, "JAVA_HOME" -> jdk.toString)
+    val mvnw = project.resolve("mvnw")
+    Files.write(mvnw, Array[Byte]('#', '!', 0xff.toByte, '\n'))
+    Files.setPosixFilePermissions(mvnw, permissions("rwxr-xr-x"))
+    val invalid = assemble(project, Tool.Mvn, env.get)
+    assert(clue(invalid).left.exists(text => text.contains(mvnw.toString) && text.contains("not valid UTF-8")))
+
+    Files.writeString(mvnw, "#!/bin/sh\nhash_string() {\n}\n")
+    val properties = Files.createDirectories(project.resolve(".mvn/wrapper")).resolve("maven-wrapper.properties")
+    Files.writeString(properties, "distributionUrl=https://example.org/apache-maven-3.9.16-bin.zip\n")
+    Files.setPosixFilePermissions(properties, permissions("---------"))
+    val denied = assemble(project, Tool.Mvn, env.get)
+    assert(
+      clue(denied).left.exists(text => text.contains(properties.toString) && text.contains("permission denied")),
+    )
 
   test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):
     val both = Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://proxy.example:3128")

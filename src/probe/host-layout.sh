@@ -94,6 +94,14 @@ say "user cache dir" "$([ -d "$mill_cache" ] && echo "$mill_cache" || echo "MISS
 say "download folder" "$([ -d "$mill_cache/download" ] && ls -1 "$mill_cache/download" | tr '\n' ' ' || echo MISSING)"
 
 echo
+echo "=== maven ==="
+mvn_dists="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists"
+say "project wrapper" "$([ -x mvnw ] && echo mvnw || echo MISSING)"
+say "distributionUrl" \
+    "$(sed -n 's/^distributionUrl=//p' .mvn/wrapper/maven-wrapper.properties 2>/dev/null || echo MISSING)"
+say "wrapper dists" "$([ -d "$mvn_dists" ] && ls -1 "$mvn_dists" | tr '\n' ' ' || echo "MISSING $mvn_dists")"
+
+echo
 echo "=== what a Seatbelt profile would name ==="
 say "PROJECT" "$project"
 say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"

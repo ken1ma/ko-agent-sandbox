@@ -110,7 +110,7 @@ checkout — [Development](#development).
 1. Insert `--write=reject` before `<command>` when the agent must only read the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to
    anything other than its own provider.
-1. On macOS, insert `--run-on-host=sbt,mill --auto-shutdown-foreign-sbt-on-host` when the
+1. On macOS, insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
    agent will run builds or tests: a build inside the podman machine takes memory from every
    other container there and keeps it until the session ends.
 
@@ -137,7 +137,7 @@ checkout — [Development](#development).
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
       --run-on-host=<tools>
-                         macOS only: sbt / mill can be run on the host. This gains
+                         macOS only: sbt / mill / mvn can be run on the host. This gains
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
                          command, which runs those build tools OUTSIDE

@@ -21,33 +21,64 @@ object RunOnHostSandbox:
 
   case class Assembled(
     prereqs: BuildPrereqs,
-    sbtDistribution: Option[Path],
-    /** The per-project sbt global base and Ivy home: created and granted for an sbt build
-      * (`sbtCachesGranted`), and for a mill build paths nothing reads, named all the same so the
-      * environment has the same variable names for both tools — as `millDownloads` is for sbt. */
+    /** The unpacked distribution the executable runs from: sbt's in the Coursier archive cache,
+      * Maven's under the wrapper's `dists`; mill's executable is one file and has none. */
+    distribution: Option[Path],
+    /** The per-project sbt global base and Ivy home, and Maven's local repository: created and
+      * granted for the tool that reads each (`sbtCachesGranted`, `m2RepositoryGranted`), and for
+      * the other tools paths nothing reads, named all the same so the environment has the same
+      * variable names for every tool — as `millDownloads` is for sbt. */
     sbtGlobal: Path,
     ivyHome: Path,
+    m2Repository: Path,
     /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
       * build is granted, and what the build's own script is pointed at (buildEnvironment). */
     millDownloads: Option[Path],
   ):
     def sbtGlobalGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(sbtGlobal)
     def ivyHomeGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(ivyHome)
+    def m2RepositoryGranted: Option[Path] = Option.when(prereqs.tool == Tool.Mvn)(m2Repository)
     /** The persistent caches an sbt build writes besides Coursier's. */
     def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
 
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
-  /** Absent is None; existing-but-unreadable throws and fails the assembly, never falls to the
-    * next source — mill would select the file and then fail reading it. */
+  /** A file the prerequisites cannot read, carried out of the readers — whose callers are pure
+    * and take a reader that answers absent or present — to the assembly's boundary, where it is
+    * one worded refusal. Existing-but-unreadable never falls to the next source: mill would
+    * select the file and then fail reading it. */
+  private final class Unreadable(val refusal: Refusal) extends RuntimeException(null, null, false, false)
+
+  private def reading[A](path: Path)(read: => A): A =
+    try read
+    catch
+      case ex: IOException =>
+        val reason = ex match
+          case _: java.nio.charset.CharacterCodingException => "not valid UTF-8"
+          case _: java.nio.file.AccessDeniedException       => "permission denied"
+          case _                                             => ex.getClass.getSimpleName
+        throw Unreadable(Refusal.PrerequisiteFileUnreadable(path, reason))
+
+  /** Absent is None. */
   private def readLines(path: Path): Option[Seq[String]] =
-    Option.when(Files.exists(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
+    reading(path)(Option.when(Files.exists(path))(Files.readAllLines(path).toArray(Array.empty[String]).toSeq))
+
+  private def readText(path: Path): Option[String] =
+    reading(path)(Option.when(Files.exists(path))(Files.readString(path, UTF_8)))
+
+  private def readBytes(path: Path): Array[Byte] = reading(path)(Files.readAllBytes(path))
 
   /** Steps 1–5: everything the profile derives authority from, decided before anything runs. */
   def assemble(project: Path, tool: Tool, env: String => Option[String]): Either[String, Assembled] =
+    try assembled(project, tool, env)
+    catch case ex: Unreadable => Left(wording(ex.refusal))
+
+  private def assembled(project: Path, tool: Tool, env: String => Option[String]): Either[String, Assembled] =
     val os = Os.Mac
     def context[A](step: String)(value: Either[Any, A]): Either[String, A] =
-      value.left.map(reason => s"$step: $reason")
+      value.left.map:
+        case refusal: Refusal => s"$step: ${wording(refusal)}"
+        case reason           => s"$step: $reason"
 
     for
       coursierCache <- coursierCacheRoot(os, env).toRight("no Coursier cache root")
@@ -62,7 +93,7 @@ object RunOnHostSandbox:
             // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text.
             // Every byte maps to a char, which leaves the ASCII path this searches for intact.
             inner <- SeatbeltProfile
-              .sbtDistribution(String(Files.readAllBytes(sbt), ISO_8859_1), coursierCache)
+              .sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
               .toRight(s"$sbt names no distribution inside $coursierCache")
             home <- context("sbt distribution")(
               validateSbtDistribution(inner, coursierCache, realPath, isExecutableFile),
@@ -82,6 +113,21 @@ object RunOnHostSandbox:
             )
             real <- realPath(provisioned).toRight(s"$provisioned vanished")
           yield (real, None)
+        case Tool.Mvn =>
+          for
+            wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
+            _ <- context("mvn wrapper")(validateMvnWrapperScript(readLines(wrapper).getOrElse(Seq.empty)))
+            properties = project.resolve(".mvn").resolve("wrapper").resolve("maven-wrapper.properties")
+            url <- context("mvn wrapper")(
+              readText(properties).toRight(Refusal.PrereqMvnWrapperUnreadable(s"$properties is absent"))
+                .flatMap(mvnDistributionUrl(_, env("MVNW_REPOURL"))),
+            )
+            userHome <- mvnUserHome(env).toRight("no Maven user home")
+            home <- context("mvn distribution")(
+              mvnDistributionHome(mvnDistributionDir(userHome, url), url, isExecutableFile),
+            )
+            real <- realPath(home).toRight(s"$home vanished")
+          yield (real.resolve("bin").resolve("mvn"), Some(real))
       (executable, distribution) = executableAndDistribution
       configuredRoot <- context("cache root")(cacheRootOf(os, env))
       cacheRoot <- context("cache root")(
@@ -90,9 +136,10 @@ object RunOnHostSandbox:
       projectId = projectIdOf(project, os)
       v1 = buildCoursierV1(cacheRoot, projectId)
       _ = Files.createDirectories(v1)
-      sbtCache = (dir: Path) => if tool == Tool.Sbt then Files.createDirectories(dir).toRealPath() else dir
-      sbtGlobal = sbtCache(buildSbtGlobal(cacheRoot, projectId))
-      ivyHome = sbtCache(buildIvyHome(cacheRoot, projectId))
+      toolCache = (owner: Tool, dir: Path) => if tool == owner then Files.createDirectories(dir).toRealPath() else dir
+      sbtGlobal = toolCache(Tool.Sbt, buildSbtGlobal(cacheRoot, projectId))
+      ivyHome = toolCache(Tool.Sbt, buildIvyHome(cacheRoot, projectId))
+      m2Repository = toolCache(Tool.Mvn, buildM2Repository(cacheRoot, projectId))
     yield Assembled(
       BuildPrereqs(
         project = project,
@@ -104,6 +151,7 @@ object RunOnHostSandbox:
       distribution,
       sbtGlobal,
       ivyHome,
+      m2Repository,
       millDownloadDir(env),
     )
 
@@ -117,7 +165,7 @@ object RunOnHostSandbox:
    */
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
-    val tools = Vector("sbt", "mill")
+    val tools = Tool.values.toVector.map(_.name)
     def strays(path: Path, admitted: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
       else
@@ -162,10 +210,7 @@ object RunOnHostSandbox:
       if !Files.exists(file) then Right(Vector.empty)
       else
         try
-          buildRuleHosts(Files.readString(file, UTF_8)).left.map:
-            case Refusal.RuleOutsideBuildGrammar(line) =>
-              s"$file: '$line' is outside the build's rule grammar — one `$BuildRuleForm` per line"
-            case other => s"$file: $other"
+          buildRuleHosts(Files.readString(file, UTF_8)).left.map(refusal => s"$file: ${wording(refusal)}")
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
@@ -220,12 +265,9 @@ object RunOnHostSandbox:
       options: List[String],
       buildArgs: List[String],
     ): Unit =
-      val tool = toolName match
-        case "sbt"  => Tool.Sbt
-        case "mill" => Tool.Mill
-        case other =>
-          Console.err.println(s"--run-build-on-host: unknown tool $other")
-          sys.exit(2)
+      val tool = Tool.values.find(_.name == toolName).getOrElse:
+        Console.err.println(s"--run-build-on-host: unknown tool $toolName")
+        sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
       val stray = options.filterNot(option => option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption))
       if stray.nonEmpty then
@@ -537,7 +579,7 @@ object RunOnHostSandbox:
             val outcome =
               try
                 sessionTmpFits(session.tmp) match
-                  case Left(reason) => Left(reason.toString)
+                  case Left(refusal) => Left(wording(refusal))
                   case Right(_) =>
                     runInSession(
                       session, assembled, fileHosts, buildArgs, runtime, workingDirectory, log,
@@ -569,15 +611,16 @@ object RunOnHostSandbox:
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
     for
-      _ <- startProxy(session, fileHosts)
+      _ <- startProxy(session, assembled.prereqs.tool, fileHosts)
       port <- awaitProxyPort(session.directory.resolve("proxy.log"), deadlineMillis = 30_000)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
           prereqs = assembled.prereqs,
           sessionTmp = session.tmp,
-          sbtDistribution = assembled.sbtDistribution,
+          distribution = assembled.distribution,
           sbtGlobal = assembled.sbtGlobalGranted,
           ivyHome = assembled.ivyHomeGranted,
+          m2Repository = assembled.m2RepositoryGranted,
           proxyPort = port,
           runtime = runtime,
         ),
@@ -587,7 +630,7 @@ object RunOnHostSandbox:
       reportDenied(session.directory.resolve("proxy.log"), assembled.prereqs.tool, log)
       exit
 
-  private def startProxy(session: Session, fileHosts: Vector[String]): Either[String, Process] =
+  private def startProxy(session: Session, tool: Tool, fileHosts: Vector[String]): Either[String, Process] =
     val command = RunOnHostSession
       .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
@@ -597,7 +640,7 @@ object RunOnHostSandbox:
     builder.environment.clear()
     upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
-    builder.environment.put("EGRESS_RULE", egressRuleText(fileHosts))
+    builder.environment.put("EGRESS_RULE", egressRuleText(tool, fileHosts))
     builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
     builder.environment.put("EGRESS_LOG_FILE", session.directory.resolve("proxy.log").toString)
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -624,6 +667,10 @@ object RunOnHostSandbox:
           "-java-home", prereqs.jdkHome.toString) ++ buildArgs
       case Tool.Mill =>
         Seq(prereqs.project.resolve("mill").toString, "--no-daemon") ++ buildArgs
+      // The distribution's own `mvn`, not the project's `mvnw` (run-on-host.md "Maven");
+      // --batch-mode as sbt's -batch.
+      case Tool.Mvn =>
+        Seq(prereqs.executable.toString, "--batch-mode") ++ buildArgs
 
     val record = session.records.resolve("client")
     val command = RunOnHostSession.registeredSpawn(
@@ -637,7 +684,7 @@ object RunOnHostSandbox:
     builder.environment.putAll(
       buildEnvironment(
         name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-        assembled.millDownloads, session.tmp, proxyPort, System.getProperty("user.name"),
+        assembled.m2Repository, assembled.millDownloads, session.tmp, proxyPort, System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -671,6 +718,7 @@ object RunOnHostSandbox:
     prereqs: BuildPrereqs,
     sbtGlobal: Path,
     ivyHome: Path,
+    m2Repository: Path,
     millDownloads: Option[Path],
     sessionTmp: Path,
     proxyPort: Int,
@@ -687,6 +735,9 @@ object RunOnHostSandbox:
       s"-Djava.util.prefs.userRoot=$sessionTmp",
       s"-Dsbt.global.base=$sbtGlobal",
       s"-Dsbt.ivy.home=$ivyHome",
+      s"-Dmaven.repo.local=$m2Repository",
+      // Maven's resolver ignores the JVM proxy properties unless told (run-on-host.md "Maven").
+      "-Daether.connector.http.useSystemProperties=true",
       "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
       "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
       // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
@@ -782,8 +833,7 @@ object RunOnHostSandbox:
   private def reportDenied(proxyLog: Path, tool: Tool, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog)
     if hosts.nonEmpty then
-      val toolName = tool.toString.toLowerCase(java.util.Locale.ROOT)
       log((("Build requested network access to:" +: hosts.map(host => s"  $host")) :+
-        ("Not permitted by the Scala build sandbox. If the build should reach it, add an" +
-          s" `$BuildRuleForm` line to .ko-agent-sandbox/host-command/$toolName/egress/rule."))
+        ("Not permitted by the host build sandbox. If the build should reach it, add an" +
+          s" `$BuildRuleForm` line to .ko-agent-sandbox/host-command/${tool.name}/egress/rule."))
         .mkString("\n"))
