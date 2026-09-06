@@ -1,7 +1,7 @@
 # TODO
 
-Remaining work that buys real security or maintainability for the actual threat model. Ideas
-without a concrete gain live in design.md as standing design decisions so they stop resurfacing.
+Remaining work that adds real security or maintainability for the actual threat model. Ideas without
+a concrete gain are recorded in design.md as standing design decisions so they stop resurfacing.
 
 ## Deferred — GREASE ECH on inspected hosts
 
@@ -37,7 +37,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
 rule grammar refuses an IP literal, so a corporate site on the LAN without a public name is
-unreachable from a session. If that is ever needed, the shape that keeps the security model:
+unreachable from a session. If that is ever needed, the design that keeps the security model:
 
 - [ ] A launch option naming exact addresses — never a range, never a line in
   `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
@@ -57,12 +57,12 @@ unreachable from a session. If that is ever needed, the shape that keeps the sec
   grant reaches every application endpoint selectable at the address — by `Host`, by HTTP/2's
   `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
   sees none of it.
-- [ ] Stated cost, in SECURITY.md when it lands: the traffic is a tunnel by construction — the
-  hello admitted at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
+- [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
+  the hello admitted at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
   logged; and the sandbox then holds
   the host's network position against services that authenticate by location — router and NAS
   pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
-  the same class. Port 443 and the one-client network bound the surface, not the trust.
+  the same class. Port 443 and the one-client network bound the attack surface, not the trust.
 
 ## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
 
@@ -100,9 +100,9 @@ against the file through the same code that would run it; the equivalent here is
 
 ## Deferred — staged-workspace extensions and hardening
 
-These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put
-all of its lifecycle into one change. The initial one-stage-per-project sharing unit and its failure
-semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
+These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put all
+of its lifecycle into one change. The initial one-stage-per-project sharing unit and what happens
+when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 
 - [ ] Detect project-directory replacement before attaching a persistent stage. Record a host-only
   root identity, an optional resolved-gitdir identity and a small secondary fingerprint; ordinary
@@ -132,7 +132,7 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
   whole conflict-free plan. The digest binds the project identity, representation version,
   generation, complete operation groups, content and metadata hashes, lower baselines, and rename
   and hardlink relationships. A mismatch changes nothing; path selection remains interactive and
-  rewrites the residual plan under a new digest.
+  rewrites the remaining plan under a new digest.
 - [ ] Add `--stage-name=<name>` only when one project needs concurrent independent staged change
   sets. Each name selects a separate upper layer, merged mount, cache and failure domain over the
   same project directory; sessions sharing a name still share those resources. Define safe name
@@ -150,8 +150,8 @@ row where the probe broke — with a killed run leaving nothing outside the moun
 
 - [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
   folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
-  halves are deleted when their rows land. Their machine record adds the upper volume's filesystem,
-  which is what the staged design needs the answers for (`plan-staged.md`).
+  halves are deleted when their rows are added. Their machine record adds the upper volume's
+  filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
 - [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
   the container — a host-native build turns host writes from an occasional human edit into
   every build.
@@ -164,7 +164,7 @@ from scratch.
 **Problem.** A host that idle-sleeps mid-build suspends the podman machine: builds stall, API
 connections break. Claude Code solves this on macOS by wrapping long commands in `caffeinate`, but
 the agent here runs inside a Linux container — it cannot reach the host's power manager, and the
-launcher execs away on POSIX, so neither side has an obvious place to stand.
+launcher execs away on POSIX, so neither side has an obvious place to run it.
 
 **The lease design:**
 
@@ -172,7 +172,7 @@ launcher execs away on POSIX, so neither side has an obvious place to stand.
   It accepts the familiar flags (`-t`, `-w`), execs the wrapped command with its exit status passed
   through, and refreshes a lease file under a dedicated mount every 15 s while the command runs.
 - The launcher mounts a launcher-owned lease directory there and starts a host-side watcher that
-  reads lease **freshness, never content** — no injection surface; the channel is one bit whose
+  reads lease **freshness, never content** — nothing to inject into; the channel is one bit whose
   worst misuse drains a battery (it belongs in SECURITY.md's low-bandwidth list when it returns).
 - The watcher per host: macOS, a detached sh loop (reaper pattern) running
   `/usr/bin/caffeinate -i -t 20` while fresh — the assertion doubling as the poll interval, so no
@@ -197,7 +197,7 @@ on podman-less machines and kills the test JVM.
   which runs unconfined while parsing hostile bytes as the user's uid
   (`run-on-host.md` "The build's egress proxy", where the acceptance argument binds:
   loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
-  surface). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
+  parser). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
   log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
   own job, and SBPL cannot filter by name — plus its loopback listener.
 - [ ] Filter `mach-lookup` in the host build profile. It is granted unfiltered, and the system tool
@@ -212,7 +212,7 @@ on podman-less machines and kills the test JVM.
 
 Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's
 JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
-does not establish compatibility between the two builds' state. That leaves legible paths in
+does not establish compatibility between the two builds' state. That leaves readable paths in
 build output as the benefit, which did not justify the change. The host path reaches the
 container regardless: the build's streamed output names it (`SECURITY.md`, "Run on host"). Prior
 art, both mounting the project at its host path for path legibility rather than shared state:

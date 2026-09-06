@@ -39,7 +39,7 @@ object TransportHelper:
     /** The startup line naming this run's transport (SECURITY.md, "The audit line grammar"). */
     def summary: String
 
-  /** The existing dial loop: each address in turn, the last failure reported when none connects. */
+  /** The dial loop: each address in turn, the last failure reported when none connects. */
   def dial(addresses: Vector[InetAddress], port: Int): Socket =
     @tailrec
     def loop(remaining: List[InetAddress], lastFailure: Option[IOException]): Socket =
@@ -73,7 +73,7 @@ object TransportHelper:
    * The upstream proxy as `variable` — HTTPS_PROXY or its lowercase — spelled it, parsed once at
    * startup. `host` is the normalized name, or a literal as written; `authorization` is the whole
    * `Proxy-Authorization` value, `Basic` and the encoded credential, and the one place the
-   * credential lives. Nothing here prints it: `spelled` is the endpoint without userinfo, and
+   * credential is held. Nothing here prints it: `spelled` is the endpoint without userinfo, and
    * every refusal names the part that is wrong, never the value.
    */
   case class UpstreamEndpoint(
@@ -200,7 +200,7 @@ object TransportHelper:
 
   /**
    * One CONNECT to the upstream proxy per origin address, naming the vetted numeric address —
-   * never the hostname, which would let the upstream proxy resolve it to something the
+   * never the hostname, which would let the upstream proxy resolve it to an address the
    * private-range check never saw. The tunnel socket then carries the same TLS the direct socket
    * would: the client's own hello on an opaque host, the inspected connection with the origin's
    * name as SNI otherwise.

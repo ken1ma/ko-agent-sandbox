@@ -1,5 +1,5 @@
-// The launcher's own surface: the run/reset naming that keeps projects apart, the configuration
-// surface, the build verbs, and the documents the code must stay in step with (the --help text's
+// What the launcher itself owns: the run/reset naming that keeps projects apart, the configuration
+// flags, the build verbs, and the documents the code must stay in step with (the --help text's
 // Environment section, SECURITY.md's forge list against the proxy's source, the bundled context).
 
 package agentsandbox.launcher
@@ -303,7 +303,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
-    // is also why the pair lives beside UsageText rather than in HostCommands, whose contract is
+    // is also why the pair is beside UsageText rather than in HostCommands, whose contract is
     // to know nothing of the sandbox.
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
@@ -1064,7 +1064,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // SECURITY.md section that reasons about them (the launcher holds no copy — the leaf's
     // names come from the image's own --print-ruleset at launch). This scrapes both texts; it
     // depends on the rest of the read-only tier never being written as a `1. \`host\`` list in
-    // SECURITY.md — prose or a different marker keeps this green.
+    // SECURITY.md — a sentence or a different marker keeps this green.
     val Listed = """^1\. `([^`]+)`$""".r
     val listed = Files
       .readString(Paths.get("SECURITY.md"))
@@ -1094,7 +1094,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assertEquals(resolved.warnings, Vector.empty, directory.toString)
 
   test("agent egress instructions use the proxy's grant vocabulary, every word and no other"):
-    // The launcher writes this prose; the proxy owns the vocabulary. An agent following a word the
+    // The launcher writes this text; the proxy owns the vocabulary. An agent following a word the
     // proxy does not define writes a rule file that fails the *next* launch, so the drift shows up
     // nowhere near the text that caused it. Scraped from the proxy's source, like the git-host
     // list above, because the launcher holds no copy of the grant words.
@@ -1109,7 +1109,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(words, Set("read", "git-fetch", "tunnel"))
     assert(grantObject.group(1).contains("method="), "the proxy no longer spells the method word `method=`")
 
-    // A ruleset with no lines of its own, so every grant word found is the prose's own.
+    // A ruleset with no lines of its own, so every grant word found is the text's own.
     val emptyResolution = "egress profile: deny-all"
     val section = authoritySection("live", "fuse", emptyResolution)
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
@@ -1351,7 +1351,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(
       !command.exists(_.startsWith("--mount")),
-      s"--self-test mounts something into the container: ${command.mkString(" ")}",
+      s"--self-test mounts a path into the container: ${command.mkString(" ")}",
     )
     // The root retry exists to measure the bounding-set question, not to be the default.
     assert(!command.containsSlice(Seq("--user", "0")), command.mkString(" "))
@@ -1402,6 +1402,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       parseCommandLine(List("--self-test", "a_handle_held")),
       Right(ParsedCommandLine(None, None, Some(("--self-test", List("a_handle_held"))), Nil)),
     )
+
+  test("--reset takes project ids as --stats prints them, each once"):
+    assertEquals(projectIdOperands("--reset", Nil), Right(Vector.empty))
+    assertEquals(
+      projectIdOperands("--reset", List("a-0123456789ab", "b-0123456789ab")),
+      Right(Vector("a-0123456789ab", "b-0123456789ab")),
+    )
+    val path = projectIdOperands("--reset", List("a-0123456789ab", "/home/me/app"))
+    assert(path.left.exists(_.contains("--stats prints it")), path.toString)
+    val twice = projectIdOperands("--reset", List("a-0123456789ab", "b-0123456789ab", "a-0123456789ab"))
+    assert(twice.left.exists(_.contains("names a-0123456789ab twice")), twice.toString)
 
   test("the state root must be absolute, resolves canonically, and stays outside the project"):
     // Refused rather than resolved, on every platform spelling.
@@ -1471,10 +1482,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(!isRunNamed(proxyRunContainer, victimId)("ko-agent-egress-proxy-app-abc123-9f8e7d6c-1a2b3c4d"))
     assert(!isRunNamed(sandboxRunContainer, victimId)("ko-agent-sandbox-run-app-abc123-9f8e7d6c-1a2b3c4d"))
-    // The honest names — an eight-hex suffix right after the id — still match.
+    // The well-formed names — an eight-hex suffix right after the id — still match.
     assert(isRunNamed(proxyRunContainer, victimId)("ko-agent-egress-proxy-app-abc123-1a2b3c4d"))
     assert(isRunNamed(sandboxRunContainer, victimId)("ko-agent-sandbox-run-app-abc123-1a2b3c4d"))
-    // And the minted suffix is what the anchor assumes: exactly eight hex characters.
+    // And the generated suffix is what the anchor assumes: exactly eight hex characters.
     assert(newRunSuffix().matches("[0-9a-f]{8}"))
 
   test("reset filters match exactly the launcher's reserved name patterns"):

@@ -1,7 +1,7 @@
-// The egress proxy: the listening loop, the flow from CONNECT to tunnel, and the one-request
-// inspected session. The ruleset and its decisions live in RulesetHelper.scala, the audit log's form
+// The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request
+// inspected session. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
-// HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf minting in X509Helper.scala, git protocol
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf issuance in X509Helper.scala, git protocol
 // knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
 // address is reached — directly or through the upstream proxy HTTPS_PROXY names — in
 // TransportHelper.scala.
@@ -102,7 +102,7 @@ object AgentEgressProxy:
         sys.exit(2)
 
   /*
-   * One host's fate under the resolved ruleset, plus the current DNS resolution
+   * One host's decision under the resolved ruleset, plus the current DNS resolution
    * evidence — separately, because the ruleset's decision is fixed per run
    * while a connection resolves and validates the destination again when it
    * is made. Run by the launcher's --egress-check through a one-shot
@@ -207,7 +207,7 @@ object AgentEgressProxy:
   def serve(): Unit =
     /*
      * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to
-     * that host file too. Set up first so the startup lines land in it, and
+     * that host file too. Set up first so the startup lines are written to it, and
      * failing loudly: an enforcement point whose audit trail cannot be
      * written should not start.
      */
@@ -246,7 +246,7 @@ object AgentEgressProxy:
           System.err.println(s"cannot load the TLS inspection material: ${ex.getMessage}")
           sys.exit(2)
 
-    // Before the ready line: the launcher reads the log once that line lands, and relays this one.
+    // Before the ready line: the launcher reads the log once that line is written, and relays this one.
     System.err.println(run.transport.summary)
 
     val server = ServerSocket()
@@ -269,7 +269,7 @@ object AgentEgressProxy:
    * The material a proxy starts with is keyed by profile. Under the three finite profiles the
    * leaf and its key are present exactly when the ruleset inspects a host: both absent is the
    * image running on its own, inspection off and said so; material for a ruleset that inspects
-   * nothing is an error, not a narrower ruleset, since the launcher never mints a leaf for such a
+   * nothing is an error, not a narrower ruleset, since the launcher never issues a leaf for such a
    * ruleset and a supplied one means the two disagree about what this ruleset is. Under
    * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
    * inspected, and without the CA each would be the writable tunnel this profile no longer admits,
@@ -291,20 +291,20 @@ object AgentEgressProxy:
     if resolved.publicDefault then
       if leaf.nonEmpty then
         throw IllegalArgumentException(
-          s"$CertificateVariable is set under ${resolved.profile}, which mints every leaf from " +
+          s"$CertificateVariable is set under ${resolved.profile}, which issues every leaf from " +
             s"$CaCertificateVariable and takes none",
         )
       val (certificate, key) = ca.getOrElse(
         throw IllegalArgumentException(
           s"$CaCertificateVariable and $CaPrivateKeyVariable are unset under ${resolved.profile}, which " +
-            "inspects every unlisted host and mints their leaves from the run CA",
+            "inspects every unlisted host and issues their leaves from the run CA",
         ),
       )
-      Some(TlsInspection.minting(certificate, key))
+      Some(TlsInspection.issuing(certificate, key))
     else
       if ca.nonEmpty then
         throw IllegalArgumentException(
-          s"$CaCertificateVariable is set under ${resolved.profile}, which mints nothing; the CA key never " +
+          s"$CaCertificateVariable is set under ${resolved.profile}, which issues nothing; the CA key never " +
             "enters this container there",
         )
       leaf.map: (certificate, key) =>
@@ -368,12 +368,12 @@ object AgentEgressProxy:
   def handle(client: Socket, run: Run): Unit =
     // The audit context, filled in as parsing learns it: a `-` in the line marks a field the
     // connection ended before revealing. The host is the target as the sandbox requested it —
-    // what was asked for, not a name the ruleset vouches for. auditLine has the grammar.
+    // what was asked for, not necessarily a hostname admitted by the ruleset. auditLine has the grammar.
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
       // An IO failure while reading the request is the client's, not the origin's; rethrown as a
-      // BadRequest so the log does not blame an origin the proxy never dialled, with a 502.
+      // BadRequest so the log does not record a 502 against an origin the proxy never dialled.
       val request =
         try
           client.setSoTimeout(HandshakeTimeoutMillis)
@@ -521,7 +521,7 @@ object AgentEgressProxy:
 
     // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
     // line prints only after the origin leg connects, so a failing request's method and target
-    // must ride the deny/error line or they would never be recorded.
+    // must go on the deny/error line or they would never be recorded.
     var method = "-"
     var target = ""
 
@@ -557,7 +557,7 @@ object AgentEgressProxy:
         case ex: TruncatedResponse =>
           System.err.println(auditLine("error", host, method, target, s"relay: ${ex.getMessage}"))
           // The head already reached the client, so there is no 502 to send; the abortive close
-          // (linger 0: RST, no clean TLS end) is what keeps the stump from reading as the whole.
+          // (linger 0: RST, no clean TLS end) is what keeps the truncated body from reading as the whole.
           try client.setSoLinger(true, 0)
           catch case _: SocketException => ()
 
@@ -640,7 +640,7 @@ object AgentEgressProxy:
    * Consume whatever the client still sends, until its EOF, bounded: closing with unread bytes
    * in the receive buffer turns the close into an RST, and an RST destroys the just-written
    * response's unread tail in the client's stack. A request pipelined past `Connection: close`
-   * lands here and is discarded unanswered; a client still flooding at the cap gets the RST it
+   * arrives here and is discarded unanswered; a client still flooding at the cap gets the RST it
    * asked for.
    */
   def drainClient(clientTls: Socket): Unit =

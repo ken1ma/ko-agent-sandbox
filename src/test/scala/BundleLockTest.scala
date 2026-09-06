@@ -10,9 +10,9 @@
 // run that dies between the two leaves the original under ko-agent-sandbox:bundle-lock-backup —
 // `podman tag ko-agent-sandbox:bundle-lock-backup ko-agent-sandbox:latest` restores it by hand.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *BundleLockTest"
+//     sbt "testWithPodman *BundleLockTest"
 
 package agentsandbox.launcher
 
@@ -20,7 +20,7 @@ import java.nio.file.{Files, Path}
 
 import LauncherImages.BundleLabel
 import HostCommands.*
-import IntegrationSession.*
+import WithPodman.*
 
 class BundleLockTest extends munit.FunSuite:
 
@@ -40,7 +40,7 @@ class BundleLockTest extends munit.FunSuite:
     builder.start().waitFor()
 
   test("a mislabelled default image refuses the launch; the same image overridden only warns"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var retagged = false
@@ -69,7 +69,7 @@ class BundleLockTest extends munit.FunSuite:
       )
       assert(output.contains("rebuild with --build"), s"no rebuild hint:\n$output")
 
-      // The honest name back before the warn path, which must owe nothing to the default tag.
+      // The real image back under its name before the warn path, which must not depend on the default tag.
       assert(runOk(podman, "tag", Backup, Latest))
       retagged = false
 

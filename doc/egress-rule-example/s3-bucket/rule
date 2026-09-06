@@ -5,7 +5,7 @@
 # backslash or an empty segment — is refused and logged. A bucket whose name contains dots does
 # not fit S3's wildcard certificate and takes the path-style form instead, where the region's
 # host serves every bucket and the bucket is the first segment:
-# allow https://s3.<region>.amazonaws.com/<bucket>/ read, the shape gcs-bucket narrows. Reads
+# allow https://s3.<region>.amazonaws.com/<bucket>/ read, the line gcs-bucket narrows. Reads
 # only: a presigned upload URL still fails here, since a PUT is refused where no line grants it.
 # What travels in an allowed GET's suffix and query is not bounded; SECURITY.md, "Exfiltration
 # through an allowed host".

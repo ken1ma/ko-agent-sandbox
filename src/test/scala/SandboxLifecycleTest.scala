@@ -1,4 +1,4 @@
-// The reaper's argument plumbing, where a wrong positional argument removes the wrong container,
+// The reaper's arguments, where a wrong positional argument removes the wrong container,
 // and the run's cleanup, whose whole mechanism is one hook answering to the run's own state.
 
 package agentsandbox.launcher
@@ -29,7 +29,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assertEquals(removals, 0, "the cleanup removed while the sandbox may have been starting")
 
     // With a process, the removal follows its exit rather than racing it. Any short-lived process
-    // serves; each platform lends its own shell.
+    // serves; each platform supplies its own shell.
     val process =
       if scala.util.Properties.isWin then ProcessBuilder("cmd", "/c", "exit 0").start()
       else ProcessBuilder("/bin/sh", "-c", "exit 0").start()
@@ -106,7 +106,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(!ReaperScript.contains("run-container"))
 
   test("the reaper ignores terminal signals and removes only this run's resources"):
-    // The trap is the first thing that can matter; only the PATH assignment precedes it.
+    // The trap is installed before any command a signal could interrupt; only the PATH assignment precedes it.
     assertEquals(ReaperScript.linesIterator.drop(1).next(), "trap '' INT HUP TERM")
     assert(ReaperScript.contains("\"$3\" rm --force \"$1\""))
     assert(ReaperScript.contains("\"$3\" rm --force --time 2 \"$2\""))
@@ -249,7 +249,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     // Measured, not read off the script text (ReaperScript has the `if`-not-`||` pitfall).
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("off", runningAnswers = 99, hangExec = false)
-    assertEquals(run.inspects, 1, "something besides the reaper's own check called inspect")
+    assertEquals(run.inspects, 1, "a caller besides the reaper's own check called inspect")
     assertEquals(run.childrenAtWait, Vector.empty, "a job was running at the wait")
 
   test("the broker and everything under it end with the sandbox, through the reaper's ignored TERM"):

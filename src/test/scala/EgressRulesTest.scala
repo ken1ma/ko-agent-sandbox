@@ -170,7 +170,7 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(readRuleFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
   test("the egress directory's refused forms each name their reason"):
-    val parent = Files.createTempDirectory("rule-shapes")
+    val parent = Files.createTempDirectory("rule-forms")
 
     val asFile = parent.resolve("egress")
     Files.writeString(asFile, "allow https://ghcr.io/ read\n")
@@ -230,7 +230,7 @@ class EgressRulesTest extends munit.FunSuite:
       Right(Vector("github.com", "pypi.org")),
     )
     assertEquals(inspectedHostsOf("egress profile: deny-all\n" + summary(0, 0, 0)), Right(Vector.empty))
-    assert(inspectedHostsOf("another shape entirely").isLeft)
+    assert(inspectedHostsOf("another form entirely").isLeft)
     assert(inspectedHostsOf("allow https://pypi.org/ read").isLeft)
 
   test("the widening lines are the proxy's own line, and an image printing none reports none"):

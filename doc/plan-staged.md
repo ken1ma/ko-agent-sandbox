@@ -43,8 +43,9 @@ instructions. Future migrations are separate work.
 
 ## Proving the engine per platform
 
-The axes a machine varies on are `design.md`, and `../fuse/ko-agent-fs/doc/testing.md` has the
-places to run the suites. What follows is only which one settles which part of the staged contract.
+The properties that vary between machines are listed in `design.md`, and
+`../fuse/ko-agent-fs/doc/testing.md` has the places to run the suites. What follows is only which
+one settles which part of the staged contract.
 
 | contract item                                      | settled by                  |
 | -------------------------------------------------- | --------------------------- |
@@ -128,7 +129,7 @@ command reports the project directory and number of attached sessions it will qu
 Apply holds the stage's control lock for its whole state transition. The sealed plan is a durable
 ordered set of operation groups: a rename, hardlink relationship or other indivisible change is
 selected and applied as one group. A link relationship cannot be recovered from what a session
-observed — the filter mints an inode per `(parent, name)`, so two names for one object are two
+observed — the filter assigns an inode per `(parent, name)`, so two names for one object are two
 inodes there (`../fuse/ko-agent-fs/doc/verification-log.md`) — so the stage records it at copy-up,
 from the backing object's identity, and the plan records it. The lower keeps the relationship;
 only the view through the filter does not. For each group, trusted code:
@@ -140,12 +141,12 @@ only the view through the filter does not. For each group, trusted code:
 
 After interruption, a baseline match is safe to retry, a desired-result match completes the intent,
 and any third state is a conflict. Applied entries fall through to the host lower, so later host
-changes remain visible; unapplied entries stay in the residual sealed view. Interactive review can
+changes remain visible; unapplied entries stay in the remaining sealed view. Interactive review can
 explicitly keep the host version and drop a whole staged operation group, including a baseline
 conflict found before intent, without changing the host or newer active-generation work. A group
 with a persisted intent must first recover to its baseline or desired result; it cannot be dropped
 from an ambiguous partial state. The sealed plan is retired only when every operation is applied or
-explicitly dropped. A successful partial apply or drop atomically rewrites the residual plan before
+explicitly dropped. A successful partial apply or drop atomically rewrites the remaining plan before
 review continues or control returns. This is crash-resumable but not a portable multi-file
 transaction; rollback is deferred (`TODO.md`).
 
@@ -196,20 +197,20 @@ representative `sbt` builds on every platform before enabling the journal. Runti
 failure remains fail-closed; the deferred disk-exhaustion work is for staged upper layers, apply,
 rollback bundles and staged control journals (`TODO.md`).
 
-## Git residue closure
+## Closing the git gaps
 
 Live mode recursively validates nested repositories before mounting without following symlinks.
 It validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs,
 and gates create, write, rename, exchange, hardlink and symlink operations that could complete one.
 Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy projects on
 every platform. An acceleration must still validate the current complete tree; a skipped directory
-or stale result would reopen the residue.
+or stale result would reopen the gap.
 
 The bare-layout rule uses Git's valid-`HEAD` plus `objects/` plus `refs/` discovery layout. Gitdirs
 reached from an existing worktree's `.git` metadata are classified separately. Elsewhere, only a
 mutation affecting an entry whose basename is one of those three candidates performs sibling
 lookups and, when necessary, validates `HEAD`; operations on other names and tree walks pay no extra
-checks. Benchmark the candidate path against the standing FUSE performance measurements.
+checks. Benchmark the candidate path against the existing FUSE performance measurements.
 
 This rule cannot distinguish a bare repository from a project fixture containing the same valid
 triple. Live mode deliberately refuses completing either one, and recursive preflight refuses an
@@ -229,7 +230,7 @@ its private Git metadata cannot be applied.
    and the reach of an open-file hold each decide a representation choice, and none can be reasoned
    to a conclusion (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Settling them first avoids revising
    an implemented representation.
-2. Close nested Git and bare-layout residues and add the live mutation journal.
+2. Close the nested-git and bare-layout gaps and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
    lifecycle and visibility, with the in-situ suite, the launcher verb and the stamp that gates
    staged launch.
@@ -238,10 +239,10 @@ its private Git metadata cannot be applied.
    until status, apply, recovery and discard are available.
 5. Make `reject` the default only after step 4. Remove the workspace pin mode and make any present
    `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration message: `fuse` needs
-   no replacement — the filter is `--write=live`'s only mechanism then — and the weaker `none`
+   no replacement — the filter is `--write=live`'s only guard then — and the weaker `none`
    mode has no equivalent. Remove the pin mode's launcher branch, Git pin construction,
    `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned empty mount sources
-   only where another mount still needs one; and update the surfaces that document the pin mode
+   only where another mount still needs one; and update the documents that describe the pin mode
    and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
    pins of `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same change. Persistent stages
    narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
@@ -275,8 +276,8 @@ its private Git metadata cannot be applied.
 
 There is no detached full-copy stage, named parallel stage, automatic apply, per-session live mount,
 bulk stage discard, host-wide command broker, executable-bit enforcement, or implicit fallback
-between write modes. Project-controlled commands remain a workflow concern rather than a claimed
-host-wide boundary.
+between write modes. Project-controlled commands remain the user's workflow to manage rather than a
+claimed host-wide boundary.
 
 Deferred staged work is `TODO.md` ("staged-workspace extensions and hardening"); the optional
 no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/TODO.md`.
@@ -289,4 +290,4 @@ session's agent sees the merged mount, so the two disagree about what the projec
 build compiles the host tree, not what the session staged, and writes its output where no stage
 records it. Which of the three answers holds — refuse the combination, stage the build's writes
 too, or define the host tree as the build's view and say so — is undecided, and belongs with
-whichever of the two features lands second.
+whichever of the two features is implemented second.

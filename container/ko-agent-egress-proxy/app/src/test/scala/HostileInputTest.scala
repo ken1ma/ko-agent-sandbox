@@ -2,7 +2,7 @@
 // aimed at parser disagreement, canonicalization and fail-open rule parsing rather than at more
 // examples of rules that file already pins — and the reference evaluator the ruleset is
 // property-tested against. Where a rule is pinned there, this file asserts only
-// what it adds — the two Smokescreen bypasses and the alternate IPv4 spellings live there, and this
+// what it adds — the two Smokescreen bypasses and the alternate IPv4 spellings are there, and this
 // is the wider corpus around them.
 //
 // The randomized tests count both outcomes and assert each happened. A generator that drifts into
@@ -37,7 +37,7 @@ class HostileInputTest extends munit.FunSuite:
     authorizeRequest(ConnectRequest.parse(connect(authority)), defaultsRuleset)
 
   /** "refused" for either typed refusal, the reached host otherwise. An untyped exception escapes
-    * and fails the test: a parser that throws something else has read hostile bytes badly, which is
+    * and fails the test: a parser that throws any other exception has read hostile bytes badly, which is
     * the failure mode this file exists to catch. */
   private def outcomeOf(authority: Array[Byte]): String =
     try s"reached ${authorize(authority)}"
@@ -246,7 +246,7 @@ class HostileInputTest extends munit.FunSuite:
       Vector("Transfer-Encoding: chunked", "Transfer-Encoding: chunked"),
       Vector("Content-Length: 5", "Transfer-Encoding: chunked"),
     )
-    // Which of these are refused is AgentEgressProxyTest's; the refusals are swallowed here. What
+    // Which of these are refused is AgentEgressProxyTest's; the refusals are ignored here. What
     // is added is what holds of the ones that are *not* refused: the answer is stable, and it is
     // never the response-only framing whose request forwarder throws on sight.
     var framed = 0
@@ -288,7 +288,7 @@ class HostileInputTest extends munit.FunSuite:
 
   test("no rule file, however malformed, admits a host or a grant nobody named"):
     // The fail-open direction for rule parsing: a file that resolves at all must resolve to
-    // defaults hosts plus the ones its own text spells, never to something the arithmetic invented,
+    // defaults hosts plus the ones its own text spells, never to a host the arithmetic invented,
     // and every grant on a resolved scope is a word some line wrote.
     val lines = Vector(
       "allow https://github.com/ read git-fetch", "deny https://github.com/", "deny https://**.github.com/",
@@ -386,7 +386,7 @@ class HostileInputTest extends munit.FunSuite:
       ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
       ++ Option.when(grants("tunnel"))("tunnel")).mkString(" ")
 
-  /** One line's standing grants: what the evaluator holds, one per line, never folded. */
+  /** One allow-line contribution, retained separately rather than folded. */
   private case class Given(
     host: String,
     path: String,
@@ -449,17 +449,17 @@ class HostileInputTest extends munit.FunSuite:
     val clears = lines.headOption.contains(DenyDefaults)
     val publicDefault = profile == "allow-unless-denied"
     if profile == "deny-all" then return "refused"
-    var standing: Vector[Given] = profile match
+    var contributions: Vector[Given] = profile match
       case "deny-unless-model" => provider.fold(Vector.empty)(groupGiven)
       case _                   => if clears then Vector.empty else defaultsGiven
     var patterns = Vector.empty[(String, Boolean)]
-    var touched = standing.map(_.host).toSet
+    var touched = contributions.map(_.host).toSet
     def consult(line: Drawn): Boolean = (profile, line) match
       case ("deny-unless-model", Deny(_, _, _) | DenyGroup(_)) => true
       case ("deny-unless-model", _)                            => false
       case _                                                   => true
     def add(entry: Given): Unit =
-      standing :+= entry
+      contributions :+= entry
       touched += entry.host
     lines.filter(consult).foreach:
       case DenyDefaults => ()
@@ -469,14 +469,15 @@ class HostileInputTest extends munit.FunSuite:
           name,
         ).filter(g => consult(Allow(g.host, g.path, g.grants))).foreach(add)
       case Deny(h, subtree, g) =>
-        standing = standing.map: entry =>
+        contributions = contributions.map: entry =>
           if !hostMatches(h, subtree, entry.host) then entry
           else entry.copy(grants = if g.isEmpty then Set.empty else entry.grants -- g)
         // An unlisted host holds `read` and nothing else, so those are the denies that reach it.
         if g.isEmpty || g("read") then patterns :+= (h, subtree)
       case DenyGroup(name) =>
-        standing = standing.map(entry => if entry.group.contains(name) then entry.copy(grants = Set.empty) else entry)
-    val listed = standing.filter(entry => entry.host == host && entry.grants.nonEmpty)
+        contributions = contributions.map: entry =>
+          if entry.group.contains(name) then entry.copy(grants = Set.empty) else entry
+    val listed = contributions.filter(entry => entry.host == host && entry.grants.nonEmpty)
     if listed.exists(_.grants("tunnel")) then return "tunnel"
     // An unlisted host under the public default holds `read` at the root and nothing else.
     val open = publicDefault && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
@@ -487,7 +488,7 @@ class HostileInputTest extends munit.FunSuite:
     val covering = active.filter(entry => pathContains(entry.path, path))
     if covering.isEmpty then return "refused"
     val grants = covering.flatMap(_.grants).toSet
-    val longest = (standing ++ active).filter(
+    val longest = (contributions ++ active).filter(
       entry => entry.host == host && pathContains(entry.path, path),
     ).map(_.path).maxBy(_.length)
     if longest != "/" && request.ambiguous then return "refused"

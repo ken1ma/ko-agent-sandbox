@@ -33,7 +33,7 @@ the terminator. `Server.scala` checks the *server* socket against `maxSocketLeng
 the client's connect to it through `ipcsocket`'s JNI, have no such check, so the overrun is
 caught by the C library's fortified `memcpy` and kills the process.
 
-**Expected:** the message the server socket already gives, naming `XDG_RUNTIME_DIR` as the knob,
+**Expected:** the message the server socket already gives, naming `XDG_RUNTIME_DIR` as the setting,
 from whichever side sees the path first.
 
 **Related:** #3932 (`SBT_GLOBAL_SERVER_DIR` for long server-socket paths), #6887 / #6907

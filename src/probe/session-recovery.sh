@@ -13,14 +13,14 @@
 #       the derivation the wrapper's auto-shutdown sends to (RunOnHostSandbox.sbtServerSocket).
 #       It runs after M2 in the script, because M4 ends the server and takes the portfile with it
 #
-# Run it on the Mac, from this repository's root, when sbt or the proxy changes. It builds the
+# Run it on macOS, from this repository's root, when sbt or the proxy changes. It builds the
 # proxy dist if absent, boots one sbt 2.0.7 server in a scratch project under /private/tmp, and
 # ends what it started; on a FAIL it keeps the scratch tree and names it.
 
 set -u
 
 if [ "$(uname -s)" != "Darwin" ]; then
-    echo "This probe measures a macOS host; this is $(uname -s). Run it on the Mac." >&2
+    echo "This probe measures a macOS host; this is $(uname -s). Run it on macOS." >&2
     exit 2
 fi
 if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
@@ -63,7 +63,7 @@ if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
 fi
 
 if lsof -nP -iTCP:3128 -sTCP:LISTEN >/dev/null 2>&1; then
-    report FAIL "M1 port 3128 free before start" "something already listens; stop it and re-run"
+    report FAIL "M1 port 3128 free before start" "another process already listens; stop it and re-run"
 else
     EGRESS_PROFILE=deny-unless-allowed EGRESS_RULE='deny defaults
 allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &

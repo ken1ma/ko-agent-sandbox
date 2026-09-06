@@ -16,8 +16,8 @@ import X509Helper.*
 import X509HelperTest.*
 
 object X509HelperTest:
-  /** A CA of the kind the launcher mints for a run, built here with the same JDK classes: the
-    * proxy never mints one, and this build has no BouncyCastle. */
+  /** A CA of the kind the launcher creates for a run, built here with the same JDK classes: the
+    * proxy never creates one, and this build has no BouncyCastle. */
   def testCa(now: Instant, days: Long): (X509Certificate, PrivateKey) =
     val keyPair = newEcKeyPair()
     val name = X500Name("CN=ko-agent-sandbox egress CA (test)")
@@ -71,11 +71,11 @@ class X509HelperTest extends munit.FunSuite:
       .generateCertificate(java.io.ByteArrayInputStream(certificate.getEncoded))
       .asInstanceOf[X509Certificate]
 
-  test("a minted leaf names its host alone, is a serverAuth non-CA, chains to the CA and answers its key"):
+  test("an issued leaf names its host alone, is a serverAuth non-CA, chains to the CA and matches its key"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
-    val minted = mintLeaf("docs.example", ca, caKey, now)
-    val leaf = reparsed(minted.certificate)
+    val issued = issueLeaf("docs.example", ca, caKey, now)
+    val leaf = reparsed(issued.certificate)
 
     assertEquals(TLSHelper.TlsInspection.subjectAlternativeNames(leaf), Set("docs.example"))
     assertEquals(leaf.getBasicConstraints, -1)
@@ -86,10 +86,10 @@ class X509HelperTest extends munit.FunSuite:
     serverTrustedBy(ca, leaf)
     intercept[java.security.cert.CertificateException](serverTrustedBy(testCa(now, days = 825)(0), leaf))
 
-    // The key is the leaf's own, and answers the certificate.
+    // The key is the leaf's own, and matches the certificate.
     val probe = Array.tabulate[Byte](32)(_.toByte)
     val signer = java.security.Signature.getInstance("SHA256withECDSA")
-    signer.initSign(minted.privateKey)
+    signer.initSign(issued.privateKey)
     signer.update(probe)
     val signature = signer.sign()
     val verifier = java.security.Signature.getInstance("SHA256withECDSA")
@@ -101,7 +101,7 @@ class X509HelperTest extends munit.FunSuite:
   test("the chain has the key identifiers strict verifiers require"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
-    val leaf = reparsed(mintLeaf("docs.example", ca, caKey, now).certificate)
+    val leaf = reparsed(issueLeaf("docs.example", ca, caKey, now).certificate)
     val SkiOid = "2.5.29.14"
     val AkiOid = "2.5.29.35"
     val caSki = ca.getExtensionValue(SkiOid)
@@ -116,28 +116,29 @@ class X509HelperTest extends munit.FunSuite:
     // To the second: X.509 validity carries no finer time.
     val now = Instant.now().truncatedTo(ChronoUnit.SECONDS)
     val (ca, caKey) = testCa(now, days = 40)
-    val leaf = mintLeaf("docs.example", ca, caKey, now).certificate
+    val leaf = issueLeaf("docs.example", ca, caKey, now).certificate
     assert(!leaf.getNotAfter.after(ca.getNotAfter))
     val (longCa, longKey) = testCa(now, days = 3650)
     assertEquals(
-      mintLeaf("docs.example", longCa, longKey, now).certificate.getNotAfter.toInstant,
+      issueLeaf("docs.example", longCa, longKey, now).certificate.getNotAfter.toInstant,
       now.plus(LeafValidityDays, ChronoUnit.DAYS),
     )
-    val again = mintLeaf("docs.example", ca, caKey, now).certificate
+    val again = issueLeaf("docs.example", ca, caKey, now).certificate
     assertNotEquals(again.getSerialNumber, leaf.getSerialNumber)
     assertNotEquals(again.getPublicKey, leaf.getPublicKey)
 
-  test("a client verifying the host under the run CA accepts the minted leaf, and the next connection reuses it"):
+  test("a client verifying the host under the run CA accepts the issued leaf, and the next connection reuses it"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
     val directory = Files.createTempDirectory("run-ca")
     val (certificateFile, keyFile) = writePem(directory, "ca", ca, caKey)
-    val inspection = TlsInspection.minting(certificateFile, keyFile)
+    val inspection = TlsInspection.issuing(certificateFile, keyFile)
     val first = inspection.contextFor("docs.example")
     assert(first eq inspection.contextFor("docs.example"))
     assert(first ne inspection.contextFor("other.example"))
-    // The cache is bounded: past MintedLeaves distinct hosts the least recently used is minted again.
-    (1 to TlsInspection.MintedLeaves).foreach(i => inspection.contextFor(s"host$i.example"))
+    // The cache is bounded: past LeafCacheCapacity distinct hosts the least recently used host's context is
+    // evicted, and its next connection issues another leaf.
+    (1 to TlsInspection.LeafCacheCapacity).foreach(i => inspection.contextFor(s"host$i.example"))
     assert(first ne inspection.contextFor("docs.example"))
 
     val clientContext = SSLContext.getInstance("TLS")
@@ -171,16 +172,16 @@ class X509HelperTest extends munit.FunSuite:
       serving.join()
     finally server.close()
 
-  test("the run CA is refused at start when its key does not answer it or it is no CA"):
+  test("the run CA is refused at start when its key does not match it or it is no CA"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
     val (other, otherKey) = testCa(now, days = 825)
     val directory = Files.createTempDirectory("run-ca")
     val (certificateFile, _) = writePem(directory, "ca", ca, caKey)
     val (_, otherKeyFile) = writePem(directory, "other", other, otherKey)
-    val mismatched = intercept[IllegalArgumentException](TlsInspection.minting(certificateFile, otherKeyFile))
-    assert(mismatched.getMessage.contains("does not answer"), mismatched.getMessage)
-    val leaf = mintLeaf("docs.example", ca, caKey, now)
+    val mismatched = intercept[IllegalArgumentException](TlsInspection.issuing(certificateFile, otherKeyFile))
+    assert(mismatched.getMessage.contains("does not match"), mismatched.getMessage)
+    val leaf = issueLeaf("docs.example", ca, caKey, now)
     val (leafFile, leafKeyFile) = writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
-    val notCa = intercept[IllegalArgumentException](TlsInspection.minting(leafFile, leafKeyFile))
+    val notCa = intercept[IllegalArgumentException](TlsInspection.issuing(leafFile, leafKeyFile))
     assert(notCa.getMessage.contains("not a CA certificate"), notCa.getMessage)

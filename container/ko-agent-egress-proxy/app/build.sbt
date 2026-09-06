@@ -15,7 +15,7 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
-// X509Helper mints leaves with the JDK's internal certificate builder, which the JVM keeps behind
+// X509Helper issues leaves with the JDK's internal certificate builder, which the JVM keeps behind
 // the module boundary at run time; scalac compiles against it unasked. The Containerfile passes the
 // same two exports to native-image, and the launcher's manifest carries them for the host build's
 // proxy.

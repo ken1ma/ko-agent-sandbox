@@ -3,7 +3,7 @@
 // by scripts the tests choose — the transport and the command stubbed, never the protocol. What
 // it holds is the channel's contract: framing under bounds, the working-directory boundary,
 // streamed output carried whole with the command's own exit code, and teardown by descriptor
-// lifetime — a dead shim ends the running command, a handshake whose requester died is stillborn
+// lifetime — a dead shim ends the running command, a handshake whose requester died expires
 // with no command started, and a competing shim waits its turn rather than attaching to a
 // predecessor's streams. The macOS gate re-runs the protocol against real sbt; these rows hold
 // everywhere.
@@ -180,7 +180,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     finally
       running.set(false)
       // A handshake that is no transaction id ends the cycle empty and, with running now false,
-      // the loop — the clean lever this side of the FIFO has. Bounded: with the reader already
+      // the loop — the one way this side of the FIFO can end it. Bounded: with the reader already
       // gone the open would block forever.
       val poison = ProcessBuilder("sh", "-c", s"echo poison > $FifoDir/req").start()
       if !poison.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) then poison.destroyForcibly()
@@ -220,7 +220,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(exit, 0)
       // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
       // host environment's to explain, a line that merely quotes the banner is the build's, and
-      // stdout is not the stream the announcement lands on.
+      // stdout is not the stream the announcement is written to.
       assertEquals(err, s"complaint\nPicked up _JAVA_OPTIONS: -Dx=1\n[warn] $banner\n")
       assertEquals(out, s"$banner\n")
 
@@ -284,15 +284,15 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(logged.contains("9998"), logged)
       assert(logged.contains("9999"), logged)
 
-  test("a requester dead before speaking is stillborn: no command, and the channel keeps serving"):
+  test("a transaction whose requester died without a request expires: no command, and the channel keeps serving"):
     channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), deadline = 1500): (project, _, _) =>
       // A handshake whose ctl exists but is never opened — the shim died between its two steps —
-      // and one whose ctl never existed at all. Neither may start a command or wedge the broker.
+      // and one whose ctl never existed at all. Neither may start a command or leave the broker blocked on a FIFO.
       ProcessBuilder("sh", "-c", s"mkfifo -m 600 $FifoDir/ctl.4242; echo 4242 > $FifoDir/req")
         .start().waitFor()
       ProcessBuilder("sh", "-c", s"echo 4243 > $FifoDir/req").start().waitFor()
-      // Serving this proves the broker declared both stagings stillborn and moved on: cycles
-      // are serial, so a wedged one would leave this handshake blocked.
+      // Serving the next transaction proves both incomplete transactions expired; cycles are serial,
+      // so a transaction still blocked on its FIFO would prevent it.
       val (exit, out, _) = shimCall(project, "sbt")
       assertEquals(exit, 0)
       assertEquals(out, s"built in $project\n")

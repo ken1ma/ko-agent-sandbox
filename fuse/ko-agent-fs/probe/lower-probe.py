@@ -17,7 +17,7 @@ Run in a SCRATCH project; it creates and deletes files:
     python3 lower-probe-host.py        # in a HOST terminal, same directory
 
 The unfiltered run is the control, and it is what separates this filter's own answer from the
-share's: an inode number the filter minted per name looks exactly like a share that invented one.
+share's: an inode number the filter assigned per name looks exactly like a share that invented one.
 
 Results are printed here, the host's observations folded in; the host half needs python3 and nothing
 else. The rendezvous travels through the share, so a hang is a coherency failure before it is
@@ -47,7 +47,7 @@ rows: list[tuple[str, list[str]]] = []
 
 
 def record(name: str, *observations: str) -> None:
-    """One row, one observation per line under it. A row that says two things — one per direction,
+    """One row, one observation per line under it. A row with two observations — one per direction,
     or one per side — is two lines, because that is how it gets read and copied into the log."""
     rows.append((name, list(observations)))
 
@@ -86,12 +86,12 @@ def ask(step: str, **payload) -> dict:
         time.sleep(0.05)
     print(f"\nabort: the host half never answered '{step}' within {WAIT}s.")
     print("Is lower-probe-host.py running in a HOST terminal in this same directory?")
-    print(f"{WORK}/ is left in place; its request and answer files are what says which side stalled.")
+    print(f"{WORK}/ is left in place; its request and answer files show which side stalled.")
     sys.exit(2)
 
 
 def renameat2(old: str, new: str, flags: int) -> str:
-    """`ok`, or the errno name. Python has no wrapper; glibc grew the symbol in 2.28, and the raw
+    """`ok`, or the errno name. Python has no wrapper; glibc added one in 2.28, and the raw
     syscall covers a libc that has not."""
     libc = ctypes.CDLL(None, use_errno=True)
     old_bytes, new_bytes = old.encode(), new.encode()
@@ -229,7 +229,7 @@ def case_folding() -> None:
 
 def open_file_hold() -> None:
     """How far a descriptor held here limits the host's ability to write, rename and unlink that
-    path — and whether releasing it restores what was refused. Apply write-back stands on this.
+    path — and whether releasing it restores what was refused. Apply write-back depends on this.
 
     Each attempt gets its own file, and the released phase gets a third set. A shared target would
     have the unlink attempt destroy what the next phase is about to hold, which is a probe measuring

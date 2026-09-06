@@ -49,7 +49,7 @@ Facts have one binding site:
 Registry login, SSH agent forwarding and cloud request re-signing are different protocols and are
 not requirements of this plan.
 
-## Invariants
+## Guarantees
 
 1. A credential has two independent authorities: the egress ruleset admits a destination,
    and the host launch selects a credential instance. Neither authority implies the other.
@@ -74,7 +74,7 @@ not requirements of this plan.
 11. Selecting one service cannot change another service's mechanism, adapter, source, targets,
     placeholder or cache generation.
 12. TLS mediation of an otherwise opaque provider endpoint is explicit in the launch banner and
-    `--egress-effective` output. Without a selected credential, its standing opaque behavior is
+    `--egress-effective` output. Without a selected credential, its configured opaque behavior is
     unchanged.
 13. The proxy never sends a real credential before origin TLS identity is validated, and never
     forwards it across an origin redirect unless the new target independently matches the service.
@@ -91,7 +91,7 @@ A **service definition** is trusted, versioned data shipped in the proxy image. 
   placeholder;
 - injection targets, each an exact normalized host, one header and one fixed value format with a
   single placeholder slot;
-- an optional standing literal path prefix and method set, using the ruleset's existing matchers;
+- an optional configured literal path prefix and method set, using the ruleset's existing matchers;
 - the client and image compatibility probes required before that service is offered.
 
 A **credential instance** is host-owned state:
@@ -168,15 +168,15 @@ path /
 The serialized form is internal to the image, not project configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
-- a header from the base plan's closed set (its invariant 4);
+- a header from the base plan's closed set (its guarantee 4);
 - a format containing exactly one `%s`, no other conversion, and otherwise only visible ASCII
   and space: catalog text, trusted for the space `Bearer %s` needs, and the field is built by
   placing a value that has separately passed the raw-value grammar into the format;
-- a method set and optional literal prefix that cannot be wider than the target's standing
+- a method set and optional literal prefix that cannot be wider than the target's configured
   inspected scope;
 - unique `(host, header, format, matcher)` entries inside one service.
 
-For a standing tunnel host, the target deliberately has no method or path grants:
+For a configured tunnel host, the target deliberately has no method or path grants:
 the existing authority already permits writable traffic. Mediation parses enough HTTP to inject
 and relay, but it does not claim to make model traffic read-only.
 
@@ -201,7 +201,7 @@ source kind, descriptor digest and refresh times. The secret backend contains on
 OAuth material. Project state contains neither.
 
 The backend write and the generation publish are the one gate for value format: every value
-passes the base plan's value grammar (its invariant 4) there, whatever produced it — `set`,
+passes the base plan's value grammar (its guarantee 4) there, whatever produced it — `set`,
 `import`, an executable result, an OAuth access token at issuance or refresh, a cached
 generation being reused. A value that fails is refused at that producer with the byte's offset
 and nothing is stored; a refresh that yields one is a refresh failure, and the current
@@ -347,7 +347,7 @@ For one mediated connection:
 1. Preserve CONNECT authorization, public-address validation, SNI equality and origin pinning.
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
-4. Apply standing inspected authorization when the ruleset says inspected.
+4. Apply the configured inspected authorization when the ruleset says inspected.
 5. Replace only the selected instance's complete placeholder in the declared header format.
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when spent.
@@ -383,9 +383,9 @@ project's proxy log.
 
 ## Lifecycle and cleanup
 
-Global credential records live outside every project's state. Project `--reset` and `--reset-all`
-remove per-run generations and agent state but do not silently revoke or delete global credentials;
-`--credential-remove` is the only deletion authority.
+Global credential records are stored outside every project's state. Project `--reset` and
+`--reset-all` remove per-run generations and agent state but do not silently revoke or delete global
+credentials; `--credential-remove` is the only deletion authority.
 
 Normal exit, Ctrl-C, failed create/start and reset remove every per-run value, placeholder mapping
 and unavailable-status file. The host cache retains only what its source contract requires and is
@@ -461,7 +461,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### TLS and clients
 
-- Test inspected and standing-tunnel targets with no credential, a selected credential and
+- Test inspected and configured-tunnel targets with no credential, a selected credential and
   a denied overlay; no selection preserves byte-for-byte opaque behavior.
 - Prove origin identity, SNI and public-address checks precede injection and remain the original
   hostname across every target and upstream-proxy mode.

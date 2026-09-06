@@ -1,12 +1,12 @@
 # Troubleshooting `ko-agent-fs`
 
-Where to look when the workspace FUSE filter — or something beneath it — misbehaves. Keyed by
+Where to look when the workspace FUSE filter — or its host or VM — fails. Keyed by
 symptom. Commands are given for podman machine (macOS/Windows); on native Linux drop
 `podman machine ssh` and use the same paths under your own home.
 
-## Where everything lives
+## State and log locations
 
-All filter state sits in the daemon user's home, per project:
+All filter state is stored in the daemon user's home, per project:
 
     ~/.local/share/ko-agent-sandbox/ko-agent-fs             the installed binary
     ~/.local/share/ko-agent-sandbox/mounts/<project>/
@@ -31,7 +31,7 @@ The one-look health check:
     podman machine ssh 'pgrep -a ko-agent-fs; mount | grep ko-agent-fs;
                         tail .local/share/ko-agent-sandbox/mounts/*/daemon.log'
 
-## "Operation not permitted" on something that should be allowed
+## "Operation not permitted" for an allowed mutation
 
 The matching `DENY` line in `daemon.log` names the operation, the target and the rule:
 
@@ -40,15 +40,15 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   file breaks a git command, never opens a hole). Report it with the DENY line; the fix is one
   allowlist entry plus its tests.
 - `reason=protected-git-entry` on a name that is not `.git` — the conservative name rule
-  (`git-metadata.md`, "The name rule") swallowed a legitimate name. Report the exact bytes.
-- `reason=protected-sandbox-config` — something tried to create or write `.ko-agent-sandbox`, the
+  (`git-metadata.md`, "The name rule") refused a legitimate name. Report the exact bytes.
+- `reason=protected-sandbox-config` — a process tried to create or write `.ko-agent-sandbox`, the
   launcher's own configuration. Editing it is the host's job (`SECURITY.md`, "A project loosening
   its own confinement"); the same reason on a name that is merely *like* it is the fold rule
   over-reaching, and worth reporting with the exact bytes.
-- `reason=nonportable-target-shape` on a `symlink` — a tool tried to create a link whose target is
-  absolute or climbs above the workspace root, neither of which can be trusted to mean the same
-  thing to the host (`SECURITY.md`, "A symlink is the sharpest case"; the rule and its limits are
-  `fs.rs`, `target_has_portable_shape`). Give the tool a relative target landing inside the
+- `reason=nonportable-target-syntax` on a `symlink` — a tool tried to create a link whose target is
+  absolute or climbs above the workspace root, neither of which can be trusted to resolve to the
+  same host path (`SECURITY.md`, "A symlink is the highest-risk case"; the rule and its limits are
+  `fs.rs`, `target_has_portable_syntax`). Give the tool a relative target resolving inside the
   workspace, or let it cache inside the project. Tools that link into a store of their own generally
   fall back to copying: sbt turns off linking for the session on the first refusal and copies out of
   its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an absolute
@@ -62,10 +62,10 @@ share's own permissions and SELinux label from inside the machine.
 ## "Too many levels of symbolic links" (ELOOP) on a path that has none
 
 A handle held across a rename. The daemon reconstructs an inode's path from the names it was looked
-up under, and something now stands at one of those names that is not what stood there before; the
-resolver refuses to follow it rather than serve an object the path no longer describes (`fs.rs`,
-`open_ino`). There is no `DENY` line, because no policy decision was reached. Reopen the path — a
-fresh lookup builds a current chain.
+up under, and one of those names now refers to a different object than it did; the resolver refuses
+to follow it rather than serve an object the path no longer describes (`fs.rs`, `open_ino`). There
+is no `DENY` line, because no policy decision was reached. Reopen the path — a fresh lookup builds a
+current chain.
 
 ## "Transport endpoint is not connected" (ENOTCONN)
 
@@ -75,8 +75,8 @@ served, not even a shell whose cwd is inside — and scoped to `/workspace` alon
     podman machine ssh 'tail -20 .local/share/ko-agent-sandbox/mounts/*/daemon.log*'
     podman machine ssh 'journalctl -k | grep -iE "oom|killed" | tail -5'
 
-A panic lands in the log; an OOM kill lands in the kernel journal instead (an sbt-scale build in
-the VM can eat it — see "The whole machine degrades"). Quit the session and relaunch: the mount
+A panic is in the log; an OOM kill is in the kernel journal instead (an sbt-scale build in
+the VM can exhaust it — see "The whole machine degrades"). Quit the session and relaunch: the mount
 script finds the dead mount, lazily unmounts it, and starts a fresh daemon; the previous daemon's
 log survives as `daemon.log.1`.
 
@@ -94,8 +94,8 @@ Every gate prints its reason; the message is the diagnosis.
   startup guard (`guard.rs`): a control path — the gitdir, its config, a hook — resolves through
   the writable workspace, or the workspace root is itself laid out as a gitdir; the filter cannot
   protect either. The remedy is in the message.
-- `mountpoint ... is not empty; refusing` — something landed in the mountpoint directory while no
-  filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
+- `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
+  no filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 
 ## `/workspace` is empty inside the container
 
@@ -103,7 +103,7 @@ The bind captured the bare mountpoint directory instead of a live mount — the 
 window between the launcher's mount check and the container start. By construction the directory
 under the mount is empty, so nothing is exposed. Quit and relaunch. A *reap* cannot cause this:
 `lock` above holds the mount check and the unmount apart. On a machine with no `flock` it can,
-and then the marker's age is the only thing keeping the two apart.
+and then only the marker's age keeps the two apart.
 
 ## Everything works but slowly
 
@@ -125,9 +125,9 @@ depth 6–7, 18 s for 3,200 files. What shortens it, set on the host (a session 
 
 ## The whole machine degrades (every podman command slow or erroring)
 
-The filter shares the VM with podman itself; when the *machine* is sick the filter is a casualty,
-not the cause. In one observed incident an in-sandbox sbt cross-build exhausted the VM's memory
-(container `/tmp` is tmpfs — RAM), the OOM killer took the podman service, and every API call
+The filter shares the VM with podman itself; when the *machine* fails, the filter fails with it,
+and is not the cause. In one observed incident an in-sandbox sbt cross-build exhausted the VM's
+memory (container `/tmp` is tmpfs — RAM), the OOM killer took the podman service, and every API call
 returned `EOF`. Check, in order:
 
     podman machine ssh 'free -h; df -h /'
@@ -149,5 +149,5 @@ first reap that finds no container of its name — a launcher killed between its
 and `start` leaves both, and the reaper removes such a container after ten minutes, except on
 Windows or after a failed reaper spawn, where only `--reset` does; a stale or version-skewed mount
 is unmounted and replaced at the next launch; `--reset` removes the project's whole
-`mounts/<project>` tree. The one thing worth checking after repeated crashes is that
+`mounts/<project>` tree. The one check worth making after repeated crashes is that
 `pgrep -a ko-agent-fs` matches the projects that actually have sessions.

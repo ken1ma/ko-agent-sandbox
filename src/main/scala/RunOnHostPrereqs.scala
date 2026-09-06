@@ -1,5 +1,5 @@
 // What a host build is allowed to touch, decided before any of it runs: where this project's
-// disposable build caches live, which JDK and sbt are the Coursier-managed ones, and which
+// disposable build caches are stored, which JDK and sbt are the Coursier-managed ones, and which
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
@@ -33,6 +33,9 @@ object RunOnHostPrereqs:
     case PrereqMillExecutableMissing(version: String, downloadDir: Path)
     case PrereqMillJvmNotSystem(found: Option[String])
     case CacheRootUnusable(reason: String)
+    /** Apart from [[CacheRootUnusable]] because it alone proves the project's builds never wrote
+      * under this root: they refuse it by this same check. */
+    case CacheRootInsideProject(root: Path, project: Path)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
     case RuleOutsideBuildGrammar(line: String)
@@ -77,8 +80,8 @@ object RunOnHostPrereqs:
           case Some(path) => Right(path.resolve("ko-agent-sandbox").normalize())
 
   /**
-   * This project's build caches, under one directory so `--reset-cache` for a project is a single
-   * removal and a further cache kind can join without moving anything.
+   * This project's build caches, under one directory so `--reset-run-on-host` for a project is a
+   * single removal and a further cache kind can join without moving anything.
    *
    * Coursier's, and sbt's global base. mill's executable is provisioned by the user rather than
    * fetched here, so it has no writable home (RunOnHostPrereqs.millExecutable).
@@ -95,13 +98,13 @@ object RunOnHostPrereqs:
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
    * host, where a build against a session-temporary base would have its own outputs dangle the
    * moment the session directory is removed. Beside the Coursier cache, it shares that cache's poison
-   * scope (later builds of the same project, themselves sandboxed) and `--reset-cache`'s removal.
+   * scope (later builds of the same project, themselves sandboxed) and `--reset-run-on-host`'s removal.
    */
   def buildSbtGlobal(cacheRoot: Path, projectId: String): Path =
     buildCacheDir(cacheRoot, projectId).resolve("sbt-global")
 
   /**
-   * Refused when the cache root would sit inside the project, the check
+   * Refused when the cache root would be inside the project, the check
    * [[AgentSandboxLauncher.requireStateRootOutside]] makes for the state root: a cache the
    * workspace can reach is a cache the sandbox can rewrite between builds.
    */
@@ -126,7 +129,7 @@ object RunOnHostPrereqs:
         // case-sensitive volume keeps distinct.
         def overlapsExactly(left: Path, right: Path) = left.startsWith(right) || right.startsWith(left)
         if spellings(root).exists(r => spellings(project).exists(p => overlapsExactly(r, p))) then
-          Left(Refusal.CacheRootUnusable(s"$root overlaps the project directory $project"))
+          Left(Refusal.CacheRootInsideProject(root, project))
         else Right(root)
 
   /** The user's Coursier cache root — read for the JDK, never granted whole
@@ -248,7 +251,7 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMillBootstrapMissing)
 
   /**
-   * Where a provisioned mill executable lives, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
+   * The directory containing a provisioned mill executable, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
    * if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`. `MILL_USER_CACHE_DIR` is not an
    * input — the script assigns it and never reads it. No platform branch: the fallback is spelled
    * the same everywhere, which is why a macOS host keeps mill's cache under ~/.cache while
@@ -415,7 +418,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * How long SESSION_TMP may be. sbt's boot socket lives at
+   * How long SESSION_TMP may be. sbt's boot socket is at
    * `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<farmHash>/sbt-load.sock` (sbt's
    * BootServerSocket.java), 50 characters past the directory once the hash is a signed 64-bit
    * value, against the 104-byte `sun_path` a macOS UNIX-domain socket allows, NUL included. The

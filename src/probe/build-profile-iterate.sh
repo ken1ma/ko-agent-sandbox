@@ -13,7 +13,7 @@
 # works, so they start from a set that runs and remove cumulatively, keeping only grants whose
 # absence breaks it.
 #
-#   sh src/probe/build-profile-iterate.sh floor          # which layer fails? run this first
+#   sh src/probe/build-profile-iterate.sh checks         # which check fails? run this first
 #   sh src/probe/build-profile-iterate.sh ops "<command>"    # which operations does it need?
 #   sh src/probe/build-profile-iterate.sh paths          # what does /bin/sh need?
 #   sh src/probe/build-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
@@ -25,9 +25,9 @@
 # added because a build failed once is a grant that outlives every later build, so each belongs
 # there only if it is a stable runtime read and not a path into user data.
 set -u
-if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; fi
+if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 
-mode=${1:-floor}
+mode=${1:-checks}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-build-profile
 authority=src/main/resources/agentsandbox/runtime-authority.txt
@@ -300,32 +300,32 @@ paths)
     dump_profile "$work/paths.sb"
     echo
     ;;
-floor)
+checks)
     # A process that dies before writing anything says nothing about which grant is missing. This
-    # climbs from the smallest possible program to a real build and stops at the first rung that
-    # fails, so the missing grant belongs to that layer and not to sbt. Output is not redirected:
+    # runs checks in order, from the smallest possible program to a real build, and stops at the
+    # first that fails, so the missing grant is one that check already needs. Output is not redirected:
     # the reason usually goes to the terminal, and redirecting is how it was lost.
     emit "$authority" || exit 1
     . "$work/build.env"
-    rung() {
+    check() {
         printf '\n--- %s\n' "$1"; shift
         if /usr/bin/sandbox-exec -f "$work/build.sb" "$@"; then
             echo "    ok"
         else
-            echo "    FAILED (exit $?) — the missing grant belongs to this layer"
+            echo "    FAILED (exit $?) — this check is the first to require the missing grant"
             exit 1
         fi
     }
-    # Only binaries the profile grants: a rung that fails because the ladder reached for something
-    # ungranted says nothing about the layer it claims to test.
-    rung "the loader, through a granted shell"           /bin/sh -c 'echo hello'
-    rung "the sbt script's interpreter: /usr/bin/env sh"   /usr/bin/env sh -c 'echo hello'
-    rung "bash, which the inner sbt script needs"        /bin/bash -c 'echo hello'
-    rung "the coreutils that script calls"               /bin/bash -c 'uname -s; dirname /a/b; basename /a/b'
-    rung "the JDK"                                       "$JAVA_HOME/bin/java" -version
-    rung "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
+    # Only binaries the profile grants: a check that fails because it reached for an ungranted
+    # binary says nothing about the program it claims to test.
+    check "the loader, through a granted shell"           /bin/sh -c 'echo hello'
+    check "the sbt script's interpreter: /usr/bin/env sh"   /usr/bin/env sh -c 'echo hello'
+    check "bash, which the inner sbt script needs"        /bin/bash -c 'echo hello'
+    check "the coreutils that script calls"               /bin/bash -c 'uname -s; dirname /a/b; basename /a/b'
+    check "the JDK"                                       "$JAVA_HOME/bin/java" -version
+    check "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every rung passed; the gate is next: sh src/probe/build-profile-gate.sh quick"
+    echo "every check passed; the gate is next: sh src/probe/build-profile-gate.sh quick"
     ;;
 narrow)
     emit "$authority" || exit 1
@@ -349,5 +349,5 @@ narrow)
     echo "review it, then replace the body of $authority with it."
     ;;
 *)
-    echo "usage: $0 [floor|ops|paths|narrow] [command]" >&2; exit 2 ;;
+    echo "usage: $0 [checks|ops|paths|narrow] [command]" >&2; exit 2 ;;
 esac

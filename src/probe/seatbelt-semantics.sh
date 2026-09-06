@@ -14,7 +14,7 @@
 # The scratch project is named with a space and a '+' on purpose — the two characters a real host
 # puts in these paths (cs's install directory, the Coursier JDK home).
 set -u
-if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; fi
+if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 [ -x /usr/bin/sandbox-exec ] || { echo "no /usr/bin/sandbox-exec" >&2; exit 2; }
 
 # Canonical, because a rule naming a non-canonical path matches nothing and so fails *open*:
@@ -33,7 +33,7 @@ ln -s .git "$proj/link"
 
 profile() { sed "s|@PROJ@|$proj|g" > "$root/p.sb"; }
 
-# Prints DENIED, ALLOWED, or ERROR. A write is allowed only if it both succeeded and landed.
+# Prints DENIED, ALLOWED, or ERROR. A write is allowed only if it both succeeded and is on disk.
 attempt() {
     marker=$1; shift
     if /usr/bin/sandbox-exec -f "$root/p.sb" /bin/sh -c "$*" >/dev/null 2>"$root/err"; then
@@ -75,7 +75,7 @@ r=$(attempt "$proj/late/.git/config" \
     "mkdir -p '$proj/late/.git' && echo probe > '$proj/late/.git/config'")
 report "E3 access-time evaluation" \
     "is a .git created *during* the run covered by the same rule?" "$r" \
-    "DENIED: the deny held at access time, and the Windows exclusion stands. ALLOWED: it is a launch-time scan."
+    "DENIED: the deny held at access time, and the Windows exclusion holds. ALLOWED: it is a launch-time scan."
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/link/config'")

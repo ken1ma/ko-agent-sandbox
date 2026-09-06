@@ -22,8 +22,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
   /**
    * Never the production path. A suite is run inside a sandbox session as readily as outside one,
    * and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that session's broker is reading:
-   * removing them wedges its reader on an unlinked inode, and nothing inside the container can
-   * make the channel again. Both sides are pointed here instead — the broker's shell functions by
+   * removing them leaves its reader blocked on an unlinked inode, and nothing inside the container can
+   * restore the channel. Both sides are pointed here instead — the broker's shell functions by
    * their argument, the shim by the one line rewritten below.
    */
   private val FifoDir = Files.createTempDirectory("clipboard-fifos")

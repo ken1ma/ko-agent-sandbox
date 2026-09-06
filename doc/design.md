@@ -1,8 +1,8 @@
 # Design decisions
 
-What was decided and must not silently drift: the standing decisions, recorded so they stop
-resurfacing; the axes verification has to separate; the prior art they were reviewed against; and
-the principles to preserve. The work that remains is TODO.md; the security model is SECURITY.md.
+What was decided and must not silently drift: the standing decisions, recorded so they stop being
+reopened; the properties verification has to separate; the prior art they were reviewed against;
+and the principles to preserve. What remains to do is TODO.md; the security model is SECURITY.md.
 
 ## Standing design decisions
 
@@ -16,7 +16,7 @@ decision rests on no longer holds. Nothing less reopens one.
 This architecture deliberately avoids most cases in which a broker is useful by keeping
 valuable credentials outside the sandbox.
 
-A capability layer would create a second security-policy language and another enforcement surface
+A capability layer would create a second security-policy language and another enforcement point
 while providing little reduction in authority under this operating model. Prior art proposing
 exactly this design — a host-side MCP auth broker/gateway holding credentials the agent container
 never sees — solves a real problem for workflows that need credentialed MCP servers, a requirement
@@ -26,17 +26,17 @@ this project's operating model deliberately avoids:
 
 ### No signing broker for the proxy's leaves, and no run intermediate
 
-Under `allow-unless-denied` the proxy mints a leaf per unlisted host from a CA minted for the run
-(SECURITY.md, "Who holds the CA key"). Two shapes that would keep the CA key on the host were
+Under `allow-unless-denied` the proxy issues a leaf per unlisted host from a CA created for the run
+(SECURITY.md, "Who holds the CA key"). Two designs that would keep the CA key on the host were
 rejected. A signing broker — the proxy asking the launcher to sign each leaf — keeps the letter of
 "the launcher holds the key" and loses its sense: the broker is a signing oracle for whatever the
-proxy asks, so the key's location no longer bounds what a compromised proxy can mint, only where
-the bytes sit, at the cost of a channel and a round trip per host. A run intermediate signed by
-the project CA would keep the project-level trust store and JDK keystore, and would let a leaf a
-compromised proxy minted chain to the project CA and be honoured by every other session of the
-project, which is what the run scope exists to prevent. A launch-minted leaf beside the run CA
-proves nothing either: a missing or extra name, the two things the "names exactly" check exists
-for, cannot happen when the proxy mints what it inspects.
+proxy asks, so the key's location no longer bounds what a compromised proxy can issue, only where
+the bytes are stored, at the cost of a channel and a round trip per host. A run intermediate signed
+by the project CA would keep the project-level trust store and JDK keystore, and would let a leaf a
+compromised proxy issued chain to the project CA and be honoured by every other session of the
+project, which is what the run scope exists to prevent. A launch-issued leaf beside the run CA
+proves nothing either: a missing or extra name, the two defects the "names exactly" check exists
+for, cannot happen when the proxy issues what it inspects.
 
 ### No per-repository `GitRead(repository)` grant
 
@@ -65,8 +65,8 @@ which that agent reads with no launcher help, because the managed-policy locatio
 loads unconditionally — a project file can add to the image's conventions but never drop them —
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
 session cannot rewrite the instructions governing the next one, as it could any file in the
-project directory. Prose governs nothing enforceable; the file sits in the boundary directory for
-that read-before-launch property alone.
+project directory. The instruction file changes no enforcement; it is in the boundary directory
+for that read-before-launch property alone.
 
 ### No richer rule format
 
@@ -74,16 +74,16 @@ The rules stay four fixed profiles over one file, `rule`, in the grammar `doc/eg
 spells out: `allow` and `deny` lines naming URLs, four grant words, no pattern but the
 taking-away subtree, no open vocabulary, no selected-provider-plus-extras profile variant.
 
-Its design lineage is a small part of OpenBSD's policy-language tradition, chosen as precedent,
+Its model is a small part of OpenBSD's policy languages, chosen as precedent,
 not as a compatibility target. PF evaluates rules in textual order and lets the last matching
-one decide, the restrictive shape a broad block followed by its exceptions. relayd applies the
+one decide, so the restrictive ordering puts a broad block before its exceptions. relayd applies the
 same model at the application layer, to HTTP requests by method, path and host — and reached it
 by replacing its own earlier design: until 2014 its HTTP filtering was per-header protocol
 directives, matched by name with no order among them, which Reyk Floeter replaced with linear
 last-matching `pass`/`block` rules "inspired by pf" (the commit below). That history is why this
 grammar has textual order and no specificity precedence: a later root `deny` beats an earlier
 `/api/` allow of the same grant however specific the path, where a most-specific-wins rule
-would admit it. doas is the same house's smaller instance — `permit`/`deny`, last match wins, no
+would admit it. doas is the same model at smaller scale — `permit`/`deny`, last match wins, no
 match denies — and the precedent for keeping the vocabulary this small. The lessons kept: the
 file's order is its meaning; broad restrictions precede their narrower exceptions; the resolved
 ruleset may compile the rules into host and path scopes, and that compilation must not change
@@ -103,7 +103,7 @@ and nginx's, which reads the exception before the rule; a wildcard on the granti
 decision the grammar rests on: syntax buys the file's meaning — one parser, one resolver the
 launcher's dry run executes, exact hosts so a grant is enumerable and the leaf certificate can
 name it, every ambiguity a refused launch — and not the project's choices, which `tunnel` is
-right there to make; restricting the grammar further would buy no security about what a
+right there to make; restricting the grammar further would add no security about what a
 reviewed project may open.
 
 A URL is the form every comparable project's operator already writes, and a path on the granting
@@ -133,15 +133,15 @@ in the order written, and a denial names a host or a subtree whole) — are well
 - https://github.com/stripe/smokescreen/issues/236
 
 Do not add a wildcard on the granting side, a second precedence, a richer pattern language, or
-a grant word outside the closed set without a concrete need that outweighs that surface.
+a grant word outside the closed set without a concrete need that outweighs the added attack surface.
 
-### No HTTP query surface on the proxy
+### No HTTP query endpoint on the proxy
 
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
 header, answering the ruleset in force from the live proxy. Rejected, because every consumer
 already gets that answer from the proxy's own `--print-ruleset` dry run — `--egress-effective`,
 the launch banner, `KO_AGENT_SANDBOX_EGRESS_RULESET`, and the appended agent instructions — and
-the launcher cannot use a live query anyway: the rules must be validated and the leaf minted before
+the launcher cannot use a live query anyway: the rules must be validated and the leaf issued before
 the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
 would add is a second parsed request format at the enforcement point, against its
 CONNECT-only-one-request rule, for information already delivered. `Max-Forwards` itself creates
@@ -185,13 +185,13 @@ proxy"), and each of these stays out of it for a reason of its own:
 
 ### No test hook that pauses a launch mid-flight
 
-The workspace filter's reference count has one state worth attacking: a launch between its
-`podman create` and its `podman start`, where the marker and a container that is not running exist
-together and a reap must count the marker (`KoAgentFs`, "The workspace FUSE filter's mount
-lifecycle"). Arranging that interleaving at an arbitrary instant
-would need the launcher pausable from outside — a variable read on the launch path. It would need
-to be known, documented in `--help`, and fail closed like every other variable: boundary code
-containing scaffolding for a test, on the path that decides whether the filter is mounted at all.
+The workspace filter's reference count has one state worth attacking: a launch between its `podman
+create` and its `podman start`, where the marker and a container that is not running exist together
+and a reap must count the marker (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle").
+Arranging that interleaving at an arbitrary instant would need the launcher pausable from outside —
+a variable read on the launch path. It would need to be known, documented in `--help`, and fail
+closed like every other variable: boundary code carrying a hook that exists only for a test, on the
+path that decides whether the filter is mounted at all.
 
 `MountLifecycleTest` reaches the same evidence without it; its header has how. What stays out of
 reach is an interleaving at some other instant — which a pause hook would not enumerate either.
@@ -224,7 +224,7 @@ A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, 
 inside them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`,
 `readAgentInstructions`, tested). podman resolves mount sources on the host, so mounting through a
 repository-controlled link would expose its target into the sandbox, and following the link to pin
-its resolved target would make the pinned surface depend on where the link points at launch time.
+its resolved target would make the pinned paths depend on where the link points at launch time.
 The refusal is loud, names the path, and comes before the launcher creates anything, so setup writes
 nothing through a pre-seeded link (tested: "a refused symlink form leaves no artifact through the
 link"); the project directory itself is `toRealPath()`-canonical before any of this. Prior art for
@@ -246,19 +246,19 @@ remains the primary exfiltration control.
 
 ### No masking of secret-named files in the workspace
 
-Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and
-the like inside the sandbox. Here the boundary is that the project directory is hostile data and
-nothing credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary
-where it is and hides one class of files by name, without strengthening the boundary: a secret
-under any other name, in `config.yaml`, or in git history stays visible. It also costs every
-project to serve the undisciplined one: a default `.env` mask
-breaks tests that read `.env`, the first `-name .env` removes the protection, and the user who
-commits a credential is the one least likely to review a third boundary file in `.ko-agent-sandbox`.
-Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, which lives
-under no well-known name. Keep the rule procedural: a credential in the project directory
-violates the operating model, and it is the user's to keep out. A `deny` of the forge in
-`egress/rule` removes one way to spend a forge token left there, not the risk — every admitted
-host is a possible recipient of what the sandbox holds.
+Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and the
+like inside the sandbox. Here the boundary is that the project directory is hostile data and nothing
+credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary where it is
+and hides one class of files by name, without strengthening the boundary: a secret under any other
+name, in `config.yaml`, or in git history stays visible. It also costs every project to serve the
+undisciplined one: a default `.env` mask breaks tests that read `.env`, the first `-name .env`
+removes the protection, and the user who commits a credential is the one least likely to review a
+third boundary file in `.ko-agent-sandbox`. Password-protected containers (`*.p12`, `*.pfx`) are
+inert without the password, and these formats have no standard password file or environment-variable
+name. Keep the rule procedural: a credential in the project directory violates the operating model,
+and it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
+forge token left there, not the risk — every admitted host is a possible recipient of what the
+sandbox holds.
 
 ### No gVisor or microVM isolation layer
 
@@ -290,11 +290,11 @@ step (`RefusalAdvice` in the proxy), and the user adds the `allow` line to
 
 sandbox-runtime annotates the agent's context with a `<sandbox_violations>` block; Copilot's
 coding-agent firewall reports a blocked request with the address and the command that made it.
-Each needs integration per CLI release. The `403` body already lands in the tool output every
+Each needs integration per CLI release. The `403` body already appears in the tool output every
 agent reads, at the enforcement point, so nothing is integrated. Revisit if an agent stops
-surfacing its tools' output to the model, which is what the body's route relies on.
+showing its tools' output to the model, which is what the body's route relies on.
 
-## The axes verification has to separate
+## The properties verification has to separate
 
 Conflating them is what makes verification look larger than it is.
 
@@ -306,7 +306,7 @@ Conflating them is what makes verification look larger than it is.
   (`../fuse/ko-agent-fs/doc/architecture.md`).
 - **The share**, and the backing under it: the host project directory as it arrives inside the
   machine, over virtiofs on macOS and the WSL share on Windows. On native Linux the upper varies
-  instead, a named volume landing in the host's container storage — btrfs, ZFS, XFS or overlay —
+  instead, a named volume stored in the host's container storage — btrfs, ZFS, XFS or overlay —
   against the machine's own ext4 everywhere else.
 
 Every case asserts a premise behaviorally, at the layer the product uses it — never a version, a
@@ -317,7 +317,7 @@ driver all reach it the same way, and no case has to anticipate which.
 
 ## Prior-art references worth retaining
 
-Comparison points for future decisions, not dependencies. The specific issues that shaped a decision
+Comparison points for future decisions, not dependencies. The specific issues a decision rests on
 are linked inline where that decision is recorded; these are the broader sources.
 
 - Docker AI sandboxes — microVM isolation, direct-vs-clone workspace models:
@@ -395,12 +395,12 @@ through the conversation.
 
 ```text
 An allowed host is a possible recipient of sandbox data.
-HTTP "read" semantics do not make the request an information-flow read.
+Calling a GET request "read" does not make it an information-flow read.
 ```
 
 ```text
 Prefer a small, observable boundary over a richer policy language.
-Add policy machinery only when it removes authority the sandbox would otherwise
+Add policy code only when it removes authority the sandbox would otherwise
 have to possess.
 ```
 

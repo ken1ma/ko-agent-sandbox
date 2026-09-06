@@ -130,7 +130,7 @@ ENV npm_config_prefix=/home/nonroot/.local
 # same package ko-agent-fs's own build container installs.
 #
 # RUSTUP_HOME holds the toolchain in the image; CARGO_HOME is deliberately
-# left unset, so registry caches land in ~/.cargo and die with the session
+# left unset, so registry caches are written to ~/.cargo and die with the session
 # like every other cache.
 
 ENV RUSTUP_HOME=/opt/rust/rustup
@@ -346,7 +346,7 @@ COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 #
 # Google distributes agy through an install script that resolves a
 # per-platform manifest {version, url, sha512}; the manifest is used
-# directly so the binary lands in the read-only image, keeping the sha512
+# directly so the binary is stored in the read-only image, keeping the sha512
 # check and skipping the shell-profile editing. agy self-updates only where
 # its binary is writable; /usr/local/bin is not, so it updates on rebuild
 # like the others. The smoke test gets a throwaway HOME because agy writes
@@ -365,7 +365,7 @@ RUN set -euxo pipefail; \
     HOME=/tmp/agy-smoke agy --version >/dev/null; \
     rm -rf /tmp/agy-smoke
 
-# All agy state lives under ~/.gemini, a symlink into
+# All agy state is under ~/.gemini, a symlink into
 # the persistent volume. Unlike the others, permission prompts are not
 # pre-disabled: agy has no settings key for it, only
 # --dangerously-skip-permissions or the in-app /permissions, which persists.
@@ -378,7 +378,7 @@ RUN set -euxo pipefail; \
 # GitHub's install script (gh.io/copilot-install) fetches the release tarball
 # and checks it against the release's SHA256SUMS; the same two fetches here,
 # without the shell-profile editing. The npm package wraps the same binary.
-# `releases/latest` as for Codex, so a release landing between the two
+# `releases/latest` as for Codex, so a release published between the two
 # fetches fails the checksum and the build, never installs a mismatch. The
 # smoke test gets a throwaway HOME because copilot writes a package cache on
 # every invocation and this RUN is root.

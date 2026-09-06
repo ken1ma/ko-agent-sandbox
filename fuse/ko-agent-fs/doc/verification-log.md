@@ -9,9 +9,9 @@ meant to settle, why a pass without its machine is not evidence, and which rows 
 
 ### Verified: APFS case-insensitive (macOS 26.4.1, build 25E253; 2026-08-14)
 
-The empirical run the posture calls for, on the default macOS volume (File System Personality:
-APFS, the case-insensitive variant), through the full production stack — filtered sandbox session →
-FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
+The empirical run `security-research.md` calls for, on the default macOS volume (File System
+Personality: APFS, the case-insensitive variant), through the full production stack — filtered
+sandbox session → FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
 
 - All 14 denied spellings (`.git` itself, the four ASCII case variants, the Turkish i-family, the
   four ignorable-code-point forms, the three trailing-punctuation forms) failed with exactly
@@ -61,7 +61,7 @@ invalidating the cached page as designed. The sandbox→host direction holds on 
 is pinned at the filter's own layer by the rig suite.
 
 The virtiofs premise, as observed on the same machine: the host shares (`/Users`, `/private`,
-`/var/folders` — the first is the one project directories live under) mount in the VM as
+`/var/folders` — the first is the one project directories are under) mount in the VM as
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
@@ -75,8 +75,8 @@ machine-shared sources.)
 The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
 with the launcher playing the host writer over a scratch lower in the project directory: the
 guard's refusal held through the whole stack, the host write was visible to `read()` 1 ms after
-it landed, and the established mmap showed it 0 ms behind `read()`. This is the form every
-later re-run takes.
+it was written, and the established mmap showed it 0 ms behind `read()`. Every later re-run
+follows this procedure.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
@@ -93,7 +93,7 @@ cache policy in the path.
 ### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
 
 On a Windows host (podman 6.1.0, machine on WSL2, kernel 6.18.33.2-microsoft-standard-WSL2),
-measured with host-side ground truth at every step:
+measured against host-side observations at every step:
 
 - A host-created file, and a host rewrite of a file nothing held open, both reached an in-session
   `read()` promptly — host→session visibility holds for unheld files, and session→host held

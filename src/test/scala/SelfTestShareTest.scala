@@ -19,11 +19,11 @@ class SelfTestShareTest extends FunSuite:
     assert(command.contains("--userns=keep-id:uid=65532,gid=65532"))
     assert(command.contains("--user=65532:65532"))
     assert(command.contains(s"--volume=$mountpoint:/workspace:rw"))
-    // No image build and no volume creation: the probe reuses the sandbox image as it stands, so
+    // No image build and no volume creation: the probe reuses the sandbox image as it is, so
     // a second run rebuilds nothing and leaves no second container or volume behind.
     assertEquals(command.takeRight(3), Vector("ko-agent-sandbox:latest", "python3", "-"))
 
-  test("a killed run's mount and container land inside the sweeps every reset already makes"):
+  test("a killed run's mount and container fall inside the sweeps every reset already makes"):
     assert(koAgentFsMountDir(shareMountId("1a2b3c4d")).startsWith(s"$KoAgentFsInstallDir/mounts/"))
     assertEquals(
       probeContainers(
@@ -31,7 +31,7 @@ class SelfTestShareTest extends FunSuite:
       ),
       Seq(probeContainerName("1a2b3c4d")),
     )
-    // The minted name itself, so the sweep and the builder cannot drift apart.
+    // The generated name itself, so the sweep and the builder cannot drift apart.
     assert(probeContainers(Seq(probeContainerName(AgentSandboxLauncher.newRunSuffix()))).nonEmpty)
 
   test("the probe programs speak exactly the protocol the orchestrator reads"):
@@ -53,7 +53,7 @@ class SelfTestShareTest extends FunSuite:
     for marker <- Seq("READY", "read-visible", "HELD", "stack ", SeedName, OldBytes, NewBytes, ReleaseName) do
       assert(WindowsSessionProbe.contains(marker), marker)
     // No mmap row on Windows: the write it measures is refused while the mapping holds
-    // (verification-log.md, "coherency on Windows"); the HELD refusal row stands in its place.
+    // (verification-log.md, "coherency on Windows"); the HELD refusal row checks that behavior instead.
     assert(!WindowsSessionProbe.contains("mmap-visible"))
 
   test("the machine view script asks about the backing path without splicing it"):

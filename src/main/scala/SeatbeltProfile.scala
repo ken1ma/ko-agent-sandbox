@@ -1,8 +1,9 @@
 // The Seatbelt profile a host build runs under (run-on-host.md "The Seatbelt profile"). Pure — a
-// BuildPrereqs in, SBPL out — so what the profile says is a unit test rather than something only a
-// Mac can check.
+// BuildPrereqs in, SBPL out — so unit tests check the generated SBPL without requiring
+// macOS.
 //
-// Two properties of SBPL shape everything here, both measured by src/probe/seatbelt-semantics.sh:
+// Two properties of SBPL decide how paths are written and how rules are ordered here, both measured by
+// src/probe/seatbelt-semantics.sh:
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
 //     non-canonical path therefore matches nothing, which grants rather than denies. Every path

@@ -62,8 +62,8 @@ object SandboxStats:
   /**
    * `memory: 58% (4.2G) available`, `storage: 58% (937G) free`: the share first, for a
    * reader who knows the machine's size, and beside it the figure the ceilings and the
-   * `--reset-cache` flag act on, `tint` applied to just those. `whole` is positive; a machine that
-   * cannot say its size gets no line.
+   * `--reset-run-on-host` flag act on, `tint` applied to just those. `whole` is positive; a
+   * machine that cannot say its size gets no line.
    */
   def shareLine(label: String, part: Long, whole: Long, state: String, tint: String => String = identity): String =
     val figure = f"${part * 100.0 / whole}%.0f%% (${humanBytes(part)})"
@@ -207,8 +207,8 @@ object SandboxStats:
 
   /**
    * One project's disk use: the launcher's state and build-cache roots, and its agents' volume —
-   * None when podman was not there to size it. `directory` is the recorded one; None for a
-   * project last launched before the record existed.
+   * None when podman was not there to size it. `directory` is the recorded one where it still
+   * exists; None for a project last launched before the record existed, or whose directory is gone.
    */
   final case class ProjectUsage(
     id: String,
@@ -219,17 +219,42 @@ object SandboxStats:
   ):
     def totalBytes: Long = stateBytes + cacheBytes + volumeBytes.getOrElse(0L)
 
-  /** Each project's recorded directory, by id. */
+  /**
+   * Each project's recorded directory, by id, where the directory still exists. When the recorded
+   * directory is missing, the table prints the id instead: a missing directory may be on an
+   * unmounted filesystem, and `--reset <id>` accepts the id without that directory.
+   */
   def projectDirectories(projectsRoot: Path): Map[String, String] =
-    childNames(projectsRoot).flatMap: id =>
-      readIfPresent(projectsRoot.resolve(id)).map(_.trim).filter(_.nonEmpty).map(id -> _)
+    childNames(projectsRoot).filter(SandboxProject.isProjectId).flatMap: id =>
+      readIfPresent(projectsRoot.resolve(id)).map(_.trim).filter(_.nonEmpty)
+        .filter(directory => Files.isDirectory(Paths.get(directory)))
+        .map(id -> _)
     .toMap
 
+  /** The roots holding one directory per project id, sized into the state column. */
+  private def stateDirs(os: Os): Vector[Path] =
+    Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
+
+  private def cacheDir(os: Os): Option[Path] = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
+
+  private val VolumePrefix = "ko-agent-sandbox-persistent-"
+
+  /** Project ids found under the state or cache roots, or extracted from persistent-volume names. */
+  def projectIds(os: Os, volumeNames: Seq[String]): Vector[String] =
+    projectIdsUnder(stateDirs(os) ++ cacheDir(os), volumeNames)
+
+  /** Names matching the id's pattern only (SandboxProject.ProjectIdPattern): a stray file under a root is
+    * not a project, and would be a row `--reset <id>` refuses. */
+  def projectIdsUnder(roots: Seq[Path], volumeNames: Seq[String]): Vector[String] =
+    val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(VolumePrefix))
+    (roots.flatMap(childNames) ++ volumeIds).filter(SandboxProject.isProjectId).distinct.sorted.toVector
+
   /**
-   * Largest first, each project named by its directory — where `--reset-cache` runs — and by its
-   * id where none is recorded. The flag threshold is 1% of the cache filesystem's free space, so
-   * the report says which project to `--reset-cache` rather than leaving a column of numbers to
-   * compare by eye; it reads the cache column alone, the one `--reset-cache` removes.
+   * Largest first, each project named by its directory — where `--reset-run-on-host` runs — and
+   * by its id, which `--reset <id>` takes, where none is recorded or the recorded one is gone. The
+   * flag threshold is 1% of the cache filesystem's free space, so the report says which project
+   * to `--reset-run-on-host` rather than leaving a column of numbers to compare by eye; it reads
+   * only cache usage because `--reset-run-on-host` removes only that cache.
    */
   def projectTable(usages: Vector[ProjectUsage], cacheFreeBytes: Long): String =
     if usages.isEmpty then counted(0, "project") + "\n"
@@ -237,7 +262,7 @@ object SandboxStats:
       val rows = usages.sortBy(usage => (-usage.totalBytes, usage.id)).map: usage =>
         val flag =
           if usage.cacheBytes * 100 > cacheFreeBytes then
-            "  <- cache over 1% of free space; a --reset-cache candidate"
+            "  <- cache over 1% of free space; a --reset-run-on-host candidate"
           else ""
         Vector(
           humanBytes(usage.totalBytes),
@@ -295,10 +320,10 @@ object SandboxStats:
         System.out.print(s"volumes: podman system df failed: ${firstLine(answer.err)}\n")
         None
 
-    val stateDirs = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
-    val cacheDir = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
+    val stateDirs = this.stateDirs(os)
+    val cacheDir = this.cacheDir(os)
 
-    // Where the volumes live is podman's store: a host path on native Linux, the VM's disk
+    // The volumes are in podman's store: a host path on native Linux, the VM's disk
     // elsewhere, which only the machine itself can size.
     val graphRoot = service.toOption.flatMap: podman =>
       val answer = run(podman, "info", "--format", "{{.Store.GraphRoot}}")
@@ -316,17 +341,14 @@ object SandboxStats:
       yield space
     storageLines(os, hostRoots, machineSpace).foreach(System.out.println)
 
-    val volumePrefix = "ko-agent-sandbox-persistent-"
-    val volumeIds =
-      volumes.toVector.flatMap(sizes => persistentVolumes(sizes.keys.toSeq)).map(_.stripPrefix(volumePrefix))
-    val ids = ((stateDirs ++ cacheDir.toVector).flatMap(childNames) ++ volumeIds).distinct.sorted
+    val ids = projectIdsUnder(stateDirs ++ cacheDir, volumes.toVector.flatMap(_.keys))
     val usages = ids.map: id =>
       ProjectUsage(
         id,
         directories.get(id),
         stateDirs.map(dir => directoryBytes(dir.resolve(id))).sum,
         cacheDir.map(dir => directoryBytes(dir.resolve(id))).getOrElse(0L),
-        volumes.map(_.getOrElse(volumePrefix + id, 0L)),
+        volumes.map(_.getOrElse(VolumePrefix + id, 0L)),
       )
     val cacheFreeBytes = cacheDir.flatMap(hostRoot).map(_.freeBytes).getOrElse(0L)
     System.out.print(projectTable(usages, cacheFreeBytes))

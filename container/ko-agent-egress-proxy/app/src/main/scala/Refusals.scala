@@ -11,7 +11,7 @@ case class ClosedWithoutRequest() extends RuntimeException("closed without sendi
 
 /** An origin EOF where response framing promised more. Distinct from IOException because the
   * response head has already been forwarded by then: no 502 can follow, and the handler must end
-  * the client connection abortively so the stump cannot read as a completed response. */
+  * the client connection abortively so the truncated body cannot read as a completed response. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A refusal the ruleset made, told to the refused party as a 403 body of two lines
@@ -21,7 +21,7 @@ case class Refusal(message: String, advice: String) extends RuntimeException(mes
 
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
- * can take there, or the one thing to tell the user. Never a way around the ruleset, and never a
+ * can take there, or the one instruction to pass to the user. Never a way around the ruleset, and never a
  * host this session's ruleset does not admit — forRefusedPost checks before naming one. Fixed text
  * plus what the request itself named, so a body never carries project data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.

@@ -31,8 +31,8 @@ volume=ko-agent-fs-rig-target
 podman volume exists "$volume" 2>/dev/null || podman volume create "$volume" >/dev/null
 
 # Fixed text; the two values that vary travel as environment rather than being spliced in. A
-# quoted heredoc, not a quoted string: the text is prose as much as shell, and one apostrophe in
-# the prose would end a string — the outer shell then runs the rest of it, unmounted.
+# quoted heredoc, not a quoted string: the heredoc holds comments as well as shell commands, and
+# one apostrophe in a comment would end a string — the outer shell then runs the rest of it, unmounted.
 inner=$(cat <<'INNER'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -69,7 +69,7 @@ INNER
 )
 
 # `bash -c`, never `bash -lc`: a login shell sources /etc/profile, which on Debian *assigns* PATH
-# rather than extending it, discarding the image ENV PATH where rustup and cargo live. The symptom
+# rather than extending it, discarding the image ENV PATH that holds rustup and cargo. The symptom
 # is `rustup: command not found` in an image that plainly has one.
 #
 # `label=disable`, and no `:Z`: on a podman machine the source arrives over virtiofs as `nfs_t`,

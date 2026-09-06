@@ -188,7 +188,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(fakes.ended.toList, List(6L), "released, the entry is anyone's to collect")
     assert(!Files.exists(entry))
 
-  test("a condemned entry without its lock is deletion residue: removed, nothing signalled"):
+  test("a condemned entry without its lock is a half-deleted tree: removed, nothing signalled"):
     val root = freshRoot()
     val session = publish(root, Path.of("/p")).toOption.get
     Files.writeString(session.records.resolve("x"), renderRecord(Record(11, "START-G")), UTF_8)
@@ -242,11 +242,11 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(actions.exists(_.isInstanceOf[Collected.ServerShutDown]), clue = actions)
     assert(!Files.exists(session.directory))
 
-  test("staging litter is cleared, published live sessions are not"):
+  test("staging leftovers are cleared, published live sessions are not"):
     val root = freshRoot()
     val live = publish(root, Path.of("/p")).toOption.get
-    val litter = Files.createDirectories(root.resolve(StagingDir).resolve("s-half-made"))
-    Files.writeString(litter.resolve("junk"), "x", UTF_8)
+    val leftover = Files.createDirectories(root.resolve(StagingDir).resolve("s-half-made"))
+    Files.writeString(leftover.resolve("junk"), "x", UTF_8)
     scavenge(root, processes(), _ => ServerAnswer.ShutDown)
     assertEquals(listNames(root.resolve(StagingDir)), Vector.empty)
     assert(Files.isDirectory(live.directory))
@@ -467,7 +467,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     thread.join(10_000)
 
-  test("an absent socket is Unreachable: nothing lives behind it"):
+  test("an absent socket is Unreachable: there is no server to stop"):
     val result = SbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
 

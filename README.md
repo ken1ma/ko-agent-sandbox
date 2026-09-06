@@ -137,7 +137,7 @@ checkout — [Development](#development).
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
       --run-on-host=<tools>
-                         macOS only: sbt / mill can be run on the host. This buys
+                         macOS only: sbt / mill can be run on the host. This gains
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
                          command, which runs those build tools OUTSIDE
@@ -172,17 +172,18 @@ checkout — [Development](#development).
       --update           update the agents: rebuild only the sandbox container
                          image, without cache
 
-      --reset            remove this project's containers (ending any live
+      --reset [<id>...]  remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
                          TLS inspection CA, cached ruleset resolution, logs,
-                         and workspace-filter mount; images, any shared
-                         volume and the host-build caches are left
-                         untouched
-      --reset-cache      remove this project's host-build caches — what
-                         --run-on-host builds resolved; a warm cache
-                         --reset deliberately keeps
-      --reset-all        the same as --reset, for every project, and the
-                         whole build-cache root with them
+                         workspace-filter mount and host-build caches;
+                         images and any shared volume are left untouched.
+                         Ids, as --stats prints them, name projects whose
+                         directories are gone instead of the current one
+      --reset-run-on-host
+                         remove this project's host-build caches alone —
+                         what --run-on-host builds resolved — leaving its
+                         sessions and state; needs no podman
+      --reset-all        the same as --reset, for every project
 
       --egress-effective [--] [<command> [args...]]
                          print the ruleset the accompanying --egress=<profile>
@@ -203,9 +204,10 @@ checkout — [Development](#development).
                          live sessions, and per-project disk use across
                          the launcher's state and build-cache roots and
                          the agents' volumes, each project named by its
-                         directory and any cache worth a --reset-cache
-                         flagged; read-only — a stopped podman machine is
-                         not started
+                         directory — by its id, which --reset takes, where
+                         the directory is gone — and any cache worth a
+                         --reset-run-on-host flagged; read-only — a stopped
+                         podman machine is not started
 
       --self-test [<filter>]
                          run the workspace filter's own suites, always
@@ -287,7 +289,7 @@ checkout — [Development](#development).
        running — the next session's end, or `--reset`, collects it.
     1. To remove: `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs`
        (plain `rm` on Linux).
-    1. When something looks wrong: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.
+    1. For workspace-filter failures: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.
 
 
 ### Running `<command>`
@@ -325,8 +327,8 @@ checkout — [Development](#development).
    workspace mount and the agent-state volume, and race on both.
 1. Calling another installed agent's command or MCP server reuses that agent's login and
    configuration. Treat the project directory as their shared trust domain.
-1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (recipe
-   in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
+1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (the commands
+   are in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
    stock `postgres` and `nginx` cannot.
 
 
@@ -399,20 +401,18 @@ project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`
 
 #### launcher
 
-1. On the host, after "Build the launcher and images" above: the variable opts the
-   container-launching suites in, and they run the jar and images that step built.
+1. On the host, after "Build the launcher and images" above: the command runs the
+   container-launching suites, which `test` and `testFull` skip; they run the jar and images that
+   step built.
 
-    1. macOS / Linux / bash on Windows
+       sbt testWithPodman
 
-           KO_AGENT_SANDBOX_INTEGRATION=1 sbt testFull
-
-    1. Windows PowerShell (version 7 or later)
-
-           $env:KO_AGENT_SANDBOX_INTEGRATION = 1 && sbt testFull
-
-    1. Windows Command Prompt
-
-           set "KO_AGENT_SANDBOX_INTEGRATION=1" && sbt testFull
+    1. `testOnly` patterns can follow, quoted with the command since sbt reads each shell
+       argument as a command of its own: `sbt "testWithPodman *RunTopologyTest"`.
+    1. One case skips unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
+       bucket you own: the refusal of an owner-signed upload inside the inspected tunnel. The
+       case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign the
+       URL and the run line, which uses `sbt --server` so the variable reaches the tests.
 
 1. On Linux, in a session with the default egress profile, which skips the container suites
 

@@ -3,12 +3,12 @@
 How the filter is built, and the alternatives weighed on the way. The *what* it must enforce is
 `git-metadata.md` — plus one rule that is not about git: since the host reads this directory too,
 `symlink` refuses to *create* a link whose target is absolute or climbs above the workspace root.
-That is a conservative shape rather than a judgement about meaning, and it binds at creation rather
-than over links in the tree — `rename` and `link` do not re-judge one already created (`fs.rs`,
-`target_has_portable_shape`, which states both limits and measures the cost on sbt 2). This is the
-*how*. Decisions here were taken with the workload in mind: a sandbox compiling large Scala
-projects — hundreds of thousands of files, `sbt`/`bloop`/`metals` stat-storming the tree — over a
-workspace the host edits concurrently.
+That is a conservative test of syntax, not a judgement about meaning, and it binds at creation
+rather than over links in the tree — `rename` and `link` do not re-judge one already created
+(`fs.rs`, `target_has_portable_syntax`, which states both limits and measures the cost on sbt 2).
+This is the *how*. Decisions here were taken with the workload in mind: a sandbox compiling large
+Scala projects — hundreds of thousands of files, `sbt`/`bloop`/`metals` stat-storming the tree —
+over a workspace the host edits concurrently.
 
 
 ## Mediation mechanism: a FUSE view
@@ -23,7 +23,7 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   provide AppArmor, so using it would require a dedicated machine with an AppArmor-capable kernel
   and the policy loaded — not the user's normal default machine.
 - **fanotify pre-content permission events** (Linux 6.14) — gate access on the real mount, no FUSE.
-  Its permission model gates *access to existing content*; it does not cleanly express the invariant
+  Its permission model gates *access to existing content*; it does not cleanly express the rule
   we most need, *refusing creation of an entry named `.git`*. Partial fit.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in-kernel.
   Elegant and native-speed, and the alternative to revisit if constraints change. Rejected for the
@@ -34,11 +34,11 @@ host's direct writes to the same files are not (`git-metadata.md`, "Host modific
 filter"). FUSE delivers this natively — the filtered view is a *separate mount only the container
 binds*, while the host reaches the backing tree by another path the filter never sees. fanotify and
 BPF-LSM instead hook the backing objects for every accessor in the VM, so preserving the asymmetry
-means carving the container out by cgroup/mount-namespace scoping — surface for a property FUSE
-gives for free. FUSE also keeps the "works wherever the VM does" portability `SECURITY.md` ("The
-workspace filter") rests the choice on, and stays plain auditable Rust rather than a BPF policy
-program whose enablement (`CONFIG_BPF_LSM`, the active LSM list) is itself an environment risk. So
-FUSE is the mechanism — chosen against the alternatives, not defaulted into.
+means carving the container out by cgroup/mount-namespace scoping — code to write for a property
+FUSE gives for free. FUSE also keeps the "works wherever the VM does" portability `SECURITY.md`
+("The workspace filter") rests the choice on, and stays plain auditable Rust rather than a BPF
+policy program whose enablement (`CONFIG_BPF_LSM`, the active LSM list) is itself an environment
+risk. So FUSE is the mechanism — chosen against the alternatives, not defaulted into.
 
 
 ## Inode model: path + `openat2(RESOLVE_IN_ROOT)`
@@ -104,7 +104,7 @@ with the kernel at `open`, after which bulk read/write bypass the daemon at nati
   op-rate (`lookup`/`getattr`), which passthrough does not touch — see caching below.
 
 
-## Coherency: zero-cache is a correctness invariant
+## Coherency: zero-cache is a correctness requirement
 
 Real-time bidirectional visibility is the project's defining requirement — a copy-back overlay was
 rejected at the outset. A FUSE attribute/entry cache with a nonzero TTL lets the kernel answer from
@@ -112,7 +112,7 @@ a stale attribute without re-asking the daemon, so a host edit stays invisible u
 expires. A build tool keying on mtime would then miss the change and compile stale content — a
 correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
 *backing's* state at the moment of the call — never older, and never fresher than the backing
-itself. Therefore, as invariants and not tunables:
+itself. Therefore these are fixed, not settings:
 
 - entry, attribute, and negative-entry TTLs are **0**, always;
 - writeback caching is **off** (it would let the kernel hold writes the host cannot see);
@@ -120,12 +120,12 @@ itself. Therefore, as invariants and not tunables:
   `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
   log rather than serving a view that can go stale. Zero metadata TTL keeps *attributes* fresh, but
   a file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
-  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when it sees mtime change — which
-  the zero-TTL getattrs surface — so data stays coherent while shared `mmap` keeps working.
+  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when a zero-TTL `GETATTR` reports
+  an mtime change, so data stays coherent while shared `mmap` keeps working.
   Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
   the self-test container, and its share rows measure it across the real host share.
 
-The invariant has a measured price: with entry TTL 0, every path component of every syscall is a
+Zero cache has a measured price: with entry TTL 0, every path component of every syscall is a
 fresh LOOKUP round trip.
 
 Performance is recovered only by means that keep every answer fresh — batching, parallelism and a
@@ -160,17 +160,17 @@ policy is enforced whoever is asking. Exposure is bounded by the machine running
 project's containers.
 
 Reach includes concurrency: a project has **one** daemon and one mount, and every session of that
-project — concurrent ones included — binds the same mountpoint. The sharing semantics is exactly
-the raw bind's (same files, live, racing like any two processes on one directory); what is new is
-the shared fate — the daemon dying turns `/workspace` into `ENOTCONN` for all of that project's
-sessions at once, fail-closed for each of them.
+project — concurrent ones included — binds the same mountpoint. The sessions share what a raw bind
+would give them — the same files, live, racing like any two processes on one directory — and one
+process a raw bind has not: the daemon, whose death turns `/workspace` into `ENOTCONN` for all of
+that project's sessions at once, fail-closed for each of them.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no
-FUSE mount. The staged view is not implemented; the root `doc/plan-staged.md` plans it
-and the root `doc/TODO.md` keeps the deferred work. This topology is nevertheless
-fixed before that work starts: per-session mounts would make a cheap restart expensive and give
-collaborating sessions incoherent locks and caches.
+FUSE mount. The staged view is not implemented; the root `doc/plan-staged.md` plans it and the root
+`doc/TODO.md` keeps the deferred work. This topology is nevertheless fixed before that work starts:
+per-session mounts would make a cheap restart expensive and give collaborating sessions incoherent
+locks and caches.
 
 `allow_other` from an unprivileged user additionally requires `user_allow_other` in
 `/etc/fuse.conf`, which stock images do not set. Getting it there is consent-gated and never
@@ -181,8 +181,8 @@ silent: `SECURITY.md`, "Silent changes to what you own", has the rule, and
 ## Build and install
 
 The trust rationale — what an auditor relies on, and how the identity check closes each link — is
-the repository's `SECURITY.md` ("The workspace filter"); what a machine admin sees `--build` do,
-and how to undo it, is its `README.md` ("`--build`"). This section is the mechanics:
+the repository's `SECURITY.md` ("The workspace filter"); what a machine admin sees `--build` do, and
+how to undo it, is its `README.md` ("`--build`"). This section is the build and installation steps:
 
 1. **`sbt dist`** bundles `fuse/ko-agent-fs/**` into the jar next to the container build contexts,
    minus this `doc/` directory and `probe/`, neither of which is a build input or distribution
@@ -201,7 +201,7 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
    The build gates on licences (`deny.toml`) before it produces a binary. The test suite runs in
    the separately built `ko-agent-self-test` image (`testing.md`).
 3. **Extract the binary.** The image's final stage is `scratch` holding only `/ko-agent-fs`, so
-   there is exactly one thing to take:
+   the binary is the only file to take:
 
        podman create --name <tmp> ko-agent-fs:<tag>
        podman cp <tmp>:/ko-agent-fs <install-path>
@@ -214,13 +214,13 @@ and how to undo it, is its `README.md` ("`--build`"). This section is the mechan
    - *native Linux* — there is no VM; the filter runs on the host, so the extraction above writes
      straight into the host user's home.
    - *macOS / Windows* — the filter runs **inside the Podman machine**, because that is where the
-     workspace's backing filesystem is. The image already lives in the VM's image storage, so the
-     extraction is run *there*, through `podman machine ssh` (which lands in the VM user's home,
-     whoever that is), rather than on the host where a plain `podman cp` would land it.
+     workspace's backing filesystem is. The image is already in the VM's image storage, so the
+     extraction is run *there*, through `podman machine ssh` (which writes to the VM user's home,
+     whoever that is), rather than on the host where a plain `podman cp` would put it.
 5. **Verify what was installed.** The launcher compares the installed binary's `--version` with
    the digest of the source it bundles (`Containerfile`, header).
 
-The digest's construction, and why the algorithm exists only on the launcher side, live with the
+The digest's construction, and why the algorithm exists only on the launcher side, are with the
 code: `KoAgentFs.koAgentFsSourceId`.
 
 **All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
@@ -230,10 +230,10 @@ tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear 
 launch, never a silently weaker boundary): each launch gates on the installed binary's identity
 and self-test, then mounts the project through a per-project daemon shared by its sessions and
 binds the mountpoint at `/workspace`. The lifecycle's design and reasoning
-live with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
+are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid
-`fusermount3` when direct `mount(2)` is denied, so an ordinary VM user's mount lands in their
+`fusermount3` when direct `mount(2)` is denied, so an ordinary VM user's mount appears in their
 session namespace — exactly where rootless podman resolves bind sources. This is also why the
 filter is installed into the VM rather than run as a FUSE sidecar container: under rootless podman
 a mount made *inside* a container does not propagate up to where the sandbox's bind could see it.
@@ -241,16 +241,16 @@ a mount made *inside* a container does not propagate up to where the sandbox's b
 
 ## What stays out of the audited core
 
-The policy decisions live in `src/policy.rs`, dependency-free and position-only. This document's
-machinery — the inode table, the resolver, the fuser glue, passthrough, cache tuning — is the
-untrusted plumbing around it. The plumbing decides *where* an op is; `policy.rs` alone decides
-*whether* it is allowed. Keeping that line sharp is what makes the security surface auditable at
-100k-file scale, where the plumbing is necessarily busy.
+The policy decisions are in `src/policy.rs`, dependency-free and position-only. Everything else
+here — the inode table, the resolver, the fuser bindings, passthrough, cache tuning — is the
+untrusted FUSE layer around it. The FUSE layer decides *where* an op is; `policy.rs` alone decides
+*whether* it is allowed. Keeping that separation strict is what keeps the authorization rules
+auditable at 100k-file scale, where the FUSE layer is necessarily busy.
 
 The line is worth reading precisely, because *where* is not always a function of the names. Under
 `<gitdir>/modules` it is not: a submodule's name defaults to its path, so the same path can be a
 gitdir root or a namespace above one, and only the tree can say (`git-metadata.md`, "Positional,
-not string-based"). The plumbing answers that one question — `fs.rs`, `is_gitdir_root`, a single
+not string-based"). The FUSE layer answers that one question — `fs.rs`, `is_gitdir_root`, a single
 `fstatat` for a `HEAD` — and hands the answer over; every rule that consumes it stays in
 `policy.rs` and stays exhaustively unit-testable. An error, or no answer, leaves the strict
-reading, so the plumbing can only ever narrow what the core would otherwise permit.
+reading, so the FUSE layer can only ever narrow what the core would otherwise permit.

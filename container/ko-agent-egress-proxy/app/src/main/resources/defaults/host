@@ -9,7 +9,7 @@
 # - does it expose an unauthenticated write endpoint;
 # - which grants do its operations call for;
 # - could it be project-specific (.ko-agent-sandbox/egress/rule) instead?
-# This list stays a small set of intentional data recipients; it never grows by accumulation.
+# This list stays a small set of intentional data recipients; entries are added only for them.
 
 # git repositories: clone and pull are fetch, a POST to .../git-upload-pack, hence git-fetch
 allow https://github.com/   read git-fetch

@@ -164,18 +164,16 @@ class SandboxStatsTest extends munit.FunSuite:
       100L << 30,
     )
     // A project with no record, last launched before records existed, is named by its id.
-    assertEquals(
-      rendered,
-      """3 projects
-        |  total  state  cache  volume  project
-        |   2.0G      0   2.0G       0  big-000000000000  <- cache over 1% of free space; a --reset-cache candidate
-        |   1.7G   1.5M   445M    1.2G  /home/me/agents
-        |    11K   1.0K    10K       0  /home/me/small
-        |""".stripMargin,
-    )
+    val expected = """3 projects
+    |  total  state  cache  volume  project
+    |   2.0G      0   2.0G       0  big-000000000000  <- cache over 1% of free space; a --reset-run-on-host candidate
+    |   1.7G   1.5M   445M    1.2G  /home/me/agents
+    |    11K   1.0K    10K       0  /home/me/small
+    |""".stripMargin
+    assertEquals(rendered, expected)
     // At exactly 1% nothing is flagged, and an unsized volume reads as unknown, not as empty.
     val edge = projectTable(Vector(ProjectUsage("p-0", None, 0, 1L << 30, None)), 100L << 30)
-    assert(!edge.contains("--reset-cache"), edge)
+    assert(!edge.contains("--reset-run-on-host"), edge)
     assert(edge.contains("  -  p-0"), edge)
     assertEquals(projectTable(Vector.empty, 5L << 30), "0 projects\n")
 
@@ -191,16 +189,37 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-sandbox-run-app-0123456789ab"), None)
     assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
 
-  test("the directory behind an id is what the launch recorded, and nothing where it did not"):
+  test("the directory behind an id is what the launch recorded while it exists, and nothing otherwise"):
     val root = Files.createTempDirectory("projects")
-    val project = Paths.get("/home/me/app")
+    val project = Files.createTempDirectory("app")
     AgentSandboxLauncher.recordProjectDirectory(root, "app-0123456789ab", project)
+    // A record whose directory is gone: the row falls back to the id, the handle --reset takes.
+    AgentSandboxLauncher.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
     Files.createDirectories(root.resolve("odd-0123456789ab"))
     Files.writeString(root.resolve("blank-0123456789ab"), "\n")
+    // A stray file under the root is not a record: its name is no id --reset would take.
+    Files.writeString(root.resolve(".DS_Store"), project.toString)
     assertEquals(projectDirectories(root), Map("app-0123456789ab" -> project.toString))
     if HostCommands.posixPermissions(root) then
       assertEquals(Files.getPosixFilePermissions(root.resolve("app-0123456789ab")).size, 2)
     assertEquals(projectDirectories(root.resolve("absent")), Map.empty)
+
+  test("the project rows are every id holding state, a cache or a volume, once each, sorted"):
+    val tls = Files.createTempDirectory("tls")
+    val cache = Files.createTempDirectory("cache")
+    Files.createDirectories(tls.resolve("b-0123456789ab"))
+    Files.createDirectories(cache.resolve("b-0123456789ab"))
+    Files.createDirectories(cache.resolve("a-0123456789ab"))
+    // Strays a root accumulates — Finder metadata, a hand-made directory — are no projects.
+    Files.writeString(tls.resolve(".DS_Store"), "")
+    Files.createDirectories(cache.resolve("scratch"))
+    val ids = projectIdsUnder(
+      Vector(tls, cache, tls.resolve("absent")),
+      Vector("ko-agent-sandbox-persistent-c-0123456789ab", "ko-agent-sandbox-persistent-backup", "other"),
+    )
+    assertEquals(ids, Vector("a-0123456789ab", "b-0123456789ab", "c-0123456789ab"))
+    // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
+    assertEquals(AgentSandboxLauncher.projectIdOperands("--reset", ids.toList), Right(ids))
 
   test("a volume probe answers present on 0, absent on 1, and nothing on any other exit"):
     assertEquals(AgentSandboxLauncher.volumeExistsAnswer(0), Some(true))
@@ -208,7 +227,7 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(AgentSandboxLauncher.volumeExistsAnswer(125), None)
     assertEquals(AgentSandboxLauncher.volumeExistsAnswer(-1), None)
 
-  test("a reset drops the record once nothing it names remains, and keeps it while something does"):
+  test("a reset drops the record once nothing it names remains, and keeps it while a resource does"):
     val root = Files.createTempDirectory("projects")
     val id = "app-0123456789ab"
     val kept = Files.createTempDirectory("cache")

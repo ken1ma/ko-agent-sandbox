@@ -22,16 +22,16 @@
 // (SECURITY.md, "The `.git` pins of `WORKSPACE_GUARD=none`"); a failure there is the result worth
 // recording, not a red suite to silence.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *WorkspaceGuardOffTest"
+//     sbt "testWithPodman *WorkspaceGuardOffTest"
 
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 
 import HostCommands.*
-import IntegrationSession.{*, given}
+import WithPodman.{*, given}
 
 class WorkspaceGuardOffTest extends munit.FunSuite:
 
@@ -63,7 +63,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         f"hooks mount=${mounted(session, Hooks)}%-5s list=${exec(session, "ls", Hooks).ok}%-5s",
     )
 
-  /** The boundary, and so the only thing asserted. `what` names the host-side operation that ran. */
+  /** The boundary, and so the only assertion. `what` names the host-side operation that ran. */
   private def stillPinned(session: Session, what: String): Unit =
     val configWrite = writable(session, Config)
     val hooksWrite = hookWritable(session)
@@ -85,7 +85,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     session
 
   test("the .git pins hold across host-side mutations that keep the file's inode"):
-    optIn()
+    requireTestWithPodman()
 
     val project = repository()
     val config = project.resolve(".git").resolve("config")
@@ -130,13 +130,13 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a host-side inode replacement is what stops a .git pin being honoured"):
-    optIn()
+    requireTestWithPodman()
 
     // One replacement, then watch: a check made in the stale instant after it reports a pin that
     // is already gone.
     //
     // Asserted rather than left failing: no mount over a path closes this, so a red suite would
-    // report the same thing every run, while an assertion turns a podman release that changes it
+    // report the same failure every run, while an assertion turns a podman release that changes it
     // into the one result worth hearing about.
     val project = repository()
     val config = project.resolve(".git").resolve("config")
@@ -169,7 +169,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         assert(fellThrough, "the pin now survives a host-side inode replacement; SECURITY.md says it does not")
         assert(
           exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
-          "the pin refuses a second write; the first one reached something else",
+          "the pin refuses a second write; the first one reached a different file",
         )
         assert(
           Files.readString(config).contains(marker),
@@ -191,7 +191,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a pointer-file .git is pinned whole, so its redirection cannot be re-aimed"):
-    optIn()
+    requireTestWithPodman()
 
     // The second of gitGuardVolumes' layouts: a linked worktree's `.git` is a file naming the real
     // gitdir, and rewriting it re-aims a repository's control state
@@ -230,7 +230,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       discard(project)
 
   test("a project with no repository gets an empty read-only .git the host cannot seed mid-session"):
-    optIn()
+    requireTestWithPodman()
 
     // The third layout: no `.git` at all, so the name is pinned over the launcher's own empty
     // directory and a sandbox cannot fabricate a repository for host git to discover. The mount
@@ -258,7 +258,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         "the workspace is not writable; these assertions can no longer tell a pin from a lost mount",
       )
 
-      // A repository the host creates mid-session lands in the project's own .git; the pin's
+      // A repository the host creates mid-session is created in the project's own .git; the pin's
       // source is the launcher's empty directory, so the session must keep seeing nothing. The
       // wait matches the second test's observation that a bypass arrives seconds late, never
       // with its mutation.

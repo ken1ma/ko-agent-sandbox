@@ -106,7 +106,7 @@ EOF
     fi
     # The original beside it before the first append, and only if no copy is there yet, so a
     # re-run cannot overwrite the true original with an already-appended one. Named for this
-    # tool rather than `.dist`, which would claim an as-distributed pristineness nobody
+    # tool rather than `.dist`, which would claim the file is as distributed, which nobody
     # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
     [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"
     cat >> "$net" <<EOF
@@ -123,7 +123,7 @@ EOF
 
 set_proxy
 
-# The CA is the other half, and only exists where the session inspects something. Absent is a
+# The CA is the other half, and only exists where the session inspects a host. Absent is a
 # report rather than a failure: the proxy above is what a read-write-only policy needs.
 if [ ! -r "$CA" ]; then
     echo "${0##*/}: $CA is absent, so this session inspects no host; nothing to trust"

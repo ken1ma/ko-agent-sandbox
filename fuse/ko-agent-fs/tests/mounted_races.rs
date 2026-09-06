@@ -3,7 +3,7 @@
 //!
 //! The property is not "every operation succeeds" — under a concurrent rename a failure is a correct
 //! answer. It is that the filter never serves the *wrong* object, never panics, and never leaves the
-//! daemon wedged. These also drive `openat2`'s `EAGAIN` path, which nothing else reaches.
+//! daemon unresponsive. These also drive `openat2`'s `EAGAIN` path, which nothing else reaches.
 
 mod common;
 
@@ -60,7 +60,7 @@ fn a_concurrent_host_rename_never_yields_another_file() {
             }
             // The name genuinely was not there at that instant.
             Err(err) if err.kind() == ErrorKind::NotFound => {}
-            // A stale handle is the honest answer to "the tree moved under you".
+            // A stale handle is the correct answer to "the tree moved under you".
             Err(err) if err.raw_os_error() == Some(libc::ESTALE) => {}
             Err(err) => panic!("unexpected failure during a concurrent rename: {err}"),
         }
@@ -69,7 +69,7 @@ fn a_concurrent_host_rename_never_yields_another_file() {
     stop.store(true, Ordering::Relaxed);
     churn.join().expect("the churn thread panicked");
 
-    // The daemon must still be serving after the churn, not wedged or dead.
+    // The daemon must still be serving after the churn, not unresponsive or dead.
     let _ = fs::rename(
         mount.backing_at("deep/moved"),
         mount.backing_at("deep/nested"),
@@ -86,7 +86,7 @@ fn a_concurrent_host_rename_never_yields_another_file() {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
     // The adversarial version: the sandbox hammers a write at a hook while the host renames the
-    // gitdir out from under that very path and back. No interleaving may land a byte in the hooks
+    // gitdir out from under that very path and back. No interleaving may write a byte into the hooks
     // tree — the classifier and the resolution must agree about which object is being written. The
     // churn moves the gitdir itself rather than a sibling, because a sibling's name is not on the
     // path being written and would leave the agreement untested.
@@ -113,9 +113,9 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
     let mut frozen = 0usize;
     while Instant::now() < deadline {
         match fs::write(mount.at(".git/hooks/pre-commit"), b"evil") {
-            Ok(()) => panic!("SECURITY: a hook write landed during a concurrent rename"),
+            Ok(()) => panic!("SECURITY: a hook write succeeded during a concurrent rename"),
             // The policy refusing is the answer that matters; the other two are the gitdir simply
-            // not being there at that instant, which is the honest answer to a name that moved.
+            // not being there at that instant, which is the correct answer to a name that moved.
             Err(err) if err.raw_os_error() == Some(libc::EPERM) => frozen += 1,
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) if err.raw_os_error() == Some(libc::ESTALE) => {}

@@ -22,7 +22,7 @@ confidence-threshold = 0.9
 # A duplicate major version of a dependency is noise, not an error, in a tree this small.
 multiple-versions = "allow"
 # Nothing here should need a C toolchain beyond the linker. Neither crate is in Cargo.lock today:
-# a tripwire for the day a dependency brings one in, not a fact about the current tree.
+# the build fails the day a dependency brings one in; this says nothing about the current tree.
 deny = ["cc", "bindgen"]
 
 [advisories]

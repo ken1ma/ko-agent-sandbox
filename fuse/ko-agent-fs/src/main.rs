@@ -63,7 +63,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
 /// a caller can answer it with another machine or more privilege; everything after the mount is
 /// this filter's own behavior, which neither repairs. The stage reached is the whole of the classification,
 /// and it is not a claim about the cause: the accompanying message has what detail there is —
-/// sometimes the exact failure, sometimes an error and the usual suspects — so a caller passes it
+/// sometimes the exact failure, sometimes an error and the likely causes — so a caller passes it
 /// on rather than narrowing it into a diagnosis nothing here made. A caller that cannot tell the
 /// two apart either retries a defect with more privilege or reports a setup failure as a bug.
 enum SelfTestFailure {
@@ -203,7 +203,7 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
     }
 }
 
-/// The coherency invariant measured rather than assumed (`doc/architecture.md`, "Coherency").
+/// Coherency measured rather than assumed (`doc/architecture.md`, "Coherency").
 /// `init` refuses a kernel that cannot offer `AUTO_INVAL_DATA`, but a kernel that offers it and
 /// then does not invalidate would serve a build tool stale bytes — from the page cache, or from a
 /// mapping git took before the write. Both of those paths are checked here, and only here:
@@ -211,7 +211,7 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
 ///
 /// The rewrite is in place — `write(2)` over an already-sized file, never the truncate
 /// `fs::write` would do — so the file's length never changes and an invalidation can only have
-/// come from the mtime the zero TTL surfaces. It is also repeated until the backing's own mtime
+/// come from the mtime the zero-TTL `GETATTR` reports. It is also repeated until the backing's own mtime
 /// moves: on a filesystem stamping whole seconds there is nothing for the kernel to notice inside
 /// a tick, and reporting that as an incoherent kernel would abort every launch on a true
 /// statement about the clock. This runs over the local scratch tree, so what it proves is what

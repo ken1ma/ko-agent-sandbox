@@ -1,8 +1,8 @@
 // The workspace filter's mount lifecycle and its reference count, against real sessions.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *MountLifecycleTest"
+//     sbt "testWithPodman *MountLifecycleTest"
 //
 // Sessions are driven with `sleep` rather than an agent — a session runs whatever command it is
 // given, which is what makes the sequence scriptable with no terminal — and the marker set is
@@ -10,7 +10,7 @@
 // point: the two ways the count can be wrong are opposite, and a leaked marker (a mount nobody
 // uses) is invisible to the user who would notice the other one.
 //
-// Beyond the straight line it covers the two rules that exist for a *concurrent* reap
+// Beyond that sequence it covers the two rules that exist for a *concurrent* reap
 // (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle"). Neither needs a launch that can be
 // paused: the state a launch-in-flight presents to a reap is a marker whose container exists and
 // is not running, which can be created directly; that a real launch passes through that state and
@@ -22,7 +22,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
-import IntegrationSession.{*, given}
+import WithPodman.{*, given}
 import KoAgentFs.*
 
 class MountLifecycleTest extends munit.FunSuite:
@@ -31,12 +31,12 @@ class MountLifecycleTest extends munit.FunSuite:
 
   private val Mounts = ".local/share/ko-agent-sandbox/mounts"
 
-  /** Where the daemon lives, through the launcher's own helper rather than a second opinion. */
+  /** Where the daemon runs, through the launcher's own helper rather than a second opinion. */
   private def vm(script: String): String =
     run(koAgentFsScriptCommand(podman, currentOs, script)*).text
 
   test("a project's mount is created, reused, held through a launch in flight, and released"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var started = Vector.empty[Session]
@@ -45,7 +45,7 @@ class MountLifecycleTest extends munit.FunSuite:
     var planted = ""
 
     def launch(log: Path): String =
-      val appeared = IntegrationSession.launch(project, log)
+      val appeared = WithPodman.launch(project, log)
       started = started :+ appeared
       id = appeared.id
       appeared.container
@@ -147,7 +147,7 @@ class MountLifecycleTest extends munit.FunSuite:
 
       // And while C's reap runs, the lock is held from outside: the reap must wait for it rather
       // than counting markers and unmounting under whoever holds it. `-o` so the child does not
-      // inherit the locked descriptor — an flock lives on the open file description, so a child
+      // inherit the locked descriptor — an flock is held on the open file description, so a child
       // holding a copy keeps the lock after the holder is killed.
       lockHolder = vm(
         s"""nohup flock -o "$$HOME/$Mounts/$id/lock" -c 'sleep 300' >/dev/null 2>&1 </dev/null &

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The binary under test. `env!("CARGO_BIN_EXE_...")` bakes an absolute path at *compile* time,
-/// and this project's flow compiles in the hardened sandbox (`/workspace/...`) but runs mounted
+/// and this project compiles in the hardened sandbox (`/workspace/...`) but runs mounted
 /// tests in the privileged rig (`/work/...`) — so resolve relative to the running test executable
 /// (`target/debug/deps/<test>` → `target/debug/ko-agent-fs`), which holds wherever the tree is.
 fn binary() -> PathBuf {
@@ -75,7 +75,7 @@ fn incomplete_arguments_are_refused_with_usage() {
 fn a_workspace_whose_hooks_live_inside_it_is_refused_before_mounting() {
     // The startup guard, end to end through the binary: a repository whose hook directory the host
     // relocated into the worktree is refused, because no amount of per-operation filtering can
-    // protect files that live at an ordinary worktree path (`doc/git-metadata.md`).
+    // protect files at an ordinary worktree path (`doc/git-metadata.md`).
     let source = scratch("relocated-source");
     let mount = scratch("relocated-mount");
     fs::create_dir_all(source.join(".git")).unwrap();
@@ -149,7 +149,7 @@ fn the_self_test_passes_where_fuse_is_available() {
 #[test]
 #[ignore = "needs a FUSE-capable environment; run in the privileged dev rig"]
 fn the_binary_mounts_and_serves_end_to_end() {
-    // The one flow nothing else drives: main.rs itself — argument parsing, the guard, the mount,
+    // The one code path nothing else drives: main.rs itself — argument parsing, the guard, the mount,
     // the policy — as the launcher runs it. The mounted suites construct the filesystem
     // in-process; the self-test uses a scratch tree of the binary's own making. This serves a
     // caller-provided tree through a caller-visible mountpoint.

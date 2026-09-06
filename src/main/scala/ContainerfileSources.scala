@@ -106,7 +106,7 @@ object ContainerfileSources:
               "",
         )
         if refusal.isEmpty then
-          // A name is one of four things, and the order decides which: the empty base or an
+          // A name is one of four kinds, and the order decides which: the empty base or an
           // earlier stage, an image this launcher builds, an image a registry holds, or a short
           // name only the host's registries.conf could place. Testing the registry syntax before
           // the launcher's own images would schedule a pull for one it is about to build.
@@ -272,7 +272,7 @@ object ContainerfileSources:
   /**
    * Pull separately: downstream Containerfiles mix remote sources with launcher-owned local bases,
    * so putting --pull=always on their builds would also look for those local names in registries.
-   * Bare `pull` has always semantics; spelling that as --policy=always requires podman 5.6 for no
+   * Bare `pull` always pulls; spelling that as --policy=always requires podman 5.6 for no
    * behavior change. Do not use `newer`: it suppresses pull errors when a local image exists.
    *
    * --quiet, because the default output answers the wrong question: it is the copier's per-layer

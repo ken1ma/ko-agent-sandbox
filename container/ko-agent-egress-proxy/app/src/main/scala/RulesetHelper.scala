@@ -21,8 +21,8 @@ object RulesetHelper:
    * the hosts it matches, and for each grant the last applicable line decides. A `deny` names a
    * host or a subtree, never a path: a grant by path needs one spelling that works while a denial
    * by path needs every spelling that reaches the tenant, and a proxy comparing literally cannot
-   * know them (SECURITY.md, "Adding hosts, not patterns"). The restrictive shape is therefore a
-   * host-wide deny with the narrower allow beneath it, which fails closed.
+   * know them (SECURITY.md, "Adding hosts, not patterns"). The restrictive ordering therefore puts a
+   * host-wide deny before the narrower allow, which fails closed.
    *
    * Every allowed host is a GET-based exfiltration channel: a permitted GET carries its URL, and a
    * URL is a message. A host's treatment is one of two — `tunnel`, an opaque tunnel with nothing
@@ -35,7 +35,7 @@ object RulesetHelper:
    * what an agent actually wanted.
    *
    * Inspection is off unless the launcher supplies a certificate and key: a leaf naming exactly
-   * the resolved inspected hosts, or under allow-unless-denied the run CA every leaf is minted from
+   * the resolved inspected hosts, or under allow-unless-denied the run CA every leaf is issued from
    * (AgentEgressProxy.loadInspection; SECURITY.md, "Who holds the CA key").
    */
 
@@ -173,8 +173,8 @@ object RulesetHelper:
         val grants = parseGrants(refuse, words)
         if grants.isEmpty then refuse(s"names no grant; an allow line says what it grants: ${Grant.Forms}")
         if grants(Grant.Tunnel) && grants.size > 1 then
-          refuse("puts tunnel beside another word; a tunnel has no path and no method to grant, so the word stands " +
-            "alone")
+          refuse("puts tunnel beside another word; a tunnel has no path and no method to grant, so the word is " +
+            "alone on its line")
         if grants(Grant.Tunnel) && path != RulePath.Root then refuse("gives a tunnel a path; a tunnel's URL ends at /")
         Rule.Allow(host, path, grants)
       case "deny" +: url +: words if url.startsWith("https://") =>
@@ -256,7 +256,7 @@ object RulesetHelper:
    *
    * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
    * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
-   * (the launcher's dry run) is where a malformed defaults file surfaces.
+   * (the launcher's dry run) is where a malformed defaults file is reported.
    */
   private def readDefault(name: String): Vector[Line] =
     val file = s"defaults/$name"
@@ -326,7 +326,7 @@ object RulesetHelper:
     /** Whether the project's file wrote it, directly or by expanding a group. */
     def fromRule: Boolean = via.exists(_.file == RuleFile) || line.file == RuleFile
 
-  /** One allow line's standing grants at its path; a group's line has its group's name, which
+  /** One allow line's active grants at its path; a group's line has its group's name, which
     * is what `deny model-provider` removes. Emptied by denies, it stays in the state as the
     * boundary its path opened: a line is a boundary as well as a grant. */
   private case class Contribution(
@@ -350,7 +350,7 @@ object RulesetHelper:
 
     def touched: Set[String] = contributions.map(_.host).toSet
 
-    /** The resolved grants at `path` on `host` as the state stands: what a line there adds to. */
+    /** The resolved grants at `path` on `host` in the current state: what a line there adds to. */
     def enclosing(host: String, path: String): Set[String] =
       active.filter(c => c.host == host && RulePath.contains(c.path, path)).flatMap(_.grants).toSet
 
@@ -361,15 +361,15 @@ object RulesetHelper:
    * An allow line's step. A host has one treatment, checked at each line: an inspected grant added
    * to a host holding `tunnel`, or `tunnel` to a host holding an inspected grant, is the refusal,
    * naming the deny that would clear the way. With `check`, the project's line is warned when it
-   * grants nothing its enclosing scope lacks — a redundant grant, its boundary standing — unless a
+   * grants nothing its enclosing scope lacks — a redundant grant whose path still defines a boundary — unless a
    * defaults line at the same path already grants it, the restatement that is how a file stays
    * valid as the image adopts its hosts.
    */
   private def contribute(state: State, contribution: Contribution, check: Boolean): State =
     val Contribution(host, path, grants, source, _) = contribution
-    val standing = state.active.filter(_.host == host)
-    val tunnels = standing.filter(_.grants(Grant.Tunnel))
-    val inspected = standing.filter(c => Grant.isInspected(c.grants))
+    val activeOnHost = state.active.filter(_.host == host)
+    val tunnels = activeOnHost.filter(_.grants(Grant.Tunnel))
+    val inspected = activeOnHost.filter(c => Grant.isInspected(c.grants))
     if grants(Grant.Tunnel) && inspected.nonEmpty then
       throw IllegalArgumentException(
         s"${source.spelled} makes $host a tunnel while it holds ${inspected.map(_.source.spelled).mkString("; ")}; " +
@@ -383,7 +383,7 @@ object RulesetHelper:
     val warning =
       if !check || !grants.subsetOf(state.enclosing(host, path)) then None
       else
-        val restated = standing.exists(c => c.path == path && !c.source.fromRule && grants.subsetOf(c.grants))
+        val restated = activeOnHost.exists(c => c.path == path && !c.source.fromRule && grants.subsetOf(c.grants))
         Option.when(!restated)(
           s"${source.spelled} grants nothing its enclosing scope lacks at its position; to narrow, take the " +
             s"grants first: deny https://$host/ ${Grant.spelled(grants)}, then this line",
@@ -779,7 +779,7 @@ object RulesetHelper:
   /**
    * The one gate an inspected request passes. The request is classified once, into what it is — a
    * read, fetch discovery, upload-pack, push discovery, another write — with its path vetted for
-   * the boundary it lands in, and that classification is decided once against the resolved scope
+   * the boundary it falls in, and that classification is decided once against the resolved scope
    * of its longest literal match: GET and HEAD under `read`, bodyless; fetch discovery and
    * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
    * fails at its first request; push discovery under a `POST` grant, where the push is the

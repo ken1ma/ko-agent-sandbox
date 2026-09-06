@@ -86,8 +86,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("Smokescreen-class canonicalization tricks reach no non-allowed host"):
     // Permanent regression inputs from Smokescreen's deny-list bypasses: bracketed hostname (GHSA-qwrf-gfpj-qvj6),
-    // trailing dot / letter case (GHSA-gcj7-j438-hjj2). A ruleset with one normalizeHost chokepoint keeps every
-    // dressing of a non-listed host refused.
+    // trailing dot / letter case (GHSA-gcj7-j438-hjj2). A ruleset passing every host through normalizeHost once
+    // keeps every spelling of a non-listed host refused.
     Vector(
       "[example.com]:443",
       "example.com.:443",
@@ -233,7 +233,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Vector("rule: deny https://telemetry.example/ matches nothing at its position"),
         profile,
       )
-    // A deny that takes something is no warning, under a profile that never consults it included.
+    // A deny that removes a grant is no warning, under a profile that never consults it included.
     assertEquals(rulesetOf(profile = "deny-all", rule = "deny https://github.com/").warnings, Vector.empty)
     // A grant no line gave, a subtree over nothing, a group after `deny defaults`, and `tunnel` on an
     // inspected host: each names its line.
@@ -261,7 +261,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "to narrow, take the grants first: deny https://github.com/ git-fetch, then this line",
       ),
     )
-    // The boundary stands all the same: the scope is in the ruleset: a line is a boundary as well as a grant.
+    // Even when its permissions duplicate the enclosing scope, the narrower path still defines a boundary.
     assertEquals(redundant.inspectedScopes("github.com")("/my-org/"), Set("read", "git-fetch"))
     Vector(
       "allow https://github.com/ read",
@@ -319,7 +319,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(restored.warnings.size, 1)
     assert(restored.warnings.head.contains("taken back"), restored.warnings.toString)
     // A provider line is warned once, naming itself, when every line it expands to is taken back —
-    // by the group's deny or host by host; one host left standing is no warning.
+    // by the group's deny or host by host; one host still granted is no warning.
     val groupTaken = "deny defaults\nallow model-provider anthropic\ndeny model-provider anthropic"
     assertEquals(
       rulesetOf(rule = groupTaken).warnings,
@@ -548,7 +548,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       rulesetOf(rule = "allow https://codeberg.org/my-org/ git-fetch\ndeny https://codeberg.org/ git-fetch")
     assertEquals(reversed.inspectedScopes("codeberg.org"), Map("/" -> Set("read"), "/my-org/" -> Set("read")))
     // A deny is host-wide, so the exception beneath it is the narrower scope, and a spelling the
-    // proxy cannot place in it lands where the deny holds.
+    // proxy cannot place in it falls where the deny holds.
     val owner = rulesetOf(rule = "deny https://github.com/\nallow https://github.com/my-org/ read")
     assertEquals(owner.inspectedScopes("github.com"), Map("/my-org/" -> Set("read")))
     def get(path: String): Unit =
@@ -762,7 +762,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(own.hosts, Map("docs.python.org" -> Treatment.Inspected(Map("/" -> Set("read")))))
     assert(own.clearsDefaults)
     assertEquals(own.warnings, Vector.empty)
-    // Under allow-unless-denied the map is cleared and the public default stands alone.
+    // Under allow-unless-denied the map is cleared and the public default is all that remains.
     val cleared = rulesetOf(profile = "allow-unless-denied", rule = "deny defaults")
     assertEquals(cleared.hosts, Map.empty)
     assertEquals(cleared.denialPatterns, Vector.empty)
@@ -874,7 +874,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(wideningLine(narrowing), None)
     assertEquals(metadataLines(narrowing).size, 1)
 
-  test("--print-ruleset is the rule grammar, one line per resolved scope, sorted: what the leaf is minted from"):
+  test("--print-ruleset is the rule grammar, one line per resolved scope, sorted: what the leaf's names derive from"):
     val resolved = rulesetOf()
     val lines = rulesetLines(resolved)
     assertEquals(lines(0), "egress profile: deny-unless-allowed")
@@ -1079,13 +1079,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[ClosedWithoutRequest](readHttpHeader(ByteArrayInputStream(Array.emptyByteArray), 4096))
     intercept[BadRequest](readHttpHeader(ByteArrayInputStream(ascii("GET / HT")), 4096))
 
-  test("a response head parses for status and framing, and malformations blame the origin"):
+  test("a response head parses for status and framing, and a malformation is the origin's failure"):
     val head = HttpResponseHead.parse(
       ascii("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"),
     )
     assertEquals(head.status, 200)
     assertEquals(head.bodyFraming("GET"), BodyFraming.Length(5))
-    // Origin-side malformations are IOExceptions — the 502 blames the world, never the client.
+    // Origin-side malformations are IOExceptions — the 502 attributes the failure to the origin, never to the client.
     intercept[IOException](HttpResponseHead.parse(ascii("ICY 200 OK\r\n\r\n")))
     intercept[IOException](HttpResponseHead.parse(ascii("HTTP/1.1 abc OK\r\n\r\n")))
 
@@ -1180,7 +1180,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
 
   test("relayInspected refuses an origin whose Connection strips its own framing, before the head"):
-    // On the wire: the refusal has to land before toClientBytes, while a 502 is still possible —
+    // On the wire: the refusal has to be written before toClientBytes, while a 502 is still possible —
     // afterwards the client would read chunk markers as payload.
     val (client, clientPeer) = socketPair()
     val (origin, originPeer) = socketPair()
@@ -1546,8 +1546,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val missing = TlsInspection.inspectedNamesError(Set("github.com"), required)
     assert(missing.exists(_.contains("does not cover gitlab.com")), missing.toString)
 
-    // Over-coverage is the fail-open direction: a launcher minting a name this proxy does not inspect believes that
-    // host is inspected while it tunnels opaquely, writable.
+    // Over-coverage is the fail-open direction: a launcher issuing a leaf for a name this proxy does not inspect
+    // believes that host is inspected while it tunnels opaquely, writable.
     val extra = TlsInspection.inspectedNamesError(required + "gist.github.com", required)
     assert(extra.exists(_.contains("gist.github.com")), extra.toString)
 
@@ -1560,7 +1560,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val (ca, caKey) = X509HelperTest.testCa(now, days = 825)
     val directory = java.nio.file.Files.createTempDirectory("material")
     val (caFile, caKeyFile) = X509HelperTest.writePem(directory, "ca", ca, caKey)
-    val leaf = X509Helper.mintLeaf("docs.example", ca, caKey, now)
+    val leaf = X509Helper.issueLeaf("docs.example", ca, caKey, now)
     val (leafFile, leafKeyFile) = X509HelperTest.writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
     val leafPair = Map(CertificateVariable -> leafFile.toString, PrivateKeyVariable -> leafKeyFile.toString)
     val caPair = Map(CaCertificateVariable -> caFile.toString, CaPrivateKeyVariable -> caKeyFile.toString)
@@ -1574,8 +1574,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(loadInspection(one, Map.empty[String, String].get), None)
     assert(refusal(rulesetOf(profile = "deny-all"), leafPair).contains("inspects no host"))
     assert(refusal(one, leafPair - PrivateKeyVariable).contains("must be set together"))
-    assert(refusal(one, caPair).contains("mints nothing"))
-    assert(refusal(one, leafPair ++ caPair).contains("mints nothing"))
+    assert(refusal(one, caPair).contains("issues nothing"))
+    assert(refusal(one, leafPair ++ caPair).contains("issues nothing"))
     // The public default: the run CA exactly, and nothing else.
     assert(loadInspection(open, caPair.get).nonEmpty)
     assert(refusal(open, Map.empty).contains("are unset under allow-unless-denied"))
@@ -1662,7 +1662,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     request(browse, whole("read"))
     assertEquals(refused(discovery, whole("read")), "git fetch ref discovery")
     assertEquals(refused(transfer, whole("read")), "POST not granted")
-    // A POST whose path mimics upload-pack rides nothing through on a host without git-fetch.
+    // A POST whose path mimics upload-pack opens nothing on a host without git-fetch.
     assertEquals(
       refused(
         "POST /v2/x/x/git-upload-pack HTTP/1.1\r\nHost: public.ecr.aws\r\nContent-Length: 0\r\n\r\n",
@@ -1671,7 +1671,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
       "POST not granted",
     )
-    // A body on a read method is an upload wearing a read method: the fact named, on every host.
+    // A body on a read method is an upload sent as a read: the fact named, on every host.
     Vector("GET", "HEAD").foreach: method =>
       assertEquals(
         refused(s"$method /o/r HTTP/1.1\r\nHost: github.com\r\nContent-Length: 9\r\n\r\n", whole("read", "git-fetch")),
@@ -1722,7 +1722,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A malformed escape is no discovery of either service: the GET stays an ordinary read.
     request("GET /o/r.git/info/refs?service=git-receive%2xpack HTTP/1.1\r\nHost: github.com\r\n\r\n", whole("read"))
     // npm: the audit line beside the root read admits the audit POST at its exact path, an older
-    // npm's endpoint gets an honest refusal, and a scoped package keeps reading under the root.
+    // npm's endpoint is refused, and a scoped package keeps reading under the root.
     val npm = Map("/" -> Set("read"), "/-/npm/v1/security/advisories/bulk" -> Set("read", "POST"))
     request(
       "POST /-/npm/v1/security/advisories/bulk HTTP/1.1\r\nHost: registry.npmjs.org\r\nContent-Length: 0\r\n\r\n",
@@ -2078,10 +2078,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("the ready line spells the bound port, and the fixed-port form is the launcher's"):
     assertEquals(readyLine(51234), "agent-egress-proxy listening on :51234")
     assertEquals(ReadyLine, readyLine(ListenPort))
-
-  // ---------------------------------------------------------------------------
-  // Refusal advice: the 403 body's second line, RefusalAdvice's table
-  // ---------------------------------------------------------------------------
 
   // ---------------------------------------------------------------------------
   // Refusal advice: the 403 body's second line, RefusalAdvice's table

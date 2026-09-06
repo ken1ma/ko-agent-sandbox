@@ -4,28 +4,28 @@
 // Two of these are the refusals no session can demonstrate about itself, because both happen on the
 // proxy's *origin* leg, which inspection moves out of the client's sight: an origin whose
 // certificate does not verify, and a name that resolves into private address space. Skipping either
-// check is invisible in normal operation — the sandbox sees a valid leaf minted by this project's
+// check is invisible in normal operation — the sandbox sees a valid leaf issued by this project's
 // CA whatever the origin presented — which is the classic TLS-interception failure.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *EgressSessionTest"
+//     sbt "testWithPodman *EgressSessionTest"
 //
 // The assertions use hosts outside the built-in ruleset, and the suite is only as good as their
 // reachability from the host running it: `example.com` (a plain addition), `expired.badssl.com` and
 // `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
 // a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address
 // embedded in the name), and `github.com/octocat/Hello-World.git` (a clone small enough to be a
-// fixture). One test takes its fixture from the environment instead — INTEGRATION_SIGNED_PUT_URL,
-// a presigned upload URL only a bucket owner can mint — and skips when it is unset; its own header
-// has the minting one-liner.
+// fixture). One test takes its fixture from the environment instead — SIGNED_PUT_URL,
+// a presigned upload URL only a bucket owner can sign — and skips when it is unset; its own header
+// has the signing one-liner.
 
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
-import IntegrationSession.*
+import WithPodman.*
 
 class EgressSessionTest extends munit.FunSuite:
 
@@ -92,7 +92,7 @@ class EgressSessionTest extends munit.FunSuite:
       discard(project)
 
   test("a read line is inspected, verified at the origin, and opens nothing else"):
-    optIn()
+    requireTestWithPodman()
 
     withSession(
       Some(
@@ -105,7 +105,7 @@ class EgressSessionTest extends munit.FunSuite:
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
-      // Inspected on the project's own CA, like a catalog host: one leaf, minted at launch
+      // Inspected on the project's own CA, like a catalog host: one leaf, issued at launch
       // from the ruleset, or the addition would be a treatment the proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
@@ -135,7 +135,7 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://unlisted.invalid/", "a host the ruleset never named was allowed")
 
   test("a deny of one grant takes that grant alone: the forge stays readable and stops being clonable"):
-    optIn()
+    requireTestWithPodman()
 
     // github.com is `read git-fetch` in the defaults: inspected reads, plus the clone's two
     // requests. One deny line takes the clone back host-wide and leaves the reads.
@@ -157,16 +157,16 @@ class EgressSessionTest extends munit.FunSuite:
         "no deny line records the refused clone at ref discovery",
       )
 
-    // The control, and the only thing that makes the refusal above evidence: the same clone under
+    // The control, without which the refusal above is not evidence: the same clone under
     // the defaults, which the project did not touch.
     withSession(None): session =>
       assert(exec(session, clone*).ok, "the clone fails under the defaults too; this fixture proves nothing")
 
   test("a host-wide deny with a narrower allow beneath it admits one owner and refuses the rest, clone included"):
-    optIn()
+    requireTestWithPodman()
 
     // The forge denied whole, then one owner re-granted for the clone and the device login's path
-    // re-granted for its POST; the same shape on the raw-content host. The requests outside are
+    // re-granted for its POST; the same form on the raw-content host. The requests outside are
     // refused inside the tunnel, so curl reports the proxy's own status, and a clone of another
     // owner fails at ref discovery.
     withSession(
@@ -217,38 +217,38 @@ class EgressSessionTest extends munit.FunSuite:
 
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
     // The inspected treatment's reason to exist (SECURITY.md, "Reading without being able to write").
-    // The rule is host-independent, which is what lets any owner-minted bucket serve as the fixture.
+    // The rule is host-independent, which is what lets any bucket its owner signs for serve as the fixture.
     // For an S3 bucket:
     //
     // ('boto3[crt]', because the credential provider behind `aws login` needs the CRT extra;
-    // s3v4, because in older regions boto3 still mints deprecated SigV2 URLs; `--server`, because
+    // s3v4, because in older regions boto3 still generates deprecated SigV2 URLs; `--server`, because
     // a resident sbt server would keep the environment it started with and skip this test as if
     // the variable were never set):
     //
-    //     INTEGRATION_SIGNED_PUT_URL="$(uv run --with 'boto3[crt]' python3 -c 'import boto3, botocore.config
+    //     SIGNED_PUT_URL="$(uv run --with 'boto3[crt]' python3 -c 'import boto3, botocore.config
     //     print(boto3.client("s3", config=botocore.config.Config(signature_version="s3v4"))
     //         .generate_presigned_url("put_object",
     //         Params={"Bucket": "YOUR-BUCKET", "Key": "ko-agent-sandbox-probe"}, ExpiresIn=1800))')" \
-    //         KO_AGENT_SANDBOX_INTEGRATION=1 sbt --server "testOnly *EgressSessionTest"
+    //         sbt --server "testWithPodman *EgressSessionTest"
     //
-    // The URL's query string is a capability, and it lands whole in this run's owner-only audit
+    // The URL's query string is a capability, and it is recorded whole in this run's owner-only audit
     // log; it expires on its own, and the probe object is the owner's to delete.
-    optIn()
-    val signed = env("INTEGRATION_SIGNED_PUT_URL")
-    assume(signed.isDefined, "set INTEGRATION_SIGNED_PUT_URL to a presigned PUT URL (test header)")
+    requireTestWithPodman()
+    val signed = env("SIGNED_PUT_URL")
+    assume(signed.isDefined, "set SIGNED_PUT_URL to a presigned PUT URL (test header)")
     val url = signed.get
     val bucketHost = java.net.URI(url).getHost
 
     // The control, from the unconfined host: the URL genuinely accepts the write. Without it, the
-    // refusal below could be the origin's own answer to a stale or malformed URL. The body rides
-    // along because it is the diagnosis when this fails — S3 names AccessDenied, ExpiredToken or
+    // refusal below could be the origin's own answer to a stale or malformed URL. The body is
+    // kept because it is the diagnosis when this fails — S3 names AccessDenied, ExpiredToken or
     // SignatureDoesNotMatch there, and nowhere else.
     // The emptied Content-Type strips the header curl invents for a body: a SigV2-signed URL
     // (boto3's default in older regions) covers Content-Type, and the invented one breaks its
     // signature; SigV4 does not care either way.
     val control = run(
       "curl", "-sS", "--max-time", "25", "-w", "\n%{http_code}",
-      "-H", "Content-Type:", "-X", "PUT", "--data-binary", "minted-and-accepted", url,
+      "-H", "Content-Type:", "-X", "PUT", "--data-binary", "signed-and-accepted", url,
     )
     val controlLines = control.text.linesIterator.toVector
     assertEquals(
@@ -271,7 +271,7 @@ class EgressSessionTest extends munit.FunSuite:
       )
 
   test("under allow-unless-denied an unlisted host is an inspected read under this run's CA, a tunnel host opaque"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var live: Option[Session] = None
@@ -288,7 +288,7 @@ class EgressSessionTest extends munit.FunSuite:
       val runCa = exec(
         session, "openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt",
       ).text.stripPrefix("subject=").trim
-      assert(runCa.contains("run-"), s"the sandbox trusts a CA other than this run's: $runCa")
+      assert(runCa.contains(session.suffix), s"the sandbox trusts a CA other than this run's: $runCa")
       assertEquals(issuer(session, "example.com"), runCa, "the unlisted host is not inspected under the run CA")
       assertEquals(issuer(session, "pypi.org"), runCa, "the catalog host is not inspected under the run CA")
       assertNotEquals(issuer(session, "api.anthropic.com"), runCa, "the tunnel host was inspected")
@@ -303,7 +303,7 @@ class EgressSessionTest extends munit.FunSuite:
       discard(project)
 
   test("a deny defaults lockdown removes the defaults and still signs in"):
-    optIn()
+    requireTestWithPodman()
 
     withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
       // A tunnel is opaque: any status means the CONNECT was granted, and the agent endpoint
@@ -317,7 +317,7 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
   test("the npm audit line admits the audit POST beside an install with a scoped package"):
-    optIn()
+    requireTestWithPodman()
 
     // The example's one line, over the defaults' root read: the install's reads under the root
     // keep working with the `%2f` npm spells a scoped package's name with, and the audit POST at

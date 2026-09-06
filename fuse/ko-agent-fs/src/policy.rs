@@ -1,9 +1,9 @@
 //! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String`
-//! (Linux names are byte sequences). This is the whole security surface worth auditing closely;
-//! `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
+//! (Linux names are byte sequences). Every per-operation FUSE authorization rule is here, the part worth
+//! auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
 //! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]).
 //!
-//! The plumbing (the FUSE layer) never re-derives protection from a path string. It caches one
+//! The FUSE layer never re-derives protection from a path string. It caches one
 //! [`GitContext`] per inode, computed once at lookup from the parent's context plus the child's
 //! name ([`child_context`], O(1)), and asks this module to [`classify`] or [`authorize`] against
 //! it. The overwhelming majority of files in a build are outside any gitdir, so their context is a
@@ -63,7 +63,7 @@ pub enum GitContext {
     /// gitdir at `modules/libs/foo` and leaves `modules/libs` holding nothing but other gitdirs.
     /// Names alone cannot say which of the two a directory is — `modules/a/b` is `a/b`'s gitdir if
     /// the submodule is at `a/b`, and `a`'s own subdirectory if it is at `a` — so this is the one
-    /// position the core cannot derive, and [`gitdir_root`] is what the plumbing swaps in once it
+    /// position the core cannot derive, and [`gitdir_root`] is what the FUSE layer swaps in once it
     /// has looked. Control until then, which is what stops a namespace being written into and so
     /// made to *look* like a gitdir.
     ModuleNamespace,
@@ -146,7 +146,7 @@ fn folds_to(name: &[u8], target: &[u8]) -> bool {
     folded[..end].eq_ignore_ascii_case(target)
 }
 
-/// The context of a directory the plumbing has identified as a gitdir root in its own right. The
+/// The context of a directory the FUSE layer has identified as a gitdir root in its own right. The
 /// one position this core cannot derive from names ([`GitContext::ModuleNamespace`] has why), and
 /// so the one it is told.
 pub fn gitdir_root() -> GitContext {
@@ -162,7 +162,7 @@ pub fn gitdir_root() -> GitContext {
 ///
 /// The two differ in how far `<name>` reaches (`doc/git-metadata.md`, P1): a linked worktree's is
 /// always one component and re-roots here; a submodule's is not knowable from the path, so those
-/// children become [`GitContext::ModuleNamespace`] until the plumbing says otherwise. Both compose
+/// children become [`GitContext::ModuleNamespace`] until the FUSE layer says otherwise. Both compose
 /// recursively.
 pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
     match parent {
@@ -312,7 +312,7 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
     }
     // Named separately from the control-state refusal below, which would also catch it: the deny
-    // log's reason is what a user reads when a legitimate name is swallowed, and a "control state"
+    // log's reason is what a user reads when a legitimate name is refused, and a "control state"
     // reason would send them looking in `.git` rather than at this rule.
     if is_sandbox_config_name(new_name) {
         return Decision::Deny(
@@ -502,7 +502,7 @@ mod tests {
             classify_relative_path(b"apps/web/.ko-agent-sandbox/egress/rule", &[]),
             GitPathClass::Control
         );
-        // A repository below it is the launcher's own business, not something to re-root into a
+        // A repository below it is the launcher's own business, not a candidate to re-root into a
         // gitdir with a writable objects/.
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox/.git/objects/ab/cdef", &[]),
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_under_modules_is_a_namespace_until_the_plumbing_says_otherwise() {
+    fn a_directory_under_modules_is_a_namespace_until_the_fuse_layer_says_otherwise() {
         let modules = ingit(&[b"modules"]);
         assert_eq!(
             child_context(&modules, b"libs"),
@@ -621,11 +621,11 @@ mod tests {
     #[test]
     fn a_submodule_name_may_carry_a_slash_and_its_gitdir_still_re_roots() {
         // `libs/foo` is the ordinary name for a submodule at `libs/foo`, so the gitdir is two
-        // components below `modules` — and once the plumbing has identified it, everything under it
+        // components below `modules` — and once the FUSE layer has identified it, everything under it
         // classifies exactly as a top-level submodule's does.
         let namespace = child_context(&ingit(&[b"modules"]), b"libs");
         assert_eq!(namespace, GitContext::ModuleNamespace);
-        let foo = gitdir_root(); // what the plumbing swaps in for `.git/modules/libs/foo`
+        let foo = gitdir_root(); // what the FUSE layer swaps in for `.git/modules/libs/foo`
         for (name, expected) in [
             (b"objects".as_slice(), GitPathClass::Operational),
             (b"refs", GitPathClass::Operational),
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn a_submodule_gitdir_re_roots_so_its_objects_stay_writable() {
         // .git/modules/foo is itself a gitdir; classification must restart there, which for a
-        // one-component name is what the plumbing's answer amounts to.
+        // one-component name is what the FUSE layer's answer amounts to.
         let modules = ingit(&[b"modules"]);
         assert_eq!(child_context(&modules, b"foo"), GitContext::ModuleNamespace);
         let foo = gitdir_root();

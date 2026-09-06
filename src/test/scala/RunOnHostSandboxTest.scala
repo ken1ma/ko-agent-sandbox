@@ -438,8 +438,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // The same escape one directory up: an ancestor link inside the project redirects the rest.
     Files.createSymbolicLink(project.resolve("srv"), outside)
     assert(reachable(project.resolve("srv/real.sock")))
-    // Outside -> project -> outside: every hop but the middle one looks innocent, and only the
-    // middle one is writable. Resolving the chain in one step would report the far end and clear it.
+    // Outside -> project -> outside: every hop but the middle one is outside the project, and only
+    // the middle one is writable. Resolving the chain in one step would report the far end and clear it.
     val relay = project.resolve("relay")
     Files.createSymbolicLink(relay, existing)
     val entry = outside.resolve("entry")

@@ -120,7 +120,7 @@ def rename_flags(_request: dict) -> dict:
         handle.write(b"x\n")
     with open(work("rh-y"), "wb") as handle:
         handle.write(b"y\n")
-    # The session composes the prose; this side reports only what it observed.
+    # The session writes the result lines; this side reports only what it observed.
     return {
         "exchange": exchange(work("rh-x"), work("rh-y")),
         "noreplace_onto_existing": noreplace(work("rh-x"), work("rh-y")),
@@ -230,7 +230,7 @@ def main() -> int:
                     # A directory an earlier run left behind. The session clears it at startup, so
                     # exiting on this one would end this half before the real run had begun.
                     continue
-                # Answered before exiting: the session removes the directory once this lands, and
+                # Answered before exiting: the session removes the directory once this is written, and
                 # would otherwise remove it while this half was still watching for the request.
                 answer(step, {})
                 print("done.")
