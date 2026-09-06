@@ -1,4 +1,4 @@
-// Run Claude Code, Codex, Antigravity, or Copilot CLI inside a rootless podman container.
+// Run Claude Code, Codex, Antigravity, Copilot CLI or OpenCode inside a rootless podman container.
 //
 // One launcher for Linux, macOS, WSL and native Windows. This file records the decisions, the flags and the sequence
 // of steps; the threat model is SECURITY.md. Its neighbours, each the whole of one concern:
@@ -31,8 +31,9 @@
 //    |      mounts it back RO (boundaryGuardVolume)
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
-//    |                                       (~/.claude, ~/.codex, ~/.gemini,
-//    |                                        ~/.copilot are symlinks into it)
+//    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.copilot
+//    |                                        and opencode's XDG directories are
+//    |                                        symlinks into it)
 //    |
 //    +-- --run-on-host (macOS only): sandbox-run-on-host relays a command
 //    |      request to a host-side wrapper that runs sbt/mill under a
@@ -3096,8 +3097,8 @@ object AgentSandboxLauncher:
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
       "--mount", "type=volume,dst=/home/nonroot",
 
-      // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini and ~/.copilot are symlinks into this volume. This is
-      // podman-owned storage, not a bind mount into the host HOME.
+      // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini, ~/.copilot and opencode's XDG directories are symlinks
+      // into this volume. This is podman-owned storage, not a bind mount into the host HOME.
       "--mount", s"type=volume,src=$persistentVolume,dst=/home/nonroot/persistent-volume",
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM

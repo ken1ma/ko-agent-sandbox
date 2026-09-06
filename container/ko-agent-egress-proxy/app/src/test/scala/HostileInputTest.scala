@@ -450,7 +450,9 @@ class HostileInputTest extends munit.FunSuite:
     val publicDefault = profile == "allow-unless-denied"
     if profile == "deny-all" then return "refused"
     var contributions: Vector[Given] = profile match
-      case "deny-unless-model" => provider.fold(Vector.empty)(groupGiven)
+      case "deny-unless-model" =>
+        provider.fold(Vector.empty): selected =>
+          (if selected == AllProviders then ModelProviders else Vector(selected)).flatMap(groupGiven)
       case _                   => if clears then Vector.empty else defaultsGiven
     var patterns = Vector.empty[(String, Boolean)]
     var touched = contributions.map(_.host).toSet
@@ -540,7 +542,7 @@ class HostileInputTest extends munit.FunSuite:
           DenyGroup("google"),
           DenyGroup("anthropic"),
         )
-    val providers = Vector(None, Some("github"), Some("anthropic"), Some("google"))
+    val providers = Vector(None, Some("github"), Some("anthropic"), Some("google"), Some(AllProviders))
     val outcomes = scala.collection.mutable.Map.empty[String, Int].withDefaultValue(0)
     var files = 0
     var refusedFiles = 0

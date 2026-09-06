@@ -65,6 +65,7 @@ The sandbox image preinstalls:
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
 1. Copilot CLI (GitHub)
+1. OpenCode (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
 and configures them to
@@ -109,7 +110,8 @@ checkout — [Development](#development).
 
 1. Insert `--write=reject` before `<command>` when the agent must only read the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to
-   anything other than its own provider.
+   anything other than its own provider; for `opencode` that is every provider group
+   (`doc/egress-proxy.md`).
 1. On macOS, insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
    agent will run builds or tests: a build inside the podman machine takes memory from every
    other container there and keeps it until the session ends.
@@ -122,7 +124,7 @@ checkout — [Development](#development).
 
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
-    <command> runs inside the sandbox: claude, codex, agy, copilot, bash, ...
+    <command> runs inside the sandbox: claude, codex, agy, copilot, opencode, bash, ...
     The first non-option ends launcher parsing and everything after it is
     forwarded verbatim; -- is an optional escape for a command that could
     look like a launcher option.
@@ -314,14 +316,22 @@ checkout — [Development](#development).
        web reached through the model provider"). Prompts for paths outside `/workspace` and for
        URLs remain unless you run `copilot --yolo`. Its fullscreen TUI cannot be turned off, so
        copying text out is `/copy`, which needs `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
-    1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
+    1. `opencode`: run `/connect`, then `/models` to pick a model of the connected provider. The
+       default model, `opencode/big-pickle`, posts to `opencode.ai`, which the proxy admits
+       read-only. Anthropic and Google take an API key. For a ChatGPT plan choose the headless
+       method; the browser method's callback never reaches the container. GitHub Copilot prints
+       a device code like `copilot login`, and the token it stores has the `read:user` scope,
+       not `repo`.
+    1. `claude --resume`, `codex resume`, `agy --continue`, `copilot --continue` and
+       `opencode --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so set
        `approval_policy = "on-request"` there; `agy` reads `~/.gemini/antigravity-cli/settings.json`,
        so set `"toolPermission": "request-review"` there (or via `/config`);
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
        them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
-       `COPILOT_ALLOW_ALL=false`.
+       `COPILOT_ALLOW_ALL=false`; `opencode`'s are managed config the image fixes, like
+       `claude`'s, and `--env='OPENCODE_PERMISSION={"*":"ask"}'` overrides it for one launch.
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume, and race on both.
 1. Calling another installed agent's command or MCP server reuses that agent's login and

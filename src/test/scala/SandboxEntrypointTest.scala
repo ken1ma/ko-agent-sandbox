@@ -24,10 +24,13 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assume(Files.isExecutable(sh) && gnuMv, "runs the entrypoint under /bin/sh with GNU mv")
     val root = Files.createTempDirectory("sandbox-entrypoint")
     val seed = Files.createDirectories(root.resolve("seed"))
-    Vector("claude", "codex", "antigravity", "copilot").foreach: agent =>
+    Vector("claude", "codex", "antigravity", "copilot", "opencode").foreach: agent =>
       Files.createDirectory(seed.resolve(agent))
       Files.writeString(seed.resolve(agent).resolve("seeded"), agent)
     Files.createSymbolicLink(seed.resolve("copilot").resolve("copilot-instructions.md"), script)
+    // opencode's seed has depth: the link sits in a subdirectory.
+    Files.createDirectory(seed.resolve("opencode").resolve("config"))
+    Files.createSymbolicLink(seed.resolve("opencode").resolve("config").resolve("AGENTS.md"), script)
     val home = Files.createDirectories(root.resolve("home"))
     Files.createDirectory(home.resolve("persistent-volume"))
     (seed, home)
@@ -119,9 +122,10 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(status, 0, output)
     assertEquals(output, "a b c ")
     val volume = home.resolve("persistent-volume")
-    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
+    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot", "opencode"))
     assertEquals(Files.readString(volume.resolve("codex").resolve("seeded")), "codex")
     assert(Files.isSymbolicLink(volume.resolve("copilot").resolve("copilot-instructions.md")))
+    assert(Files.isSymbolicLink(volume.resolve("opencode").resolve("config").resolve("AGENTS.md")))
 
   test("a volume from an older image gets only the directories it lacks; the rest is untouched"):
     val (seed, home) = fixture()
@@ -151,7 +155,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val volume = home.resolve("persistent-volume")
     val results = (1 to 20).toVector.map(_ => start(seed, home)).map(finish)
     results.foreach((status, output) => assertEquals(status, 0, output))
-    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
+    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot", "opencode"))
     assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md"))
 
   test("a home with no persistent-volume — a container run by hand, not a session — still runs the command"):

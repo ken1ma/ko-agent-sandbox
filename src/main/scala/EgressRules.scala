@@ -99,8 +99,10 @@ object EgressRules:
               .map(_.trim)
               .filter(_.nonEmpty)
               .getOrElse("none")
-            val selected =
-              if provider == "none" then "no provider selected" else s"model provider $provider"
+            val selected = provider match
+              case "none" => "no provider selected"
+              case "all"  => "every model provider"
+              case name   => s"model provider $name"
             s"egress: ${chosen(profile, color)}; $selected; $inspected inspected, $opaque opaque"
           case _ =>
             s"egress: ${chosen(profile, color)}; $inspected inspected, $opaque opaque"
@@ -199,11 +201,13 @@ object EgressRules:
 
   /**
    * Only the basename of the directly launched command is classified; the launcher does not
-   * inspect a wrapper's arguments or guess what it may later execute — a wrapper script selects
+   * inspect a script's arguments or guess what it may later execute — a script that starts an agent selects
    * no provider and, under deny-unless-model, gets the startup warning instead of a guessed grant.
+   * opencode has no fixed provider and selects `all`, the proxy's word for every group it defines
+   * (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of groups.
    */
   val AgentProviders: Map[String, String] =
-    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github")
+    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github", "opencode" -> "all")
 
   def commandProvider(command: Option[String]): Option[String] =
     command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)
