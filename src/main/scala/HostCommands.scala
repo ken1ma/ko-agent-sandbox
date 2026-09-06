@@ -1,8 +1,8 @@
 // The launcher's host-side primitives: the platform tag, how it runs an executable, and how it
 // reads and writes the small state files everything else keeps. Nothing here knows what a sandbox
-// is, which is what lets every other file in this package sit on top of it without a cycle.
+// is, which is what lets every other file in this package depend on it without a cycle.
 //
-// The security-relevant member is findOnPath — see its comment. Everything else is plumbing.
+// The security-relevant member is findOnPath — see its comment.
 
 package agentsandbox.launcher
 
@@ -29,8 +29,27 @@ object HostCommands:
     * these lines are consent or refusal text a reader must be able to trust
     * verbatim. */
   def fail(message: String, code: Int = 1): Nothing =
+    if shuttingDown then
+      val interrupted = "the launch was interrupted; the failure below is its consequence, not a fault of its own"
+      System.err.println(emphasized(s"$ErrorLabel $interrupted"))
     System.err.println(emphasized(message))
     sys.exit(code)
+
+  /**
+   * Whether this JVM's shutdown has begun. A child podman shares the terminal's process group and
+   * dies of the same Ctrl-C, so the refusal the main thread raises on its exit status is the
+   * interruption's, not the child's, and `fail` says so first. The JDK reports the state only by
+   * refusing: `addShutdownHook` and `removeShutdownHook` throw IllegalStateException once the hooks
+   * have started, and removing needs no hook of this probe's to exist. The exit that `fail` then
+   * makes blocks indefinitely — Runtime.exit's contract: "all other invocations will perform no
+   * action and block indefinitely" — and the JVM ends when the hooks finish, with the shutdown's
+   * own status.
+   */
+  def shuttingDown: Boolean =
+    try
+      Runtime.getRuntime.removeShutdownHook(Thread(() => ()))
+      false
+    catch case _: IllegalStateException => true
 
   def env(name: String): Option[String] =
     Option(System.getenv(name)).filter(_.nonEmpty)
@@ -41,38 +60,62 @@ object HostCommands:
 
   /**
    * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
-   * `deny-unless-allowed` — so the banner, `--egress-effective` and the policy file read and grep
+   * `deny-unless-allowed` — so the banner, `--egress-effective` and the rule file read and grep
    * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
    * severity label, a boundary weaker than the default, or the mode an authority line states, and
    * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
-   * alone, and this follows them. A mode takes a hue of its own so it is never read as a severity:
-   * yellow and red stay warning and error.
+   * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
+   * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
+   * apart; red is a boundary weaker than the default, in force for the session; what the user
+   * chose — a mode, the tools run on host — takes a hue of its own, purple, so it is never read as
+   * a severity. A headroom figure is outside the ranking: it is a measurement, and green, orange
+   * and red are its scale (Headroom).
    *
-   * Colour carries nothing of its own. These lines are read back from a redirected stream, from a
+   * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the two authority lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
-  def caution(text: String, color: Boolean = colorStderr): String = tinted("33", text, color)
+  def caution(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
 
-  /** A refusal, which in this launcher is only ever the `error:` label. */
-  def alarm(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
+  /** A boundary weaker than the default, in force: the raw workspace bind, the permissive egress
+    * profile, a rule file granting beyond the defaults. The whole line, so no line ever has
+    * two colours. */
+  def weakened(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
 
-  /** The mode an authority line states — `live`, `deny-unless-allowed`. Orange is not among
-    * ANSI's eight, so this is the 256-colour cube's. */
-  def statedMode(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
+  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`,
+    * `sbt, mill`. Purple, and orange above, are not among the theme's sixteen — its magenta is as
+    * often pink, its yellow as often olive — so both are the 256-colour cube's. */
+  def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
-  /** Each line's leading severity label tinted. Line by line, because a block carries a label on
-    * some lines and not others — the proxy's policy warnings, a warning's continuation. */
+  /** The scale of a headroom figure: green while what the verb is about fits, orange where it is
+    * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and
+    * buildMemoryHeadroom each define their own scale). On the figure alone, so the
+    * words hold where the escape does not. */
+  enum Headroom(val code: String):
+    case Ample extends Headroom("32")
+    case Warned extends Headroom("38;5;208")
+    case Short extends Headroom("31")
+
+  def gauged(text: String, headroom: Headroom, color: Boolean = colorStderr): String =
+    tinted(headroom.code, text, color)
+
+  /** Each line's leading severity label tinted. Line by line, because a block has a label on
+    * some lines and not others — the proxy's rule warnings, a warning's continuation. */
   def emphasized(text: String, color: Boolean = colorStderr): String =
     text.linesIterator
       .map: line =>
-        if line.startsWith(ErrorLabel) then alarm(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
+        if line.startsWith(ErrorLabel) then caution(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
         else if line.startsWith(WarningLabel) then caution(WarningLabel, color) + line.stripPrefix(WarningLabel)
         else line
       .mkString("\n")
 
   /** Every warning the launcher writes itself, so the label is spelled and tinted in one place. */
   def warn(message: String): Unit = System.err.println(emphasized(s"$WarningLabel $message"))
+
+  /** The `[y/N]` convention, stated once for every prompt: only an explicit yes is consent —
+    * EOF and everything else decline. */
+  def consented(answer: Option[String]): Boolean =
+    answer.map(_.trim.toLowerCase(java.util.Locale.ROOT)).exists(a => a == "y" || a == "yes")
 
   private val WarningLabel = "warning:"
   private val ErrorLabel = "error:"
@@ -90,13 +133,18 @@ object HostCommands:
   lazy val colorStderr: Boolean =
     colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
 
+  /** For the `--stats` report, the one output the launcher writes to stdout: the stream a reader
+    * pipes as readily as watches, so it is asked for itself. */
+  lazy val colorStdout: Boolean =
+    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
+
   /** `NO_COLOR` and `TERM=dumb` are what a tool is expected to honour; the launcher adds no
     * variable of its own. */
   def colorAllowed(os: Os, noColor: Option[String], term: Option[String]): Boolean =
     os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
 
   // -------------------------------------------------------------------------
-  // Subprocess plumbing
+  // Subprocesses
   // -------------------------------------------------------------------------
 
   case class Run(exit: Int, out: Array[Byte], err: String):
@@ -107,8 +155,8 @@ object HostCommands:
    * A command echoed before it runs, as `set -x` prints it: `+ ` and then the words, each shown
    * unambiguously on the one line — so a multi-line script argument prints as the one quoted
    * word it is, not as lines that look like commands of their own. The marker is what tells a
-   * command from the output that follows it; the launcher's own lines carry a `label:` instead,
-   * and a subprocess's carry neither.
+   * command from the output that follows it; the launcher's own lines have a `label:` instead,
+   * and a subprocess's have neither.
    *
    * The resolved podman is shown by its bare name, since the `using:` line said the path once
    * when it was resolved — and only then: an unannounced path stays spelled out.
@@ -170,7 +218,7 @@ object HostCommands:
 
   /**
    * Host executables resolve through PATH entries that are absolute *and*
-   * outside the project directory. Two different things are being
+   * outside the project directory. Two different path classes are being
    * kept out, and neither subsumes the other:
    *
    *   - a relative entry (`.`, `bin`, `../tools`) resolves against the working
@@ -225,7 +273,7 @@ object HostCommands:
    * covers the executables the launcher itself invokes; this covers the ones
    * its scripts do.
    *
-   * The system directories are the whole list, and what that costs is legible
+   * The system directories are the whole list, and what that costs is reported
    * rather than silent: a host keeping fusermount3 somewhere unusual — a Nix
    * profile, say — gets a "not found" it can read, never a binary out of the
    * project. Inside a podman machine the value is what the VM already had.
@@ -238,7 +286,7 @@ object HostCommands:
   val ScriptPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
   // Concatenated, not an interpolated stripMargin: stripMargin runs after interpolation, so a
-  // script line that began with `|` would be silently eaten.
+  // script line that began with `|` would be silently dropped.
   def withScriptPath(script: String): String = s"export PATH=$ScriptPath\n$script"
 
   /**
@@ -255,7 +303,7 @@ object HostCommands:
           """error: podman is not installed or not on PATH
             |
             |PATH entries inside the current directory are not searched: it is the
-            |project directory being sandboxed (DESIGN.md, "No PATH-resolved host executables").
+            |project directory being sandboxed (design.md, "No repository-controlled host executable resolution").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127,
@@ -282,7 +330,7 @@ object HostCommands:
   def canonicalizedFuturePath(path: Path): Either[String, Path] =
     val absolute = path.toAbsolutePath.normalize()
     // NOFOLLOW attributes, not Files.exists: exists follows links, so a dangling symlink would
-    // read as absent and ride into the "future" tail unchecked — a concurrent writer could
+    // read as absent and pass into the "future" tail unchecked — a concurrent writer could
     // materialize its target after validation — and it folds every other I/O failure into false.
     // Only NotFound means missing; anything else refuses.
     def presence(candidate: Path): Either[String, Boolean] =
@@ -338,7 +386,7 @@ object HostCommands:
    * The stamp travels inside the file rather than in one beside it because separate files are
    * atomic individually and race as a set — a launch interleaved between writing its content and
    * writing its stamp leaves a pairing neither launch computed, and that pairing is sticky, held
-   * until something happens to rewrite it. A caller reading several of these requires every one to
+   * until a later launch rewrites it. A caller reading several of these requires every one to
    * match, so an interleaving is a miss that re-derives rather than a mixture that persists.
    */
   def stampedEntry(path: Path, stamp: String): Option[String] =
@@ -378,7 +426,7 @@ object HostCommands:
    * copies are taken from (AgentSandboxLauncher, the locked TLS derivation), or per-run itself,
    * like the audit log — and a launch of the same project may be copying or assembling at this
    * moment: a name that disappears even briefly fails that launch, and a name that exists holding
-   * half a file is worse. Rename is what leaves neither state visible. The temporary carries a
+   * half a file is worse. Rename is what leaves neither state visible. The temporary has a
    * generated name, so two launches racing here cannot collide on it.
    *
    * A write that would change neither the content nor the mode is skipped: a cache stamp that
@@ -468,8 +516,8 @@ object HostCommands:
    * A variable governing the boundary — or whether its reader sees it — takes exactly one of a
    * closed value set, case-sensitive: never a bare presence test, and no alternate spellings
    * (`1`, `true`, `yes`, …). An unclear value must refuse the launch rather than be read as
-   * either side of the choice (DESIGN.md, "Security configuration must fail closed"), and each
-   * accepted spelling is surface that has to stay correct everywhere it is parsed. Unset and
+   * either side of the choice (design.md, "Security configuration must fail closed"), and each
+   * accepted spelling must be handled consistently everywhere it is parsed. Unset and
    * empty mean the default, which is always the choice that weakens nothing.
    */
   def closedChoice(

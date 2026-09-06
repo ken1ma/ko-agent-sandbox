@@ -50,7 +50,7 @@ object LauncherImages:
 
   /**
    * The label read back through Go's raw-string (backtick) quoting, because the argument must not
-   * carry a double quote: on Windows, Java's argument encoding passes an embedded quote through
+   * contain a double quote: on Windows, Java's argument encoding passes an embedded quote through
    * unescaped, and podman then parses a mangled template ("bad character U+002D"). Literal
    * newlines are avoided in the multi-line templates below for the same reason — `{{println}}`
    * emits them on the output side instead.
@@ -66,7 +66,7 @@ object LauncherImages:
 
   case class TaggedImage(tag: String, id: String)
 
-  // Podman distinguishes these by case: `.Id` is the full SHA, while `.ID` is truncated.
+  // podman distinguishes these by case: `.Id` is the full SHA, while `.ID` is truncated.
   def imageListCommand(podman: String): Vector[String] =
     Vector(podman, "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}\t{{.Id}}")
 
@@ -88,9 +88,9 @@ object LauncherImages:
       fail(s"error: $failure; could not find the image id for $image")
 
   /**
-   * Only the launcher-owned base repositories carry versioned tags. Fixed leaf and cache tags are
+   * Only the launcher-owned base repositories have versioned tags. Fixed leaf and cache tags are
    * deliberately excluded: a supported custom sandbox or proxy image may use another tag in the
-   * same repository. Leaves precede bases. `localhost/` is Podman's display form for the unqualified
+   * same repository. Leaves precede bases. `localhost/` is podman's display form for the unqualified
    * names the launcher passes to `build -t`.
    */
   def staleVersionedBaseImageTags(
@@ -108,7 +108,7 @@ object LauncherImages:
 
   /**
    * The self-test images a listing holds, in removal order: SelfTestImageTags reversed, leaves
-   * before bases like every other cleanup list. Podman's listing order is not a dependency order,
+   * before bases like every other cleanup list. podman's listing order is not a dependency order,
    * so it is never inherited.
    */
   def selfTestCleanupOrder(existing: Vector[TaggedImage]): Vector[TaggedImage] =
@@ -237,7 +237,7 @@ object LauncherImages:
     "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
 
   /**
-   * The continuation line is indented under the note, as every launcher line carries a label and
+   * The continuation line is indented under the note, as every launcher line starts with a label and
    * an unindented bare line reads as a subprocess's. The second form's continuation is podman's
    * error text, so it stays as podman wrote it.
    */
@@ -247,7 +247,7 @@ object LauncherImages:
         s"note: keeping superseded image ${shortId(imageId)} while container ${shortId(matched.group(1))}"
           + " still uses it;\n  a later --build, --update, or --self-test will retry once that container is gone"
       case None =>
-        s"note: keeping superseded image ${shortId(imageId)}; Podman did not remove it\n${error.trim}"
+        s"note: keeping superseded image ${shortId(imageId)}; podman did not remove it\n${error.trim}"
 
   def removeSupersededImages(
     podman: String,

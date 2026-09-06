@@ -1,8 +1,8 @@
 // The workspace filter's mount lifecycle and its reference count, against real sessions.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *MountLifecycleTest"
+//     sbt "testWithPodman *MountLifecycleTest"
 //
 // Sessions are driven with `sleep` rather than an agent — a session runs whatever command it is
 // given, which is what makes the sequence scriptable with no terminal — and the marker set is
@@ -10,19 +10,19 @@
 // point: the two ways the count can be wrong are opposite, and a leaked marker (a mount nobody
 // uses) is invisible to the user who would notice the other one.
 //
-// Beyond the straight line it covers the two rules that exist for a *concurrent* reap
+// Beyond that sequence it covers the two rules that exist for a *concurrent* reap
 // (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle"). Neither needs a launch that can be
-// paused: the state a launch-in-flight presents to a reap is a marker whose container does not
-// exist, which can be created directly; that a real launch passes through that state is the
-// marker's mtime against its container's creation; and that the project lock serializes a reap
-// against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
+// paused: the state a launch-in-flight presents to a reap is a marker whose container exists and
+// is not running, which can be created directly; that a real launch passes through that state and
+// no other is the marker's mtime against its container's creation; and that the project lock
+// serializes a reap against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
 
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
-import IntegrationSession.*
+import WithPodman.{*, given}
 import KoAgentFs.*
 
 class MountLifecycleTest extends munit.FunSuite:
@@ -31,20 +31,21 @@ class MountLifecycleTest extends munit.FunSuite:
 
   private val Mounts = ".local/share/ko-agent-sandbox/mounts"
 
-  /** Where the daemon lives, through the launcher's own helper rather than a second opinion. */
+  /** Where the daemon runs, through the launcher's own helper rather than a second opinion. */
   private def vm(script: String): String =
     run(koAgentFsScriptCommand(podman, currentOs, script)*).text
 
   test("a project's mount is created, reused, held through a launch in flight, and released"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var started = Vector.empty[Session]
     var lockHolder = ""
     var id = ""
+    var planted = ""
 
     def launch(log: Path): String =
-      val appeared = IntegrationSession.launch(project, log)
+      val appeared = WithPodman.launch(project, log)
       started = started :+ appeared
       id = appeared.id
       appeared.container
@@ -72,11 +73,12 @@ class MountLifecycleTest extends munit.FunSuite:
 
     try
       val a = launch(project.resolve("a.log"))
+      val aLog = Files.readString(project.resolve("a.log"))
       assert(
-        Files.readString(project.resolve("a.log")).contains(", mounted shared by this project's live sessions"),
-        s"session A did not create the mount — another session of $id already holds one",
+        aLog.contains("workspace filter: mounted") && !aLog.contains("reusing the mount"),
+        s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
-      assertEquals(eventually(30)(markers())(_ == a), a, "markers after A")
+      polling.withMaxRetries(30).eventually(assertEquals(markers(), a, "markers after A"))
       assertEquals(mounted(), 1, "A is running but its mountpoint is not mounted")
       assertEquals(daemonPids().size, 1, s"expected one daemon for $id")
 
@@ -88,48 +90,53 @@ class MountLifecycleTest extends munit.FunSuite:
         s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
-      assertEquals(eventually(30)(markers())(_ == both), both, "markers with both up")
+      polling.withMaxRetries(30).eventually(assertEquals(markers(), both, "markers with both up"))
       assertEquals(daemonPids().size, 1, "B started a second daemon")
       // A daemon holding the project lock would block every later reap for the session's whole
       // life; the mount script closes fd 9 across the fork to prevent exactly that.
       daemonPids().foreach: pid =>
         assertEquals(vm(s"[ -e /proc/$pid/fd/9 ] && echo held || echo free").trim, "free")
 
-      // The ordering the whole reference count rests on, measured rather than assumed: the marker
-      // is written at the mount, the container created only once the proxy is up.
+      // The ordering the whole reference count rests on, measured rather than assumed: the
+      // container is created first, the marker written at the mount after it.
       val written = vm(s"""stat -c %.9Y "$$HOME/$Mounts/$id/sessions/$b" 2>/dev/null""")
         .trim.filter(_.isDigit)
       val created = run(podman, "inspect", "--format", "{{.Created.UnixNano}}", b).text.trim
       assert(written.nonEmpty && created.forall(_.isDigit), s"marker=$written created=$created")
-      val windowMillis = (created.toLong - written.toLong) / 1000000
+      val afterMillis = (written.toLong - created.toLong) / 1000000
       assert(
-        windowMillis >= 100,
-        s"B's marker and its container are ${windowMillis}ms apart; the window the age gate " +
-          "covers is not there, so either the launcher's ordering changed or the clocks differ",
+        afterMillis > 0,
+        s"B's marker was written ${-afterMillis}ms before its container was created; either the " +
+          "launcher's ordering changed or the clocks differ",
       )
 
       run(podman, "stop", "--time", "2", a)
       started = started.filterNot(_.container == a)
-      assertEquals(eventually(Patience)(markers())(_ == b), b, "markers after A exits")
+      eventually(assertEquals(markers(), b, "markers after A exits"))
       assertEquals(mounted(), 1, "the mount went away while B was still using it")
       assert(run(podman, "exec", b, "sh", "-c", "ls /workspace > /dev/null").ok,
              "B's /workspace stopped serving when A exited")
 
       // Exactly the state a launch in flight presents to a reap, planted rather than raced for: a
-      // fresh marker whose container does not exist. Without the age gate the next reap prunes it,
-      // finds none left, and unmounts under a launch still on its way to creating its container.
-      val planted = s"ko-agent-sandbox-run-$id-0000dead"
+      // marker whose container exists and is not running. Pruning on anything short of the
+      // container's absence would take it, find none left, and unmount under a launch still on its
+      // way to starting.
+      planted = s"ko-agent-sandbox-run-$id-0000dead"
+      assert(
+        run(podman, "create", "--name", planted, "--pull=never", "ko-agent-sandbox:latest", "true").ok,
+        "could not create the planted container",
+      )
       vm(s"""touch "$$HOME/$Mounts/$id/sessions/$planted"""")
       run(podman, "stop", "--time", "2", b)
       started = started.filterNot(_.container == b)
-      assertEquals(
-        eventually(Patience)(markers())(_ == planted), planted,
-        "the planted marker did not survive the last real session's reap",
-      )
+      eventually:
+        assertEquals(markers(), planted, "the planted marker did not survive the last real session's reap")
       assertEquals(mounted(), 1, "the mount was pulled out from under a launch in flight")
       assertEquals(daemonPids().size, 1, "the daemon exited under a launch in flight")
 
-      vm(s"""touch -d '20 minutes ago' "$$HOME/$Mounts/$id/sessions/$planted"""")
+      // Its container gone — as the reaper's bounded wait or a reset leaves it — the marker is the
+      // next reap's to collect.
+      assert(run(podman, "rm", planted).ok, "could not remove the planted container")
       val c = launch(project.resolve("c.log"))
       assert(
         Files
@@ -140,7 +147,7 @@ class MountLifecycleTest extends munit.FunSuite:
 
       // And while C's reap runs, the lock is held from outside: the reap must wait for it rather
       // than counting markers and unmounting under whoever holds it. `-o` so the child does not
-      // inherit the locked descriptor — an flock lives on the open file description, so a child
+      // inherit the locked descriptor — an flock is held on the open file description, so a child
       // holding a copy keeps the lock after the holder is killed.
       lockHolder = vm(
         s"""nohup flock -o "$$HOME/$Mounts/$id/lock" -c 'sleep 300' >/dev/null 2>&1 </dev/null &
@@ -152,20 +159,18 @@ class MountLifecycleTest extends munit.FunSuite:
 
       run(podman, "stop", "--time", "2", c)
       started = started.filterNot(_.container == c)
-      assert(
-        eventually(Patience)(lockWaiters())(_ >= 1) >= 1,
-        "no reap ever blocked on the project lock; it is not serializing",
-      )
+      eventually(assert(lockWaiters() >= 1, "no reap ever blocked on the project lock; it is not serializing"))
       assertEquals(mounted(), 1, "the mount went down while the lock was held")
-      assertEquals(markers(), planted, "expected only the aged marker while the reap is blocked")
+      assertEquals(markers(), planted, "expected only the planted marker while the reap is blocked")
 
       vm(s"kill $lockHolder 2>/dev/null || true")
       lockHolder = ""
-      assertEquals(eventually(Patience)(markers())(_.isEmpty), "", "the aged marker was collected")
-      assertEquals(eventually(60)(mounted())(_ == 0), 0, "the mountpoint is still mounted")
-      assertEquals(eventually(60)(daemonPids().size)(_ == 0), 0, "the daemon is still running")
+      eventually(assertEquals(markers(), "", "the planted marker was collected"))
+      polling.withMaxRetries(60).eventually(assertEquals(mounted(), 0, "the mountpoint is still mounted"))
+      polling.withMaxRetries(60).eventually(assertEquals(daemonPids().size, 0, "the daemon is still running"))
 
     finally
       if lockHolder.nonEmpty then vm(s"kill $lockHolder 2>/dev/null || true")
+      if planted.nonEmpty then run(podman, "rm", "--force", planted)
       started.foreach(stop)
       discard(project)

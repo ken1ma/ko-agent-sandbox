@@ -34,9 +34,9 @@ object IPAddrHelper:
    * The colon test below is unreachable through every caller here:
    * normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which
    * refuses a `:` outright, so an IPv6 literal is already a BadRequest
-   * ("invalid hostname", a 400) before it can become the PolicyViolation the
+   * ("invalid hostname", a 400) before it can become the Refusal the
    * message below describes. Keeping the test costs nothing and holds if this
-   * is ever called on something normalizeHost did not vet.
+   * is ever called on a host normalizeHost did not vet.
    */
   def isIpLiteral(host: String): Boolean =
     if host.contains(':') then true
@@ -54,16 +54,19 @@ object IPAddrHelper:
    * name being used to smuggle a destination, not a name with a stale record.
    */
   def resolvePublic(host: String): Vector[InetAddress] =
-    val addresses = InetAddress.getAllByName(host).toVector
+    requirePublic(InetAddress.getAllByName(host).toVector)
 
+  /** The vetting half of resolvePublic, apart from the lookup so a test can hand it addresses. */
+  def requirePublic(addresses: Vector[InetAddress]): Vector[InetAddress] =
     if addresses.isEmpty then
-      throw PolicyViolation("resolved to no addresses")
+      throw Refusal("resolved to no addresses", RefusalAdvice.nonPublicAddress)
 
     addresses.filterNot(isPublicDestination) match
       case Vector() => addresses
       case rejected =>
-        throw PolicyViolation(
+        throw Refusal(
           s"resolved to non-public address ${rejected.head.getHostAddress}",
+          RefusalAdvice.nonPublicAddress,
         )
 
   /**

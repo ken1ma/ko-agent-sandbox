@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The metadata cost of the filter, as a command rather than a reconstruction (doc/TODO.md,
 "Performance"). It builds its own corpus, so two runs are comparable even on different machines,
-and reports microseconds per entry for the operation shapes the table there is built from.
+and reports microseconds per entry for the workloads the table there is built from.
 
 Run it INSIDE a sandbox session, twice, and compare the columns — the second run is the control:
 
@@ -13,7 +13,7 @@ Run it INSIDE a sandbox session, twice, and compare the columns — the second r
 
 The control matters more than the absolute numbers: on the measured macOS stack the hypervisor
 answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
-resolution. What the ratio prices is the filter, not the backing share (doc/architecture.md).
+resolution. What the ratio measures is the filter's cost, not the backing share's (doc/architecture.md).
 
 Everything is written under a temporary directory in /workspace — which is the point, /tmp is not
 the filesystem under test — and removed afterwards. FILES=n varies the corpus size.
@@ -43,7 +43,7 @@ def stack() -> str:
 
 
 def build(root: str) -> int:
-    """A shape a build tool actually produces: a few hundred directories, a handful of small files
+    """A tree a build tool actually produces: a few hundred directories, a handful of small files
     in each. 4 KB of content, so the run measures metadata rather than bandwidth."""
     payload = b"x" * 4096
     for index in range(FILES):
@@ -89,8 +89,8 @@ def main() -> int:
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    print("\nRun this again in the other stack; the ratio between the two columns is what the")
-    print('coherency invariant costs (doc/TODO.md, "Performance").')
+    print("\nRun this again in the other stack; the ratio between the two columns is what")
+    print('coherency costs (doc/TODO.md, "Performance").')
     return 0
 
 

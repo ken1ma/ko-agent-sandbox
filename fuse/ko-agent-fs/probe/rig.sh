@@ -5,7 +5,7 @@
 # containers inside the sandbox by default"). So they run here instead: on the host, in a
 # privileged container, against the toolchain that ships.
 #
-#     probe/rig.sh                        # the whole ignored suite, venue probe first
+#     probe/rig.sh                        # the whole ignored suite, mount probe first
 #     probe/rig.sh a_handle_held          # one filter, for a single test or a family
 #     GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
 #
@@ -30,8 +30,10 @@ rust=$(sed -n 's/^ARG RUST_VERSION=\(.*\)$/\1/p' "$crate/Containerfile")
 volume=ko-agent-fs-rig-target
 podman volume exists "$volume" 2>/dev/null || podman volume create "$volume" >/dev/null
 
-# Fixed text; the two values that vary travel as environment rather than being spliced in.
-inner='
+# Fixed text; the two values that vary travel as environment rather than being spliced in. A
+# quoted heredoc, not a quoted string: the heredoc holds comments as well as shell commands, and
+# one apostrophe in a comment would end a string — the outer shell then runs the rest of it, unmounted.
+inner=$(cat <<'INNER'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -49,7 +51,7 @@ echo user_allow_other >> /etc/fuse.conf
 
 # The shipping triple, because the difference is not cosmetic: the static-musl link constraint
 # src/fs.rs records at its rename is invisible to a glibc build, and only this triple makes
-# tests/binary.rs spawn the artifact in its real shape. GLIBC=1 answers one question — whether a
+# tests/binary.rs spawn the artifact as it ships. GLIBC=1 answers one question — whether a
 # failure is libc-specific — and is not a faster alternative.
 if [ "$RIG_GLIBC" = 1 ]; then
     target=""
@@ -59,14 +61,15 @@ else
     target="--target $triple"
 fi
 
-# The venue check first. A PROBE FAIL says /dev/fuse, the mount privilege, or fusers libfuse-free
+# The mount probe first. A PROBE FAIL says /dev/fuse, the mount privilege, or fuser's libfuse-free
 # path is wrong, rather than leaving that to be read off thirty test failures.
 cargo run --locked $target --example mount_probe
 cargo test --locked $target -- --ignored $RIG_FILTER
-'
+INNER
+)
 
 # `bash -c`, never `bash -lc`: a login shell sources /etc/profile, which on Debian *assigns* PATH
-# rather than extending it, discarding the image ENV PATH where rustup and cargo live. The symptom
+# rather than extending it, discarding the image ENV PATH that holds rustup and cargo. The symptom
 # is `rustup: command not found` in an image that plainly has one.
 #
 # `label=disable`, and no `:Z`: on a podman machine the source arrives over virtiofs as `nfs_t`,

@@ -4,17 +4,16 @@ import java.io.{ByteArrayOutputStream, EOFException, IOException, InputStream, O
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import javax.net.ssl.SSLSocket
 import scala.annotation.tailrec
 
 import IPAddrHelper.normalizeHost
 
 /**
- * The HTTP surface. Everything here refuses ambiguity rather than resolving
+ * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving
  * it — folded headers, Content-Length beside Transfer-Encoding, conflicting
  * Content-Lengths, bare CR or LF — because a proxy and an origin reading
  * the same bytes differently is what request smuggling exploits. (The
- * duplicate-Host refusal is the policy's: authorizeInspectedRequest.)
+ * duplicate-Host refusal is the ruleset's: authorizeInspectedRequest.)
  *
  * Clients speak HTTP/1.1, and an HTTP/1.0 request is refused by name: no
  * such client exists here, and half-supporting one — it could not parse a
@@ -102,8 +101,8 @@ object HTTPHelper:
 
     def parseAuthority(authority: String): ConnectRequest =
       // `isWhitespace` misses the controls that matter most in the audit log — ESC and BEL are not
-      // whitespace, and DEL is not above 0x7f — and this authority is logged as requested on every
-      // refusal, before any normalization has vouched for it.
+      // whitespace, and DEL is not above 0x7f — and this authority may be logged on a refusal
+      // before parseAuthority validates it or authorizeRequest normalizes its host.
       if authority.isEmpty ||
           authority.exists(ch => ch.isWhitespace || ch > 0x7f || isForbiddenControl(ch))
       then
@@ -216,7 +215,7 @@ object HTTPHelper:
 
     /** The client is waiting for a 100 before it sends its body (RFC 9110 §10.1.1). This proxy
       * answers the 100 itself (relayInspected) and forwards the body unconditionally, so
-      * toUpstreamBytes drops the Expect — an origin must not be left waiting for a body this
+      * toOriginBytes drops the Expect — an origin must not be left waiting for a body this
       * proxy sends regardless. Without this, the client stalls until its own 100 timeout on
       * every large POST (git's fetch negotiation past http.postBuffer sends it). */
     def expectsContinue: Boolean =
@@ -225,7 +224,7 @@ object HTTPHelper:
     /** HTTP/1.1, this hop's headers removed — the fixed hop-by-hop set plus whatever the
       * message's own Connection header names — and `Connection: close` added: end-of-stream
       * then frames the response. */
-    def toUpstreamBytes: Array[Byte] =
+    def toOriginBytes: Array[Byte] =
       val builder = StringBuilder()
 
       builder.append(s"$method $target HTTP/1.1\r\n")
@@ -262,8 +261,8 @@ object HTTPHelper:
       .filter(_.nonEmpty)
       .toSet
 
-  /** The headers this hop reads for itself — the framing pair, and the Host the policy checked. A
-    * Connection header nominating one asks this hop to strip a header it has already acted on: the
+  /** The headers this hop reads for itself — the framing pair, and the Host that must match the authorized
+    * CONNECT host. A Connection header nominating one asks this hop to strip a header it has already acted on: the
     * body would go out framed by a header the message no longer carries, which is a smuggling
     * primitive, not a hop-by-hop courtesy. Both bodyFraming implementations refuse it — they are
     * the framing authorities, and each runs before a byte of its message is forwarded. */
@@ -316,19 +315,27 @@ object HTTPHelper:
         if !name.forall(isHttpTokenChar) then
           throw BadRequest("invalid HTTP header name")
 
-        val value = line.substring(colon + 1).trim
-        if value.exists(ch => isForbiddenControl(ch) && ch != '\t') then
+        // Checked before the optional whitespace is stripped: Java's `trim` removes every
+        // character up to SP, so trimming first would drop an edge NUL, VT or FF where it should
+        // refuse the head.
+        val raw = line.substring(colon + 1)
+        if raw.exists(ch => isForbiddenControl(ch) && ch != '\t') then
           throw BadRequest("control character in HTTP header value")
 
-        (name, value)
+        (name, stripOptionalWhitespace(raw))
+
+  /** A field value without its optional whitespace, SP and HTAB at either end (RFC 9110 §5.5);
+    * what the origin receives and what the decision reads. */
+  def stripOptionalWhitespace(value: String): String =
+    value.dropWhile(ch => ch == ' ' || ch == '\t').reverse.dropWhile(ch => ch == ' ' || ch == '\t').reverse
 
   /**
    * The response head, parsed for status and framing only — just enough to tell a completed body
    * from a truncated one — and relayed with only its hop-by-hop headers replaced (toClientBytes):
    * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
-   * response content, because that would grow into the policy language this proxy refuses to
-   * have. Origin-side malformations are IOExceptions, never BadRequests: the world failed, and
-   * the 502 should blame the origin.
+   * response content, because that would require the response-content rule language this proxy refuses to
+   * have. Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and
+   * the 502 should say so.
    */
   case class HttpResponseHead(
     statusLine: String,
@@ -365,7 +372,7 @@ object HTTPHelper:
 
     /** RFC 9112 §6.3 for the one-request sessions this proxy runs. Mirrors the request side's
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
-      * UntilClose, because this proxy sends `Connection: close` upstream. */
+      * UntilClose, because this proxy sends `Connection: close` to the origin. */
     def bodyFraming(requestMethod: String): BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
@@ -399,9 +406,9 @@ object HTTPHelper:
         else BodyFraming.UntilClose
 
   object HttpResponseHead:
-    def parse(bytes: Array[Byte]): HttpResponseHead =
+    def parse(bytes: Array[Byte], subject: String = "origin response head"): HttpResponseHead =
       def malformed(reason: String): Nothing =
-        throw IOException(s"origin response head: $reason")
+        throw IOException(s"$subject: $reason")
 
       val text = String(bytes, StandardCharsets.ISO_8859_1)
 
@@ -430,8 +437,8 @@ object HTTPHelper:
 
   /**
    * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
-   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. Two things ride on that.
-   * The target is written verbatim into the audit log, so a tab would break the field grammar
+   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. The audit log and the origin
+   * both depend on that. The target is written verbatim into the audit log, so a tab would break the field grammar
    * tooling greps and an escape sequence would let a request choose how the record of itself reads
    * on the operator's terminal. And an origin is entitled to a well-formed request: CR and LF are
    * already refused above, which is what closes smuggling, but forwarding NUL or DEL into a header
@@ -482,9 +489,9 @@ object HTTPHelper:
         throw IllegalStateException("request bodies cannot be close-delimited")
 
   /**
-   * The response-body relay, framing enforced: an upstream EOF inside a declared length or an
+   * The response-body relay, framing enforced: an origin EOF inside a declared length or an
    * unterminated chunk sequence is TruncatedResponse — the caller must end the connection so the
-   * stump cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
+   * truncated body cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
    * is the terminator.
    */
   def forwardResponseBody(
@@ -604,38 +611,44 @@ object HTTPHelper:
 
     loop(false)
 
-  /** The refusal curl and git surface: a reason inside the tunnel beats a
-    * dropped connection. */
+  /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
+    * the ruleset's (Refusal.advice). One line each, so a client that prints the body —
+    * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
+  def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
+    (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))
+      .getBytes(StandardCharsets.UTF_8)
+
+  /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
+    * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. */
   def respondInsideTls(
-    socket: SSLSocket,
+    socket: Socket,
     status: Int,
     reason: String,
     detail: String,
+    advice: Option[String] = None,
   ): Unit =
-    try
-      val body = s"ko-agent-egress-proxy: $detail\n".getBytes(StandardCharsets.UTF_8)
+    respondQuietly(socket, status, reason, refusalBody(detail, advice))
 
-      val out = socket.getOutputStream
-      writeAscii(
-        out,
-        s"HTTP/1.1 $status $reason\r\n" +
-          "Content-Type: text/plain; charset=utf-8\r\n" +
-          s"Content-Length: ${body.length}\r\n" +
-          "Connection: close\r\n\r\n",
-      )
-      out.write(body)
-      out.flush()
+  def respondQuietly(
+    client: Socket,
+    status: Int,
+    reason: String,
+    body: Array[Byte] = Array.emptyByteArray,
+  ): Unit =
+    try respond(client, status, reason, body)
     catch case _: IOException => ()
 
-  def respondQuietly(client: Socket, status: Int, reason: String): Unit =
-    try respond(client, status, reason)
-    catch case _: IOException => ()
-
-  def respond(client: Socket, status: Int, reason: String): Unit =
+  def respond(client: Socket, status: Int, reason: String, body: Array[Byte]): Unit =
+    val out = client.getOutputStream
     writeAscii(
-      client.getOutputStream,
-      s"HTTP/1.1 $status $reason\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      out,
+      s"HTTP/1.1 $status $reason\r\n" +
+        (if body.isEmpty then "" else "Content-Type: text/plain; charset=utf-8\r\n") +
+        s"Content-Length: ${body.length}\r\n" +
+        "Connection: close\r\n\r\n",
     )
+    out.write(body)
+    out.flush()
 
   def writeAscii(out: OutputStream, value: String): Unit =
     out.write(value.getBytes(StandardCharsets.US_ASCII))

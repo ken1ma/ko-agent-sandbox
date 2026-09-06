@@ -1,6 +1,6 @@
 # TODO
 
-What `ko-agent-fs` still needs, ordered by what stands between it and a first release anyone should
+What `ko-agent-fs` still needs, ordered by what separates it from a first release anyone should
 trust. Items under **P1 — platform verification** are the ones that *cannot* be settled by reasoning
 at all — only the backing filesystem answers them, and until a row runs, the claim it would confirm
 is an assumption. Which machine settles a row depends on the backing: ext4 and the two Linux
@@ -12,9 +12,9 @@ Decisions that research has already closed are in **Non-TODOs** so they stop res
 
 ## P1 — Platform verification (needs real filesystems)
 
-Every run belongs in `verification-log.md` with the venue that produced it: OS, podman, kernel and
-filesystem versions. A pass with no venue recorded is not evidence for the next release, and
-re-running is the only thing that notices a platform default changing underneath a row.
+Every run belongs in `verification-log.md` with the machine that produced it: OS, podman, kernel and
+filesystem versions. A pass with no machine recorded is not evidence for the next release, and
+only re-running notices a platform default changing underneath a row.
 
 ### The `.git` name rule per backing filesystem
 
@@ -43,7 +43,7 @@ cleanup). The corpus:
 Pass criterion: for every denied spelling the create fails with `EPERM`; for every allowed spelling
 it succeeds *and* host `lstat` of `.git` still finds nothing. A failure on any row means the fold
 rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Fold tables are
-version-specific, which is what makes the recorded versions load-bearing here.
+version-specific, which is why the recorded versions matter here.
 
 APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
 `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
@@ -54,19 +54,48 @@ one end to end. What is left:
 ### End-to-end coherency through the real host share
 
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
-writes promptly (`architecture.md`). `probe/coherency-probe.py` measures both paths a write can
-travel, `read()` and an established `mmap`, across the whole stack. macOS 26.4.1 passes, and
-Windows measures fresh-when-unheld with host writes to session-held files refused by a share lock;
-`verification-log.md` records both, and why the premise is behavioural rather than declarative.
+writes promptly (`architecture.md`). The launcher's `--self-test` share rows measure both paths a
+write can travel, `read()` and an established `mmap`, across the whole stack, launcher-driven and
+machine-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
+session-held files refused by a share lock; `verification-log.md` records both, and why the
+premise is behavioral rather than declarative.
 
-- [ ] Re-run it on Linux, and after a podman or macOS upgrade.
+- [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade — the measurement, not the
+  mount table, is what notices a changed hypervisor default.
+
+### A path that survives deletion and refuses every child (unexplained)
+
+Observed 2026-08-30 on macOS 26.4.1, in a live-mode session, after `rm -rf` of a directory an sbt
+server still held open. One path became unusable while remaining visible:
+
+```sh
+mkdir -p target/out  && mkdir target/out/anything    # ENOENT
+mkdir -p target/out3 && mkdir target/out3/anything   # ok
+```
+
+`ENOENT`, not `EPERM`, so no policy rule is involved, and `out` is no reserved name. `ls` and
+`stat` both showed an ordinary empty directory. `rmdir` succeeded, and recreating the directory at
+the same path reproduced the failure, so it is not a stale entry for that inode — the path itself
+stayed unusable, for every child name, while a sibling created moments later behaved normally. It
+persisted across the rest of the session.
+
+- [ ] Reproduce deliberately: delete a directory through the mount while a process holds it open,
+  then recreate it. If it reproduces, this belongs in the launcher's `--self-test` share rows,
+  which already exercise it — a host-shared tree mutated under a live reader.
+A fresh container and mount cleared it: the same path accepted children again with no host-side
+repair. So it is state in this layer rather than anything reaching the backing share, and a session
+that hits it can be told to relaunch — which is worth an entry in `troubleshooting.md` once the
+trigger is understood well enough to name.
+
+The launcher's `--run-on-host` makes a host process writing the shared `target/` the ordinary
+case rather than an occasional one.
 
 ### What the staged lower can do, per share
 
 A stage's lower is the host project directory as it arrives inside the machine, and it is where the
 stage reads its baseline, revalidates it and applies back onto it. Each row below decides a
 representation choice, so they run before the stage format is fixed rather than after — the root
-`doc/PLAN-STAGED.md` has which venue settles which part of the contract. Every row is two-party:
+`doc/plan-staged.md` has which machine settles which part of the contract. Every row is two-party:
 `probe/lower-probe.py` runs in a session and `probe/lower-probe-host.py` on the host beside it, and
 the pair reports all five in one run.
 
@@ -78,18 +107,18 @@ The rows:
   absent exchange is an apply that cannot be atomic by that route.
 - Symlinks: can the daemon create one on the lower, and does the host then resolve it as a symlink?
   Windows makes symlink creation privileged, so this may be a refusal to plan around rather than a
-  behaviour to test.
+  behavior to test.
 - Case folding between the layers: an upper name and a lower name differing only by case. Whether
   they collide decides how whiteouts and upper entries may be named.
 - The reach of an open-file hold: host write, rename and unlink against a path a session holds open,
-  read-held and write-held, and whether releasing restores what was refused. Apply write-back stands
-  or falls on this.
+  read-held and write-held, and whether releasing restores what was refused. Apply write-back
+  depends or falls on this.
 
 APFS answers all five (`verification-log.md` has the run): the lower keeps hardlink relationships,
 exchange is available on both sides, symlinks round-trip, two names differing only by case are one
 name, and a session-held descriptor blocks no host mutation. One answer was never the share's to
-give — a session cannot see a hardlink relationship at all, because the filter mints an inode per
-`(parent, name)` — and what that costs a stage is the root `doc/PLAN-STAGED.md`'s to settle.
+give — a session cannot see a hardlink relationship at all, because the filter assigns an inode per
+`(parent, name)` — and what that costs a stage is the root `doc/plan-staged.md`'s to settle.
 
 What is left:
 
@@ -128,14 +157,14 @@ What the suites cover and how to run them, the self-test image and the privilege
 The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
 the sandbox's own. `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
 `probe/perf-probe.py` builds its own corpus, so two runs are comparable
-across machines, and reports per-entry times for the operation shapes below. Run it once in a
+across machines, and reports per-entry times for the workloads below. Run it once in a
 filtered session and once with the guard off — the ratio between the columns is the answer, and
 the control isolates the filter's cost from the backing share.
 
 Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
 virtiofs, against the same corpus over a plain bind mount:
 
-| operation                       | raw bind | filtered | ratio | shape                            |
+| operation                       | raw bind | filtered | ratio | workload                         |
 | ------------------------------- | -------- | -------- | ----- | -------------------------------- |
 | `find` (readdir only)           | 65 µs    | 317 µs   | 4.9×  | batched per directory            |
 | `find -printf` (readdir + stat) | 147 µs   | 1052 µs  | 7.2×  | ≈ a lookup + getattr round trip  |
@@ -145,15 +174,15 @@ virtiofs, against the same corpus over a plain bind mount:
 |                                 |          |          |       | *path-based* syscall re-resolves |
 |                                 |          |          |       | every component                  |
 
-The margin over that honest baseline is **~5–12×**. The raw bind is fast because the hypervisor
-answers a guest lookup in ~56 µs and the guest caches nothing (`verification-log.md`, "the
-virtiofs layer itself"), so what the ratio prices is this layer alone: one FUSE round trip through
+The margin over that measured baseline is **~5–12×**. The raw bind is fast because the hypervisor
+answers a guest lookup in ~56 µs and the guest caches nothing (`verification-log.md`, "the virtiofs
+layer itself"), so what the ratio measures is this layer's cost alone: one FUSE round trip through
 the daemon per path component, which TTL 0 makes unavoidable.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
-(tolerable); walk+stat ~1.8 min; `ls -lR`-shaped traffic ~13 min — the `sbt`/`metals` stat-storm
-shape, on this project's own stated target workload. The dominant term is per-syscall LOOKUPs: entry
-TTL 0 means every path component of every syscall is a fresh round trip, which no batching
+(tolerable); walk+stat ~1.8 min; a stat per entry as `ls -lR` does, ~13 min — the `sbt`/`metals`
+stat storm, this project's own stated target workload. The dominant term is per-syscall LOOKUPs:
+entry TTL 0 means every path component of every syscall is a fresh round trip, which no batching
 downstream can amortize.
 
 Measured on a real tree (2026-08-25, the same macOS machine; 3,190 tracked files at mean depth 6.6
@@ -170,7 +199,7 @@ A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms
 component adds ~0.6 ms, one more LOOKUP round trip (`verification-log.md`, "The cost of a path
 walk"). git stats every tracked file by its full path
 from the root and pays the depth; `find` and the other `fts` walkers hold directory fds and pay
-depth 1 — the two `lstat` rows are those two shapes, and the 2.2× between them is the whole
+depth 1 — the two `lstat` rows are those two workloads, and the 2.2× between them is the whole
 path-walk term. Claude Code runs `git status` at startup: in that project it answers `pwd` in 51 s
 from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the host.
 
@@ -178,26 +207,26 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
   in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
   mandatory on.
 - [ ] **Run it on Windows/WSL**, same reason, lowest priority.
-- [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so
-  ~0.4 ms of a depth-1 `lstat`'s 0.44 ms is the container→daemon FUSE hop plus the daemon's own
-  work per op — still unattributed between the two: the path inode model's full-path `openat2` per
-  op, per-op fd open/close, the inode-table lock, and the single-threaded session serializing round
-  trips. Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one
-  operation*. This is the only lever for `find`-shaped tools, which hold directory fds and never pay
-  the walk; it composes with the cache-TTL knob below, which reaches only path-walking ones. A
+- [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.4 ms
+  of a depth-1 `lstat`'s 0.44 ms is the container→daemon FUSE hop plus the daemon's own work per op
+  — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op fd
+  open/close, the inode-table lock, and the single-threaded session serializing round trips.
+  Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
+  This is the only gain available to tools like `find`, which hold directory fds and never pay the
+  walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
   directory-fd cache *across* operations is excluded: it pins the directory, so one the host
   replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
   through the stale fd, unbounded in time, which is worse than any TTL.
-- [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help getdents-shaped
-  traffic and not `ls -lR`-shaped: under TTL 0 the attributes it returns expire immediately, so
-  follow-up per-file stats still round-trip. Measure before and after.
+- [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help a walk that only
+  lists entries, not one that stats each as `ls -lR` does: under TTL 0 the attributes it returns
+  expire immediately, so follow-up per-file stats still round-trip. Measure before and after.
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
-  `doc/PLAN-STAGED.md`; restrict passthrough to live mode unless research first establishes a safe
+  `doc/plan-staged.md`; restrict passthrough to live mode unless research first establishes a safe
   revoke and re-register protocol. Do not make staged mode inherit a live-only optimization by
   accident.
-- [ ] Push-invalidation: the knob below kept *correct* by the daemon watching the backing (inotify
+- [ ] Push-invalidation: the option below kept *correct* by the daemon watching the backing (inotify
   inside the VM) and issuing `notify_inval_entry`/`notify_inval_inode`, so its window closes at the
   host write rather than at T. Only sound if a watch in the guest sees a host-side virtiofs write,
   which nothing has shown — verify that premise first; if it fails, this row is closed.
@@ -206,11 +235,11 @@ Every one of these keeps the default coherency guarantee intact: performance is 
 parallelism, batching, push-invalidation and a shorter per-op path. The one exception is explicit,
 opt-in and off by default:
 
-### The cache-TTL knob (decided 2026-08-25, not started)
+### The cache-TTL option (decided 2026-08-25, not started)
 
-A per-project TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen
-over an always-on value because the knee moves with the host: a component costs ~0.6 ms over
-virtiofs and far less on native Linux, so the right T is measured per venue, not designed.
+A per-project TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen over
+an always-on value because the break-even point moves with the host: a component costs ~0.6 ms over
+virtiofs and far less on native Linux, so the right T is measured per machine, not designed.
 
 What it caches, and why exactly that. The path-walk term is the kernel re-asking per component,
 and an entry-only TTL does not remove it: under `DefaultPermissions` the kernel's `fuse_permission`
@@ -219,23 +248,24 @@ refreshes a directory's attributes before each permission check on the walk, so 
 directory's name *and* attributes, together. A file's attribute TTL stays 0, so `AUTO_INVAL_DATA`
 stays whole and file `stat` and data are as fresh as today (every `open` also drops the file's
 cached pages: no `FOPEN_KEEP_CACHE` is granted). fuser 0.18's `ReplyEntry::entry_with_ttls`
-carries the two TTLs separately, so the per-reply choice needs no patch.
+keeps the two TTLs separately, so the per-reply choice needs no patch.
 
 What it exposes, exactly: a directory's mode, owner and mtime, and a name, may be up to T old. The
-sharpest consequence found: git's untracked cache keys on directory mtime, so a file the host
+worst consequence found: git's untracked cache keys on directory mtime, so a file the host
 created within the last T can be missing from one `git status`. Policy is untouched — an inode's
 git context is computed once at creation (`inode.rs`, `lookup`), so it already outlives any kernel
 cache, and every mutation reaches the daemon whatever is cached.
 
 Expected gain: the 2.2× measured above on git's stat pass, so roughly half of Claude Code's startup
-on the real tree; nothing for `find`-shaped tools (the profiling row is their lever). The bursts
-that pay set the knee: a cached component is re-asked once per T while a walk stays under it, so
-from the measured component cost T = 100 ms keeps ~96 % of the gain at a tenth of the window and
-T = 10 ms loses a third of it. Those are derived, not measured; the sweep below decides.
+on the real tree; nothing for tools like `find` (the profiling row is what would help them). The
+bursts that pay set the break-even point: a cached component is re-asked once per T while a walk
+stays under it, so from the measured component cost T = 100 ms keeps ~96 % of the gain at a tenth of
+the window and T = 10 ms loses a third of it. Those are derived, not measured; the sweep below
+decides.
 
 - [ ] Daemon: `--cache-ttl <ms>`; in `lookup`/`getattr` a directory replies `(T, T)`, anything
-      else `(0, T)`. A pure `ttls(mode, knob)` with a population test: every non-directory mode
-      yields attribute TTL 0 for every knob value.
+      else `(0, T)`. A pure `ttls(mode, ttl)` with a population test: every non-directory mode
+      yields attribute TTL 0 for every option value.
 - [ ] Rig: the coherency suite at T = 0 and T = 5 s — host append, delete and create visible at
       once under both. `--self-test` stays at 0, which is what "every mount is the same mount"
       (`fs.rs`, `mount_config`) is there to prove.
@@ -247,13 +277,13 @@ T = 10 ms loses a third of it. Those are derived, not measured; the sweep below 
 - [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
       `verification-log.md`. Only then a persisted value.
 - [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, admitted
-      by the unknown-filename rule (README, "Modifying the egress policy"). A project sets its own
+      by the unknown-filename rule (doc/egress-proxy.md, "The rule file"). A project sets its own
       coherency window, and a session cannot edit the file. Deferred until the sweep has a value
       worth persisting.
-- [ ] Docs: `architecture.md` "Coherency" states the guarantee with the knob in it — file
+- [ ] Docs: `architecture.md` "Coherency" states the guarantee with the option in it — file
       attributes and data always fresh, directory names and attributes ≤ T, default 0;
       `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
-      README's reference block carries the flag.
+      README's reference block documents the flag.
 
 
 ## P2 — Diagnostics
@@ -271,24 +301,16 @@ launch gate. The gap:
 The filter is the **default** enforcement on every platform, ahead of that verification;
 `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the pin instead. What that leaves:
 
-- [ ] `SECURITY.md` carries a **Not defended** entry for the filter on the platforms where it is
-  unverified — verified on macOS, reasoned elsewhere. When Linux and Windows have their rows that
-  entry has nothing left to say and goes; the claim it qualifies already sits under **Defended**.
-- [ ] The guard refuses to serve a repository whose control bytes resolve through the writable
-  workspace under the binding rule — a redirected gitdir or commondir, an aliased config, hooks or
-  an individual hook entry resolving back in, a bare layout at the root — and refuses the configs
-  it cannot read faithfully: a `~`, a backslash, an unterminated quote, a bare `path` key, a
-  non-UTF-8 or unreadable file (`git-metadata.md`, "Relocated hook directories"). As the default
-  enforcement that means a project which launched yesterday does not launch today, and the remedy
-  is to edit one's own `.git/config`. Decide whether that is acceptable, or whether the undecidable
-  cases should fall back to the pin rather than refuse.
-- [ ] The guard's scope residue (`SECURITY.md`, "Not defended"): decide whether to extend the
+- [ ] `SECURITY.md` has a **Not defended** entry for the filter on the platforms where it is
+  unverified — verified on macOS and Windows, reasoned on Linux. When Linux has its row that entry
+  has nothing left to say and goes; the claim it qualifies is already listed under **Defended**.
+- [ ] The guard's scope gap (`SECURITY.md`, "Not defended"): decide whether to extend the
   checks to the repositories and bare layouts a pre-mount walk finds, or to keep recording it.
 
 
 ## Deferred research
 
-Timed to the increment that needs it, so the findings are fresh when they are used.
+Timed to the work that needs it, so the findings are fresh when they are used.
 
 - [ ] `fuse-backend-rs` (virtiofsd, Cloud Hypervisor) versus `fuser` — before investing in
   passthrough, since it is the more battle-tested passthrough implementation.
@@ -297,7 +319,7 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 - [ ] Landlock to confine the daemon itself, so a bug in `ko-agent-fs` can reach only the backing
   directory. Defense in depth, not a boundary — the boundary is the policy.
 - [ ] An optional no-symlink profile, only if staged review proves insufficient or users need a
-  strict live view. A truthful profile has to define existing links and moves of directories that
+  strict live view. A complete profile has to define existing links and moves of directories that
   contain them, then measure npm and pnpm bins, Python virtual environments, Bazel, Git-tracked
   links and native-library layouts; sbt falling back to copies settles only one consumer.
 
@@ -340,7 +362,7 @@ Timed to the increment that needs it, so the findings are fresh when they are us
   fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
   directory or the raw one — scoped to `/workspace` alone, and even shells die at spawn
   because their cwd is inside the dead mount. The failure is already total, loud and
-  fail-closed, so outside machinery would only convert one obvious dead session into
+  fail-closed, so an outside tool would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.
 - **A Unicode normalization library in the policy core.** Not needed (`git-metadata.md`, "The
   name rule"); pinned by a test.
@@ -360,7 +382,7 @@ Timed to the increment that needs it, so the findings are fresh when they are us
 - **`FOPEN_DIRECT_IO` for coherency.** It would work, and it disables shared `mmap`, which git needs
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **An always-on nonzero cache TTL.** Real-time bidirectional visibility is the defining
-  requirement, so the default is 0 and no built-in value exists; "The cache-TTL knob" above is
+  requirement, so the default is 0 and no built-in value exists; "The cache-TTL option" above is
   the one exception, per project and opt-in, and its exposure is stated there.
 - **Blocking executable-bit changes.** This prevents only accidental direct POSIX execution;
   explicit interpreters and Windows bypass the bit, so it adds little beside read-only-by-default

@@ -1,15 +1,26 @@
 # TODO
 
-Remaining work that buys real security or maintainability for the actual threat model. Ideas
-without a concrete gain live in DESIGN.md as Non-TODOs so they stop resurfacing.
+Remaining work that adds real security or maintainability for the actual threat model. Ideas without
+a concrete gain are recorded in design.md as standing design decisions so they stop resurfacing.
+
+## Deferred — GREASE ECH on inspected hosts
+
+- [ ] Admit an ECH extension on an inspected host, only if a client that sends GREASE ECH —
+  a browser, a BoringSSL-based tool — enters the image. The proxy is the TLS server there, so
+  ignoring an extension it cannot decrypt is what every non-ECH server does: a GREASE client
+  continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
+  origin never sees the client's hello. On a `tunnel` host the refusal stays: GREASE and real ECH
+  are indistinguishable by design (RFC 9849, 6.2), and real ECH under a passing outer SNI is
+  domain fronting through the allowed host (`TLSHelper`, the extension constant). The price is a
+  second ECH step in SECURITY.md's handshake list and its tests.
 
 ## Deferred — inspected-relay keep-alive
 
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
-  framing is parsed and enforced, so the shape is a request loop per client connection with a
-  fresh upstream connection per request; the price is a larger state machine at the enforcement
-  point and the one-request stance's smuggling argument re-argued in SECURITY.md.
+  framing is parsed and enforced, so the design is a request loop per client connection with a
+  fresh origin connection per request; the price is a larger state machine at the enforcement
+  point and the one-request rule's smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
 
@@ -22,11 +33,76 @@ If `git lfs pull` becomes important:
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
+## Deferred — LAN destinations, as launch-time authority
+
+The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
+rule grammar refuses an IP literal, so a corporate site on the LAN without a public name is
+unreachable from a session. If that is ever needed, the design that keeps the security model:
+
+- [ ] A launch option naming exact addresses — never a range, never a line in
+  `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
+  line would name a different machine on every clone, and a reviewer could not say what it
+  reaches. Authority typed at launch, like `--egress=allow-unless-denied`, and tinted in the
+  banner the same way.
+- [ ] The vetting admits those addresses and nothing else of the private space, and only when
+  the CONNECT names the address itself: a public name resolving to a private address stays
+  refused, or a name whose answer changes, or has one public and one private record, reaches
+  the LAN through the name.
+- [ ] An exception to the lifecycle's step 10 for the listed addresses, and only those: a
+  ClientHello with no SNI is the form a client sends to an address and is admitted there, one
+  naming any host stays refused. Opaque, as the simplest form; an inspected address is
+  possible — the leaf can include an `iPAddress` name — and is its own further decision. Opaque,
+  the consequence is stated with it: nothing binds the tunnel to a name, so the origin's
+  identity rests on the client's own certificate check, which the client may skip, and the
+  grant reaches every application endpoint selectable at the address — by `Host`, by HTTP/2's
+  `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
+  sees none of it.
+- [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
+  the hello admitted at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
+  logged; and the sandbox then holds
+  the host's network position against services that authenticate by location — router and NAS
+  pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
+  the same class. Port 443 and the one-client network bound the attack surface, not the trust.
+
+## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
+
+- [ ] Trust an upstream proxy's interception CA, so a TLS-terminating one stops failing closed
+  with certificate errors (`egress-proxy.md`, "Through an upstream proxy"). Its inclusion is
+  authority — it lets that proxy read and change opaque model traffic — so it needs a
+  launch-time selection and a banner line of its own, and four stores extended: the proxy's
+  origin trust, the sandbox PEM bundle, the image JDK's `cacerts`, and `sandbox-jdk-use-proxy`'s
+  certificate. An endpoint CA, for an `https` endpoint under a private CA, is carried the same
+  way but extends one store only, the trust the proxy verifies the endpoint against: in any of
+  the four it would be interception authority.
+- [ ] Explicit resolvers for the proxy container, only when podman's resolver — which follows the
+  host's on Linux and the host's through the machine elsewhere — stops answering for someone.
+  Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
+  name is a refusal naming the non-public answer, never a private address admitted.
+- [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
+  podman machines, and record whether each can route to a private endpoint; one that cannot must
+  fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
+  reaches a loopback helper such as cntlm under rootless podman is part of the same run.
+
+## Deferred — `--explain-request`, the ordered rules traced for one request
+
+The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an
+operator
+asks is no longer "is this host admitted" — `--egress-check` answers that — but "which line
+decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
+against the file through the same code that would run it; the equivalent here is a trace:
+
+- [ ] `--explain-request METHOD URL`, printing the request's classification, each applicable
+  line with the grant state it leaves, the boundary the longest match selects, and the
+  decision. The trace comes from the proxy's own resolver and authorizer emitting it as they
+  decide, run through the launcher's dry run — never a second evaluator in production: the
+  tests' plain ordered evaluator stays the oracle the fold is checked against, and a trace
+  that could disagree with enforcement would be worse than none.
+
 ## Deferred — staged-workspace extensions and hardening
 
-These are separate increments after the staged workspace in `PLAN-STAGED.md`, not reasons to put
-all of its lifecycle into one change. The initial one-stage-per-project sharing unit and its failure
-semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
+These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put all
+of its lifecycle into one change. The initial one-stage-per-project sharing unit and what happens
+when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 
 - [ ] Detect project-directory replacement before attaching a persistent stage. Record a host-only
   root identity, an optional resolved-gitdir identity and a small secondary fingerprint; ordinary
@@ -56,33 +132,29 @@ semantics are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may rea
   whole conflict-free plan. The digest binds the project identity, representation version,
   generation, complete operation groups, content and metadata hashes, lower baselines, and rename
   and hardlink relationships. A mismatch changes nothing; path selection remains interactive and
-  rewrites the residual plan under a new digest.
+  rewrites the remaining plan under a new digest.
 - [ ] Add `--stage-name=<name>` only when one project needs concurrent independent staged change
   sets. Each name selects a separate upper layer, merged mount, cache and failure domain over the
   same project directory; sessions sharing a name still share those resources. Define safe name
   encoding, resource limits, management-command selection, project-wide apply serialization and
   migration from the sole unnamed stage before exposing it.
 
-## Deferred — `--self-test`'s share rows
+## Deferred — `--self-test`'s remaining share rows
 
-`--self-test` builds the self-test image and runs the crate's suites in it
-(`../fuse/ko-agent-fs/doc/testing.md`). Those settle the code's own logic and the kernel; the share
-is the axis they cannot reach, because their backing tree is the container's own storage
-(`DESIGN.md`). The rows that do reach it are hand-run probes with a host terminal beside them, and
-they are the same host-writer/session-reader shape the verb would have to take.
+`--self-test` runs share rows after the crate's suites (`SelfTestShare.scala`,
+`../fuse/ko-agent-fs/doc/testing.md`): the share is what the container suites cannot reach,
+and the coherency rows cross it launcher-driven and machine-recorded, the scratch gone on
+success and kept on failure — its files are how a row that measured a refusal is told apart from a
+row where the probe broke — with a killed run leaving nothing outside the mounts/ sweep,
+`--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
 
-- [ ] Fold `probe/coherency-probe.py` and `probe/lower-probe.py` into `--self-test`: a scratch lower
-  in the host project directory so the share is in the path, the host side driven by the launcher
-  rather than by a person, and the full venue record — OS, podman version, machine provider, kernel,
-  the lower's filesystem type and case behaviour, the upper volume's filesystem. A run with no venue
-  recorded is not evidence for the next release (`../fuse/ko-agent-fs/doc/TODO.md`, "P1").
-- [ ] Keep those rows non-destructive, which the container run gets for free and a share row does
-  not: the work directory goes away on success and survives a failure, since its files are how a row
-  that measured a refusal is told apart from a row where the probe broke; `.git` and
-  `.ko-agent-sandbox` stay untouched at any depth; Podman machine configuration is unchanged. Test
-  that a second run rebuilds no image, creates no second container or volume, and leaves the
-  project directory byte-identical, and that a killed run leaves nothing the reset sweep does not
-  match.
+- [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
+  folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
+  halves are deleted when their rows are added. Their machine record adds the upper volume's
+  filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
+- [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
+  the container — a host-native build turns host writes from an occasional human edit into
+  every build.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
 
@@ -92,7 +164,7 @@ from scratch.
 **Problem.** A host that idle-sleeps mid-build suspends the podman machine: builds stall, API
 connections break. Claude Code solves this on macOS by wrapping long commands in `caffeinate`, but
 the agent here runs inside a Linux container — it cannot reach the host's power manager, and the
-launcher execs away on POSIX, so neither side has an obvious place to stand.
+launcher execs away on POSIX, so neither side has an obvious place to run it.
 
 **The lease design:**
 
@@ -100,7 +172,7 @@ launcher execs away on POSIX, so neither side has an obvious place to stand.
   It accepts the familiar flags (`-t`, `-w`), execs the wrapped command with its exit status passed
   through, and refreshes a lease file under a dedicated mount every 15 s while the command runs.
 - The launcher mounts a launcher-owned lease directory there and starts a host-side watcher that
-  reads lease **freshness, never content** — no injection surface; the channel is one bit whose
+  reads lease **freshness, never content** — nothing to inject into; the channel is one bit whose
   worst misuse drains a battery (it belongs in SECURITY.md's low-bandwidth list when it returns).
 - The watcher per host: macOS, a detached sh loop (reaper pattern) running
   `/usr/bin/caffeinate -i -t 20` while fresh — the assertion doubling as the poll interval, so no
@@ -119,6 +191,74 @@ channel — however narrow — should exist for a convenience. One constraint on
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
 
+## Deferred — extra hardening, low value
+
+- [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
+  which runs unconfined while parsing hostile bytes as the user's uid
+  (`run-on-host.md` "The build's egress proxy", where the acceptance argument binds:
+  loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
+  parser). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
+  log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
+  own job, and SBPL cannot filter by name — plus its loopback listener.
+- [ ] Filter `mach-lookup` in the host build profile. It is granted unfiltered, and the system tool
+  directories are executable (a build's scripts need `find`, `mount` and whatever else;
+  `runtime-authority.txt`); together those let a build reach any Mach service — `open` through
+  LaunchServices would start an application outside the profile. Measure the services a build
+  actually needs, as `ops` measures operation families, and filter to them
+  (`(allow mach-lookup (global-name …))`, the pattern Apple's profiles use); the gate's
+  forked-process rows are where the answer is checked.
+
+## Deferred — Gradle under `--run-on-host`
+
+Gradle does not fit the host build profile, because its processes talk to each other over
+loopback TCP and the profile allows loopback only to the build's own proxy port
+(`run-on-host.md`, "Network"). These facts come from Gradle 9.7.1's sources and its daemon
+documentation, read on 2026-09-06:
+
+- Every process Gradle forks — a test executor, a process-isolated worker, the Kotlin compiler
+  daemon — connects back to the build over TCP: `DefaultWorkerProcessBuilder` gets the address
+  from `MessagingServer.accept`, and the messaging server is `TcpIncomingConnector`
+  (`platforms/core-runtime/messaging`).
+- The Gradle client talks to the daemon over TCP too. `--no-daemon` avoids the daemon only when
+  `GRADLE_OPTS` matches the build's `org.gradle.jvmargs`; otherwise Gradle forks a single-use
+  daemon.
+- Seatbelt cannot allow loopback for "this build's processes" only. The narrowest rule is
+  `(local ip "localhost:*")` and `(remote ip "localhost:*")`, which is every service on the host
+  that listens on loopback. The network section refuses that, and this project's own proxy tests
+  run in the container for the same reason.
+
+Everything else a Gradle backend needs is known, so the open decision is the loopback rule alone:
+
+- The project has a `gradlew` script, and the user has run it once on the host, so the Gradle
+  it downloaded is already under `GRADLE_USER_HOME` (default `~/.gradle`). The wrapper finds
+  that directory the way Gradle's `PathAssembler` does: `wrapper/dists/<name>/<hash>/<one
+  directory>`, where the hash is the MD5 of the distribution URL written in base 36. The build
+  is granted that directory read-only.
+- The build runs `bin/gradle --no-daemon` from that directory, not `gradlew`: with
+  `GRADLE_USER_HOME` moved into the build cache, `gradlew` would download Gradle again into a
+  directory that is writable and not executable.
+- `GRADLE_USER_HOME` is set to a directory in the build cache. `JAVA_HOME` is the JDK, and
+  `org.gradle.java.installations.auto-download=false` stops Gradle from downloading another one.
+- Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy admits that host by default,
+  as it does for Maven. `plugins.gradle.org` goes in the rule file.
+
+- [ ] Decide: a Gradle-only profile that allows loopback both ways, with the cost stated in
+  `SECURITY.md`; Gradle under the proxy-only rule, with `gradle test` documented as failing with
+  `EPERM`; or no Gradle.
+
+## Deferred — same-path workspace mounting under `--run-on-host`
+
+Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's
+JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
+does not establish compatibility between the two builds' state. That leaves readable paths in
+build output as the benefit, which did not justify the change. The host path reaches the
+container regardless: the build's streamed output names it (`SECURITY.md`, "Run on host"). Prior
+art, both mounting the project at its host path for path legibility rather than shared state:
+
+- Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
+- Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
+  https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/
+
 ## Before the first release — continuous integration
 
 There is no CI. The README's developer commands run the launcher, proxy and filter suites;
@@ -130,12 +270,12 @@ binary identity, and the installed filter's mount self-test.
   on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
   its moving external database must not gate installation.
 - [ ] Keep the artifact-local gates above in `--build`, and keep the mounted filter suites in
-  `--self-test`; CI does not prove a user's FUSE venue.
+  `--self-test`; CI does not prove the filter on a user's own machine.
 
 ## Before the first release — the published identity
 
 - [ ] One decision, several names that must fall out of it together: the jar's artifact name and
-  publication coordinates; the Scala package names (`agentsandbox.*`, carrying neither the
+  publication coordinates; the Scala package names (`agentsandbox.*`, containing neither the
   `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` —
   OCI convention wants a reverse-DNS key, and the right prefix is this same identity, so deciding
   the key alone would decide the identity by accident). Until then a changed key self-heals

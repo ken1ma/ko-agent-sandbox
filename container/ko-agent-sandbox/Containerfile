@@ -12,9 +12,9 @@ LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 ARG BUNDLE_ID
 LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 
-ARG UV_VERSION=0.12.5
+ARG UV_VERSION=0.12.6
 ARG PYTHON_VERSION=3.14
-ARG NODE_VERSION=24.19.0
+ARG NODE_VERSION=24.20.0
 
 # ---------------------------------------------------------------------------
 # Development utilities
@@ -130,7 +130,7 @@ ENV npm_config_prefix=/home/nonroot/.local
 # same package ko-agent-fs's own build container installs.
 #
 # RUSTUP_HOME holds the toolchain in the image; CARGO_HOME is deliberately
-# left unset, so registry caches land in ~/.cargo and die with the session
+# left unset, so registry caches are written to ~/.cargo and die with the session
 # like every other cache.
 
 ENV RUSTUP_HOME=/opt/rust/rustup
@@ -169,7 +169,12 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 #
 # The launcher mounts a per-project named volume at ~/persistent-volume;
 # each agent's dot-directory is a relative symlink into it, so no relocation
-# variables are needed. The volume's content starts as the seed below, which
+# variables are needed. opencode's three XDG directories are linked one by
+# one for the same reason: XDG_*_HOME variables would move every other
+# tool's directories too. Its data directory holds the logins (auth.json)
+# and the sessions, so its config directory alone would lose them; its
+# cache, ~/.cache/opencode, dies with the session like every cache.
+# The volume's content starts as the seed below, which
 # sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
 # not only into a fresh volume, as Podman's copy-up would, but into one an
 # older image created before an agent was added. A directory the volume has
@@ -184,17 +189,33 @@ RUN set -euxo pipefail; \
         $SANDBOX_VOLUME_SEED/claude \
         $SANDBOX_VOLUME_SEED/codex \
         $SANDBOX_VOLUME_SEED/antigravity \
-        $SANDBOX_VOLUME_SEED/copilot; \
+        $SANDBOX_VOLUME_SEED/copilot \
+        $SANDBOX_VOLUME_SEED/opencode \
+        $SANDBOX_VOLUME_SEED/opencode/config \
+        $SANDBOX_VOLUME_SEED/opencode/data \
+        $SANDBOX_VOLUME_SEED/opencode/state; \
+    # the parents of the links below
+    install -d -o nonroot -g nonroot \
+        /home/nonroot/.config \
+        /home/nonroot/.local \
+        /home/nonroot/.local/share \
+        /home/nonroot/.local/state; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
     # agy reads its state from ~/.gemini, not a name of its own
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
     ln -s persistent-volume/copilot /home/nonroot/.copilot; \
+    ln -s ../persistent-volume/opencode/config /home/nonroot/.config/opencode; \
+    ln -s ../../persistent-volume/opencode/data /home/nonroot/.local/share/opencode; \
+    ln -s ../../persistent-volume/opencode/state /home/nonroot/.local/state/opencode; \
     chown -h nonroot:nonroot \
         /home/nonroot/.claude \
         /home/nonroot/.codex \
         /home/nonroot/.gemini \
-        /home/nonroot/.copilot
+        /home/nonroot/.copilot \
+        /home/nonroot/.config/opencode \
+        /home/nonroot/.local/share/opencode \
+        /home/nonroot/.local/state/opencode
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +277,7 @@ RUN set -euxo pipefail; \
 # removing the volume cannot drop it, and it does not depend on launcher
 # flags. One source outranks it: an organization's server-managed settings,
 # fetched when the session signs in to Anthropic directly. Claude Code
-# reads a single admin source, so under one this file is ignored whole —
+# reads a single admin source, so under one this file is ignored entirely —
 # prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
 # the source in force — and can require the sandbox (the apt step above).
 #
@@ -346,7 +367,7 @@ COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 #
 # Google distributes agy through an install script that resolves a
 # per-platform manifest {version, url, sha512}; the manifest is used
-# directly so the binary lands in the read-only image, keeping the sha512
+# directly so the binary is stored in the read-only image, keeping the sha512
 # check and skipping the shell-profile editing. agy self-updates only where
 # its binary is writable; /usr/local/bin is not, so it updates on rebuild
 # like the others. The smoke test gets a throwaway HOME because agy writes
@@ -365,10 +386,21 @@ RUN set -euxo pipefail; \
     HOME=/tmp/agy-smoke agy --version >/dev/null; \
     rm -rf /tmp/agy-smoke
 
-# All agy state lives under ~/.gemini, a symlink into
-# the persistent volume. Unlike the others, permission prompts are not
-# pre-disabled: agy has no settings key for it, only
-# --dangerously-skip-permissions or the in-app /permissions, which persists.
+# All agy state is under ~/.gemini, a symlink into the persistent volume.
+# toolPermission=always-proceed auto-approves tool execution (the counterpart of
+# Claude's bypassPermissions and Codex's approval_policy="never"), and
+# /workspace is pre-trusted so agy prompts neither on startup.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0700 \
+        $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
+    printf '%s\n' \
+        '{' \
+        '  "toolPermission": "always-proceed",' \
+        '  "trustedWorkspaces": [' \
+        '    "/workspace"' \
+        '  ]' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli/settings.json
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +410,7 @@ RUN set -euxo pipefail; \
 # GitHub's install script (gh.io/copilot-install) fetches the release tarball
 # and checks it against the release's SHA256SUMS; the same two fetches here,
 # without the shell-profile editing. The npm package wraps the same binary.
-# `releases/latest` as for Codex, so a release landing between the two
+# `releases/latest` as for Codex, so a release published between the two
 # fetches fails the checksum and the build, never installs a mismatch. The
 # smoke test gets a throwaway HOME because copilot writes a package cache on
 # every invocation and this RUN is root.
@@ -420,13 +452,66 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
+# OpenCode
+# ---------------------------------------------------------------------------
+#
+# The release ships no checksum file; the release API's asset `digest` is the
+# one source. One read of `releases/latest` names the asset and its digest
+# together, so a release published mid-build cannot mismatch them.
+# The x64 build needs AVX2, and the CPU building the image is the CPU running
+# it — the podman machine's, or the Linux host's — so its flag decides. The
+# glibc build, not the musl one: Debian has glibc. The smoke test gets a
+# throwaway HOME because OpenCode creates its XDG directories on every start,
+# and this RUN is root.
+RUN set -euxo pipefail; \
+    case "$(uname -m)" in \
+        aarch64) OPENCODE_ASSET=opencode-linux-arm64.tar.gz ;; \
+        x86_64) \
+            if grep -qw avx2 /proc/cpuinfo; then OPENCODE_ASSET=opencode-linux-x64.tar.gz; \
+            else OPENCODE_ASSET=opencode-linux-x64-baseline.tar.gz; fi ;; \
+        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    OPENCODE_ASSET_JSON="$(curl -fsSL https://api.github.com/repos/anomalyco/opencode/releases/latest \
+        | jq -ce --arg name "$OPENCODE_ASSET" '[.assets[] | select(.name == $name)] | select(length == 1) | .[0]')"; \
+    curl -fsSL "$(printf '%s' "$OPENCODE_ASSET_JSON" | jq -re .browser_download_url)" -o /tmp/opencode.tar.gz; \
+    printf '%s  /tmp/opencode.tar.gz\n' \
+        "$(printf '%s' "$OPENCODE_ASSET_JSON" \
+            | jq -re '.digest | select(startswith("sha256:")) | ltrimstr("sha256:")')" \
+        | sha256sum -c -; \
+    tar -xzf /tmp/opencode.tar.gz -C /tmp opencode; \
+    install -m 0755 /tmp/opencode /usr/local/bin/opencode; \
+    rm /tmp/opencode.tar.gz /tmp/opencode; \
+    HOME=/tmp/opencode-smoke opencode --version >/dev/null; \
+    rm -rf /tmp/opencode-smoke
+
+# /etc/opencode/opencode.json is OpenCode's managed layer, merged after the
+# user's and the project's files, so neither can turn these back.
+# permission allow: the counterpart of Claude's bypassPermissions above.
+# OPENCODE_PERMISSION is read after this file, so a launch that forwards it
+# puts the prompts back (README, "Running <command>").
+# share disabled: /share would post the session to opncd.ai, or to an
+# enterprise's own URL, either of which a project rule line could admit.
+# autoupdate false: the binary is the image's, and the check alone reads the
+# GitHub release API at every start.
+RUN set -euxo pipefail; \
+    install -d -m 0755 /etc/opencode; \
+    printf '%s\n' \
+        '{' \
+        '  "autoupdate": false,' \
+        '  "permission": "allow",' \
+        '  "share": "disabled"' \
+        '}' \
+        > /etc/opencode/opencode.json
+
+
+# ---------------------------------------------------------------------------
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
 # AGENTS-SANDBOX.md tells the running agent what this container is;
 # AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
 # every link below. The launcher mounts its own assembly over AGENTS.md — the
-# policy in force appended, and a project's
+# ruleset in force appended, and a project's
 # .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
 # why the parts ship beside the whole.
 # Without them an agent reads `Read-only file system` as breakage, or writes
@@ -435,7 +520,8 @@ RUN set -euxo pipefail; \
 #   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
 #           first, project-unexcludable, read-only like managed-settings
 #   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; copilot
-#           ~/.copilot/copilot-instructions.md — no system scope, so each
+#           ~/.copilot/copilot-instructions.md; opencode
+#           ~/.config/opencode/AGENTS.md — no system scope, so each
 #           resolves through the persistent volume. (Codex's
 #           model_instructions_file would *replace* the built-in
 #           instructions, so it is not used.)
@@ -447,7 +533,8 @@ RUN set -euxo pipefail; \
 # Each script's own header says what it is for; they ship because an agent would otherwise retype
 # them from the instructions.
 COPY --chmod=0755 \
-    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman ko-agent-clipboard \
+    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman sandbox-run-on-host sandbox-egress-check \
+    ko-agent-clipboard \
     sandbox-entrypoint \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
@@ -461,7 +548,8 @@ RUN set -euxo pipefail; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/opencode/config/AGENTS.md
 
 
 # ---------------------------------------------------------------------------

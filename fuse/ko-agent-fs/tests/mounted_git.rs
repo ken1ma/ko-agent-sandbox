@@ -90,7 +90,7 @@ fn the_everyday_commands_work_on_a_host_repository() {
     );
 
     let log = succeeds("git log", git_in(&workspace, &["log", "--oneline"]));
-    assert_eq!(log.lines().count(), 3, "the commit did not land:\n{log}");
+    assert_eq!(log.lines().count(), 3, "the commit is not in the log:\n{log}");
 
     // The backing tree is the same tree.
     let host_log = succeeds(
@@ -187,9 +187,9 @@ fn the_deliberately_blocked_commands_fail() {
     );
 }
 
-/// A superproject whose submodule sits in a subdirectory — so git names it `libs/foo` and puts its
-/// gitdir two levels below `modules/`, which is the common shape and the one a depth rule misses.
-/// The upstream lives beside the backing tree rather than inside it, so the mount serves only the
+/// A superproject whose submodule is in a subdirectory — so git names it `libs/foo` and puts its
+/// gitdir two levels below `modules/`, which is the common layout and the one a depth rule misses.
+/// The upstream is beside the backing tree rather than inside it, so the mount serves only the
 /// superproject.
 fn super_with_nested_submodule(backing: &Path) {
     let upstream = backing
@@ -282,8 +282,8 @@ fn a_submodule_in_a_subdirectory_works_like_any_other() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_hook_the_host_installed_runs_for_the_host() {
-    // The filter freezes hooks against the sandbox; it must not break the host's own hook, which is
-    // the thing being protected rather than disabled.
+    // The filter freezes hooks against the sandbox; it must not break the host's own hook: the
+    // host-installed hook is protected, not disabled.
     let mount = TestMount::new(|backing| {
         host_repository(backing);
         let hook = backing.join(".git/hooks/pre-commit");

@@ -1,0 +1,8 @@
+# The .ko-agent-sandbox/egress/rule of a project that reads one of its own Cloud Storage
+# buckets. storage.googleapis.com serves every tenant's bucket under its own first path segment,
+# so allowing the host whole allows every public bucket on it; the tree keeps the reach to this
+# one. Reads only, and a request outside the tree — or spelled with percent-encoding, a dot
+# segment, a backslash or an empty segment — is refused and logged. A signed upload URL for the
+# bucket still fails here: a PUT is refused where no line grants it. What travels in an allowed
+# GET's suffix and query is not bounded; SECURITY.md, "Exfiltration through an allowed host".
+allow https://storage.googleapis.com/my-bucket/ read

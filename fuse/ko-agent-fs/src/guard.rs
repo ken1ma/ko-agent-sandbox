@@ -1,7 +1,7 @@
 //! Startup guards: the conditions under which the filter refuses to mount at all.
 //!
 //! The binding rule and the snapshot argument are `doc/git-metadata.md`, "Relocated hook
-//! directories"; the scope residue — root repository only, once, before the mount — is `SECURITY.md`.
+//! directories"; the scope gap — root repository only, once, before the mount — is `SECURITY.md`.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -44,7 +44,7 @@ pub fn check_hook_location(backing_root: &Path) -> Result<(), Refusal> {
 struct Workspace {
     root: PathBuf,
     /// Submodule gitdir roots as workspace-relative byte paths — discovered by the `HEAD` each
-    /// gitdir holds, the same question the runtime plumbing asks of the tree (`fs.rs`,
+    /// gitdir holds, the same question the FUSE layer asks of the tree (`fs.rs`,
     /// `is_gitdir_root`), so this guard's `Control` means the runtime's `Control`. Without them,
     /// everything under `modules/` would read as namespace — Control, and so *exempt* here —
     /// while the runtime serves an identified gitdir's `objects/` writable: the fail-open
@@ -82,7 +82,7 @@ impl Workspace {
         }
         let entries = match fs::read_dir(dir) {
             // NotADirectory is an absence too: a pointer-file `.git` has no modules tree of its
-            // own — the real gitdir's lives wherever locate_gitdir vetted.
+            // own — the real gitdir's modules tree is under the directory locate_gitdir accepted.
             Err(err)
                 if err.kind() == ErrorKind::NotFound || err.kind() == ErrorKind::NotADirectory =>
             {
@@ -147,7 +147,7 @@ impl Workspace {
 
     /// The path's workspace-relative bytes when it lies strictly inside the root; `None` for the
     /// root itself and everything outside. The root as a traversed component needs no check: its
-    /// own name lives in its parent directory, which the mount never serves.
+    /// own name is in its parent directory, which the mount never serves.
     fn relative_bytes(&self, path: &Path) -> Option<Vec<u8>> {
         let rel = path.strip_prefix(&self.root).ok()?;
         if rel.as_os_str().is_empty() {
@@ -156,10 +156,10 @@ impl Workspace {
         Some(rel.as_os_str().as_bytes().to_vec())
     }
 
-    fn refuse_operational(&self, origin: &str, component: &Path) -> Refusal {
+    fn refuse_operational(&self, subject: &str, component: &Path) -> Refusal {
         Refusal {
             reason: format!(
-                "{origin} resolves through {component:?}, inside the workspace and writable by \
+                "{subject} resolves through {component:?}, inside the workspace and writable by \
                  the sandbox"
             ),
             remedy: "Hooks and configuration reachable through a writable workspace path would \
@@ -173,9 +173,9 @@ impl Workspace {
     /// walks: each named component that lies inside the workspace must classify `Control` before
     /// it is even looked up — existence cannot weaken the answer, because a missing operational
     /// name is one the sandbox can create. Returns the resolved path, or `None` when it does not
-    /// exist, which is reached only through components the rule admitted. `origin` names what is
+    /// exist, which is reached only through components the rule admitted. `subject` names what is
     /// being resolved, for the refusal an operator reads.
-    fn resolve_checked(&self, path: &Path, origin: &str) -> Result<Option<PathBuf>, Refusal> {
+    fn resolve_checked(&self, path: &Path, subject: &str) -> Result<Option<PathBuf>, Refusal> {
         let roots: Vec<&[u8]> = self.gitdir_roots.iter().map(Vec::as_slice).collect();
         let mut pending: VecDeque<OsString> = components_of(path).into();
         let mut current = PathBuf::from("/");
@@ -192,7 +192,7 @@ impl Workspace {
                 if let Some(rel) = self.relative_bytes(&next)
                     && classify_relative_path(&rel, &roots) != GitPathClass::Control
                 {
-                    return Err(self.refuse_operational(origin, &next));
+                    return Err(self.refuse_operational(subject, &next));
                 }
                 if missing {
                     current = next;
@@ -206,7 +206,7 @@ impl Workspace {
                     Err(err) => {
                         return Err(Refusal {
                             reason: format!(
-                                "cannot resolve {next:?} while locating {origin}: {err}"
+                                "cannot resolve {next:?} while locating {subject}: {err}"
                             ),
                             remedy: "The filter will not serve control state it cannot resolve."
                                 .to_string(),
@@ -217,7 +217,7 @@ impl Workspace {
                         if hops > MAX_SYMLINK_HOPS {
                             return Err(Refusal {
                                 reason: format!(
-                                    "{origin} takes more than {MAX_SYMLINK_HOPS} symlink hops to \
+                                    "{subject} takes more than {MAX_SYMLINK_HOPS} symlink hops to \
                                      resolve"
                                 ),
                                 remedy: "The filter will not serve control state it cannot \
@@ -264,7 +264,7 @@ impl Workspace {
 
         if metadata.file_type().is_symlink() {
             // The launcher refuses a symlinked `.git` outright and so does this: a link decides
-            // where the whole control surface lives, and following it would make the guarded set
+            // where the whole of the control state is, and following it would make the guarded set
             // depend on where it points at this instant.
             return Err(Refusal {
                 reason: format!("{dotgit:?} is a symlink"),
@@ -289,8 +289,8 @@ impl Workspace {
             });
         };
         let named = resolve_against(&self.root, target.trim());
-        let origin = format!("the gitdir {dotgit:?} names");
-        match self.resolve_checked(&named, &origin)? {
+        let subject = format!("the gitdir {dotgit:?} names");
+        match self.resolve_checked(&named, &subject)? {
             None => Err(Refusal {
                 reason: format!("{dotgit:?} names a gitdir that does not exist: {named:?}"),
                 remedy: "The filter will not serve a repository whose gitdir it cannot locate."
@@ -312,12 +312,12 @@ impl Workspace {
         }
     }
 
-    /// The common gitdir — where `config` and `hooks` live for a linked worktree: the directory
+    /// The common gitdir, which holds `config` and `hooks` for a linked worktree: the directory
     /// the gitdir's `commondir` file names, or the gitdir itself when there is none.
     fn common_of(&self, gitdir: &Path) -> Result<PathBuf, Refusal> {
         let commondir_path = gitdir.join("commondir");
-        let origin = format!("the commondir file {commondir_path:?}");
-        let Some(resolved) = self.resolve_checked(&commondir_path, &origin)? else {
+        let subject = format!("the commondir file {commondir_path:?}");
+        let Some(resolved) = self.resolve_checked(&commondir_path, &subject)? else {
             return Ok(gitdir.to_path_buf());
         };
         let text = match fs::read_to_string(&resolved) {
@@ -333,8 +333,8 @@ impl Workspace {
             Ok(text) => text,
         };
         let named = resolve_against(gitdir, text.trim());
-        let origin = format!("the common gitdir {commondir_path:?} names");
-        match self.resolve_checked(&named, &origin)? {
+        let subject = format!("the common gitdir {commondir_path:?} names");
+        match self.resolve_checked(&named, &subject)? {
             None => Err(Refusal {
                 reason: format!(
                     "{commondir_path:?} names a directory that does not exist: {named:?}"
@@ -374,13 +374,13 @@ impl Workspace {
             hooks_dirs.push(gitdir.join("hooks"));
         }
 
-        // The config files git reads for this repository: the shared config lives in the common
+        // The config files git reads for this repository: the shared config is in the common
         // gitdir — for a linked worktree that is NOT the located gitdir, which holds only
         // `config.worktree` — so scanning `gitdir/config` alone misses the file that names the
         // hooks git actually runs.
         for config_path in [common.join("config"), gitdir.join("config.worktree")] {
-            let origin = format!("the config file {config_path:?}");
-            let Some(resolved) = self.resolve_checked(&config_path, &origin)? else {
+            let subject = format!("the config file {config_path:?}");
+            let Some(resolved) = self.resolve_checked(&config_path, &subject)? else {
                 continue;
             };
             let bytes = match fs::read(&resolved) {
@@ -427,7 +427,7 @@ impl Workspace {
                     // that is not one directory: most hooks run from the worktree root, but the
                     // receive-side hooks (pre-receive, update, post-receive) run from $GIT_DIR.
                     // Every base is judged — worktree, gitdir, common gitdir — and any one
-                    // landing on writable workspace paths refuses; over-refusing a spelling only
+                    // resolving to writable workspace paths refuses; over-refusing a spelling only
                     // one base makes dangerous is the scanner's own price.
                     let mut bases: Vec<&Path> = vec![self.root.as_path()];
                     for base in [gitdir, common.as_path()] {
@@ -438,9 +438,9 @@ impl Workspace {
                     for value in values {
                         for base in &bases {
                             let named = resolve_against(base, &value);
-                            let origin =
+                            let subject =
                                 format!("{config_path:?} sets a hooksPath to {value:?}, which");
-                            if let Some(dir) = self.resolve_checked(&named, &origin)?
+                            if let Some(dir) = self.resolve_checked(&named, &subject)?
                                 && !hooks_dirs.contains(&dir)
                             {
                                 hooks_dirs.push(dir);
@@ -458,11 +458,11 @@ impl Workspace {
     }
 
     /// Every entry of an effective hooks directory, resolved under the binding rule: the
-    /// directory may legitimately live outside the workspace, but an individual hook that is a
+    /// directory may legitimately be outside the workspace, but an individual hook that is a
     /// symlink back into ordinary workspace data is the same relocation one level down.
     fn check_hook_entries(&self, dir: &Path) -> Result<(), Refusal> {
-        let origin = format!("the hook directory {dir:?}");
-        let Some(resolved) = self.resolve_checked(dir, &origin)? else {
+        let subject = format!("the hook directory {dir:?}");
+        let Some(resolved) = self.resolve_checked(dir, &subject)? else {
             return Ok(());
         };
         let entries = match fs::read_dir(&resolved) {
@@ -484,15 +484,15 @@ impl Workspace {
                 remedy: "The filter will not serve hooks it cannot inspect.".to_string(),
             })?;
             let hook = resolved.join(entry.file_name());
-            let origin = format!("the hook {hook:?}");
-            self.resolve_checked(&hook, &origin)?;
+            let subject = format!("the hook {hook:?}");
+            self.resolve_checked(&hook, &subject)?;
         }
         Ok(())
     }
 
     /// Whether the workspace root is itself laid out as a gitdir — `git init --bare`,
     /// `git clone --bare|--mirror`, or hand-assembled. Host git's ascending discovery adopts such
-    /// a directory, and its config and hooks sit at ordinary names the filter must keep writable,
+    /// a directory, and its config and hooks have ordinary names the filter must keep writable,
     /// so it is refused. The recognition mirrors git's own `is_git_directory`: a valid `HEAD`
     /// (symref or detached hash), an `objects` directory, a `refs` directory — a triple reftable
     /// repositories also keep, precisely so old gits recognize them.
@@ -504,7 +504,7 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot read {head:?}: {err}"),
-                    remedy: "The filter will not serve a tree whose repository shape it cannot \
+                    remedy: "The filter will not serve a tree whose repository layout it cannot \
                              decide."
                         .to_string(),
                 });
@@ -530,7 +530,7 @@ impl Workspace {
                 Err(err) => {
                     return Err(Refusal {
                         reason: format!("cannot read {:?}: {err}", self.root.join(name)),
-                        remedy: "The filter will not serve a tree whose repository shape it \
+                        remedy: "The filter will not serve a tree whose repository layout it \
                                  cannot decide."
                             .to_string(),
                     });
@@ -545,7 +545,7 @@ impl Workspace {
                  valid HEAD, objects/ and refs/",
                 self.root
             ),
-            remedy: "Its config and hooks sit at workspace-root names the filter must keep \
+            remedy: "Its config and hooks have workspace-root names the filter must keep \
                      writable, so it cannot be served. Launch from a worktree with a .git entry, \
                      or move the bare repository elsewhere."
                 .to_string(),
@@ -583,14 +583,14 @@ enum HooksPath {
     Undecidable(&'static str),
 }
 
-/// A deliberately blunt scanner, not a git-config parser. It answers one question — could this file
+/// A deliberately conservative scanner, not a git-config parser. It answers one question — could this file
 /// put hooks inside the workspace — and every doubt resolves to [`HooksPath::Undecidable`], which
 /// refuses the mount.
 ///
-/// Blunt has to mean blunt *toward refusing*, which is the invariant to preserve when changing
+/// Conservative has to mean erring *toward refusing*, which is what to preserve when changing
 /// this scanner. It reads no section headers, so it reports every `hooksPath` in
-/// the file and lets the caller refuse if *any* lands inside the workspace — keeping only the last
-/// would be the fail-open shape — and each doubt refuses because reading it any other way would
+/// the file and lets the caller refuse if *any* resolves inside the workspace — keeping only the last
+/// would be the fail-open reading — and each doubt refuses because reading it any other way would
 /// compare a different string than the one hooks run from. The worked example and the per-doubt
 /// reasons are `doc/git-metadata.md`, "Relocated hook directories".
 fn scan_hooks_path(text: &str) -> HooksPath {
@@ -624,7 +624,7 @@ fn scan_hooks_path(text: &str) -> HooksPath {
             return HooksPath::Undecidable("sets a hooksPath relative to a home directory");
         }
         if value.contains('\\') {
-            return HooksPath::Undecidable("sets a hooksPath carrying a backslash escape");
+            return HooksPath::Undecidable("sets a hooksPath containing a backslash escape");
         }
         if !value.is_empty() {
             found.push(value.to_string());
@@ -693,10 +693,10 @@ mod tests {
 
     #[test]
     fn every_hooks_path_is_reported_because_sections_are_invisible() {
-        // The fail-open shape this scanner must not have. `tool.hooksPath` is a key git never reads
+        // The fail-open reading this scanner must not have. `tool.hooksPath` is a key git never reads
         // for hooks, so git runs `./githooks` from inside the worktree; a scanner keeping only the
         // last value would answer `/opt/hooks` and serve the tree. Both are reported instead, and
-        // the caller refuses on the first that lands inside.
+        // the caller refuses on the first that resolves inside.
         assert_eq!(
             values(scan_hooks_path(
                 "[core]\n\thooksPath = ./githooks\n[tool]\n\thooksPath = /opt/hooks\n"
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn an_include_makes_the_answer_undecidable() {
-        // The setting could live in the included file, which this scanner does not follow — so the
+        // The setting could be in the included file, which this scanner does not follow — so the
         // mount is refused rather than guessed at.
         assert!(matches!(
             scan_hooks_path("[include]\n\tpath = ../shared.config\n"),
@@ -861,9 +861,9 @@ mod tests {
 
     #[test]
     fn a_hooks_path_masked_by_a_later_section_is_still_refused() {
-        // End to end, the shape `every_hooks_path_is_reported_because_sections_are_invisible`
+        // End to end, the property `every_hooks_path_is_reported_because_sections_are_invisible`
         // pins at the scanner: the repository git would run `./githooks` from is refused, whatever
-        // stands after it in the file.
+        // follows it in the file.
         let root = scratch("hookspath-masked");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("githooks")).unwrap();
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn a_pointer_file_naming_an_in_workspace_gitdir_is_refused() {
         // `git init --separate-git-dir admin .` run by the host: the gitdir's config and hooks
-        // then sit at ordinary workspace names, and the host's next `git status` reads them.
+        // then have ordinary workspace names, and the host's next `git status` reads them.
         let root = scratch("separate-gitdir");
         fs::create_dir_all(root.join("admin/hooks")).unwrap();
         fs::write(root.join("admin/HEAD"), b"ref: refs/heads/main\n").unwrap();
@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn the_common_config_reached_through_commondir_is_scanned() {
-        // A linked worktree's shared config lives in the common gitdir, not beside the worktree's
+        // A linked worktree's shared config is in the common gitdir, not beside the worktree's
         // own `config.worktree`; a scan of the located gitdir alone misses the file that names
         // the hooks git actually runs.
         let root = scratch("worktree");
@@ -983,7 +983,7 @@ mod tests {
 
     #[test]
     fn a_control_file_aliased_through_a_reaimable_workspace_intermediate_is_refused() {
-        // The two-hop shape a final-target check misses: at validation the chain ends outside the
+        // The two-hop chain a final-target check misses: at validation the chain ends outside the
         // workspace, but its intermediate is an ordinary workspace name the sandbox can re-aim.
         let outside = scratch("two-hop-target");
         fs::write(outside.join("real-config"), b"[core]\n").unwrap();
@@ -1007,7 +1007,7 @@ mod tests {
     #[test]
     fn a_config_aliased_into_operational_git_state_is_refused() {
         // "Under .git" is not an exemption: the operational subtrees are writable, so a config
-        // whose bytes live in .git/objects is a config the sandbox chooses.
+        // whose bytes are in .git/objects is a config the sandbox chooses.
         let root = scratch("alias-operational");
         fs::create_dir_all(root.join(".git/objects")).unwrap();
         fs::write(root.join(".git/objects/aux"), b"[core]\n").unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
         refused_with(&root, "bare");
         let _ = fs::remove_dir_all(&root);
 
-        // The recognition is git's own triple, so a partial or invalid shape stays an ordinary
+        // The recognition is git's own triple, so a partial or invalid layout stays an ordinary
         // project: a HEAD without refs, and a HEAD git would not validate.
         let root = scratch("bare-near-miss");
         fs::write(root.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
@@ -1099,7 +1099,7 @@ mod tests {
         assert!(check_hook_location(&root).is_ok());
         let _ = fs::remove_dir_all(&root);
 
-        // A symref git's own validate_headref rejects — the target must live under refs/ — so
+        // A symref git's own validate_headref rejects — the target must be under refs/ — so
         // the guard must not call this a repository either.
         let root = scratch("bare-invalid-symref");
         fs::write(root.join("HEAD"), b"ref: nonsense\n").unwrap();

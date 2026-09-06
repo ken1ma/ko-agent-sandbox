@@ -74,8 +74,8 @@ struct DirEntry {
 /// another `open`: `fcntl(F_SETFL)` toggles `O_APPEND` on a live file description, and the kernel
 /// sends the flags as they are with every write (`fuse_write_flags` reads `f_flags`). So this is
 /// what [`Filesystem::write`] reconciles against, and the reconciliation is not cosmetic — with the
-/// two out of step, a positional write on a still-appending descriptor lands at the end and an
-/// appending write on a plain one lands at a stale offset.
+/// two out of step, a positional write on a still-appending descriptor goes to the end and an
+/// appending write on a plain one goes to a stale offset.
 struct Handle {
     fd: Arc<OwnedFd>,
     append: bool,
@@ -170,7 +170,7 @@ impl KoAgentFs {
         );
         // openat2 returns EAGAIN when it cannot prove a `..` stayed within the root under a
         // concurrent rename; the kernel expects the caller to retry. Bounded, so a relentless racer
-        // cannot spin us forever — the attacker only delays their own request.
+        // cannot spin this loop forever — the attacker only delays their own request.
         let mut attempts = 0;
         loop {
             match openat2(&self.root, rel.as_c_str(), how) {
@@ -366,14 +366,14 @@ impl KoAgentFs {
 ///     offset stale, and a `pwrite` there overwrites the bytes it should have followed. Carrying
 ///     the flag puts the guarantee where POSIX puts it, in the backing filesystem, and git appends
 ///     its reflogs. [`Filesystem::write`] is the other half: an `O_APPEND` fd must be written with
-///     `write`, because Linux has `pwrite` on one append regardless of the offset it was given.
+///     `write`, because on Linux `pwrite` on one appends regardless of the offset it was given.
 ///
 /// `O_SYNC` and `O_DSYNC` are deliberately absent, and they are the pair most likely to look like
-/// an oversight: the kernel already ends a write with `generic_write_sync`, which lands in this
-/// filesystem's own `fsync`, so carrying them to the backing fd would buy a second flush per write
+/// an oversight: the kernel already ends a write with `generic_write_sync`, which arrives in this
+/// filesystem's own `fsync`, so carrying them to the backing fd would add a second flush per write
 /// rather than a guarantee. That reasoning holds only while `fsync` really syncs — which is
-/// [`Filesystem::fsync`]'s own subject. Everything else — `O_DIRECT`, `O_NOATIME` — is surface
-/// nobody reasoned about, and the allowlist is what keeps that true as the platform grows flags.
+/// [`Filesystem::fsync`]'s own subject. Everything else — `O_DIRECT`, `O_NOATIME` — is behavior
+/// nobody reasoned about, and the allowlist is what keeps that true as the platform adds flags.
 fn passthrough_flags(flags: i32) -> OFlag {
     let mut oflag = OFlag::from_bits_truncate(flags & libc::O_ACCMODE);
     for carried in [OFlag::O_EXCL, OFlag::O_TRUNC, OFlag::O_APPEND] {
@@ -469,11 +469,11 @@ fn to_errno(err: NixErrno) -> Errno {
 }
 
 /// Whether a symlink `target`, created in a directory `depth` components below the workspace root,
-/// has the *shape* of a portable one: relative, and never climbing above the directory it is created
+/// has the *syntax* of a portable one: relative, and never climbing above the directory it is created
 /// in by more than that directory's own depth. `symlink` has the why.
 ///
-/// A conservative shape test, not a decision about meaning, and it errs in both directions rather
-/// than claiming a semantics it cannot compute:
+/// A conservative test of syntax, not a decision about meaning, and it errs in both directions rather
+/// than claiming a meaning it cannot compute:
 ///
 ///   - it accepts a target whose own components are symlinks the host may resolve differently,
 ///     since it walks the target lexically and resolves nothing;
@@ -481,7 +481,7 @@ fn to_errno(err: NixErrno) -> Errno {
 ///     project directory anywhere else, and needlessly strict for a native Linux one that really
 ///     is at `/workspace`.
 ///
-/// Shape is what a filter serving an unknown host layout can judge. The rule earns its place on the
+/// Syntax is what a filter serving an unknown host layout can judge. The rule earns its place on the
 /// second direction anyway: what a caching tool plants is the container's own store path, which
 /// cannot be assumed portable to a host layout this side never sees.
 ///
@@ -494,10 +494,10 @@ fn to_errno(err: NixErrno) -> Errno {
 /// directory above it therefore re-aims it against a depth this never saw, and it can then resolve
 /// outside the workspace. Neither `rename` nor `link` re-judges — not an oversight to correct:
 /// doing it for a directory means walking everything under it on every rename, at a cost this rule
-/// does not earn. What this refuses is a target written in a non-portable shape, which is the accidental
-/// tool behaviour the rule is aimed at; a session set on leaving a link that resolves elsewhere
+/// does not earn. What this refuses is a target written in a non-portable syntax, which is the accidental
+/// tool behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
 /// still can.
-fn target_has_portable_shape(target: &Path, depth: usize) -> bool {
+fn target_has_portable_syntax(target: &Path, depth: usize) -> bool {
     let mut at = depth;
     for component in target.components() {
         match component {
@@ -507,7 +507,7 @@ fn target_has_portable_shape(target: &Path, depth: usize) -> bool {
                 None => return false,
             },
             Component::Normal(_) => at += 1,
-            // Absolute: refused on the shape alone, with nothing resolved or interpreted.
+            // Absolute: refused on the syntax alone, with nothing resolved or interpreted.
             Component::RootDir | Component::Prefix(_) => return false,
         }
     }
@@ -605,12 +605,12 @@ fn dir_type(kind: nix::dir::Type) -> FileType {
 //   unlink, rmdir                  the target child's classification
 //   rename                         source (RenameFrom) and destination; RENAME_EXCHANGE both ways
 //   setattr (chmod/chown/truncate) the target inode's classification
-//   open (write intent)            classification; write() then rides the already-authorized handle
+//   open (write intent)            classification; write() then uses the already-authorized handle
 //
 // So the deny surface is closed by construction: unimplemented ops fail, and every implemented op is
 // gated on *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never gated. This
 // is the deny side only; whether the *policy* is complete is `doc/git-metadata.md`, resting on the
-// git-behaviour premises `doc/git-metadata.md` records under "Premises".
+// git-behavior premises `doc/git-metadata.md` records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
@@ -759,9 +759,9 @@ impl Filesystem for KoAgentFs {
 
     /// Snapshot the directory once, into the handle. A `readdir` scan is then stable: re-reading the
     /// directory on every call, and paginating by index into a *changing* list, silently skips or
-    /// duplicates entries when the tree moves under a scan — and a large directory made it O(n²)
+    /// duplicates entries when the tree moves under a scan — and a large directory makes it O(n²)
     /// besides. POSIX leaves it unspecified whether a scan sees entries added after `opendir`, so a
-    /// snapshot is the sanctioned reading; the *next* `opendir` sees the new state, and attributes
+    /// snapshot is a permitted reading; the *next* `opendir` sees the new state, and attributes
     /// stay live because their TTL is zero.
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
@@ -955,10 +955,10 @@ impl Filesystem for KoAgentFs {
             return reply.error(err);
         }
         // Not a policy decision — the target is never what the policy classifies (the mutation
-        // tests say why) — but the one thing a session writes whose stored content the host's own
-        // kernel follows as a path, with the user's privileges and nothing having to run.
-        // `target_has_portable_shape` has the shape this accepts and how far that shape is only an
-        // approximation; SECURITY.md, "A symlink is the sharpest case", has the threat.
+        // tests say why) — but a symlink target is the only session-written content the host's own kernel
+        // later follows as a path, with the user's privileges and nothing having to run.
+        // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only an
+        // approximation; SECURITY.md, "A symlink is the highest-risk case", has the threat.
         //
         // The population is tools that cache outside the project and link into it, and sbt 2 is the
         // measured case at both ends. Unrefused, it materializes a build-cache hit as a link into
@@ -972,11 +972,11 @@ impl Filesystem for KoAgentFs {
             Some(components) => components.len(),
             None => return reply.error(Errno::ESTALE),
         };
-        if !target_has_portable_shape(target, depth) {
+        if !target_has_portable_syntax(target, depth) {
             return reply.error(deny(
                 "symlink",
                 &format!("{link_name:?}"),
-                "nonportable-target-shape: refusing a target that is absolute or climbs above \
+                "nonportable-target-syntax: refusing a target that is absolute or climbs above \
                  the workspace root",
             ));
         }
@@ -998,7 +998,7 @@ impl Filesystem for KoAgentFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
-        // Source-side too (`doc/git-metadata.md`, "Operations that carry these mutations").
+        // Source-side too (`doc/git-metadata.md`, "Operations that make these mutations").
         if let Err(err) = self.allow_ino(ino.0, Mutation::Link, "link-source") {
             return reply.error(err);
         }
@@ -1239,7 +1239,7 @@ impl Filesystem for KoAgentFs {
     }
 
     /// The directory twin, and needed for the same reason: git syncs the directory holding a ref it
-    /// just renamed into place. The `opendir` handle carries a name snapshot rather than an fd, so
+    /// just renamed into place. The `opendir` handle holds a name snapshot rather than an fd, so
     /// this re-resolves the inode — which is what every other operation here does anyway.
     fn fsyncdir(
         &self,
@@ -1266,9 +1266,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_symlink_target_has_portable_shape_when_it_is_relative_and_lands_inside() {
+    fn a_symlink_target_has_portable_syntax_when_relative_and_never_climbing_above_the_root() {
         let portable =
-            |target: &str, depth: usize| target_has_portable_shape(Path::new(target), depth);
+            |target: &str, depth: usize| target_has_portable_syntax(Path::new(target), depth);
 
         // depth 0 is a link in the workspace root.
         assert!(portable("sibling.rs", 0));
@@ -1283,13 +1283,13 @@ mod tests {
         assert!(!portable("../..", 1));
         assert!(!portable("../../../../etc/passwd", 1));
 
-        // Descending first buys depth back, and the running count is what decides.
+        // Descending first increases the remaining permitted depth, and the running count is what decides.
         assert!(portable("a/../b", 0));
         assert!(portable("a/b/../../c", 0));
         assert!(!portable("a/../../b", 0));
 
         // Absolute is absolute at any depth, and what it names is not consulted — `/workspace/...`
-        // is refused with the rest, which is the conservative half of the shape.
+        // is refused with the rest, which is the conservative half of the rule.
         assert!(!portable("/etc/passwd", 9));
         assert!(!portable("/workspace/src/main.rs", 9));
     }

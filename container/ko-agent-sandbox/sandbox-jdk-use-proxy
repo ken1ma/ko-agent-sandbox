@@ -1,4 +1,5 @@
 #!/bin/sh
+#
 # Give one JVM what this session's network needs: the egress proxy's inspection CA, and the proxy
 # itself.
 #
@@ -12,7 +13,7 @@
 #   sandbox-jdk-use-proxy                  # $JAVA_HOME
 #   sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
 #
-# Not for a GraalVM native image (cs, scala-cli): it has no conf/ to edit and takes the same facts
+# Not for a GraalVM native image (cs, scala): it has no conf/ to edit and takes the same facts
 # as -D options — KO_AGENT_SANDBOX_JAVA_OPTS, in the agent instructions.
 #
 # Idempotent, and safe to point at the image's JDK: it reports what is already true rather than
@@ -38,12 +39,12 @@ if [ -z "$PROXY_HOST" ] || [ "$PROXY_HOST" = "$PROXY_PORT" ]; then
     exit 2
 fi
 
-CA=/etc/ko-agent-sandbox/egress-ca.crt
+CA=/etc/ko-agent-sandbox/egress-proxy-ca.crt
 ALIAS=ko-agent-sandbox-egress
 # The password every JDK ships cacerts under; not a secret, and the store holds only certificates.
 STOREPASS=changeit
 
-# Named JAVA_HOME because that is what it is — the home of the JDK being taught.
+# Named JAVA_HOME because that is what it is — the home of the JDK being prepared.
 JAVA_HOME="${1:-${JAVA_HOME:-}}"
 
 if [ $# -gt 1 ] || [ -z "$JAVA_HOME" ]; then
@@ -61,7 +62,7 @@ fi
 # work, and adds a banner to every JVM start that corrupts output other tools parse; this sets no
 # system property at all. Appended, because a properties file takes the last assignment of a key;
 # http.nonProxyHosts is left as shipped, since it already spells the loopback exemptions NO_PROXY
-# carries.
+# lists.
 set_proxy() {
     net=$JAVA_HOME/conf/net.properties
     # A failure, not a report: every Java 9+ runtime ships this file, and without the proxy the
@@ -105,7 +106,7 @@ EOF
     fi
     # The original beside it before the first append, and only if no copy is there yet, so a
     # re-run cannot overwrite the true original with an already-appended one. Named for this
-    # tool rather than `.dist`, which would claim an as-distributed pristineness nobody
+    # tool rather than `.dist`, which would claim the file is as distributed, which nobody
     # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
     [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"
     cat >> "$net" <<EOF
@@ -122,14 +123,14 @@ EOF
 
 set_proxy
 
-# The CA is the other half, and only exists where the session inspects something. Absent is a
+# The CA is the other half, and only exists where the session inspects a host. Absent is a
 # report rather than a failure: the proxy above is what a read-write-only policy needs.
 if [ ! -r "$CA" ]; then
     echo "${0##*/}: $CA is absent, so this session inspects no host; nothing to trust"
     exit 0
 fi
 
-# The colon-hex SHA-256 both keytool outputs below carry, whatever label they print it under.
+# The colon-hex SHA-256 both keytool outputs below print, whatever label they print it under.
 fingerprint_of() {
     grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' | head -1
 }
@@ -138,7 +139,7 @@ fingerprint_of() {
 # keytool is invoked rather than whichever one is on PATH.
 #
 # Idempotence must compare the certificate, not just find the alias: a JDK kept on a volume shared
-# across projects can carry this alias for another project's CA, and "already trusted" over the
+# across projects can hold this alias for another project's CA, and "already trusted" over the
 # wrong certificate would be exactly the unexplained TLS failure this tool exists to end.
 want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
 have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \

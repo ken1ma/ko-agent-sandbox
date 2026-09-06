@@ -1,5 +1,5 @@
 // How a run ends: the handover to podman, and the removal of the proxy and networks that run
-// created. Both removal paths live here together on purpose — the detached reaper (POSIX, after the
+// created. Both removal paths are here together on purpose — the detached reaper (POSIX, after the
 // exec) and removeRunResources (Windows, or any launch that stayed resident) are twins, and a change
 // to one is nearly always a change to the other. Splitting them by platform would put the twins in
 // different files.
@@ -36,8 +36,9 @@ object SandboxLifecycle:
     System.err.flush()
     // Claimed before either way of starting podman, and before the `start()` that can throw.
     if !cleanup.handingOver() then
-      // A shutdown got there first and this run's resources are already gone. The JVM is mid-halt,
-      // and a non-zero exit during shutdown halts rather than re-running the sequence.
+      // A shutdown got there first and this run's resources are already gone. This exit blocks
+      // indefinitely; the JVM ends when the hook finishes, with the shutdown's own status
+      // (HostCommands.shuttingDown has the contract).
       sys.exit(1)
     if viaExec && currentOs != Os.Windows then
       try FFMHelper.libc.execvp(command)
@@ -56,8 +57,8 @@ object SandboxLifecycle:
   // Removing what the run created
   // -------------------------------------------------------------------------
   //
-  // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's policy and
-  // certificate are current; nothing worth keeping dies with any of it (the audit log is a host file).
+  // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's ruleset and
+  // certificate are its own; nothing worth keeping dies with any of it (the audit log is a host file).
   //
   // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never toward
   // a removed proxy under a live sandbox:
@@ -129,7 +130,7 @@ object SandboxLifecycle:
       val handingOver = child.isEmpty && handedOver
       if !claimed && !handingOver then
         // Claimed before the removal runs rather than after it succeeds. A `remove` that throws
-        // part-way has already taken something away, so allowing a handover after it would start a
+        // part-way has already removed part of the run, so allowing a handover after it would start a
         // sandbox whose proxy or networks are half gone: a failed cleanup refuses the handover as
         // permanently as a successful one.
         claimed = true
@@ -150,7 +151,7 @@ object SandboxLifecycle:
    * (documented at the step that reads them), $8 the clipboard mode, $9
    * to ${11} its host tools, ${12} the ps its cleanup walks the tree with.
    *
-   * The trap is load-bearing: the reaper shares the launcher's process
+   * The trap is necessary: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
    *
    * The clipboard broker is a job of this script rather than a process of
@@ -166,7 +167,7 @@ object SandboxLifecycle:
     withScriptPath(
       "trap '' INT HUP TERM\n\n" +
       """# A process and its descendants, through the ps the launcher proved answers this exact
-      |# command shape (ClipboardBroker.probedPs): one answering nothing would leave every job
+      |# command arguments (ClipboardBroker.probedPs): one answering nothing would leave every job
       |# childless here and the cleanup ending the job alone, silently. ${12} is read at top
       |# level; inside a function the positionals are the function's. STOP and KILL, the two
       |# signals no disposition can refuse — the tree inherits this shell's ignores. A stopped
@@ -179,7 +180,7 @@ object SandboxLifecycle:
       |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
       |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
       |
-      |""".stripMargin + ClipboardBroker.HostShellFunctions +
+      |""".stripMargin + ClipboardBroker.hostShellFunctions() +
       """# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten

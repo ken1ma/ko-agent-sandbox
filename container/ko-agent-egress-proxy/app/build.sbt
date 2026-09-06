@@ -1,11 +1,11 @@
 name := "agent-egress-proxy"
 version := "0.1.0"
-scalaVersion := "3.8.4"
+scalaVersion := "3.9.0"
 
 Compile / mainClass := Some("agentsandbox.egress.AgentEgressProxy")
 
 libraryDependencies +=
-  "org.scalameta" %% "munit" % "1.3.5" % Test
+  "org.scalameta" %% "munit" % "1.3.6" % Test
 
 scalacOptions ++= Seq(
   "-deprecation",
@@ -13,6 +13,16 @@ scalacOptions ++= Seq(
   "-unchecked",
   "-Wunused:all",
   "-Werror",
+)
+
+// X509Helper issues leaves with the JDK's internal certificate builder, which the JVM keeps behind
+// the module boundary at run time; scalac compiles against it unasked. The Containerfile passes the
+// same two exports to native-image, and the launcher's manifest carries them for the host build's
+// proxy.
+Test / fork := true
+Test / javaOptions ++= Seq(
+  "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
+  "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
 )
 
 // Native Image follows the jar's manifest Class-Path, resolved relative to the application jar. `dist` puts the

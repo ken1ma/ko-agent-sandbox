@@ -49,7 +49,7 @@ RUN set -euxo pipefail; \
 ENV JAVA_HOME=/opt/graalvm
 ENV PATH="/opt/graalvm/bin:$PATH"
 
-# Build as nonroot: cs setup's cache lives under /home/nonroot, and root
+# Build as nonroot: cs setup's cache is under /home/nonroot, and root
 # would populate a second, cold one on every build.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot /build
@@ -60,17 +60,27 @@ WORKDIR /build/app
 
 RUN set -euxo pipefail; \
     sbt -batch dist; \
+    # -J-Xmx pins the builder, whose in-container default budgets 85% of the machine's *total* \
+    # memory — sized past what exists on a machine whose free memory running sandbox sessions \
+    # hold, which every session then pays for. Deliberately tight over the measured heap peak \
+    # (1.39 GiB, aarch64; x64 compiles different code and trips first if it grows): the context \
+    # ships bundled in the launcher jar, so users compile only sources a developer already \
+    # built, and growth fails the developer's own build, where a roomier cap \
+    # would hide growth in GC time nobody reads. \
     # Bodies pass through fixed buffers instead of accumulating in the managed heap. \
     native-image \
+        -J-Xmx1536m \
         -R:MaxHeapSize=64m \
+        --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
+        --add-exports=java.base/sun.security.util=ALL-UNNAMED \
         -o /build/agent-egress-proxy \
         -jar target/dist/agent-egress-proxy.jar
 
-# The leaf cert/key mount point, created here because distroless has no
-# shell to mkdir with; in the image the contract is visible and independent
-# of podman's --read-only behaviour.
+# The mount points for the leaf cert/key and, under allow-unless-denied, the run CA's, created
+# here because distroless has no shell to mkdir with; in the image the contract is visible and
+# independent of podman's --read-only behaviour.
 RUN set -euxo pipefail; \
-    install -d -o nonroot -g nonroot -m 0755 /build/tls
+    install -d -o nonroot -g nonroot -m 0755 /build/tls /build/tls/allow-unless-denied
 
 # The audit-log mount point, same reasoning; the file ships empty so the image still runs on its own, logging to stderr.
 RUN set -euxo pipefail; \
@@ -82,14 +92,14 @@ RUN set -euxo pipefail; \
 # Runtime
 # ---------------------------------------------------------------------------
 #
-# A policy enforcement point should hold nothing an attacker could use:
+# An enforcement point should hold nothing an attacker could use:
 # distroless has no shell, package manager, interpreter or JVM, so an ad-hoc
 # command cannot run inside it. The cost is no HEALTHCHECK; liveness is the log
 # (--proxy-log). `nonroot` is a mutable tag resolving to uid 65532.
 FROM gcr.io/distroless/base-debian13:nonroot
 
 LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
-LABEL org.opencontainers.image.description="CONNECT-only allowlisting egress proxy for ko-agent-sandbox"
+LABEL org.opencontainers.image.description="CONNECT-only egress proxy for ko-agent-sandbox, enforcing a project's rules"
 LABEL org.opencontainers.image.base.name="gcr.io/distroless/base-debian13:nonroot"
 
 # The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
@@ -102,15 +112,16 @@ LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 # Debian runtime, and each image architecture compiles its own binary.
 COPY --from=build /build/agent-egress-proxy /usr/local/bin/agent-egress-proxy
 
-# TLS inspection material lands here; with neither variable set the proxy
-# runs uninspected, which keeps the image runnable on its own. The CA key
-# never enters this container.
+# TLS inspection material is mounted here: the leaf and its key, or under allow-unless-denied the run
+# CA and its key (SECURITY.md, "Who holds the CA key"); with no variable set the proxy runs
+# uninspected under the finite profiles, which keeps the image runnable on its own. The project
+# CA's key never enters this container.
 COPY --from=build /build/tls /etc/agent-egress-proxy
 
-# The per-run audit log lands here, a bind-mounted host file that outlives the container.
+# The per-run audit log is written here, a bind-mounted host file that outlives the container.
 COPY --from=build /build/var-log /var/log/agent-egress-proxy
 
-# Documentation only; not published, so a workstation process cannot borrow the sandbox's egress allowance.
+# Documentation only; not published, so a workstation process cannot borrow the sandbox's egress rules.
 EXPOSE 3128
 
 # The base already runs as 65532; restated as a security property of this image.

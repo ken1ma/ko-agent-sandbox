@@ -24,10 +24,13 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assume(Files.isExecutable(sh) && gnuMv, "runs the entrypoint under /bin/sh with GNU mv")
     val root = Files.createTempDirectory("sandbox-entrypoint")
     val seed = Files.createDirectories(root.resolve("seed"))
-    Vector("claude", "codex", "antigravity", "copilot").foreach: agent =>
+    Vector("claude", "codex", "antigravity", "copilot", "opencode").foreach: agent =>
       Files.createDirectory(seed.resolve(agent))
       Files.writeString(seed.resolve(agent).resolve("seeded"), agent)
     Files.createSymbolicLink(seed.resolve("copilot").resolve("copilot-instructions.md"), script)
+    // opencode's seed has depth: the link sits in a subdirectory.
+    Files.createDirectory(seed.resolve("opencode").resolve("config"))
+    Files.createSymbolicLink(seed.resolve("opencode").resolve("config").resolve("AGENTS.md"), script)
     val home = Files.createDirectories(root.resolve("home"))
     Files.createDirectory(home.resolve("persistent-volume"))
     (seed, home)
@@ -119,9 +122,10 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(status, 0, output)
     assertEquals(output, "a b c ")
     val volume = home.resolve("persistent-volume")
-    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
+    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot", "opencode"))
     assertEquals(Files.readString(volume.resolve("codex").resolve("seeded")), "codex")
     assert(Files.isSymbolicLink(volume.resolve("copilot").resolve("copilot-instructions.md")))
+    assert(Files.isSymbolicLink(volume.resolve("opencode").resolve("config").resolve("AGENTS.md")))
 
   test("a volume from an older image gets only the directories it lacks; the rest is untouched"):
     val (seed, home) = fixture()
@@ -151,7 +155,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val volume = home.resolve("persistent-volume")
     val results = (1 to 20).toVector.map(_ => start(seed, home)).map(finish)
     results.foreach((status, output) => assertEquals(status, 0, output))
-    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot"))
+    assertEquals(entries(volume), Set("claude", "codex", "antigravity", "copilot", "opencode"))
     assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md"))
 
   test("a home with no persistent-volume — a container run by hand, not a session — still runs the command"):
@@ -170,19 +174,21 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   test("a machine short of memory, swapping, stalled, or out of disk is said before the command, once"):
     val (seed, home) = fixture()
-    val sick = proc(
-      available = 512L << 10,
-      total = 8L << 20,
-      swapUsed = 1L << 20,
+    // Sizes as numfmt --to=iec prints them, at the rule's edges: 65 MiB in its 10.6 GiB total's
+    // unit, 9.95 MiB of swap rounding up to a whole 10, and 1023.5 MiB of disk carrying to 1.0G.
+    val failing = proc(
+      available = 65L << 10,
+      total = (106L << 20) / 10,
+      swapUsed = 10188,
       pressure = Some("some avg10=40.00 avg60=25.50 avg300=3.00 total=1"),
     )
-    val (status, output) = finish(start(seed, home, sick, Some(fakeDf(1L << 20))))
+    val (status, output) = finish(start(seed, home, failing, Some(fakeDf(1048064))))
     assertEquals(status, 0, output)
     assert(output.startsWith("warning: the machine podman runs on is under pressure"), output)
-    assert(output.contains("  0.5 GiB of 8.0 GiB memory available\n"), output)
-    assert(output.contains("  1.0 GiB of swap in use\n"), output)
+    assert(output.contains("  0.1 of 11G memory available\n"), output)
+    assert(output.contains("  10M of swap in use\n"), output)
     assert(output.contains("  memory pressure: tasks stalled on memory 25.50% of the last minute\n"), output)
-    assert(output.contains("  1.0 GiB of disk left on the machine\n"), output)
+    assert(output.contains("  1.0G of disk left on the machine\n"), output)
     assert(output.contains("podman machine set --memory"), output)
     // No terminal on stdin, so no hold: the command still ran.
     assert(!output.contains("[Y/n]"), output)
@@ -197,15 +203,15 @@ class SandboxEntrypointTest extends munit.FunSuite:
     // The same swap with memory tight now — under a quarter available, not yet under 1 GiB — is.
     val tight = proc(available = 3L << 20, total = 16L << 20, swapUsed = 1L << 20)
     val (_, warned) = finish(start(seed, home, tight))
-    assert(warned.contains("  1.0 GiB of swap in use\n"), warned)
+    assert(warned.contains("  1.0G of swap in use\n"), warned)
     assert(!warned.contains("memory available"), warned)
 
   test("a pressure file the kernel refuses to serve, or lacks, costs only its line"):
     val (seed, home) = fixture()
     val refused = proc(available = 512L << 10, pressure = Some("x"))
     refused.resolve("pressure").resolve("memory").toFile.setReadable(false)
-    Vector(refused, proc(available = 512L << 10)).foreach: sick =>
-      val (status, output) = finish(start(seed, home, sick))
+    Vector(refused, proc(available = 512L << 10)).foreach: failing =>
+      val (status, output) = finish(start(seed, home, failing))
       assertEquals(status, 0, output)
       assert(output.contains("memory available"), output)
       assert(!output.contains("memory pressure"), output)

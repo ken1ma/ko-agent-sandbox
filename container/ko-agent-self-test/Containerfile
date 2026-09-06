@@ -2,14 +2,14 @@
 # Build ko-agent-self-test
 # ---------------------------------------------------------------------------
 #
-# The venue the launcher's `--self-test` runs the crate's suites in
+# The container the launcher's `--self-test` runs the crate's suites in
 # (`fuse/ko-agent-fs/doc/testing.md`). Their mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no
 # image build has, so they compile here and run later:
 # `--no-run` in the builder means nothing is compiled, and nothing fetched, at verification time.
 # Built by the launcher's `--self-test` (AgentSandboxLauncher.selfTestBuildCommands).
 #
 # The context is the unpacked bundle root rather than this directory, because the crate to compile
-# lives beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
+# is beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
 # pins, passed in by whoever builds, so this cannot drift into exercising a second compiler.
 
 ARG RUST_VERSION
@@ -34,7 +34,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # The shipping triple, for the reason ko-agent-fs/Containerfile builds with it: the static-musl link
 # constraint src/fs.rs records at its rename is invisible to a glibc build.
 #
-# The artifacts land in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
+# The artifacts are written in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
 # <dir>/ko-agent-fs — reproduced rather than flattened. `--message-format=json` names each
 # executable; guessing at hash-suffixed filenames would silently miss a test target added later.
 # A cache mount is not a layer, hence lifting them out inside this RUN.
@@ -68,7 +68,7 @@ USER root
 # mount(2); the mount takes the setuid helper instead, which is the route a real session takes and
 # one the dev rig running as root never reaches. Podman keeps SYS_ADMIN in the bounding set for a
 # non-root USER, so the helper can reach it (fuse/ko-agent-fs/doc/verification-log.md); the
-# launcher retries as root if some venue ever does not.
+# launcher retries as root if some machine ever does not.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends fuse3; \

@@ -1,3 +1,7 @@
+# our baseline
+*.log
+*.tmp
+
 # mill
 out/
 

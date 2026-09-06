@@ -12,8 +12,9 @@ write mode — the appended "Authority in force for this session" section says w
 
 `/workspace` is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
-`~/persistent-volume` — where `~/.claude`, `~/.codex`, `~/.gemini` and `~/.copilot` point —
-survives, and holds agent state, not project output.
+`~/persistent-volume` — where `~/.claude`, `~/.codex`, `~/.gemini`, `~/.copilot` and opencode's
+`~/.config/opencode`, `~/.local/share/opencode` and `~/.local/state/opencode` point — survives,
+and holds agent state, not project output.
 
 The host clipboard is reachable only when `KO_AGENT_SANDBOX_CLIPBOARD` is set: `paste` serves an
 image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image/png -o`), and
@@ -27,14 +28,20 @@ appended authority section says when the weaker raw bind is in force instead.
 
 The host's own symlinks are served as they are, so one with an absolute target dangles in here.
 sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
-`find target -xtype l -delete` removes just the dead links.
+Dead links can occur in any `target` tree, the meta-build's `project/target` and each subproject's
+included. This removes just those, leaving control state alone:
+
+```sh
+find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
+    -type d -name target -exec find {} -xtype l -delete \;
+```
 
 
 ## Use what is already installed
 
-Java 25, Scala (`sbt`, `scala-cli`, `cs`, `scalafmt`), Python 3.14 (`uv`, `uvx`), Node 24, Rust
-stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`, `patch`, `zstd`,
-`openssl`, binutils, and the usual GNU text and process commands.
+Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Python 3.14 (`uv`,
+`uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`,
+`patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — for that last one use `python3 -c "import sqlite3; ..."`.
@@ -113,23 +120,24 @@ so — only they can add it to the image.
 
 The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this session reaches, and
 with what treatment, is the appended "Authority in force for this session" section;
-`KO_AGENT_SANDBOX_EGRESS_POLICY` carries the same lines.
+`KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
 
-On a restricted host, `git push`, an API `POST` outside a named allowance, and `PUT` are refused
-by the proxy, with the reason in the body. GraphQL is a `POST`; read through REST.
-
-If a host will not connect, name it to the user and stop. Do not look for another route, and do
-not spend the session diagnosing it — they can add a host in seconds.
+On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
+refused, and the `403` body says what to do next. If a host will not connect, run
+`sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
+A TLS error on an allowed host is the trust store (next paragraph), or a client the proxy
+closes on: no SNI, Encrypted ClientHello — a browser's GREASE included, so a browser-driven tool
+fails on every host — or HTTP/2 only. Plain `curl`/`git` are none of these.
 
 `getent hosts` and every other name lookup fail by design; that is never why a fetch failed.
 Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
 -servername host -proxy egress-proxy:3128`.
 
-A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-ca.crt`, or
-the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
+A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-proxy-ca.crt`,
+or the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
 run `sandbox-jdk-use-proxy <jdk-home>` on one you installed yourself. A native-image tool has no
 `conf/` to prepare and reads no environment variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in
-its own spelling — `scala-cli $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
+its own spelling — `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
 `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs nothing.
 
 
@@ -148,9 +156,9 @@ At `same-uid` a runtime runs, within four limits:
   nonroot-by-default images with `--user 0`. For databases, run them as processes as above.
 - **Host network only.** `-p` does not exist; services bind 127.0.0.1 directly, and egress is
   still the proxy's.
-- **Most registries need the allowlist.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
-  baseline; for any other, ask the user to add `+host <registry>` to
-  `.ko-agent-sandbox/egress/allowed`. A stalled pull is a refused host.
+- **Most registries need a rule.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
+  defaults; for any other, ask the user to add `allow https://<registry>/ read` to
+  `.ko-agent-sandbox/egress/rule`. A stalled pull is a refused host.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
 podman is not preinstalled. `sandbox-install-podman` fetches and configures it:

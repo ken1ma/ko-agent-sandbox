@@ -1,6 +1,10 @@
-// The egress proxy: policy, connection handling, and the flow from CONNECT to tunnel. The HTTP surface lives in
-// HTTPHelper.scala, the TLS surface in TLSHelper.scala, git protocol knowledge in GitHelper.scala, and hostname/address
-// vetting in IPAddrHelper.scala.
+// The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request
+// inspected session. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
+// in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf issuance in X509Helper.scala, git protocol
+// knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
+// address is reached — directly or through the upstream proxy HTTPS_PROXY names — in
+// TransportHelper.scala.
 
 package agentsandbox.egress
 
@@ -8,26 +12,30 @@ import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintS
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
 import java.nio.file.Path
 import java.time.Instant
-import java.time.format.DateTimeFormatter
 import java.security.GeneralSecurityException
 import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
 
-import GitHelper.*
 import HTTPHelper.*
 import IPAddrHelper.*
+import LogHelper.*
+import RulesetHelper.*
 import TLSHelper.*
+import TransportHelper.*
 
 object AgentEgressProxy:
 
   val ListenPort = 3128
 
-  /** Printed after `bind` and before any policy line, so a reader that saw it has a proxy
+  /** Printed after `bind` and before any ruleset line, so a reader that saw it has a proxy
     * accepting connections; every refusal made before then ends the process instead. The
-    * launcher gates the sandbox on this spelling, after the stamp every line here carries
-    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together. */
-  val ReadyLine = s"agent-egress-proxy listening on :$ListenPort"
+    * launcher gates the sandbox on this spelling, after the stamp every line here starts with
+    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
+    * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
+    * its ephemeral port from this line. */
+  def readyLine(port: Int) = s"agent-egress-proxy listening on :$port"
+  val ReadyLine = readyLine(ListenPort)
 
   val ConnectTimeoutMillis = 10_000
   val HandshakeTimeoutMillis = 10_000
@@ -43,124 +51,12 @@ object AgentEgressProxy:
    */
   val InspectedIdleTimeoutMillis = 300_000
 
-  /*
-   * Exact hostnames only. Deliberately no regex or wildcard matching on the granting side.
-   *
-   * Every allowed host is a GET-based exfiltration channel: a permitted GET carries its URL, and a URL is a message.
-   *
-   * A host's treatment is one of two:
-   *
-   *   - unrestricted: an opaque tunnel — nothing seen or logged past the CONNECT.
-   *   - restricted: TLS-inspected; only GET and HEAD, plus the POST paths its `allow=` tags open
-   *     (authorizeInspectedRequest).
-   *
-   * A tag names one of the fixed treatments this proxy defines (KnownTags); it never describes a
-   * rule, and an unknown tag is a refused start — the guardrail DESIGN.md ("No general HTTP
-   * method/path policy language") sets on this syntax.
-   *
-   * Which hosts are in force is the selected profile's answer (resolvePolicy below): the
-   * launcher-owned baseline — every model-provider group plus the curated restricted catalog —
-   * shaped by the project's `allowed` delta and `denied` rules. Whichever policy is in force is
-   * printed at startup and every denial is logged, which is how you find out what an agent
-   * actually wanted.
-   *
-   * Inspection is off unless the launcher supplies a certificate and key; the leaf must name
-   * exactly the resolved restricted hosts, tags stripped (SECURITY.md, "Who holds the CA key").
-   */
-
-  enum Treatment:
-    case Restricted(tags: Set[String])
-    case Unrestricted
-
-
-  /** The tags a restricted entry may carry — a closed set: a tag names one of the fixed
-    * rule-sets in authorizeInspectedRequest, never describes one. Each is named tool-operation,
-    * for the single operation it opens. */
-  val KnownTags: Set[String] = Set("git-fetch", "npm-audit", "github-login-device")
-
-  /** The audit endpoint the image's npm POSTs at install time — measured on the bundled Node
-    * 24.19.0 / npm 11.17.0, not guessed. An older npm's /-/npm/v1/security/audits/quick is
-    * refused and logged: the contract is the shipped client, and npm treats the refusal as
-    * non-fatal. */
-  val NpmAuditPath = "/-/npm/v1/security/advisories/bulk"
-
-  /** GitHub's OAuth device flow, as Copilot CLI 1.0.80 drives it: the first mints the user code the
-    * agent prints, the second polls for the token once the browser has approved. Both bodies are
-    * fixed forms naming a client id, so the allowance carries no project data. */
-  val GithubLoginDevicePaths: Set[String] = Set("/login/device/code", "/login/oauth/access_token")
-
-  /**
-   * The baseline is policy, so it is written as policy: resource files in the `allowed` grammar's
-   * addition form, read through the parser a project's file goes through, with the reasoning for
-   * each host as a comment beside it. `baseline/host` is the curated restricted catalog — what
-   * deny-unless-allowed admits on its own; `baseline/model-provider/<name>` is what
-   * `+model-provider <name>` expands to: the party trusted to receive project data, and only its
-   * model, authentication and control-plane endpoints, never every domain it owns (the github
-   * group's forge entries have the case).
-   *
-   * A baseline file holds `+host` entries and nothing else, and the catalog holds no unrestricted
-   * one; either is a refused start, not a silent narrowing, so the image's own `--print-policy`
-   * (the launcher's dry run) is where a malformed baseline surfaces.
-   */
-  val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "github")
-
-  private def readBaseline(name: String): Map[String, Treatment] =
-    val variable = s"the baseline file $name"
-    val stream = getClass.getResourceAsStream(s"/baseline/$name")
-    if stream == null then throw IllegalStateException(s"$variable is missing from the proxy jar")
-    val text =
-      try String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
-      finally stream.close()
-    val entries = policyEntries(text).map:
-      case "+host" +: entry +: words => parseHostAddition(variable, entry, words)
-      case tokens =>
-        throw IllegalStateException(
-          s"$variable contains '${tokens.mkString(" ")}'; a baseline file holds +host entries only",
-        )
-    val twice = entries.groupBy(_(0)).collect { case (host, seen) if seen.sizeIs > 1 => host }.toVector.sorted
-    if twice.nonEmpty then throw IllegalStateException(s"$variable names ${twice.mkString(", ")} twice")
-    entries.toMap
-
-  val CuratedRestrictedHosts: Map[String, Set[String]] =
-    readBaseline("host").map:
-      case (host, Treatment.Restricted(tags)) => host -> tags
-      case (host, Treatment.Unrestricted) =>
-        throw IllegalStateException(
-          s"the baseline file host makes $host unrestricted; the catalog is restricted, and an " +
-            "opaque tunnel belongs to a model-provider group",
-        )
-
-  val ModelProviderHosts: Map[String, Map[String, Treatment]] =
-    ModelProviders.map(name => name -> readBaseline(s"model-provider/$name")).toMap
-
-  /**
-   * Baseline `B`: every model-provider group plus the curated restricted catalog. A host in both
-   * is restricted in both — a group never widens the catalog — and carries the union of its tags
-   * (github.com: `allow=git-fetch` from the catalog, `allow=github-login-device` from its group). What each
-   * profile admits of it is resolvePolicy's equation.
-   */
-  val BaselineHosts: Map[String, Treatment] =
-    (ModelProviderHosts.values.flatten
-      ++ CuratedRestrictedHosts.map((host, tags) => host -> Treatment.Restricted(tags)))
-      .groupMapReduce(_(0))(_(1)):
-        case (Treatment.Restricted(a), Treatment.Restricted(b)) => Treatment.Restricted(a ++ b)
-        case (a, b) =>
-          throw IllegalStateException(s"a provider group and the catalog disagree on a host's treatment: $a, $b")
-
-  val ProfileVariable = "EGRESS_PROFILE"
-  val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
-  val AllowedVariable = "EGRESS_ALLOWED"
-  val DeniedVariable = "EGRESS_DENIED"
-
-  /** The authority profiles, weakest-to-widest; deny-unless-allowed is what an unset
-    * EGRESS_PROFILE means — the launcher-owned baseline, every entry restricted or a model
-    * provider's own endpoints, so the default is useful without opening the open internet. */
-  val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
-  val DefaultProfile = "deny-unless-allowed"
-
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
+  val CaCertificateVariable = "EGRESS_TLS_CA_CERTIFICATE"
+  val CaPrivateKeyVariable = "EGRESS_TLS_CA_PRIVATE_KEY"
   val LogFileVariable = "EGRESS_LOG_FILE"
+  val BindVariable = "EGRESS_BIND"
 
   val executor = Executors.newVirtualThreadPerTaskExecutor()
   val connectionSlots = Semaphore(MaxConcurrentConnections)
@@ -168,35 +64,36 @@ object AgentEgressProxy:
   def main(args: Array[String]): Unit =
     args.toList match
       case Nil                                       => serve()
-      case "--print-policy" :: Nil                   => printPolicy(provenance = false)
-      case "--print-policy" :: "--provenance" :: Nil => printPolicy(provenance = true)
+      case "--print-ruleset" :: Nil                   => printRuleset(provenance = false)
+      case "--print-ruleset" :: "--provenance" :: Nil => printRuleset(provenance = true)
       case "--check-host" :: host :: Nil             => checkHost(host)
       case _ =>
         System.err.println(
-          "agent-egress-proxy takes no arguments, --print-policy [--provenance] to " +
-            "resolve the policy, print it, and exit, or --check-host <host> to report " +
-            "one host's policy decision and current resolution",
+          "agent-egress-proxy takes no arguments, --print-ruleset [--provenance] to " +
+            "resolve the ruleset, print it, and exit, or --check-host <host> to report " +
+            "one host's ruleset decision and current DNS resolution",
         )
         sys.exit(2)
 
   /*
    * The dry run behind --egress-effective and every launch: no port, no log, a
    * pure computation the launcher runs --network=none to read back what would
-   * be enforced. The restricted line is also where the launcher reads the
-   * leaf certificate's names from, tags stripped. Warnings — an idle denial,
-   * a selected provider the profile does not fully admit — go to stderr, so
-   * the data lines pipe cleanly.
+   * be enforced. The ruleset lines are also where the launcher reads the leaf
+   * certificate's names from. Warnings — a deny matching nothing, a redundant
+   * grant, a selected provider the profile does not fully admit — go to
+   * stderr, so the data lines pipe cleanly.
    *
-   * The lines say what this policy *would* inspect, not what a given
+   * The lines say what this ruleset *would* inspect, not what a given
    * run will: unlike serve() this reads no certificate, because the dry run
-   * is not given one. Every launch mounts the leaf, so the two agree there;
-   * only the standalone image run without EGRESS_TLS_CERTIFICATE logs the
-   * restricted hosts as opaque.
+   * is not given one. Every launch mounts the leaf, or under allow-unless-denied
+   * the run CA, so the two agree there; only the standalone image run without
+   * material logs the inspected hosts as opaque.
    */
-  def printPolicy(provenance: Boolean): Unit =
+  def printRuleset(provenance: Boolean): Unit =
     try
-      val resolved = configuredPolicy()
-      policyLines(resolved).foreach(println)
+      val resolved = configuredRuleset()
+      rulesetLines(resolved).foreach(println)
+      metadataLines(resolved).foreach(println)
       if provenance then provenanceLines(resolved).foreach(println)
       resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     catch
@@ -205,16 +102,16 @@ object AgentEgressProxy:
         sys.exit(2)
 
   /*
-   * One host's fate under the resolved policy, plus the current resolution
-   * evidence — separately, because the policy decision is fixed per run
+   * One host's decision under the resolved ruleset, plus the current DNS resolution
+   * evidence — separately, because the ruleset's decision is fixed per run
    * while a connection resolves and validates the destination again when it
    * is made. Run by the launcher's --egress-check through a one-shot
-   * container on an egress-shaped network, so the resolver path is
-   * enforcement's, never the launcher host's.
+   * container on a network built as the session's egress network is, so the
+   * resolver path is enforcement's, never the launcher host's.
    */
   def checkHost(rawHost: String): Unit =
     val resolved =
-      try configuredPolicy()
+      try configuredRuleset()
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -228,98 +125,89 @@ object AgentEgressProxy:
           sys.exit(2)
 
     // The decision is authorizeRequest's own — the very function a CONNECT meets — so this
-    // diagnostic cannot disagree with enforcement: an IP-literal target, a denied rule and a
+    // diagnostic cannot disagree with enforcement: an IP-literal target, a denied host and a
     // non-admitted host all answer here exactly as they would on the wire, in enforcement's
-    // words. Only an accepted host's treatment is looked up on top.
-    val decision =
+    // words. Only an accepted host's treatment is looked up on top, its resolved lines, one
+    // per scope.
+    val decisions =
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
         resolved.hosts.get(authorized) match
-          case Some(treatment) => spelled(treatment)
-          case None            => "unrestricted (the public-HTTPS default)"
-      catch case ex: PolicyViolation => s"refused: ${ex.getMessage}"
-    println(s"policy: $host $decision")
+          case Some(treatment) => ruleLines(authorized, treatment)
+          case None            => Vector("read (the public-HTTPS default)")
+      catch case ex: Refusal => Vector(s"refused: ${ex.getMessage}")
+    decisions.foreach(decision => println(s"ruleset: $host $decision"))
 
-    try println(s"resolves: ${resolvePublic(host).map(_.getHostAddress).mkString(" ")}")
-    catch
-      case ex: PolicyViolation => println(s"resolves: refused: ${ex.getMessage}")
-      case ex: IOException     => println(s"resolves: failed: ${ex.getMessage}")
+    val addresses =
+      try
+        val resolved = resolvePublic(host)
+        println(s"resolves: ${resolved.map(_.getHostAddress).mkString(" ")}")
+        resolved
+      catch
+        case ex: Refusal =>
+          println(s"resolves: refused: ${ex.getMessage}")
+          Vector.empty
+        case ex: IOException =>
+          println(s"resolves: failed: ${ex.getMessage}")
+          Vector.empty
 
-  def spelled(treatment: Treatment): String = treatment match
-    case Treatment.Restricted(tags) if tags.nonEmpty => s"restricted allow=${tags.toVector.sorted.mkString(",")}"
-    case Treatment.Restricted(_)                     => "restricted"
-    case Treatment.Unrestricted                      => "unrestricted"
+    // The transport a launch would use, through the same parser, resolution and CONNECT: one
+    // tunnel to the first vetted address, closed before any TLS — enough to say whether the
+    // upstream proxy admits a numeric CONNECT to this host, without asking the origin anything.
+    UpstreamEndpoint.configured(variable => Option(System.getenv(variable))).foreach: endpoint =>
+      val transport =
+        try UpstreamProxy(endpoint, endpoint.resolve())
+        catch
+          case ex: (IllegalArgumentException | IOException) =>
+            println(s"upstream proxy: refused: ${ex.getMessage}")
+            sys.exit(2)
+      println(transport.summary.stripPrefix("egress transport: "))
+      addresses.headOption.foreach: address =>
+        try
+          closeQuietly(transport.connect(Vector(address), 443).socket)
+          println(s"upstream tunnel: established to ${address.getHostAddress}")
+        catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
-  /**
-   * The resolved policy, one line each — printed by --print-policy and
-   * logged by serve() in the same shape, so the dry-run banner, the runtime
-   * log and the launcher's leaf minting all read one format. The restricted
-   * line is the whole inspected set — what the leaf certificate names — and
-   * each allowance in force gets a line of its own (`restricted allow=git-fetch
-   * (7): ...`), so which hosts carry which exception is read off directly.
-   * Under allow-unless-denied there is no finite unrestricted line to print —
-   * the profile line carries the public-HTTPS default instead, and no host
-   * count is invented.
-   */
-  def policyLines(resolved: ResolvedEgress): Vector[String] =
-    val profileLine = resolved.profile match
-      case "deny-unless-model" =>
-        s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
-      case "allow-unless-denied" =>
-        "egress profile: allow-unless-denied; default: public HTTPS unrestricted"
-      case other => s"egress profile: $other"
-
-    val restrictedHosts = resolved.restricted.keys.toVector.sorted
-    val allowanceLines = resolved.restricted.values.flatten.toVector.distinct.sorted.map: tag =>
-      val hosts = resolved.tagged(tag).toVector.sorted
-      s"restricted allow=$tag (${hosts.size}):" + hosts.map(" " + _).mkString
-    val unrestrictedLine = Option.when(!resolved.ambient)(
-      s"unrestricted hosts (${resolved.unrestrictedHosts.size}):"
-        + resolved.unrestrictedHosts.toVector.sorted.map(" " + _).mkString,
-    )
-
-    Vector(
-      profileLine,
-      s"restricted hosts (${restrictedHosts.size}):" + restrictedHosts.map(" " + _).mkString,
-    ) ++ allowanceLines ++ unrestrictedLine ++ Vector(
-      s"denied rules (${resolved.denied.size}):"
-        + resolved.denied.map(" " + _.spelled).mkString,
-    ) ++ Option.when(resolved.idleDenied.nonEmpty)(
-      s"idle denied rules (${resolved.idleDenied.size}):"
-        + resolved.idleDenied.map(" " + _.spelled).mkString,
-    )
+  def configuredRuleset(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
+    RetiredVariables.filter(variable => read(variable).nonEmpty).foreach: variable =>
+      throw IllegalArgumentException(
+        s"$variable is set, which this proxy no longer reads; the rules are one file, in $RuleVariable",
+      )
+    resolveRuleset(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
 
   /**
-   * Where each effective entry came from — built-in provider group or curated catalog, `allowed`
-   * addition, `denied` — and what overrode what: a removal or denial that costs a host is a line
-   * here, never a silent subtraction. Printed by `--print-policy --provenance`, which is what
-   * `--egress-effective` runs.
+   * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an
+   * ephemeral one read back from the ready line. Unset is the wildcard on ListenPort, which the
+   * container's own network namespace makes safe. A hostname is refused: this is a bind address,
+   * and a name would make where the proxy listens depend on the environment's resolver.
    */
-  def provenanceLines(resolved: ResolvedEgress): Vector[String] =
-    def sourceOf(host: String): String = resolved.sources(host)
-
-    val hostLines = resolved.hosts.toVector.sorted(using Ordering.by(_(0))).map: (host, treatment) =>
-      s"  $host: ${spelled(treatment)}; ${sourceOf(host)}"
-    val deniedOverrides = resolved.deniedAdmitted.toVector.sortBy(_(0)).map: (host, rule) =>
-      s"  $host: denied by ${rule.spelled}; ${sourceOf(host)}"
-    val removalLines = resolved.removedSpellings.map(spelling => s"  $spelling: removed by allowed")
-    val idleLines = resolved.idleDenied.map(rule => s"  ${rule.spelled}: denies nothing this profile admits (idle)")
-
-    Vector("provenance:") ++ hostLines ++ deniedOverrides ++ removalLines ++ idleLines
-
-  def configuredPolicy(): ResolvedEgress =
-    def read(variable: String): Option[String] = Option(System.getenv(variable))
-    resolvePolicy(
-      read(ProfileVariable),
-      read(ModelProviderVariable),
-      read(AllowedVariable),
-      read(DeniedVariable),
-    )
+  def parseBind(value: Option[String]): InetSocketAddress =
+    value.filter(_.nonEmpty) match
+      case None => InetSocketAddress(ListenPort)
+      case Some(spelled) =>
+        def refuse(): Nothing = throw IllegalArgumentException(
+          s"$BindVariable is '$spelled'; the form is <ip-literal>:<port>, IPv6 in brackets, port 0 for ephemeral",
+        )
+        val (address, portText) = spelled match
+          case s if s.startsWith("[") =>
+            s.indexOf("]:") match
+              case -1 => refuse()
+              case i  => (s.substring(1, i), s.substring(i + 2))
+          case s =>
+            s.lastIndexOf(':') match
+              case -1                       => refuse()
+              case i if s.indexOf(':') != i => refuse() // an unbracketed IPv6 literal
+              case i                        => (s.substring(0, i), s.substring(i + 1))
+        val port = portText.toIntOption.filter(p => 0 <= p && p <= 65535).getOrElse(refuse())
+        val literal =
+          try InetAddress.ofLiteral(address)
+          catch case _: IllegalArgumentException => refuse()
+        InetSocketAddress(literal, port)
 
   def serve(): Unit =
     /*
      * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to
-     * that host file too. Set up first so the startup lines land in it, and
+     * that host file too. Set up first so the startup lines are written to it, and
      * failing loudly: an enforcement point whose audit trail cannot be
      * written should not start.
      */
@@ -329,17 +217,25 @@ object AgentEgressProxy:
     System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
-     * Resolved before binding the port: a malformed policy is a container
-     * that fails to start, with the one-line reason — a stack trace would
-     * read as a proxy bug. Launches never get here (the launcher dry-runs
-     * the same variables first); this is the standalone-image path, or
-     * inspection material that cannot be read or names a set other than
-     * the one this policy inspects.
+     * Resolved before binding the port: a malformed ruleset or bind address is
+     * a container that fails to start, with the one-line reason — a stack
+     * trace would read as a proxy bug. Launches never get here (the launcher
+     * dry-runs the same variables first); this is the standalone-image path,
+     * or inspection material that cannot be read or names a set other than
+     * the one this ruleset inspects.
      */
-    val policy =
+    val (run, bind) =
       try
-        val resolved = configuredPolicy()
-        EgressPolicy(resolved, loadInspection(resolved))
+        val resolved = configuredRuleset()
+        val inspection = loadInspection(resolved)
+        // Last, so a variable refusal is reported before an endpoint the proxy cannot resolve is.
+        val transport =
+          try originTransport(variable => Option(System.getenv(variable)))
+          catch
+            case ex: IOException =>
+              System.err.println(ex.getMessage)
+              sys.exit(2)
+        (Run(resolved, inspection, transport), parseBind(Option(System.getenv(BindVariable))))
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -350,497 +246,91 @@ object AgentEgressProxy:
           System.err.println(s"cannot load the TLS inspection material: ${ex.getMessage}")
           sys.exit(2)
 
+    // Before the ready line: the launcher reads the log once that line is written, and relays this one.
+    System.err.println(run.transport.summary)
+
     val server = ServerSocket()
     server.setReuseAddress(true)
-    server.bind(InetSocketAddress(ListenPort))
+    server.bind(bind)
 
-    System.err.println(ReadyLine)
-    val lines = policyLines(policy.resolved)
+    System.err.println(readyLine(server.getLocalPort))
+    val lines = rulesetLines(run.resolved)
     lines.foreach(System.err.println)
-    // The digest gives the audit log one stable, grep-able line naming which policy this run
+    // The digest gives the audit log one stable, grep-able line naming which ruleset this run
     // enforced, comparable across runs without diffing the lines above.
-    System.err.println(s"resolved-policy digest: ${sha256Hex(lines.mkString("\n"))}")
-    policy.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
-    System.err.println(policy.inspectionSummary)
+    System.err.println(s"ruleset digest: ${sha256Hex(lines.mkString("\n"))}")
+    metadataLines(run.resolved).foreach(System.err.println)
+    run.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
+    System.err.println(run.inspectionSummary)
 
-    acceptForever(server, policy)
+    acceptForever(server, run)
 
   /*
-   * Both variables absent is not an error — the image runs on its own,
-   * inspection off and said so. Material for a policy that inspects nothing
-   * is an error, not a narrower policy: the launcher never mints a leaf for
-   * such a policy, so a supplied one means the two disagree about what this
-   * policy is.
+   * The material a proxy starts with is keyed by profile. Under the three finite profiles the
+   * leaf and its key are present exactly when the ruleset inspects a host: both absent is the
+   * image running on its own, inspection off and said so; material for a ruleset that inspects
+   * nothing is an error, not a narrower ruleset, since the launcher never issues a leaf for such a
+   * ruleset and a supplied one means the two disagree about what this ruleset is. Under
+   * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
+   * inspected, and without the CA each would be the writable tunnel this profile no longer admits,
+   * so their absence refuses the start. Either pair under the other profile is refused likewise
+   * (SECURITY.md, "Who holds the CA key").
    */
-  def loadInspection(resolved: ResolvedEgress): Option[TlsInspection] =
-    val certificate = Option(System.getenv(CertificateVariable)).filter(_.nonEmpty)
-    val privateKey = Option(System.getenv(PrivateKeyVariable)).filter(_.nonEmpty)
+  def loadInspection(
+    resolved: ResolvedEgress,
+    read: String => Option[String] = variable => Option(System.getenv(variable)),
+  ): Option[TlsInspection] =
+    def pair(certificateVariable: String, keyVariable: String): Option[(Path, Path)] =
+      (read(certificateVariable).filter(_.nonEmpty), read(keyVariable).filter(_.nonEmpty)) match
+        case (Some(certificate), Some(key)) => Some((Path.of(certificate), Path.of(key)))
+        case (None, None)                   => None
+        case _ => throw IllegalArgumentException(s"$certificateVariable and $keyVariable must be set together")
+    val leaf = pair(CertificateVariable, PrivateKeyVariable)
+    val ca = pair(CaCertificateVariable, CaPrivateKeyVariable)
 
-    (certificate, privateKey) match
-      case (Some(certificatePath), Some(privateKeyPath)) =>
+    if resolved.publicDefault then
+      if leaf.nonEmpty then
+        throw IllegalArgumentException(
+          s"$CertificateVariable is set under ${resolved.profile}, which issues every leaf from " +
+            s"$CaCertificateVariable and takes none",
+        )
+      val (certificate, key) = ca.getOrElse(
+        throw IllegalArgumentException(
+          s"$CaCertificateVariable and $CaPrivateKeyVariable are unset under ${resolved.profile}, which " +
+            "inspects every unlisted host and issues their leaves from the run CA",
+        ),
+      )
+      Some(TlsInspection.issuing(certificate, key))
+    else
+      if ca.nonEmpty then
+        throw IllegalArgumentException(
+          s"$CaCertificateVariable is set under ${resolved.profile}, which issues nothing; the CA key never " +
+            "enters this container there",
+        )
+      leaf.map: (certificate, key) =>
         if resolved.inspected.isEmpty then
           throw IllegalArgumentException(
-            s"$CertificateVariable is set, but this policy restricts no host; " +
+            s"$CertificateVariable is set, but this ruleset inspects no host; " +
               "with nothing to inspect the material can only be a mistake",
           )
-        Some(
-          TlsInspection.load(Path.of(certificatePath), Path.of(privateKeyPath), resolved.inspected),
-        )
+        TlsInspection.load(certificate, key, resolved.inspected)
 
-      case (None, None) => None
-
-      case _ =>
-        throw IllegalArgumentException(
-          s"$CertificateVariable and $PrivateKeyVariable must be set together",
-        )
-
-  /**
-   * One `denied` rule, or an entry of the launcher-owned internal denials. Every form is
-   * removal-only, so none can widen authority; the provider form keeps a denied provider denied
-   * when its concrete endpoints change, because it matches whatever the group expands to now.
-   */
-  enum DenyRule:
-    case Exact(host: String)
-    case Subtree(base: String)
-    case Provider(name: String)
-
-    def matches(host: String): Boolean = this match
-      case Exact(h) => host == h
-      // The pattern's own dot is the label boundary: `**.foo.com` covers foo.com and api.foo.com, never barfoo.com.
-      case Subtree(b)  => host == b || host.endsWith("." + b)
-      case Provider(p) => ModelProviderHosts(p).contains(host)
-
-    def spelled: String = this match
-      case Exact(h)    => h
-      case Subtree(b)  => s"**.$b"
-      case Provider(p) => s"model-provider:$p"
-
-  /**
-   * The policy in force: the selected profile's finite host map — under allow-unless-denied,
-   * the restricted exceptions, with `ambient` admitting every other public hostname on port 443
-   * as unrestricted — and the denied rules, which win over both treatments. What each treatment
-   * means is the policy comment's enumeration; how the restricted rules are enforced once TLS
-   * is terminated is authorizeInspectedRequest. The provenance fields exist for presentation
-   * only — `sources` labels each pre-denial host with the rule that last changed it,
-   * `deniedAdmitted` the hosts a denial cost, `removedSpellings` the allowed-delta rules that
-   * actually removed something; enforcement reads `hosts`, `ambient` and `denied`.
-   */
-  case class ResolvedEgress(
-    profile: String,
-    provider: Option[String],
-    ambient: Boolean,
-    hosts: Map[String, Treatment],
-    denied: Vector[DenyRule],
-    idleDenied: Vector[DenyRule],
-    warnings: Vector[String],
-    sources: Map[String, String],
-    deniedAdmitted: Map[String, DenyRule],
-    removedSpellings: Vector[String],
-  ):
-    val restricted: Map[String, Set[String]] =
-      hosts.collect { case (host, Treatment.Restricted(tags)) => host -> tags }
-    val unrestrictedHosts: Set[String] =
-      hosts.collect { case (host, Treatment.Unrestricted) => host }.toSet
-    val inspected: Set[String] = restricted.keySet
-    def tagged(tag: String): Set[String] =
-      restricted.collect { case (host, tags) if tags.contains(tag) => host }.toSet
-
-  case class EgressPolicy(
+  case class Run(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
+    transport: OriginTransport,
   ):
     def inspectionSummary: String =
       inspection match
-        case Some(active) =>
-          s"tls inspection: active for the ${active.hosts.size} restricted hosts"
+        case Some(_) if resolved.publicDefault =>
+          s"tls inspection: every admitted host, except the ${resolved.tunnelHosts.size} tunnel hosts"
+        case Some(_) =>
+          s"tls inspection: active for the ${resolved.inspected.size} inspected hosts"
         case None =>
           "tls inspection: off; every allowed host is an opaque, writable tunnel"
 
-  /**
-   * The variables resolved to the policy in force.
-   *
-   * Let `M` be the selected provider's group, `B` the baseline (BaselineHosts), `A` the result
-   * of applying the `allowed` delta to `B`, `N` the restricted narrowing set — `B`'s restricted
-   * entries plus restricted exact-host additions; removals, `-**` and unrestricted
-   * additions cannot subtract from it — `D` the `denied` rules expanded, and `U` the implicit
-   * map from every public hostname on port 443 to unrestricted:
-   *
-   *   deny-all            = empty
-   *   deny-unless-model   = M - D
-   *   deny-unless-allowed = A - D
-   *   allow-unless-denied = narrow(U, N) - D
-   *
-   * A provider group is a contribution, not a replacement: `+model-provider` merges a group's
-   * restricted tags into a host the catalog restricts too, and `-model-provider` takes back only
-   * those — `+` then `-` is the identity, and over the baseline `+` alone is a no-op. `D`'s
-   * `model-provider` form is the one that removes such a host outright.
-   *
-   * The internal-network denials of the security model are not host rules here: they are
-   * IPAddrHelper's address vetting, applied to every resolved destination at connection time,
-   * ambient hosts included, so no policy file can spell them away.
-   *
-   * Fails closed on every ambiguity: an unknown profile, provider, tag or entry shape; duplicate
-   * exact-host additions with different treatments; a host both added and removed — a `+host`
-   * under a `-host **.domain` included; an addition that would widen a restricted baseline host
-   * to unrestricted, which has no delta spelling short of `-**` plus a complete
-   * replacement; a removal matching neither the baseline nor an addition. A `denied` entry
-   * matching nothing the selected profile admits is a startup warning, not an error: it can
-   * still apply under another profile or a future provider expansion, and a typo cannot be
-   * distinguished from a proactive denial against the ambient host universe. An empty effective
-   * map is valid and reported as such — deny-all resolves empty by design, as does
-   * deny-unless-model with no provider selected. The only wildcard is the taking-away side's
-   * `**.domain`; SECURITY.md ("Adding hosts, not patterns") records the asymmetry.
-   */
-  def resolvePolicy(
-    profileValue: Option[String],
-    providerValue: Option[String],
-    allowedText: Option[String],
-    deniedText: Option[String],
-  ): ResolvedEgress =
-    val profile = profileValue.getOrElse(DefaultProfile)
-    if !Profiles.contains(profile) then
-      throw IllegalArgumentException(
-        s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}",
-      )
-    val provider =
-      providerValue.filterNot(_ == "none").map(requireProvider(ModelProviderVariable, _))
-
-    val delta = parseAllowed(allowedText.getOrElse(""))
-    val denied = parseDenied(deniedText.getOrElse(""))
-
-    delta.addedHosts.foreach: (host, treatment) =>
-      val widens = !delta.clearsBaseline && treatment == Treatment.Unrestricted &&
-        BaselineHosts.get(host).exists {
-          case Treatment.Restricted(_) => true
-          case Treatment.Unrestricted  => false
-        }
-      if widens then
-        throw IllegalArgumentException(
-          s"$AllowedVariable re-adds the restricted baseline host $host as unrestricted; " +
-            "treatment widening has no delta spelling — use -** and state the complete " +
-            "replacement policy",
-        )
-
-    val contradicted =
-      delta.addedHosts.keySet.filter(host => delta.removals.exists(_.matches(host)))
-    if contradicted.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes ${contradicted.toVector.sorted.mkString(", ")}",
-      )
-
-    delta.removals.foreach: removal =>
-      if !(BaselineHosts.keySet ++ delta.addedHosts.keySet).exists(removal.matches) then
-        throw IllegalArgumentException(
-          s"$AllowedVariable removes ${removal.spelled}, which matches neither the baseline " +
-            "nor an addition; a '-' that removes nothing is refused",
-        )
-
-    // Provenance rides along with the transformation itself: each host carries the label of the
-    // last rule that actually changed it, and a delta rule is reported as a removal only when it
-    // removed a host that was present when it applied. A rule the profile never consults, or one
-    // that restates what already held — re-adding a baseline host with its baseline treatment,
-    // removing under -** what -** already cleared — shapes nothing and is reported
-    // nowhere.
-    // A host in the catalog and a group names both: its tags came from both.
-    def baselineSource(host: String): String =
-      (Option.when(CuratedRestrictedHosts.contains(host))("curated baseline")
-        ++ ModelProviderHosts.collect { case (name, hosts) if hosts.contains(host) => s"model-provider $name" })
-        .mkString(", ")
-
-    def overlay(
-      current: Map[String, (Treatment, String)],
-      host: String,
-      treatment: Treatment,
-      source: String,
-    ): Map[String, (Treatment, String)] =
-      current.get(host) match
-        case Some((standing, _)) if standing == treatment => current
-        case _ => current.updated(host, (treatment, source))
-
-    // A group's restricted entry contributes its tags to a host the catalog already restricts, as
-    // BaselineHosts merged them: `+model-provider github` over the baseline is a no-op, not a
-    // re-allowancing of github.com. Removing the group takes back only what it contributed.
-    def addGroup(current: Map[String, (Treatment, String)], name: String, source: String) =
-      ModelProviderHosts(name).foldLeft(current):
-        case (current, (host, Treatment.Restricted(tags))) =>
-          current.get(host) match
-            case Some((Treatment.Restricted(standing), _)) if tags.subsetOf(standing) => current
-            case Some((Treatment.Restricted(standing), _)) =>
-              current.updated(host, (Treatment.Restricted(standing ++ tags), source))
-            case _ => current.updated(host, (Treatment.Restricted(tags), source))
-        case (current, (host, treatment)) => overlay(current, host, treatment, source)
-    def removeGroup(current: Map[String, (Treatment, String)], name: String) =
-      ModelProviderHosts(name).keys.foldLeft(current): (current, host) =>
-        CuratedRestrictedHosts.get(host) match
-          case Some(tags) if current.contains(host) =>
-            current.updated(host, (Treatment.Restricted(tags), "curated baseline"))
-          case _ => current - host
-
-    // A: the allowed delta applied to B, in the delta's fixed order. Additions land last, so an
-    // exact entry overrides the baseline's treatment of the same host (the widening direction was
-    // refused above).
-    val cleared: Map[String, (Treatment, String)] =
-      if delta.clearsBaseline then Map.empty
-      else BaselineHosts.map((host, treatment) => host -> (treatment, baselineSource(host)))
-    val afterProviderRemovals = delta.removedProviders.toVector.sorted.foldLeft(cleared)(removeGroup)
-    val withAddedProviders =
-      delta.addedProviders.toVector.sorted.foldLeft(afterProviderRemovals): (current, name) =>
-        addGroup(current, name, s"allowed +model-provider $name")
-    // Sequentially, each rule judged against the map as the rules before it left it: of two
-    // overlapping removals, only the first removes anything, and only it is reported.
-    val (afterRemovals, effectiveHostRemovals) =
-      delta.removals.foldLeft((withAddedProviders, Vector.empty[String])):
-        case ((current, effective), rule) =>
-          val remaining = current.filterNot((host, _) => rule.matches(host))
-          (remaining, if remaining.size < current.size then effective :+ rule.spelled else effective)
-    val admitted = delta.addedHosts.toVector.sortBy(_(0)).foldLeft(afterRemovals):
-      case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
-
-    val effectiveRemovals =
-      Option.when(delta.clearsBaseline)("-** (baseline cleared)").toVector
-        ++ delta.removedProviders.toVector.sorted
-          .filter(name => cleared.keys.exists(ModelProviderHosts(name).contains))
-          .map(name => s"model-provider:$name")
-        ++ effectiveHostRemovals
-
-    // N: what stays restricted under allow-unless-denied — every restricted baseline entry, a
-    // group's included, so github.com keeps allow=github-login-device. Only additions extend it; nothing in
-    // the delta subtracts from it, so a removal or `-**` cannot widen an ambient host.
-    val narrowed: Map[String, (Treatment, String)] =
-      delta.addedHosts.toVector.sortBy(_(0))
-        .filter((_, treatment) => treatment != Treatment.Unrestricted)
-        .foldLeft(
-          BaselineHosts.collect { case (host, treatment @ Treatment.Restricted(_)) =>
-            host -> ((treatment: Treatment) -> baselineSource(host))
-          },
-        ):
-          case (current, (host, treatment)) => overlay(current, host, treatment, "allowed +host")
-
-    val (preDenyWithSources, ambient) = profile match
-      case "deny-all" => (Map.empty[String, (Treatment, String)], false)
-      case "deny-unless-model" =>
-        (
-          provider.fold(Map.empty[String, (Treatment, String)])(name =>
-            ModelProviderHosts(name).map((host, treatment) => host -> (treatment, s"model-provider $name")),
-          ),
-          false,
-        )
-      case "deny-unless-allowed" => (admitted, false)
-      case "allow-unless-denied" => (narrowed, true)
-
-    val preDeny = preDenyWithSources.view.mapValues(_(0)).toMap
-    val sources = preDenyWithSources.view.mapValues(_(1)).toMap
-
-    val deniedAdmitted: Map[String, DenyRule] =
-      preDeny.keys.toVector.flatMap(host => denied.find(_.matches(host)).map(host -> _)).toMap
-
-    // deny-all warns about nothing: its denials are idle by definition. Under
-    // allow-unless-denied every syntactically valid rule matches the ambient universe.
-    val idleDenied =
-      if profile == "deny-all" || ambient then Vector.empty
-      else denied.filterNot(rule => preDeny.keys.exists(rule.matches))
-
-    val hosts = preDeny.filterNot((host, _) => deniedAdmitted.contains(host))
-
-    val warnings =
-      provider.toVector.flatMap: selected =>
-        val unreachable = ModelProviderHosts(selected).keys.toVector.sorted.filterNot: host =>
-          !denied.exists(_.matches(host)) && (hosts.contains(host) || ambient)
-        Option.when(unreachable.nonEmpty)(
-          s"the selected model provider '$selected' is not fully reachable under $profile: " +
-            unreachable.mkString(" "),
-        )
-      ++ Option.when(idleDenied.nonEmpty)(
-        "denied rules matching nothing this profile admits (kept: they can apply under " +
-          s"another profile or a future provider expansion): ${idleDenied.map(_.spelled).mkString(" ")}",
-      )
-
-    // Only deny-unless-allowed consults the removal side of the delta; under every other profile
-    // even an effective-looking removal shaped nothing.
-    val activeRemovals =
-      if profile == "deny-unless-allowed" then effectiveRemovals else Vector.empty[String]
-
-    ResolvedEgress(
-      profile, provider, ambient, hosts, denied, idleDenied, warnings,
-      sources, deniedAdmitted, activeRemovals,
-    )
-
-  private def requireProvider(variable: String, name: String): String =
-    if !ModelProviderHosts.contains(name) then
-      throw IllegalArgumentException(
-        s"$variable names the model provider '$name', which this proxy does not define; " +
-          s"the providers are ${ModelProviderHosts.keys.toVector.sorted.mkString(", ")}",
-      )
-    name
-
-  /**
-   * The allowances of one `allow=<tag>,...` word: KnownTags members only, so a tag names a fixed
-   * treatment, and never empty — `allow=` saying nothing is refused, not read as none.
-   */
-  private def parseAllowances(variable: String, host: String, word: String): Set[String] =
-    val tags = word.stripPrefix("allow=").split(",", -1).toVector
-    tags.foreach: tag =>
-      if !KnownTags.contains(tag) then
-        throw IllegalArgumentException(
-          s"$variable allows '$host' the operation '$tag', which is none this proxy defines; " +
-            s"the allowances are: ${KnownTags.toVector.sorted.mkString(", ")}",
-        )
-    tags.toSet
-
-  private def parseHostAddition(variable: String, entry: String, words: Vector[String]): (String, Treatment) =
-    val host = normalizeEntry(variable, entry)
-    words match
-      case Vector()               => host -> Treatment.Restricted(Set.empty)
-      case Vector("unrestricted") => host -> Treatment.Unrestricted
-      case Vector(word) if word.startsWith("allow=") =>
-        host -> Treatment.Restricted(parseAllowances(variable, host, word))
-      case _ if words.contains("unrestricted") =>
-        throw IllegalArgumentException(
-          s"$variable gives the unrestricted host $host an allowance; allow= opens one " +
-            "restricted operation, so it belongs on a restricted entry only",
-        )
-      case _ if words.contains("restricted") =>
-        throw IllegalArgumentException(
-          s"$variable spells $host's treatment 'restricted', which is the default and " +
-            "has no word: +host <host>, or +host <host> allow=<tag>,...",
-        )
-      case other =>
-        throw IllegalArgumentException(
-          s"$variable follows $host with '${other.mkString(" ")}'; the forms are " +
-            "+host <host>, +host <host> allow=<tag>,..., +host <host> unrestricted",
-        )
-
-  private enum AllowedEntry:
-    case ClearBaseline
-    case AddProvider(name: String)
-    case RemoveProvider(name: String)
-    case AddHost(host: String, treatment: Treatment)
-    case RemoveHost(removal: DenyRule)
-
-  private case class AllowedDelta(
-    clearsBaseline: Boolean,
-    addedProviders: Set[String],
-    removedProviders: Set[String],
-    addedHosts: Map[String, Treatment],
-    removals: Vector[DenyRule],
-  )
-
-  /**
-   * The `allowed` delta's grammar, one entry per line, `#` comments:
-   *
-   *   +model-provider <name>            -model-provider <name>
-   *   +host <host>                      restricted, the default: TLS-inspected, GET and HEAD
-   *   +host <host> allow=<tag>,...      restricted, plus the named allowances (KnownTags)
-   *   +host <host> unrestricted         an opaque tunnel — the one word that widens
-   *   -host <host | **.domain>
-   *   -**                               removes the whole baseline, wherever it appears
-   *
-   * The safe treatment has no word, so the dangerous one is the only entry with an extra word;
-   * `restricted` spelled out is refused rather than accepted as a second spelling. `-**` is a
-   * flag, not a rule in sequence — the file is not applied top to bottom (resolvePolicy) — so
-   * the file's own additions stand above or below it.
-   *
-   * An entry outside the grammar is refused, never skipped: a stray line configures nothing,
-   * which is the silent-weakening failure mode this file must not have. An addition states its
-   * host's complete allowances and overrides the baseline entry for the same host — never a
-   * merge, which would widen a host to a treatment no single line says. Two entries for one
-   * host with different treatments or allowances are refused; restating a baseline entry
-   * identically stays the legal defensive no-op, so a policy that names a host keeps working
-   * when the image adopts it.
-   */
-  private def parseAllowed(text: String): AllowedDelta =
-    import AllowedEntry.*
-    val entries = policyEntries(text).map:
-      case Vector("-**")                   => ClearBaseline
-      case Vector("+model-provider", name) => AddProvider(requireProvider(AllowedVariable, name))
-      case Vector("-model-provider", name) => RemoveProvider(requireProvider(AllowedVariable, name))
-      case "+host" +: entry +: words =>
-        val (host, treatment) = parseHostAddition(AllowedVariable, entry, words)
-        AddHost(host, treatment)
-      case Vector("-host", entry) => RemoveHost(parseHostRule(AllowedVariable, entry))
-      case tokens =>
-        throw IllegalArgumentException(
-          s"$AllowedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
-            "allowed grammar: +model-provider <name>, -model-provider <name>, " +
-            "+host <host> [allow=<tag>,... | unrestricted], -host <host | **.domain>, -**",
-        )
-
-    val added = entries.collect { case AddHost(host, treatment) => (host, treatment) }.distinct
-    val conflicted = added.groupBy(_(0)).filter(_._2.sizeIs > 1).keys.toVector.sorted
-    if conflicted.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable adds ${conflicted.mkString(", ")} with two different treatments; " +
-          "an entry states its host's complete treatment, once",
-      )
-
-    val addedProviders = entries.collect { case AddProvider(name) => name }.toSet
-    val removedProviders = entries.collect { case RemoveProvider(name) => name }.toSet
-    val bothWays = (addedProviders intersect removedProviders).toVector.sorted
-    if bothWays.nonEmpty then
-      throw IllegalArgumentException(
-        s"$AllowedVariable both adds and removes model-provider ${bothWays.mkString(", ")}",
-      )
-
-    AllowedDelta(
-      entries.contains(ClearBaseline),
-      addedProviders,
-      removedProviders,
-      added.toMap,
-      entries.collect { case RemoveHost(removal) => removal },
-    )
-
-  /**
-   * The `denied` file's grammar, one entry per line, `#` comments — no `+`/`-` prefixes and no
-   * `allow=`, because denied only ever takes away, the host whole, under every profile:
-   *
-   *   model-provider <name>
-   *   host <host | **.domain>
-   */
-  private def parseDenied(text: String): Vector[DenyRule] =
-    policyEntries(text)
-      .map:
-        case Vector("model-provider", name) =>
-          DenyRule.Provider(requireProvider(DeniedVariable, name))
-        case Vector("host", entry) => parseHostRule(DeniedVariable, entry)
-        case tokens =>
-          throw IllegalArgumentException(
-            s"$DeniedVariable contains '${tokens.mkString(" ")}', which is no entry of the " +
-              "denied grammar: model-provider <name>, host <host | **.domain>",
-          )
-      .distinct
-
-  private def parseHostRule(variable: String, entry: String): DenyRule =
-    if entry.startsWith("**.") then DenyRule.Subtree(normalizeEntry(variable, entry.drop(3)))
-    else DenyRule.Exact(normalizeEntry(variable, entry))
-
-  /** A policy file's lines as token vectors: `#` starts a comment, blank lines vanish, tokens
-    * split on whitespace — never comma, which stays inside its token and fails hostname
-    * validation instead of silently becoming two entries. */
-  private def policyEntries(text: String): Vector[Vector[String]] =
-    text.linesIterator
-      .map(_.takeWhile(_ != '#'))
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty))
-      .filter(_.nonEmpty)
-      .toVector
-
-  private def normalizeEntry(variable: String, entry: String): String =
-    val host =
-      try normalizeHost(entry)
-      catch
-        case ex: BadRequest =>
-          throw IllegalArgumentException(
-            s"$variable contains an invalid hostname '$entry': ${ex.getMessage}",
-          )
-
-    if isIpLiteral(host) then
-      throw IllegalArgumentException(
-        s"$variable contains an IP literal '$entry'; only hostnames are allowed",
-      )
-
-    host
-
   @tailrec
-  def acceptForever(server: ServerSocket, policy: EgressPolicy): Unit =
+  def acceptForever(server: ServerSocket, run: Run): Unit =
     /*
      * A failed accept must not take the proxy down: every agent behind it
      * would lose network access until someone noticed. A closed listening
@@ -854,18 +344,18 @@ object AgentEgressProxy:
           System.err.println(s"accept failed: ${ex.getMessage}")
           None
 
-    accepted.foreach(client => dispatch(client, policy))
+    accepted.foreach(client => dispatch(client, run))
 
-    if !server.isClosed then acceptForever(server, policy)
+    if !server.isClosed then acceptForever(server, run)
 
-  def dispatch(client: Socket, policy: EgressPolicy): Unit =
+  def dispatch(client: Socket, run: Run): Unit =
     if !connectionSlots.tryAcquire() then
       try respondQuietly(client, 503, "Service Unavailable")
       finally closeQuietly(client)
     else
       try
         executor.execute(() =>
-          try handle(client, policy)
+          try handle(client, run)
           finally connectionSlots.release(),
         )
       catch
@@ -875,15 +365,15 @@ object AgentEgressProxy:
           closeQuietly(client)
           System.err.println(s"could not start connection handler: ${ex.getMessage}")
 
-  def handle(client: Socket, policy: EgressPolicy): Unit =
+  def handle(client: Socket, run: Run): Unit =
     // The audit context, filled in as parsing learns it: a `-` in the line marks a field the
     // connection ended before revealing. The host is the target as the sandbox requested it —
-    // what was asked for, not a name the policy vouches for. auditLine has the grammar.
+    // what was asked for, not necessarily a hostname admitted by the ruleset. auditLine has the grammar.
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
-      // An IO failure while reading the request is the client's, not upstream's; rethrown as a
-      // BadRequest so the log does not blame an upstream the proxy never dialled, with a 502.
+      // An IO failure while reading the request is the client's, not the origin's; rethrown as a
+      // BadRequest so the log does not record a 502 against an origin the proxy never dialled.
       val request =
         try
           client.setSoTimeout(HandshakeTimeoutMillis)
@@ -896,12 +386,12 @@ object AgentEgressProxy:
             throw BadRequest(s"unreadable CONNECT request: ${ex.getMessage}")
 
       host = request.host
-      host = authorizeRequest(request, policy.resolved)
+      host = authorizeRequest(request, run.resolved)
       addresses = resolvePublic(host)
-      val upstream = connect(addresses, request.port)
+      val origin = run.transport.connect(addresses, request.port)
 
-      try runEstablishedTunnel(client, upstream, host, policy)
-      finally closeQuietly(upstream)
+      try runEstablishedTunnel(client, origin, host, run)
+      finally closeQuietly(origin.socket)
 
     catch
       case _: ClosedWithoutRequest =>
@@ -913,16 +403,22 @@ object AgentEgressProxy:
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
         respondQuietly(client, 400, "Bad Request")
 
-      case ex: PolicyViolation =>
+      case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
-        respondQuietly(client, 403, "Forbidden")
+        // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). No client
+        // shows it; the image's sandbox-egress-check reads it, and is the only way this refusal's
+        // reason reaches the sandbox.
+        respondQuietly(client, 403, "Forbidden", refusalBody(ex.getMessage, Some(ex.advice)))
 
       case ex: IOException =>
-        val stage =
-          if addresses.isEmpty then "resolution:"
-          else s"tried ${addresses.map(_.getHostAddress).mkString(" ")}:"
+        val stage = ex match
+          case failure: TransportFailure => s"tried ${failure.attempted.map(_.getHostAddress).mkString(" ")}:"
+          case _ if addresses.isEmpty    => "resolution:"
+          case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
-        respondQuietly(client, 502, "Bad Gateway")
+        // The stage in the body, as a refusal's reason is: the ruleset admitted this host, so the
+        // agent's next step is to report what failed, and only sandbox-egress-check shows it.
+        respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
 
       case NonFatal(ex) =>
         System.err.println(
@@ -935,9 +431,9 @@ object AgentEgressProxy:
 
   def runEstablishedTunnel(
     client: Socket,
-    upstream: Socket,
+    origin: OriginSocket,
     connectHost: String,
-    policy: EgressPolicy,
+    run: Run,
   ): Unit =
     writeAscii(client.getOutputStream, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
@@ -950,16 +446,19 @@ object AgentEgressProxy:
 
       validateTlsIdentity(connectHost, hello)
 
-      policy.inspection.filter(_.inspects(connectHost)) match
+      // A tunnel host is opaque; every other admitted host is inspected, with its lines' scopes or
+      // the public default's (Ruleset.scopesOf) — unless this run has no material at all.
+      run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedSession(
-            client, upstream, connectHost, hello, inspection,
-            policy.resolved.restricted.getOrElse(connectHost, Set.empty),
+            client, origin, connectHost, hello, inspection,
+            run.resolved.scopesOf(connectHost),
+            run.resolved.admits,
           )
 
         case None =>
           System.err.println(
-            auditLine("allow", connectHost, "CONNECT", "", s"-> ${upstream.getInetAddress.getHostAddress}"),
+            auditLine("allow", connectHost, "CONNECT", "", s"-> ${origin.address.getHostAddress}"),
           )
 
           /*
@@ -967,13 +466,13 @@ object AgentEgressProxy:
            * ClientHello. Forward those exact bytes unchanged before switching
            * to an opaque bidirectional tunnel.
            */
-          upstream.getOutputStream.write(hello.wireBytes)
-          upstream.getOutputStream.flush()
+          origin.socket.getOutputStream.write(hello.wireBytes)
+          origin.socket.getOutputStream.flush()
 
           client.setSoTimeout(0)
-          upstream.setSoTimeout(0)
+          origin.socket.setSoTimeout(0)
 
-          tunnel(client, upstream)
+          tunnel(client, origin.socket)
 
     catch
       /*
@@ -986,7 +485,7 @@ object AgentEgressProxy:
       case ex: BadRequest =>
         System.err.println(auditLine("deny", connectHost, "CONNECT", "", ex.getMessage))
 
-      case ex: PolicyViolation =>
+      case ex: Refusal =>
         System.err.println(auditLine("deny", connectHost, "CONNECT", "", ex.getMessage))
 
       case ex: IOException =>
@@ -1002,26 +501,27 @@ object AgentEgressProxy:
 
   /*
    * One request and its response, then the connection ends — and both peers are told: the
-   * request goes upstream with `Connection: close` (end-of-stream then frames the response),
+   * request goes to the origin with `Connection: close` (end-of-stream then frames the response),
    * and the response reaches the client with this proxy's own `Connection: close`, whatever the
    * origin's hop said (toClientBytes). Keeping the connection alive would mean agreeing with
-   * the origin about where each message ends — request smuggling's exact surface. After the
-   * response the client is only drained (drainClient), never answered again. Cost: a handshake
-   * per request — `git fetch` is two.
+   * the origin about where each message ends — the exact disagreement request smuggling
+   * exploits. After the response the client is only drained (drainClient), never answered
+   * again. Cost: a handshake per request — `git fetch` is two.
    */
   def runInspectedSession(
     client: Socket,
-    upstream: Socket,
+    origin: OriginSocket,
     host: String,
     hello: TlsClientHello,
     inspection: TlsInspection,
-    hostTags: Set[String],
+    hostScopes: Map[String, Set[String]],
+    admitted: String => Boolean,
   ): Unit =
-    val clientTls = inspection.accept(client, hello.wireBytes)
+    val clientTls = inspection.accept(client, hello.wireBytes, host)
 
     // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
     // line prints only after the origin leg connects, so a failing request's method and target
-    // must ride the deny/error line or they would never be recorded.
+    // must go on the deny/error line or they would never be recorded.
     var method = "-"
     var target = ""
 
@@ -1034,17 +534,17 @@ object AgentEgressProxy:
         method = head.method
         target = head.target
 
-        authorizeInspectedRequest(host, head, hostTags)
+        authorizeInspectedRequest(host, head, hostScopes, admitted)
 
-        val upstreamTls = inspection.connect(upstream, host)
+        val originTls = inspection.connect(origin.socket, host)
 
         try
           System.err.println(
-            auditLine("allow", host, method, target, s"-> ${upstream.getInetAddress.getHostAddress}"),
+            auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
           )
 
-          relayInspected(clientTls, upstreamTls, host, head)
-        finally closeQuietly(upstreamTls)
+          relayInspected(clientTls, originTls, host, head)
+        finally closeQuietly(originTls)
 
       catch
         case _: ClosedWithoutRequest =>
@@ -1057,7 +557,7 @@ object AgentEgressProxy:
         case ex: TruncatedResponse =>
           System.err.println(auditLine("error", host, method, target, s"relay: ${ex.getMessage}"))
           // The head already reached the client, so there is no 502 to send; the abortive close
-          // (linger 0: RST, no clean TLS end) is what keeps the stump from reading as the whole.
+          // (linger 0: RST, no clean TLS end) is what keeps the truncated body from reading as the whole.
           try client.setSoLinger(true, 0)
           catch case _: SocketException => ()
 
@@ -1065,9 +565,9 @@ object AgentEgressProxy:
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
           respondInsideTls(clientTls, 400, "Bad Request", ex.getMessage)
 
-        case ex: PolicyViolation =>
+        case ex: Refusal =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, 403, "Forbidden", ex.getMessage)
+          respondInsideTls(clientTls, 403, "Forbidden", ex.getMessage, Some(ex.advice))
 
         case ex: IOException =>
           System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))
@@ -1086,30 +586,30 @@ object AgentEgressProxy:
   // inside the tunnel — and plain sockets are what lets the relay be tested on loopback pairs.
   def relayInspected(
     clientTls: Socket,
-    upstreamTls: Socket,
+    originTls: Socket,
     host: String,
     head: HttpRequestHead,
   ): Unit =
-    val toUpstream = upstreamTls.getOutputStream
+    val toOrigin = originTls.getOutputStream
 
     clientTls.setSoTimeout(InspectedIdleTimeoutMillis)
-    upstreamTls.setSoTimeout(InspectedIdleTimeoutMillis)
+    originTls.setSoTimeout(InspectedIdleTimeoutMillis)
 
-    toUpstream.write(head.toUpstreamBytes)
-    // The 100 the client is waiting for is this proxy's to send: the Expect never goes upstream
-    // (toUpstreamBytes has the why), and without an answer the client stalls before its body.
+    toOrigin.write(head.toOriginBytes)
+    // The 100 the client is waiting for is this proxy's to send: the Expect never goes to the origin
+    // (toOriginBytes has the why), and without an answer the client stalls before its body.
     if head.expectsContinue then
       writeAscii(clientTls.getOutputStream, "HTTP/1.1 100 Continue\r\n\r\n")
-    forwardRequestBody(clientTls.getInputStream, toUpstream, head.bodyFraming)
-    toUpstream.flush()
+    forwardRequestBody(clientTls.getInputStream, toOrigin, head.bodyFraming)
+    toOrigin.flush()
 
-    val fromUpstream = upstreamTls.getInputStream
+    val fromOrigin = originTls.getInputStream
     val toClient = clientTls.getOutputStream
 
     @tailrec
     def finalResponseHead(): HttpResponseHead =
       val bytes =
-        try readHttpHeader(fromUpstream, MaxHttpHeaderBytes)
+        try readHttpHeader(fromOrigin, MaxHttpHeaderBytes)
         catch
           case _: ClosedWithoutRequest => throw IOException("origin closed before the response head")
           case ex: BadRequest          => throw IOException(s"origin response head: ${ex.getMessage}")
@@ -1125,7 +625,7 @@ object AgentEgressProxy:
 
     toClient.write(response.toClientBytes)
     try
-      forwardResponseBody(fromUpstream, toClient, framing)
+      forwardResponseBody(fromOrigin, toClient, framing)
       toClient.flush()
       drainClient(clientTls)
     catch
@@ -1140,7 +640,7 @@ object AgentEgressProxy:
    * Consume whatever the client still sends, until its EOF, bounded: closing with unread bytes
    * in the receive buffer turns the close into an RST, and an RST destroys the just-written
    * response's unread tail in the client's stack. A request pipelined past `Connection: close`
-   * lands here and is discarded unanswered; a client still flooding at the cap gets the RST it
+   * arrives here and is discarded unanswered; a client still flooding at the cap gets the RST it
    * asked for.
    */
   def drainClient(clientTls: Socket): Unit =
@@ -1157,124 +657,7 @@ object AgentEgressProxy:
       loop(64 * 1024)
     catch case _: IOException => ()
 
-  /**
-   * What "read access" means once TLS is terminated. Everywhere: GET and
-   * HEAD to any path, bodyless. Each of the host's tags additionally admits
-   * its POSTs: `allow=git-fetch` the git-upload-pack path, without which "read
-   * access" would silently exclude `git clone`; `allow=npm-audit` the audit
-   * endpoint npm hits during install (NpmAuditPath); `allow=github-login-device` the
-   * device-flow pair (GithubLoginDevicePaths). On a host without it, no
-   * POST at all: a path there is an object name anyone can choose, so a
-   * path rule authorizes nothing.
-   *
-   * Receive-pack discovery, the LFS batch endpoint and GraphQL stay refused:
-   * SECURITY.md, "Reading without being able to write".
-   */
-  def authorizeInspectedRequest(
-    host: String,
-    head: HttpRequestHead,
-    hostTags: Set[String],
-  ): Unit =
-    if !head.target.startsWith("/") then
-      throw PolicyViolation(
-        "only origin-form request targets are allowed",
-      )
-
-    if head.values("Upgrade").nonEmpty then
-      throw PolicyViolation("HTTP Upgrade is not allowed")
-
-    head.values("Host") match
-      case Vector(value) =>
-        val declared = normalizeHostHeader(value)
-
-        if declared != host then
-          throw PolicyViolation(s"Host header $declared")
-
-      case Vector() => throw BadRequest("missing Host header")
-      case _        => throw BadRequest("duplicate Host header")
-
-    head.bodyFraming // throws when ambiguous
-
-    head.method match
-      case "GET" | "HEAD" =>
-        // a body on a read method would be an unbounded, unlogged client-to-server channel
-        if head.bodyFraming != BodyFraming.Empty then
-          throw PolicyViolation("request body")
-
-        if isReceivePackDiscovery(head) then
-          throw PolicyViolation("git push ref discovery")
-
-      case "POST" =>
-        requireUnambiguousPath(head.path)
-
-        val opened =
-          (hostTags.contains("git-fetch") && isUploadPack(head.path))
-            || (hostTags.contains("npm-audit") && head.path == NpmAuditPath)
-            || (hostTags.contains("github-login-device") && GithubLoginDevicePaths.contains(head.path))
-        if !opened then
-          throw PolicyViolation(if hostTags.isEmpty then "restricted host" else "restricted path")
-
-      case _ =>
-        throw PolicyViolation("restricted host")
-
-  /*
-   * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
-   * contain one and resolvePublic rejects private answers — and load-bearing clarity under the
-   * ambient profile, where it is the named refusal a literal target gets. Denial wins over both
-   * treatments and over the ambient default.
-   */
-  def authorizeRequest(
-    request: ConnectRequest,
-    resolved: ResolvedEgress,
-  ): String =
-    if request.port != 443 then
-      throw PolicyViolation(s"port ${request.port}")
-
-    val host = normalizeHost(request.host)
-
-    if isIpLiteral(host) then
-      throw PolicyViolation("IP-literal target")
-
-    resolved.denied.find(_.matches(host)).foreach: rule =>
-      throw PolicyViolation(s"host denied (${rule.spelled})")
-
-    if !resolved.hosts.contains(host) && !resolved.ambient then
-      throw PolicyViolation("host not allowed")
-
-    host
-
-  def connect(
-    addresses: Vector[InetAddress],
-    port: Int,
-  ): Socket =
-    @tailrec
-    def loop(
-      remaining: List[InetAddress],
-      lastFailure: Option[IOException],
-    ): Socket =
-      remaining match
-        case Nil =>
-          throw lastFailure.getOrElse(
-            IOException("no resolved address could be connected"),
-          )
-
-        case address :: rest =>
-          val socket = Socket()
-          try
-            socket.connect(
-              InetSocketAddress(address, port),
-              ConnectTimeoutMillis,
-            )
-            socket.setTcpNoDelay(true)
-            socket
-          catch
-            case ex: IOException =>
-              closeQuietly(socket)
-              loop(rest, Some(ex))
-
-    loop(addresses.toList, None)
-
-  def tunnel(client: Socket, upstream: Socket): Unit =
+  def tunnel(client: Socket, origin: Socket): Unit =
     val done = CountDownLatch(2)
 
     def pump(
@@ -1296,14 +679,14 @@ object AgentEgressProxy:
     executor.execute(() =>
       pump(
         client.getInputStream,
-        upstream.getOutputStream,
-        () => upstream.shutdownOutput(),
+        origin.getOutputStream,
+        () => origin.shutdownOutput(),
       ),
     )
 
     executor.execute(() =>
       pump(
-        upstream.getInputStream,
+        origin.getInputStream,
         client.getOutputStream,
         () => client.shutdownOutput(),
       ),
@@ -1313,81 +696,3 @@ object AgentEgressProxy:
     catch
       case _: InterruptedException =>
         Thread.currentThread().interrupt()
-
-  /**
-   * One connection event of the audit log: `verb host method [target] tail` — the grammar
-   * SECURITY.md ("The audit line grammar") declares stable through field 3. A `-` fills a field
-   * the connection ended before revealing; the target appears exactly when a parsed inspected
-   * request exists; the tail is human text with no field structure.
-   */
-  def auditLine(verb: String, host: String, method: String, target: String, tail: String): String =
-    (Vector(verb, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
-
-  /**
-   * Every line the proxy reports, prefixed with the instant it was written, as
-   * `2026-08-26T11:59:38Z `. UTC, per SECURITY.md "The audit line grammar".
-   * Prefixing at the byte level, on the first byte after a newline, so a line
-   * printed in pieces is stamped once.
-   */
-  def stampLines(out: OutputStream, now: () => Instant): OutputStream = new OutputStream:
-    private var lineStart = true
-    private def stamp(): Unit =
-      out.write(DateTimeFormatter.ISO_INSTANT.format(now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS)).getBytes)
-      out.write(' ')
-      lineStart = false
-    override def write(byte: Int): Unit =
-      if lineStart then stamp()
-      out.write(byte)
-      lineStart = byte == '\n'
-    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
-      var from = offset
-      val end = offset + length
-      while from < end do
-        if lineStart then stamp()
-        val newline = bytes.indexOf('\n'.toByte, from)
-        val to = if newline < 0 || newline >= end then end else newline + 1
-        out.write(bytes, from, to - from)
-        lineStart = bytes(to - 1) == '\n'
-        from = to
-    override def flush(): Unit = out.flush()
-
-  /**
-   * Both sinks, flushes included; line-currency matters because the reaper
-   * removes this container the moment its sandbox exits.
-   */
-  def teeOutput(a: OutputStream, b: OutputStream): OutputStream = new OutputStream:
-    override def write(byte: Int): Unit =
-      a.write(byte)
-      b.write(byte)
-    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
-      a.write(bytes, offset, length)
-      b.write(bytes, offset, length)
-    override def flush(): Unit =
-      a.flush()
-      b.flush()
-
-  def closeQuietly(socket: Socket): Unit =
-    try socket.close()
-    catch case _: IOException => ()
-
-  def sha256Hex(text: String): String =
-    java.security.MessageDigest
-      .getInstance("SHA-256")
-      .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-      .map(byte => f"$byte%02x")
-      .mkString
-
-case class BadRequest(message: String) extends RuntimeException(message)
-
-/** A connection that closed after zero bytes: routine pooled-client behavior after admission,
-  * logged as `error`; policy refused nothing (SECURITY.md, "The audit line grammar"). */
-case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
-
-/** An upstream EOF where response framing promised more. Distinct from IOException because the
-  * response head has already been forwarded by then: no 502 can follow, and the handler must end
-  * the client connection abortively so the stump cannot read as a completed response. */
-case class TruncatedResponse(message: String) extends RuntimeException(message)
-
-case class PolicyViolation(message: String) extends RuntimeException(message)
-
-case class BadTls(message: String) extends RuntimeException(message)

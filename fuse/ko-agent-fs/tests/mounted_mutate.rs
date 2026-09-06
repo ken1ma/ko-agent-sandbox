@@ -65,7 +65,7 @@ fn openat_write(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
 
 /// `linkat(2)` from a held directory handle to a name at the mount root: the same stale-handle
 /// question asked of the source-side rule that refuses aliasing a control inode out to a writable
-/// name (`doc/git-metadata.md`, "Operations that carry these mutations").
+/// name (`doc/git-metadata.md`, "Operations that make these mutations").
 fn linkat_out(dirfd: &File, relative: &str, root: &OwnedFd, newname: &str) -> nix::Result<()> {
     let old = CString::new(relative).expect("a relative path without a NUL");
     let new = CString::new(newname).expect("a name without a NUL");
@@ -139,7 +139,7 @@ fn repository(backing: &Path) {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn creating_a_dotgit_entry_is_refused_in_every_shape() {
+fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
     let mount = TestMount::new(repository);
 
     denied("mkdir .git", fs::create_dir(mount.at("src/.git")));
@@ -198,7 +198,7 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         "case-folded spelling",
         fs::create_dir(mount.at(".KO-AGENT-SANDBOX")),
     );
-    // A launch takes its policy from the directory it starts in, so a subdirectory's copy is
+    // A launch takes its boundary configuration from the directory it starts in, so a subdirectory's copy is
     // boundary configuration too.
     denied(
         "mkdir a nested .ko-agent-sandbox",
@@ -217,37 +217,37 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         repository(backing);
         fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();
         fs::write(
-            backing.join(".ko-agent-sandbox/egress/allowed"),
-            b"+host docs.python.org\n",
+            backing.join(".ko-agent-sandbox/egress/rule"),
+            b"allow https://docs.python.org/ read\n",
         )
         .unwrap();
     });
 
     allowed(
-        "read the policy the host wrote",
-        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/allowed")).map(|_| ()),
+        "read the rule file the host wrote",
+        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/rule")).map(|_| ()),
     );
     denied(
-        "rewrite a policy file",
+        "rewrite the rule file",
         fs::write(
-            mount.at(".ko-agent-sandbox/egress/allowed"),
-            b"+host evil.example unrestricted\n",
+            mount.at(".ko-agent-sandbox/egress/rule"),
+            b"allow https://evil.example/ tunnel\n",
         ),
     );
     denied(
-        "add a policy file",
-        File::create(mount.at(".ko-agent-sandbox/egress/denied")),
+        "add a file beside the rule file",
+        File::create(mount.at(".ko-agent-sandbox/egress/extra")),
     );
     denied(
-        "remove a policy file",
-        fs::remove_file(mount.at(".ko-agent-sandbox/egress/allowed")),
+        "remove the rule file",
+        fs::remove_file(mount.at(".ko-agent-sandbox/egress/rule")),
     );
     denied(
         "remove the directory",
         fs::remove_dir_all(mount.at(".ko-agent-sandbox/egress")),
     );
     denied(
-        "rename the policy directory away",
+        "rename the boundary directory away",
         fs::rename(
             mount.at(".ko-agent-sandbox"),
             mount.at(".ko-agent-sandbox-old"),
@@ -284,7 +284,7 @@ fn the_name_rule_covers_the_case_folded_and_collapsing_spellings() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn ordinary_dot_git_prefixed_names_are_allowed() {
-    // The superset must not have swallowed the names real projects use.
+    // The superset must not include the names real projects use.
     let mount = TestMount::new(repository);
     for name in [
         ".gitignore",
@@ -392,7 +392,7 @@ fn existing_hooks_are_immutable_against_every_mutation() {
         ),
     );
 
-    // The payoff assertion: after every attempt, the host's hook is byte-for-byte untouched.
+    // The assertion the attempts above exist for: the host's hook is byte-for-byte untouched.
     assert_eq!(
         fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
         HOOK_BODY
@@ -532,7 +532,7 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
     // classification, because the classification is a function of that stale chain. Nothing races:
     // three ordinary operations, in order.
     //
-    // The handle is on `src/hooks` rather than on `src` itself, and that is load-bearing. Planting
+    // The handle is on `src/hooks` rather than on `src` itself, and that choice matters. Planting
     // the symlink re-reports the *vacated* name's inode number with a new file type, which the
     // kernel answers by invalidating that inode — so a handle on `src` would be stopped by the
     // kernel rather than by this filter, and would prove nothing about either. A handle one level
@@ -547,7 +547,7 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
     // build does all day, and a symlink's target is not the filter's to police *for policy* — the
     // kernel resolves a symlink itself and the resolved path is classified on its own names. The
     // one refusal a target does earn is unrelated to policy and is asserted separately below
-    // (`a_symlink_target_in_a_nonportable_shape_is_refused_and_an_ordinary_one_is_not`).
+    // (`a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not`).
     allowed(
         "rename an ordinary directory",
         fs::rename(mount.at("src"), mount.at("old")),
@@ -644,7 +644,7 @@ fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
         fs::write(mount.at("decoy"), b"evil\n"),
     );
     denied(
-        "rename something onto the hooks symlink",
+        "rename a decoy onto the hooks symlink",
         fs::rename(mount.at("decoy"), mount.at(".git/hooks")),
     );
     assert_eq!(
@@ -663,7 +663,7 @@ fn relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them()
     let mount = TestMount::new(relocated_hooks);
 
     let refusal = ko_agent_fs::guard::check_hook_location(&mount.backing)
-        .expect_err("the guard must refuse a workspace whose hooks live inside it");
+        .expect_err("the guard must refuse a workspace whose hooks are inside it");
     assert!(
         refusal.reason.contains("inside the workspace"),
         "unexpected refusal: {refusal}"
@@ -736,8 +736,8 @@ fn ordinary_project_work_is_unaffected() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn a_symlink_target_in_a_nonportable_shape_is_refused_and_an_ordinary_one_is_not() {
-    // A shape is asserted and nothing more: `fs.rs`, `target_has_portable_shape`.
+fn a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not() {
+    // Syntax is asserted and nothing more: `fs.rs`, `target_has_portable_syntax`.
     //
     // sbt 2 is why it exists: a build-cache hit is materialized as a link into ~/.cache/sbt, and the
     // host's next compile fails writing its own class files through what the session left behind.
@@ -751,7 +751,7 @@ fn a_symlink_target_in_a_nonportable_shape_is_refused_and_an_ordinary_one_is_not
         "symlink to an absolute path outside the workspace",
         symlink("/home/nonroot/.cache/blob", mount.at("src/cached.o")),
     );
-    // Refused for being absolute, not for where it points: the shape decides, and this one names
+    // Refused for being absolute, not for where it points: the syntax decides, and this one names
     // the mount itself.
     denied(
         "symlink to an absolute path inside the workspace",
@@ -766,7 +766,7 @@ fn a_symlink_target_in_a_nonportable_shape_is_refused_and_an_ordinary_one_is_not
         symlink("../../../etc/passwd", mount.at("src/sub/passwd")),
     );
 
-    // What the rule must not cost: everything landing inside, `..` included.
+    // What the rule must not cost: everything resolving inside, `..` included.
     allowed(
         "symlink to a sibling",
         symlink("main.rs", mount.at("src/sibling.rs")),

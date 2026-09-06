@@ -33,7 +33,7 @@ object JdkTrust:
   /** The CA's path inside a container: sandbox-jdk-use-proxy reads it there, in a session and in
     * the launcher's throwaway run alike. Use .crt for the Linux/BSD convention; keytool accepts it
     * despite its usual .cer examples. */
-  val SandboxEgressCaPath = "/etc/ko-agent-sandbox/egress-ca.crt"
+  val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
@@ -66,7 +66,7 @@ object JdkTrust:
         || firstLine(stampFile) != stamp
       then
         // `cp -L` first: the Debian Temurin packages link `cacerts` into /etc/ssl/certs, and a copy
-        // out of the container must carry the store, not the link.
+        // out of the container must contain the store, not the link.
         val prepared = "/prepared-jdk"
         // --entrypoint=: this container depends on nothing but sh and the script. The stock
         // sandbox-entrypoint would come through — it skips seeding when the root this runs as has
@@ -76,7 +76,7 @@ object JdkTrust:
         // is for this container anyway.
         val created = run(
           podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-          s"--volume=$caCertFile:$SandboxEgressCaPath:ro",
+          s"--volume=$caCertFile:$SandboxEgressProxyCaPath:ro",
           s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
           image, "sh", "-euc",
           s"""sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared"""
@@ -104,7 +104,7 @@ object JdkTrust:
       files
 
   /** What `net.properties` cannot say for itself: the route. `http.*` too, as HTTP_PROXY is set —
-    * an `http://` attempt then lands in the proxy log instead of failing unexplained. */
+    * an `http://` attempt is then recorded in the proxy log instead of failing unexplained. */
   def proxyProperties(proxyHost: String, proxyPort: Int): Vector[(String, String)] =
     Vector(
       "http.proxyHost" -> proxyHost,

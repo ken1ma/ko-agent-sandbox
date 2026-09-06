@@ -1,7 +1,7 @@
 // How the launcher runs host executables and what its scripts may resolve: trusted-path lookup,
 // and the fixed PATH every generated script declares before anything else. Then how it writes the
 // state files those runs mount: the mode they are never briefly without, and the name they are
-// never briefly missing. Then how its own lines carry severity: one label, one place it is
+// never briefly missing. Then how its own lines show severity: one label, one place it is
 // spelled, and colour only where a terminal will render it.
 
 package agentsandbox.launcher
@@ -16,6 +16,15 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  test("only an explicit yes is consent"):
+    assert(consented(Some("y")))
+    assert(consented(Some("Y")))
+    assert(consented(Some(" YES ")))
+    assert(!consented(Some("")))
+    assert(!consented(Some("n")))
+    assert(!consented(Some("yeah")))
+    assert(!consented(None))
+
   test("colour is for a terminal that will render it, and for no one else"):
     assertEquals(colorAllowed(Os.Linux, None, Some("xterm-256color")), true)
     assertEquals(colorAllowed(Os.Mac, None, None), true)
@@ -24,19 +33,45 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(colorAllowed(Os.Linux, None, Some("dumb")), false)
 
   test("emphasis tints the severity label and leaves every other word as it was written"):
-    val warning = "warning: podman runs on 3 GiB of memory\n  raise it with `podman machine set`"
+    val warning = "warning: podman runs on 3.0G of memory\n  raise it with `podman machine set`"
     assertEquals(emphasized(warning, color = false), warning)
     assertEquals(
       emphasized(warning, color = true),
-      "\u001b[33mwarning:\u001b[0m podman runs on 3 GiB of memory\n  raise it with `podman machine set`",
+      "\u001b[38;5;208mwarning:\u001b[0m podman runs on 3.0G of memory\n  raise it with `podman machine set`",
     )
-    // A block carries a label per line, and a line that has none keeps its own spelling.
+    // A block has a label per line, and a line that has none keeps its own spelling.
     assertEquals(
       emphasized("error: no\nplain\nwarning: yes", color = true),
-      "\u001b[31merror:\u001b[0m no\nplain\n\u001b[33mwarning:\u001b[0m yes",
+      "\u001b[38;5;208merror:\u001b[0m no\nplain\n\u001b[38;5;208mwarning:\u001b[0m yes",
     )
     // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
     assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
+
+  test("a refusal raised while the JVM is shutting down names the interruption first, and waits"):
+    assert(!shuttingDown, "a JVM with no shutdown under way reported one")
+    // The true case needs a shutdown under way, so it runs in a JVM of its own on this test's
+    // classes (FailDuringShutdown). The exit status is the shutdown's, not the refusal's: the
+    // refusal's exit blocked indefinitely, and the JVM ended when the hook finished.
+    def location(of: Class[?]) = Paths.get(of.getProtectionDomain.getCodeSource.getLocation.toURI).toString
+    val classpath = Vector(
+      FailDuringShutdown.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]],
+    ).map(location).distinct.mkString(java.io.File.pathSeparator)
+    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+    // Native access as the jar's manifest grants it, for the isatty behind colorStderr. What the
+    // JVM prints before the first refusal line is its own: JAVA_TOOL_OPTIONS echoed back.
+    val staged = run(
+      jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, "agentsandbox.launcher.FailDuringShutdown",
+    )
+    assertEquals(
+      staged.err.linesIterator.dropWhile(!_.startsWith("error:")).toVector,
+      Vector(
+        "error: the launch was interrupted; the failure below is its consequence, not a fault of its own",
+        "error: podman failed",
+        "its stderr",
+        "hook: removed",
+      ),
+    )
+    assertEquals(staged.exit, 130)
 
   test("every warning and refusal the launcher writes goes through the one label"):
     // warn and fail are where the label is spelled and tinted; a println of its own prints it
@@ -51,7 +86,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(offenders, Vector.empty)
 
   test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
-    // Concurrent launches of one project under different authority selections write the policy
+    // Concurrent launches of one project under different authority selections write the ruleset
     // cache without a lock. With the stamp in a file of its own, one launch's content could end up
     // under the other's stamp and stay there; with it inside each file, the pairing a caller
     // requires simply does not match and the cache re-derives.
@@ -75,7 +110,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(stampedEntry(hosts, "stamp-c"), Some(""))
 
   // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
-  // directories, which on a Windows runner carry their own ':' after the drive letter — the
+  // directories, which on a Windows runner have their own ':' after the drive letter — the
   // string cannot be built there, not merely the branch untested. The Windows branch has its own
   // test, which runs everywhere.
   private val isWindows = scala.util.Properties.isWin
@@ -84,7 +119,7 @@ class HostCommandsTest extends munit.FunSuite:
     PosixFilePermissions.toString(Files.getPosixFilePermissions(path))
 
   test("executables resolve only through absolute PATH entries"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     val dir = Files.createTempDirectory("path-resolve").toRealPath()
     val tool = dir.resolve("mytool")
     Files.createFile(tool)
@@ -96,9 +131,9 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("mytool", "", Os.Linux), None)
 
   test("an absolute PATH entry inside the project is skipped, not preferred"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
-    // The absolute-entry-inside-the-project shape (HostCommands.findOnPath's doc, DESIGN.md "No
-    // PATH-resolved host executables").
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
+    // The absolute-entry-inside-the-project case (HostCommands.findOnPath's doc, design.md "No
+    // repository-controlled host executable resolution").
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
     val shipped = Files.createDirectories(project.resolve("node_modules/.bin"))
     val planted = shipped.resolve("podman")
@@ -122,7 +157,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("podman", sibling.toString, Os.Linux, project), Some(neighbour))
 
   test("an executable symlinked out of the project is skipped, and the real path is returned"):
-    assume(!isWindows, "POSIX PATH strings cannot carry drive-letter directories")
+    assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     val project = Files.createTempDirectory("untrusted-project").toRealPath()
     val shipped = Files.createDirectories(project.resolve("bin"))
     val planted = shipped.resolve("podman")
@@ -163,12 +198,12 @@ class HostCommandsTest extends munit.FunSuite:
     scripts.foreach: (name, script) =>
       assertEquals(script.linesIterator.next(), s"export PATH=$ScriptPath", name)
       // Syntax only, by the interpreter that runs it; what a valid script does is each script's
-      // own behavioural test.
+      // own behavioral test.
       if !isWindows then
         val parsed = ProcessBuilder("/bin/sh", "-n", "-c", script).redirectErrorStream(true).start()
         val output = String(parsed.getInputStream.readAllBytes())
         assertEquals(parsed.waitFor(), 0, s"$name does not parse:\n$output")
-    // Absolute system directories only: a relative entry is the whole thing being kept out.
+    // Absolute system directories only: a relative entry is exactly what is kept out.
     assert(
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),
       ScriptPath,
@@ -178,7 +213,7 @@ class HostCommandsTest extends munit.FunSuite:
     val base = Files.createTempDirectory("future-path").toRealPath()
     // Exists already: plain canonicalization.
     assertEquals(canonicalizedFuturePath(base), Right(base))
-    // Does not exist yet: the missing tail rides on the canonicalized ancestor.
+    // Does not exist yet: the missing tail is appended to the canonicalized ancestor.
     assertEquals(canonicalizedFuturePath(base.resolve("a/b/c")), Right(base.resolve("a/b/c")))
     // A symlinked ancestor resolves, so a comparison against the answer sees the real location.
     val real = Files.createDirectories(base.resolve("real"))
@@ -227,8 +262,8 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(modeOf(planted), "rw-------")
     assertEquals(Files.readString(planted), "PRIVATE KEY")
 
-    // What the writes are made of stays inside them: a leftover temporary is a bind source's
-    // directory growing a file no launch mounts, and a sign the rename never happened.
+    // A write's temporary file never outlives the write: a failed rename leaves the temporary file in
+    // the bind source's directory, a file no launch mounts.
     assertEquals(
       Files.list(dir).iterator().asScala.map(_.getFileName.toString).toVector.sorted,
       Vector("bundle.crt", "ca.key", "leaf.key"),

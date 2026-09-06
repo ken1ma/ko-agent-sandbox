@@ -1,7 +1,0 @@
-# Codex.
-+host chatgpt.com unrestricted      # model traffic for a ChatGPT plan
-+host api.openai.com unrestricted   # API-key use
-+host auth.openai.com unrestricted  # issues the device code and the tokens
-
-# ab.chatgpt.com — A/B configuration and telemetry — is absent: codex works without it, and a
-# refusal produces a log line.

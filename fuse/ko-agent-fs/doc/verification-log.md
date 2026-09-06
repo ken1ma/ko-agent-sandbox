@@ -1,7 +1,7 @@
 # Verification log
 
-The measured runs the design's claims rest on, each with the venue that produced it. What a row is
-meant to settle, why a pass without its venue is not evidence, and which rows are still open is
+The measured runs the design's claims rest on, each with the machine that produced it. What a row is
+meant to settle, why a pass without its machine is not evidence, and which rows are still open is
 `TODO.md` ("Platform verification"); the external research the same claims draw on is
 `security-research.md`.
 
@@ -9,9 +9,9 @@ meant to settle, why a pass without its venue is not evidence, and which rows ar
 
 ### Verified: APFS case-insensitive (macOS 26.4.1, build 25E253; 2026-08-14)
 
-The empirical run the posture calls for, on the default macOS volume (File System Personality:
-APFS, the case-insensitive variant), through the full production stack — filtered sandbox session →
-FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
+The empirical run `security-research.md` calls for, on the default macOS volume (File System
+Personality: APFS, the case-insensitive variant), through the full production stack — filtered
+sandbox session → FUSE filter → virtiofs → APFS — using `probe/apfs-name-rule-probe.py`:
 
 - All 14 denied spellings (`.git` itself, the four ASCII case variants, the Turkish i-family, the
   four ignorable-code-point forms, the three trailing-punctuation forms) failed with exactly
@@ -61,13 +61,22 @@ invalidating the cached page as designed. The sandbox→host direction holds on 
 is pinned at the filter's own layer by the rig suite.
 
 The virtiofs premise, as observed on the same machine: the host shares (`/Users`, `/private`,
-`/var/folders` — the first is the one project directories live under) mount in the VM as
+`/var/folders` — the first is the one project directories are under) mount in the VM as
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
-and the guest-layer measurement below. Re-run `coherency-probe.py` after a podman or macOS upgrade
-— it, not the mount table, is what notices a changed default. (The `nfs_t` SELinux context is also
-why the launcher never applies `:Z` relabeling to machine-shared sources.)
+and the guest-layer measurement below. Re-run the measurement — the launcher's `--self-test` share
+rows — after a podman or macOS upgrade: it, not the mount table, is what notices a changed
+default. (The `nfs_t` SELinux context is also why the launcher never applies `:Z` relabeling to
+machine-shared sources.)
+
+### Verified: the same coherency, launcher-driven (same machine, libkrun, fc44 kernel; 2026-09-01)
+
+The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
+with the launcher playing the host writer over a scratch lower in the project directory: the
+guard's refusal held through the whole stack, the host write was visible to `read()` 1 ms after
+it was written, and the established mmap showed it 0 ms behind `read()`. Every later re-run
+follows this procedure.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
@@ -84,21 +93,21 @@ cache policy in the path.
 ### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
 
 On a Windows host (podman 6.1.0, machine on WSL2, kernel 6.18.33.2-microsoft-standard-WSL2),
-measured with host-side ground truth at every step:
+measured against host-side observations at every step:
 
 - A host-created file, and a host rewrite of a file nothing held open, both reached an in-session
   `read()` promptly — host→session visibility holds for unheld files, and session→host held
   already (the NTFS name-rule run).
 - A host write to a file a live session held open failed with a sharing violation ("used by
   another process") until the session released it: the daemon's backing fd reaches NTFS through
-  the machine's 9p server, whose handle carries Windows sharing semantics. Isolated below the
+  the machine's 9p server, whose handle follows Windows sharing rules. Isolated below the
   filter: a bare 9p hold (`tail -f` in the machine, no session involved) reproduces the refusal,
   and the write succeeds the moment the hold ends.
 
 Together they close the mmap question by construction: a mapped file cannot go stale under a host
-write, because the write is refused while the mapping holds — `probe/coherency-probe.py`'s mmap
+write, because the write is refused while the mapping holds — the coherency measurement's mmap
 half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
-("The project directory") carries it: a host editor's save is refused while a session holds that
+("The project directory") records it: a host editor's save is refused while a session holds that
 file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
@@ -150,17 +159,17 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 - **Two names differing only by case are one name**, through the mount and on the host alike: the
   default APFS volume folds, so an upper entry and a lower entry cannot differ by case alone.
 - **A descriptor held in the session blocks nothing on the host.** Write, rename and unlink all
-  succeed against a held path, read-held and write-held alike. Windows is where this bites.
+  succeed against a held path, read-held and write-held alike. Windows is where this matters.
 
 Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
-nothing in exchange support, symlink round-tripping, case behaviour or the reach of a hold.
+nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
 
-## Mount privilege: what a venue grants
+## Mount privilege: what a container grants
 
 ### Measured: a container needs `CAP_SYS_ADMIN`, setuid notwithstanding (podman 6.0.2; 2026-08-22)
 
-In a Podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
-`--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the venue probe, before a test runs:
+In a podman machine on macOS (machine kernel 7.1.3-200.fc44.aarch64, aarch64), dropping
+`--cap-add SYS_ADMIN` from `probe/rig.sh` fails at the mount probe, before a test runs:
 
     Error: Custom { kind: Other, error: "fusermount3: mount failed: Operation not permitted\n" }
 
@@ -178,10 +187,10 @@ platform.
 ### Measured: a non-root container user keeps the bounding set (podman 6.0.2; 2026-08-22)
 
 `--self-test` mounts and passes every suite as the sandbox image's `nonroot` (uid 65532), in a
-container given `--cap-add SYS_ADMIN`, in a Podman machine on macOS. So podman keeps the capability
+container given `--cap-add SYS_ADMIN`, in a podman machine on macOS. So podman keeps the capability
 in the *bounding* set for a container whose `USER` is not root, and the setuid `fusermount3` reaches
 it: an unprivileged uid holds no effective `CAP_SYS_ADMIN` and cannot `mount(2)`, and the mount
 succeeds anyway.
 
-This venue is therefore the only one that exercises the route a real session takes. The dev rig runs
-as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.
+This container is therefore the only one that exercises the route a real session takes. The dev
+rig runs as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.

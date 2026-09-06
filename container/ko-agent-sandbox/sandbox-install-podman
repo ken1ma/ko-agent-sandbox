@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install a rootless podman in this session, configured for the one shape that works here.
+#
+# Install a rootless podman in this session, configured the one way that works here.
 #
 #     sandbox-install-podman
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
@@ -9,7 +10,7 @@
 # `none` the container deliberately lacks what a runtime needs, every pull dies at layer unpack,
 # and the failure reads like a podman bug rather than the decision it is.
 #
-# Everything lands under $HOME and dies with the session, so this runs again next time.
+# Everything is installed under $HOME and dies with the session, so this runs again next time.
 set -eu
 
 nesting=${KO_AGENT_SANDBOX_NESTING:-none}
@@ -27,7 +28,7 @@ sandbox-apt-get install podman
 mkdir -p /tmp/xdg "$HOME/.config/containers"
 
 # netns/utsns host: an inner container shares this sandbox's network namespace and hostname,
-# because creating either of its own needs a capability this sandbox does not carry.
+# because creating either of its own needs a capability this sandbox does not have.
 # cgroups disabled: nothing delegates a cgroup here, so per-container limits are unavailable.
 cat > "$HOME/.config/containers/containers.conf" <<EOF
 [containers]

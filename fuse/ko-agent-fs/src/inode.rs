@@ -4,7 +4,7 @@
 //! walking parents to the root only when an operation needs one; nothing here caches attributes or
 //! opens backing fds (that is the resolver's job, per operation).
 //!
-//! `forget` is honored so the table stays bounded to what the kernel currently references — the
+//! `forget` is honoured so the table stays bounded to what the kernel currently references — the
 //! property that keeps memory flat while a compiler stats hundreds of thousands of files.
 
 use std::collections::HashMap;
@@ -74,10 +74,10 @@ impl InodeTable {
     /// parent's — the O(1) step that every later operation on this inode reads instead of recomputing.
     ///
     /// `is_gitdir_root` ([`GitContext::ModuleNamespace`]) only matters where the context would
-    /// otherwise be a namespace. It is read on the
-    /// allocating path alone: a reused entry keeps the context it was created with, so a directory
-    /// that *becomes* a gitdir root after its first lookup stays a namespace — control — until the
-    /// kernel forgets it. Both drift directions land on the stricter answer.
+    /// otherwise be a namespace. It is read on the allocating path alone: a reused entry keeps the
+    /// context it was created with, so a directory that *becomes* a gitdir root after its first
+    /// lookup stays a namespace — control — until the kernel forgets it. Both drift directions
+    /// give the stricter answer.
     pub fn lookup(&mut self, parent: u64, name: &OsStr, is_gitdir_root: bool) -> u64 {
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key) {
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_nested_submodule_gitdir_keeps_its_objects_writable() {
-        // The hint is what the plumbing answers for a directory under `modules/` that holds a
+        // The hint is what the FUSE layer answers for a directory under `modules/` that holds a
         // `HEAD` (`fs.rs`, `is_gitdir_root`); `libs/foo` is the ordinary two-component name a
         // submodule in a subdirectory gets, and it must behave as any other gitdir does.
         let mut table = InodeTable::new();
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn a_directory_under_modules_without_the_hint_stays_frozen() {
-        // The fail-closed half: with no `HEAD` to find, the plumbing answers `false` and everything
+        // The fail-closed half: with no `HEAD` to find, the FUSE layer answers `false` and everything
         // below reads as namespace. A tree the daemon cannot identify is never widened.
         let mut table = InodeTable::new();
         let dotgit = look(&mut table, ROOT_INO, ".git");
