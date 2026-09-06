@@ -27,7 +27,9 @@ object ContainerfileSources:
 
   /**
    * A parser directive reads as a comment but is not one: `# escape=` alone rewrites what a line
-   * continuation looks like, which would hide a `--from=` on the line after it.
+   * continuation looks like, which would hide a `--from=` on the line after it. podman (through
+   * imagebuilder, as BuildKit does) reads directives only from the lines before the first
+   * instruction, blank line, or plain comment; a `# key=value` after that point is a comment.
    */
   private val ContainerfileDirective = """#\s*[A-Za-z][A-Za-z0-9_-]*\s*=.*""".r
 
@@ -85,6 +87,7 @@ object ContainerfileSources:
     val parents = Vector.newBuilder[String]
     var refusal: Option[String] = None
     var complete = false
+    var leading = true
     var carried = ""
     var continued = false
     var inOptions = true
@@ -117,9 +120,12 @@ object ContainerfileSources:
           else if isQualifiedImage(expanded) then images += expanded
           else refuse(s"unqualified image source $expanded")
 
-      if refusal.isEmpty && !complete && line.nonEmpty && line.startsWith("#") then
-        if ContainerfileDirective.matches(line) then refuse("unsupported parser directive")
-      else if refusal.isEmpty && !complete && line.nonEmpty then
+      // Only the leading run of directive-shaped lines can hold a directive; the first line of
+      // any other shape ends it for the rest of the file.
+      val directive = leading && line.startsWith("#") && ContainerfileDirective.matches(line)
+      leading = directive
+      if refusal.isEmpty && !complete && directive then refuse("unsupported parser directive")
+      else if refusal.isEmpty && !complete && line.nonEmpty && !line.startsWith("#") then
         val content = if line.endsWith("\\") then line.dropRight(1).trim else line
         val words = content.split("\\s+").toVector
         // A continuation carries its instruction and its place in it, so an option on a later

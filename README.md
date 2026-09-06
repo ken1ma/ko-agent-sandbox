@@ -307,10 +307,8 @@ checkout — [Development](#development).
            Shift/Alt.
     1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
        login, then choose "Sign in with Device Code" in the login UI.
-    1. `agy`: sign-in works like `claude`: open the printed URL in an external browser and paste
-       the code back. Unlike `claude` and `codex`, permission prompts are not pre-disabled (agy has
-       no documented settings key for it); run `agy --dangerously-skip-permissions`, or set it once
-       via the in-app `/permissions` command, which persists.
+    1. `agy`: sign-in works like `claude`: copy the printed URL and paste in an external browser,
+       and paste the code back.
     1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
        other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
        web reached through the model provider"). Prompts for paths outside `/workspace` and for
@@ -319,7 +317,8 @@ checkout — [Development](#development).
     1. `claude --resume`, `codex resume`, `agy --continue` and `copilot --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so set
-       `approval_policy = "on-request"` there;
+       `approval_policy = "on-request"` there; `agy` reads `~/.gemini/antigravity-cli/settings.json`,
+       so set `"toolPermission": "request-review"` there (or via `/config`);
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
        them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
        `COPILOT_ALLOW_ALL=false`.

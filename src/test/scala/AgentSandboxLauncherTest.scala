@@ -443,6 +443,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |FROM local-base:${SUPPLIED}
           |FROM scratch
           |ARG REGISTRY
+          |# toolPermission=always-proceed is a comment here, not a directive
           |RUN --mount=type=cache,target=/build/target \
           |    --mount=type=cache,target=/usr/local/cargo/registry \
           |    cargo build
