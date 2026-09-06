@@ -161,9 +161,10 @@ allow https://docs.podman.io/           read
 allow https://docs.docker.com/          read
 
 # cloud providers
-allow https://docs.aws.amazon.com/ read  # AWS
-allow https://cloud.google.com/    read  # GCP
-allow https://learn.microsoft.com/ read  # Azure
+allow https://docs.aws.amazon.com/   read  # AWS
+allow https://cloud.google.com/      read  # GCP
+allow https://docs.cloud.google.com/ read  # GCP docs; cloud.google.com/.../docs redirects here
+allow https://learn.microsoft.com/   read  # Azure
 
 # infrastructure as code: the docs
 # doc/egress-rule-example/pulumi-aws/rule shows what `pulumi up` needs.
