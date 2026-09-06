@@ -1,10 +1,10 @@
 // --self-test's share rows: the host-writer/session-reader direction the crate's suites cannot reach,
 // because their backing tree is the container's own storage (fuse/ko-agent-fs/doc/testing.md). A
 // scratch lower created inside the current directory puts the real share in the path — host
-// filesystem -> share -> ko-agent-fs -> container — and the launcher plays the host half the
+// filesystem -> share -> ko-agent-fs -> container — and the launcher performs the host-side steps the
 // hand-run probes needed a person for. fuse/ko-agent-fs/doc/TODO.md is the standard: driven by the
 // launcher, machine recorded, the scratch gone on success and kept on failure, and nothing a killed
-// run leaves that the reset sweep does not match — the mount lives under the same mounts/ root the
+// run leaves that the reset sweep does not match — the mount is under the same mounts/ root the
 // unmount-all sweep clears, the container's name pattern is in --reset-all's container sweep, and
 // the scratch's name says what left it behind.
 
@@ -27,7 +27,7 @@ object SelfTestShare:
   def probeContainerName(suffix: String): String = s"ko-agent-self-test-share-$suffix"
 
   /** `--reset-all`'s sweep for the probe container a killed launcher leaves. `--rm` and the
-    * removal in [[shareRows]]' finally are the primary cleanup; this is the belt-and-braces
+    * removal in [[shareRows]]' finally are the primary cleanup; this is the fallback
     * match, anchored on the eight-hex run suffix like the launcher's own reserved patterns. */
   def probeContainers(names: Seq[String]): Seq[String] =
     names.filter(_.matches(probeContainerName("[0-9a-f]{8}")))
@@ -52,7 +52,7 @@ object SelfTestShare:
   /**
    * The probe container, run as a session's would be where it matters: keep-id maps the image uid
    * onto the daemon user, which is what makes the allow_other mount writable through the bind,
-   * and the volume rides unlabelled like every FUSE mountpoint. `--entrypoint=` because the probe
+   * and the volume is mounted unlabelled like every FUSE mountpoint. `--entrypoint=` because the probe
    * is the stdin program, not an agent session; `--network=none` because the rows need no egress.
    */
   def probeRunCommand(podman: String, mountpoint: String, container: String): Vector[String] =
@@ -235,8 +235,9 @@ object SelfTestShare:
         val command = probeRunCommand(podman, mountpoint, container)
         echoCommand(command)
         val process = ProcessBuilder(command*).redirectErrorStream(true).start()
-        // The hard bound over both 120 s probe waits plus container start; the kill turns a wedged
-        // share into a failed row with the lines so far as the report.
+        // The hard bound over both 120 s probe waits plus container start. The kill ends an unresponsive
+        // probe; the rows already printed remain, and the non-zero exit below adds a failure row only
+        // when none of them failed.
         val watchdog = Thread(() =>
           if !process.waitFor(300, TimeUnit.SECONDS) then { process.destroyForcibly(); () },
         )
@@ -302,9 +303,10 @@ object SelfTestShare:
         val exit = process.waitFor()
         if exit != 0 && !failed then row(false, "share probe", s"exit $exit with no failing row")
       finally
-        // The watchdog kills only the attached client; a container wedged in the share outlives
-        // it, --rm firing on container exit alone. Removed here directly — and by name pattern in
-        // --reset-all's sweep, for the killed launcher no finally survives.
+        // The watchdog kills only the attached client; the container, its process blocked on the share,
+        // outlives it, because --rm removes a container only when the container exits. Removed here
+        // explicitly. If the launcher is killed before this finally runs, --reset-all removes the
+        // container by name pattern.
         run(podman, "rm", "--force", "--ignore", container)
         if failed then
           val log = run(koAgentFsScriptCommand(podman, os, daemonLogScript(mountId))*)

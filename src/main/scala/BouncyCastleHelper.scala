@@ -19,9 +19,9 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 /**
  * All the launcher's certificate handling: PEM, X.509 parsing,
- * fingerprints, expiry checks, minting the per-project CA and leaf.
+ * fingerprints, expiry checks, creating the per-project CA and issuing the leaf.
  * Deliberately the only file that imports org.bouncycastle: replacing the
- * dependency makes this file the whole blast radius.
+ * dependency changes this file and nothing else.
  */
 object BouncyCastleHelper:
 
@@ -61,7 +61,7 @@ object BouncyCastleHelper:
       catch case _: Exception => false
 
   /**
-   * Whether the private key is the one this certificate's public key answers, proven by a
+   * Whether the private key is the one that matches this certificate's public key, proven by a
    * sign-and-verify round trip; false on anything unparsable or empty. The expiry check alone cannot
    * see a key beside a certificate it does not match — the state a launch that died between
    * writing the two leaves behind — and such a pair fails every TLS handshake while looking fine.
@@ -88,7 +88,7 @@ object BouncyCastleHelper:
       true
     catch case _: Exception => false
 
-  case class Minted(certificatePem: String, privateKeyPem: String)
+  case class CertificateMaterial(certificatePem: String, privateKeyPem: String)
 
   def newEcKeyPair() =
     val generator = KeyPairGenerator.getInstance("EC")
@@ -105,14 +105,17 @@ object BouncyCastleHelper:
 
   /**
    * Backdated five minutes: the certificate is verified inside a podman
-   * Machine VM whose clock can sit slightly behind the host's, and a
+   * Machine VM whose clock can run slightly behind the host's, and a
    * notBefore in the future fails there as an unexplained TLS error.
    */
   def notBefore(now: Instant): Date = Date.from(now.minus(5, ChronoUnit.MINUTES))
 
-  def mintCa(slug: String, now: Instant = Instant.now(), days: Long = 3650): Minted =
+  /** `slug` names the project, and for a per-run CA its run too, inside a common name RFC 5280
+    * caps at 64 characters, which Bouncy Castle enforces: the wording leaves 42 for a 32-character
+    * project slug, a space and an 8-hex run suffix. */
+  def createCa(slug: String, now: Instant = Instant.now(), days: Long = 3650): CertificateMaterial =
     val keyPair = newEcKeyPair()
-    val name = X500Name(s"CN=ko-agent-sandbox egress CA ($slug)")
+    val name = X500Name(s"CN=ko-agent-sandbox CA ($slug)")
     val builder = JcaX509v3CertificateBuilder(
       name,
       randomSerial(),
@@ -131,7 +134,7 @@ object BouncyCastleHelper:
     )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.getPrivate)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
-    Minted(
+    CertificateMaterial(
       toPem("CERTIFICATE", certificate.getEncoded),
       toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded),
     )
@@ -144,13 +147,13 @@ object BouncyCastleHelper:
    * Lifetime clamped to the CA's, so a ten-year CA's last years are not a
    * launch failure; the reissue margin normally keeps the clamp inactive.
    */
-  def mintLeaf(
+  def issueLeaf(
     caCertificatePem: String,
     caPrivateKeyPem: String,
     hosts: Seq[String],
     now: Instant = Instant.now(),
     days: Long = agentsandbox.egress.X509Helper.LeafValidityDays,
-  ): Minted =
+  ): CertificateMaterial =
     val issuer = parseCertificate(caCertificatePem)
     val issuerKey = parseEcPrivateKey(caPrivateKeyPem)
     val keyPair = newEcKeyPair()
@@ -195,7 +198,7 @@ object BouncyCastleHelper:
     )
     val signer = JcaContentSignerBuilder("SHA256withECDSA").build(issuerKey)
     val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
-    Minted(
+    CertificateMaterial(
       toPem("CERTIFICATE", certificate.getEncoded),
       toPem("PRIVATE KEY", keyPair.getPrivate.getEncoded),
     )

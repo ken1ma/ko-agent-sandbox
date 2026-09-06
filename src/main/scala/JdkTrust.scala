@@ -104,7 +104,7 @@ object JdkTrust:
       files
 
   /** What `net.properties` cannot say for itself: the route. `http.*` too, as HTTP_PROXY is set —
-    * an `http://` attempt then lands in the proxy log instead of failing unexplained. */
+    * an `http://` attempt is then recorded in the proxy log instead of failing unexplained. */
   def proxyProperties(proxyHost: String, proxyPort: Int): Vector[(String, String)] =
     Vector(
       "http.proxyHost" -> proxyHost,

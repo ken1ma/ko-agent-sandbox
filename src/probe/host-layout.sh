@@ -9,10 +9,10 @@
 
 set -u
 
-# Run this on the Mac, in a host terminal. Inside a sandbox session every answer below would
+# Run this on macOS, in a host terminal. Inside a sandbox session every answer below would
 # describe the container instead, and would read as a host missing its whole toolchain.
 if [ "$(uname -s)" != "Darwin" ]; then
-    echo "This probe reports a macOS host's layout; this is $(uname -s). Run it on the Mac." >&2
+    echo "This probe reports a macOS host's layout; this is $(uname -s). Run it on macOS." >&2
     exit 2
 fi
 if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then

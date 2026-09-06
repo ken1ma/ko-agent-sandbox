@@ -2,7 +2,7 @@
 # Which SBPL spelling admits a TCP connect to the loopback proxy port — measured with must-fail
 # controls, the answers SeatbeltProfile's proxy rule encodes.
 #
-# Run it on the Mac, on each new macOS release: the spelling and its controls are SBPL behavior
+# Run it on macOS, on each new macOS release: the spelling and its controls are SBPL behavior
 # a release can change. ~10 seconds.
 set -u
 port=45071

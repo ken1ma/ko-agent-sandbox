@@ -7,9 +7,9 @@
 # version Coursier fetched, so it moves.
 #
 # Writes to a file rather than the terminal: what Coursier installs carries an appended jar,
-# so `cat` on one dumps binary and eats the scrollback.
+# so `cat` on one dumps binary and fills the scrollback.
 set -u
-if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; fi
+if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 
 out=${1:-/tmp/sbt-exec-chain.txt}
 : > "$out"

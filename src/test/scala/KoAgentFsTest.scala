@@ -54,7 +54,7 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test"),
     )
 
-  test("the fuse.conf consent flow checks idempotently and enables exactly what it explained"):
+  test("the fuse.conf consent check is idempotent and enables exactly what it describes"):
     assertEquals(
       koAgentFsFuseConfCheckCommand("podman"),
       Vector("podman", "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf"),
@@ -73,7 +73,7 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
     val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1")
-    // The build check sits under the project lock and right before the daemon start; the
+    // The build check runs under the project lock and right before the daemon start; the
     // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
     assert(check > script.indexOf("flock 9"), script)
@@ -138,11 +138,12 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.contains("rm -f \"$dir/sessions/run-container-1\""))
     assert(script.contains("\"/usr/bin/podman\" container exists \"$(basename \"$marker\")\""))
     assert(script.contains("mounts/app-abc123def456"))
-    assert(script.contains("if [ -z \"$(ls -A \"$dir/sessions\" 2>/dev/null)\" ]"))
+    val emptiness = "if sessions=\"$(ls -A \"$dir/sessions\" 2>/dev/null)\" || [ ! -e \"$dir/sessions\" ]"
+    assert(script.contains(emptiness), script)
     assert(script.contains("fusermount3 -uz \"$dir/workspace\""))
     val lock = script.indexOf("flock 9")
     assert(script.contains("exec 9>\"$dir/lock\""), script)
-    assert(lock >= 0 && lock < script.indexOf("if [ -z \"$(ls -A"), script)
+    assert(lock >= 0 && lock < script.indexOf(emptiness), script)
 
   /**
    * Runs the reap script the way the reaper does — /bin/sh, `HOME` pointing at a scratch tree —
@@ -196,6 +197,41 @@ class KoAgentFsTest extends munit.FunSuite:
       survivingMarkers(podmanExit = 127, Seq("crashed" -> 3600L)),
       Set("crashed"),
     )
+
+  /** Whether the reap asked to unmount: the script's fusermount3 is a stub that leaves a file
+    * behind, put first on the PATH the script exports for itself — the one edit made to the script
+    * text. `readable` false makes the sessions directory unlistable, the unknown-liveness edge,
+    * restored before the scratch tree is deleted. */
+  private def unmountRequested(readable: Boolean, markers: Seq[String]): Boolean =
+    val home = Files.createTempDirectory("ko-agent-fs-reap-unmount")
+    val sessions = home.resolve(koAgentFsMountDir("app-abc123def456")).resolve("sessions")
+    try
+      Files.createDirectories(sessions)
+      markers.foreach(name => Files.writeString(sessions.resolve(name), ""))
+      val bin = Files.createDirectories(home.resolve("bin"))
+      val stub = Files.writeString(home.resolve("podman-stub"), "#!/bin/sh\nexit 0\n")
+      val fusermount = Files.writeString(bin.resolve("fusermount3"), s"#!/bin/sh\ntouch \"$home/unmounted\"\n")
+      Seq(stub, fusermount).foreach(Files.setPosixFilePermissions(_, PosixFilePermissions.fromString("rwx------")))
+      if !readable then Files.setPosixFilePermissions(sessions, PosixFilePermissions.fromString("---------"))
+
+      val script = koAgentFsReapScript(stub.toString, "app-abc123def456", "run-1")
+      assert(script.startsWith("export PATH="), script)
+      val builder = ProcessBuilder("/bin/sh", "-c", script.replaceFirst("^export PATH=", s"export PATH=$bin:"))
+      builder.environment().put("HOME", home.toString)
+      builder.redirectErrorStream(true)
+      assertEquals(builder.start().waitFor(), 0, "the reap script failed")
+      Files.exists(home.resolve("unmounted"))
+    finally
+      if Files.exists(sessions) then
+        Files.setPosixFilePermissions(sessions, PosixFilePermissions.fromString("rwx------"))
+      deleteRecursively(home)
+
+  test("a reap unmounts at zero sessions, and never when it cannot tell how many there are"):
+    assume(!isWindows)
+    assume(System.getProperty("user.name") != "root", "root reads an unreadable directory fine")
+    assert(unmountRequested(readable = true, Seq.empty), "no sessions left, yet no unmount")
+    assert(!unmountRequested(readable = true, Seq("live")), "unmounted under a live session")
+    assert(!unmountRequested(readable = false, Seq.empty), "unmounted on an unlistable sessions directory")
 
   test("the reap script runs in the VM on podman machine and on this host on Linux"):
     assertEquals(koAgentFsTeardownMode(Os.Mac), "machine")
@@ -313,8 +349,8 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(context)
 
   test("the workspace guard fails closed on anything it does not recognize"):
-    // Exactly fuse and none, case-sensitive: every accepted value is one more thing to keep
-    // correct everywhere it is parsed.
+    // Exactly fuse and none, case-sensitive: every accepted value must be handled consistently
+    // everywhere it is parsed.
     assertEquals(workspaceGuard(None), Right("fuse"))
     assertEquals(workspaceGuard(Some("")), Right("fuse"))
     assertEquals(workspaceGuard(Some("fuse")), Right("fuse"))
@@ -337,7 +373,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(declared, AgentSandboxLauncher.SelfTestSetupExit)
 
   test("the rig's container script parses under the bash that runs it"):
-    // The script lives inside rig.sh as a quoted heredoc and is executed only in the privileged
+    // The script is inside rig.sh as a quoted heredoc and is executed only in the privileged
     // container, so nothing else parses it. `sh -n` over rig.sh itself is no check — the heredoc
     // makes the outer file parse whatever the inner text says.
     assume(!isWindows, "no /bin/bash to parse with")

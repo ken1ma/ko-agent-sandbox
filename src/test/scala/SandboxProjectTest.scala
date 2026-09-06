@@ -35,6 +35,13 @@ class SandboxProjectTest extends munit.FunSuite:
   test("slug is truncated to 32 characters"):
     assertEquals(slugOf("a" * 40), "a" * 32)
 
+  test("every id projectIdOf generates has the pattern --stats lists and --reset accepts"):
+    Vector("my-app_1.0", "my app (2)", "日本語プロジェクト", "a" * 40, ".hidden").foreach: name =>
+      val id = projectIdOf(Paths.get("/home/user").resolve(name), Os.Linux)
+      assert(isProjectId(id), id)
+    Vector("app", "app-", "app-0123456789a", "app-0123456789abc", "/home/me/app", "").foreach: name =>
+      assert(!isProjectId(name), name)
+
   test("project hash is stable, hex, and 12 characters"):
     val hash = projectHash("/home/user/project", Os.Linux)
     assertEquals(hash.length, 12)
@@ -155,7 +162,7 @@ class SandboxProjectTest extends munit.FunSuite:
     )
     assert(isForbiddenProjectDir(userProfile, homes))
     assert(isForbiddenProjectDir(userProfile.getParent, homes))
-    // SystemDrive\Users stays protected although the current profile lives elsewhere, and so do
+    // SystemDrive\Users stays protected although the current profile is elsewhere, and so do
     // the profiles it holds.
     assert(isForbiddenProjectDir(base.resolve("Users"), homes))
     assert(isForbiddenProjectDir(base.resolve("Users").resolve("someone"), homes))
@@ -307,14 +314,14 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(project.resolve(".git"), s"gitdir: $separate\n")
     assertEquals(noGit(project), Some(NoGit.Gitdir(separate.toString, separate, None)))
     assert(noGitWarning(noGit(project).get).contains("stay on the host"))
-    // An absolute gitdir is a host path even where it lands inside the project, which the
+    // An absolute gitdir is a host path even where it resolves inside the project, which the
     // container has at /workspace and not where the host keeps it.
     val absolute = Files.createDirectories(root.resolve("absolute"))
     val ownGitdir = gitdirAt(absolute.resolve("real.git"))
     Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
     assertEquals(noGit(absolute), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
     // A `.git` symlink is the same absence when it leads out of the project: only the mount pins
-    // of WORKSPACE_GUARD=none refuse that shape, and the filter serves it as the host wrote it.
+    // of WORKSPACE_GUARD=none refuse that form, and the filter serves it as the host wrote it.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
     assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, None)))
@@ -334,7 +341,7 @@ class SandboxProjectTest extends munit.FunSuite:
       noGit(Files.createDirectories(linked.resolve("src"))),
       Some(NoGit.Above(linked, None)),
     )
-    // A hollow .git is no repository: the search passes it as git's does, and reaches the one
+    // An empty .git directory is no repository: the search passes it as git's does, and reaches the one
     // above, which is also the launch offered.
     val hollow = Files.createDirectories(superproject.resolve("hollow"))
     Files.createDirectories(hollow.resolve(".git"))
@@ -398,7 +405,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val oversized = Files.createDirectories(superproject.resolve("oversized"))
     Files.writeString(oversized.resolve(".git"), "gitdir: " + "x" * (1 << 20))
     assertEquals(noGit(oversized), None)
-    // A relative gitdir that climbs out and re-enters the project by its host name lands inside on
+    // A relative gitdir that climbs out and re-enters the project by its host name resolves inside on
     // the host and nowhere in the container, whose base is /workspace — and one level up it climbs
     // nowhere, so the parent is the launch.
     val reentrant = Files.createDirectories(root.resolve("reentrant"))
@@ -407,7 +414,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(noGit(reentrant), Some(NoGit.Gitdir("../reentrant/real.git", reentered, Some(root))))
     // A `.git` symlink to a pointer file in a subdirectory: the OS follows the link to read the
     // file, and the gitdir it names resolves against the directory holding `.git` — the project —
-    // not against the pointer's own, which would land inside and hide that the container cannot
+    // not against the pointer's own, which would resolve inside and hide that the container cannot
     // follow it. From the parent both steps stay inside, so the parent is the launch.
     val chained = Files.createDirectories(root.resolve("chained"))
     val elsewhere = gitdirAt(root.resolve("elsewhere.git"))
@@ -466,7 +473,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
     assert(boundaryDirError(dir).isDefined)
-    // Refused, not replaced: whatever sits there is the user's to remove.
+    // Refused, not replaced: whatever is there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
   test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
@@ -503,7 +510,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
   test("agent/ holds one file, with the forms egress/ refuses refused for the same reasons"):
-    val parent = Files.createTempDirectory("agent-shapes")
+    val parent = Files.createTempDirectory("agent-forms")
     assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
 
     val asFile = parent.resolve("agent")

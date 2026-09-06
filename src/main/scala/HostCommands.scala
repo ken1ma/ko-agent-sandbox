@@ -1,8 +1,8 @@
 // The launcher's host-side primitives: the platform tag, how it runs an executable, and how it
 // reads and writes the small state files everything else keeps. Nothing here knows what a sandbox
-// is, which is what lets every other file in this package sit on top of it without a cycle.
+// is, which is what lets every other file in this package depend on it without a cycle.
 //
-// The security-relevant member is findOnPath — see its comment. Everything else is plumbing.
+// The security-relevant member is findOnPath — see its comment.
 
 package agentsandbox.launcher
 
@@ -47,11 +47,10 @@ object HostCommands:
    * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
    * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
    * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
-   * apart; red is a boundary weaker than the default, in force for the session, the one line on
-   * the screen that can cost the reader something; what the user chose — a mode, the tools run on
-   * host — takes a hue of its own, purple, so it is never read as a severity. A headroom figure
-   * is outside the ranking: it is a measurement, and green, orange and red are its scale
-   * (Headroom).
+   * apart; red is a boundary weaker than the default, in force for the session; what the user
+   * chose — a mode, the tools run on host — takes a hue of its own, purple, so it is never read as
+   * a severity. A headroom figure is outside the ranking: it is a measurement, and green, orange
+   * and red are its scale (Headroom).
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the two authority lines — from the instructions the agent is
@@ -71,7 +70,7 @@ object HostCommands:
 
   /** The scale of a headroom figure: green while what the verb is about fits, orange where it is
     * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and
-    * buildMemoryHeadroom have the thresholds, one scale per concern). On the figure alone, so the
+    * buildMemoryHeadroom each define their own scale). On the figure alone, so the
     * words hold where the escape does not. */
   enum Headroom(val code: String):
     case Ample extends Headroom("32")
@@ -115,7 +114,7 @@ object HostCommands:
   lazy val colorStderr: Boolean =
     colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
 
-  /** For the `--stats` report, the one thing the launcher writes to stdout: the stream a reader
+  /** For the `--stats` report, the one output the launcher writes to stdout: the stream a reader
     * pipes as readily as watches, so it is asked for itself. */
   lazy val colorStdout: Boolean =
     colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
@@ -126,7 +125,7 @@ object HostCommands:
     os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
 
   // -------------------------------------------------------------------------
-  // Subprocess plumbing
+  // Subprocesses
   // -------------------------------------------------------------------------
 
   case class Run(exit: Int, out: Array[Byte], err: String):
@@ -200,7 +199,7 @@ object HostCommands:
 
   /**
    * Host executables resolve through PATH entries that are absolute *and*
-   * outside the project directory. Two different things are being
+   * outside the project directory. Two different path classes are being
    * kept out, and neither subsumes the other:
    *
    *   - a relative entry (`.`, `bin`, `../tools`) resolves against the working
@@ -255,7 +254,7 @@ object HostCommands:
    * covers the executables the launcher itself invokes; this covers the ones
    * its scripts do.
    *
-   * The system directories are the whole list, and what that costs is legible
+   * The system directories are the whole list, and what that costs is reported
    * rather than silent: a host keeping fusermount3 somewhere unusual — a Nix
    * profile, say — gets a "not found" it can read, never a binary out of the
    * project. Inside a podman machine the value is what the VM already had.
@@ -268,7 +267,7 @@ object HostCommands:
   val ScriptPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
   // Concatenated, not an interpolated stripMargin: stripMargin runs after interpolation, so a
-  // script line that began with `|` would be silently eaten.
+  // script line that began with `|` would be silently dropped.
   def withScriptPath(script: String): String = s"export PATH=$ScriptPath\n$script"
 
   /**
@@ -312,7 +311,7 @@ object HostCommands:
   def canonicalizedFuturePath(path: Path): Either[String, Path] =
     val absolute = path.toAbsolutePath.normalize()
     // NOFOLLOW attributes, not Files.exists: exists follows links, so a dangling symlink would
-    // read as absent and ride into the "future" tail unchecked — a concurrent writer could
+    // read as absent and pass into the "future" tail unchecked — a concurrent writer could
     // materialize its target after validation — and it folds every other I/O failure into false.
     // Only NotFound means missing; anything else refuses.
     def presence(candidate: Path): Either[String, Boolean] =
@@ -368,7 +367,7 @@ object HostCommands:
    * The stamp travels inside the file rather than in one beside it because separate files are
    * atomic individually and race as a set — a launch interleaved between writing its content and
    * writing its stamp leaves a pairing neither launch computed, and that pairing is sticky, held
-   * until something happens to rewrite it. A caller reading several of these requires every one to
+   * until a later launch rewrites it. A caller reading several of these requires every one to
    * match, so an interleaving is a miss that re-derives rather than a mixture that persists.
    */
   def stampedEntry(path: Path, stamp: String): Option[String] =
@@ -499,7 +498,7 @@ object HostCommands:
    * closed value set, case-sensitive: never a bare presence test, and no alternate spellings
    * (`1`, `true`, `yes`, …). An unclear value must refuse the launch rather than be read as
    * either side of the choice (design.md, "Security configuration must fail closed"), and each
-   * accepted spelling is one more thing that has to stay correct everywhere it is parsed. Unset and
+   * accepted spelling must be handled consistently everywhere it is parsed. Unset and
    * empty mean the default, which is always the choice that weakens nothing.
    */
   def closedChoice(

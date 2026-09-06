@@ -85,11 +85,11 @@ fi
 # --download-only resolves against the image's installed set (the default, still-readable dpkg
 # status), so only genuinely missing packages and their dependencies are fetched. Through a file
 # for the same reason as update above — a download that still fails after the retries must fail
-# the install here, or the stranded archive surfaces only much later, as some unpacked binary
+# the install here, or the stranded archive shows only much later, as some unpacked binary
 # failing to load a library it arrived without.
 if ! aptc install --download-only -y -o Acquire::Retries=3 "$@" > "$apt/install.log" 2>&1; then
     grep -E "newly installed|^Get:|^Err|^E:" "$apt/install.log" | tail -5 >&2
-    # Renamed aside, or the retry that heals a transient failure overwrites the evidence of it.
+    # Renamed aside, or the retry that succeeds after a transient failure overwrites the evidence of it.
     mv "$apt/install.log" "$apt/install-failed.log"
     echo "${0##*/}: download failed; nothing unpacked (apt output kept: $apt/install-failed.log)" >&2
     exit 1
@@ -100,7 +100,7 @@ grep -E "newly installed|^Get:" "$apt/install.log" | tail -1
 # deliberately not cleaned: deleting archives would turn every repeated install of the same
 # package into a re-download. A stamp per archive is the unpack bookkeeping dpkg would have kept:
 # re-runs skip what is already extracted, and a version bump is a new filename, unpacked afresh.
-# The stamp lands only after dpkg-deb succeeds, so an aborted extraction is retried, not skipped.
+# The stamp is written only after dpkg-deb succeeds, so an aborted extraction is retried, not skipped.
 unpacked=$root/.unpacked
 mkdir -p "$unpacked"
 for archive in "$apt/cache/archives"/*.deb; do

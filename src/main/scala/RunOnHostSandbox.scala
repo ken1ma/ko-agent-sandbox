@@ -1,8 +1,8 @@
 // The wrapper: from a project and a tool to a confined build's exit code, through the thirteen
 // steps — validate, scavenge, publish, proxy, profile, run, end what was started, remove. macOS
-// only, like everything it drives; the assembly and refusal logic lives in RunOnHostPrereqs and
-// is unit-tested there, so this file is choreography plus the host observations no Linux test can
-// make.
+// only, like everything it drives; the assembly and refusal logic are in RunOnHostPrereqs and
+// are unit-tested there, so this file is the sequence of steps plus the host observations no Linux
+// test can make.
 
 package agentsandbox.launcher
 
@@ -23,8 +23,8 @@ object RunOnHostSandbox:
     prereqs: BuildPrereqs,
     sbtDistribution: Option[Path],
     /** The per-project sbt global base: created and granted for an sbt build (`sbtGlobalGranted`),
-      * and for a mill build a path nothing reads, named all the same so the environment is one
-      * shape for both tools — as `millDownloads` is for sbt. */
+      * and for a mill build a path nothing reads, named all the same so the environment has the same
+      * variable names for both tools — as `millDownloads` is for sbt. */
     sbtGlobal: Path,
     /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
       * build is granted, and what the build's own script is pointed at (buildEnvironment). */
@@ -106,7 +106,7 @@ object RunOnHostSandbox:
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
    * applies (SandboxProject.boundaryDirError): the tools this wrapper serves, egress/ inside each,
    * rule inside that — a stray name, the retired grammar's file among them, a symlinked component,
-   * or a component of the wrong type refuses the build, never sits as ignored config. The type rule
+   * or a component of the wrong type refuses the build, never remains as ignored config. The type rule
    * prevents real failures: a file where a directory belongs would read as absent configuration,
    * and a FIFO where the file belongs would block the read forever.
    */
@@ -167,7 +167,7 @@ object RunOnHostSandbox:
    * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
    * path that must also be executable. A runtime path is admitted only where testing proves the
    * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
-   * src/probe/build-profile-iterate.sh is how it grows.
+   * src/probe/build-profile-iterate.sh is how candidate entries are measured.
    */
   def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
@@ -190,7 +190,7 @@ object RunOnHostSandbox:
       finally stream.close()
     parseRuntimeAuthority(text.linesIterator.toSeq)
 
-  /** How the wrapper re-invokes its own vehicle — the running JVM and classpath, or the native
+  /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
     * image binary itself — under one of the launcher's private verbs. */
   def selfInvocation(verbAndArguments: String*): Seq[String] =
     if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
@@ -250,15 +250,15 @@ object RunOnHostSandbox:
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
-  /** Where a forwarded value rides from the launcher to the confined build: a name nothing reads
-    * by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
+  /** The name a forwarded value is carried under from the launcher to the confined build: one nothing
+    * reads by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
     * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
     * read by them first; the requested name is restored inside the build's environment alone,
     * where the wrapper's own settings still win over it. */
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is the tee
-    * of its stderr, so the line lands where this polls. */
+    * of its stderr, so the line is written where this polls. */
   def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
     val Ready = raw""".*agent-egress-proxy listening on :(\d+).*""".r
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
@@ -282,7 +282,7 @@ object RunOnHostSandbox:
    * server reached through the project's portfile belongs to someone — the user's shell, another
    * session — and a build that attached to it would run outside this profile. Live means
    * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
-   * the portfile points, uncontained on purpose — the user's own server lives outside any
+   * the portfile points, uncontained on purpose — the user's own server runs outside any
    * session — and the probe only connects and closes, writing nothing to what it reaches.
    */
   def livePortfileServer(project: Path): Option[Path] =
@@ -318,7 +318,7 @@ object RunOnHostSandbox:
    * (`CommandExchange.scala`), while the global base's own sources are trimmed and empty-filtered
    * — `SBT_CONFIG_HOME`, else `XDG_CONFIG_HOME/sbt`, else `user.home/.config/sbt`
    * (`SysProp.defaultGlobalBaseDirectory`). `user.home`, not `$HOME`: sbt reads the property, and
-   * the two can differ. `-Dsbt.global.base`, first in sbt's order, lives in the user's JVM and is
+   * the two can differ. `-Dsbt.global.base`, first in sbt's order, is set in the user's JVM and is
    * invisible from this process, so a server launched with it derives elsewhere and is never
    * found at this socket — the refusal below, not a wrong shutdown.
    */
@@ -349,8 +349,8 @@ object RunOnHostSandbox:
    * writes: from the first component inside, the build chooses what every later component means,
    * and a link there can send the rest anywhere — including straight back out, which is why the
    * fully resolved endpoint answers nothing. So the walk follows one hop at a time, checking
-   * where each link *sits* before reading where it points, and answers yes the moment a step
-   * lands in a writable root — the leaf included, since the socket itself may be the planted
+   * where each link *is located* before reading where it points, and answers yes the moment a step
+   * resolves into a writable root — the leaf included, since the socket itself may be the planted
    * link. It stops at the first component absent even as a link: nothing exists beneath it, and
    * creating it would need a write to the last resolved prefix, outside every writable root by
    * then.
@@ -408,7 +408,7 @@ object RunOnHostSandbox:
    * The consented resolution: under the launch option, end the foreign server instead of
    * refusing. The socket the shutdown is sent to is derived from the project path the way sbt
    * derives it, never read from the portfile, and the portfile's word is only compared against it: workspace
-   * content must not choose where an unconfined write-and-parse lands. The derivation is
+   * content must not choose where an unconfined write-and-parse goes. The derivation is
    * authorization, so it is checked as well as computed — a derived socket the project could
    * have planted is refused, since the project chooses its own content and would then be
    * choosing the target. Every doubt falls back to the refusal, naming what stopped the shutdown.
@@ -513,7 +513,7 @@ object RunOnHostSandbox:
             2
           case Right(session) =>
             // Also on a shutdown hook: SIGINT and SIGTERM end a JVM through its hooks, never by
-            // unwinding to `finally` — and the registered groups sit outside the terminal's own,
+            // unwinding to `finally` — and the registered groups are outside the terminal's own,
             // so nothing but this would end them on a Ctrl-C. Synchronized, not merely once: the
             // JVM halts when its hooks return, so the losing caller must block until the whole
             // cleanup is done, never return early into a halting JVM.

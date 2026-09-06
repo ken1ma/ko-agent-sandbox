@@ -1,8 +1,7 @@
 // The host build's session lifecycle. A session is one wrapper
 // command; its directory is published by rename so it is never seen half-made, its lock states the
-// wrapper's liveness, and its records own the children's. Everything here is choreography over an
-// injected filesystem-and-processes interface, so the kill interleavings are unit tests rather than
-// something only a Mac under kill -9 can check.
+// wrapper's liveness, and its records own the children's. The filesystem and process operations are injected,
+// so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
 // The rule the records keep: no process may outlive its record. A spawn becomes its
 // own group's leader and publishes `<pgid> <leader start time>` by rename before it runs the
@@ -44,8 +43,8 @@ object RunOnHostSession:
       case Array(pid, start) if start.nonEmpty => pid.toLongOption.map(Record(_, start))
       case _                                   => None
 
-  /** What the scavenger observes and does about processes. Injected: the decision protocol is the
-    * tested thing, and a real implementation only on macOS. */
+  /** What the scavenger observes and does about processes. Injected: the tests exercise the
+    * decision protocol, and a real implementation runs only on macOS. */
   trait Processes:
     /** `ps -o lstart= -p pid`, None when no such process exists. */
     def startOf(pid: Long): Option[String]
@@ -65,7 +64,7 @@ object RunOnHostSession:
   /** What a shutdown sent to a socket established (SbtServerShutdown is the real sender). */
   enum ServerAnswer:
     case ShutDown
-    /** The connect itself failed: nothing lives behind the socket, so nothing is left to end. */
+    /** The connect itself failed before reaching a server, so there is no server to stop. */
     case Unreachable(reason: String)
     /** A server accepted the connect but did not finish shutting down before the bound. */
     case Unanswered(reason: String)
@@ -120,7 +119,7 @@ object RunOnHostSession:
    * Create in staging, lock there, rename into the root: a scanned entry is locked by
    * construction, so a free lock always means a dead session. The root lock covers creating the
    * staging entry through the rename — the scavenger's staging cleanup takes the same lock, so it
-   * can never eat a directory whose creator has not locked it yet.
+   * can never delete a directory whose creator has not locked it yet.
    */
   def publish(root: Path, project: Path): Either[String, Session] =
     try
@@ -151,7 +150,7 @@ object RunOnHostSession:
     session.close()
 
   /**
-   * The wrapper's own step 11, on the scavenger's machinery: condemn the session first — the
+   * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
    * build's grants are path-based and name the original pathname, so after the rename no process
    * it started can redirect what `collect`'s canonicalization proves — then collect it: recorded
    * groups ended behind their live spawn leaders, the server with them, the directory deleted.
@@ -202,7 +201,7 @@ object RunOnHostSession:
           try results += entry -> collect(root, entry, processes, shutdown)
           finally lock.close()
         case Claim.Held    => ()
-        case Claim.Residue => deleteTree(entry)
+        case Claim.HalfDeleted => deleteTree(entry)
 
     if Files.isDirectory(condemnedRoot) then
       listDirectory(condemnedRoot).foreach(collectLocked)
@@ -399,7 +398,7 @@ object RunOnHostSession:
       catch case _: IOException => Vector.empty
 
   // ---------------------------------------------------------------------------
-  // Plumbing
+  // Helpers
   // ---------------------------------------------------------------------------
 
   private def withRootLock[A](root: Path)(body: => A): A =
@@ -421,7 +420,7 @@ object RunOnHostSession:
     case Held
     /** No lock file: deleteSessionTree unlinks the lock last, so this is a dead collector's
       * leftover — removed without signalling, since only the lock chain proves ownership. */
-    case Residue
+    case HalfDeleted
 
   /** The entry's lock taken for the whole collection. Never created when missing: a fresh inode
     * at the pathname could be taken while the unlinked one still guards a half-deleted tree. */
@@ -438,7 +437,7 @@ object RunOnHostSession:
           channel.close()
           Claim.Held
     catch
-      case _: java.nio.file.NoSuchFileException => Claim.Residue
+      case _: java.nio.file.NoSuchFileException => Claim.HalfDeleted
       case _: IOException => Claim.Held
 
   /** Free means dead: a published directory was locked before it became visible, so an untaken
@@ -469,8 +468,8 @@ object RunOnHostSession:
   /** Deletion for a session directory: every child but the lock, then — only if nothing else
     * survived — the lock and the directory. The lock pathname outlives every other child so that
     * no collector can create and take a fresh inode there while the held one still guards a
-    * half-deleted tree; a missing lock therefore always means this deletion's residue
-    * (Claim.Residue). A child that would not delete — an unreadable subtree, say — keeps the
+    * half-deleted tree; a missing lock therefore always means a tree this deletion left half-deleted
+    * (Claim.HalfDeleted). A child that would not delete — an unreadable subtree, say — keeps the
     * entry locked and collectable instead of leaving a lockless directory that still holds
     * records. */
   private def deleteSessionTree(entry: Path): Unit =

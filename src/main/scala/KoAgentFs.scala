@@ -2,7 +2,7 @@
 // bundles, building and installing the binary, proving the installed one is that source's build, and
 // the per-project mount lifecycle every session that mounts it runs through.
 //
-// It is a separate program with its own source tree, docs, tests and version contract
+// It is a separate program with its own source tree, docs, tests and version check
 // (fuse/ko-agent-fs/), and it reaches the launch through workspaceGuard, prepareKoAgentFs and
 // mountKoAgentFs. That is why it is a file rather than a section.
 
@@ -21,7 +21,7 @@ object KoAgentFs:
    * The one source-identity digest, for the filter binary and the image bundle labels alike:
    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
    * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
-   * unambiguous, and the path makes a rename a new identity. The algorithm lives only here,
+   * unambiguous, and the path makes a rename a new identity. The algorithm is only here,
    * deliberately: a build is told the answer and repeats it, so there is no second implementation
    * to drift from this one.
    */
@@ -66,9 +66,9 @@ object KoAgentFs:
   def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs")
 
   /**
-   * Where the filter binary lives, relative to the home of the user the
+   * Where the filter binary is installed, relative to the home of the user the
    * daemon runs as — the VM user's home on podman machine, the host user's
-   * on native Linux. Relative on purpose: `podman machine ssh` lands in the
+   * on native Linux. Relative on purpose: `podman machine ssh` starts in the
    * VM user's home whoever that is (core on macOS, the WSL user on
    * Windows), so no per-platform absolute path needs to be known here.
    */
@@ -79,8 +79,8 @@ object KoAgentFs:
    * Steps 3–4 of the filter pipeline (fuse/ko-agent-fs/doc/architecture.md,
    * "Build and install"): take /ko-agent-fs out of the image's scratch stage
    * and put it where the daemon must run. On podman machine both the image
-   * storage and the daemon live inside the VM, so the whole extraction runs
-   * there through `machine ssh` — a host-side `podman cp` would land the
+   * storage and the daemon are inside the VM, so the whole extraction runs
+   * there through `machine ssh` — a host-side `podman cp` would put the
    * binary on the wrong side of the boundary. The ssh script is fixed text;
    * nothing user-controlled is interpolated into it. `--replace` clears a
    * leftover extract container from a crashed earlier run.
@@ -248,10 +248,10 @@ object KoAgentFs:
   // ---------------------------------------------------------------------------
 
   /**
-   * Which mechanism guards the workspace's git control state: `fuse` — the default, what an
+   * Which guard protects the workspace's git control state: `fuse` — the default, what an
    * unset variable means — mounts /workspace through the FUSE filter; `none` binds it directly
    * with only the mount pins, the weaker boundary. The variable names the effect and the value
-   * names the mechanism, so a better guard someday is a new value here, not a new variable.
+   * names the guard, so a better one someday is a new value here, not a new variable.
    * This variable can weaken the boundary, so "security
    * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
    * not silently weaken the effective boundary" (design.md's principles) applies to it
@@ -340,7 +340,7 @@ object KoAgentFs:
        |  exit 1
        |fi
        |# The binary prepareKoAgentFs verified can be replaced by a --build between that check and
-       |# here — the start prompt sits between them. Checked again beside the start, under the
+       |# here — execution pauses at the start prompt. Checked again beside the start, under the
        |# image-build lock the launcher holds across this script and the installer holds while it
        |# replaces the binary (mountKoAgentFs), so the daemon started is the build source-id names.
        |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
@@ -367,7 +367,7 @@ object KoAgentFs:
     )
 
   /**
-   * The last-session teardown, run where the daemon lives after a sandbox
+   * The last-session teardown, run where the daemon runs after a sandbox
    * container exits. The session markers are the reference count: remove
    * this run's, prune the dead ones (a crashed launcher leaks its marker;
    * pruning self-heals it), and unmount only when none remain.
@@ -385,7 +385,7 @@ object KoAgentFs:
    * unmounting, and by the mount script across its reuse decision — covers
    * what the ordering alone does not: a reap that counted zero markers, then
    * a launch that writes its marker and reuses the still-live mount, then the
-   * unmount landing under it. Serialized, that launch either takes the lock
+   * unmount running under it. Serialized, that launch either takes the lock
    * first and is counted, or finds the mount gone and starts a fresh daemon.
    * A machine without flock degrades to the orderings, which is why the marker
    * is written outside the lock and first.
@@ -408,11 +408,13 @@ object KoAgentFs:
        |  "$podman" container exists "$$(basename "$$marker")" >/dev/null 2>&1 || gone=$$?
        |  # Only podman's own "no such container" answer (exit 1) prunes. Anything else — a broken
        |  # podman is exit 125 — is unknown liveness, and pruning on unknown is how the last-session
-       |  # unmount below lands under a live session; the marker leaks toward a later reap instead.
+       |  # unmount below runs under a live session; the marker leaks toward a later reap instead.
        |  [ "$$gone" -eq 1 ] && rm -f "$$marker"
        |done
-       |if [ -z "$$(ls -A "$$dir/sessions" 2>/dev/null)" ]; then
-       |  fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
+       |# A sessions directory that exists but cannot be listed is unknown liveness too, and keeps
+       |# the mount; one that does not exist never held a marker.
+       |if sessions="$$(ls -A "$$dir/sessions" 2>/dev/null)" || [ ! -e "$$dir/sessions" ]; then
+       |  [ -z "$$sessions" ] && fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
        |fi""".stripMargin
     )
 
@@ -472,10 +474,9 @@ object KoAgentFs:
       case Os.Linux => Vector("/bin/sh", "-c", script)
       // The script crosses base64-encoded. Windows needs it: the script is full of double quotes,
       // which Windows argument encoding passes through unescaped, handing the VM a mangled
-      // command line (LauncherImages.BundleLabelTemplate is the same wall). macOS does not
-      // need it and gets it anyway: macOS is the platform running daily, so sharing the path is
-      // what keeps a broken wrapper from surviving unnoticed until someone sits at a Windows
-      // machine.
+      // command line (LauncherImages.BundleLabelTemplate has the same problem). macOS does not need it
+      // but uses the same encoding, so daily macOS runs detect a broken wrapper before it is used on
+      // Windows.
       case Os.Mac | Os.Windows =>
         val encoded =
           java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))

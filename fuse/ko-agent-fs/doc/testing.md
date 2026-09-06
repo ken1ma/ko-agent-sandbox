@@ -57,7 +57,7 @@ machine; this rig runs them against source you are still editing, with no jar re
     GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
 
 Each flag the rig needs is justified beside itself in that script rather than here, because that is
-where a reader changing one is standing. What is worth knowing before reading it:
+where a reader changing one is looking. What is worth knowing before reading it:
 
 - **The mount probe runs first.** `mount_probe` mounts a trivial read-only filesystem and reads one
   file back, so a `PROBE FAIL` says the container is wrong — `/dev/fuse`, the mount privilege, or
@@ -72,7 +72,7 @@ where a reader changing one is standing. What is worth knowing before reading it
   the binary relative to the running test executable rather than through `CARGO_BIN_EXE_`, precisely
   so the crate can be compiled at one path and tested at another; keeping `CARGO_TARGET_DIR` off the
   host share also keeps the rig's build out of the one a sandbox session makes in `target/`. The
-  volume does not cover the `rust-std` download, which lands in the image's rustup home — if the rig
+  volume does not cover the `rust-std` download, which goes to the image's rustup home — if the rig
   ever becomes routine, bake the apt packages and the target into a small image instead.
 - **The exit status is cargo's**, so a control run — patch the source, expect a failure, restore —
   reads the way it should from a shell.
@@ -89,7 +89,7 @@ aliasing in both directions, the full name-rule corpus, an existing `.git` point
 rename that vacates its name); real git, where the everyday commands
 must pass, `rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist
 cannot quietly reopen them, and the host's own hook must still run; and the concurrency/TOCTOU pair,
-which is also the only thing that reaches `openat2`'s `EAGAIN` path.
+the only tests that reach `openat2`'s `EAGAIN` path.
 
 The suites run as a single uid, so they cannot tell `allow_other` + `default_permissions`
 (`architecture.md`, "Who may reach the mount") from the alternative; only the launcher mounting for

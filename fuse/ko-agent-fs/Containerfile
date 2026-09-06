@@ -18,7 +18,7 @@
 # binary, so what runs is what the user can read. The output is a *static*
 # musl executable because it is installed into a VM whose libc is not ours to
 # assume. The final stage is `scratch` holding only the binary, so the
-# extraction step has exactly one obvious thing to take.
+# extraction step has exactly one file to take.
 
 # Debian 13 (trixie), matching the rest of this project's images.
 ARG RUST_VERSION=1.98.0
@@ -74,7 +74,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # cargo fingerprints a path dependency by mtime: whenever this step runs at all,
 # the crate recompiles. When nothing changed, the COPY and ENV layers are cached
 # and the step does not run. `installKoAgentFs` refusing a binary whose
-# `--version` does not echo the digest is the backstop, not the reason.
+# `--version` does not echo the digest is the last check, not the reason.
 #
 # /usr/local/cargo is the rust image's CARGO_HOME, spelled out because a mount
 # target is not a shell word.

@@ -10,7 +10,7 @@
 # `none` the container deliberately lacks what a runtime needs, every pull dies at layer unpack,
 # and the failure reads like a podman bug rather than the decision it is.
 #
-# Everything lands under $HOME and dies with the session, so this runs again next time.
+# Everything is installed under $HOME and dies with the session, so this runs again next time.
 set -eu
 
 nesting=${KO_AGENT_SANDBOX_NESTING:-none}

@@ -1,8 +1,8 @@
 # External security research log
 
-A living record of the outside research this design rests on: git's own CVE history (the catalog of
+A record of the outside research this design rests on: git's own CVE history (the catalog of
 how repository state becomes host code execution) and the FUSE / `openat2` semantics the filter's
-correctness depends on. The git *conclusions* live in `git-metadata.md` ("Prior art"); this file is
+correctness depends on. The git *conclusions* are in `git-metadata.md` ("Prior art"); this file is
 the *process* — what was reviewed, when, what to watch for, how to redo it — plus the FUSE/openat2
 findings. The runs that verify a claim on a real platform are `verification-log.md`. Refresh
 periodically (a git or kernel upgrade is a good trigger) and update the dates.
@@ -18,7 +18,7 @@ current code too: one that has since been acted on is no longer a finding.
 A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 
 - **Hooks / `core.hooksPath` / a new config→command mechanism.** A brand-new config *source*, or a
-  new worktree-data→command path, would undermine P0 (`git-metadata.md`). The sharpest one.
+  new worktree-data→command path, would undermine P0 (`git-metadata.md`). The highest-risk one.
 - **"Trick git into writing into `.git`"** (symlink + case-insensitivity + submodules). We backstop
   this on the sandbox side because we classify the *resolved* destination; still worth tracking.
 - **Hardlink handling.** Inode aliasing is the class the `link` source-side rule closes.
@@ -68,7 +68,7 @@ Findings the rule rests on:
 - **NTFS folds through a *per-volume* `$UpCase` table** — table-driven and volume-specific, so the
   exact fold set is *not statically knowable*, and a crafted volume can even remap ASCII (out of our
   threat model, but it shows the mechanism). This is the strongest argument for the
-  conservative-superset-plus-empirical-test posture rather than trying to mirror a fold table.
+  conservative superset checked by an empirical test, rather than trying to mirror a fold table.
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)
 
@@ -89,8 +89,8 @@ rests on:
   directory stream in the handle. What the filter does instead: `fs.rs`, `opendir`.
 
 What these findings settled into — which alternatives were weighed and rejected, and why — is
-`TODO.md`'s Non-TODOs. Decisions live there, findings here; a decision kept in both places is the
-one that goes stale.
+`TODO.md`'s Non-TODOs. Decisions are recorded there, findings here; a decision kept in both places
+is the one that goes stale.
 
 Sources: <https://man7.org/linux/man-pages/man2/openat2.2.html>,
 <https://www.kernel.org/doc/html/latest/filesystems/fuse-io.html>,

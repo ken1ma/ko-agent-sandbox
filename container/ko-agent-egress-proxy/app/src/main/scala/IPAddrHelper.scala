@@ -36,7 +36,7 @@ object IPAddrHelper:
    * refuses a `:` outright, so an IPv6 literal is already a BadRequest
    * ("invalid hostname", a 400) before it can become the Refusal the
    * message below describes. Keeping the test costs nothing and holds if this
-   * is ever called on something normalizeHost did not vet.
+   * is ever called on a host normalizeHost did not vet.
    */
   def isIpLiteral(host: String): Boolean =
     if host.contains(':') then true

@@ -177,7 +177,7 @@ class HostCommandsTest extends munit.FunSuite:
         val parsed = ProcessBuilder("/bin/sh", "-n", "-c", script).redirectErrorStream(true).start()
         val output = String(parsed.getInputStream.readAllBytes())
         assertEquals(parsed.waitFor(), 0, s"$name does not parse:\n$output")
-    // Absolute system directories only: a relative entry is the whole thing being kept out.
+    // Absolute system directories only: a relative entry is exactly what is kept out.
     assert(
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),
       ScriptPath,
@@ -236,8 +236,8 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(modeOf(planted), "rw-------")
     assertEquals(Files.readString(planted), "PRIVATE KEY")
 
-    // What the writes are made of stays inside them: a leftover temporary is a bind source's
-    // directory growing a file no launch mounts, and a sign the rename never happened.
+    // A write's temporary file never outlives the write: a failed rename leaves the temporary file in
+    // the bind source's directory, a file no launch mounts.
     assertEquals(
       Files.list(dir).iterator().asScala.map(_.getFileName.toString).toVector.sorted,
       Vector("bundle.crt", "ca.key", "leaf.key"),

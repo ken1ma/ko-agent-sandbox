@@ -1,4 +1,4 @@
-// What the generated profile says, asserted here rather than only on a Mac. The rules under test
+// Unit tests assert the generated SBPL without requiring macOS. The rules under test
 // are the ones src/probe/seatbelt-semantics.sh measured: a non-canonical path grants rather than
 // denies, so it is refused; the guard denies come last, because SBPL is last-match-wins.
 
@@ -107,7 +107,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
 
-  test("the guard does not reach the session temp: a test's throwaway .git lives there"):
+  test("the guard does not reach the session temp: a test's throwaway .git is under the session temporary directory"):
     // The project path is the only path in the guard, and it is a subpath filter, never part of
     // the regex.
     val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
@@ -151,7 +151,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("writable implies executable for the project and the session temp, never for the cache"):
     // A child inherits the profile, so running what the build wrote adds no authority, and a
-    // suite's stubs live in the temp directory; the cache holds artifacts nothing runs.
+    // suite's stubs are in the temp directory; the cache holds artifacts nothing runs.
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
@@ -208,7 +208,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
          |""".stripMargin
     assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
 
-  test("the longest cache path wins, so a grant never lands on a prefix"):
+  test("the longest cache path wins, so a grant never applies to a prefix"):
     val script =
       s"""CACHE="$cacheRoot"
          |exec "$distributionExec" "$$@"
@@ -222,7 +222,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("a script naming no cache path yields nothing rather than a guess"):
     assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", cacheRoot), None)
 
-  test("the distribution grant is its home, not the executable: sbt-launch.jar lives beside it"):
+  test("the distribution grant is its home, not the executable: sbt-launch.jar is beside it"):
     assert(rendered().contains(s"(subpath \"$distribution\")"))
     assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
 

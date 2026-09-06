@@ -83,13 +83,13 @@ What a line grants is its words, and nothing is implied:
   `POST` is granted at the repository.
 - `tunnel` — the opaque treatment. It stands alone on its line, and its URL ends at `/`.
 
-The lines apply in the order written, over the defaults — the PF and relayd model, whose lineage
+The lines apply in the order written, over the defaults — the PF and relayd model, whose origin
 and limits design.md records under "No richer rule format": an `allow` adds its grants
 under its path, a `deny` takes the named grants from every scope on each host it matches, or
 every grant when it names none, and for each grant the last applicable line decides. A `deny`
 names a host or a subtree whole, never a path (SECURITY.md, "Adding hosts, not patterns", has
-why a denial by path fails open). So the restrictive shape is a host-wide `deny` with the
-narrower `allow` beneath it, and the broad denial comes first:
+why a denial by path fails open). So the restrictive ordering puts a host-wide `deny` before the
+narrower `allow`:
 
 ```text
 allow https://www.rfc-editor.org/ read                 # reads under the host
@@ -160,11 +160,11 @@ Every ambiguity is a failed launch with the reason and the line printed:
 Two lines disagreeing about a grant are the ordinary case, not a refusal: the later one decides,
 and a repeated line is the last word on its grants — `deny`, `allow`, `deny` takes an exception
 back; `allow`, `deny`, `allow` restores what the deny took.
-Three things are warned at every launch instead, under every profile, so a misspelling cannot
+Three conditions are warned at every launch instead, under every profile, so a misspelling cannot
 fail silently: a `deny` matching nothing at its position; a redundant grant — a line granting
 nothing its enclosing scope lacks, `allow https://github.com/my-org/ git-fetch` under the
 defaults' root line, which usually means a host-wide `deny` before it was intended, though the
-boundary it opens stands; and a line every grant of which a later line takes back. A line
+boundary it opens remains; and a line every grant of which a later line takes back. A line
 restating a defaults line at its path is silent: that is how a file stays valid as the image
 adopts its hosts.
 
@@ -238,7 +238,7 @@ refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unle
 `allow-unless-denied` the model providers, unless a project adds more; under `deny-unless-model`
 the selected group's tunnel lines; under `deny-all` none.
 
-The per-project CA lives on the host, under
+The per-project CA is stored on the host, under
 
     ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
@@ -246,10 +246,10 @@ The per-project CA lives on the host, under
 1. The certificates are created and refreshed automatically for each project (SECURITY.md,
    "Who holds the CA key").
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
-   launch's proxy starts with the certificates the launch found or minted.
-1. Under `allow-unless-denied` a launch mints a CA for the run instead, as
+   launch's proxy starts with the certificates the launch found or issued.
+1. Under `allow-unless-denied` a launch creates a CA for the run instead, as
    `run-<suffix>/agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
-   directory, and removes it with the run; the proxy mints each host's certificate from it at the
+   directory, and removes it with the run; the proxy issues each host's certificate from it at the
    host's first connection. Nothing is rotated: no session trusts another's.
 
 ## Through an upstream proxy

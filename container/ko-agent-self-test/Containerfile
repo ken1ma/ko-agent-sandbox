@@ -9,7 +9,7 @@
 # Built by the launcher's `--self-test` (AgentSandboxLauncher.selfTestBuildCommands).
 #
 # The context is the unpacked bundle root rather than this directory, because the crate to compile
-# lives beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
+# is beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
 # pins, passed in by whoever builds, so this cannot drift into exercising a second compiler.
 
 ARG RUST_VERSION
@@ -34,7 +34,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # The shipping triple, for the reason ko-agent-fs/Containerfile builds with it: the static-musl link
 # constraint src/fs.rs records at its rename is invisible to a glibc build.
 #
-# The artifacts land in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
+# The artifacts are written in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
 # <dir>/ko-agent-fs — reproduced rather than flattened. `--message-format=json` names each
 # executable; guessing at hash-suffixed filenames would silently miss a test target added later.
 # A cache mount is not a layer, hence lifting them out inside this RUN.

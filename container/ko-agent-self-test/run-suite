@@ -9,12 +9,12 @@ filter=${1:-}
 echo "machine: $(uname -srm), uid $(id -u)"
 
 # The setup check first, and the filter's own: --self-test mounts with the product's options,
-# allow_other among them, so it is the only thing here that exercises what user_allow_other gates.
+# allow_other among them, so it is the only check here that exercises what user_allow_other gates.
 # It grades its own failure by the stage it reached — exit 3 for anything before its behavioural
 # checks begin, the scratch tree and the mount alike, which the launcher answers by retrying with
 # more privilege; 1 for anything past that, which no machine or privilege change repairs.
 # mount_probe cannot serve as this gate: it mounts with fuser's defaults, so an allow_other refusal
-# passes it and surfaces later as an apparent defect.
+# passes it and appears later as an apparent defect.
 selftest=0
 "$suite/ko-agent-fs" --self-test || selftest=$?
 [ "$selftest" -ne 3 ] || exit 3

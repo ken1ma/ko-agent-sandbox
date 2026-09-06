@@ -172,7 +172,7 @@ fn a_host_write_is_visible_immediately() {
     assert_eq!(
         fs::read_to_string(mount.at("greeting.txt")).unwrap(),
         "changed underneath\n",
-        "a host write was not visible at once: the coherency invariant is broken"
+        "a host write was not visible at once, which coherency requires"
     );
 
     // A host-created file appears without any cache flush, and a host-deleted one disappears.
@@ -199,9 +199,9 @@ fn a_sandbox_write_is_visible_to_the_host_immediately() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn a_positional_write_lands_at_its_offset_not_at_the_descriptor() {
+fn a_positional_write_goes_to_its_offset_not_the_descriptor_position() {
     // One arm of the write branch. `write` on a positional handle would follow the backing fd's own
-    // position instead of the offset the caller gave, so the second write below would land on the
+    // position instead of the offset the caller gave, so the second write below would go to the
     // first — which is what this catches if the arms are ever swapped.
     use std::fs::OpenOptions;
     use std::os::unix::fs::FileExt;
@@ -255,7 +255,7 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
     assert_eq!(
         fs::read_to_string(mount.backing_at("greeting.txt")).unwrap(),
         "hello from the backing store\nthe host's line\nthe sandbox's line\n",
-        "the appending write did not land at the end the file actually had"
+        "the appending write did not go to the end the file actually had"
     );
 }
 

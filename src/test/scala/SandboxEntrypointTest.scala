@@ -172,13 +172,13 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     // Sizes as numfmt --to=iec prints them, at the rule's edges: 65 MiB in its 10.6 GiB total's
     // unit, 9.95 MiB of swap rounding up to a whole 10, and 1023.5 MiB of disk carrying to 1.0G.
-    val sick = proc(
+    val failing = proc(
       available = 65L << 10,
       total = (106L << 20) / 10,
       swapUsed = 10188,
       pressure = Some("some avg10=40.00 avg60=25.50 avg300=3.00 total=1"),
     )
-    val (status, output) = finish(start(seed, home, sick, Some(fakeDf(1048064))))
+    val (status, output) = finish(start(seed, home, failing, Some(fakeDf(1048064))))
     assertEquals(status, 0, output)
     assert(output.startsWith("warning: the machine podman runs on is under pressure"), output)
     assert(output.contains("  0.1 of 11G memory available\n"), output)
@@ -206,8 +206,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     val refused = proc(available = 512L << 10, pressure = Some("x"))
     refused.resolve("pressure").resolve("memory").toFile.setReadable(false)
-    Vector(refused, proc(available = 512L << 10)).foreach: sick =>
-      val (status, output) = finish(start(seed, home, sick))
+    Vector(refused, proc(available = 512L << 10)).foreach: failing =>
+      val (status, output) = finish(start(seed, home, failing))
       assertEquals(status, 0, output)
       assert(output.contains("memory available"), output)
       assert(!output.contains("memory pressure"), output)

@@ -62,7 +62,7 @@ the selected sandbox image and mounting its subpath with `type=image,rw=true`. T
 prove ownership, the final nested-mount topology and each supported platform; it is not part of
 this plan.
 
-## Invariants
+## Guarantees
 
 1. `sbt`, `scala-cli`, `cs`, `scalafmt`, and every other launcher produced by `cs setup` remain
    installed in the sandbox image.
@@ -172,7 +172,7 @@ Change `container/debian-coursier/Containerfile`, the canonical producer of the 
 2. Make the installed tree root-owned and non-writable by UID 65532.
 3. Perform setup with a temporary `HOME`, then delete that home and every Coursier download cache
    in the same `RUN` instruction. A later `RUN rm` leaves the bytes in an earlier image layer and
-   does not satisfy invariant 3.
+   does not satisfy this step.
 4. Set `PATH` in this order:
 
    ```text
@@ -194,7 +194,7 @@ Change `container/debian-coursier/Containerfile`, the canonical producer of the 
 during its build. Give that trusted build step explicit Buildah cache mounts for the Coursier and
 sbt build caches if measurements show repeated proxy builds regress. Those are build caches, not
 runtime image content; the final distroless proxy must still contain only its application output.
-Update its comment that says the inherited `cs setup` cache lives under `/home/nonroot`: after the
+Update its comment that says the inherited `cs setup` cache is under `/home/nonroot`: after the
 relocation there is no inherited cache, and a nonroot build instead determines ownership of the
 explicit build-cache mounts and session-created state.
 
@@ -268,9 +268,9 @@ exfiltrate private artifacts, repository URLs, metadata and any accidentally sto
 egress profile permits a destination. State that at the option and in `SECURITY.md`.
 
 The sandbox cannot poison the lower through the cache mount: all cache-path writes enter its
-private upper. Preserve that claim with a host-observed integration test, not only an argument
-test. The host can change the lower while a session runs; `:O` is not a snapshot, and podman warns
-against lower mutation. The accepted behavior is:
+private upper. Preserve that claim with a host-observed suite under `sbt testWithPodman`, not only
+an argument test. The host can change the lower while a session runs; `:O` is not a snapshot, and
+podman warns against lower mutation. The accepted behavior is:
 
 - redundant downloads and inconsistent cache misses are acceptable;
 - a concurrent host mutation can make the current Coursier command fail and require a retry;
@@ -310,7 +310,7 @@ inline command that can omit or reorder it.
 - test that an explicit cache outside home is accepted when it overlaps no protected root;
 - assert the complete create command has one anonymous home, one persistent volume, and exactly
   the selected cache overlays in registry-defined order;
-- assert a custom sandbox image does not change the host mount semantics.
+- assert a custom sandbox image does not change how the host mount behaves.
 
 `src/test/scala/SessionBoundaryTest.scala`:
 
@@ -321,8 +321,8 @@ inline command that can omit or reorder it.
 - update the complete mount allowlist deliberately rather than allowing every new host mount under
   `/home/nonroot` by prefix alone.
 
-Add an opt-in integration suite using a temporary host `v1` directory, never the developer's real
-cache:
+Add a container-launching suite, under `sbt testWithPodman`, using a temporary host `v1`
+directory, never the developer's real cache:
 
 1. Put a readable lower marker and an immutable fixture artifact in it.
 2. Launch with the explicit option and prove both are visible.
@@ -366,7 +366,7 @@ Update each claim at its binding site:
 | complete host-readable boundary | launcher diagram | README diagram, `SECURITY.md` |
 | private artifacts and mutable-lower risk | `SECURITY.md` | README option warning |
 | installed tools and session cache behavior | `AGENTS-SANDBOX.md` | Containerfile tests |
-| mount and cleanup mechanism | launcher source | integration lifecycle tests |
+| mount and cleanup mechanism | launcher source | `testWithPodman` lifecycle suites |
 | platform qualification | README option text | platform verification record |
 
 The README's opening claim that the sandbox reaches no user files except the project must become a
@@ -375,10 +375,10 @@ host-cache lower and disposable per-run upper. Do not repeat the full threat ana
 to `SECURITY.md`.
 
 At the existing `cs install TOOL` instruction, `AGENTS-SANDBOX.md` should tell an acting agent that
-session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed
-launchers under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that
-a missing Scala artifact is downloaded into disposable session state and that a narrow egress
-profile can prevent the download. It does not need to teach podman overlay mechanics.
+session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed launchers
+under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that a missing
+Scala artifact is downloaded into disposable session state and that a narrow egress profile can
+prevent the download. It does not need to teach how podman implements overlay mounts.
 
 ## Acceptance checklist
 
@@ -396,7 +396,7 @@ profile can prevent the download. It does not need to teach podman overlay mecha
 - [ ] macOS, native Linux and Windows claims match completed platform probes.
 - [ ] The persistent volume is seeded correctly after reset and every agent state path works.
 - [ ] Help, README, security model, sandbox instructions and launcher boundary diagram agree.
-- [ ] Unit tests, full tests and opt-in container integration tests pass.
+- [ ] `sbt testFull` and `sbt testWithPodman` pass.
 - [ ] Startup measurements demonstrate that image-home copy-up is no longer the dominant delay.
 
 ## Deliberate exclusions

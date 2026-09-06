@@ -12,7 +12,7 @@ column is:
     java -jar ko-agent-sandbox.jar bash          # then again with KO_AGENT_SANDBOX_WORKSPACE_GUARD=none
     python3 xattr-probe.py
 
-Rows that differ between the two runs are what implementing xattrs would buy. Rows that fail in both
+Rows that differ between the two runs are what implementing xattrs would enable. Rows that fail in both
 are the environment's, not the filter's. Record the result in doc/TODO.md with the OS and podman
 versions, the way the name-rule and coherency probes do.
 

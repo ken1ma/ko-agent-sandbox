@@ -79,7 +79,7 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
 #[test]
 fn control_state_stays_frozen() {
     for path in [
-        // The command-defining config files and the hook tree — the crown jewels.
+        // The command-defining config files and the hook tree: what the filter exists to freeze.
         ".git/config",
         ".git/config.worktree",
         ".git/hooks/pre-commit",

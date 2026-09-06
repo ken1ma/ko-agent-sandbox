@@ -50,7 +50,7 @@ object GitHelper:
         .exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == "service=git-upload-pack")
 
   /**
-   * One decode pass — the forge router's semantics, not HTTP's, which
+   * One decode pass — the forge router's decoding, not HTTP's, which
    * assigns no meaning to %-escapes in a target; the forwarded bytes stay
    * as sent. Private and deny-side on purpose: in HTTPHelper as a reusable
    * decoder it would invite allow-side use and recreate the

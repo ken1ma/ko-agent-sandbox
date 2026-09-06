@@ -179,7 +179,7 @@ object EgressRules:
             s"error: $entry is not a rule file\negress/ holds only " +
               s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          // The one stray form the name check cannot see: a rule file's own name on something
+          // The one stray form the name check cannot see: a rule file's own name on an entry
           // the read below skips, which would leave that file silently unread.
           case entry if !Files.isRegularFile(entry) =>
             s"error: $entry is not a regular file\negress/ holds a text file per rule file; " +
@@ -282,8 +282,8 @@ object EgressRules:
    * how the launcher learns which names the leaf certificate must list — the proxy image's own
    * answer under this project's rules, so no second copy of any list exists to drift, and a proxy
    * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
-   * inspects nothing; the launcher then mints no leaf and hands the proxy no inspection material.
-   * Under allow-unless-denied no leaf is minted at all: the proxy mints its own from the run CA.
+   * inspects nothing; the launcher then issues no leaf and hands the proxy no inspection material.
+   * Under allow-unless-denied no leaf is issued at all: the proxy issues its own from the run CA.
    * A resolution without its profile line is another launcher version's format, refused.
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =

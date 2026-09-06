@@ -24,11 +24,11 @@
 # unlisted-host row: its resolution must reach a host the proxy refuses.
 #
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
-# and writes nothing, and every created marker lives in a scratch tree this script makes and
+# and writes nothing, and every created marker is in a scratch tree this script makes and
 # removes. A denied row prints the denial on stderr; a wrongly permitted one leaves a marker the
 # cleanup removes, and the row reports FAIL.
 set -u
-if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on the Mac." >&2; exit 2; fi
+if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 tool=${1:-all}
 case "$tool" in sbt|mill|all) ;; *) echo "usage: $0 [sbt|mill|all] [quick]" >&2; exit 2 ;; esac
 case "${2:-full}" in
@@ -41,7 +41,7 @@ want() { [ "$tool" = all ] || [ "$tool" = "$1" ]; }
 project=$(pwd -P)
 # Paths are interpolated into sbt's command parser in `emit` and into single-quoted /bin/sh -c
 # strings in the rows, where a quote character would end the quoting and inject. No path here
-# earns escaping machinery: any interpolated path carrying a quote or backslash is refused.
+# earns escaping: any interpolated path carrying a quote or backslash is refused.
 safe_path() { # what value
     case "$2" in
         *[\'\"\\]*) echo "$1 contains a quote or backslash and cannot be interpolated safely: $2" >&2; exit 2 ;;
@@ -53,7 +53,7 @@ safe_path "JAVA_HOME" "${JAVA_HOME:-}"
 safe_path "TMPDIR" "${TMPDIR:-}"
 # Every path this run creates is unique to it — mktemp, not a pid, which is reused — so two gates
 # do not share logs, and the cleanup removes only what this run made and never a project's file.
-# The logs live under the project's target/gate/, git-ignored and, unlike $TMPDIR, shared with a
+# The logs are under the project's target/gate/, git-ignored and, unlike $TMPDIR, shared with a
 # sandbox session reading them. The project scratch tree is made after preflight, so an early
 # exit leaves nothing there.
 mkdir -p "$project/target/gate" && work=$(mktemp -d "$project/target/gate/run.XXXXXX") || exit 1
@@ -563,7 +563,7 @@ await_client_record() { # victim-pid
 }
 # Always launched with `&`, and exec so $! IS the wrapper JVM: without it the background pid is
 # the subshell running this function, java is its child, and every staged kill — and the spawn's
-# parent-pid check above — would land on or look at the wrong process.
+# parent-pid check above — would signal or look at the wrong process.
 victim_wrapper() { # log-name
     exec "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
         sbt "$project" src/main/resources/agentsandbox/runtime-authority.txt -- compile >"$work/$1" 2>&1
@@ -716,7 +716,7 @@ kill_channel_execs() {
         [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] && kill -9 "$pid" 2>/dev/null
     done < "$work/exec.pids"
 }
-# `exec` for the same reason as victim_wrapper: the staged kills must land on the shim itself.
+# `exec` for the same reason as victim_wrapper: the staged kills must be delivered to the shim itself.
 channel_shim() { # log cwd args...
     chan_log=$1; chan_cwd=$2; shift 2
     cd "$chan_cwd" || exit 1

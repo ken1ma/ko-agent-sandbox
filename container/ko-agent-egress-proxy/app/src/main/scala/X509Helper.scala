@@ -1,4 +1,4 @@
-// Leaf certificates minted in the proxy, under allow-unless-denied, from the run CA the launcher
+// Leaf certificates issued in the proxy, under allow-unless-denied, from the run CA the launcher
 // hands it (SECURITY.md, "Who holds the CA key", has the profile's exception and its trade). The
 // builder is the JDK's own internal one — the classes keytool and CertificateFactory run — because
 // JCA has no public certificate builder and every library that has one is a dependency this image
@@ -25,18 +25,18 @@ object X509Helper:
 
   /** The longest validity Apple's TLS trust evaluation accepts for a server certificate from a CA
     * outside its own root store, this one included (its shipped roots are held to 398 days); the
-    * run CA the launcher mints has the same, so the clamp to the CA's end below is inactive. */
+    * run CA the launcher creates has the same, so the clamp to the CA's end below is inactive. */
   val LeafValidityDays = 825L
 
-  case class MintedLeaf(certificate: X509Certificate, privateKey: PrivateKey)
+  case class IssuedLeaf(certificate: X509Certificate, privateKey: PrivateKey)
 
   /**
    * A leaf naming `host` and nothing else, signed by `ca` with `caKey`: P-256, `SHA256withECDSA`,
    * `serverAuth`, its own fresh key. The extensions are the launcher's leaf's
-   * (BouncyCastleHelper.mintLeaf), key identifiers included: strict verifiers refuse a chain
+   * (BouncyCastleHelper.issueLeaf), key identifiers included: strict verifiers refuse a chain
    * without them.
    */
-  def mintLeaf(host: String, ca: X509Certificate, caKey: PrivateKey, now: Instant = Instant.now()): MintedLeaf =
+  def issueLeaf(host: String, ca: X509Certificate, caKey: PrivateKey, now: Instant = Instant.now()): IssuedLeaf =
     val keyPair = newEcKeyPair()
     val requestedNotAfter = now.plus(LeafValidityDays, ChronoUnit.DAYS)
     val caNotAfter = ca.getNotAfter.toInstant
@@ -74,7 +74,7 @@ object X509Helper:
     )
     info.setExtensions(extensions)
 
-    MintedLeaf(X509CertImpl.newSigned(info, caKey, "SHA256withECDSA"), keyPair.getPrivate)
+    IssuedLeaf(X509CertImpl.newSigned(info, caKey, "SHA256withECDSA"), keyPair.getPrivate)
 
   def newEcKeyPair(): KeyPair =
     val generator = KeyPairGenerator.getInstance("EC")

@@ -2,9 +2,9 @@
 // no session can see, because from inside the sandbox the proxy is reachable and opaque, which is
 // the point of it.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *ProxyContainerTest"
+//     sbt "testWithPodman *ProxyContainerTest"
 
 package agentsandbox.launcher
 
@@ -15,14 +15,14 @@ import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
 
 import HostCommands.*
-import IntegrationSession.*
+import WithPodman.*
 
 class ProxyContainerTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(10, "min")
 
   test("this run's proxy is hardened, on its own networks, holding only this run's material"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var session: Option[Session] = None
@@ -100,7 +100,7 @@ class ProxyContainerTest extends munit.FunSuite:
     AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
 
   test("under allow-unless-denied the proxy holds this run's own CA and key, and no leaf"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     var session: Option[Session] = None
@@ -157,7 +157,7 @@ class ProxyContainerTest extends munit.FunSuite:
       accepting.join()
 
   test("HTTPS_PROXY reaches the proxy container by name, and every origin connection leaves through it"):
-    optIn()
+    requireTestWithPodman()
 
     val upstream = HostProxy()
     val project = scratchProject()

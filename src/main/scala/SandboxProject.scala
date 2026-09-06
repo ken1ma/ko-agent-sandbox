@@ -1,9 +1,9 @@
-// The project directory — the thing that becomes /workspace, and everything the launcher decides
+// The project directory — the directory that becomes /workspace, and everything the launcher decides
 // about it before any resource exists: the real path it resolves to, the directories refused as
 // projects outright, the identity its path hashes to (which names every per-project resource), and
 // the mount guards that pin or refuse its .git and .ko-agent-sandbox layouts. The session's
 // configuration variables are deliberately not here — they describe a launch, not the project,
-// and live beside the --help text they must stay in step with.
+// and are beside the --help text they must stay in step with.
 
 package agentsandbox.launcher
 
@@ -20,7 +20,7 @@ object SandboxProject:
 
   /**
    * The current directory, symlinks resolved (like `pwd -P`) — what becomes
-   * /workspace, and the thing every per-project resource is named after. A
+   * /workspace, and the path every per-project resource is named after. A
    * directory that cannot be canonicalized fails the command: falling back
    * to the symbolic spelling would hash to a different project id than the
    * launches that resolved it, and the symlink guards assume a real path.
@@ -76,14 +76,14 @@ object SandboxProject:
     catch case _: InvalidPathException => Left(s"$name is not a valid path")
 
   /**
-   * Refused whether or not a configured home sits beneath them: the
+   * Refused whether or not a configured home is located beneath them: the
    * directories operating systems keep user homes in, so a relocated or
    * unset HOME never leaves /home or /Users mountable. Returned as
    * (containers, homes) — `/home` and `/Users` hold homes, `/root` and
    * `/var/root` are homes — because only a container's direct children are
    * refused. The Windows profiles root is derived from SystemDrive rather
    * than from USERPROFILE's parent, so it stays protected when the current
-   * profile lives on another drive, and falls back to `C:` so an environment
+   * profile is on another drive, and falls back to `C:` so an environment
    * without even SystemDrive keeps the boundary SECURITY.md states.
    * Best-effort canonicalized; a root absent on this machine is kept as
    * spelled and protects nothing that exists.
@@ -255,6 +255,13 @@ object SandboxProject:
   def projectIdOf(dir: Path, os: Os): String =
     s"${slugOf(dir.getFileName.toString)}-${projectHash(dir.toString, os)}"
 
+  /** What [[projectIdOf]] generates, and the one definition of a project id's pattern: `--stats` lists a
+    * name under a state or cache root only when it matches, and `--reset <id>` accepts only what
+    * matches, so every id `--stats` prints is one `--reset` takes. */
+  val ProjectIdPattern = "[A-Za-z0-9._-]{1,32}-[0-9a-f]{12}"
+
+  def isProjectId(name: String): Boolean = name.matches(ProjectIdPattern)
+
   /**
    * Enforcement under guard=none: default sessions get the workspace
    * FUSE filter instead, whose policy is a strict superset of these pins
@@ -264,11 +271,11 @@ object SandboxProject:
    * .git/config (core.hooksPath, core.fsmonitor, filters, pagers) — so
    * writing either from inside would turn the user's next `git status` into
    * execution outside the boundary. A mount point cannot be written,
-   * deleted or replaced from inside; pinning these two pins the execution
-   * surface while the rest of .git stays writable data (SECURITY.md, "The
+   * deleted or replaced from inside; pinning these two pins what git
+   * executes while the rest of .git stays writable data (SECURITY.md, "The
    * project directory").
    *
-   * Shapes:
+   * Forms:
    *   - directory: pin config and hooks; an absent one is pinned from the
    *     launcher's own empty source (below) — never created in the project,
    *     and never left to podman, which would manufacture a *directory*
@@ -287,7 +294,7 @@ object SandboxProject:
    * The layout is read once, at launch; a bind mount binds the inode, so a
    * repository created on the host mid-session appears inside behind the
    * whole-directory pin, read-only until the next launch. Mid-session
-   * changes only ever sit behind a mount coarser than their layout warrants.
+   * changes only ever remain behind a mount coarser than their layout warrants.
    */
   def gitGuardVolumes(gitDir: Path, emptyFile: Path, emptyDir: Path): Either[String, Vector[String]] =
     def refuse(path: Path): Either[String, Vector[String]] =
@@ -318,7 +325,7 @@ object SandboxProject:
    * user launched from is part of a repository. The container has the project directory at
    * `/workspace` and nothing above or beside it, so git works there only when the repository's
    * control directory is inside the project: a `.git` directory, or a pointer file whose relative
-   * target stays within it. Every other shape leaves `/workspace/.git` naming a path the container
+   * target stays within it. Every other form leaves `/workspace/.git` naming a path the container
    * does not have — a submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
    * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
    * from a subdirectory of the repository — and every git command fails with `not a git repository`,
@@ -362,10 +369,10 @@ object SandboxProject:
    * The repository rooted at a directory, as the host has it, and whether the container would
    * reach its control directory with `base` as `/workspace`.
    *
-   * A shape test, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
+   * A test of form, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
    * `HEAD`, `objects` and `refs`, the last two through a linked worktree's `commondir`): the
-   * gitdir must exist and hold a `HEAD`, the one entry every gitdir shape has. Reproducing the
-   * rest buys an exactness this cannot spend — what it decides is a warning and a suggested
+   * gitdir must exist and hold a `HEAD`, the one entry every gitdir form has. Reproducing the
+   * rest would add exactness this does not need — what it decides is a warning and a suggested
    * launch, never a refusal, and host git states the authoritative failure in its own words. The
    * cost, in full: a `.git` git would reject and search past counts here, so a session under one
    * hears nothing, and such a directory can be the launch named.
@@ -386,11 +393,11 @@ object SandboxProject:
    * (`read_gitfile_gently`). So there are two steps at most, and one base for both.
    *
    * `reachable` is the container's side of those steps, and deliberately approximate: each must be
-   * relative, never climb above `base` — the directory that would be `/workspace` — and land
+   * relative, never climb above `base` — the directory that would be `/workspace` — and resolve
    * inside it. The container resolves the same two steps under a `/workspace` of its own, so a
    * step that is absolute, or that leaves the base and re-enters the host's path by name
    * (`../foo/x` under `/root/foo`), leads nowhere there; one through a symlinked component is
-   * judged where the host's link really lands.
+   * judged where the host's link really resolves.
    */
   private def gitdirOf(dir: Path, base: Path): Option[Gitdir] =
     val dotGit = dir.resolve(".git")
@@ -422,7 +429,7 @@ object SandboxProject:
 
   /** git's `read_gitfile_gently` (setup.c): a file of at most 1 MiB that begins `gitdir: ` — that
     * spelling, at its start — and the rest of it, less trailing CR and LF, is the path. A file of
-    * another shape is no pointer to git, and a later line naming a gitdir is not one either. The
+    * another form is no pointer to git, and a later line naming a gitdir is not one either. The
     * bound is the read itself, one byte past it and no more, so a `.git` of any size — or one
     * growing while it is read — costs the launcher nothing. */
   private def gitfileTarget(gitfile: Path): Option[String] =
@@ -542,16 +549,16 @@ object SandboxProject:
             s"""error: $boundaryDir contains ${stray.mkString(", ")}, which this launcher does not read
                |The directory is boundary configuration and holds only:
                |${BoundaryDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
-               |launch, never sit as ignored config — and it is either a typo or a boundary file a
+               |launch, never remain as ignored config — and it is either a typo or a boundary file a
                |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
           )
 
   /**
    * guard=none's mount at /workspace/.ko-agent-sandbox, which must exist even with no
    * configuration shipped so that session cannot fabricate the configuration governing the next
-   * one (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only thing
-   * standing between the session and the boundary files. Created here when absent, not by podman,
-   * whose machine path refuses a missing bind source — a residue of guard=none alone: the
+   * one (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only barrier
+   * between the session and the boundary files. Created here when absent, not by podman,
+   * whose machine path refuses a missing bind source — needed under guard=none alone: the
    * FUSE filter enforces the same rule by name (protected-sandbox-config) with no mount and no
    * created path, and reject mode's read-only tree needs neither. Call after boundaryDirError.
    */
@@ -568,7 +575,7 @@ object SandboxProject:
    * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
    * Read on the host, so the same forms egress/ refuses (EgressRules.readRuleFiles) are
    * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
-   * file, an empty file. Not normalized — it is prose, mounted as written.
+   * file, an empty file. Not normalized — it is text, mounted as written.
    */
   def readAgentInstructions(agentDir: Path): Either[String, Option[String]] =
     def symlinkRefusal(path: Path): String =

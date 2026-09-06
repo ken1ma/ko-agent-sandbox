@@ -8,15 +8,15 @@
 // it only when the reaper's spawn fails — which nothing outside the process can make happen, and
 // design.md declines the test hook that would.
 //
-// Opt-in like the other container-launching suites (IntegrationSession has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
-//     KO_AGENT_SANDBOX_INTEGRATION=1 sbt "testOnly *RunTopologyTest"
+//     sbt "testWithPodman *RunTopologyTest"
 
 package agentsandbox.launcher
 
 import AgentSandboxLauncher.addressOn
 import HostCommands.*
-import IntegrationSession.{*, given}
+import WithPodman.{*, given}
 
 class RunTopologyTest extends munit.FunSuite:
 
@@ -56,7 +56,7 @@ class RunTopologyTest extends munit.FunSuite:
   private def exists(container: String): Boolean = run(podman, "container", "exists", container).ok
 
   test("a run's networks are created by its launch and removed when its sandbox exits"):
-    optIn()
+    requireTestWithPodman()
 
     val project = scratchProject()
     try
@@ -73,7 +73,7 @@ class RunTopologyTest extends munit.FunSuite:
     finally discard(project)
 
   test("a session reaches its own proxy and no other session's"):
-    optIn()
+    requireTestWithPodman()
 
     // Two projects rather than two sessions of one, because that also settles the cross-*project*
     // claim. The run suffix is fresh per launch, so two sessions of one project are separated the
@@ -108,7 +108,7 @@ class RunTopologyTest extends munit.FunSuite:
       discard(projectB)
 
   test("a run whose reaper died strands its resources, and --reset sweeps them"):
-    optIn()
+    requireTestWithPodman()
     // No reaper exists on Windows by construction — the resident launcher is the teardown there,
     // which the first test verifies — and pkill is not a Windows tool either way.
     assume(currentOs != Os.Windows, "no reaper exists on Windows")
@@ -129,8 +129,8 @@ class RunTopologyTest extends munit.FunSuite:
       // that had already cleaned itself up, which is the opposite of what this asserts.
       Thread.sleep(5000)
       stranded.foreach: network =>
-        assert(networks().contains(network), s"$network was removed by something other than --reset")
-      assert(exists(session.proxy), s"${session.proxy} was removed by something other than --reset")
+        assert(networks().contains(network), s"$network was removed before --reset")
+      assert(exists(session.proxy), s"${session.proxy} was removed before --reset")
 
       val (ok, output) = reset(project)
       assert(ok, s"--reset failed:\n$output")

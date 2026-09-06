@@ -14,7 +14,7 @@ reached through the model provider") is a provider instance of
 
 ## Evidence and target
 
-The credential residues SECURITY.md concedes are the target.
+The credential gaps SECURITY.md concedes are the target.
 
 - A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
   reaching whatever this project's egress rules admit". A `GET` carries its URL, and a URL is
@@ -37,7 +37,7 @@ method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pac
 `git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
 an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
 
-## Invariants
+## Guarantees
 
 1. The value reaches the proxy container only, never the sandbox's environment, the persistent
    volume, `/workspace`, the launch banner, or the audit log.
@@ -95,7 +95,7 @@ Refusals, each fatal at launch and naming the fix:
   forward unbrokered with `--env=NAME`".
 - `HOST` is denied: the denial wins, as for every other entry.
 - two bindings for one `NAME`: refused; one name, one host.
-- the value outside the grammar (invariant 4): "value of `NAME` contains a byte a header cannot
+- the value outside the grammar (guarantee 4): "value of `NAME` contains a byte a header cannot
   carry" — the byte's offset, never the value; an empty value is "`NAME` is empty".
 - `HEADER` outside the set: "header must be one of `Authorization`, `x-api-key`, `PRIVATE-TOKEN`".
 
@@ -108,9 +108,9 @@ proxy container, removed with the run. Not an environment variable on the proxy 
 a secret does not belong beside it.
 
 The proxy reads the file once at start and refuses to start if a value or header fails the
-grammar (invariant 4) or a binding names a host outside its own resolved inspected set — the
+grammar (guarantee 4) or a binding names a host outside its own resolved inspected set — the
 same in-both-directions check the leaf certificate gets, for the same reason: a binding the
-proxy cannot honour would surface as a 401 inside the sandbox with nothing in the log to
+proxy cannot honour would appear as a 401 inside the sandbox with nothing in the log to
 explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProxyReady`: the launch
 fails with the message.
 
@@ -163,7 +163,7 @@ Not brokered, for reasons that hold independently of effort:
   account holder; a stolen forge token is every private repository. The gain does not pay for
   a per-release contract with the CLI.
 - `--env=ANTHROPIC_API_KEY@api.anthropic.com` is the one Claude case the mechanism would fit —
-  API-key mode, a fixed header, no lifecycle — and it is refused by invariant 2 because the host
+  API-key mode, a fixed header, no lifecycle — and it is refused by guarantee 2 because the host
   is a tunnel. If the model endpoints are ever inspected for another reason, the binding
   works unchanged; nothing in this plan is built for it.
 
@@ -172,14 +172,14 @@ Not brokered, for reasons that hold independently of effort:
 Additions to SECURITY.md, each at its binding site:
 
 - "Exfiltration through an allowed host": a brokered `--env` value is not in the sandbox; the
-  residue narrows to unbrokered forwards and credentials in the project directory.
+  gap narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
   a holder of what the ruleset admits spending. Compromising it compromises both ruleset and
   credential — one boundary.
 - "The audit line grammar": the `inject` field.
 
-Residues that stay, stated: the credential is still spent by the agent on the bound host within
+Gaps that stay, stated: the credential is still spent by the agent on the bound host within
 the allowed methods; the placeholder tells a hostile project that a `GH_TOKEN` exists and
 where it is honoured (harmless); an origin echoing a credential in a response is not rewritten.
 
@@ -191,8 +191,8 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   sandbox `--env` list with placeholders and, separately, the proxy's secret-file contents.
 - Binding validation against the resolved profile, reusing the inspected hosts read from the
   allow lines of
-  `--print-ruleset` (the leaf certificate's source of truth, so no second host list).
-- `CredentialGrammar`: the value and header-name checks of invariant 4, one source file under
+  `--print-ruleset` (what the leaf certificate's names are derived from, so no second host list).
+- `CredentialGrammar`: the value and header-name checks of guarantee 4, one source file under
   `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
   launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
   — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
@@ -200,7 +200,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
   would be one more custody site. The executable-source result there passes through the same
   object.
-- Placeholder generation: `SecureRandom`, format rules from invariant 5.
+- Placeholder generation: `SecureRandom`, format rules from guarantee 5.
 - Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
   into the proxy, removed in `SandboxLifecycle` with the leaf.
 - Banner and `--egress-effective`: `NAME → HOST (Authorization)` per binding.
@@ -254,7 +254,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - [ ] Every refusal in "Command-line contract" fires with its message.
 - [ ] `--proxy-log` shows `inject=GH_TOKEN` on exactly the authenticated requests.
 - [ ] `SessionBoundaryTest` finds no value in the volume after exit.
-- [ ] `sbt testFull` green on Linux, macOS and Windows podman machines.
+- [ ] `sbt testWithPodman` green on Linux, macOS and Windows podman machines.
 
 ## Deliberate exclusions
 

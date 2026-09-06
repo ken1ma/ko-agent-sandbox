@@ -42,7 +42,7 @@ object SbtServerShutdown:
    * the server to close the socket — the measured sequence of a successful shutdown. Bounded
    * throughout, the connect included; a definitive no-listener answer is Unreachable, and
    * everything else — an unanswered protocol, a transient connect failure — is Unanswered, for
-   * the caller to retry, never something to guess at by pid. The default bound is minutes, not
+   * the caller to retry, never a verdict to guess at by pid. The default bound is minutes, not
    * seconds: a server mid-exec runs `shutdown` after the command it is on, so the bound covers a
    * queued exec, not only a dead socket.
    */

@@ -1,5 +1,5 @@
 // How a run ends: the handover to podman, and the removal of the proxy and networks that run
-// created. Both removal paths live here together on purpose — the detached reaper (POSIX, after the
+// created. Both removal paths are here together on purpose — the detached reaper (POSIX, after the
 // exec) and removeRunResources (Windows, or any launch that stayed resident) are twins, and a change
 // to one is nearly always a change to the other. Splitting them by platform would put the twins in
 // different files.
@@ -129,7 +129,7 @@ object SandboxLifecycle:
       val handingOver = child.isEmpty && handedOver
       if !claimed && !handingOver then
         // Claimed before the removal runs rather than after it succeeds. A `remove` that throws
-        // part-way has already taken something away, so allowing a handover after it would start a
+        // part-way has already removed part of the run, so allowing a handover after it would start a
         // sandbox whose proxy or networks are half gone: a failed cleanup refuses the handover as
         // permanently as a successful one.
         claimed = true

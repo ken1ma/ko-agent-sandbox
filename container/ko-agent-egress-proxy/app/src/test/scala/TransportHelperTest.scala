@@ -288,7 +288,7 @@ class TransportHelperTest extends munit.FunSuite:
   test("an https endpoint the image's roots do not chain to fails before a byte, the credential included, is sent"):
     val directory = Files.createTempDirectory("upstream-endpoint")
     val (ca, caKey) = X509HelperTest.testCa(Instant.now(), 30)
-    val leaf = X509Helper.mintLeaf("proxy.corp.example", ca, caKey)
+    val leaf = X509Helper.issueLeaf("proxy.corp.example", ca, caKey)
     val (certificate, key) = X509HelperTest.writePem(directory, "endpoint", leaf.certificate, leaf.privateKey)
     val serving = TlsInspection.load(certificate, key, Set("proxy.corp.example"))
 

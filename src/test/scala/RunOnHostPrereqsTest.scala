@@ -1,7 +1,7 @@
 // The prerequisite validator's exit criterion: supported and unsupported layouts are classified
 // correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
 // contains a percent-encoded '+', a literal '+' and a directory named like an archive, and the
-// install directory contains a space, which is exactly the input a quoting or regex bug eats.
+// install directory contains a space, which is exactly the input a quoting or regex bug mishandles.
 
 package agentsandbox.launcher
 
@@ -74,10 +74,10 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
     assertEquals(cacheRootOutsideProject(root, project, Os.Mac, Right(_)), Right(root))
 
-  test("the project's caches sit under one removable directory"):
+  test("the project's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
     assertEquals(buildCoursierV1(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
-    // One removal reaches all of them: what --reset-cache relies on.
+    // One removal reaches all of them: what --reset-run-on-host relies on.
     assert(buildCoursierV1(root, "abc123").startsWith(buildCacheDir(root, "abc123")))
 
   // --------------------------------------------------------------------------
@@ -107,7 +107,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Some(Paths.get("/opt/cs/bin")),
     )
 
-  test("a cache root whose symlink lands inside the project is refused on its canonical path"):
+  test("a cache root whose symlink resolves inside the project is refused on its canonical path"):
     val alias = Paths.get("/opt/cache/ko-agent-sandbox")
     val canonical: Path => Either[String, Path] =
       path => Right(if path == alias then project.resolve(".cache") else path)
@@ -315,7 +315,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(millJvmIsSystem(project, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
     val stray = files("build.mill" -> Seq("//| mill-jvm-version: system", "package build", "//| x"))
     assert(millJvmIsSystem(project, stray).isLeft)
-    // A second YAML document is territory mill never reads; a marker anywhere is a refusal.
+    // A second YAML document is one mill never reads; a marker anywhere is a refusal.
     val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
     assertEquals(millJvmIsSystem(project, secondDoc), Left(Refusal.PrereqMillJvmNotSystem(Some("multi-document YAML"))))
     val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
@@ -394,7 +394,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
-  test("a version that could name something other than a directory entry is refused"):
+  test("a version that could name a path other than a directory entry is refused"):
     for bad <- Seq("../../etc", "a/b", "1.1.8 --flag") do
       assertEquals(
         millVersion(project, files(".mill-version" -> Seq(bad))),
@@ -581,7 +581,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
-  test("the sbt global base sits beside the project's Coursier cache, one --reset-cache removal"):
+  test("the sbt global base is stored beside the project's Coursier cache, one --reset-run-on-host removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
       buildSbtGlobal(cacheRoot, "proj-abc123"),

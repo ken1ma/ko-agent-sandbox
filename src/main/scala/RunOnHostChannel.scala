@@ -1,6 +1,6 @@
 // The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side broker
 // that serves it. The sandbox side is the image's sandbox-run-on-host
-// shim; the broker is a detached process of the launcher's own vehicle — the jar or native
+// shim; the broker is a detached process of the launcher's own executable — the jar or native
 // binary — spawned per session under --run-on-host. SECURITY.md "Run on host" has what the
 // channel grants and withholds.
 
@@ -30,7 +30,7 @@ object RunOnHostChannel:
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running command is ended with SIGTERM, the
    * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
-   * never completes, is declared stillborn on a deadline with no command started. The data FIFOs
+   * never completes, expires on a deadline with no command started. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
    *
@@ -127,7 +127,7 @@ object RunOnHostChannel:
     * write and reaches the readers the refusal answers on; EOF or DrainBytes ends the attempt —
     * past DrainBytes nothing legitimate is writing, and the caller's refusal is bounded anyway.
     * Every consumed byte is charged, the NUL delimiters included: a NUL-dense frame must exhaust
-    * the byte budget, never buy itself a field-counted pass through the parser. */
+    * the byte budget, never obtain a field-counted pass through the parser. */
   private def drainFields(in: InputStream, fields: Long): Unit =
     var remaining = fields
     var budget = DrainBytes
@@ -164,7 +164,7 @@ object RunOnHostChannel:
   final case class Transport(
     execPrefix: Seq[String],
     sandboxRunning: () => Boolean,
-    /** Where the FIFOs live inside the sandbox: the shim's own constant, and a parameter only so
+    /** Where the FIFOs are inside the sandbox: the shim's own constant, and a parameter only so
       * a test can put both sides somewhere that is not a live session's channel. */
     sandboxDir: String = SandboxDir,
   )
@@ -178,7 +178,7 @@ object RunOnHostChannel:
     os: Os,
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
-    /** How long a handshake may sit without a complete request before it is stillborn. */
+    /** How long the broker waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
   )
 
@@ -209,7 +209,8 @@ object RunOnHostChannel:
    * A transport exec is killed whole, descendants first: the shell behind it may have forked the
    * command it ran (measured — a stubbed exec left its `cat` alive under pid 1 after
    * destroyForcibly took only the shell), and a surviving grandchild holds both the FIFO and
-   * this side's pipe open past the transaction, wedging the broker in a read no EOF ends.
+   * this side's pipe open past the transaction, leaving the broker blocked on a read because the
+   * surviving grandchild prevents EOF.
    */
   private def end(process: Process): Unit =
     process.descendants().forEach(_.destroyForcibly())
@@ -267,15 +268,15 @@ object RunOnHostChannel:
     ctl.getOutputStream.close()
 
     // The shim may have died between its handshake and opening ctl, leaving the open above with
-    // no writer ever: a request not complete by the deadline is stillborn, no command started.
+    // no writer ever: a request not complete by the deadline expires, no command started.
     val requestArrived = AtomicBoolean(false)
-    val stillborn = Thread(() =>
+    val expiryThread = Thread(() =>
       try Thread.sleep(service.requestDeadlineMillis)
       catch case _: InterruptedException => ()
       finally if !requestArrived.get then end(ctl),
     )
-    stillborn.setDaemon(true)
-    stillborn.start()
+    expiryThread.setDaemon(true)
+    expiryThread.start()
 
     try
       readRequest(ctl.getInputStream) match
@@ -285,7 +286,7 @@ object RunOnHostChannel:
           // nothing will open.
           refuse(transport, id, s"CHANNEL_UNAVAILABLE: the request could not be read: $reason", log)
         case Right(None) =>
-          log(s"stillborn transaction $id: the requester never sent a request")
+          log(s"expired transaction $id: the requester never sent a request")
         case Right(Some(request)) =>
           requestArrived.set(true)
           answer(transport, service, id, ctl, request, log)

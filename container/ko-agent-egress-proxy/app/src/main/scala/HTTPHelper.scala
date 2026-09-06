@@ -101,8 +101,8 @@ object HTTPHelper:
 
     def parseAuthority(authority: String): ConnectRequest =
       // `isWhitespace` misses the controls that matter most in the audit log — ESC and BEL are not
-      // whitespace, and DEL is not above 0x7f — and this authority is logged as requested on every
-      // refusal, before any normalization has vouched for it.
+      // whitespace, and DEL is not above 0x7f — and this authority may be logged on a refusal
+      // before parseAuthority validates it or authorizeRequest normalizes its host.
       if authority.isEmpty ||
           authority.exists(ch => ch.isWhitespace || ch > 0x7f || isForbiddenControl(ch))
       then
@@ -261,8 +261,8 @@ object HTTPHelper:
       .filter(_.nonEmpty)
       .toSet
 
-  /** The headers this hop reads for itself — the framing pair, and the Host the ruleset checked. A
-    * Connection header nominating one asks this hop to strip a header it has already acted on: the
+  /** The headers this hop reads for itself — the framing pair, and the Host that must match the authorized
+    * CONNECT host. A Connection header nominating one asks this hop to strip a header it has already acted on: the
     * body would go out framed by a header the message no longer carries, which is a smuggling
     * primitive, not a hop-by-hop courtesy. Both bodyFraming implementations refuse it — they are
     * the framing authorities, and each runs before a byte of its message is forwarded. */
@@ -333,9 +333,9 @@ object HTTPHelper:
    * The response head, parsed for status and framing only — just enough to tell a completed body
    * from a truncated one — and relayed with only its hop-by-hop headers replaced (toClientBytes):
    * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
-   * response content, because that would grow into the rule language this proxy refuses to
-   * have. Origin-side malformations are IOExceptions, never BadRequests: the world failed, and
-   * the 502 should blame the origin.
+   * response content, because that would require the response-content rule language this proxy refuses to
+   * have. Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and
+   * the 502 should say so.
    */
   case class HttpResponseHead(
     statusLine: String,
@@ -437,8 +437,8 @@ object HTTPHelper:
 
   /**
    * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
-   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. Two things ride on that.
-   * The target is written verbatim into the audit log, so a tab would break the field grammar
+   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. The audit log and the origin
+   * both depend on that. The target is written verbatim into the audit log, so a tab would break the field grammar
    * tooling greps and an escape sequence would let a request choose how the record of itself reads
    * on the operator's terminal. And an origin is entitled to a well-formed request: CR and LF are
    * already refused above, which is what closes smuggling, but forwarding NUL or DEL into a header
@@ -491,7 +491,7 @@ object HTTPHelper:
   /**
    * The response-body relay, framing enforced: an origin EOF inside a declared length or an
    * unterminated chunk sequence is TruncatedResponse — the caller must end the connection so the
-   * stump cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
+   * truncated body cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
    * is the terminator.
    */
   def forwardResponseBody(

@@ -110,7 +110,7 @@ impl Drop for TestMount {
 }
 
 /// Assert the filter refused an operation — and refused it as *policy*, with `EPERM`, not merely
-/// with some error that might mean the tree was shaped differently than the test assumed.
+/// with some error that might mean the tree was laid out differently than the test assumed.
 #[track_caller]
 pub fn denied<T>(what: &str, result: io::Result<T>) {
     match result {

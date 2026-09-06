@@ -13,7 +13,7 @@ Run it INSIDE a sandbox session, twice, and compare the columns — the second r
 
 The control matters more than the absolute numbers: on the measured macOS stack the hypervisor
 answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
-resolution. What the ratio prices is the filter, not the backing share (doc/architecture.md).
+resolution. What the ratio measures is the filter's cost, not the backing share's (doc/architecture.md).
 
 Everything is written under a temporary directory in /workspace — which is the point, /tmp is not
 the filesystem under test — and removed afterwards. FILES=n varies the corpus size.
@@ -89,8 +89,8 @@ def main() -> int:
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    print("\nRun this again in the other stack; the ratio between the two columns is what the")
-    print('coherency invariant costs (doc/TODO.md, "Performance").')
+    print("\nRun this again in the other stack; the ratio between the two columns is what")
+    print('coherency costs (doc/TODO.md, "Performance").')
     return 0
 
 

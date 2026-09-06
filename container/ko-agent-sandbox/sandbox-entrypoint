@@ -89,7 +89,7 @@ if [ -n "$pressure" ] && awk -v p="$pressure" 'BEGIN { exit !(p > 10) }'; then
     warn "memory pressure: tasks stalled on memory $pressure% of the last minute"
 fi
 
-# The persistent volume sits on the machine's own storage, so its filesystem is what image layers
+# The persistent volume uses the machine's own filesystem, which is what image layers
 # and containers fill; the root here is an overlay whose free space is one step removed.
 disk=$(df -Pk "$volume" 2>/dev/null | awk 'NR == 2 { print $4 }')
 if [ -n "$disk" ] && [ "$disk" -lt 2097152 ]; then

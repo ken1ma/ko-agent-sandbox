@@ -49,9 +49,9 @@ class SessionBoundaryTest extends munit.FunSuite:
     curl((Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
   /** `EPERM` specifically — the filter's policy denial — rather than merely "an error", which is
-    * the same distinction the mounted Rust suites draw. Java surfaces `EPERM` as a bare
+    * the same distinction the mounted Rust suites draw. Java reports `EPERM` as a bare
     * `FileSystemException`; `AccessDeniedException` is `EACCES`, a different answer that would mean
-    * the tree was shaped differently than the test assumed. */
+    * the tree was laid out differently than the test assumed. */
   private def deniedByFilter(what: String)(thunk: => Any): Unit =
     val refusal = intercept[java.nio.file.FileSystemException](thunk)
     assert(
@@ -128,7 +128,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://pypi.org/").ok)
     assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://1.1.1.1/").ok)
 
-    // The sharper form: the failure is immediate and structural, not a timeout.
+    // The stricter check: the failure is immediate and structural, not a timeout.
     val reached =
       try
         val socket = java.net.Socket()
@@ -275,7 +275,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("the image JDK's trust store holds this project's CA beside every root it shipped"):
     inSession()
     // Dropping a shipped root would be the silent half of preparing the store wrong: the sandbox
-    // would keep working until something needed a public CA. The shipped store is under the
+    // would keep working until a request needed a public CA. The shipped store is under the
     // mount, so the check is for a root every Temurin ships and for a count no per-project
     // addition could reach on its own.
     val listing = run("keytool", "-list", "-cacerts", "-storepass", "changeit")
@@ -288,7 +288,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("a git host serves an anonymous clone"):
     inSession()
     // Under /tmp, never /workspace: cloning into the workspace is refused by the filter itself,
-    // which would make this a test of the wrong thing.
+    // which would make this a test of the wrong boundary.
     val into = Files.createTempDirectory("clone-probe")
     try
       val clone = run(
@@ -342,7 +342,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     )
 
     // guard=none's mount, where present, must be read-only; under the filter there is no
-    // mount to check — the rule lives in the filesystem itself.
+    // mount to check — the filesystem itself enforces the rule.
     mountOptions(boundaryDir.toString).foreach: options =>
       assert(
         options.split(",").contains("ro"),
@@ -361,7 +361,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val expected =
       raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|workspace|home/nonroot)($$|/)".r.unanchored
     // `/etc/ssl/certs` covers two mounts, not one: the PEM bundle, and the merged JDK trust store —
-    // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which lands
+    // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which ends up
     // here, because Temurin's Debian packaging symlinks that path to
     // /etc/ssl/certs/adoptium/cacerts and podman resolves a bind target before mounting it.
     val alsoExpected =
