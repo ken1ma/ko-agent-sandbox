@@ -30,9 +30,8 @@ object EmitBuildProfile:
       sys.exit(1)
 
     val tool = args.lift(2).map(_.toLowerCase) match
-      case None | Some("sbt") => Tool.Sbt
-      case Some("mill")       => Tool.Mill
-      case Some(other)        => fail(s"unknown tool $other")
+      case None        => Tool.Sbt
+      case Some(name)  => Tool.values.find(_.name == name).getOrElse(fail(s"unknown tool $name"))
 
     val assembled = RunOnHostSandbox.assemble(project, tool, env).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
@@ -41,9 +40,10 @@ object EmitBuildProfile:
     val inputs = SeatbeltProfile.ProfileInputs(
       prereqs = assembled.prereqs,
       sessionTmp = sessionTmp,
-      sbtDistribution = assembled.sbtDistribution,
+      distribution = assembled.distribution,
       sbtGlobal = assembled.sbtGlobalGranted,
       ivyHome = assembled.ivyHomeGranted,
+      m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
       runtime = runtime,
     )
@@ -61,6 +61,7 @@ object EmitBuildProfile:
     Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     Console.err.println(s"ivy home: ${assembled.ivyHome}")
+    Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
     // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran

@@ -1494,12 +1494,7 @@ object AgentSandboxLauncher:
           canonicalizedFuturePath(root).left.map(RunOnHostPrereqs.Refusal.CacheRootUnusable(_))
 
   private def cacheRootError(refusal: RunOnHostPrereqs.Refusal): String =
-    val reason = refusal match
-      case RunOnHostPrereqs.Refusal.CacheRootUnusable(text)              => text
-      case RunOnHostPrereqs.Refusal.CacheRootInsideProject(root, project) =>
-        s"$root overlaps the project directory $project"
-      case other                                                        => other.toString
-    s"error: cache root: $reason"
+    s"error: ${RunOnHostPrereqs.wording(refusal)}"
 
   /**
    * `--reset-run-on-host`: this project's build caches — what its `--run-on-host` builds
@@ -1664,7 +1659,7 @@ object AgentSandboxLauncher:
 
   /** The tools `--run-on-host` can name. Available on macOS only, which
     * launch() enforces: the parser stays pure over the arguments. */
-  val RunOnHostTools = Vector("sbt", "mill")
+  val RunOnHostTools = RunOnHostPrereqs.Tool.values.toVector.map(_.name)
 
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
     val names = value.split(",", -1).toVector
@@ -1898,10 +1893,10 @@ object AgentSandboxLauncher:
         s"""
            |## Host builds
            |
-           |Run this project's Scala builds with $commands: they run on the
+           |Run this project's builds with $commands: they run on the
            |host, sandboxed to the project, per-project build caches and one artifact repository,
            |and they may write the project except git control state and `.ko-agent-sandbox`.
-           |Each invocation starts and ends its own sbt server, so batch commands into one —
+           |Each sbt invocation starts and ends its own server, so batch commands into one —
            |`sandbox-run-on-host sbt 'compile; test'`, quoted: sbt reads separate arguments as one
            |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
            |that binds one fails there with `Operation not permitted`; that suite alone runs in the
@@ -1915,9 +1910,9 @@ object AgentSandboxLauncher:
         s"""
            |## Host builds
            |
-           |`sandbox-run-on-host` is absent from this session. If sbt or `mill` builds here are
-           |slow, or the machine is short on memory, tell the user: relaunching with
-           |`--run-on-host=sbt,mill` runs them on the host — memory reclaimed on exit rather than
+           |`sandbox-run-on-host` is absent from this session. If sbt, `mill` or Maven builds here
+           |are slow, or the machine is short on memory, tell the user: relaunching with
+           |`--run-on-host=sbt,mill,mvn` runs them on the host — memory reclaimed on exit rather than
            |left with the podman machine, at host speed, and without the symlink cleanup that
            |switching between container and host builds needs ("The host's own symlinks").
            |""".stripMargin

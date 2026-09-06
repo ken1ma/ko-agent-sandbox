@@ -1,8 +1,9 @@
-# Run on Host — sbt and `mill` builds outside the container
+# Run on Host — sbt, `mill` and Maven builds outside the container
 
-`--run-on-host=<tools>` (macOS only, off by default) relays this project's sbt and `mill` builds to
-the host, where each runs under a Seatbelt profile of its own. This document is the reference for
-how host builds work and what they require; the table names the code that enforces each part:
+`--run-on-host=<tools>` (macOS only, off by default) relays this project's sbt, `mill` and Maven
+builds to the host, where each runs under a Seatbelt profile of its own. This document is the
+reference for how host builds work and what they require; the table names the code that enforces
+each part:
 
 | concern | binding site |
 | --- | --- |
@@ -32,8 +33,9 @@ direct Internet access from the build; any automatic expansion of permissions wh
 and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH
 credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell` and `sbtn`'s
 interactive modes; mounting the container's workspace at its host path (`TODO.md`, "same-path
-mounting"). The container keeps its Scala toolchain: host builds are the fast path, not a
-replacement, and a session without `--run-on-host` builds in the container as before.
+mounting"); Gradle, whose processes talk over loopback TCP (`TODO.md`, "Gradle"). The container
+keeps its toolchain: host builds are the fast path, not a replacement, and a session without
+`--run-on-host` builds in the container as before.
 
 ## Why only macOS
 
@@ -108,9 +110,11 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
 
-Every build's proxy admits one host on its own, `repo1.maven.org:443` — Coursier's and sbt's
-default Maven Central URL, not the `repo.maven.apache.org` alias almost nothing resolves against.
-`repo.scala-sbt.org` is deliberately absent: it hosts the Ivy-style plugin repository and is not
+Every build's proxy admits one host on its own: the tool's Maven Central
+(`RunOnHostPrereqs.centralHost`). For sbt and `mill`, which resolve through Coursier, that is
+`repo1.maven.org`; for Maven, whose super POM names the alias, it is `repo.maven.apache.org`.
+Each tool resolves against its own host and never against the other's. `repo.scala-sbt.org` is
+deliberately absent: it hosts the Ivy-style plugin repository and is not
 part of sbt's bootstrap — an uncached sbt version named in `project/build.properties` resolves from
 Maven Central. A build that needs more adds it explicitly ("Configuration", below); nothing is
 inferred or silently permitted.
@@ -130,11 +134,12 @@ to: …"). It never adds the host itself.
 
 ## Tool prerequisites
 
-The rule that explains both tools: **the user provisions the executable; the sandbox fetches only
-artifacts.** sbt's comes from `cs install sbt`, and everything else it needs is a jar the JDK
+The rule that explains all three tools: **the user provisions the executable; the sandbox fetches
+only artifacts.** sbt's comes from `cs install sbt`, and everything else it needs is a jar the JDK
 reads, fetched into the writable build cache through the proxy. `mill`'s executable *is* the
 fetched artifact — so it is provisioned, not fetched, and a version bump
 is an explicit host update rather than an automatic update performed by the build definition.
+Maven's is the distribution the project's wrapper unpacked on the host.
 `RunOnHostPrereqs.scala` validates all of the below before a build starts; a violation is a refusal
 naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
@@ -173,20 +178,20 @@ redirected, sbt boots from the build cache, warm across sessions. `~/.sbt/1.0`,
 `~/.sbt/2.0` and `~/.m2` are not granted either.
 
 The Ivy home follows `-Dsbt.ivy.home` into the build cache the same way, and `~/.ivy2` is not
-granted. What reaches that home, read from the sources of sbt 1.12.13 and 2.0.8: resolving an
-inter-project dependency builds Ivy module descriptors (`projectDescriptors`), which enters Ivy
-and takes `<ivy home>/.sbt.ivy.lock` before every `update` of a multi-project build;
-`<ivy home>/local` is the `local` resolver, read on every resolution and written by
-`publishLocal`; and `updateSbtClassifiers` keeps its excludes file there. Canonicalizing the
-denied `~/.ivy2` for that lock is where an sbt 1.12.13 `packageBin` across a `dependsOn` edge
-died under the profile; this repository's own build has no such edge, so its gate rows never
-reached the path, and `src/probe/ivy-fixture` is that build, on sbt 1.
+granted. sbt uses that home for three things, read from the sources of sbt 1.12.13 and 2.0.8.
+Resolving a dependency between the projects of one build goes through Ivy
+(`projectDescriptors`), and Ivy takes the lock file `<ivy home>/.sbt.ivy.lock` first.
+`<ivy home>/local` is the `local` resolver, which every resolution reads and `publishLocal`
+writes. `updateSbtClassifiers` keeps its excludes file there. Without the redirect, an sbt
+1.12.13 `packageBin` of a build with a `dependsOn` edge dies under the profile while
+canonicalizing the denied `~/.ivy2` for that lock. This repository's own build has no such edge,
+so the gate's sbt rows never reach that path; `src/probe/ivy-fixture` is such a build, on sbt 1.
 
-sbt 2 after 2.0.8 has no Ivy library (sbt/sbt#9615, merged 2026-08-24): no lock is taken, and
-the fixture measures nothing a release from there on does, so it is not duplicated for sbt 2
-and retires with sbt 1. `local` and the excludes file still derive from `sbt.ivy.home` there, so
-the redirect and its grant outlive the lock; retire them only when a released sbt stops
-deriving those two paths, which is a re-read of `Defaults.scala`, not a gate run.
+sbt 2 releases after 2.0.8 have no Ivy library (sbt/sbt#9615, merged 2026-08-24) and take no
+lock, so the fixture is not duplicated for sbt 2; it retires when sbt 1 does. Those releases
+still take `local` and the excludes file from `sbt.ivy.home`, so the redirect and its grant stay
+after the lock is gone. Retire them only when a released sbt stops deriving those two paths, and
+check that by reading `Defaults.scala` again, not by a gate run.
 
 The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints that it
 is starting the server and returns with no build run — a gate row keeps measuring it, and if it
@@ -219,6 +224,43 @@ executable and the daemon talk over a loopback TCP socket, which the profile den
 and `out/mill-daemon/` cleared at session start — mill memoizes its resolved classpath against the
 cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
 denies.
+
+### Maven
+
+The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally is not used. Run
+`./mvnw --version` once in a host terminal, and again whenever `distributionUrl` in
+`.mvn/wrapper/maven-wrapper.properties` changes: that run downloads Maven into
+`~/.m2/wrapper/dists`, and the build is granted that one Maven read-only — not the whole `dists`
+directory, which holds every Maven the user ever ran a wrapper for. If the wrapper has not
+downloaded it yet, the build is refused, and the refusal names the command to run.
+
+Only the `only-script` wrapper type is served, the default that `mvn wrapper:wrapper` generates;
+a project with any other wrapper type is refused, and the refusal names the command that
+converts it. The wrapper recognizes the type from the script's `hash_string` function, reading
+the script and never running it. The other types run a jar that computes the distribution
+directory from more inputs — `distributionBase`, `distributionPath`, a relative URL, the JVM's
+`user.home` — which this launcher deliberately does not reproduce: a derivation that reproduced
+some of them would grant a stale copy where the script selects another.
+
+The build runs `bin/mvn --batch-mode` from that directory, not `mvnw`, which looks for Maven under
+a home directory it computes itself. The wrapper computes the directory exactly as the script does
+(`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs: `distributionUrl`, rewritten by
+`MVNW_REPOURL` when the launcher's environment sets that mirror override, hashed as a string and
+with `-bin` dropped from the directory name, under `$MAVEN_USER_HOME/wrapper/dists`, or
+`~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset. An mvnd distribution is refused: mvnd is a
+daemon.
+
+Maven runs once and exits: there is no daemon and no server, and Surefire's forked test JVMs talk
+to it over pipes by default, so `mvn test` works under the network rule as it is. Maven's
+resolver ignores the JVM proxy properties unless `aether.connector.http.useSystemProperties` is
+set, and then warns at every download that it is using them. That property belongs to
+resolver 1.9, which Maven 3.9 ships. Both properties are measured on Maven 3.9.16, the latest
+release, by building `src/probe/mvn-fixture` through a proxy inside the container; the gate's mvn
+rows measure them under the profile. Maven 4 is still a release candidate; it is provisioned the
+same way and is unmeasured. The user's `~/.m2/settings.xml` and `toolchains.xml` are denied, and
+Maven treats them as absent, so a mirror or credential there never reaches a confined build.
+`.mvn/maven.config`, `jvm.config` and `extensions.xml` are project files the agent already
+controls, like `sbt 'set …'`.
 
 ## The session
 
@@ -257,14 +299,16 @@ The `java -D` properties:
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
 | `sbt.global.base` | `<build cache>/sbt-global` |
 | `sbt.ivy.home` | `<build cache>/ivy-home` |
+| `maven.repo.local` | `<build cache>/m2/repository` |
+| `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
 `<session>` is this build's directory under the wrapper root above, `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<build cache>` the
 project's own build-cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The build
-cache" below). One environment serves both tools: the sbt global base and Ivy home are named for
-a mill build too, where nothing reads them and they are neither created nor granted, and the mill
-download folder — the one the wrapper granted the executable in — for an sbt build, which ignores
-it.
+cache" below). One environment serves every tool. sbt's global base and Ivy home and Maven's
+local repository are set for every build; a build of another tool reads none of them, and the
+wrapper neither creates nor grants them for it. The mill download folder, the one holding the
+granted executable, is set for the other builds the same way, and they ignore it.
 
 Why the rows are what they are. The host's `TMPDIR` names a directory the build is not granted,
 so the session's replaces it for forked shell tools, as `java.io.tmpdir` does for JVMs. `HOME` is
@@ -408,8 +452,9 @@ directory that already holds reviewed boundary configuration:
 .ko-agent-sandbox/host-command/<tool>/egress/rule
 ```
 
-One file per tool, so a repository that builds with both grants each only what it resolves. The
-grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines and comments,
+One file per tool, so a repository that builds with more than one grants each only what it
+resolves. The grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines
+and comments,
 nothing else — no other grant, no path, no provider, no deny — refused at validation rather than
 passed through. The full grammar would let one `allow model-provider` line expand into endpoints
 that are no artifact repository, and a `tunnel` word means nothing to a proxy running without
@@ -422,7 +467,7 @@ launcher reads it on the host, and it is reviewed in a pull request like any oth
 never remains as ignored config (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
-Neither tool needs a GitHub release CDN: the only fetch that ever used one is the `mill`
+No tool needs a GitHub release CDN: the only fetch that ever used one is the `mill`
 bootstrap's own executable download, which the user provisions on the host instead.
 
 Derived paths come from Coursier conventions and environment APIs; advanced overrides
@@ -430,13 +475,14 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 
 ## The build cache
 
-Agent-invoked builds get their own build-cache root, per project —
-`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`, Coursier's `v1`, sbt's
-global base and its Ivy home under one directory, so `--reset-run-on-host` is a single removal,
-`--reset` takes it with the project's other state, and a further cache kind can join without
-moving anything. It is discovered exactly as the launcher's state root is, so the two answer alike
-on one machine; a relative override is refused because it would resolve against the repository
-being sandboxed, and a root inside the project is refused outright.
+Agent-invoked builds get their own build-cache root, per project:
+`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`. It holds Coursier's
+`v1`, sbt's global base and Ivy home, and Maven's local repository under one directory, so
+`--reset-run-on-host` is a single removal, `--reset` takes it with the project's other state, and
+a further cache kind can join without moving anything. It is discovered exactly as the launcher's
+state root is, so the two answer alike on one machine; a relative override is refused because it
+would resolve against the repository being sandboxed, and a root inside the project is refused
+outright.
 
 Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it. The cost
 is a cold cache on a project's first agent build, warm from the second onward.
@@ -449,7 +495,8 @@ or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache belong
 
 The build reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to
 the `v1` directory, which the sbt script, sbt's own resolution and Coursier all honour. sbt's own
-two caches travel as the `java -D` properties above, which its launcher reads.
+two caches and Maven's local repository travel as the `java -D` properties above, which sbt's
+launcher and Maven's CLI read.
 
 ## Sources
 
@@ -461,3 +508,7 @@ two caches travel as the `java -D` properties above, which its launcher reads.
 - `mill` project-local bootstrap scripts: https://mill-build.org/mill/cli/installation-ide.html
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   https://www.scala-sbt.org/1.x/docs/sbt-server.html
+- Maven Wrapper — the wrapper types and `MAVEN_USER_HOME`: https://maven.apache.org/wrapper/
+- Surefire fork communication — process pipes by default, TCP by configuration:
+  https://maven.apache.org/surefire/maven-surefire-plugin/examples/process-communication.html
+- Maven Resolver configuration — `useSystemProperties`: https://maven.apache.org/resolver/configuration.html

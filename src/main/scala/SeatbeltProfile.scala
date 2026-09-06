@@ -92,9 +92,10 @@ object SeatbeltProfile:
   case class ProfileInputs(
     prereqs: BuildPrereqs,
     sessionTmp: Path,
-    sbtDistribution: Option[Path],
+    distribution: Option[Path],
     sbtGlobal: Option[Path],
     ivyHome: Option[Path],
+    m2Repository: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
   )
@@ -105,33 +106,39 @@ object SeatbeltProfile:
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
-    val readOnly = Seq(prereqs.jdkHome) ++ inputs.sbtDistribution ++ Seq(prereqs.executable)
+    val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
     // Writable implies executable for the project and the session temp, never for the cache:
     // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
     // JVM reads, and nothing there is run.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
-    // The sbt global base and Ivy home are caches like the Coursier one — artifacts the JVM
-    // reads, nothing run — and persistent for the same reason target/ links into the base
-    // (RunOnHostPrereqs.buildSbtGlobal, buildIvyHome).
-    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome
+    // The sbt global base, the Ivy home and Maven's local repository are caches like the Coursier
+    // one: artifacts the JVM reads, nothing run.
+    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
+    val tool = prereqs.tool
     everyPath.find(path => !usable(path)) match
-      case _ if prereqs.tool == Tool.Sbt && inputs.sbtDistribution.isEmpty =>
+      case _ if tool == Tool.Sbt && inputs.distribution.isEmpty =>
         Left(
           "an sbt profile needs the distribution the sbt script execs; without it the build cannot find sbt-launch.jar",
         )
-      case _ if prereqs.tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
+      case _ if tool == Tool.Mvn && inputs.distribution.isEmpty =>
+        Left("an mvn profile needs the distribution its mvn runs from; without it the build cannot find lib/")
+      case _ if tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
-      case _ if prereqs.tool == Tool.Sbt && inputs.ivyHome.isEmpty =>
+      case _ if tool == Tool.Sbt && inputs.ivyHome.isEmpty =>
         Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
-      case _ if prereqs.tool == Tool.Mill && inputs.sbtDistribution.isDefined =>
-        Left("a mill profile has no sbt distribution to grant")
-      case _ if prereqs.tool == Tool.Mill && inputs.sbtGlobal.isDefined =>
-        Left("a mill profile has no sbt global base to grant")
-      case _ if prereqs.tool == Tool.Mill && inputs.ivyHome.isDefined =>
-        Left("a mill profile has no Ivy home to grant")
+      case _ if tool == Tool.Mvn && inputs.m2Repository.isEmpty =>
+        Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
+      case _ if tool == Tool.Mill && inputs.distribution.isDefined =>
+        Left("a mill profile has no distribution to grant")
+      case _ if tool != Tool.Sbt && inputs.sbtGlobal.isDefined =>
+        Left(s"a ${tool.name} profile has no sbt global base to grant")
+      case _ if tool != Tool.Sbt && inputs.ivyHome.isDefined =>
+        Left(s"a ${tool.name} profile has no Ivy home to grant")
+      case _ if tool != Tool.Mvn && inputs.m2Repository.isDefined =>
+        Left(s"a ${tool.name} profile has no Maven local repository to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")

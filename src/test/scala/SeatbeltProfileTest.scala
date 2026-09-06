@@ -38,7 +38,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
-  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), port, runtime)
+  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime)
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
@@ -64,14 +64,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(clue(reason).contains("grant"))
 
   test("the tool and the distribution agree: sbt needs it, mill has none"):
-    assert(render(inputs().copy(sbtDistribution = None)).isLeft)
+    assert(render(inputs().copy(distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs)).isLeft)
 
   test("the tool and the global base agree the same way, and the Ivy home with them"):
     assert(render(inputs().copy(sbtGlobal = None)).isLeft)
     assert(render(inputs().copy(ivyHome = None)).isLeft)
-    assert(render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None)).isLeft)
-    assert(render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None)).isLeft)
+    assert(render(inputs().copy(prereqs = millPrereqs, distribution = None)).isLeft)
+    assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None)).isLeft)
 
   test("the sbt global base and Ivy home are granted read-write and, like the Coursier cache, never exec"):
     val text = rendered()
@@ -236,9 +236,29 @@ class SeatbeltProfileTest extends munit.FunSuite:
     executable = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
   )
 
-  private def millText: String =
-    render(inputs().copy(prereqs = millPrereqs, sbtDistribution = None, sbtGlobal = None, ivyHome = None))
-      .fold(reason => fail(reason), identity)
+  private def millInputs = inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None)
+
+  private def millText: String = render(millInputs).fold(reason => fail(reason), identity)
+
+  private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
+  private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/m2/repository")
+  private val mvnPrereqs = prereqs.copy(tool = Tool.Mvn, executable = mvnHome.resolve("bin/mvn"))
+  private def mvnInputs = millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
+
+  test("mvn grants its distribution to run and its local repository to write, and no sbt cache"):
+    val text = render(mvnInputs).fold(reason => fail(reason), identity)
+    assert(clue(text).contains(s"""(allow process-exec* file-read* (subpath "$mvnHome"))"""))
+    assert(text.contains(s"""(allow file-read* file-write* (subpath "$m2Repository"))"""))
+    assert(!text.contains(s"""process-exec* (subpath "$m2Repository")"""))
+    assert(!text.contains("sbt-global"))
+    assert(!text.contains("ivy-home"))
+
+  test("the tool and the Maven local repository agree: mvn needs it, the others have none"):
+    assert(render(mvnInputs.copy(m2Repository = None)).isLeft)
+    assert(render(mvnInputs.copy(distribution = None)).isLeft)
+    assert(render(mvnInputs.copy(sbtGlobal = Some(sbtGlobal))).isLeft)
+    assert(render(inputs().copy(m2Repository = Some(m2Repository))).isLeft)
+    assert(render(millInputs.copy(m2Repository = Some(m2Repository))).isLeft)
 
   test("mill renders without the sbt distribution"):
     val text = millText

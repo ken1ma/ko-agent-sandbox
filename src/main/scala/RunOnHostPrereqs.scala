@@ -19,7 +19,10 @@ import HostCommands.Os
 object RunOnHostPrereqs:
 
   enum Tool:
-    case Sbt, Mill
+    case Sbt, Mill, Mvn
+
+    /** What a launch, a request, the rule file and the shim call it: the executable's name. */
+    def name: String = toString.toLowerCase(Locale.ROOT)
 
   /**
    * Why a build cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
@@ -32,6 +35,12 @@ object RunOnHostPrereqs:
     case PrereqMillVersionUnpinned
     case PrereqMillExecutableMissing(version: String, downloadDir: Path)
     case PrereqMillJvmNotSystem(found: Option[String])
+    case PrereqMvnWrapperMissing
+    case PrereqMvnWrapperNotOnlyScript
+    case PrereqMvnWrapperUnreadable(reason: String)
+    case PrereqMvnDistributionIsMvnd(distributionUrl: String)
+    case PrereqMvnDistributionMissing(distributionUrl: String, home: Path)
+    case PrerequisiteFileUnreadable(path: Path, reason: String)
     case CacheRootUnusable(reason: String)
     /** Apart from [[CacheRootUnusable]] because it alone proves the project's builds never wrote
       * under this root: they refuse it by this same check. */
@@ -39,6 +48,46 @@ object RunOnHostPrereqs:
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
     case RuleOutsideBuildGrammar(line: String)
+
+  /**
+   * The refusal as the blocked reader sees it: what stopped the build, and what to do next.
+   * Every case is worded here, so a case the wrapper prints through its enum spelling is a
+   * compile error, not a message with a class name in it.
+   */
+  def wording(refusal: Refusal): String = refusal match
+    case Refusal.PrereqJvmNotCoursier(found) =>
+      s"JAVA_HOME must name a JDK Coursier installed (`cs java --jvm <name> --setup`); found $found"
+    case Refusal.PrereqSbtNotCoursier(found) =>
+      s"sbt must be the one `cs install sbt` produced; found $found"
+    case Refusal.PrereqMillBootstrapMissing =>
+      "the project has no executable `mill` bootstrap script; a global mill is not used"
+    case Refusal.PrereqMillVersionUnpinned =>
+      "no mill version is pinned in the project: .mill-version, .config/mill-version, build.mill.yaml " +
+        "or the build script's header"
+    case Refusal.PrereqMillExecutableMissing(version, downloadDir) =>
+      s"mill $version is not provisioned under $downloadDir; run `./mill --version` once in a host terminal"
+    case Refusal.PrereqMillJvmNotSystem(found) =>
+      s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
+    case Refusal.PrereqMvnWrapperMissing =>
+      "the project has no executable `mvnw` wrapper script; a global mvn is not used"
+    case Refusal.PrereqMvnWrapperNotOnlyScript =>
+      "the mvnw wrapper is not the only-script type; run `./mvnw wrapper:wrapper -Dtype=only-script` in a host terminal"
+    case Refusal.PrereqMvnWrapperUnreadable(reason) => reason
+    case Refusal.PrereqMvnDistributionIsMvnd(url) =>
+      s"distributionUrl in .mvn/wrapper/maven-wrapper.properties names mvnd, a daemon: '$url'; " +
+        "point it at an apache-maven-…-bin.zip URL"
+    case Refusal.PrereqMvnDistributionMissing(url, home) =>
+      s"Maven from $url is not unpacked at $home; run `./mvnw --version` once in a host terminal"
+    case Refusal.PrerequisiteFileUnreadable(path, reason) => s"$path cannot be read: $reason"
+    case Refusal.CacheRootUnusable(reason)            => s"cache root: $reason"
+    case Refusal.CacheRootInsideProject(root, project) =>
+      s"cache root $root overlaps the project directory $project"
+    case Refusal.WorkingDirectoryOutsideProject(requested) =>
+      s"the working directory $requested is not inside the project"
+    case Refusal.SessionTmpTooLong(path, max) =>
+      s"the session directory $path is longer than $max characters, sbt's socket path budget"
+    case Refusal.RuleOutsideBuildGrammar(line) =>
+      s"'$line' is outside the build's rule grammar — one `$BuildRuleForm` per line"
 
   /** Everything settled before a build is asked for; every path canonical. */
   case class BuildPrereqs(
@@ -83,8 +132,9 @@ object RunOnHostPrereqs:
    * This project's build caches, under one directory so `--reset-run-on-host` for a project is a
    * single removal and a further cache kind can join without moving anything.
    *
-   * Coursier's, sbt's global base and sbt's Ivy home. mill's executable is provisioned by the user
-   * rather than fetched here, so it has no writable home (RunOnHostPrereqs.millExecutable).
+   * Coursier's, sbt's global base and Ivy home, and Maven's local repository. mill's executable
+   * is provisioned by the user rather than fetched here, so it has no writable home
+   * (RunOnHostPrereqs.millExecutable).
    */
   def buildCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
@@ -110,6 +160,11 @@ object RunOnHostPrereqs:
    */
   def buildIvyHome(cacheRoot: Path, projectId: String): Path =
     buildCacheDir(cacheRoot, projectId).resolve("ivy-home")
+
+  /** The confined build's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
+    * denies. Maven stores every artifact and plugin it resolves here. */
+  def buildM2Repository(cacheRoot: Path, projectId: String): Path =
+    buildCacheDir(cacheRoot, projectId).resolve("m2").resolve("repository")
 
   /**
    * Refused when the cache root would be inside the project, the check
@@ -421,6 +476,93 @@ object RunOnHostPrereqs:
   private def plausibleVersion(value: String): Boolean =
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
+  /** Maven's wrapper, the project's own `mvnw`, under the rule mill's bootstrap follows
+    * (run-on-host.md "Maven"); a `mvn` from PATH is not a fallback. */
+  def validateMvnWrapper(project: Path, isExecutableFile: Path => Boolean): Either[Refusal, Path] =
+    val wrapper = project.resolve("mvnw")
+    if isExecutableFile(wrapper) then Right(wrapper) else Left(Refusal.PrereqMvnWrapperMissing)
+
+  /**
+   * Only the `only-script` wrapper type, recognized by the `hash_string` function that computes
+   * the distribution directory in shell. Every other type runs `maven-wrapper.jar`, which
+   * computes it from more inputs — `distributionBase`, `distributionPath`, a relative URL, the
+   * JVM's `user.home` — that this launcher deliberately does not reproduce: a derivation that
+   * reproduced some of them would grant a stale copy where the script selects another. The
+   * script that runs decides, not the `distributionType` the wrapper plugin recorded beside it.
+   */
+  def validateMvnWrapperScript(scriptLines: Seq[String]): Either[Refusal, Unit] =
+    if scriptLines.exists(_.startsWith("hash_string()")) then Right(())
+    else Left(Refusal.PrereqMvnWrapperNotOnlyScript)
+
+  /**
+   * The distribution URL as the script takes it. `distributionUrl` from
+   * `.mvn/wrapper/maven-wrapper.properties`, read as `while IFS="=" read -r key value` reads it:
+   * a line is what a newline terminates, so a last line without one ends the loop unread; the key
+   * is everything before the line's first `=`, matched exactly, the value everything after; the
+   * last matching line wins, and `tr -d '[:space:]'` removes the six ASCII whitespace characters
+   * from the value, inside it included. Then `MVNW_REPOURL`, when set, replaces everything up to
+   * and including the first `/org/apache/maven/` — the documented mirror override, applied
+   * before hashing. A `maven-mvnd-*` distribution is refused: mvnd is a daemon. The value and the
+   * effective URL must be printable ASCII, since the shell hashes bytes and Java hashes chars,
+   * and only ASCII keeps the two the same; a non-ASCII value is refused before `tr`'s removal,
+   * whose character class the locale may widen.
+   */
+  def mvnDistributionUrl(propertiesText: String, repoUrl: Option[String]): Either[Refusal, String] =
+    val found = propertiesText.split("\n", -1).dropRight(1).toSeq.collect:
+      case line if line.contains('=') && line.takeWhile(_ != '=') == "distributionUrl" =>
+        line.dropWhile(_ != '=').drop(1)
+    val pattern = "/org/apache/maven/"
+    val cSpace = Set(' ', '\t', '\n', '\u000b', '\f', '\r')
+    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
+    def noUrl = Left(Refusal.PrereqMvnWrapperUnreadable("no distributionUrl in .mvn/wrapper/maven-wrapper.properties"))
+    // A URL is quoted in a refusal only once it is printable ASCII: never a control character.
+    found.lastOption match
+      case None => noUrl
+      case Some(raw) if !printable(raw.filterNot(cSpace)) =>
+        Left(Refusal.PrereqMvnWrapperUnreadable("distributionUrl contains a character outside printable ASCII"))
+      case Some(raw) =>
+        val url = raw.filterNot(cSpace)
+        val effective = repoUrl.filter(_.nonEmpty).fold(url): repo =>
+          repo + pattern + (url.indexOf(pattern) match
+            case -1    => url
+            case index => url.drop(index + pattern.length))
+        if url.isEmpty then noUrl
+        else if !printable(effective) then
+          Left(Refusal.PrereqMvnWrapperUnreadable("MVNW_REPOURL contains a character outside printable ASCII"))
+        else if url.drop(url.lastIndexOf('/') + 1).startsWith("maven-mvnd-") then
+          Left(Refusal.PrereqMvnDistributionIsMvnd(url))
+        else if !effective.endsWith("-bin.zip") then
+          Left(Refusal.PrereqMvnWrapperUnreadable(
+            s"distributionUrl '$effective' does not end in -bin.zip, which the script requires",
+          ))
+        else Right(effective)
+
+  /** The wrapper's base directory as the script takes it: `MAVEN_USER_HOME`, else `~/.m2`. */
+  def mvnUserHome(env: String => Option[String]): Option[Path] =
+    def fromEnv(name: String) = env(name).filter(_.nonEmpty).flatMap(parsePath).map(_.normalize())
+    fromEnv("MAVEN_USER_HOME").orElse(fromEnv("HOME").map(_.resolve(".m2")))
+
+  /**
+   * The distribution's directory as the script computes it under `<user home>/wrapper/dists`: the
+   * URL's file name without its extension and without the trailing `-bin`, then the URL's
+   * `String.hashCode` in hex — the script's `hash_string` is that function over bytes. Maven's
+   * `bin/` is directly inside.
+   */
+  def mvnDistributionDir(userHome: Path, distributionUrl: String): Path =
+    val fileName = distributionUrl.drop(distributionUrl.lastIndexOf('/') + 1)
+    val name = fileName.take(fileName.lastIndexOf('.')).stripSuffix("-bin")
+    userHome.resolve("wrapper").resolve("dists").resolve(name).resolve(Integer.toHexString(distributionUrl.hashCode))
+
+  /** That directory, provisioned: `bin/mvn` present and executable, or a refusal naming what `./mvnw`
+    * would fix. */
+  def mvnDistributionHome(
+    derived: Path,
+    distributionUrl: String,
+    isExecutableFile: Path => Boolean,
+  ): Either[Refusal, Path] =
+    if isExecutableFile(derived.resolve("bin").resolve("mvn")) then Right(derived)
+    else Left(Refusal.PrereqMvnDistributionMissing(distributionUrl, derived))
+
   // ---------------------------------------------------------------------------
   // The session temporary directory
   // ---------------------------------------------------------------------------
@@ -447,12 +589,17 @@ object RunOnHostPrereqs:
   // The build's egress rules
   // ---------------------------------------------------------------------------
 
-  /** Coursier's and sbt's default artifact repository: the one host every build's proxy admits. */
-  val MavenCentralHost = "repo1.maven.org"
+  /**
+   * The tool's default artifact repository, the one host every build's proxy admits on its own.
+   * Both are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
+   * Maven's super POM names `repo.maven.apache.org`.
+   */
+  def centralHost(tool: Tool): String = tool match
+    case Tool.Sbt | Tool.Mill => "repo1.maven.org"
+    case Tool.Mvn             => "repo.maven.apache.org"
 
   def buildRulePath(project: Path, tool: Tool): Path =
-    project.resolve(".ko-agent-sandbox").resolve("host-command")
-      .resolve(tool.toString.toLowerCase(java.util.Locale.ROOT)).resolve("egress").resolve("rule")
+    project.resolve(".ko-agent-sandbox").resolve("host-command").resolve(tool.name).resolve("egress").resolve("rule")
 
   /** The one line form the build's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
   val BuildRuleForm = "allow https://<host>/ read"
@@ -482,12 +629,12 @@ object RunOnHostPrereqs:
       case None          => Right(lines.flatMap(hostOf).distinct)
 
   /**
-   * The proxy's rule input for a build: `deny defaults`, then Maven Central, then the file's
-   * lines — the whole ruleset stated, so the container's catalog contributes nothing. Deduplicated,
-   * so a host the file restates is not warned as a redundant grant at every build.
+   * The proxy's rule input for a build: `deny defaults`, then the tool's Maven Central host, then
+   * the file's lines — the whole ruleset stated, so the container's catalog contributes nothing.
+   * Deduplicated, so a host the file restates is not warned as a redundant grant at every build.
    */
-  def egressRuleText(fileHosts: Vector[String]): String =
-    ("deny defaults" +: (MavenCentralHost +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
+  def egressRuleText(tool: Tool, fileHosts: Vector[String]): String =
+    ("deny defaults" +: (centralHost(tool) +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
       .mkString("\n")
 
   // ---------------------------------------------------------------------------

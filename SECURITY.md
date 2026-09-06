@@ -838,7 +838,7 @@ else refuses the launch, like the workspace guard) opens a channel with these pr
 
 ## Run on host
 
-Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`) is a container→host
+Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`, `mvn`) is a container→host
 **execution** path — the one place this design runs code the agent chose outside the container —
 and what bounds it is a Seatbelt profile, not the container the build is no longer in.
 `doc/run-on-host.md` is the reference; the properties, each with its cost:
@@ -864,11 +864,15 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   arbitrary Scala without touching `build.sbt`), and the profile confines whatever they select.
   What a build reaches, in whole: the project read-write minus git control state and
   `.ko-agent-sandbox` — denied at any depth, case folded, link creation included — its own
-  per-project build caches, one Coursier-managed JDK read-only, a session temporary directory,
-  and loopback to its own egress proxy, which admits the artifact repositories
+  per-project build caches, one Coursier-managed JDK read-only, the tool's own executable and
+  distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
+  archive cache, the one mill executable the user provisioned, the one Maven the project's
+  wrapper unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when
+  `MAVEN_USER_HOME` is unset — a session temporary directory, and loopback to its own egress
+  proxy, which admits the artifact repositories
   `.ko-agent-sandbox/host-command/<tool>/egress/rule` names (`allow https://<host>/ read` lines
   only, a closed namespace like its parent) plus Maven Central. Everything else user-owned is
-  invisible — the launcher state root and the user's own caches included.
+  invisible — the launcher state root and the rest of the user's caches included.
 - **The build's environment is a closed set, not the launcher's.** The wrapper builds it whole
   (`doc/run-on-host.md`, "The session", has the table): its own settings, three pass-throughs,
   and what `--env` named at launch — the same forward the sandbox gets, the same refusal of
@@ -889,9 +893,10 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live
   server holds the portfile, starts the build's server inside the profile, and ends it, portfile
   included, before the session ends. The cost is that no warm daemon spans builds: sbt's server
-  lives for one `sandbox-run-on-host` command, and `mill` runs `--no-daemon`. Under
-  `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server first instead of
-  refusing — authority the user typed at launch, and logged into the build's transcript. The
+  lives for one `sandbox-run-on-host` command, `mill` runs `--no-daemon`, and Maven runs once
+  and exits. Under `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server
+  first instead of refusing — authority the user typed at launch, and logged into the build's
+  transcript. The
   shutdown is sent only to the socket the wrapper derives from the project path as sbt derives
   it, never to one the portfile names: the portfile is workspace content, so honouring its
   spelling would let the project aim an unconfined write-and-parse at any socket this uid
@@ -907,13 +912,13 @@ and what bounds it is a Seatbelt profile, not the container the build is no long
   named where it is stated ("The host's git executing what the sandbox wrote", above).
 - **Cache poisoning stops at the project.** The build writes its own per-project caches, never
   yours: the Coursier cache, sbt's global base — its boot directory and content-addressed
-  store — and sbt's Ivy home, where `publishLocal` lands. A poisoned artifact in any of them
-  reaches later agent builds of the same project, which are themselves sandboxed, and no other
-  project and no unsandboxed build — and `--reset` discards all three with the project's other
-  state; `--reset-run-on-host` discards those caches alone. The separation is by root, one
-  directory holding the three (`doc/run-on-host.md`, "The build cache"), because Seatbelt has no
-  mount namespace to overlay with (`plan-coursier.md` reaches the same property for the
-  container by a podman `:O` upper).
+  store — sbt's Ivy home, which `publishLocal` writes, and Maven's local repository, which holds
+  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent builds
+  of the same project, which are themselves sandboxed, and no other project and no unsandboxed
+  build — and `--reset` discards them all with the project's other state; `--reset-run-on-host`
+  discards those caches alone. The separation is by root, one directory holding them
+  (`doc/run-on-host.md`, "The build cache"), because Seatbelt has no mount namespace to overlay
+  with (`plan-coursier.md` reaches the same property for the container by a podman `:O` upper).
 - **The build's output names host paths.** Every compiler message containing an absolute path tells
   the container the project's path on the host. Disclosure, not authority.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A
