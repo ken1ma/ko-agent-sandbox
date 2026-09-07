@@ -59,6 +59,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "production.cloudflare.docker.com", "production.cloudfront.docker.com",
       "gcr.io", "public.ecr.aws",
       "d2glxqk2uabbnd.cloudfront.net", "d5l0dvt14r5h8.cloudfront.net",
+      "ghcr.io", "pkg-containers.githubusercontent.com",
+      "quay.io", "cdn.quay.io", "cdn01.quay.io", "cdn02.quay.io", "cdn03.quay.io",
+      "cdn04.quay.io", "cdn05.quay.io", "cdn06.quay.io",
     ).foreach: host =>
       assertEquals(authorize(host, 443), host)
       assertEquals(DefaultHosts.get(host), Some(Treatment.Inspected(Map("/" -> Set("read")))), host)

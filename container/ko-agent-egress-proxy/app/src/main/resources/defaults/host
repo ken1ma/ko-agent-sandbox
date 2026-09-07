@@ -18,11 +18,13 @@ allow https://gitlab.com/   read git-fetch
 
 # GitHub
 allow https://raw.githubusercontent.com/            read  # raw file contents
-allow https://objects.githubusercontent.com/        read  # download redirects, user attachments
+allow https://objects.githubusercontent.com/        read  # issue and PR attachments
 allow https://codeload.github.com/                  read  # archive downloads (tarball, zipball)
 allow https://api.github.com/                       read  # REST reads: issues, PRs, releases
 allow https://release-assets.githubusercontent.com/ read  # release downloads
 allow https://media.githubusercontent.com/          read  # direct LFS media URLs
+allow https://ghcr.io/                              read  # container registry; issues token too
+allow https://pkg-containers.githubusercontent.com/ read  # ghcr.io's blob CDN
 
 # agent docs
 allow https://code.claude.com/        read  # claude
@@ -186,13 +188,20 @@ allow https://auth.docker.io/                   read  # token issuer; anonymous 
 # blob CDN, https://docs.docker.com/docker-hub/release-notes/#2026-05-20
 allow https://production.cloudfront.docker.com/ read  # blob CDN
 allow https://production.cloudflare.docker.com/ read  # no longer listed in https://docs.docker.com/desktop/setup/allow-list/
-# distroless; Artifact Registry serves the blobs itself, so storage.googleapis.com is not needed
-allow https://gcr.io/                           read
-allow https://public.ecr.aws/                   read  # Amazon Linux
+# gcr.io (Artifact Registry) serves the blobs itself, so no storage.googleapis.com
+allow https://gcr.io/                           read  # distroless
+allow https://public.ecr.aws/                   read  # Amazon ECR Public Gallery: Amazon Linux
 allow https://d5l0dvt14r5h8.cloudfront.net/     read  # blob CDN
 allow https://d2glxqk2uabbnd.cloudfront.net/    read  # blob CDN
-# ghcr.io and quay.io wait for a real need: a project adds them in egress/rule,
-# and the proxy log names a refused one.
+allow https://quay.io/                          read  # blobs redirect to CDN below; https://github.com/openshift/openshift-docs/blob/main/modules/configuring-firewall-module.adoc
+allow https://cdn.quay.io/                      read
+allow https://cdn01.quay.io/                    read
+allow https://cdn02.quay.io/                    read
+allow https://cdn03.quay.io/                    read
+allow https://cdn04.quay.io/                    read
+allow https://cdn05.quay.io/                    read
+allow https://cdn06.quay.io/                    read
+# ghcr.io is under "GitHub" above
 
 # Unix / Debian
 allow https://man7.org/            read  # Linux man pages

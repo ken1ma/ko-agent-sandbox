@@ -981,8 +981,8 @@ switches `USER` or chowns to a second uid fails by design — this repository's 
 them, so the sandbox still cannot build itself. The egress topology is inherited, not escaped:
 inner containers share the sandbox's network namespace, their only route out is still the proxy,
 and an image pull is an ordinary logged CONNECT to a registry the ruleset admits — Docker Hub,
-`gcr.io` and ECR Public are built in, any other registry is the project's `egress/rule` to
-add.
+`ghcr.io`, `quay.io`, `gcr.io` and ECR Public are built in, any other registry is the project's
+`egress/rule` to add.
 No runtime is preinstalled; podman arrives through the image's `sandbox-install-podman` — which
 refuses outside this mode, and unpacks under `$HOME` as ordinary unprivileged code granted nothing
 by the image. Its storage dies with the session (no cross-session executable cache), and the next
