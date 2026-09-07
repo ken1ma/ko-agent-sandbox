@@ -24,6 +24,11 @@ this project's operating model deliberately avoids:
 
 - https://github.com/mattolson/agent-sandbox/issues/122
 
+`plan-credential-broker-proxy.md` is inside this decision, not an exception to it: it moves a
+value the user forwards out of the sandbox and adds no grant word — what the value may do stays
+with its issuer's scope and the ruleset (SECURITY.md, "Why the ruleset is not a capability
+system").
+
 ### No signing broker for the proxy's leaves, and no run intermediate
 
 Under `allow-unless-denied` the proxy issues a leaf per unlisted host from a CA created for the run

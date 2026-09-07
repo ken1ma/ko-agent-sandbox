@@ -4,7 +4,14 @@
 # This stack is in us-east-1 with VPC, EC2, ECS, Aurora, CloudWatch, IAM, Secrets Manager, and
 # stack secrets encrypted by KMS (--secrets-provider awskms://...). Launch with the credentials
 # forwarded: --env=PULUMI_ACCESS_TOKEN --env=AWS_ACCESS_KEY_ID --env=AWS_SECRET_ACCESS_KEY;
-# SECURITY.md, "Credential theft", is what that costs.
+# SECURITY.md, "Credential theft", is what that costs, and says to forward a read-only role's
+# temporary credential — AWS_SESSION_TOKEN with the two above — when the session is to
+# `pulumi preview`. IAM then refuses a mutation whoever requests it: `pulumi up`, which may still
+# start and compute its update, the AWS CLI, or the program's own SDK call. An action a
+# provider's preview needs but the role lacks fails the same way. The state backend is a second
+# authority: a preview reads state and `--refresh` writes it, so PULUMI_ACCESS_TOKEN's permission
+# set decides that separately; whether a read-only token's `--refresh` works must be tested
+# against the backend in use, not assumed.
 # get.pulumi.com serves the CLI, and the plugins GitHub releases lack
 allow https://get.pulumi.com/ read
 allow https://api.pulumi.com/ tunnel                      # state backend; not for a local login

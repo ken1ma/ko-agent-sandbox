@@ -473,6 +473,9 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Delivery order
 
+Each step starts on a use case real sessions of `plan-credential-broker-proxy.md` produced, one
+of "Required use cases" above; TODO.md, "Credential brokering", has the order and its reason.
+
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.
 2. Implement host storage, management actions and per-run generations for static API keys. Reuse the
@@ -503,5 +506,7 @@ production-container cleanup pass together.
   https://github.com/docker/sbx-releases/issues/344
 - docker/sbx-releases #402, refresh side effects and cross-process races:
   https://github.com/docker/sbx-releases/issues/402
+- docker/sbx-releases #492, a removed credential still injected after the sandbox restarts:
+  https://github.com/docker/sbx-releases/issues/492
 - docker/sbx-releases #300, proposed expiring host-exec credential contract:
   https://github.com/docker/sbx-releases/issues/300
