@@ -374,9 +374,13 @@ object RunOnHostChannel:
             // shim blocked on a FIFO no writer will ever open.
             outWriter.waitFor()
             errWriter.waitFor()
+            // Set before the exit code goes out: the shim exits as soon as it has read the code,
+            // and on the host its ctl closes before the exit writer's end is observed here. The
+            // command has exited and both streams have drained, so nothing is left to end;
+            // writeExit's bound covers a requester gone before reading the code.
+            ended.set(true)
             writeExit(transport, id, exit)
             log(s"exit $exit")
-          ended.set(true)
         catch
           case ex: IOException =>
             log(s"could not start the wrapper: ${ex.getMessage}")

@@ -150,11 +150,19 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("channel")
     val host = Files.createDirectory(dir.resolve("host"))
     val project = Files.createDirectory(dir.resolve("project")).toRealPath()
+    // On the host `podman exec` returns tens of milliseconds after the container-side process
+    // ends (measured in a session's channel log). The exit writer's lateness is the one the
+    // protocol can observe — the shim's ctl closes before the broker sees that writer end — so
+    // the stub delays that exec alone.
     executable(
       host.resolve("podman"),
       """#!/bin/sh
         |case "$1 $2" in
-        |  "exec -i") shift 3; exec "$@" ;;
+        |  "exec -i") shift 3
+        |    case "$*" in
+        |      *"/exit."*) "$@"; sleep 0.3 ;;
+        |      *) exec "$@" ;;
+        |    esac ;;
         |esac
         |""".stripMargin,
     )
@@ -201,11 +209,21 @@ class RunOnHostChannelTest extends munit.FunSuite:
   test("a command streams both channels back and returns its own exit code"):
     channel((program, cwd, args) =>
       Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
-    ): (project, _, _) =>
+    ): (project, _, brokerLog) =>
       val (exit, out, err) = shimCall(project, "sbt", "test", "-v")
       assertEquals(exit, 7)
       assertEquals(out, s"ran sbt test -v in $project\n")
       assertEquals(err, "complaint\n")
+      // The shim leaves as soon as it has its exit code, and the log records that as the
+      // answer's end, never as a requester lost mid-command. The exit line lands after the
+      // shim's own return, by the exit writer's end, so it is awaited.
+      var waited = 0
+      while !brokerLog().contains("exit 7") && waited < 100 do
+        Thread.sleep(100)
+        waited += 1
+      val logged = brokerLog()
+      assert(logged.contains("exit 7"), logged)
+      assert(!logged.contains("requester is gone"), logged)
 
   test("the banner the injected JAVA_TOOL_OPTIONS causes is dropped, and nothing else is"):
     val banner = "Picked up JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/x"
