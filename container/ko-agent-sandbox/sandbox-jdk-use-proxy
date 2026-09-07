@@ -123,8 +123,8 @@ EOF
 
 set_proxy
 
-# The CA is the other half, and only exists where the session inspects a host. Absent is a
-# report rather than a failure: the proxy above is what a read-write-only policy needs.
+# The CA exists only where the session inspects a host. Without inspection, the proxy settings
+# above suffice and there is no extra certificate to trust.
 if [ ! -r "$CA" ]; then
     echo "${0##*/}: $CA is absent, so this session inspects no host; nothing to trust"
     exit 0

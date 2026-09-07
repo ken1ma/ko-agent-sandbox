@@ -111,7 +111,7 @@ object GitHelper:
     problemOf(path, spellings).foreach: problem =>
       throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath)
 
-  /** A write-capable method's path, refused rather than normalized when a
+  /** A POST, PUT, PATCH or DELETE path, refused rather than normalized when a
     * forge would decode it first. */
   def requireUnambiguousPath(path: String): Unit =
     requireSpelledPlainly(path, DecodedSpellings)

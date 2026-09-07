@@ -6,7 +6,7 @@
 // src/probe/seatbelt-semantics.sh:
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
-//     non-canonical path therefore matches nothing, which grants rather than denies. Every path
+//     non-canonical path can leave a deny unmatched and a broader allow in force. Every path
 //     that reaches `render` is refused unless it is absolute and normalized, and RunOnHostPrereqs
 //     resolves symlinks before it gets here.
 //   - Rules are last-match-wins, so the guard denies are emitted after every allow. A generator
@@ -29,10 +29,9 @@ object SeatbeltProfile:
    * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
    *
-   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. Case is not folded
-   * here and does not need to be: SBPL canonicalizes the accessed path, and on a case-insensitive
-   * volume that returns the on-disk spelling, so `.GIT` arrives as `.git`. A profile written to
-   * rely on pattern folding instead would not fold.
+   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern matches
+   * Seatbelt's resolved path without folding case; run-on-host.md, "The host command's filesystem
+   * rules", states what the case-alias probe establishes.
    */
   val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
@@ -101,24 +100,20 @@ object SeatbeltProfile:
   )
 
   /**
-   * The profile, or the first reason it cannot be built. A refusal rather than a best effort: a
-   * profile with one unusable rule is a profile with one silent grant.
+   * The profile, or the first reason it cannot be built. A deny naming the wrong path could
+   * leave a broader allow in force.
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
     val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
-    // Writable implies executable for the project and the session temp, never for the cache:
-    // a child inherits the profile, so a command running what it wrote gains nothing, and a build's
-    // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
-    // JVM reads, and nothing there is run.
+    // Tests write and run stubs in the project and the command's temporary directory. Children
+    // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
-    // The sbt global base, the Ivy home and Maven's local repository are caches like the Coursier
-    // one: artifacts the JVM reads, nothing run.
     val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
     val program = prereqs.program
-    everyPath.find(path => !usable(path)) match
+    everyPath.find(path => !isAbsoluteNormalized(path)) match
       case _ if program == Program.Sbt && inputs.distribution.isEmpty =>
         Left(
           "an sbt profile needs the distribution the sbt script execs; without it the command cannot find" +
@@ -140,7 +135,7 @@ object SeatbeltProfile:
         Left(s"a ${program.name} profile has no Ivy home to grant")
       case _ if program != Program.Mvn && inputs.m2Repository.isDefined =>
         Left(s"a ${program.name} profile has no Maven local repository to grant")
-      case Some(bad) => Left(nonCanonicalReason(bad))
+      case Some(bad) => Left(invalidPathReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
       case None =>
@@ -175,7 +170,7 @@ object SeatbeltProfile:
         lines += ""
         lines += ";; What the command may change, and run: a child inherits this profile."
         readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
-        lines += ";; What the command may change but never runs."
+        lines += ";; Caches: reads and writes, but no direct process execution; the JVM can load their code."
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
         lines += ";; The command's own proxy, and no other destination."
@@ -186,15 +181,15 @@ object SeatbeltProfile:
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
-        // session temp, where the environment contract points XDG_RUNTIME_DIR and
+        // command's temporary directory, where the environment contract points XDG_RUNTIME_DIR and
         // SBT_GLOBAL_SERVER_DIR; measured that a socket outside the subpath stays denied.
-        lines += ";; sbt's boot and server sockets, inside the session temp and nowhere else."
+        lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
-        lines += ";; a .git a test builds in the session temp is reclaimed with the session, and no"
+        lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
         lines += ";; host git ever runs there."
         GuardedNames.foreach: name =>
           lines +=
@@ -234,12 +229,12 @@ object SeatbeltProfile:
 
   /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPrereqs:
     * it needs the filesystem, and this stays pure. */
-  private def usable(path: Path): Boolean =
+  private def isAbsoluteNormalized(path: Path): Boolean =
     path.isAbsolute && path.normalize() == path
 
-  private def nonCanonicalReason(path: Path): String =
-    s"$path is not a canonical absolute path; SBPL matches rules as written, so a rule naming it " +
-      "would match nothing and grant rather than deny"
+  private def invalidPathReason(path: Path): String =
+    s"$path is not absolute and normalized; supply an absolute path with no . or .. components " +
+      "and resolve symlinks before rendering the profile"
 
   /** An SBPL string literal. Paths here contain spaces, `+` and percent signs; only a quote or a
     * backslash needs escaping, and neither occurs in a path this wrapper accepts. */

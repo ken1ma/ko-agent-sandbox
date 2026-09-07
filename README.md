@@ -262,7 +262,7 @@ checkout — [Development](#development).
 
 ### `--build`
 
-1. Builds the containers in the diagram with `podman build`.
+1. Builds the container images in the diagram with `podman build`.
     1. Image-producing actions require their source registries on every run: `--build` reaches
        Docker Hub, `ghcr.io` and `gcr.io`; `--update` reaches `ghcr.io`; `--self-test` reaches
        Docker Hub. A warm cache does not provide an offline mode.

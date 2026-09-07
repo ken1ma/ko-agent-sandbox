@@ -85,9 +85,9 @@ report "E4 symlink canonicalization" \
 
 # ---------------------------------------------------------------------------
 r=$(attempt "$proj/.git/config" "echo probe > '$proj/.GIT/config'")
-report "E5 case folding" \
-    "does a lowercase rule catch an uppercase spelling on this insensitive volume?" "$r" \
-    "DENIED: folding is free. ALLOWED: the fold rule needs an explicit case-insensitive pattern."
+report "E5 case alias of an existing entry" \
+    "does .GIT resolve to the existing .git on this case-insensitive volume?" "$r" \
+    "DENIED: the rule matches the resolved .git path. ALLOWED: this alias bypasses the rule."
 
 # ---------------------------------------------------------------------------
 profile <<'SB'

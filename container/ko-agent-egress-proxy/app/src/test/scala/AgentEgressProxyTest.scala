@@ -1705,9 +1705,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     Vector("GET", "HEAD").foreach: method =>
       assertEquals(
         refused(s"$method /o/r HTTP/1.1\r\nHost: github.com\r\nContent-Length: 9\r\n\r\n", whole("read", "git-fetch")),
-        "request body",
+        "request body framing header",
       )
-    // method= is its list, under its path, and write-only where the scope has no read.
+    // method= grants its listed methods under its path, without general GET or HEAD access.
     val api = Map("/" -> Set("read"), "/api/" -> Set("read", "PUT", "DELETE"))
     request("PUT /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api)
     request("DELETE /api/x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", api)
@@ -1830,12 +1830,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "Host: github.com\r\n\r\n",
     )
 
-  test("a read method may not carry a request body"):
-    Vector("GET", "HEAD").foreach: method =>
-      intercept[Refusal]:
-        inspected(
-          s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\nContent-Length: 5\r\n\r\n",
-        )
+  test("GET and HEAD refuse body framing headers, including a zero Content-Length"):
+    for
+      method <- Vector("GET", "HEAD")
+      header <- Vector("Content-Length: 0", "Content-Length: 5", "Transfer-Encoding: chunked")
+    do
+      val refusal = intercept[Refusal]:
+        inspected(s"$method /owner/repo HTTP/1.1\r\nHost: github.com\r\n$header\r\n\r\n")
+      assertEquals(refusal.getMessage, "request body framing header")
+      assertEquals(refusal.advice, RefusalAdvice.bodyFramingHeader)
 
   test("git fetch is allowed and git push is not"):
     inspected(
@@ -1919,15 +1922,35 @@ class AgentEgressProxyTest extends munit.FunSuite:
           s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
         )
 
-  test("a write path may not be spelled ambiguously"):
-    Vector(
-      "/owner/repo.git/%2e%2e/git-upload-pack",
-      "/owner/repo.git/../git-upload-pack",
-      "/owner/repo.git/./git-upload-pack",
-    ).foreach: path =>
-      intercept[Refusal]:
-        inspected(
-          s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
+  test("path-spelling checks distinguish the host root from narrower scopes for every supported method"):
+    val grants = Set("read", "POST", "PUT", "PATCH", "DELETE")
+    val root = Map("/" -> grants)
+    val narrowed = root + ("/owner/" -> grants)
+    val spellings = Vector(
+      "/owner/%2e%2e/x" -> "percent-encoding in the path",
+      "/owner/../x" -> "a dot segment in the path",
+      "/owner/./x" -> "a dot segment in the path",
+      "/owner/a\\b" -> "a backslash in the path",
+      "/owner//x" -> "an empty segment in the path",
+    )
+    for
+      method <- Vector("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
+      (path, reason) <- spellings
+    do
+      val request = head(s"$method $path HTTP/1.1\r\nHost: github.com\r\n\r\n")
+      assertEquals(
+        intercept[Refusal](authorizeInspectedRequest("github.com", request, narrowed)).getMessage,
+        reason,
+        s"$method $path under /owner/",
+      )
+      val allowedAtRoot = method == "GET" || method == "HEAD" ||
+        reason == "a backslash in the path" || reason == "an empty segment in the path"
+      if allowedAtRoot then authorizeInspectedRequest("github.com", request, root)
+      else
+        assertEquals(
+          intercept[Refusal](authorizeInspectedRequest("github.com", request, root)).getMessage,
+          reason,
+          s"$method $path under /",
         )
 
   test("the Host header must name the host the connection was authorized for"):
@@ -2202,7 +2225,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         () => inspected("GET /x HTTP/1.1\r\nHost: evil.example\r\n\r\n"),
       ),
       RefusalRow(
-        "authorizeInspectedRequest request body", github, requestBody,
+        "authorizeInspectedRequest body framing header", github, bodyFramingHeader,
         () => inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 9\r\n\r\n"),
       ),
       RefusalRow(
@@ -2223,40 +2246,41 @@ class AgentEgressProxyTest extends munit.FunSuite:
         () =>
           authorizeInspectedRequest(github, head("GET /o/r HTTP/1.1\r\nHost: github.com\r\n\r\n"), whole("git-fetch")),
       ),
-      // The refused-write site chooses by path for a POST — api.github.com's GraphQL is the case that
-      // matters — and names the write for any other method.
-      RefusalRow("authorizeInspectedRequest write not granted", github, graphql, post(github, "/graphql", fetch)),
+      // A refused POST gets advice for its path: GraphQL and LFS can retrieve data through another API.
+      RefusalRow("authorizeInspectedRequest method not granted", github, graphql, post(github, "/graphql", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest write not granted", "api.github.com", graphql,
+        "authorizeInspectedRequest method not granted", "api.github.com", graphql,
         post("api.github.com", "/graphql", whole("read")),
       ),
-      RefusalRow("authorizeInspectedRequest write not granted", gitlab, graphql, post(gitlab, "/api/graphql", fetch)),
+      RefusalRow("authorizeInspectedRequest method not granted", gitlab, graphql, post(gitlab, "/api/graphql", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest write not granted", github, lfsBatchGithub,
+        "authorizeInspectedRequest method not granted", github, lfsBatchGithub,
         post(github, "/o/r.git/info/lfs/objects/batch", fetch, defaultsRuleset.hosts.contains),
       ),
       // The content host is named only while the ruleset admits it, and only for the forge it serves.
       RefusalRow(
-        "authorizeInspectedRequest write not granted", github, lfsBatch,
+        "authorizeInspectedRequest method not granted", github, lfsBatch,
         post(
           github, "/o/r.git/info/lfs/objects/batch", fetch,
           rulesetOf(rule = s"deny https://$LfsContentHost/").hosts.contains,
         ),
       ),
       RefusalRow(
-        "authorizeInspectedRequest write not granted", gitlab, lfsBatch,
+        "authorizeInspectedRequest method not granted", gitlab, lfsBatch,
         post(gitlab, "/g/o/r.git/info/lfs/objects/batch", fetch, defaultsRuleset.hosts.contains),
       ),
-      RefusalRow("authorizeInspectedRequest write not granted", github, readOnly, post(github, "/o/r/issues", fetch)),
       RefusalRow(
-        "authorizeInspectedRequest write not granted", github, readOnly,
+        "authorizeInspectedRequest method not granted", github, methodNotGranted, post(github, "/o/r/issues", fetch),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest method not granted", github, methodNotGranted,
         () => inspected("PUT /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
       ),
       RefusalRow(
-        "authorizeInspectedRequest other method", github, readOnly,
+        "authorizeInspectedRequest other method", github, methodNotGranted,
         () => inspected("OPTIONS /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
       ),
-      // GitHelper's one refusal site, reached by a write path's two spellings and, under a line
+      // GitHelper's one refusal site, reached by a POST path's two spellings and, under a line
       // other than the root, a read path's two further ones.
       RefusalRow(
         "requireSpelledPlainly", github, ambiguousPath,
@@ -2351,12 +2375,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):
     val (client, server) = socketPair()
-    respondInsideTls(server, 403, "Forbidden", "POST not granted", Some(RefusalAdvice.readOnly))
+    respondInsideTls(server, 403, "Forbidden", "POST not granted", Some(RefusalAdvice.methodNotGranted))
     server.close()
     val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
     client.close()
 
-    val body = s"ko-agent-egress-proxy: POST not granted\n${RefusalAdvice.readOnly}\n"
+    val body = s"ko-agent-egress-proxy: POST not granted\n${RefusalAdvice.methodNotGranted}\n"
     assertEquals(
       received,
       "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +

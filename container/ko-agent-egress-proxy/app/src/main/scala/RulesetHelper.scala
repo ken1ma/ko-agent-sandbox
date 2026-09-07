@@ -786,12 +786,12 @@ object RulesetHelper:
 
   /**
    * The one gate an inspected request passes. The request is classified once, into what it is — a
-   * read, fetch discovery, upload-pack, push discovery, another write — with its path vetted for
+   * read, fetch discovery, upload-pack, push discovery, or a request using another method — with its path vetted for
    * the boundary it falls in, and that classification is decided once against the resolved scope
    * of its longest literal match: GET and HEAD under `read`, bodyless; fetch discovery and
    * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
    * fails at its first request; push discovery under a `POST` grant, where the push is the
-   * project's own grant; another write under its method, its path refused for the spellings a
+   * project's own grant; other requests under their method grants, their paths refused for spellings a
    * forge decodes first (requireUnambiguousPath). Where the longest match is a line other than
    * the root, the request is first refused for `%`, a dot segment, a backslash and an empty
    * segment, on every method: under such a line the path decides grants the root does not give.
@@ -838,7 +838,7 @@ object RulesetHelper:
       case "GET" | "HEAD" =>
         // a body on a read method would be an unbounded, unlogged client-to-server channel
         if head.bodyFraming != BodyFraming.Empty then
-          throw Refusal("request body", RefusalAdvice.requestBody)
+          throw Refusal("request body framing header", RefusalAdvice.bodyFramingHeader)
 
         if isReceivePackDiscovery(head) then
           if !grants("POST") then throw Refusal("git push ref discovery", RefusalAdvice.gitPush)
@@ -854,11 +854,12 @@ object RulesetHelper:
         if !opened then
           throw Refusal(
             s"$method not granted",
-            if method == "POST" then RefusalAdvice.forRefusedPost(host, path, admitted) else RefusalAdvice.readOnly,
+            if method == "POST" then RefusalAdvice.forRefusedPost(host, path, admitted)
+            else RefusalAdvice.methodNotGranted,
           )
 
       case method =>
-        throw Refusal(s"$method not granted", RefusalAdvice.readOnly)
+        throw Refusal(s"$method not granted", RefusalAdvice.methodNotGranted)
 
   /*
    * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot

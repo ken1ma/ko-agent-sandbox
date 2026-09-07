@@ -204,6 +204,11 @@ on podman-less machines and kills the test JVM.
 
 ## Deferred — extra hardening, low value
 
+- [ ] Fold case in the host command profile's guard pattern (`SeatbeltProfile.anyDepth`), so a
+  `.GIT` or `.KO-AGENT-SANDBOX` the command creates where no lowercase entry exists is denied on a
+  case-insensitive volume (`run-on-host.md`, "The host command's filesystem rules"), with a gate
+  row creating one. Until then the workspace filter is the stricter of the two guards there.
+
 - [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
   which runs unconfined while parsing hostile bytes as the user's uid
   (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds:
@@ -223,13 +228,13 @@ on podman-less machines and kills the test JVM.
 
 sbt's thin client waits for its server's portfile with no deadline (`run-on-host.md`, "The channel
 and the command"), so a server that never publishes one is a command silent until the agent gives
-up: measured once at ten minutes, with the server's stderr gone with the session. The channel log
-keeps that file for a command ended by signal, and nothing bounds the wait: not the client, not
-the wrapper, not the broker, whose writers die only with their requester, and not the shim, which
-reads output to EOF. Two forms would, and both wait on a measurement:
+up: measured once at ten minutes, with the server's stderr gone with the command's directory.
+The channel log keeps that file for a command ended by signal, and nothing bounds the wait: not the
+client, not the wrapper, not the broker, whose writers die only with their requester, and not the
+shim, which reads output to EOF. Two forms would, and both wait on a measurement:
 
 - [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
-  so the session's logs are kept, with a stderr line naming the bound and the host command log.
+  so the command's logs are kept, with a stderr line naming the bound and the host command log.
   Silence is measured where the command's bytes are read, and time the pump spends blocked on a
   slow requester does not count. N must exceed a healthy silence — a module compiling, a large
   download, which the proxy logs once at its start, a slow test — because a value below one is not
@@ -271,9 +276,9 @@ Everything else a Gradle backend needs is known, so the open decision is the loo
   directory>`, where the hash is the MD5 of the distribution URL written in base 36. The build
   is granted that directory read-only.
 - The build runs `bin/gradle --no-daemon` from that directory, not `gradlew`: with
-  `GRADLE_USER_HOME` moved into the build cache, `gradlew` would download Gradle again into a
-  directory that is writable and not executable.
-- `GRADLE_USER_HOME` is set to a directory in the build cache. `JAVA_HOME` is the JDK, and
+  `GRADLE_USER_HOME` moved into the run-on-host cache, `gradlew` would download Gradle again into a
+  directory where direct process execution is denied.
+- `GRADLE_USER_HOME` is set to a directory in the run-on-host cache. `JAVA_HOME` is the JDK, and
   `org.gradle.java.installations.auto-download=false` stops Gradle from downloading another one.
 - Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy admits that host by default,
   as it does for Maven. `plugins.gradle.org` goes in the rule file.

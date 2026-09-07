@@ -33,7 +33,7 @@ files are the membership, with the reason beside each line.
    under `defaults/model-provider/`. Only the basename of the directly launched command is
    classified; anything else selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
-   443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, every write
+   443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, all other methods
    refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
    `read` and nothing else, so a `tunnel` deny takes nothing from it. Choose it for work whose
    hosts cannot be listed ahead of it — the open web, an unbounded dependency tree — and expect
@@ -73,14 +73,16 @@ proxy folds nothing. `https://HOST` without its slash is refused, never read as 
 
 What a line grants is its words, and nothing is implied:
 
-- `read` — `GET` and `HEAD`, without a body.
+- `read` — `GET` and `HEAD`, without a body or `Content-Length` or `Transfer-Encoding` headers.
+  Even `Content-Length: 0` is refused.
 - `git-fetch` — a clone's two requests, the ref discovery (`GET .../info/refs?service=
   git-upload-pack`) and the transfer (`POST .../git-upload-pack`). A `git-fetch` line without
   `read` is clonable and not browsable; a `read` line without `git-fetch` is browsable, and a
   clone fails at its first request. `git-fetch` never grants `git push`.
 - `method=POST,PUT,...` — the listed methods, from `POST`, `PUT`, `PATCH`, `DELETE`, at that
-  path. A `method=` line alone is write-only. `git push`'s ref discovery is refused except where
-  `POST` is granted at the repository.
+  path, without granting general `GET` or `HEAD` access. These methods can also retrieve data,
+  such as a GraphQL query sent by `POST`. `POST` at a repository also grants `git push`'s ref
+  discovery, which uses `GET`.
 - `tunnel` — the opaque treatment. It stands alone on its line, and its URL ends at `/`.
 
 The lines apply in the order written, over the defaults — the PF and relayd model, whose origin
@@ -118,10 +120,11 @@ a scope other than the root, the request is first refused, on every method, for 
 origin might fold onto another path — `%`, a dot segment, a backslash, an empty segment — because
 the proxy compares literally and cannot know how the origin decodes; a wrong-case path fails
 closed on GitHub and GCS alike.
-Under the root a read may carry any of those, which is what keeps npm's `/@scope%2fname` reading
-beside a `method=` line; a write keeps that refusal everywhere. A line is therefore a boundary as
-well as a grant: one whose grants its enclosing scope already holds still changes what a request
-under it is refused for.
+Under the root, `GET` and `HEAD` may carry any of those spellings, which keeps npm's
+`/@scope%2fname` readable beside a `method=` line. `POST`, `PUT`, `PATCH` and `DELETE` still refuse
+percent-encoding and dot segments there; backslashes and empty segments are refused only under a
+scope other than the root. A line is therefore a boundary as well as a grant: one whose grants its
+enclosing scope already holds still changes which path spellings are refused.
 
 `deny defaults`, the first line if present, means the defaults contribute nothing and the file is
 the whole ruleset. Any line above it is refused. `allow model-provider NAME` expands, at its
@@ -233,8 +236,8 @@ SECURITY.md, "The audit line grammar", has every field and reason.
 
 ## TLS inspection
 
-The proxy terminates the TLS of every inspected host so that reading can be allowed and writing
-refused. Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` and
+The proxy terminates TLS for every inspected host and checks each request against its grants.
+Only hosts with the `tunnel` treatment stay opaque — under `deny-unless-allowed` and
 `allow-unless-denied` the model providers, unless a project adds more; under `deny-unless-model`
 the selected groups' tunnel lines; under `deny-all` none.
 

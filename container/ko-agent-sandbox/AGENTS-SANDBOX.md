@@ -2,7 +2,7 @@
 
 You are running inside a container that is the security boundary.
 
-## Unprivileged user, read-only filesystem
+## Unprivileged user, read-only root filesystem
 
 You are `nonroot` with `no-new-privileges` set and every Linux capability dropped.
 `root` cannot be obtained.

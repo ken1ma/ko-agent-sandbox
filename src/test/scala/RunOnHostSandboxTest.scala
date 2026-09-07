@@ -530,7 +530,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     appendSessionLogs(channelLog, condemned)
     val logged = Files.readString(channelLog, UTF_8)
     assert(logged.startsWith("before\n"), logged)
-    assert(logged.contains("ended by signal; session s1's logs follow"), logged)
+    assert(logged.contains("ended by signal; command s1's logs follow"), logged)
     assert(logged.contains(s"==> proxy.log\n[last $SessionLogTailBytes bytes]\n"), logged)
     assert(logged.contains(s"==> sbt-server-err1.log\n[last $SessionLogTailBytes bytes]\n"), logged)
     assert(logged.contains("==> sbt-server-err2.log\n[skipped: not a regular file]\n"), logged)

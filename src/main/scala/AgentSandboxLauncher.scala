@@ -1953,7 +1953,7 @@ object AgentSandboxLauncher:
        |$admission A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
        |serves `clone` and `pull`, and `git push` is always refused; `method=` names the
-       |write methods admitted there. On an inspected host a request takes the line whose
+       |HTTP methods admitted there. On an inspected host a request takes the line whose
        |path is its longest match, a tree by prefix, an exact path alone; one matching no line
        |is refused, and so is one under a line other than the root spelled with
        |percent-encoding, a dot segment, a backslash or an empty segment.

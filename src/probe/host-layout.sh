@@ -42,7 +42,7 @@ project=$(pwd -P)
 say "canonical project root" "$project"
 probe_dir=$(mktemp -d "$project/.layout-probe.XXXXXX") || exit 1
 : > "$probe_dir/casetest"
-if [ -e "$probe_dir/CASETEST" ]; then say "filesystem case" "INSENSITIVE (the fold rule binds)"
+if [ -e "$probe_dir/CASETEST" ]; then say "filesystem case" "insensitive"
 else say "filesystem case" "sensitive"; fi
 rm -rf "$probe_dir"
 say "project/build.properties" "$([ -f project/build.properties ] && cat project/build.properties || echo MISSING)"

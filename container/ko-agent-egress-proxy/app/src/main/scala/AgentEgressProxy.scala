@@ -1,5 +1,5 @@
 // The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request
-// inspected session. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
+// inspected connection. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
 // HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf issuance in X509Helper.scala, git protocol
 // knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
@@ -44,7 +44,7 @@ object AgentEgressProxy:
   val MaxConcurrentConnections = 256
 
   /*
-   * An inspected session is one HTTP request and its response, so this bounds
+   * An inspected connection is one HTTP request and its response, so this bounds
    * inactivity rather than total duration: a `git clone` of a large repository
    * transfers continuously and never approaches it, while GitHub counting
    * objects before the first byte can legitimately take minutes.
@@ -450,7 +450,7 @@ object AgentEgressProxy:
       // the public default's (Ruleset.scopesOf) — unless this run has no material at all.
       run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
-          runInspectedSession(
+          runInspectedConnection(
             client, origin, connectHost, hello, inspection,
             run.resolved.scopesOf(connectHost),
             run.resolved.admits,
@@ -508,7 +508,7 @@ object AgentEgressProxy:
    * exploits. After the response the client is only drained (drainClient), never answered
    * again. Cost: a handshake per request — `git fetch` is two.
    */
-  def runInspectedSession(
+  def runInspectedConnection(
     client: Socket,
     origin: OriginSocket,
     host: String,

@@ -10,7 +10,7 @@ each part:
 | the threat model, priced | `SECURITY.md` "Run on host" |
 | the option, the command, what a command may write | README Reference, `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
-| the session lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
+| the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | the wrapper: proxy, environment, diagnostics | `RunOnHostSandbox.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
@@ -66,17 +66,19 @@ guard in ACLs at all — before it is worth reconsidering.
 The filesystem rules beneath the reach — what a command may touch, in whole — and the two deny rows
 that make host commands safe to expose to a sandbox:
 
-- **Writable implies executable for the project and the session temp, and for nothing else.** A
-  child inherits the profile, so a command running what it wrote gains no authority it did not
-  have — and a build's tests routinely write and run stubs, as this repository's own do. The agent
-  cache is writable and not executable: it holds artifacts the JVM reads, and nothing there is run.
+- **Commands can start programs they write in the project or their temporary directory.** A
+  child inherits the profile, so running those programs adds no authority. Tests routinely write
+  and run stubs. The run-on-host cache permits reads and writes but not direct process execution;
+  the JVM can still load and execute code from cached JARs.
 - **Seatbelt has no mount namespace**, so `$HOME` cannot be replaced with an empty directory the
   way a container image would. The profile denies it instead: a command cannot create
   `$HOME/.netrc`, a Coursier mirror file, or any other configuration a later step would read,
   because the write is denied rather than because the directory is bare.
-- **Both guard rows fold case.** APFS is case-insensitive by default, so `.GIT` reaches the same
-  directory as `.git`, and `ko-agent-fs` already folds on the filter's side; two guards over one
-  tree protect only where they agree about a name — a write arrives through the laxer one.
+- **Seatbelt matches the path after resolving it, and the pattern does not fold case.** On a
+  case-insensitive volume an access through `.GIT` to an existing `.git` resolves to the lowercase
+  path and is denied (`src/probe/seatbelt-semantics.sh`, E5). A `.GIT` the command creates where
+  no `.git` exists keeps that spelling and is not denied, though host `git` run in that directory
+  would open it as `.git`; the workspace filter refuses the name. `TODO.md` holds the fix.
 - **Both guard rows deny link creation, not only writes.** On the host the project and its `.git`
   are one filesystem, so `link(PROJECT/.git/config, PROJECT/x)` would succeed and a later write to
   `x` reach `.git/config` by a path no write rule matches. `SECURITY.md` dismisses hardlinks for
@@ -86,17 +88,16 @@ that make host commands safe to expose to a sandbox:
   writable tree is not a `.git` directory, and neither guard refuses it — running host `git` inside
   a directory the agent created is running the agent's output, the same gap `SECURITY.md`
   records for the workspace filter.
-- **The session temporary directory is the only unnamed writable space**, and it is
-  session-scoped: it starts empty and no command reads temporary state left by another. That is not
-  the same as an orderly exit always happening — a killed command can leave a directory, and the
-  next start reclaims it rather than reuses it (`RunOnHostSession.scala`).
+- **Each command gets a fresh temporary directory.** A killed command can leave one behind;
+  the next command reclaims it rather than reusing it (`RunOnHostSession.scala`).
 
 ## Network
 
 The command's only egress is its own proxy (below); Seatbelt permits connections to that loopback
-endpoint and nothing else, with UNIX-domain sockets only inside the session temp. Loopback is every
-local service, so no TCP listener or other loopback connect is granted: a test suite that binds
-one — the proxy's own wire-relay tests do — gets `EPERM` on the host and runs in the container.
+endpoint and nothing else, with UNIX-domain sockets only inside the command's temporary directory.
+Loopback reaches local services, so no TCP listener or other loopback connect is granted. A test
+suite that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host and runs in
+the container.
 Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`):
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
@@ -170,8 +171,8 @@ running the script to ask would execute what the profile exists to contain, on t
 
 sbt 2 is client/server by construction — there is no one-shot mode — so the server starts *inside*
 the profile and its state follows `-Dsbt.global.base` into the project's run-on-host cache. The base
-must be persistent, not session-temporary: sbt 2 leaves `target/` outputs as symlinks into its
-content-addressed store, so a base removed with the session would dangle the build's own outputs.
+must persist across commands: sbt 2 leaves `target/` outputs as symlinks into its content-addressed
+store, so removing that base when the command ends would leave the build's own outputs dangling.
 The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a store
 the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted roots
 before each command. `~/.sbt/boot` is not granted and has no consumer — with the global base
@@ -222,8 +223,8 @@ Three more requirements of `mill`, each measured by the gate against `src/probe/
 `mill-jvm-version: system` in the project — its default provisions a JVM through Coursier's index
 into a writable, executable place, which is what the JVM rule refuses; `--no-daemon` — the
 executable and the daemon talk over a loopback TCP socket, which the profile denies ("Network");
-and `out/mill-daemon/` cleared at session start — mill memoizes its resolved classpath against the
-cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
+and `out/mill-daemon/` cleared before each command — mill memoizes its resolved classpath against
+the cache of whatever run wrote it, and a memo from an unconfined run names paths the profile
 denies.
 
 ### Maven
@@ -263,11 +264,12 @@ Maven treats them as absent, so a mirror or credential there never reaches a con
 `.mvn/maven.config`, `jvm.config` and `extensions.xml` are project files the agent already
 controls, like `sbt 'set …'`.
 
-## The session
+## The command's lifetime and environment
 
-`RunOnHostSession.scala` is the lifecycle: a session directory published by rename so it is never
-seen half-made, a lock stating the wrapper's liveness, records owning the children's, condemnation
-before collection, and the portfile-attributed shutdown of an orphaned server. The wrapper root is
+`RunOnHostSession.scala` tracks one wrapper invocation, which it calls a command session. Its
+directory is published by rename so it is never seen half-made; a lock marks the wrapper as live,
+and records identify its child processes. Cleanup moves the directory out of the active set before
+ending those processes and any orphaned sbt server its portfile identifies. The wrapper root is
 `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
 socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
 
@@ -281,7 +283,7 @@ without a proxy. What the wrapper supplies:
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
 | `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
-| `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<session>/tmp` |
+| `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<command directory>/tmp` |
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
@@ -303,7 +305,7 @@ The `java -D` properties:
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
-`<session>` is this command's directory under the wrapper root above, `<cache home>` is
+`<command directory>` is this invocation's directory under the wrapper root above, `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<run-on-host cache>` the
 project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The
 run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home and
@@ -312,7 +314,7 @@ and the wrapper neither creates nor grants them for it. The mill download folder
 the granted executable, is set for the other programs the same way, and they ignore it.
 
 Why the rows are what they are. The host's `TMPDIR` names a directory the command is not granted,
-so the session's replaces it for forked shell programs, as `java.io.tmpdir` does for JVMs. `HOME` is
+so the command's replaces it for forked shell programs, as `java.io.tmpdir` does for JVMs. `HOME` is
 passed because the programs' scripts derive paths from it, and nothing under it is granted. `--env`
 is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
 pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
@@ -356,9 +358,9 @@ attaches to the portfile's server or contends for it. `mill` needs none of this,
 `--no-daemon`; the upstream request that would remove the option is in `sbt-issues.md`.
 
 The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
-changed its mind or gave up on a command that sat silent. So before the wrapper removes the session
-directory of a command ended by that signal, it appends the session's logs to the channel's log, the
-file the launch printed as `host command log` (`RunOnHostSandbox.appendSessionLogs`): the tail of
+changed its mind or gave up on a command that sat silent. Before removing that command's directory,
+the wrapper appends the command's logs to the channel's log, the file the launch printed as
+`host command log` (`RunOnHostSandbox.appendSessionLogs`): the tail of
 the proxy audit log, and sbt's server-stderr file when the client was still waiting for its server.
 The wrapper runs unconfined and the command wrote that directory, so the read comes after the rename
 and the ending of the command's groups, refuses a link at any component, and takes the tail by
@@ -378,8 +380,8 @@ authoritative here — measurement (`src/probe/seatbelt-semantics.sh`,
 the one worth reading first. `SeatbeltProfile.scala` encodes the findings, the two that decide
 everything in its header. The rest, measured:
 
-- What the guard rests on (`src/probe/seatbelt-semantics.sh`): the accessed path is canonicalized —
-  a write through `link -> .git` is denied — and canonicalization folds case where the volume does;
+- What the guard rests on (`src/probe/seatbelt-semantics.sh`): the accessed path is resolved —
+  a write through `link -> .git` is denied, as is the case alias described in the filesystem rules;
   rules are evaluated at access time, so a `.git` created *during* the command is covered; one regex
   spans every depth; and `file-write*` already refuses a hardlink to a denied target, so the
   explicit link clause is redundancy — kept, because the membership of a wildcard operation family
@@ -414,8 +416,8 @@ system — is discovered by running a real build under a deny-default profile an
 never by listing what a host happens to have, and never as a way to reach a user path. The measured
 set is one file, a resource of the launcher's own artifact
 (`src/main/resources/agentsandbox/runtime-authority.txt`): what the production wrapper grants is
-what the probes measured, and the gate and a session run one authority rather than two copies that
-can drift. `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured. Do not
+what the probes measured. The gate and host commands use that same set of grants.
+`src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured. Do not
 pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the narrowest rule
 testing justifies.
 
@@ -423,17 +425,17 @@ testing justifies.
 
 Each command runs its own proxy process, from the same codebase as the container's.
 
-Not the session's proxy: that one is per run, on a network created `--internal`, inside the podman
-machine. There is no host route to it, and making one would either publish the session's full
+The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
+There is no host route to it, and making one would either publish the sandbox session's full
 `--egress` ruleset — `api.anthropic.com` and forges included — to any host process, or relay
 each connection through `podman exec`, paying the VM round trip on exactly the path the command was
 moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
 either way; what is worth controlling is the rules behind it, and a proxy admitting one artifact
 repository is a prize barely worth stealing.
 
-Its lifetime is the session's, bound to the session lock rather than to the client process: the
-server the client forks is what resolves, and it lives past the client until the wrapper ends it.
-Binding to the lock keeps the answer unchanged if a warm server spanning invocations is ever added.
+The command's proxy lives until the wrapper cleans up that invocation. Its lock tracks this
+lifetime, which can extend past the client process: the server the client forks resolves artifacts
+and lives until the wrapper ends it.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
 `dist` compiles them in beside their `/defaults` resources, and the wrapper starts the proxy by

@@ -305,22 +305,22 @@ object RunOnHostSandbox:
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
   /** `--channel-log=<file>`: the broker's own log, where the wrapper appends a signal-ended
-    * command's session logs (appendSessionLogs). */
+    * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
-  /** The last bytes of each session log appended to the channel log: a stalled command's last
+  /** The last bytes of each command log appended to the channel log: a stalled command's last
     * lines are the finding, and a build's audit log can run long. */
   val SessionLogTailBytes = 64 << 10
 
-  /** What the session knew, kept before its directory goes: the proxy's audit log, and sbt's
+  /** Logs retained before the command's directory is removed: the proxy's audit log and sbt's
     * server-stderr file. run-on-host.md "The channel and the command" has why every signal
-    * keeps them and what the second file's presence means. `condemned` is the session directory
+    * keeps them and what the second file's presence means. `condemned` is the command directory
     * at its condemned pathname with its groups ended (RunOnHostSession.endSession), so no
     * process the command started can change what is read; the tmp check below and sessionLogTail
-    * keep each read inside the session. */
+    * keep each read inside the command directory. */
   def appendSessionLogs(channelLog: Path, condemned: Path): Unit =
     val block = StringBuilder()
-    block.append(s"${java.time.Instant.now()} ended by signal; session ${condemned.getFileName}'s logs follow\n")
+    block.append(s"${java.time.Instant.now()} ended by signal; command ${condemned.getFileName}'s logs follow\n")
     // The command's write grant is the tmp subpath, which covers the tmp entry itself: it can
     // replace the directory with a link, which the rename preserves: listed only as a directory
     // by its own attributes.
@@ -396,10 +396,10 @@ object RunOnHostSandbox:
   /**
    * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
    * server reached through the project's portfile belongs to someone — the user's shell, another
-   * session — and a command that attached to it would run outside this profile. Live means
+   * command — and a command that attached to it would run outside this profile. Live means
    * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
    * the portfile points, uncontained on purpose — the user's own server runs outside any
-   * session — and the probe only connects and closes, writing nothing to what it reaches.
+   * sandbox — and the probe only connects and closes, writing nothing to what it reaches.
    */
   def livePortfileServer(project: Path): Option[Path] =
     val portfile = project.resolve("project").resolve("target").resolve("active.json")
@@ -783,8 +783,8 @@ object RunOnHostSandbox:
 
   /**
    * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
-   * the wrapper's own settings, which win. doc/run-on-host.md, "The session", has the table of
-   * what is in it; SECURITY.md, "Run on host", has why it is closed.
+   * the wrapper's own settings, which win. doc/run-on-host.md, "The command's lifetime and environment",
+   * has the table of what is in it; SECURITY.md, "Run on host", has why it is closed.
    */
   def commandEnvironment(
     host: String => Option[String],
