@@ -353,6 +353,21 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(!Files.exists(session.directory), "the original pathname is gone before any shutdown was sent")
     assert(!Files.exists(condemned), "collection deleted the condemned directory")
 
+  test("endSession hands beforeRemoval the condemned directory, groups ended, and deletes it even if that throws"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(5, "START-E")), UTF_8)
+    val fakes = processes(5L -> "START-E")
+    val condemned = root.resolve(CondemnedDir).resolve(session.directory.getFileName)
+    val seen = ListBuffer[(Path, List[Long], Boolean)]()
+    intercept[IllegalStateException]:
+      endSession(root, session, fakes, _ => ServerAnswer.Unreachable("no socket"), condemned =>
+        seen += ((condemned, fakes.ended.toList, Files.isDirectory(condemned.resolve(TmpDir))))
+        throw IllegalStateException("the reader failed"))
+    assertEquals(seen.toList, List((condemned, List(5L), true)))
+    assert(!Files.exists(condemned), "the deletion followed the failed read")
+    assert(!Files.exists(session.directory))
+
   test("an unanswered server keeps its condemned directory for the next start to retry"):
     val root = freshRoot()
     val (dead, _) = deadSessionWithServer(root, _.resolve(TmpDir).resolve("sock"))

@@ -219,6 +219,31 @@ on podman-less machines and kills the test JVM.
   (global-name …))`, the pattern Apple's profiles use); the gate's forked-process rows are where the
   answer is checked.
 
+## Deferred — a bound on a silent host command
+
+sbt's thin client waits for its server's portfile with no deadline (`run-on-host.md`, "The channel
+and the command"), so a server that never publishes one is a command silent until the agent gives
+up: measured once at ten minutes, with the server's stderr gone with the session. The channel log
+keeps that file for a command ended by signal, and nothing bounds the wait: not the client, not
+the wrapper, not the broker, whose writers die only with their requester, and not the shim, which
+reads output to EOF. Two forms would, and both wait on a measurement:
+
+- [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
+  so the session's logs are kept, with a stderr line naming the bound and the host command log.
+  Silence is measured where the command's bytes are read, and time the pump spends blocked on a
+  slow requester does not count. N must exceed a healthy silence — a module compiling, a large
+  download, which the proxy logs once at its start, a slow test — because a value below one is not
+  a one-off failure: the rerun hits the same silence, and the project cannot build on the host
+  until the constant changes. Five minutes is the smallest value defensible without measurement.
+- [ ] sbt-specific, in the wrapper: no progress before the portfile exists — neither output nor
+  growth of the proxy audit log — for N seconds ends the command, with the server-stderr file's
+  content in the diagnostic. Safe at sixty seconds for a first run, whose downloads and build
+  loading count as progress, at the cost of piping the command's output through the wrapper.
+
+Not a form: a bound on the time to first output. The client prints four lines before it waits, and
+every JVM prints its `JAVA_TOOL_OPTIONS` banner within a second, so every host command has written
+something before it can stall.
+
 ## Deferred — Gradle under `--run-on-host`
 
 Gradle does not fit the host command profile, because its processes talk to each other over

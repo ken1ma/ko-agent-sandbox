@@ -7,8 +7,10 @@
 package agentsandbox.launcher
 
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.{ISO_8859_1, UTF_8}
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
+import java.nio.file.attribute.BasicFileAttributes
 
 import scala.jdk.CollectionConverters.*
 
@@ -255,9 +257,9 @@ object RunOnHostSandbox:
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ actionAndArguments
 
-  /** `--run-command-on-host <program> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] --
-    * <args...>`: one channel request as a process of its own, so the broker's cancel is a
-    * SIGTERM whose answer is this wrapper's shutdown hook. */
+  /** `--run-command-on-host <program> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...]
+    * [--channel-log=<file>] -- <args...>`: one channel request as a process of its own, so the
+    * broker's cancel is a SIGTERM whose answer is this wrapper's shutdown hook. */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
       programName: String,
@@ -270,7 +272,9 @@ object RunOnHostSandbox:
         Console.err.println(s"--run-command-on-host: unknown program $programName")
         sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
-      val stray = options.filterNot(option => option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption))
+      val stray = options.filterNot(option =>
+        option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption) || option.startsWith(ChannelLogOption),
+      )
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
         sys.exit(2)
@@ -280,6 +284,8 @@ object RunOnHostSandbox:
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
           autoShutdownForeignSbt = options.contains(AutoShutdownForeignSbtOption),
           forwarded = forwardedNames(options),
+          channelLog = options.find(_.startsWith(ChannelLogOption))
+            .map(option => Path.of(option.stripPrefix(ChannelLogOption))),
         ),
       )
     args.toList match
@@ -297,6 +303,68 @@ object RunOnHostSandbox:
 
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
+
+  /** `--channel-log=<file>`: the broker's own log, where the wrapper appends a signal-ended
+    * command's session logs (appendSessionLogs). */
+  val ChannelLogOption = "--channel-log="
+
+  /** The last bytes of each session log appended to the channel log: a stalled command's last
+    * lines are the finding, and a build's audit log can run long. */
+  val SessionLogTailBytes = 64 << 10
+
+  /** What the session knew, kept before its directory goes: the proxy's audit log, and sbt's
+    * server-stderr file. run-on-host.md "The channel and the command" has why every signal
+    * keeps them and what the second file's presence means. `condemned` is the session directory
+    * at its condemned pathname with its groups ended (RunOnHostSession.endSession), so no
+    * process the command started can change what is read; the tmp check below and sessionLogTail
+    * keep each read inside the session. */
+  def appendSessionLogs(channelLog: Path, condemned: Path): Unit =
+    val block = StringBuilder()
+    block.append(s"${java.time.Instant.now()} ended by signal; session ${condemned.getFileName}'s logs follow\n")
+    // The command's write grant is the tmp subpath, which covers the tmp entry itself: it can
+    // replace the directory with a link, which the rename preserves: listed only as a directory
+    // by its own attributes.
+    val tmp = condemned.resolve(RunOnHostSession.TmpDir)
+    val serverStderr =
+      if !Files.isDirectory(tmp, LinkOption.NOFOLLOW_LINKS) then
+        block.append(s"==> ${RunOnHostSession.TmpDir}\n[skipped: not a directory]\n")
+        Vector.empty
+      else
+        try
+          Files.list(tmp).iterator().asScala
+            .filter(_.getFileName.toString.startsWith("sbt-server-err")).toVector.sorted
+        catch case _: IOException => Vector.empty
+    (condemned.resolve("proxy.log") +: serverStderr).foreach: file =>
+      sessionLogTail(file).foreach: tail =>
+        block.append(s"==> ${file.getFileName}\n").append(tail)
+        if !tail.endsWith("\n") then block.append('\n')
+    try Files.writeString(channelLog, block.toString, UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+    catch case _: IOException => ()
+
+  /** The tail of one session log, as the file the listing named and nothing it could point to:
+    * the attributes are read without following a link, the open refuses one, and the read is
+    * positioned at the tail rather than sized by the file — a sparse file's size is the command's
+    * to choose. Absent is None; anything but a regular file is named and not opened, since an
+    * open FIFO would hold this teardown. */
+  private def sessionLogTail(file: Path): Option[String] =
+    try
+      val attributes = Files.readAttributes(file, classOf[BasicFileAttributes], LinkOption.NOFOLLOW_LINKS)
+      if !attributes.isRegularFile then Some("[skipped: not a regular file]\n")
+      else
+        val channel = Files.newByteChannel(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
+        try
+          val start = math.max(0L, channel.size() - SessionLogTailBytes)
+          channel.position(start)
+          val buffer = ByteBuffer.allocate(SessionLogTailBytes)
+          var open = true
+          while open && buffer.hasRemaining do
+            if channel.read(buffer) < 0 then open = false
+          val text = String(buffer.array, 0, buffer.position(), UTF_8)
+          Some(if start > 0 then s"[last $SessionLogTailBytes bytes]\n$text" else text)
+        finally channel.close()
+    catch
+      case _: java.nio.file.NoSuchFileException => None
+      case ex: IOException => Some(s"[unreadable: ${ex.getMessage}]\n")
 
   /** The name a forwarded value is carried under from the launcher to the confined command: one nothing
     * reads by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
@@ -516,6 +584,8 @@ object RunOnHostSandbox:
     // What `--env` named at launch, the same authority; the values are in this process's
     // environment under carrierName.
     forwarded: Vector[String] = Vector.empty,
+    // Where a command ended by signal leaves its session's logs (appendSessionLogs).
+    channelLog: Option[Path] = None,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = Path.of(s"/private/tmp/ko-agent-$uid")
@@ -567,15 +637,18 @@ object RunOnHostSandbox:
             // cleanup is done, never return early into a halting JVM.
             object teardown:
               private var done = false
-              def apply(): Unit = synchronized:
+              def apply(bySignal: Boolean): Unit = synchronized:
                 if !done then
                   done = true
                   RunOnHostSession
                     .endSession(root, session, RunOnHostSession.HostProcesses,
-                      SbtServerShutdown.shutdown(_))
+                      SbtServerShutdown.shutdown(_),
+                      beforeRemoval =
+                        if bySignal then condemned => channelLog.foreach(appendSessionLogs(_, condemned))
+                        else _ => ())
                     .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
                     .foreach(kept => log(s"kept for the next start to retry: $kept"))
-            val hook = Thread(() => teardown())
+            val hook = Thread(() => teardown(bySignal = true))
             Runtime.getRuntime.addShutdownHook(hook)
             val outcome =
               try
@@ -587,7 +660,7 @@ object RunOnHostSandbox:
                       forwarded.flatMap(name => env(carrierName(name)).map(name -> _)),
                     )
               finally
-                teardown()
+                teardown(bySignal = false)
                 try Runtime.getRuntime.removeShutdownHook(hook)
                 catch case _: IllegalStateException => () // already shutting down; the hook ran
             outcome match

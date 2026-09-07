@@ -157,11 +157,14 @@ object RunOnHostSession:
    * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
    * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
    * TERM). The session's own lock is held through the collection — the exclusivity every other
-   * collector respects (scavenge) — and released only after. A failed rename falls back to ending
-   * the recorded groups and removing in place, with no shutdown sent to any socket.
+   * collector respects (scavenge) — and released only after. `beforeRemoval` sees the condemned
+   * directory once its groups are ended, the wrapper's moment to read the session's logs
+   * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
+   * and removing in place, with no shutdown sent to any socket and no logs read: at the original
+   * pathname a process the command started could still redirect a read.
    */
   def endSession(root: Path, session: Session, processes: Processes,
-    shutdown: Path => ServerAnswer): Vector[Collected] =
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
     val condemned =
       try
         val condemnedRoot = Files.createDirectories(root.resolve(CondemnedDir), ownerOnly)
@@ -171,7 +174,7 @@ object RunOnHostSession:
       catch case _: IOException => None
     condemned match
       case Some(entry) =>
-        val actions = collect(root, entry, processes, shutdown)
+        val actions = collect(root, entry, processes, shutdown, beforeRemoval)
         session.close()
         actions
       case None =>
@@ -235,10 +238,13 @@ object RunOnHostSession:
    * server is ended, by asking it.
    */
   def collect(root: Path, condemned: Path, processes: Processes,
-    shutdown: Path => ServerAnswer): Vector[Collected] =
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
     val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) :+
       collectServer(root, condemned, shutdown)
-    if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
+    // Whatever the reader does, the deletion follows it.
+    try beforeRemoval(condemned)
+    finally
+      if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
     actions
 
   /** End every group the records name and prove — the scavenger's core. */

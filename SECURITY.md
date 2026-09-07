@@ -934,9 +934,10 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
   the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
-  groups, its sbt server and its proxy, and removes the session directory. If SIGKILL prevents that
-  teardown, the recorded groups remain, and the next start's scavenger ends them by proof, never by
-  guess.
+  groups, its sbt server and its proxy, appends the session's proxy audit log and sbt's
+  server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel and the
+  command"), and removes the session directory. If SIGKILL prevents that teardown, the recorded
+  groups remain, and the next start's scavenger ends them by proof, never by guess.
 
 ## No containers inside the sandbox by default
 

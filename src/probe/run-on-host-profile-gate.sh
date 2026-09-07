@@ -854,11 +854,13 @@ EOF
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
+        # The teardown appended the session's logs to the channel log before removing it (appendSessionLogs).
         if [ "$(sessions_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
-            && [ "$broker_state" = alive ]
+            && [ "$broker_state" = alive ] && grep -q "ended by signal" "$work/channel.log"
         then report PASS "channel: a dead shim ends the running command"
         else report FAIL "channel: a dead shim ends the running command" \
-            "sessions: $(sessions_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state"; fi
+            "sessions: $(sessions_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state," \
+            "logs kept: $(grep -c 'ended by signal' "$work/channel.log")"; fi
 
         # The sandbox dies: every exec dies with it, the shim included; the broker ends the command
         # and, with the container gone, itself.
