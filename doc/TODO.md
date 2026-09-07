@@ -3,6 +3,17 @@
 Remaining work that adds real security or maintainability for the actual threat model. Ideas without
 a concrete gain are recorded in design.md as standing design decisions so they stop resurfacing.
 
+## Credential brokering — its two plans, in order
+
+- [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.
+- [ ] Real sessions on it before `plan-provider-credential-proxy.md`, whose steps are taken one
+  at a time, each on a use case those sessions produced, never as the broker's automatic second
+  half: what that plan adds — storage, generations, refresh, removal — is where the field
+  failures are (docker/sbx-releases #492, a removed credential still injected after a restart),
+  and none of it is needed for a per-run static value.
+- AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
+  forwards instead.
+
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Admit an ECH extension on an inspected host, only if a client that sends GREASE ECH —

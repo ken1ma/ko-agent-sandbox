@@ -43,7 +43,7 @@
 //    |      loopback egress proxy; nothing else (RunOnHostSandbox.scala,
 //    |      RunOnHostChannel.scala; SECURITY.md "Run on host")
 //    |
-//    X-- ~/.ssh                             NOT EXPOSED
+//    X-- ~/.ssh, the SSH agent's socket     NOT EXPOSED
 //    X-- ~/.aws                             NOT EXPOSED
 //    X-- ~/.config                          NOT EXPOSED
 //    X-- podman/Docker socket               NOT EXPOSED

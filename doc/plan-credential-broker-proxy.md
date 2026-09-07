@@ -36,6 +36,12 @@ What brokering does not change: the bound host still receives authenticated requ
 method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
 `git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
 an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
+One property it relies on already holds: the rewrite is the one route by which a host-held
+credential enters a request, since no other host channel that authenticates — an SSH agent's
+socket, a key — is mounted (SECURITY.md, "Credential theft"; `SessionBoundaryTest`'s mount
+population). What the sandbox holds of its own toward the same host — an agent's login, an
+unbrokered forward, a file in the project — is priced in SECURITY.md and unchanged by this. That
+socket is the route of docker/sbx-releases #121.
 
 ## Guarantees
 
@@ -114,6 +120,14 @@ proxy cannot honour would appear as a 401 inside the sandbox with nothing in the
 explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProxyReady`: the launch
 fails with the message.
 
+"Removed with the run" is the run directory's lifetime, which `SandboxLifecycle` ("Removing
+what the run created") defines, open edges included: a lost reaper, or a launcher SIGKILLed
+mid-start, leaves the file owner-only on the host and mounted in a proxy nobody reaps until
+`--reset`, since the sweep at the next launch keeps every run whose containers exist. Without a
+binding that edge leaves a proxy and two networks; with one, a value too, at the same price and
+for the reason that comment gives. A lingering value is never reused: the next run has its own
+directory and placeholder.
+
 ## Substitution
 
 In the inspected relay, after the request head is parsed and before `toOriginBytes`:
@@ -176,7 +190,8 @@ Additions to SECURITY.md, each at its binding site:
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
   a holder of what the ruleset admits spending. Compromising it compromises both ruleset and
-  credential — one boundary.
+  credential — one boundary. What a lost reaper leaves, and that `--reset` is what removes it
+  ("Custody").
 - "The audit line grammar": the `inject` field.
 
 Gaps that stay, stated: the credential is still spent by the agent on the bound host within
@@ -224,13 +239,21 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   `--env` argument the sandbox receives (`AgentSandboxLauncherTest` already checks the forwarded
   list — extend the same test).
 - Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
-  header, wrong host, placeholder in URL and query left alone, non-placeholder token untouched,
-  two placeholders in one request (one bound to another host); a secret file with a value or
-  header outside the grammar refuses start-up; `HostileInputTest` gains the substituted head
-  re-parsed as exactly one request with the same header count.
+  header, wrong host, placeholder in URL and query left alone, non-placeholder token untouched
+  under every scheme, `Bearer` or a `Basic` password — an application's own credential for the
+  bound host (docker/sbx-releases #8), two placeholders in one request (one bound to another
+  host); a secret file with a value or header outside the grammar refuses start-up;
+  `HostileInputTest` gains the substituted head re-parsed as exactly one request with the same
+  header count.
 - Proxy end-to-end (`AgentEgressProxyTest` style, local TLS origin): a `GET` with the
   placeholder arrives at the origin with the value; the same to an unbound inspected host
-  arrives with the placeholder; audit line shows `inject` exactly once.
+  arrives with the placeholder; audit line shows `inject` exactly once; an application's own
+  `Bearer` and `Basic` credential to the bound host arrives at the origin unchanged, audit line
+  without `inject` — #8 over the whole relay path.
+- Lifecycle (`RunTopologyTest`'s lost-reaper case, and a launcher killed between creating the
+  run directory and the handover): the value file is either gone with the run or still
+  owner-only under its own run directory and gone after `--reset`; never under another run's
+  directory.
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
   the persistent volume and `/workspace` contain neither the value nor the placeholder-to-value
   mapping — the openai/codex #30971 check, population-level over every agent's state directory.
@@ -249,10 +272,15 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - [ ] `--env=GH_TOKEN@api.github.com` launches; `env` inside the sandbox shows a placeholder in
       GitHub token format; `gh api user` succeeds; the same token sent to `gitlab.com` arrives
       there as the placeholder (audit line without `inject`).
-- [ ] Private `git clone https://github.com/...` with a credential helper returning the
-      placeholder succeeds; `git push` is still refused at ref discovery.
+- [ ] `github.com` is another host, so the same value bound under a second name,
+      `--env=GIT_TOKEN@github.com`, gets a placeholder of its own; a private
+      `git clone https://github.com/...` with a credential helper returning that placeholder
+      succeeds, and returning the `api.github.com` one fails with the origin's 401; `git push`
+      is still refused at ref discovery. One credential at both hosts under one name is
+      `plan-provider-credential-proxy.md`'s first use case.
 - [ ] Every refusal in "Command-line contract" fires with its message.
-- [ ] `--proxy-log` shows `inject=GH_TOKEN` on exactly the authenticated requests.
+- [ ] `--proxy-log` shows `inject=GH_TOKEN` and `inject=GIT_TOKEN` on exactly the authenticated
+      requests, each at its own host.
 - [ ] `SessionBoundaryTest` finds no value in the volume after exit.
 - [ ] `sbt testWithPodman` green on Linux, macOS and Windows podman machines.
 
@@ -266,7 +294,9 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - Brokering for tunnel hosts, hence the Claude/Codex logins ("Claude Code and Codex
   logins: excluded").
 - AWS SigV4 re-signing (sandbox-runtime does it): no AWS host is in the catalog; a signed
-  request is a body-dependent signature, which is body inspection by another name.
+  request is a body-dependent signature, which is body inspection by another name. What a
+  Pulumi session forwards instead, and what bounds it, is the comment in
+  `doc/egress-rule-example/pulumi-aws/rule`.
 - A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password):
   `--env=NAME` already reads the host environment; a resolver is a shell pipeline in front of
   it.

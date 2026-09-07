@@ -13,10 +13,11 @@ them. `$HOME` and `/tmp` inside are writable but die with the session. No contai
 mounted under any spelling: one would hand a session the host's own container runtime, which is
 every boundary here at once, so `SessionBoundaryTest` looks for both spellings.
 
-**Credential theft.** There is little to steal: forge tokens, cloud credentials and SSH keys are
-never mounted — everything credentialed happens on the host (the README's private-repository
-workflow generalizes: push, publish, deploy, administer). The one exception is the agents' own
-provider logins, kept in the persistent volume because no agent functions without them.
+**Credential theft.** There is little to steal: forge tokens, cloud credentials, SSH keys and the
+SSH agent's socket are never mounted — everything credentialed happens on the host (the README's
+private-repository workflow generalizes: push, publish, deploy, administer). The one exception is
+the agents' own provider logins, kept in the persistent volume because no agent functions without
+them.
 
 That is a claim about what the launcher passes in unasked. A credential the user puts in the
 project directory themselves is in the sandbox like any other file, and one forwarded with
@@ -24,7 +25,10 @@ project directory themselves is in the sandbox like any other file, and one forw
 project's egress rules admit ("Exfiltration through an allowed host", below). `--env` is
 therefore named only on the command line, never in a project file, so the project cannot choose
 which host variables it receives; it refuses `KO_AGENT_SANDBOX_*`, the launcher's own account of
-what is enforced; and the launch prints every forwarded name.
+what is enforced; and the launch prints every forwarded name. Nothing here reads which program
+spends a forwarded value, so its authority is what its issuer gave it: forward a temporary
+credential of the narrowest role the job needs — a read-only role for a cloud preview, so the
+provider refuses a mutation whoever attempts it.
 
 **Project data reaching a destination nobody chose.** The only path out is the HTTPS proxy,
 which admits what the launch's `--egress` profile resolves to and logs every attempt ("Egress
