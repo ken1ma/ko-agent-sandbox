@@ -157,9 +157,10 @@ At `same-uid` a runtime runs, within four limits:
   nonroot-by-default images with `--user 0`. For databases, run them as processes as above.
 - **Host network only.** `-p` does not exist; services bind 127.0.0.1 directly, and egress is
   still the proxy's.
-- **Most registries need a rule.** Docker Hub, `gcr.io` and `public.ecr.aws` are in the
-  defaults; for any other, ask the user to add `allow https://<registry>/ read` to
-  `.ko-agent-sandbox/egress/rule`. A stalled pull is a refused host.
+- **Most registries need a rule.** Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and
+  `public.ecr.aws` are in the defaults; for any other, ask the user to add
+  `allow https://<registry>/ read` to `.ko-agent-sandbox/egress/rule`. A stalled pull is a
+  refused host.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
 podman is not preinstalled. `sandbox-install-podman` fetches and configures it:
