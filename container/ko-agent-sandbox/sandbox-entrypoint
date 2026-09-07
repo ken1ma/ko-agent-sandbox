@@ -97,17 +97,17 @@ if [ -n "$disk" ] && [ "$disk" -lt 2097152 ]; then
 fi
 
 if [ -n "$warnings" ]; then
-    ceiling=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
-    case "$ceiling" in
-        ''|max) ceiling= ;;
-        *) ceiling=" This session may use up to $(human "$ceiling") of it"
-           ceiling="$ceiling (KO_AGENT_SANDBOX_MEMORY)." ;;
+    memory_limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+    case "$memory_limit" in
+        ''|max) memory_limit= ;;
+        *) memory_limit=" This session may use up to $(human "$memory_limit") of it"
+           memory_limit="$memory_limit (KO_AGENT_SANDBOX_MEMORY)." ;;
     esac
     {
         printf 'warning: the machine podman runs on is under pressure; '
         printf 'every session on it slows down or fails together\n%s' "$warnings"
         printf '  Stop other sessions and containers, or give the machine more (on a podman machine,\n'
-        printf '  podman machine set --memory, machine stopped; podman system prune for disk).%s\n' "$ceiling"
+        printf '  podman machine set --memory, machine stopped; podman system prune for disk).%s\n' "$memory_limit"
     } >&2
     if [ -t 0 ] && [ "${KO_AGENT_SANDBOX_SESSION_START:-pause}" != immediate ]; then
         printf '\nPress Enter to start anyway ' >&2

@@ -2,37 +2,38 @@
 
 Status: Beta on macOS, alpha on Linux and Windows
 
-The AI agents in this sandbox, by default,
+The AI agents in this sandbox by default
 
-1. reach no user files except the project directory (current directory)
-1. reach no network except the launcher-owned defaults:
-    1. the model providers of the agents
-    1. a curated set of sites, limited to reads and named grants, such as `git clone`/`pull`
+1. reach no user files except the current directory (project directory)
+1. reach no network destinations except:
+    1. the model providers supported by the sandbox
+    1. an opinionated, customizable selection of sites, limited to reading and explicitly
+       permitted operations, such as `git clone`/`pull`
 
-How it is put together:
+The sandbox runs rootless, and its agents run as the `nonroot` user.
 
-    ┌─ macOS / Linux / Windows (WSL, native) ──────────────────────────────────────┐
+    ┌─ macOS / Linux / Windows (with/without WSL) ─────────────────────────────────┐
     │                                                                              │
     │  ┌─ launcher ──────────────────────────────────────────────────────────┐     │
     │  │  runs podman to manage the containers, volumes, and networks        │     │
     │  └─────────────────────────────────────────────────────────────────────┘     │
     │                                                                              │
     │  ┌─ project directory ───────────┐     ┌─ named volume (per project) ──┐     │
-    │  │  the only user files the      │     │  agents' auth and config,     │     │
-    │  │  sandbox can reach            │     │  kept across sessions;        │     │
+    │  │  the only user files          │     │  agents' auth and config,     │     │
+    │  │  shared with the sandbox      │     │  kept across sessions;        │     │
     │  │                               │     │  ~/.claude ~/.codex ~/.gemini │     │
     │  │                               │     │  ... point into it            │     │
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
     │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
-    │        │ live, the default) with git control   │                             │
-    │        │ state (including hooks) frozen at any │                             │
-    │        │ depth                                 │                             │
+    │        │ live, the default) with protected     │                             │
+    │        │ Git entries (including hooks) frozen  │                             │
+    │        │ at every depth                        │                             │
     │        │                                       │                             │
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
     │  ┏━ sandbox container ━━━━┷━━━━━━┓     ┌─ egress proxy container ──────┐     │
     │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │     │
-    │  ┃  nonroot user, caps dropped,  ┃ (a) │  TLS-inspects except model    │ (b) │
+    │  ┃  capabilities dropped,        ┃ (a) │  TLS-inspects except model    │ (b) │
     │  ┃  read-only rootfs,            ┠────>│  providers                    ├─────┼─> Internet
     │  ┃  ephemeral /tmp and $HOME     ┃     │                               │     │
     │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └────┬──────────────────────────┘     │
@@ -42,79 +43,156 @@ How it is put together:
     │                                           ┌─┴─ proxy log (audit) ─────┐      │
     │  the containers and networks are created  │  every allow and refusal; │      │
     │  per run, and when the sandbox exits      │  outlives the run         │      │
-    │  they are all removed (not reused)        └───────────────────────────┘      │
+    │  they are all removed                     └───────────────────────────┘      │
     │                                                                              │
-    │  ┌─ macOS: --run-on-host sandbox for heavy workloads ───────────────────┐    │
-    │  │  sbt/mill relayed to the host under Seatbelt                         │    │
+    │  ┌─ macOS: --run-on-host sandbox for resource-intensive commands ───────┐    │
+    │  │  sbt/mill/gradle/mvn relayed under Seatbelt                          │    │
     │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 
-1. An intended workflow:
-    1. `git clone`/`pull`/`fetch` on the host first — the launcher passes none of your host
-       credentials in
-    1. run an agent in the sandbox: it should feel mostly like running it on the host
-    1. review the changes, then `git commit`/`push` on the host
-1. The launcher refuses `$HOME` and its ancestors as the project directory
-   (it would expose `~/.aws`, `~/.ssh`), along with the well-known home
-   containers (`/home`, `/Users`, the Windows profiles root), and any path
-   containing a dot-prefixed directory.
+A typical workflow:
+
+1. `git clone`/`pull` on the host first — host Git credentials are not automatically forwarded.
+2. Run an agent in the sandbox: it should feel mostly like running it on the host.
+3. Review the changes, then `git commit`/`push` on the host.
 
 The sandbox image preinstalls:
 
 1. Claude Code (Anthropic)
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
+1. Kiro CLI (AWS)
 1. Copilot CLI (GitHub)
 1. OpenCode (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
-and configures them to
-
-1. not ask for permissions
-    1. `agy` needs a one-time step, and `copilot` a flag; see
-       [Running `<command>`](#running-command)
-
-[SECURITY.md] describes the security model — what the sandbox defends against, how, and what it does
-not.
+The agents are configured to run without permission prompts to avoid training users to approve
+without reading. The sandbox enforces the boundary.
 
 
 ## Install
 
-### Runtime Environment
+### Prerequisites
 
 1. [podman](https://github.com/containers/podman) 6.1.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. Run `podman machine init` after a new installation
     1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
-        1. `wsl --version` should show the version.
+        1. Check that WSL is installed with `wsl --version`.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
         1. AWS EC2: before `podman machine init`, shut down the instance then
             1. Actions → Instance settings → Change CPU options: Enable Nested virtualization
 
 1. Java 25 LTS
 
-### With Coursier
+### Build from source
 
-Publication coordinates wait on the artifact's name, which is undecided; the jar is built from a
-checkout — [Development](#development).
+Coursier installation is planned. Until it is available, build the jar from a checkout using the
+[build instructions](#development).
 
 
 ## Usage
 
-### Typical sequence
+### Getting started
 
-    java -jar ko-agent-sandbox.jar --build  # once, and again after upgrading
+Build the container images once, and again after upgrading the jar:
 
-    java -jar ko-agent-sandbox.jar claude   # launch an agent in a trusted directory
+    java -jar "<path-to-jar>/ko-agent-sandbox.jar" --build
 
-1. Insert `--write=reject` before `<command>` when the agent must only read the directory.
-1. Insert `--egress=deny-unless-model` when the agent must not talk to
-   anything other than its own provider; for `opencode` that is every provider group
-   (`doc/egress-proxy.md`).
-1. On macOS, insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
-   agent will run builds or tests: a build inside the podman machine takes memory from every
-   other container there and keeps it until the session ends.
+Start an agent in a trusted project directory, such as `~/my-project`:
+
+    java -jar "<path-to-jar>/ko-agent-sandbox.jar" claude
+
+Insert these options before the agent command (`claude` above):
+
+1. Use `--write=reject` to make the project read-only inside the sandbox.
+1. Use `--egress=deny-unless-model` to limit network access to the agent's provider; for
+   `opencode`, that is all the default providers.
+1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
+   to build at host speed without consuming the podman machine's memory.
+
+    1. These host commands can write the project even with `--write=reject`. See
+       [doc/run-on-host.md](doc/run-on-host.md#program-prerequisites) for requirements and
+       [SECURITY.md](SECURITY.md#run-on-host) for the access it grants.
+
+The launcher refuses to use your home directory as the project because it would expose credentials
+in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
+
+### Running `<command>`
+
+1. To change `--write=` or `--egress=`, quit, relaunch, and continue the session.
+
+    1. Resume with `claude --resume`, `codex resume`, `agy --continue`, `kiro-cli chat --resume`,
+       `copilot --continue` or `opencode --continue`.
+
+1. Use Ctrl-C to quit.
+
+#### `claude`
+
+1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
+   code back.
+1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
+   `bidirectional`.
+
+#### `codex`
+
+1. Sign-in: "ChatGPT Settings" → "Security and login" → "Enable device code authorization for
+   Codex", then choose "Sign in with Device Code" in the login UI.
+
+#### `agy`
+
+1. Sign in with the URL and pasted code, as for [`claude`](#claude).
+
+#### `kiro-cli`
+
+1. `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter there, and exits
+   once signed in; run `kiro-cli` again to chat.
+
+#### `copilot`
+
+1. Run `/login` and choose "Sign in with a device code".
+
+    1. Unlike the other sign-ins, the stored token grants access to your private repositories
+       (SECURITY.md, "The web reached through the model provider").
+
+1. Prompts for paths outside `/workspace` and for URLs remain unless you run `copilot --yolo`.
+1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out; this requires
+   `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
+
+#### `opencode`
+
+1. Run `/connect`, then `/models` to pick a model of the connected provider.
+    1. Anthropic and Google take an API key.
+    1. For a ChatGPT plan choose the headless method, not the browser method.
+    1. GitHub Copilot prints a device code, and the token it stores has the `read:user` scope,
+       not `repo`.
+1. The default model, `opencode/big-pickle`, posts to `opencode.ai`, where the proxy allows only
+   reads, so its requests are refused.
+
+#### Sign-in
+
+Use the device-code or pasted-code methods above. Sign-in methods that redirect the browser to
+127.0.0.1 cannot reach the agent in the sandbox. [doc/design.md](doc/design.md#sign-in)
+explains why.
+
+#### Sessions
+
+1. Each launch prints the workspace mode and the resolved egress profile, plus its rule file and
+   any warning.
+1. More than one session can run at once from the same project directory; they share the
+   workspace mount and the agent-state volume.
+
+    1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
+
+1. Calling another installed agent's command or MCP server reuses that agent's login and
+   configuration. Treat the project directory as their shared trust domain.
+1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own.
+
+    1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
+       limits: `distroless` and `alpine` images work.
+    1. Stock `postgres` and `nginx` need multiple uids and fail.
+
 
 ### Reference
 
@@ -124,67 +202,58 @@ checkout — [Development](#development).
 
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
-    <command> runs inside the sandbox: claude, codex, agy, copilot, opencode, bash, ...
-    The first non-option ends launcher parsing and everything after it is
-    forwarded verbatim; -- is an optional escape for a command that could
-    look like a launcher option.
+    <command> runs inside the sandbox: claude, codex, agy, kiro-cli, copilot, opencode, bash, ...
+    The first non-option starts the command; all remaining arguments pass through unchanged.
+    Use -- before a command whose name looks like a launcher option.
 
-    Authority options, selected on every launch and never persisted:
+    Session options, selected on every launch and never persisted:
       --write=reject|live
-                         reject mounts /workspace read-only; live (the
-                         default) is the shared writable mount
+                         reject makes /workspace read-only; live (default)
+                         lets the agent edit the shared project files
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
-                         deny-unless-allowed, admits the launcher-owned
+                         deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
-      --run-on-host=<tools>
-                         macOS only: sbt / mill / mvn can be run on the host. This gains
-                         nothing on Linux, and cannot be securely
-                         implemented on Windows. Adds the sandbox-run-on-host
-                         command, which runs those build tools OUTSIDE
-                         the container — on this host, confined by a
-                         Seatbelt profile to the project (its git
-                         control state and .ko-agent-sandbox
-                         unreachable), per-project build caches, and
-                         the build's own egress proxy. Host builds
-                         write the project even under --write=reject.
-                         SECURITY.md "Run on host" has the why and the cost;
-                         doc/run-on-host.md has how it works
-      --auto-shutdown-foreign-sbt-on-host
-                         with --run-on-host naming sbt: when your own live
-                         sbt server holds the project, a host build shuts
-                         it down and proceeds — one transcript line names
-                         the socket — instead of refusing until you run
-                         `sbt shutdown` there. The shutdown is sent only to
-                         the socket sbt derives for this project. Your warm
-                         server dies with whatever clients it had; your
-                         next sbt command starts a fresh one
+      --run-on-host=<programs>
+                         macOS only: select sbt / mill / gradle / mvn, separated by commas.
+                         Adds the sandbox-run-on-host command inside the sandbox, to run
+                         those programs on the host under Seatbelt. Host commands can write
+                         the project even under --write=reject; access is
+                         confined to the project (excluding .git and .ko-agent-sandbox),
+                         per-project caches, and a dedicated egress proxy.
+                         The session keeps one sbt/mill daemon warm per build directory.
+                         On first use there, a daemon you started is shut down after its
+                         current build finishes; your new clients then share the session's
+                         confined daemon. Gradle's session daemons stay separate from yours.
+                         Linux gains nothing: container builds already use host speed and memory.
+                         Windows needs a different design to enforce the filesystem restrictions.
+                         See SECURITY.md "Run on host" and doc/run-on-host.md.
       --env=<name>[=<value>]
-                         forward the host's <name>, which must be set, into
-                         the sandbox and into every --run-on-host build — or
-                         with <value>, set it to that without exporting it
-                         on the host. Repeatable; only KO_AGENT_SANDBOX_* is
-                         refused. Before forwarding a secret, read SECURITY.md
+                         set a variable in the sandbox and --run-on-host commands.
+                         An explicit <value> needs no export on the host.
+                         Without <value>, use the host's value; an unset name fails.
+                         Repeatable; KO_AGENT_SANDBOX_* names are refused.
+                         Before forwarding a secret, read SECURITY.md
 
-    Management verbs, each recognized before the command; whatever follows
-    belongs to the verb:
+    Management actions, each recognized before the command; whatever follows
+    belongs to the action:
 
-      --build            build the sandbox container image, always pulling remote updates
+      --build            build the container images and install the workspace filter,
+                         always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
                          image, without cache
 
       --reset [<id>...]  remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
                          TLS inspection CA, cached ruleset resolution, logs,
-                         workspace-filter mount and host-build caches;
+                         workspace-filter mount and run-on-host caches;
                          images and any shared volume are left untouched.
                          Ids, as --stats prints them, name projects whose
                          directories are gone instead of the current one
       --reset-run-on-host
-                         remove this project's host-build caches alone —
-                         what --run-on-host builds resolved — leaving its
-                         sessions and state; needs no podman
+                         clear this project's host build caches; keep its sessions
+                         and other state. Needs no podman
       --reset-all        the same as --reset, for every project
 
       --egress-effective [--] [<command> [args...]]
@@ -193,46 +262,50 @@ checkout — [Development](#development).
                          provenance; the command selects the model provider
                          without being launched
       --egress-check=<host> [--] [<command> [args...]]
-                         one host's ruleset decision plus its current DNS
-                         resolution, through a one-shot proxy container on
-                         enforcement's own resolver path, and with HTTPS_PROXY
-                         whether the upstream proxy opens a tunnel to it;
-                         inside a session, sandbox-egress-check <host> asks
-                         the running proxy
+                         print the host's rule decision and DNS result using the proxy's
+                         resolver; with HTTPS_PROXY, also check the upstream proxy's tunnel.
+                         Starts a temporary proxy container.
+                         Inside a session, sandbox-egress-check <host>
+                         checks through the running proxy
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
-      --stats            report the machine's memory and storage headroom,
-                         live sessions, and per-project disk use across
-                         the launcher's state and build-cache roots and
-                         the agents' volumes, each project named by its
-                         directory — by its id, which --reset takes, where
-                         the directory is gone — and any cache worth a
-                         --reset-run-on-host flagged; read-only — a stopped
-                         podman machine is not started
+      --stats            show the machine's memory/storage headroom, live sessions, host build
+                         directories and their retained programs, plus per-project disk use
+                         for state, caches and agent volumes. Last-write dates cover state
+                         and caches. Flags caches worth clearing with --reset-run-on-host.
+                         Projects appear by directory; missing directories appear as ids usable
+                         with --reset. Read-only; does not start a stopped podman machine
 
       --self-test [<filter>]
-                         run the workspace filter's own suites, always
-                         pulling remote updates; <filter> selects one
-                         case or family. Removes the self-test images
-                         it replaces and leaves the machine otherwise
-                         untouched (fuse/ko-agent-fs/doc/testing.md)
+                         run the workspace filter's own suites; <filter> selects one
+                         case or family. Without a filter, also check the host share;
+                         its scratch directory in the project is removed on success
+                         and retained on failure. Removes replaced self-test images
+                         (fuse/ko-agent-fs/doc/testing.md)
 
       --help             this text
 
-    Environment:
+    Environment variables:
       KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
       KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
-      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  share one agent-state volume across projects
-      KO_AGENT_SANDBOX_MEMORY             container memory ceiling, e.g. 8g. Default: the podman
+      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every project launched with it
+                                          shares that volume as its agent state, and --reset
+                                          leaves it alone
+      KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
                                           machine's memory (on Linux, the host's) minus 1 GiB,
                                           and on Linux no more than was available at launch;
                                           at least 1 GiB, or the whole memory when that is
                                           less. The sandbox never swaps
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps /workspace shared live and
-                                          writable while protecting Git control state and
-                                          .ko-agent-sandbox at any depth; "none" weakens this
-                                          to mount pins at the workspace root (SECURITY.md).
+                                          writable while protecting Git configuration,
+                                          hooks, other protected Git entries and
+                                          .ko-agent-sandbox at any depth; "none" replaces
+                                          the filter with read-only bind mounts at the
+                                          workspace root only: .git/config and .git/hooks
+                                          (the whole .git when it is a pointer file or
+                                          absent) and .ko-agent-sandbox; the rest stays
+                                          writable (SECURITY.md).
                                           Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking
@@ -248,11 +321,9 @@ checkout — [Development](#development).
                                           also lets it set your clipboard (SECURITY.md). A
                                           Linux host needs xclip or wl-clipboard
       HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
-                                          http[s]://[user:password@]host:port with an explicit
-                                          port; the lowercase name is read when the uppercase
-                                          is unset or empty. The egress ruleset still decides every
-                                          destination and NO_PROXY is ignored
-                                          (doc/egress-proxy.md)
+                                          http[s]://[user:password@]host:port; the lowercase
+                                          name is read when the uppercase is unset or empty.
+                                          NO_PROXY is ignored (doc/egress-proxy.md)
 
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
@@ -262,125 +333,86 @@ checkout — [Development](#development).
 
 ### `--build`
 
-1. Builds the containers in the diagram with `podman build`.
-    1. Image-producing verbs require their source registries on every run: `--build` reaches
-       Docker Hub, `ghcr.io` and `gcr.io`; `--update` reaches `ghcr.io`; `--self-test` reaches
-       Docker Hub. A warm cache does not provide an offline mode.
-    1. The images' build context is bundled in the jar, so it runs standalone.
-    1. Run it again after upgrading the jar: a launch refuses images an older jar built.
-        1. `--update` is for new agent releases, not for that.
-    1. Its last step removes superseded launcher images. It never removes pulled images; other
-       local workloads may use them. `--update` performs the same launcher-image cleanup.
-1. Also compiles `ko-agent-fs`, the workspace filter,
-   from bundled source and installs the binary at `~/.local/share/ko-agent-sandbox/ko-agent-fs` —
-   inside the podman machine on macOS and Windows, in your home on native Linux.
-    1. Ends with the filter's self-test: an unprivileged mount over a scratch tree, with the
-       `.git` policy and live host-write visibility both proven on the installed binary.
-    1. The filter's `allow_other` mount needs `user_allow_other` in the machine's
-       `/etc/fuse.conf`. If it is missing, `--build` shows the change as a diff and asks before
-       writing that one line — never silently; the original is saved to
-       `/etc/fuse.conf.ko-agent-sandbox.orig`, and declining prints the script to run yourself.
-       One-time until the machine is recreated. Your native Linux host is never touched or
-       prompted for.
-    1. A session under the mount pins (`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, above) instead of
-       the filter says so on its `workspace:` line.
-    1. One filter daemon per project, shared by that project's concurrent sessions and never
-       across projects ("workspace: live; ko-agent-fs filter in the podman machine, reusing the
-       mount shared by sessions in the same project directory"; "on the host" on Linux); when the
-       project's last session ends, it is unmounted and exits. A crashed launcher can leave one
-       running — the next session's end, or `--reset`, collects it.
-    1. To remove: `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs`
-       (plain `rm` on Linux).
-    1. For workspace-filter failures: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.
+1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
+1. Installs the workspace filter, `ko-agent-fs`, compiled from bundled source, at
+   `~/.local/share/ko-agent-sandbox/ko-agent-fs` — inside the podman machine on macOS and Windows,
+   in your home on native Linux.
+
+    1. To remove it:
+       `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs` (plain `rm` on Linux).
+
+1. Use `--update` to install new agent releases.
+
+    1. It rebuilds without cache; `--build` may reuse cached versions. Agents cannot update
+       themselves inside the sandbox.
+
+1. May ask to add `user_allow_other` to the podman machine's `/etc/fuse.conf`, shown as a diff
+   first (SECURITY.md, "Silent changes to what you own"). A native Linux host is never prompted.
+1. For workspace-filter failures, see [troubleshooting.md](fuse/ko-agent-fs/doc/troubleshooting.md).
+1. `--build`, `--update` and `--self-test` all end by removing the container images they
+   superseded, never a pulled image.
 
 
-### Running `<command>`
+### Restoring permission prompts
 
-1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
-   plus its rule file and any warning, then asks `[Y/n]` over the full command
-   (`KO_AGENT_SANDBOX_SESSION_START`, Reference).
-1. Agent state persists in a per-project named volume.
-    1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
-       resulting code back.
-        1. Ctrl-C twice in quick succession to quit.
-        1. Without `KO_AGENT_SANDBOX_CLIPBOARD` (above; SECURITY.md "Clipboard") the clipboard
-           does not cross into the container: Ctrl-V answers "No image found in clipboard", and
-           claude 2.1.227's `/tui fullscreen` on macOS Terminal copies nothing out even with
-           Shift/Alt.
-    1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
-       login, then choose "Sign in with Device Code" in the login UI.
-    1. `agy`: sign-in works like `claude`: copy the printed URL and paste in an external browser,
-       and paste the code back.
-    1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
-       other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
-       web reached through the model provider"). Prompts for paths outside `/workspace` and for
-       URLs remain unless you run `copilot --yolo`. Its fullscreen TUI cannot be turned off, so
-       copying text out is `/copy`, which needs `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
-    1. `opencode`: run `/connect`, then `/models` to pick a model of the connected provider. The
-       default model, `opencode/big-pickle`, posts to `opencode.ai`, which the proxy admits
-       read-only. Anthropic and Google take an API key. For a ChatGPT plan choose the headless
-       method; the browser method's callback never reaches the container. GitHub Copilot prints
-       a device code like `copilot login`, and the token it stores has the `read:user` scope,
-       not `repo`.
-    1. `claude --resume`, `codex resume`, `agy --continue`, `copilot --continue` and
-       `opencode --continue` work.
-    1. To put permission prompts back for an untrusted repository: `codex` reads your own
-       `~/.codex/config.toml` over the image's defaults, so set
-       `approval_policy = "on-request"` there; `agy` reads `~/.gemini/antigravity-cli/settings.json`,
-       so set `"toolPermission": "request-review"` there (or via `/config`);
-       `claude`'s are managed settings the image fixes at the highest precedence, so restoring
-       them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
-       `COPILOT_ALLOW_ALL=false`; `opencode`'s are managed config the image fixes, like
-       `claude`'s, and `--env='OPENCODE_PERMISSION={"*":"ask"}'` overrides it for one launch.
-1. More than one session can run at once from the same project directory; they share the
-   workspace mount and the agent-state volume, and race on both.
-1. Calling another installed agent's command or MCP server reuses that agent's login and
-   configuration. Treat the project directory as their shared trust domain.
-1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (the commands
-   are in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
-   stock `postgres` and `nginx` cannot.
+1. `claude`: edit the managed settings in the Containerfile and rebuild the image. They take
+   precedence over user settings.
+1. `codex`: set `approval_policy = "on-request"` in `~/.codex/config.toml`. Your configuration
+   overrides the image's defaults.
+1. `agy`: set `"toolPermission": "request-review"` in `~/.gemini/antigravity-cli/settings.json`
+   (or via `/config`).
+1. `kiro-cli`: remove entries from `allowedTools` in the supplied agent configuration,
+   `~/.kiro/agents/ko-agent-sandbox.json`.
+1. `copilot`: set `COPILOT_ALLOW_ALL=false`.
+1. `opencode`: pass `OPENCODE_PERMISSION` with the value `{"*":"ask"}` through `--env` to
+   override the image's permission setting for one launch.
 
 
 ## Egress proxy
 
-Every session reaches the network through one HTTPS proxy: the launcher-owned defaults — the
-agents' model providers as opaque tunnels, a curated catalog of TLS-inspected documentation,
-package-registry and forge hosts — under the `--egress=` profile selected at launch, modified by
-the project's `.ko-agent-sandbox/egress/rule`, one line per rule:
+Every session accesses the network through one HTTPS proxy. The `--egress=` profile and the
+project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
+allowed. The defaults include tunnels to supported model providers and TLS-inspected access
+to selected documentation sites, package registries, and Git hosting services.
+
+Write one rule per line in `.ko-agent-sandbox/egress/rule`:
 
     deny https://github.com/                         # the forge, whole
     allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
-    allow https://api.example/ tunnel                # an opaque tunnel: the widest word
+    allow https://api.example/ tunnel                # permits traffic without inspection
 
-`doc/egress-proxy.md` is the reference: the profiles, the rule grammar and what each word grants,
-the ruleset a launch prints, the audit log and TLS inspection. SECURITY.md, "Egress proxy", is
-the security model.
+See [doc/egress-proxy.md](doc/egress-proxy.md) for profiles, rule syntax, TLS inspection, audit logs
+and diagnostics, and [SECURITY.md](SECURITY.md#egress-proxy) for the limits.
 
-Behind an upstream proxy, `HTTPS_PROXY` in the launcher's environment (Reference, Environment)
-sends every origin connection of the session's proxy through it, and the launch banner prints the
-endpoint. A proxy that terminates TLS with its own certificate is not supported yet: the session
-fails closed with certificate errors (`doc/egress-proxy.md`, "Through an upstream proxy").
+To use an upstream proxy, set `HTTPS_PROXY` in the launcher’s environment; the launch banner
+prints the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported;
+connections fail with certificate errors. See
+[doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
+upstream-proxy requirements.
 
 ## Overriding the agent instructions
 
-Every agent receives one assembled instruction file: sandbox facts from `AGENTS-SANDBOX.md`,
-working conventions from `AGENTS-CUSTOM.md`, and the authority appended for this session. To
-replace only the working conventions for a project, put yours at
-`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's parts in
-`container/ko-agent-sandbox/` are the starting point. The sandbox facts and session authority are
-not overridable, and the file cannot be empty — delete it to return to the image's. The
-directory's rules apply (SECURITY.md, "Why the rules are per project, in the project, and
-read-only"). Instructions that should merely *add* to the image's belong in the agent's own
-project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`.
+To replace the working conventions for a project, put yours in
+`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`. Start from the image’s
+[AGENTS-CUSTOM.md](container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty to remove
+the image’s conventions; delete it to restore them. Sandbox facts and session permissions remain in
+force. [doc/design.md](doc/design.md#the-agent-instruction-override-replaces-only-the-conventions)
+explains the scope of the override.
+
+To add instructions, use the agent’s project-level file, such as `CLAUDE.md`, `AGENTS.md`, or
+`GEMINI.md`.
 
 ## Development
 
 1. The launcher is the sbt project at the repository root
-2. The egress proxy is its own project under `container/ko-agent-egress-proxy/app`.
+2. The egress proxy is its own sbt project under `container/ko-agent-egress-proxy/app`.
+3. The workspace filter is the Rust crate under `fuse/ko-agent-fs`.
+
+Run the commands below from the repository root.
 
 ### Build environment
 
-1. Java and [sbt](https://www.scala-sbt.org)
+1. Java 25 and [sbt](https://www.scala-sbt.org)
 
     1. [Install Coursier](https://get-coursier.io/docs/cli-installation), then
 
@@ -410,30 +442,29 @@ project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`
 
 #### launcher
 
-1. On the host, after "Build the launcher and images" above: the command runs the
-   container-launching suites, which `test` and `testFull` skip; they run the jar and images that
-   step built.
+1. On the host, run the container-launching suites against the jar and images from
+   "Build the launcher and images" above. `test` and `testFull` skip these suites:
 
        sbt testWithPodman
 
-    1. `testOnly` patterns can follow, quoted with the command since sbt reads each shell
-       argument as a command of its own: `sbt "testWithPodman *RunTopologyTest"`.
+    1. `testOnly` patterns can follow, quoted with the command:
+       `sbt "testWithPodman *RunTopologyTest"`.
     1. One case skips unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
-       bucket you own: the refusal of an owner-signed upload inside the inspected tunnel. The
-       case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign the
-       URL and the run line, which uses `sbt --server` so the variable reaches the tests.
+       bucket you own: the refusal of an owner-signed upload inside the inspected tunnel.
 
-1. On Linux, in a session with the default egress profile, which skips the container suites
+        1. The case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign
+           the URL and the run line, which uses `sbt --server` so the variable reaches the tests.
+
+1. On the host, start a sandbox with the default egress rules:
 
        KO_AGENT_SANDBOX_SESSION_START=immediate \
-           java -jar target/dist/ko-agent-sandbox.jar \
-           sh -c 'find target -xtype l -delete && sbt testFull'
+           java -jar target/dist/ko-agent-sandbox.jar bash
+
+   Inside that session, remove dangling host-cache links as described in
+   [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md#host-cache-links),
+   then run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
 1. `testFull` executes every test every time, unlike `test` which is incremental.
-1. The `find` removes the host sbt's cache links under `target/`, which dangle in the session
-   (`container/ko-agent-sandbox/AGENTS-SANDBOX.md`). The session run adds `SessionBoundaryTest`,
-   which runs only inside a session and checks the defaults, so a broader `--egress=` fails
-   it.
 
 #### egress-proxy
 
@@ -445,9 +476,11 @@ project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`
 
 1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
    privileged container, on any machine with podman; running either suite directly is documented in
-   `fuse/ko-agent-fs/doc/testing.md`.
+   [testing.md](fuse/ko-agent-fs/doc/testing.md).
 
 ### Native image (optional, instant startup)
+
+Requires GraalVM (JDK 25) with `native-image` and a C toolchain.
 
     sbt dist
     cd target/dist
@@ -459,13 +492,5 @@ project-level instruction file, such as `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`
 
 1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting
    `ko-agent-sandbox` binary on PATH.
-1. Requires GraalVM (JDK 25) with `native-image` and a C toolchain.
-1. `-H:IncludeResources` embeds the bundled build context, the proxy's defaults, and the
-   launcher's own resources (the `--help` text, the measured Seatbelt runtime authority) into the
-   binary; native-image drops resources that are not explicitly requested.
-1. The FFM `execvp` handoff is supported by native-image on recent GraalVM releases (linux/macOS,
-   amd64/arm64). If a given version refuses it, the launcher still works: it falls back to staying
-   resident and waiting on podman — the model native Windows always uses.
-
-
-[SECURITY.md]: SECURITY.md
+1. If GraalVM cannot hand execution over to podman, the launcher stays resident and waits for it;
+   the sandbox still works.

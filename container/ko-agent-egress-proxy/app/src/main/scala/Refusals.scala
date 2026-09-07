@@ -5,13 +5,14 @@ package agentsandbox.egress
 
 case class BadRequest(message: String) extends RuntimeException(message)
 
-/** A connection that closed after zero bytes: routine pooled-client behavior after admission,
-  * logged as `error`; the ruleset refused nothing (SECURITY.md, "The audit line grammar"). */
+/** A connection that closed after zero bytes: routine pooled-client behavior after the ruleset
+  * allowed the connection, logged as `error`; the ruleset refused nothing (SECURITY.md, "The
+  * audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
-/** An origin EOF where response framing promised more. Distinct from IOException because the
-  * response head has already been forwarded by then: no 502 can follow, and the handler must end
-  * the client connection abortively so the truncated body cannot read as a completed response. */
+/** A response-body framing or I/O failure after forwarding the response head. Unlike IOException,
+  * it requires an abortive client close: sending a 502 would append it to the response body, and
+  * a clean TLS shutdown would make a close-delimited body appear complete. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A refusal the ruleset made, told to the refused party as a 403 body of two lines
@@ -22,7 +23,7 @@ case class Refusal(message: String, advice: String) extends RuntimeException(mes
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
  * can take there, or the one instruction to pass to the user. Never a way around the ruleset, and never a
- * host this session's ruleset does not admit — forRefusedPost checks before naming one. Fixed text
+ * host this session's ruleset does not allow — forRefusedPost checks before naming one. Fixed text
  * plus what the request itself named, so a body never carries project data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
@@ -44,11 +45,11 @@ object RefusalAdvice:
           "for another route."
       else s"Not in this session's egress rules. Ask the user to add $addition on the host."
     else
-      s"This session's egress profile, $profile, admits no project hosts. Ask the user; a relaunch under " +
-        (if defaults then s"$default can admit it." else s"$default with $addition can admit it.")
+      s"This session's egress profile, $profile, allows no project hosts. Ask the user; a relaunch under " +
+        (if defaults then s"$default can allow it." else s"$default with $addition can allow it.")
 
   // The line is on the body's first line already (`host denied (<line>)`); a `**.domain` pattern
-  // repeated here would name a host the ruleset does not admit.
+  // repeated here would name a host the ruleset does not allow.
   val hostDenied = "Denied by this project's rules. Ask the user; do not look for another route."
 
   val port = "Only port 443 is reachable."
@@ -61,22 +62,22 @@ object RefusalAdvice:
 
   val gitFetch = "Clone and fetch are refused here: no git-fetch grant. Ask the user; do not look for another route."
 
-  val noRead = "This host is not readable here: no read grant. Ask the user; do not look for another route."
+  val noRead = "No read grant covers this path. Ask the user; do not look for another route."
 
-  val graphql = "GraphQL is a POST. Read through the REST API."
+  val graphql = "This GraphQL POST is refused. Read through the REST API."
 
   /** Where GitHub serves LFS file contents read-only, one URL per file (SECURITY.md, "Reading
-    * without being able to write"). Named in advice only while the ruleset admits it. */
+    * without being able to write"). Named in advice only while the ruleset allows it. */
   val LfsContentHost = "media.githubusercontent.com"
 
   val lfsBatchGithub =
     s"LFS batch is refused. Read one file from https://$LfsContentHost/media/<owner>/<repo>/<ref>/<path>."
 
-  val lfsBatch = "LFS batch is refused, and no admitted host serves this forge's LFS content. Ask the user."
+  val lfsBatch = "LFS batch is refused. Ask the user to fetch the content on the host."
 
-  val readOnly = "This host grants no such write here. Do the write on the host."
+  val methodNotGranted = "This HTTP method is not granted here. Ask the user to run the command on the host."
 
-  val requestBody = "A read carries no body. Send the request without one."
+  val bodyFramingHeader = "GET and HEAD must omit Content-Length and Transfer-Encoding here. Remove those headers."
 
   val upgrade = "WebSockets and HTTP/2 upgrades are refused. Use a plain request."
 
@@ -88,7 +89,7 @@ object RefusalAdvice:
 
   /** The paths are the ruleset's own words for this host, so naming them names nothing new. */
   def pathOutside(paths: Set[String]): String =
-    s"This host is admitted under ${paths.toVector.sorted.mkString(" and ")} only. " +
+    s"This host is allowed under ${paths.toVector.sorted.mkString(" and ")} only. " +
       "Ask the user; do not look for another route."
 
   /** The ClientHello stage answers after the 200, so this reaches no client; the agent
@@ -98,10 +99,10 @@ object RefusalAdvice:
   /** Chosen by the path the request named — parsed by this proxy, never read from a body — so the
     * two POSTs whose refusal costs a read get the read's other route: GraphQL (`/graphql` on
     * GitHub, `/api/graphql` on GitLab) and the LFS batch endpoint. */
-  def forRefusedPost(host: String, path: String, admitted: String => Boolean): String =
+  def forRefusedPost(host: String, path: String, allowed: String => Boolean): String =
     if path.endsWith("/graphql") then graphql
     else if path.endsWith("/info/lfs/objects/batch") then
-      if host == "github.com" && admitted(LfsContentHost) then lfsBatchGithub else lfsBatch
-    else readOnly
+      if host == "github.com" && allowed(LfsContentHost) then lfsBatchGithub else lfsBatch
+    else methodNotGranted
 
 case class BadTls(message: String) extends RuntimeException(message)

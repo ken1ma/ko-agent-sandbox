@@ -1,6 +1,8 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
+import java.nio.file.attribute.FileTime
+import java.time.{Instant, ZoneOffset}
 
 import HostCommands.Os
 import SandboxStats.*
@@ -66,10 +68,10 @@ class SandboxStatsTest extends munit.FunSuite:
       ),
     )
 
-  test("live sessions order by their combined memory, the sandbox before its proxy, named by directory"):
+  test("live sessions are one row each, by combined memory, the cpu summed, named by directory"):
     val small = "small-0123456789ab"
     val big = "big-0123456789ab"
-    // An idle sandbox under its own proxy still leads: the order names roles, not sizes.
+    // An idle sandbox under its own proxy is still the row's first figure: the columns name roles.
     val rendered = liveTable(
       Vector(
         LiveContainer(small, "1a2b3c4d", "proxy", 40L << 20, 256L << 20, 0.12),
@@ -82,14 +84,70 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(
       rendered,
       """2 live sessions
-        |  run       role     memory        cpu  project
-        |  5e6f7a8b  sandbox  2.0 / 6.7G  42.5%  /home/me/big
-        |  5e6f7a8b  proxy     50 / 256M   0.0%  /home/me/big
-        |  1a2b3c4d  sandbox  0.1 / 6.7G   8.0%  small-0123456789ab
-        |  1a2b3c4d  proxy     40 / 256M   0.1%  small-0123456789ab
+        |  run       sandbox     proxy        cpu  project
+        |  5e6f7a8b  2.0 / 6.7G  50 / 256M  42.5%  /home/me/big
+        |  1a2b3c4d  0.1 / 6.7G  40 / 256M   8.2%  small-0123456789ab
         |""".stripMargin,
     )
+    // A session whose proxy podman did not list shows a dash there, not a row less.
+    val alone =
+      liveTable(Vector(LiveContainer(small, "1a2b3c4d", "sandbox", 30L << 20, (67L << 30) / 10, 8.04)), Map.empty)
+    assert(alone.contains("  1a2b3c4d  0.1 / 6.7G  -      8.0%  small-0123456789ab\n"), alone)
     assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
+
+  test("brokers are the locked broker sessions, each named by its run file, one row per directory served"):
+    val root = Files.createTempDirectory("ko-agent")
+    val project = Files.createTempDirectory("project")
+    val nested = project.resolve("nested")
+    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    def named(session: RunOnHostSession.Session, run: String): Unit =
+      Files.writeString(
+        session.directory.resolve(RunOnHostSession.RunFile), s"ko-agent-sandbox-run-app-0123456789ab-$run\n",
+      )
+    named(live, "5e6f7a8b")
+    for (directory, records) <- Seq(project -> Seq("proxy-gradle", "proxy-sbt", "server-sbt"), nested -> Seq.empty) do
+      val hash = RunOnHostSession.buildHash(directory)
+      RunOnHostSession.publishBuildFile(live.directory, hash, directory)
+      records.foreach(record => Files.writeString(live.records.resolve(s"$record-$hash"), "1 x\n"))
+    Files.writeString(live.records.resolve("daemon-gradle-4242"), "4242 x\n")
+    // A broker that has served nothing yet, and one whose launch predates the run file.
+    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    named(fresh, "1a2b3c4d")
+    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    // A dead broker's session, unlocked, is the scavenger's, not the report's; a command's is no broker.
+    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    dead.close()
+    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Command).toOption.get
+    assertEquals(
+      brokers(root),
+      Vector(
+        Broker("1a2b3c4d", project.toString, Vector.empty),
+        Broker(
+          "5e6f7a8b", project.toString,
+          Vector(project.toString -> Vector("sbt", "gradle"), nested.toString -> Vector.empty),
+        ),
+        Broker("?", project.toString, Vector.empty),
+      ),
+    )
+    assertEquals(
+      brokerTable(Vector(
+        Broker(
+          "5e6f7a8b", "/home/me/big",
+          Vector("/home/me/big" -> Vector("sbt", "gradle"), "/home/me/big/nested" -> Vector("mill")),
+        ),
+        Broker("1a2b3c4d", "/home/me/small", Vector.empty),
+      )),
+      """2 run-on-host directories
+        |  run       runtime      directory
+        |  5e6f7a8b  sbt, gradle  /home/me/big
+        |  5e6f7a8b  mill         /home/me/big/nested
+        |""".stripMargin,
+    )
+    assertEquals(brokerTable(Vector.empty), "0 run-on-host directories\n")
+    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector("/home/me/small" -> Vector("sbt"))))),
+      "1 run-on-host directory\n  run       runtime  directory\n  1a2b3c4d  sbt      /home/me/small\n")
+    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector.empty))), "0 run-on-host directories\n")
+    assertEquals(brokers(root.resolve("absent")), Vector.empty)
 
   test("volume sizes are read back from the verbose df table, in podman's decimal units"):
     val df =
@@ -148,34 +206,54 @@ class SandboxStatsTest extends munit.FunSuite:
     )
     assertEquals(storageLines(Os.Windows, Vector.empty, None), Vector.empty)
 
-  test("projects order largest first by total, volumes included, and flag only a cache over 1% of free space"):
+  test("projects order largest first by total, volumes included, dated, and flag only a cache over 1% of free space"):
     val rendered = projectTable(
       Vector(
-        ProjectUsage("small-000000000000", Some("/home/me/small"), 1024, 10 * 1024, Some(0)),
-        ProjectUsage("big-000000000000", None, 0, 2L << 30, Some(0)),
+        ProjectUsage(
+          "small-000000000000", Some("/home/me/small"), 1024, 10 * 1024, Some(0),
+          Some(Instant.parse("2026-09-01T00:00:00Z")),
+        ),
+        ProjectUsage("big-000000000000", None, 0, 2L << 30, Some(0), None),
         ProjectUsage(
           "agents-000000000000",
           Some("/home/me/agents"),
           (15L << 20) / 10,
           445L << 20,
           Some((12L << 30) / 10),
+          Some(Instant.parse("2026-09-10T08:05:30Z")),
         ),
       ),
       100L << 30,
+      ZoneOffset.UTC,
     )
     // A project with no record, last launched before records existed, is named by its id.
-    val expected = """3 projects
-    |  total  state  cache  volume  project
-    |   2.0G      0   2.0G       0  big-000000000000  <- cache over 1% of free space; a --reset-run-on-host candidate
-    |   1.7G   1.5M   445M    1.2G  /home/me/agents
-    |    11K   1.0K    10K       0  /home/me/small
+    val flag = "  <- cache over 1% of free space; a --reset-run-on-host candidate"
+    val expected = s"""3 projects
+    |  total  state  cache  volume  last write        project
+    |   2.0G      0   2.0G       0  -                 big-000000000000$flag
+    |   1.7G   1.5M   445M    1.2G  2026-09-10 08:05  /home/me/agents
+    |    11K   1.0K    10K       0  2026-09-01 00:00  /home/me/small
     |""".stripMargin
     assertEquals(rendered, expected)
     // At exactly 1% nothing is flagged, and an unsized volume reads as unknown, not as empty.
-    val edge = projectTable(Vector(ProjectUsage("p-0", None, 0, 1L << 30, None)), 100L << 30)
+    val edge = projectTable(Vector(ProjectUsage("p-0", None, 0, 1L << 30, None, None)), 100L << 30)
     assert(!edge.contains("--reset-run-on-host"), edge)
-    assert(edge.contains("  -  p-0"), edge)
+    assert(edge.contains("  -  -           p-0"), edge)
     assertEquals(projectTable(Vector.empty, 5L << 30), "0 projects\n")
+
+  test("a tree's usage is its files' bytes and its newest write, a directory's entries changing included"):
+    val root = Files.createTempDirectory("tree")
+    assertEquals(treeUsage(root.resolve("absent")), TreeUsage(0L, None))
+    val old = Instant.parse("2026-01-01T00:00:00Z")
+    val newer = Instant.parse("2026-02-01T00:00:00Z")
+    val file = Files.writeString(root.resolve("a"), "12345")
+    val sub = Files.createDirectories(root.resolve("sub"))
+    Files.writeString(sub.resolve("b"), "123")
+    Seq(file, sub, sub.resolve("b"), root).foreach(Files.setLastModifiedTime(_, FileTime.from(old)))
+    assertEquals(treeUsage(root), TreeUsage(8L, Some(old)))
+    // A file removed from `sub` writes `sub`, and the tree's date follows.
+    Files.setLastModifiedTime(sub, FileTime.from(newer))
+    assertEquals(treeUsage(root), TreeUsage(8L, Some(newer)))
 
   test("a run container's name reads back as kind, project id and run suffix"):
     assertEquals(
@@ -200,7 +278,7 @@ class SandboxStatsTest extends munit.FunSuite:
     // A stray file under the root is not a record: its name is no id --reset would take.
     Files.writeString(root.resolve(".DS_Store"), project.toString)
     assertEquals(projectDirectories(root), Map("app-0123456789ab" -> project.toString))
-    if HostCommands.posixPermissions(root) then
+    if FileHelper.posixPermissions(root) then
       assertEquals(Files.getPosixFilePermissions(root.resolve("app-0123456789ab")).size, 2)
     assertEquals(projectDirectories(root.resolve("absent")), Map.empty)
 

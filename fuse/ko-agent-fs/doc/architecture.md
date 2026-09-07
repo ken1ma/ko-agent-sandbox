@@ -109,7 +109,7 @@ with the kernel at `open`, after which bulk read/write bypass the daemon at nati
 Real-time bidirectional visibility is the project's defining requirement — a copy-back overlay was
 rejected at the outset. A FUSE attribute/entry cache with a nonzero TTL lets the kernel answer from
 a stale attribute without re-asking the daemon, so a host edit stays invisible until the TTL
-expires. A build tool keying on mtime would then miss the change and compile stale content — a
+expires. A build program keying on mtime would then miss the change and compile stale content — a
 correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
 *backing's* state at the moment of the call — never older, and never fresher than the backing
 itself. Therefore these are fixed, not settings:
@@ -129,8 +129,8 @@ Zero cache has a measured price: with entry TTL 0, every path component of every
 fresh LOOKUP round trip.
 
 Performance is recovered only by means that keep every answer fresh — batching, parallelism and a
-shorter per-op path, never a cache; `TODO.md`, "Performance", has the measurements and the open
-rows. In place:
+shorter per-op path, never a cache; `verification-log.md` ("The cost of a path walk") has the
+measurements and `TODO.md`, "Performance", the open rows. In place:
 
 - **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
 - **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
@@ -159,11 +159,10 @@ the kernel applying ordinary uid/gid/mode checks against the real backing metada
 policy is enforced whoever is asking. Exposure is bounded by the machine running only this
 project's containers.
 
-Reach includes concurrency: a project has **one** daemon and one mount, and every session of that
-project — concurrent ones included — binds the same mountpoint. The sessions share what a raw bind
-would give them — the same files, live, racing like any two processes on one directory — and one
-process a raw bind has not: the daemon, whose death turns `/workspace` into `ENOTCONN` for all of
-that project's sessions at once, fail-closed for each of them.
+A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
+write the same files and can overwrite one another's changes. If the daemon dies, `/workspace`
+returns `ENOTCONN` in every attached session, so none can continue accessing the files through the
+mount. When the project's last session ends, the daemon unmounts and exits.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no

@@ -1,6 +1,6 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
-The remaining increments of the workspace-authority work. No distributable build may make launches
+The remaining increments of the workspace-mode work. No distributable build may make launches
 with no `--write` option read-only before the staged workflow is usable.
 
 ## Staged mode
@@ -85,22 +85,23 @@ apply's atomic replacement can be refused on exactly the paths it is applying.
 --stage discard
 ```
 
-The current project identifies the stage for every verb except `list`. There is no bulk discard
-command in this increment. `--reset` and `--reset-all` remove runtime resources but preserve every
+The current project identifies the stage for every action except `list`. There is no bulk discard
+action in this increment. `--reset` and `--reset-all` remove runtime resources but preserve every
 stage. Discard refuses an attached stage and confirms the project directory, pending path count and
 size plus any sealed, partially applied or recovery-needed state; non-interactive use additionally
 requires `--yes`.
 
-`--stage list` lists every stored stage by project; the other verbs address the current project.
+`--stage list` lists every stored stage by project; the other actions address the current project.
 Attachment and list output show the representation version, pending path count and logical size,
 physical stored size, backing volume, attached-session count, lower path and last-use time. No
 pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`, `applying` and
 `recovery-needed` states, with the controlling host process and start time. Stage storage has a
-distinct reserved resource-name pattern that neither reset command matches; tests bind the
+distinct reserved resource-name pattern that neither reset action matches; tests bind the
 preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
 recovery transition is active; it never tears down a stage underneath its control process.
 
-The startup banner gains the stage's state, in the format the implemented authorities already use:
+The startup banner gains the stage's state, in the format the workspace mode and the egress profile
+already use:
 
 ```text
 workspace: STAGED; 17 paths, 42K; 3 attached sessions
@@ -169,11 +170,10 @@ every selected path is displayed.
 
 Trusted fixed code performs apply without project Git, hooks, filters, pagers or executables. It
 recursively resolves current host gitdirs, commondirs, configuration includes and hook locations,
-then refuses every path host Git treats as control state. It applies the existing conservative
-raw-byte name rules to `.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting
-bare Git layout, host-incompatible paths, symlink escapes and path-replacement races. The same
-classification is rerun immediately before each affected mutation because host Git state can
-change during review.
+then refuses every protected Git path. It applies the existing conservative raw-byte name rules to
+`.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting bare Git layout,
+host-incompatible paths, symlink escapes and path-replacement races. The same classification is
+rerun immediately before each affected mutation because host Git state can change during review.
 
 Only regular files, directories, safe symlinks and hardlinks are eligible for apply. Planning
 refuses FIFOs, sockets and device nodes rather than reproducing special files in the project
@@ -184,7 +184,7 @@ directory.
 The live daemon writes a host-only, sandbox-unmodifiable journal. It records semantic mutations:
 first writable open or create, truncate, mode or type change, rename or exchange, link, symlink,
 unlink and directory removal. Repeated writes to one path are coalesced and contents are not
-recorded. Each journal has fixed byte, exact-path and aggregate-directory ceilings. After either
+recorded. Each journal has fixed byte, exact-path and aggregate-directory limits. After either
 entry table fills, new keys fold into fixed total counters, and the journal records the loss of
 detail. Journals rotate and retain within fixed file-count and total-byte budgets across daemon
 lifetimes. The daemon durably reserves a journal slot before authorizing a mutation. A reservation
@@ -232,22 +232,22 @@ its private Git metadata cannot be applied.
    an implemented representation.
 2. Close the nested-git and bare-layout gaps and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
-   lifecycle and visibility, with the in-situ suite, the launcher verb and the stamp that gates
+   lifecycle and visibility, with the in-situ suite, the launcher action and the stamp that gates
    staged launch.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-5. Make `reject` the default only after step 4. Remove the workspace pin mode and make any present
-   `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration message: `fuse` needs
-   no replacement — the filter is `--write=live`'s only guard then — and the weaker `none`
-   mode has no equivalent. Remove the pin mode's launcher branch, Git pin construction,
-   `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned empty mount sources
-   only where another mount still needs one; and update the documents that describe the pin mode
-   and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
-   pins of `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same change. Persistent stages
-   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
-   opened; launcher comments, help, README and SECURITY must point to explicit stage discard. Remove
-   completed TODO rows rather than retaining a change history.
+5. Make `reject` the default only after step 4. Remove the writable mode without the filter and
+   make any present `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration
+   message: `fuse` needs no replacement — the filter is `--write=live`'s only guard then — and the
+   weaker `none` mode has no equivalent. Remove that mode's launcher branch, Git
+   mount construction, `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned
+   empty mount sources only where another mount still needs one; and update the documents that
+   describe that mode and the writable default — README, SECURITY.md ("Silent changes to what you
+   own", "The read-only `.git` mounts under `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same
+   change. Persistent stages narrow the meaning of reset: `--reset` and `--reset-all` no longer mean
+   the project was never opened; launcher comments, help, README and SECURITY must point to explicit
+   stage discard. Remove completed TODO rows rather than retaining a change history.
 
 ## Verification
 

@@ -1,12 +1,12 @@
 // Unit tests assert the generated SBPL without requiring macOS. The rules under test
-// are the ones src/probe/seatbelt-semantics.sh measured: a non-canonical path grants rather than
-// denies, so it is refused; the guard denies come last, because SBPL is last-match-wins.
+// are the ones src/probe/seatbelt-semantics.sh measured. Callers resolve symlinks; the renderer
+// requires absolute, normalized paths and puts guard denies last, because SBPL is last-match-wins.
 
 package agentsandbox.launcher
 
 import java.nio.file.{Path, Paths}
 
-import RunOnHostPrereqs.{BuildPrereqs, Tool}
+import RunOnHostPrereqs.{CommandPrereqs, Program}
 import SeatbeltProfile.*
 
 class SeatbeltProfileTest extends munit.FunSuite:
@@ -23,57 +23,70 @@ class SeatbeltProfileTest extends munit.FunSuite:
     cacheRoot.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
   private val distribution = distributionExec.getParent.getParent
 
-  private val prereqs = BuildPrereqs(
+  private val prereqs = CommandPrereqs(
     project = project,
     jdkHome = jdkHome,
-    coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/coursier/v1"),
-    tool = Tool.Sbt,
+    coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/coursier/v1"),
+    program = Program.Sbt,
     executable = executable,
   )
 
-  private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/sbt-global")
-  private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/ivy-home")
+  private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/sbt-global")
+  private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/ivy-home")
 
   private def inputs(
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
-    tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
-  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime)
+    tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
+  ) = ProfileInputs(
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, runtime, Network.ProxyOnly,
+  )
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
 
   // --------------------------------------------------------------------------
-  // Canonicality — the rule that fails open
+  // Absolute, normalized paths
   // --------------------------------------------------------------------------
 
-  test("a path that is not canonical is refused, because such a rule would grant"):
-    val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-build/abc/tmp")
-    // Not normalized rather than not-real: purity keeps realpath out of here, and `..` is what
-    // a test can express.
-    val dotted = Paths.get("/private/tmp/ko-agent-build/../abc")
-    assert(render(inputs(tmp = dotted)).isLeft)
-    // A merely different-but-canonical spelling still renders; resolving /tmp is the caller's job.
+  test("every profile path must be absolute and normalized"):
+    val fields: Seq[(String, Path => ProfileInputs)] = Seq(
+      "project" -> (path => inputs().copy(prereqs = prereqs.copy(project = path))),
+      "JDK" -> (path => inputs().copy(prereqs = prereqs.copy(jdkHome = path))),
+      "executable" -> (path => inputs().copy(prereqs = prereqs.copy(executable = path))),
+      "Coursier cache" -> (path => inputs().copy(prereqs = prereqs.copy(coursierV1 = path))),
+      "temporary directory" -> (path => inputs(tmp = path)),
+      "distribution" -> (path => inputs().copy(distribution = Some(path))),
+      "sbt global base" -> (path => inputs().copy(sbtGlobal = Some(path))),
+      "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
+      "Gradle user home" -> (path => gradleInputs.copy(gradleUserHome = Some(path))),
+      "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
+      "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
+      "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
+      "server tmp" -> (path => inputs().copy(network = Network.SbtClient(path))),
+    )
+    for
+      (name, withPath) <- fields
+      path <- Seq(Paths.get("relative/path"), Paths.get("/private/tmp/../other"))
+    do
+      val reason = render(withPath(path)).left.getOrElse(fail(s"$name accepted $path"))
+      assert(reason.contains("supply an absolute path with no . or .. components"), s"$name: $reason")
+
+  test("symlink resolution belongs to the caller, not the renderer's lexical check"):
+    val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-command/abc/tmp")
     assert(render(inputs(tmp = viaSymlinkSpelling)).isRight)
 
-  test("a relative path is refused"):
-    assert(render(inputs(tmp = Paths.get("relative/tmp"))).isLeft)
-
-  test("the refusal explains why it grants rather than denies"):
-    val reason = render(inputs(tmp = Paths.get("relative/tmp"))).left.getOrElse("")
-    assert(clue(reason).contains("grant"))
-
-  test("the tool and the distribution agree: sbt needs it, mill has none"):
+  test("the program and the distribution agree: sbt needs it, mill has none"):
     assert(render(inputs().copy(distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs)).isLeft)
 
-  test("the tool and the global base agree the same way, and the Ivy home with them"):
+  test("the program and the global base agree the same way, and the Ivy home with them"):
     assert(render(inputs().copy(sbtGlobal = None)).isLeft)
     assert(render(inputs().copy(ivyHome = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None)).isLeft)
 
-  test("the sbt global base and Ivy home are granted read-write and, like the Coursier cache, never exec"):
+  test("the sbt global base and Ivy home permit reads and writes without a process-exec grant"):
     val text = rendered()
     for cache <- Seq(sbtGlobal, ivyHome) do
       assert(text.contains(s"""(allow file-read* file-write* (subpath "$cache"))"""), text)
@@ -111,7 +124,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
 
-  test("the guard does not reach the session temp: a test's throwaway .git is under the session temporary directory"):
+  test("the guard does not reach the command's temporary directory: a test's throwaway .git is under it"):
     // The project path is the only path in the guard, and it is a subpath filter, never part of
     // the regex.
     val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
@@ -133,7 +146,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(text.contains("jdk-25.0.4+7/Contents/Home\")"))
     assert(text.contains("jdk-25.0.4%252B7"))
 
-  test("the tool's two halves are both granted, and neither is writable"):
+  test("the program's two halves are both granted, and neither is writable"):
     val text = rendered()
     val executionRules = text.linesIterator.filter(_.startsWith("(allow process-exec*")).mkString("\n")
     assert(clue(executionRules).contains(executable.toString))
@@ -143,7 +156,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!writable.contains(distribution.toString))
     assert(!writable.contains(jdkHome.toString))
 
-  test("only the project, its caches and the session temp are writable"):
+  test("only the project, its caches and the command's temporary directory are writable"):
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
@@ -154,17 +167,21 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("ivy-home")))
     assert(writable.exists(_.contains("/tmp/")))
 
-  test("writable implies executable for the project and the session temp, never for the cache"):
-    // A child inherits the profile, so running what the build wrote adds no authority, and a
-    // suite's stubs are in the temp directory; the cache holds artifacts nothing runs.
-    val writable = rendered().linesIterator
-      .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
-      .toSeq
-    val executable = writable.filter(_.contains("process-exec*"))
-    assertEquals(executable.size, 2)
-    assert(executable.exists(_.contains(project.toString)))
-    assert(executable.exists(_.contains("/tmp/")))
-    assert(!writable.filter(_.contains("coursier/v1")).exists(_.contains("process-exec*")))
+  test("every program permits direct execution from writable project and temporary paths, but not caches"):
+    for profile <- Seq(inputs(), millInputs, gradleInputs, mvnInputs) do
+      val writable = rendered(profile).linesIterator
+        .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
+        .toVector
+      val executable = writable.filter(_.contains("process-exec*"))
+      assertEquals(executable.size, 2, profile.prereqs.program.name)
+      assert(executable.exists(_.contains(s"(subpath \"$project\")")))
+      assert(executable.exists(_.contains(s"(subpath \"${profile.sessionTmp}\")")))
+      val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.gradleUserHome ++
+        profile.m2Repository
+      for cache <- caches do
+        val grants = writable.filter(_.contains(s"(subpath \"$cache\")"))
+        assert(grants.nonEmpty, cache.toString)
+        assert(grants.forall(line => line.contains("file-read*") && !line.contains("process-exec*")), cache.toString)
 
   test("every ancestor of a granted path is a literal metadata read, never a listing"):
     // Measured: a subpath grant covers what is under it, never the directories above, and without
@@ -189,7 +206,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
 
-  test("the proxy is the only TCP destination, and UNIX sockets are confined to the session temp"):
+  test("the proxy is the only TCP destination, and UNIX sockets are confined to the command's temporary directory"):
     val text = rendered()
     val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
@@ -197,10 +214,144 @@ class SeatbeltProfileTest extends munit.FunSuite:
       Seq(
         """(allow network-outbound (remote ip "localhost:51234"))""",
         """(allow network-bind network-inbound network-outbound """ +
-          """(local unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")) """ +
-          """(remote unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")))""",
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
       ),
     )
+
+  test("an sbt client reaches the sockets under the broker's tmp, and nothing else there"):
+    val brokerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
+    val text = rendered(inputs().copy(network = Network.SbtClient(brokerTmp)))
+    val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      network,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-outbound (remote unix-socket (subpath "/private/tmp/ko-agent-command/bxyz/tmp")))""",
+      ),
+    )
+    // The socket's directory resolves; the broker's directory is an ancestor like any other.
+    assert(text.contains(
+      """(allow file-read-metadata file-test-existence (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))""",
+    ))
+    assert(text.contains(
+      """(allow file-read-metadata file-test-existence (literal "/private/tmp/ko-agent-command/bxyz"))""",
+    ))
+    assert(!text.contains("""(allow file-read* (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))"""))
+    // Only an sbt client has a server to reach.
+    assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
+      network = Network.SbtClient(brokerTmp))).isLeft)
+
+  test("the mill daemon binds listeners on any port, and its client reaches the one port it was proved on"):
+    val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
+      .linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      daemonRules,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-bind network-inbound (local ip "localhost:*"))""",
+      ),
+    )
+    val clientRules = render(millInputs.copy(network = Network.MillClient(50123))).fold(fail(_), identity)
+      .linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      clientRules,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-outbound (remote ip "localhost:50123"))""",
+      ),
+    )
+    // Neither grant reaches another program, and the client's port is a port.
+    assert(render(inputs().copy(network = Network.MillDaemon)).isLeft)
+    assert(render(inputs().copy(network = Network.MillClient(50123))).isLeft)
+    assert(render(mvnInputs.copy(network = Network.MillClient(50123))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(0))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(70000))).isLeft)
+
+  // --------------------------------------------------------------------------
+  // The host proxy's own profile
+  // --------------------------------------------------------------------------
+
+  private val proxyJdk = Paths.get("/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home")
+  private val proxyJar = Paths.get(s"$home/.cache/ko-agent-sandbox/launcher/ko-agent-sandbox.jar")
+  private def proxyInputs(
+    executables: Seq[Path] = Seq(proxyJdk),
+    reads: Seq[Path] = Seq(proxyJar),
+    runtime: RuntimeAuthority = RuntimeAuthority(
+      Seq(Paths.get("/System/Library/CoreServices/SystemVersion.plist")), Seq(Paths.get("/bin")),
+    ),
+  ) = ProxyInputs(executables, reads, runtime)
+  private def renderedProxy(in: ProxyInputs = proxyInputs()): String =
+    renderProxy(in).fold(reason => fail(s"renderProxy refused: $reason"), identity)
+
+  test("the proxy profile grants its executable, what it loads, the runtime authority as reads, and no write"):
+    val text = renderedProxy()
+    assert(text.linesIterator.contains("(deny default)"))
+    val allows = text.linesIterator.filter(_.startsWith("(allow")).filterNot(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      allows,
+      Seq(
+        RootComponent,
+        """(allow file-read-metadata file-test-existence (literal "/Library"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Library/Java"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Library/Java/JavaVirtualMachines"))""",
+        "(allow file-read-metadata file-test-existence " +
+          """(literal "/Library/Java/JavaVirtualMachines/temurin-25.jdk"))""",
+        "(allow file-read-metadata file-test-existence " +
+          """(literal "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System/Library"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System/Library/CoreServices"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Users"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache/ko-agent-sandbox"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache/ko-agent-sandbox/launcher"))""",
+        """(allow file-read-metadata file-test-existence (literal "/dev"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private/var"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private/var/run"))""",
+        """(allow file-read-metadata file-test-existence (literal "/var"))""",
+        "(allow sysctl-read mach-lookup)",
+        """(allow file-read* file-write-data (literal "/dev/null"))""",
+        """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))""",
+        """(allow file-read* (subpath "/System/Library/CoreServices/SystemVersion.plist"))""",
+        """(allow file-read* (subpath "/bin"))""",
+        "(allow process-exec* file-read* " +
+          """(subpath "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home"))""",
+        s"""(allow file-read* (subpath "$home/.cache/ko-agent-sandbox/launcher/ko-agent-sandbox.jar"))""",
+      ),
+    )
+
+  test("the proxy profile's network is every remote, the resolver's socket, and a listener of the localhost class"):
+    val network = renderedProxy().linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      network,
+      Seq(
+        """(allow network-outbound (remote ip "*:*"))""",
+        """(allow network-outbound (remote unix-socket (literal "/private/var/run/mDNSResponder")))""",
+        """(allow network-bind network-inbound (local ip "localhost:*"))""",
+      ),
+    )
+
+  test("the proxy profile refuses a relative path and an empty executable set"):
+    assert(renderProxy(proxyInputs(reads = Seq(Paths.get("launcher.jar")))).isLeft)
+    assert(renderProxy(proxyInputs(executables = Seq(Paths.get("/Library/../usr/bin")))).isLeft)
+    assert(renderProxy(proxyInputs(executables = Seq.empty)).isLeft)
+    // The native image: the binary alone, nothing to load beside it.
+    val native =
+      renderedProxy(proxyInputs(executables = Seq(Paths.get("/usr/local/bin/ko-agent-sandbox")), reads = Seq.empty))
+    assert(native.contains("""(allow process-exec* file-read* (subpath "/usr/local/bin/ko-agent-sandbox"))"""))
+    assert(!native.contains(home))
 
   // --------------------------------------------------------------------------
   // The cs-installed sbt script's second half
@@ -232,17 +383,51 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
 
   private val millPrereqs = prereqs.copy(
-    tool = Tool.Mill,
-    executable = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
+    program = Program.Mill,
+    executable = Paths.get(s"$home/.cache/mill/download/1.1.9"),
   )
 
   private def millInputs = inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None)
 
   private def millText: String = render(millInputs).fold(reason => fail(reason), identity)
 
+  private val gradleHome =
+    Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1")
+  private val gradleUserHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/gradle-user-home")
+  private val gradlePrereqs = prereqs.copy(program = Program.Gradle, executable = gradleHome.resolve("bin/gradle"))
+  private def gradleInputs = millInputs.copy(
+    prereqs = gradlePrereqs, distribution = Some(gradleHome), gradleUserHome = Some(gradleUserHome),
+    network = Network.Gradle,
+  )
+
+  test("gradle grants its distribution to run and its user home to write, and no other program's cache"):
+    val text = render(gradleInputs).fold(reason => fail(reason), identity)
+    assert(clue(text).contains(s"""(allow process-exec* file-read* (subpath "$gradleHome"))"""))
+    assert(text.contains(s"""(allow file-read* file-write* (subpath "$gradleUserHome"))"""))
+    assert(!text.contains(s"""process-exec* (subpath "$gradleUserHome")"""))
+    assert(!text.contains("sbt-global") && !text.contains("ivy-home") && !text.contains("m2/repository"))
+
+  test("gradle's network is the mill daemon's grant plus outbound to any port of this host"):
+    val text = render(gradleInputs).fold(reason => fail(reason), identity)
+    assert(clue(text).contains("""(allow network-bind network-inbound (local ip "localhost:*"))"""))
+    assert(text.contains("""(allow network-outbound (remote ip "localhost:*"))"""))
+    assert(text.contains("""(allow network-outbound (remote ip "localhost:51234"))"""))
+    // Under any other program the wide outbound rule is absent, and Gradle's network names no other program.
+    for other <- Seq(inputs(), millInputs, mvnInputs) do
+      assert(!rendered(other).contains("""(remote ip "localhost:*")"""), other.prereqs.program.name)
+    assert(render(mvnInputs.copy(network = Network.Gradle)).isLeft)
+    assert(render(gradleInputs.copy(network = Network.ProxyOnly)).isRight)
+
+  test("the program and the Gradle user home agree: gradle needs it and its distribution, the others have none"):
+    assert(render(gradleInputs.copy(gradleUserHome = None)).isLeft)
+    assert(render(gradleInputs.copy(distribution = None)).isLeft)
+    assert(render(gradleInputs.copy(m2Repository = Some(m2Repository))).isLeft)
+    assert(render(inputs().copy(gradleUserHome = Some(gradleUserHome))).isLeft)
+    assert(render(mvnInputs.copy(gradleUserHome = Some(gradleUserHome))).isLeft)
+
   private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
-  private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/m2/repository")
-  private val mvnPrereqs = prereqs.copy(tool = Tool.Mvn, executable = mvnHome.resolve("bin/mvn"))
+  private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/m2/repository")
+  private val mvnPrereqs = prereqs.copy(program = Program.Mvn, executable = mvnHome.resolve("bin/mvn"))
   private def mvnInputs = millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
 
   test("mvn grants its distribution to run and its local repository to write, and no sbt cache"):
@@ -253,7 +438,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!text.contains("sbt-global"))
     assert(!text.contains("ivy-home"))
 
-  test("the tool and the Maven local repository agree: mvn needs it, the others have none"):
+  test("the program and the Maven local repository agree: mvn needs it, the others have none"):
     assert(render(mvnInputs.copy(m2Repository = None)).isLeft)
     assert(render(mvnInputs.copy(distribution = None)).isLeft)
     assert(render(mvnInputs.copy(sbtGlobal = Some(sbtGlobal))).isLeft)

@@ -10,9 +10,9 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
-import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
+import FileHelper.*
 
 object EgressRules:
 
@@ -50,8 +50,8 @@ object EgressRules:
     * from the first of them on is metadata (RulesetHelper.metadataLines). */
   val MetadataPrefixes: Vector[String] = Vector("ruleset summary:", "widening lines (")
 
-  /** The dry run's text up to its first metadata line — the ruleset alone — for the consumers that
-    * hold nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_RULESET`. */
+  /** Exclude metadata about the project file from the resolved rules exported in
+    * `KO_AGENT_SANDBOX_EGRESS_RULESET` and used to select the inspection certificate's hosts. */
   def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
@@ -123,7 +123,7 @@ object EgressRules:
    * the session writing where nothing can read, losing the whole record at
    * exit — which is what a retention rule counting sessions rather than
    * liveness does to a project running more than `retain` of them at once.
-   * So `retain` is a floor on what is kept, not a ceiling.
+   * More than `retain` logs can remain while their runs are live.
    */
   def logsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
     names.sorted
@@ -134,22 +134,21 @@ object EgressRules:
 
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
-  /** The two files of the grammar `rule` replaced, refused by name with the pointer: the guard
-    * freezes the directory, so nothing else tells a project its rules went unread. */
+  /** Retired rule filenames are refused with migration advice: the workspace guard prevents
+    * a session from correcting them, so the launcher must report that their rules are unread. */
   val RetiredRuleFiles: Vector[String] = Vector("allowed", "denied")
 
   /**
-   * The egress directory's files as (name, normalized text), present files
-   * only. Refused forms, each of which would otherwise be silently ignored
-   * or misread config: egress as a regular file rather than a directory,
-   * fatal so rules written that way are never skipped unseen; a filename
-   * that is no rule file (a typo'd name configures nothing); a symlinked
-   * rule file (podman resolves mount sources on the host, and this read
-   * must see the bytes a mounted-back directory would show); a rule file's name
-   * that is not a regular file, which would leave its file silently unread;
-   * a present-but-empty file, more likely a forgotten edit than a
-   * deliberate no-op — an intentionally empty rule file is an absent file.
-   * Dot-named metadata is exempt from all of it (SandboxProject.isMetadataEntry).
+   * Present egress rule files as (name, normalized text). Refuse forms that could hide or
+   * misread configuration:
+   * - A file at egress/ would leave its rules unread because the reader expects a directory.
+   * - An unknown filename could be a typo that leaves intended rules unread.
+   * - A symlink at egress/ or a rule file could redirect the host read. Podman resolves mount
+   *   sources on the host, so this read must see the bytes the mounted directory would show.
+   * - An entry with a rule filename that is not a regular file would be skipped by the reader.
+   * - A present but empty rule file is more likely a forgotten edit than a deliberate no-op;
+   *   an intentionally empty rule file is absent.
+   * Entries inside egress/ follow SandboxProject.isMetadataEntry's metadata exemption.
    */
   def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
     def symlinkRefusal(path: Path): String =
@@ -164,12 +163,8 @@ object EgressRules:
            |lines there and remove the file; doc/egress-proxy.md has the grammar.""".stripMargin
       )
     else
-      val entries = Files
-        .list(egressDir)
-        .iterator()
-        .asScala
+      val entries = directoryEntries(egressDir)
         .filterNot(entry => SandboxProject.isMetadataEntry(entry.getFileName.toString))
-        .toVector
         .sortBy(_.getFileName.toString)
 
       val refusal = entries
@@ -181,8 +176,6 @@ object EgressRules:
             s"error: $entry is not a rule file\negress/ holds only " +
               s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
           case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          // The one stray form the name check cannot see: a rule file's own name on an entry
-          // the read below skips, which would leave that file silently unread.
           case entry if !Files.isRegularFile(entry) =>
             s"error: $entry is not a regular file\negress/ holds a text file per rule file; " +
               "anything else would leave this file silently unread."
@@ -200,14 +193,22 @@ object EgressRules:
       )
 
   /**
-   * Only the basename of the directly launched command is classified; the launcher does not
-   * inspect a script's arguments or guess what it may later execute — a script that starts an agent selects
+   * Only the basename of the directly launched command is classified; the launcher does not inspect
+   * a script's arguments or guess what it may later execute — a script that starts an agent selects
    * no provider and, under deny-unless-model, gets the startup warning instead of a guessed grant.
-   * opencode has no fixed provider and selects `all`, the proxy's word for every group it defines
-   * (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of groups.
+   * opencode has no fixed provider and selects `all`, the proxy's word for every provider it
+   * defines (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of
+   * providers.
    */
   val AgentProviders: Map[String, String] =
-    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github", "opencode" -> "all")
+    Map(
+      "codex" -> "openai",
+      "claude" -> "anthropic",
+      "agy" -> "google",
+      "kiro-cli" -> "aws",
+      "copilot" -> "github",
+      "opencode" -> "all",
+    )
 
   def commandProvider(command: Option[String]): Option[String] =
     command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)
@@ -253,7 +254,7 @@ object EgressRules:
   def transportLineOf(log: String): Option[String] =
     log.linesIterator.map(_.dropWhile(_ != ' ').drop(1)).find(_.startsWith("egress transport: "))
 
-  /** The --env arguments passing the authority selection and rule files to the proxy — the
+  /** The --env arguments passing the selected profile, provider and rule files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
   def rulesetEnvArgs(
     profile: String,
@@ -270,13 +271,9 @@ object EgressRules:
   def retainedLogs(logDir: Path, prefix: String = "proxy-"): Vector[Path] =
     if !Files.isDirectory(logDir) then Vector.empty
     else
-      Files
-        .list(logDir)
-        .iterator()
-        .asScala
+      directoryEntries(logDir)
         .filter(p => p.getFileName.toString.startsWith(prefix))
         .filter(p => p.getFileName.toString.endsWith(".log"))
-        .toVector
         .sortBy(_.getFileName.toString)
 
   /**

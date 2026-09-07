@@ -1,12 +1,12 @@
-// The Seatbelt profile a host build runs under (run-on-host.md "The Seatbelt profile"). Pure — a
-// BuildPrereqs in, SBPL out — so unit tests check the generated SBPL without requiring
-// macOS.
+// The Seatbelt profiles a host command and the host proxy run under (run-on-host.md "The Seatbelt
+// profile", "The command's egress proxy"). Pure — paths in, SBPL out — so unit tests check the
+// generated SBPL without requiring macOS.
 //
 // Two properties of SBPL decide how paths are written and how rules are ordered here, both measured by
 // src/probe/seatbelt-semantics.sh:
 //
 //   - It canonicalizes the path being *accessed* but matches the rule *as written*. A rule naming a
-//     non-canonical path therefore matches nothing, which grants rather than denies. Every path
+//     non-canonical path can leave a deny unmatched and a broader allow in force. Every path
 //     that reaches `render` is refused unless it is absolute and normalized, and RunOnHostPrereqs
 //     resolves symlinks before it gets here.
 //   - Rules are last-match-wins, so the guard denies are emitted after every allow. A generator
@@ -18,7 +18,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import RunOnHostPrereqs.{BuildPrereqs, Tool}
+import RunOnHostPrereqs.{CommandPrereqs, Program}
 
 object SeatbeltProfile:
 
@@ -29,10 +29,9 @@ object SeatbeltProfile:
    * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
    *
-   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. Case is not folded
-   * here and does not need to be: SBPL canonicalizes the accessed path, and on a case-insensitive
-   * volume that returns the on-disk spelling, so `.GIT` arrives as `.git`. A profile written to
-   * rely on pattern folding instead would not fold.
+   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern matches
+   * Seatbelt's resolved path without folding case; run-on-host.md, "The host command's filesystem
+   * rules", states what the case-alias probe establishes.
    */
   val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
@@ -56,7 +55,7 @@ object SeatbeltProfile:
    * it, never the directories above. Measured: with only the deep grants, `java -version` dies in
    * the loader; with the chain present it runs, and the chain is what a coarse `/Users` grant was
    * standing in for. Metadata and not `file-read*`, because on a directory `file-read*` is its
-   * listing: src/probe/build-profile-gate.sh showed a chain granted that way listing all of
+   * listing: src/probe/run-on-host-profile-gate.sh showed a chain granted that way listing all of
    * `~/Library/Caches`. Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with
@@ -75,7 +74,7 @@ object SeatbeltProfile:
 
   /**
    * The character devices a JVM opens before it runs anything. No `/dev/tty`: closing the child's
-   * stdin does not detach its controlling terminal, and a build that can open the terminal can
+   * stdin does not detach its controlling terminal, and a command that can open the terminal can
    * read what the user types. The random devices are read-only.
    */
   val DevicePaths: Seq[Path] = Seq("/dev/null", "/dev/random", "/dev/urandom").map(Path.of(_))
@@ -84,62 +83,103 @@ object SeatbeltProfile:
     """(allow file-read* file-write-data (literal "/dev/null"))""" + "\n" +
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
-  /** What the build may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
-    * running a real build under this profile and reading the denials, never guessed: the contract admits a
+  /** What the command may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
+    * running a real build under this profile and reading the denials, never guessed: the contract allows a
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
+  /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
+    * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
+    * an sbt client, the sockets under the broker's `tmp/`, where its server listens; for the
+    * mill daemon, listeners on any port, since it binds port 0 and no rule confines a bind to
+    * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
+    * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
+    * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
+    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
+    * MillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
+    * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
+    * client starts the daemon itself, so one profile serves both. Measured:
+    * src/probe/run-on-host-broker-session.sh L1–L4, G1, G7–G10. */
+  enum Network:
+    case ProxyOnly
+    case SbtClient(serverTmp: Path)
+    case MillDaemon
+    case MillClient(daemonPort: Int)
+    case Gradle
+
   case class ProfileInputs(
-    prereqs: BuildPrereqs,
+    prereqs: CommandPrereqs,
     sessionTmp: Path,
     distribution: Option[Path],
     sbtGlobal: Option[Path],
     ivyHome: Option[Path],
+    gradleUserHome: Option[Path],
     m2Repository: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
+    network: Network,
   )
 
   /**
-   * The profile, or the first reason it cannot be built. A refusal rather than a best effort: a
-   * profile with one unusable rule is a profile with one silent grant.
+   * The profile, or the first reason it cannot be built. A deny naming the wrong path could
+   * leave a broader allow in force.
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
     val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
-    // Writable implies executable for the project and the session temp, never for the cache:
-    // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
-    // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
-    // JVM reads, and nothing there is run.
+    // Tests write and run stubs in the project and the command's temporary directory. Children
+    // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
-    // The sbt global base, the Ivy home and Maven's local repository are caches like the Coursier
-    // one: artifacts the JVM reads, nothing run.
-    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
-    val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
+    val readWrite =
+      Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.gradleUserHome ++ inputs.m2Repository
+    val serverTmp = inputs.network match
+      case Network.SbtClient(tmp) => Some(tmp)
+      case _                      => None
+    val networkProgram = inputs.network match
+      case Network.ProxyOnly                          => None
+      case Network.SbtClient(_)                       => Some(Program.Sbt)
+      case Network.MillDaemon | Network.MillClient(_) => Some(Program.Mill)
+      case Network.Gradle                             => Some(Program.Gradle)
+    val daemonPort = inputs.network match
+      case Network.MillClient(port) => Some(port)
+      case _                        => None
+    val everyPath =
+      readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ serverTmp
 
-    val tool = prereqs.tool
-    everyPath.find(path => !usable(path)) match
-      case _ if tool == Tool.Sbt && inputs.distribution.isEmpty =>
+    val program = prereqs.program
+    everyPath.find(path => !isAbsoluteNormalized(path)) match
+      case _ if program == Program.Sbt && inputs.distribution.isEmpty =>
         Left(
-          "an sbt profile needs the distribution the sbt script execs; without it the build cannot find sbt-launch.jar",
+          "an sbt profile needs the distribution the sbt script execs; without it the command cannot find" +
+            " sbt-launch.jar",
         )
-      case _ if tool == Tool.Mvn && inputs.distribution.isEmpty =>
-        Left("an mvn profile needs the distribution its mvn runs from; without it the build cannot find lib/")
-      case _ if tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
+      case _ if program == Program.Gradle && inputs.distribution.isEmpty =>
+        Left("a gradle profile needs the distribution its gradle runs from; without it the command cannot find lib/")
+      case _ if program == Program.Gradle && inputs.gradleUserHome.isEmpty =>
+        Left("a gradle profile needs the user home it grants; without it every cache is a denial")
+      case _ if program == Program.Mvn && inputs.distribution.isEmpty =>
+        Left("an mvn profile needs the distribution its mvn runs from; without it the command cannot find lib/")
+      case _ if program == Program.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
-      case _ if tool == Tool.Sbt && inputs.ivyHome.isEmpty =>
+      case _ if program == Program.Sbt && inputs.ivyHome.isEmpty =>
         Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
-      case _ if tool == Tool.Mvn && inputs.m2Repository.isEmpty =>
+      case _ if program == Program.Mvn && inputs.m2Repository.isEmpty =>
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
-      case _ if tool == Tool.Mill && inputs.distribution.isDefined =>
+      case _ if program == Program.Mill && inputs.distribution.isDefined =>
         Left("a mill profile has no distribution to grant")
-      case _ if tool != Tool.Sbt && inputs.sbtGlobal.isDefined =>
-        Left(s"a ${tool.name} profile has no sbt global base to grant")
-      case _ if tool != Tool.Sbt && inputs.ivyHome.isDefined =>
-        Left(s"a ${tool.name} profile has no Ivy home to grant")
-      case _ if tool != Tool.Mvn && inputs.m2Repository.isDefined =>
-        Left(s"a ${tool.name} profile has no Maven local repository to grant")
-      case Some(bad) => Left(nonCanonicalReason(bad))
+      case _ if networkProgram.exists(_ != program) =>
+        Left(s"a ${program.name} profile has no ${networkProgram.get.name} server or daemon to reach")
+      case _ if daemonPort.exists(port => port < 1 || port > 65535) =>
+        Left(s"the daemon port ${daemonPort.get} is not a port")
+      case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
+        Left(s"a ${program.name} profile has no sbt global base to grant")
+      case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
+        Left(s"a ${program.name} profile has no Ivy home to grant")
+      case _ if program != Program.Gradle && inputs.gradleUserHome.isDefined =>
+        Left(s"a ${program.name} profile has no Gradle user home to grant")
+      case _ if program != Program.Mvn && inputs.m2Repository.isDefined =>
+        Left(s"a ${program.name} profile has no Maven local repository to grant")
+      case Some(bad) => Left(invalidPathReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
       case None =>
@@ -156,7 +196,8 @@ object SeatbeltProfile:
         // the JVM cannot open /dev/urandom — SecureRandom then fails with "NativePRNG not
         // available", which names the algorithm rather than the path.
         (ancestorLiterals(
-          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths,
+          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths
+            ++ serverTmp,
         ))
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
@@ -164,41 +205,140 @@ object SeatbeltProfile:
         lines += "(allow process-fork sysctl-read mach-lookup)"
         lines += Devices
         lines += ""
-        lines += ";; Runtime authority: measured by src/probe/build-profile-iterate.sh, never guessed."
+        lines += ";; Runtime authority: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
         inputs.runtime.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
         inputs.runtime.executes.foreach: path =>
           lines += s"(allow process-exec* file-read* ${subpath(path)})"
         lines += ""
-        lines += ";; The build's own tools, never writable by it."
+        lines += ";; The command's own programs, never writable by it."
         readOnly.foreach(path => lines += s"(allow process-exec* file-read* ${subpath(path)})")
         lines += ""
-        lines += ";; What the build may change, and run: a child inherits this profile."
+        lines += ";; What the command may change, and run: a child inherits this profile."
         readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
-        lines += ";; What the build may change but never runs."
+        lines += ";; Caches: reads and writes, but no direct process execution; the JVM can load their code."
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
-        lines += ";; The build's own proxy, and no other destination."
+        lines += ";; The command's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
-        // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
-        // ::1 — not a dual-stack JVM's v4-mapped connect, which is why the environment contract pins
+        // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and ::1 —
+        // not a dual-stack JVM's v4-mapped connect, which is why the environment contract sets
         // preferIPv4Stack (src/probe/jvm-proxy-rule.sh measured all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
-        // session temp, where the environment contract points XDG_RUNTIME_DIR and
+        // command's temporary directory, where the environment contract points XDG_RUNTIME_DIR and
         // SBT_GLOBAL_SERVER_DIR; measured that a socket outside the subpath stays denied.
-        lines += ";; sbt's boot and server sockets, inside the session temp and nowhere else."
+        lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
+        // The client attaches to the server socket the broker's server bound under the broker's
+        // tmp/, `<SBT_GLOBAL_SERVER_DIR>/<hash>/sock`; the connect resolves the socket's own
+        // directory, hence the metadata grant, and nothing there is read.
+        serverTmp.foreach: tmp =>
+          lines += ";; The broker's sbt server: its socket under the broker's temporary directory."
+          lines += s"(allow file-read-metadata file-test-existence ${subpath(tmp)})"
+          lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
+        inputs.network match
+          case Network.MillDaemon =>
+            // "localhost:*", since the daemon binds port 0 and the filter names no range. No
+            // outbound: the daemon and every JVM the build forks inherit this profile, and the
+            // only spelling that would admit a connect to the daemon's port — chosen by the
+            // kernel during the starter's own run, so no rule can name it — is
+            // (remote ip "localhost:*"), which reaches every service of this host (Gradle's
+            // grant; run-on-host.md "Network" records the cost). So the starter's own connect
+            // is denied, which is what leaves the daemon behind, and the broker ends the starter
+            // once the daemon listens rather than widen the grant (MillDaemons.endStarter).
+            lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
+              " forks."
+            lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
+          case Network.MillClient(port) =>
+            lines += ";; The broker's mill daemon, on the one port it was proved listening on."
+            lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
+          case Network.Gradle =>
+            // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each
+            // other's, TCP and UDP; the client starts the daemon, so the grant is one profile's.
+            lines += ";; Gradle: listeners, any port, any address of this host, and outbound to any port of this" +
+              " host; inherited by what the build forks."
+            lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
+            lines += """(allow network-outbound (remote ip "localhost:*"))"""
+          case Network.ProxyOnly | Network.SbtClient(_) => ()
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
-        lines += ";; a .git a test builds in the session temp is reclaimed with the session, and no"
+        lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
         lines += ";; host git ever runs there."
         GuardedNames.foreach: name =>
           lines +=
             s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.project)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
+
+  /**
+   * The host proxy's inputs (run-on-host.md "The command's egress proxy"): what it runs from —
+   * the native image, or the JDK of the jar form — what it loads, the class-path entries of the
+   * jar form, and the runtime authority the command profile grants (RunOnHostSandbox.proxyInputs).
+   */
+  case class ProxyInputs(executables: Seq[Path], reads: Seq[Path], runtime: RuntimeAuthority)
+
+  /**
+   * The profile every host proxy runs under, or the first reason it cannot be built. Nothing of
+   * the user's is granted: no project, no cache, no write anywhere — its log is its inherited
+   * stderr — and no working directory: the proxy runs from `/`, which the root component grants
+   * (RunOnHostSandbox.startProxy).
+   */
+  def renderProxy(inputs: ProxyInputs): Either[String, String] =
+    val everyPath = inputs.executables ++ inputs.reads ++ inputs.runtime.reads ++ inputs.runtime.executes
+    everyPath.find(path => !isAbsoluteNormalized(path)) match
+      case Some(bad) => Left(invalidPathReason(bad))
+      case None if inputs.executables.isEmpty => Left("a proxy profile needs the executable the proxy runs from")
+      case None =>
+        val lines = Seq.newBuilder[String]
+        lines += "(version 1)"
+        lines += ";; Generated by SeatbeltProfile.renderProxy: the host proxy's own profile."
+        lines += "(deny default)"
+        lines += ""
+        lines += ";; Path resolution authorizes every component (render's ancestor chain)."
+        lines += RootComponent
+        ancestorLiterals(everyPath ++ DevicePaths :+ ResolverSocket)
+          .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
+        // The resolver's client spells its socket /var/run/mDNSResponder, and the root link is
+        // not in the canonical chain above: without it every lookup fails with "nodename nor
+        // servname provided" (measured: the gate's proxy fetch rows, /var alone suffices).
+        lines += ";; The root link the resolver's socket path goes through."
+        lines += s"(allow file-read-metadata file-test-existence ${literal(ResolverSocketLink)})"
+        lines += ""
+        // Measured (src/probe/run-on-host-profile-iterate.sh ops on the JDK, then the proxy
+        // itself with each family added in turn): sysctl-read for the JVM, and mach-lookup, without
+        // which a system library dies of a segmentation fault before the proxy's first line. No
+        // process-fork: the proxy forks nothing.
+        lines += ";; A process at all."
+        lines += "(allow sysctl-read mach-lookup)"
+        lines += Devices
+        lines += ""
+        lines += ";; The runtime authority as reads alone: the proxy executes nothing but itself."
+        (inputs.runtime.reads ++ inputs.runtime.executes).foreach: path =>
+          lines += s"(allow file-read* ${subpath(path)})"
+        lines += ""
+        lines += ";; The proxy's own executable, and what it loads."
+        inputs.executables.foreach(path => lines += s"(allow process-exec* file-read* ${subpath(path)})")
+        inputs.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
+        lines += ""
+        // Which hosts a client may reach is the proxy's own decision, by name; SBPL filters by
+        // address, so it decides nothing here.
+        lines += ";; Every remote: host filtering is the proxy's job."
+        lines += """(allow network-outbound (remote ip "*:*"))"""
+        lines += ";; The resolver, which InetAddress.getAllByName reaches over this socket."
+        lines += s"(allow network-outbound (remote unix-socket ${literal(ResolverSocket)}))"
+        // The listener is the proxy's EGRESS_BIND, 127.0.0.1 port 0; "localhost:*" is the narrowest
+        // class the filter compiles for a port it does not know (render's mill daemon rule).
+        lines += ";; Its listener."
+        lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
+        Right(lines.result().mkString("\n") + "\n")
+
+  /** Where macOS's resolver listens; `/var/run` is a link to it, and the filter matches the resolved path. */
+  val ResolverSocket: Path = Path.of("/private/var/run/mDNSResponder")
+
+  /** The root link the resolver's client goes through to reach ResolverSocket. */
+  val ResolverSocketLink: Path = Path.of("/var")
 
   /**
    * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
@@ -233,12 +373,12 @@ object SeatbeltProfile:
 
   /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPrereqs:
     * it needs the filesystem, and this stays pure. */
-  private def usable(path: Path): Boolean =
+  private def isAbsoluteNormalized(path: Path): Boolean =
     path.isAbsolute && path.normalize() == path
 
-  private def nonCanonicalReason(path: Path): String =
-    s"$path is not a canonical absolute path; SBPL matches rules as written, so a rule naming it " +
-      "would match nothing and grant rather than deny"
+  private def invalidPathReason(path: Path): String =
+    s"$path is not absolute and normalized; supply an absolute path with no . or .. components " +
+      "and resolve symlinks before rendering the profile"
 
   /** An SBPL string literal. Paths here contain spaces, `+` and percent signs; only a quote or a
     * backslash needs escaping, and neither occurs in a path this wrapper accepts. */

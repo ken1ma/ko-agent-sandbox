@@ -1,5 +1,5 @@
 // What the launcher itself owns: the run/reset naming that keeps projects apart, the configuration
-// flags, the build verbs, and the documents the code must stay in step with (the --help text's
+// flags, the build actions, and the documents the code must stay in step with (the --help text's
 // Environment section, SECURITY.md's forge list against the proxy's source, the bundled context).
 
 package agentsandbox.launcher
@@ -28,19 +28,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
 
-  test("the sandbox gets a memory ceiling below the machine's total, and never swaps"):
-    assertEquals(memoryCeiling(8L << 30, None), 7L << 30)
-    assertEquals(memoryCeiling(2L << 30, None), MinimumCeiling)
-    assertEquals(memoryCeiling(1L << 30, None), MinimumCeiling)
-    assertEquals(memoryCeiling(16L << 30, Some(10L << 30)), 10L << 30)
-    assertEquals(memoryCeiling(16L << 30, Some(2L << 30)), 2L << 30)
-    assertEquals(memoryCeiling(16L << 30, Some(20L << 30)), 15L << 30)
+  test("the sandbox gets a memory limit below the machine's total, and never swaps"):
+    assertEquals(memoryLimit(8L << 30, None), 7L << 30)
+    assertEquals(memoryLimit(2L << 30, None), MinimumMemoryLimit)
+    assertEquals(memoryLimit(1L << 30, None), MinimumMemoryLimit)
+    assertEquals(memoryLimit(16L << 30, Some(10L << 30)), 10L << 30)
+    assertEquals(memoryLimit(16L << 30, Some(2L << 30)), 2L << 30)
+    assertEquals(memoryLimit(16L << 30, Some(20L << 30)), 15L << 30)
     // Nothing available, less than the agent needs, and a machine smaller than the minimum.
-    assertEquals(memoryCeiling(16L << 30, Some(0L)), MinimumCeiling)
-    assertEquals(memoryCeiling(16L << 30, Some(200L << 20)), MinimumCeiling)
-    assertEquals(memoryCeiling(512L << 20, None), 512L << 20)
-    assertEquals(memoryCeiling(512L << 20, Some(0L)), 512L << 20)
-    assert(memoryCeiling(1L, Some(0L)) > 0)
+    assertEquals(memoryLimit(16L << 30, Some(0L)), MinimumMemoryLimit)
+    assertEquals(memoryLimit(16L << 30, Some(200L << 20)), MinimumMemoryLimit)
+    assertEquals(memoryLimit(512L << 20, None), 512L << 20)
+    assertEquals(memoryLimit(512L << 20, Some(0L)), 512L << 20)
+    assert(memoryLimit(1L, Some(0L)) > 0)
     assertEquals(
       memoryArguments(None, Some(8L << 30), None),
       Vector(s"--memory=${7L << 30}", s"--memory-swap=${7L << 30}"),
@@ -58,7 +58,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
 
-  test("build verbs ask first only below what a default machine idles at, read from the machine's own meminfo"):
+  test("build actions ask first only below what a default machine idles at, read from the machine's own meminfo"):
     assertEquals(buildMemoryWarning(None), None)
     assertEquals(buildMemoryWarning(Some(3L << 30)), None)
     val warning = buildMemoryWarning(Some((3L << 30) - 1))
@@ -82,7 +82,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryAvailable(Os.Windows, "", sshRefused), None)
     assertEquals(machineMemoryAvailable(Os.Mac, "", HostCommands.Run(0, "MemTotal: 1 kB\n".getBytes, "")), None)
 
-  test("every podman verb says the machine's headroom, when the machine can say it"):
+  test("every podman action says the machine's headroom, when the machine can say it"):
     assertEquals(
       machineMemoryLine(Os.Mac, Some(8L << 30), Some(6L << 30), color = false),
       Some("podman machine memory: 75% (6.0G) available"),
@@ -95,16 +95,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
     assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
 
-  test("the memory figure's scale is the verb's: the session floor at a launch, the build gate before a build"):
+  test("the run-on-host lines name the programs, and under --write=reject a red line says a host command writes"):
+    val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
+    assertEquals(live.size, 1)
+    assert(live.head.startsWith("run on host: sbt, mill by --run-on-host; "), live.head)
+    assert(live.head.contains("your own sbt server") && live.head.contains("your own mill daemon"), live.head)
+    val reject = runOnHostLines(Seq("gradle"), "reject", color = false)
+    assertEquals(reject.size, 2)
+    assert(!reject.head.contains("your own"), reject.head)
+    assertEquals(
+      reject(1),
+      "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
+        " project as its program does",
+    )
+    assert(runOnHostLines(Seq("gradle"), "reject", color = true)(1).startsWith("\u001b[31m"))
+
+  test("the memory figure's scale is the action's: the session floor at a launch, the build gate before a build"):
     import HostCommands.Headroom
-    assertEquals(launchMemoryHeadroom(MinimumCeiling), Headroom.Ample)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling - 1), Headroom.Warned)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2), Headroom.Warned)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2 - 1), Headroom.Short)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit), Headroom.Ample)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit - 1), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit / 2), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit / 2 - 1), Headroom.Short)
     assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold), Headroom.Ample)
     assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold - 1), Headroom.Warned)
-    assertEquals(buildMemoryHeadroom(MinimumCeiling), Headroom.Warned)
-    assertEquals(buildMemoryHeadroom(MinimumCeiling - 1), Headroom.Short)
+    assertEquals(buildMemoryHeadroom(MinimumMemoryLimit), Headroom.Warned)
+    assertEquals(buildMemoryHeadroom(MinimumMemoryLimit - 1), Headroom.Short)
     // On a terminal the figure alone is tinted, and the label and state stay plain.
     assertEquals(
       machineMemoryLine(Os.Linux, Some(8L << 30), Some(2L << 30), color = true),
@@ -174,8 +189,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       val prompts = Vector.newBuilder[String]
       holdForReader("pause", command, Some(Reader(prompts += _, () => Some("n"))))
       prompts.result().mkString
-    assertNotEquals(rendered("tool", "a b"), rendered("tool", "a", "b"))
-    assertEquals(rendered("tool", "a b"), "\nstart: tool 'a b' [Y/n] ")
+    assertNotEquals(rendered("program", "a b"), rendered("program", "a", "b"))
+    assertEquals(rendered("program", "a b"), "\nstart: program 'a b' [Y/n] ")
     assertEquals(renderArgument("--write=live"), "--write=live")
     assertEquals(renderArgument("/usr/local/bin/x.sh"), "/usr/local/bin/x.sh")
     assertEquals(renderArgument(""), "''")
@@ -208,7 +223,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     import ClipboardBroker.{hostBackend, HostBackend}
     // findOnPath answers with the real path, and macOS keeps its temp directory behind /var -> /private/var.
     val bin = java.nio.file.Files.createTempDirectory("clipboard-host").toRealPath()
-    def tool(name: String, body: String = ""): String =
+    def program(name: String, body: String = ""): String =
       val path = bin.resolve(name)
       java.nio.file.Files.writeString(path, body)
       path.toFile.setExecutable(true)
@@ -219,31 +234,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val noPs = hostBackend("paste", Os.Mac, bin.toString)
     assert(noPs.swap.exists(_.contains("needs ps")), noPs.toString)
     // Windows resolves its shell and executes nothing, so this holds on every runner.
-    val powershell = tool("powershell.exe")
+    val powershell = program("powershell.exe")
     assertEquals(
       hostBackend("paste", Os.Windows, bin.toString),
       Right(HostBackend(powershell = Some(java.nio.file.Paths.get(powershell)))),
     )
     // From here the fakes are executed, as shell scripts: a POSIX runner only.
-    assume(!scala.util.Properties.isWin, "the fake tools are /bin/sh scripts")
-    tool("ps", "#!/bin/sh\nexit 0\n")
+    assume(!scala.util.Properties.isWin, "the fake programs are /bin/sh scripts")
+    program("ps", "#!/bin/sh\nexit 0\n")
     val mutePs = hostBackend("paste", Os.Mac, bin.toString)
     assert(mutePs.swap.exists(_.contains("pid=,ppid=")), mutePs.toString)
     // A ps answering the probed arguments with this JVM's own row, pid and parent — the parent baked in by
     // the test, so the fake proves the parser and needs no ps of the host's own.
     val parent = ProcessHandle.current.parent.map[String](_.pid.toString).orElse("1")
-    val ps = tool("ps", s"#!/bin/sh\nprintf '%s %s\\n' \"$$PPID\" $parent\n")
+    val ps = program("ps", s"#!/bin/sh\nprintf '%s %s\\n' \"$$PPID\" $parent\n")
     assertEquals(hostBackend("paste", Os.Mac, bin.toString), Right(HostBackend(ps = ps)))
-    val wlPaste = tool("wl-paste")
+    val wlPaste = program("wl-paste")
     assertEquals(hostBackend("paste", Os.Linux, bin.toString), Right(HostBackend(wlPaste = wlPaste, ps = ps)))
     assert(hostBackend("bidirectional", Os.Linux, bin.toString).isLeft, "a write mode without wl-copy")
-    val wlCopy = tool("wl-copy")
+    val wlCopy = program("wl-copy")
     assertEquals(
       hostBackend("bidirectional", Os.Linux, bin.toString),
       Right(HostBackend(wlPaste = wlPaste, wlCopy = wlCopy, ps = ps)),
     )
-    // Every tool found travels: xclip answers first, the Wayland pair when it cannot.
-    val xclip = tool("xclip")
+    // Every program found travels: xclip answers first, the Wayland pair when it cannot.
+    val xclip = program("xclip")
     assertEquals(
       hostBackend("bidirectional", Os.Linux, bin.toString),
       Right(HostBackend(xclip = xclip, wlPaste = wlPaste, wlCopy = wlCopy, ps = ps)),
@@ -317,6 +332,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       ),
     )
 
+  test("--help covers the management actions, write modes, egress profiles and host programs"):
+    val documentedActions = "(?m)^  (--[a-z-]+)(?:[ =]|$)".r
+      .findAllMatchIn(UsageText).map(_.group(1)).toSet
+    assertEquals(
+      documentedActions,
+      ManagementActions ++ Set("--egress-check", "--write", "--egress", "--run-on-host", "--env"),
+    )
+    assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
+    assert(UsageText.contains(RunOnHostPrograms.mkString(" / ")), UsageText)
+
   test("the proxy address is read for the right network only"):
     val output =
       "ko-agent-egress-app-abc123-1a2b3c4d 10.89.0.2\n" +
@@ -361,7 +387,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.contains("--label"))
 
-  test("image-producing verbs refresh exactly the remote sources their Containerfiles use"):
+  test("--build and --update refresh exactly the remote sources their Containerfiles use"):
     val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
     val buildCommands = AgentSandboxLauncher.buildCommands(
@@ -385,19 +411,36 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       buildImages.filter(_.startsWith("ghcr.io/astral-sh/uv:")),
     )
     assertEquals(
-      remoteImagesForBuildCommands(
-        selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid"),
-        readContainerfile,
-        localImages,
-      ),
-      Vector("docker.io/library/rust:test-rust-slim-trixie"),
-    )
-    assertEquals(
       remoteImagePullCommands("podman", buildImages),
       buildImages.map(image => Vector("podman", "pull", image, "--quiet")),
     )
     buildCommands.foreach: command =>
       assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
+
+  test("self-test builds refresh no remote source of their own"):
+    // --self-test pulls nothing (selfTest), sound only while every remote source of its
+    // Containerfile is one --build pulls; the Rust version read from the filter's Containerfile
+    // makes the two references the same, and a base of its own here would never be refreshed.
+    val readContainerfile: String => String = BundledBuildContext.resource
+    val localImages = managedImageTags("1.2-3").toSet
+    val context = Files.createTempDirectory("self-test-sources")
+    Files.writeString(
+      Files.createDirectories(context.resolve("ko-agent-fs")).resolve("Containerfile"),
+      readContainerfile("ko-agent-fs/Containerfile"),
+    )
+    val rustVersion = pinnedRustVersion(context)
+    val buildImages = remoteImagesForBuildCommands(
+      AgentSandboxLauncher.buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid"),
+      readContainerfile,
+      localImages,
+    )
+    val selfTestImages = remoteImagesForBuildCommands(
+      selfTestBuildCommands("podman", rustVersion, "sourceid", "selftestid"),
+      readContainerfile,
+      localImages,
+    )
+    assert(selfTestImages.nonEmpty)
+    assert(selfTestImages.forall(buildImages.contains), s"$selfTestImages not among $buildImages")
 
   test("an echoed command shows each word unambiguously on one line, a script argument included"):
     import HostCommands.shellWord
@@ -448,14 +491,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |    --mount=type=cache,target=/usr/local/cargo/registry \
           |    cargo build
           |COPY --chown=nonroot:nonroot app /build/app
-          |COPY --from=${REGISTRY}/two/tool:latest /tool /tool
+          |COPY --from=${REGISTRY}/two/program:latest /program /program
           |COPY --from=build /a /b
           |""".stripMargin,
         Map("SUPPLIED" -> "1"),
         LauncherBuiltImages,
         None,
       ),
-      Right(Vector("example.invalid/one/second:current", "example.invalid/two/tool:latest")),
+      Right(Vector("example.invalid/one/second:current", "example.invalid/two/program:latest")),
     )
 
   test("an image reaches the build through a mount or a continued COPY, and is refreshed too"):
@@ -465,7 +508,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         """FROM example.invalid/base:1 AS build
           |RUN --mount=type=bind,from=example.invalid/mounted:2,target=/m true
           |COPY \
-          |  --from=example.invalid/tool:3 /a /b
+          |  --from=example.invalid/program:3 /a /b
           |RUN --mount=type=cache,target=/build/target \
           |    --mount=type=bind,from=example.invalid/continued:4,target=/m \
           |    cargo build
@@ -480,7 +523,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Vector(
         "example.invalid/base:1",
         "example.invalid/mounted:2",
-        "example.invalid/tool:3",
+        "example.invalid/program:3",
         "example.invalid/continued:4",
       )),
     )
@@ -492,9 +535,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       remoteImagesInContainerfile(
         "Containerfile",
         """FROM example.invalid/base:1
-          |RUN echo from=example.invalid/tool:1
-          |LABEL note="see" from=example.invalid/tool:2
-          |RUN cargo build --mount=type=bind,from=example.invalid/tool:3
+          |RUN echo from=example.invalid/program:1
+          |LABEL note="see" from=example.invalid/program:2
+          |RUN cargo build --mount=type=bind,from=example.invalid/program:3
           |""".stripMargin,
         Map.empty,
         LauncherBuiltImages,
@@ -511,13 +554,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         """ARG REGISTRY=one.invalid
           |FROM scratch
           |ARG REGISTRY=two.invalid
-          |FROM ${REGISTRY}/tool:1
+          |FROM ${REGISTRY}/program:1
           |""".stripMargin,
         Map.empty,
         LauncherBuiltImages,
         None,
       ),
-      Right(Vector("one.invalid/tool:1")),
+      Right(Vector("one.invalid/program:1")),
     )
     // ko-agent-sandbox declares ARG IMG_TAG_VER twice for this (ContainerfileSources has the scope rule).
     assertEquals(
@@ -527,17 +570,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |FROM ${REGISTRY}/base:1
           |ARG REGISTRY
           |ARG VERSION=2.0
-          |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
+          |COPY --from=${REGISTRY}/program:${VERSION} /t /t
           |""".stripMargin,
         Map.empty,
         LauncherBuiltImages,
         None,
       ),
-      Right(Vector("one.invalid/base:1", "one.invalid/tool:2.0")),
+      Right(Vector("one.invalid/base:1", "one.invalid/program:2.0")),
     )
     val unshared = remoteImagesInContainerfile(
       "Containerfile",
-      "ARG REGISTRY=one.invalid\nFROM scratch\nCOPY --from=${REGISTRY}/tool:1 /t /t\n",
+      "ARG REGISTRY=one.invalid\nFROM scratch\nCOPY --from=${REGISTRY}/program:1 /t /t\n",
       Map.empty,
       LauncherBuiltImages,
       None,
@@ -551,13 +594,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         """FROM scratch AS base
           |ARG REGISTRY=example.invalid
           |FROM base
-          |COPY --from=${REGISTRY}/tool:1 /t /t
+          |COPY --from=${REGISTRY}/program:1 /t /t
           |""".stripMargin,
         Map.empty,
         LauncherBuiltImages,
         None,
       ),
-      Right(Vector("example.invalid/tool:1")),
+      Right(Vector("example.invalid/program:1")),
     )
     // An unrelated stage inherits nothing, and still says so rather than guessing.
     val unrelated = remoteImagesInContainerfile(
@@ -565,7 +608,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       """FROM scratch AS base
         |ARG REGISTRY=example.invalid
         |FROM scratch
-        |COPY --from=${REGISTRY}/tool:1 /t /t
+        |COPY --from=${REGISTRY}/program:1 /t /t
         |""".stripMargin,
       Map.empty,
       LauncherBuiltImages,
@@ -645,13 +688,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           |FROM 0
           |ARG VERSION=2
           |FROM 1
-          |COPY --from=${REGISTRY}/tool:${VERSION} /t /t
+          |COPY --from=${REGISTRY}/program:${VERSION} /t /t
           |""".stripMargin,
         Map.empty,
         LauncherBuiltImages,
         None,
       ),
-      Right(Vector("example.invalid/tool:2")),
+      Right(Vector("example.invalid/program:2")),
     )
 
   test("a targeted build reads only the stages it reaches"):
@@ -659,7 +702,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       """ARG REACHED=example.invalid
         |FROM ${REACHED}/base:1 AS build
         |FROM ${UNPASSED}/later:2
-        |COPY --from=${UNPASSED}/tool:3 /t /t
+        |COPY --from=${UNPASSED}/program:3 /t /t
         |""".stripMargin
     val targeted = Vector(
       Vector("podman", "build", "--target", "build", "-t", "out:1", "ctx"),
@@ -728,7 +771,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("remote image parsing refuses a pattern it does not resolve"):
     // Every one of these is a Containerfile podman accepts. Approximating them is what would let a
-    // refresh be skipped without a word, so each has to stop the verb instead.
+    // refresh be skipped without a word, so each has to stop the action instead.
     Vector(
       "FROM example.invalid/base:${UNSET}\n" -> "no value for build-image variable ${UNSET}",
       "ARG V=1.0\nFROM example.invalid/base:$V\n" -> "unsupported build-image variable",
@@ -738,7 +781,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "FROM --platform=linux/arm64 example.invalid/base:1\n" -> "unsupported FROM instruction",
       "ARG V=1.0 \\\n  W=2.0\n" -> "continued instruction",
       "FROM \\\n  example.invalid/base:1\n" -> "continued instruction",
-      "# escape=`\nCOPY `\n  --from=example.invalid/tool:1 /a /b\n" -> "unsupported parser directive",
+      "# escape=`\nCOPY `\n  --from=example.invalid/program:1 /a /b\n" -> "unsupported parser directive",
       "# syntax=docker/dockerfile:1\nFROM example.invalid/base:1\n" -> "unsupported parser directive",
       "FROM scratch\nRUN <<EOF\nCOPY --from=example.invalid/not-an-image:1 /a /b\nEOF\n" ->
         "unsupported here-document",
@@ -888,14 +931,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("every cleanup order is a reverse topological order of the Containerfiles' FROM graph"):
     val version = "1.2-3"
-    val verbs =
+    val actions =
       buildCommands("podman", version, "sourceid", "sandboxid", "proxyid") ++
         updateCommands("podman", version, "sandboxid") ++
         selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
     val declared = managedImageTags(version)
     // child -> parent, read from the bundled Containerfiles rather than restated here.
-    val edges = buildOutputImages(verbs)
-      .zip(imageSourcesForBuildCommands(verbs, BundledBuildContext.resource, declared.toSet))
+    val edges = buildOutputImages(actions)
+      .zip(imageSourcesForBuildCommands(actions, BundledBuildContext.resource, declared.toSet))
       .flatMap((child, sources) => sources.parents.map(child -> _))
       .distinct
     // Not empty by an accident of parsing: the sandbox image builds on the coursier base.
@@ -941,10 +984,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("every internal multi-stage build has one named compile-cache target"):
     val containerRoot = Paths.get("container")
-    val listed = Files.list(containerRoot)
-    val containerfiles =
-      try listed.iterator().asScala.map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)).toVector
-      finally listed.close()
+    val containerfiles = FileHelper.directoryEntries(containerRoot)
+      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
     val allContainerfiles = containerfiles :+ Paths.get("fuse/ko-agent-fs/Containerfile")
     val multiStage = allContainerfiles.filter: path =>
       Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
@@ -993,8 +1034,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
   test("the bundled build context includes every Containerfile and an INDEX"):
-    // The resourceGenerators task in build.sbt put these in the jar; this pins that the launcher can find what --build
-    // unpacks.
+    // The resourceGenerators task in build.sbt put these in the jar; this checks that the launcher
+    // can find what --build unpacks.
     val index = BundledBuildContext.resource("INDEX").linesIterator.filter(_.nonEmpty).toVector
     Vector(
       "debian-temurin/Containerfile",
@@ -1079,17 +1120,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(listed, gitHosts)
 
   test("every egress rule example is a complete rule file the production parser accepts, without a warning"):
-    def entries(directory: java.nio.file.Path) =
-      val stream = Files.list(directory)
-      try stream.iterator.asScala.toVector
-      finally stream.close()
-
     val root = Paths.get("doc/egress-rule-example")
-    val examples = entries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
+    val examples = FileHelper.directoryEntries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
     assert(examples.nonEmpty, "no egress rule examples found")
 
     examples.foreach: directory =>
-      val files = entries(directory)
+      val files = FileHelper.directoryEntries(directory)
       assertEquals(files.map(_.getFileName.toString), Vector("rule"), directory.toString)
       val resolved = resolveRuleset(Some("deny-unless-allowed"), None, Some(Files.readString(files.head)))
       assertEquals(resolved.warnings, Vector.empty, directory.toString)
@@ -1112,13 +1148,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // A ruleset with no lines of its own, so every grant word found is the text's own.
     val emptyResolution = "egress profile: deny-all"
-    val section = authoritySection("live", "fuse", emptyResolution)
+    val section = appendedSection("live", "fuse", emptyResolution)
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
-    // The section holds the ruleset alone: the dry run's metadata, which describes the ruleset's
-    // size and the project's file, stays with the terminal (EgressRules.rulesetLinesOf).
-    val widened = authoritySection(
+    // Neither project-file metadata nor its hostnames belong in the instructions.
+    val widened = appendedSection(
       "live", "fuse",
       emptyResolution + "\nruleset summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
@@ -1130,74 +1165,116 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(baseInstructions.contains("no line grants at its path"), baseInstructions)
 
-  test("the authority section directs the agent by write mode, never leaves it to probing"):
+  test("agent instructions retain the profile and consult the full ruleset without embedding it"):
+    import agentsandbox.egress.RulesetHelper.{AllProviders, metadataLines, rulesetLines}
+
+    val projectRules =
+      "allow https://artifact.example/releases/ read git-fetch method=POST\n" +
+        "allow https://model.example/ tunnel\n" +
+        "deny https://**.blocked.example/"
+    for
+      profile <- EgressProfiles
+      provider <- Vector(None, Some("openai"), Some(AllProviders))
+      project <- Vector(None, Some(projectRules))
+    do
+      val resolved = resolveRuleset(Some(profile), provider, project)
+      val lines = rulesetLines(resolved)
+      val output = (lines ++ metadataLines(resolved)).mkString("\n")
+      assertEquals(EgressRules.rulesetLinesOf(output), lines.mkString("\n"))
+      for
+        mode <- WriteModes
+        guard <- Vector("fuse", "none")
+        programs <- Vector(Vector.empty[String], RunOnHostPrograms)
+      do
+        val section = appendedSection(mode, guard, output, programs)
+        assert(section.contains(lines.head), section)
+        assert(section.contains("consult `$KO_AGENT_SANDBOX_EGRESS_RULESET`"), section)
+        assertEquals(section, appendedSection(mode, guard, lines.head, programs))
+        assert(!section.linesIterator.exists(_.trim.matches("(?:allow|deny) https://.*")), section)
+        assert(!section.contains("ruleset summary:") && !section.contains("widening lines"), section)
+        assert(!section.contains("lines below") && !section.contains("allowed below"), section)
+
+  test("the appended section directs the agent by write mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all"
-    val readOnly = authoritySection("reject", "fuse", resolution)
+    val readOnly = appendedSection("reject", "fuse", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
-    val filtered = authoritySection("live", "fuse", resolution)
+    Vector(Vector.empty[String], RunOnHostPrograms).foreach: programs =>
+      val section = appendedSection("reject", "fuse", resolution, programs)
+      assert(section.contains("temporary work"), section)
+      assert(section.contains("return results in the conversation"), section)
+      assert(section.contains("--write=live"), section)
+    val filtered = appendedSection("live", "fuse", resolution)
     assert(filtered.contains("ko-agent-fs"), filtered)
     assert(filtered.contains("at any depth"), filtered)
     assert(filtered.contains("symlink targets"), filtered)
-    val raw = authoritySection("live", "none", resolution)
-    assert(raw.contains("raw writable bind"), raw)
+    val raw = appendedSection("live", "none", resolution)
+    assert(raw.contains("direct writable bind mount"), raw)
     assert(raw.contains(KoAgentFs.RawWorkspaceBoundary), raw)
-    assert(raw.contains("Nested repository control state"), raw)
-    assert(raw.contains("non-portable"), raw)
-    assert(raw.contains("symlinks remain writable"), raw)
-    // Both name the relaunch path for a host the ruleset does not admit.
+    assert(raw.contains("entries in nested repositories remain writable"), raw)
+    assert(raw.contains("Symlinks can have absolute targets"), raw)
+    assert(raw.contains("targets that resolve outside the project on the host"), raw)
+    // Both name the relaunch path for a host the ruleset does not allow.
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
-    // --run-on-host adds the host-build instruction, naming each served tool's command. Without the
+    // --run-on-host adds the run-on-host instruction, naming each served program's command. Without the
     // option, a macOS session gets one discovery line — only the launcher knows the platform —
     // and other platforms hear nothing about a command they can never have.
-    val hostBuilds = authoritySection("live", "fuse", resolution, Vector("sbt", "mill"))
-    assert(hostBuilds.contains("sandbox-run-on-host sbt"), hostBuilds)
-    assert(hostBuilds.contains("sandbox-run-on-host mill"), hostBuilds)
-    assert(hostBuilds.contains("Each sbt invocation starts and ends its own server"), hostBuilds)
-    // The batching example is quoted: the JVM client hands its arguments to sbt as one command
-    // line, so `compile test` is a parse error and `'compile; test'` is two commands (measured on
-    // sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening test suite — is
-    // named, with the container as where it runs instead.
-    assert(hostBuilds.contains("sandbox-run-on-host sbt 'compile; test'"), hostBuilds)
-    assert(!hostBuilds.contains("sbt compile test"), hostBuilds)
-    assert(hostBuilds.contains("Operation not permitted"), hostBuilds)
-    assert(hostBuilds.replace('\n', ' ').contains("that suite alone runs in the container"), hostBuilds)
-    assert(hostBuilds.contains("never re-run in the container"), hostBuilds)
-    assert(hostBuilds.contains(RunOnHostChannel.RunOnHostVariable), hostBuilds)
+    val runOnHostSection = appendedSection("live", "fuse", resolution, Vector("sbt", "mill"))
+    assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
+    assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
+    assert(
+      runOnHostSection.contains("The daemons of sbt, mill and gradle stay warm across invocations"),
+      runOnHostSection,
+    )
+    // The example of several commands is quoted: the JVM client hands its arguments to sbt as one
+    // command line, so `compile test` is a parse error and `'compile; test'` is two commands
+    // (measured on sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening
+    // test suite — is named, with the container as where it runs instead.
+    assert(runOnHostSection.contains("sandbox-run-on-host sbt 'compile; test'"), runOnHostSection)
+    assert(!runOnHostSection.contains("sbt compile test"), runOnHostSection)
+    assert(runOnHostSection.contains("Operation not permitted"), runOnHostSection)
+    assert(runOnHostSection.replace('\n', ' ').contains("the last resort, not an alternative"), runOnHostSection)
+    assert(runOnHostSection.replace('\n', ' ').contains("that suite alone runs in the container"), runOnHostSection)
+    assert(
+      runOnHostSection.replace('\n', ' ').contains("Under mill and gradle a build's processes can bind"),
+      runOnHostSection,
+    )
+    assert(runOnHostSection.contains("never re-run in the container"), runOnHostSection)
+    assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)
     val discoverable =
-      authoritySection("live", "fuse", resolution, Vector.empty, hostBuildsAvailable = true)
+      appendedSection("live", "fuse", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
-    assert(discoverable.contains("--run-on-host=sbt,mill,mvn"), discoverable)
+    assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
-    // reject's instruction flips when a host build can write the project (the --run-on-host composition):
+    // reject's instruction flips when a host command can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
-    val rejectWithBuilds = authoritySection("reject", "fuse", resolution, Vector("sbt"))
-    assert(rejectWithBuilds.contains("session's own writes"), rejectWithBuilds)
-    assert(rejectWithBuilds.contains("sandbox-run-on-host"), rejectWithBuilds)
-    assert(rejectWithBuilds.contains("--write=live"), rejectWithBuilds)
+    val rejectWithHostCommands = appendedSection("reject", "fuse", resolution, Vector("sbt"))
+    assert(rejectWithHostCommands.contains("session's own writes"), rejectWithHostCommands)
+    assert(rejectWithHostCommands.contains("sandbox-run-on-host"), rejectWithHostCommands)
+    assert(rejectWithHostCommands.contains("--write=live"), rejectWithHostCommands)
     // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
     // was chosen: the agent is not sent to ask for an allow line it already has.
     val publicDefault =
-      authoritySection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
+      appendedSection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
     assert(publicDefault.contains("reachable for reading"), publicDefault)
     assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
-    assert(!publicDefault.contains("Anything not admitted below is refused"), publicDefault)
+    assert(!publicDefault.contains("Anything not allowed by the ruleset is refused"), publicDefault)
     assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
-    assert(filtered.contains("Anything not admitted below is refused"), filtered)
+    assert(filtered.contains("Anything not allowed by the ruleset is refused"), filtered)
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
     // A session without git: the agent hears it before its first command, in the words naming
     // what the container lacks (SandboxProject.noGitInstruction).
     val cause = "`/workspace/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
-    val noGit = authoritySection("live", "fuse", resolution, noGit = Some(cause))
+    val noGit = appendedSection("live", "fuse", resolution, noGit = Some(cause))
     assert(noGit.contains(s"Git does not work in this session: $cause."), noGit)
     assert(!filtered.contains("Git does not work"), filtered)
 
-  test("the generated agent document cache varies with every authority input"):
+  test("the generated agent document cache varies with every input"):
     def stamp(
       imageId: String = "image-a",
       writeMode: String = "live",
@@ -1214,6 +1291,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(writeMode = "reject"),
       stamp(guard = "none"),
       stamp(ruleset = "ruleset-b"),
+      stamp(instructions = Some("")),
+      stamp(instructions = Some("\n")),
       stamp(instructions = Some("project instructions")),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),
@@ -1240,20 +1319,24 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(Nil).map(_.writeMode), Right("live"))
     assertEquals(parseCommandLine(Nil).map(_.egressProfile), Right("deny-unless-allowed"))
 
-  test("option parsing: authority values are a closed set and are selected once"):
+  test("option parsing: workspace modes and egress profiles are a closed set and are selected once"):
     assert(parseCommandLine(List("--write=maybe")).swap.exists(_.contains("reject, live")))
     assert(parseCommandLine(List("--egress=allow-all")).isLeft)
     assert(parseCommandLine(List("--write=live", "--write=reject")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
 
-  test("option parsing: --run-on-host names tools from a closed set, each once, selected once"):
+  test("option parsing: --run-on-host names programs from a closed set, each once, selected once"):
     assertEquals(
       parseCommandLine(List("--run-on-host=sbt,mill", "claude")).map(_.runOnHost),
       Right(Some(Vector("sbt", "mill"))),
     )
     assertEquals(parseCommandLine(List("claude")).map(_.runOnHost), Right(None))
-    assert(parseCommandLine(List("--run-on-host=gradle")).swap.exists(_.contains("sbt, mill, mvn")))
+    assertEquals(
+      parseCommandLine(List("--run-on-host=gradle", "claude")).map(_.runOnHost),
+      Right(Some(Vector("gradle"))),
+    )
+    assert(parseCommandLine(List("--run-on-host=ant")).swap.exists(_.contains("sbt, mill, gradle, mvn")))
     assert(parseCommandLine(List("--run-on-host=")).isLeft)
     assert(parseCommandLine(List("--run-on-host=sbt,sbt")).swap.exists(_.contains("twice")))
     assert(
@@ -1261,31 +1344,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         .exists(_.contains("twice")),
     )
     assert(
-      parseCommandLine(List("--run-on-host", "sbt")).swap.exists(_.contains("--run-on-host=<tools>")),
+      parseCommandLine(List("--run-on-host", "sbt")).swap.exists(_.contains("--run-on-host=<programs>")),
     )
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--run-on-host=sbt")).map(_.runOnHost), Right(None))
 
-  test("option parsing: --auto-shutdown-foreign-sbt-on-host needs sbt on the host, selected once"):
-    val option = RunOnHostSandbox.AutoShutdownForeignSbtOption
-    assertEquals(
-      parseCommandLine(List("--run-on-host=sbt", option, "claude")).map(_.autoShutdownForeignSbt),
-      Right(true),
-    )
-    assertEquals(
-      parseCommandLine(List("--run-on-host=sbt", "claude")).map(_.autoShutdownForeignSbt),
-      Right(false),
-    )
-    assert(parseCommandLine(List(option, "claude")).swap.exists(_.contains("--run-on-host")))
-    assert(parseCommandLine(List("--run-on-host=mill", option)).swap.exists(_.contains("name sbt")))
-    assert(
-      parseCommandLine(List("--run-on-host=sbt", option, option)).swap.exists(_.contains("twice")),
-    )
-    // After the command, it is the command's — and then no consent was typed.
-    assertEquals(
-      parseCommandLine(List("claude", option)).map(_.autoShutdownForeignSbt),
-      Right(false),
-    )
+  test("option parsing: the retired --auto-shutdown-foreign-sbt-on-host is refused by name"):
+    val option = RetiredAutoShutdownOption
+    val refused = parseCommandLine(List("--run-on-host=sbt", option, "claude"))
+    assert(refused.swap.exists(reason => reason.contains(option) && reason.contains("by default")), refused.toString)
+    // After the command, it is the command's.
+    assertEquals(parseCommandLine(List("claude", option)).map(_.command), Right(List("claude", option)))
 
   test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
     assertEquals(
@@ -1324,8 +1393,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The refusal is a prefix, so a variable the launcher passes to say what is enforced must
     // start with it: the interpolated `--env=$Constant=` forms are those, and EgressRules's
     // `$variable` names the proxy container's rule files, which no forward reaches.
-    val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
-      .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
+    val sources = FileHelper.directoryEntries(Paths.get("src/main/scala"))
+      .filter(_.toString.endsWith(".scala")).map(Files.readString)
     val interpolated = sources.flatMap("\"--env=\\$([A-Za-z]+)".r.findAllMatchIn(_).map(_.group(1))).toSet
     // `name` is upstreamProxyArgs's HTTPS_PROXY pass-through to the proxy container: a name with
     // no value, which no sandbox receives.
@@ -1381,7 +1450,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(pinnedRustVersion(context), "9.9.9")
 
-  test("option parsing: management verbs take the rest as operands"):
+  test("option parsing: management actions take the rest as operands"):
     assertEquals(
       parseCommandLine(List("--proxy-log", "-f")),
       Right(ParsedCommandLine(None, None, Some(("--proxy-log", List("-f"))), Nil)),

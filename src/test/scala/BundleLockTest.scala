@@ -2,7 +2,7 @@
 // jar's digest refuses the launch with the rebuild hint, while an explicitly overridden image
 // only warns (AgentSandboxLauncher.bundleMismatch decides both; this drives real launches). The
 // sandbox image is the whole demonstration — the proxy image goes through the same
-// bundleMismatch, unit-pinned in AgentSandboxLauncherTest.
+// bundleMismatch, unit-tested in AgentSandboxLauncherTest.
 //
 // The mislabelled fixture is built here, FROM the real image with only the label replaced, so
 // nothing else about the image changes. The refusal path needs the *default* name to be the

@@ -1,0 +1,32 @@
+// The security gate's Gradle fixture has one module and one test class. Keep it limited to what
+// the gate exercises. The build uses the Gradle distribution its wrapper downloaded
+// (RunOnHostPrereqs.gradleDistributionDir). `gateToolchain` asks for a toolchain the launch does
+// not grant, the toolchain row's request; `run` prints the temporary directory the forked JVM
+// sees and, with `sleep`, stays up for the cancel and teardown rows.
+plugins {
+    id 'java'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    if (project.hasProperty('gateToolchain')) {
+        toolchain.languageVersion = JavaLanguageVersion.of(project.property('gateToolchain') as int)
+    }
+}
+
+application {
+    mainClass = 'fixture.Main'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

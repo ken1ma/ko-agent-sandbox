@@ -230,7 +230,7 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
     //
     // A control for this has to drop `O_APPEND` from `passthrough_flags` *as well as* forcing the
     // `pwrite` arm: with the flag still on the backing fd, Linux appends whatever offset `pwrite`
-    // is given, and the fault this pins is not reproduced.
+    // is given, and the fault this tests is not reproduced.
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -309,7 +309,7 @@ fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
 }
 
 /// What this can and cannot show: durability itself needs a machine that loses power, so what is
-/// pinned here is that both calls reach the daemon and succeed on the backing fd. Their failure
+/// tested here is that both calls reach the daemon and succeed on the backing fd. Their failure
 /// mode is the one worth guarding against anyway — an `fh` the handle table does not know is
 /// `EBADF`, and an unimplemented op is `ENOSYS`, which the kernel converts to success and stops
 /// sending, so a regression would be silent at the syscall and visible only after a crash.

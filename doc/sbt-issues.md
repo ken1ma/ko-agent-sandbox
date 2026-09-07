@@ -4,6 +4,30 @@ Found while measuring the `--run-on-host` build sandbox, each written as the rep
 What this project does about each is in `run-on-host.md` and the code it points to; the row here
 is only what upstream needs.
 
+## Quoted JVM options are copied into arguments
+
+**Versions:** sbt runner 2.0.8, Temurin 25.0.4 on macOS; also reproduced on Linux.
+
+**Reproducer:** from an sbt project, print the JVM properties without starting the build:
+
+```sh
+JAVA_TOOL_OPTIONS='-Djava.io.tmpdir="/tmp"' \
+    sbt --server -J-XshowSettings:properties -J--dry-run
+```
+
+**What happens:** `java.io.tmpdir` is `"/tmp"`, including the quotes. An actual build fails when
+ipcsocket loads its native library because the quoted path is not absolute. A value containing
+spaces can prevent JVM startup. `--jvm-client` and `JDK_JAVA_OPTIONS` have the same problem.
+
+**Why:** the runner assigns `java_tool_options=($JAVA_TOOL_OPTIONS)` and
+`jdk_java_options=($JDK_JAVA_OPTIONS)`, then passes the arrays to Java. Shell expansion splits
+words without interpreting quotes within them. These arguments override the values the JVM
+already parsed correctly from its environment. The script's `findProperty` also splits quoted
+environment values without unquoting them when selecting the preloaded cache directory.
+
+**Expected:** preserve the JVM's parsing of its environment options, including quoted paths;
+the script's cache lookup should agree with the JVM's value.
+
 ## The JVM thin client crashes instead of reporting a long boot-socket path
 
 **Title:** `--jvm-client` dies with `Trace/BPT trap: 5` when `java.io.tmpdir` is over 52 characters

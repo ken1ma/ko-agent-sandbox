@@ -1,9 +1,9 @@
 // --self-test's share rows: the host-writer/session-reader direction the crate's suites cannot reach,
 // because their backing tree is the container's own storage (fuse/ko-agent-fs/doc/testing.md). A
 // scratch lower created inside the current directory puts the real share in the path — host
-// filesystem -> share -> ko-agent-fs -> container — and the launcher performs the host-side steps the
-// hand-run probes needed a person for. fuse/ko-agent-fs/doc/TODO.md is the standard: driven by the
-// launcher, machine recorded, the scratch gone on success and kept on failure, and nothing a killed
+// filesystem -> share -> ko-agent-fs -> container — with the launcher performing the host-side steps.
+// doc/TODO.md, "--self-test's remaining share rows", sets the standard: driven by the launcher,
+// machine recorded, the scratch gone on success and kept on failure, and nothing a killed
 // run leaves that the reset sweep does not match — the mount is under the same mounts/ root the
 // unmount-all sweep clears, the container's name pattern is in --reset-all's container sweep, and
 // the scratch's name says what left it behind.
@@ -16,6 +16,7 @@ import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
 
 import HostCommands.*
+import FileHelper.*
 import KoAgentFs.*
 
 object SelfTestShare:
@@ -65,8 +66,8 @@ object SelfTestShare:
     )
 
   /** The stack check both programs open with — `.git` refused at *any* depth is the property that
-    * separates the filter from the launcher's mount pins, and probing in a fresh subdirectory is
-    * what makes it answer in a tree that already has a `.git`. */
+    * separates the filter from the launcher's read-only bind mounts, and probing in a fresh
+    * subdirectory is what makes it answer in a tree that already has a `.git`. */
   private val ProbePrelude: String =
     s"""import mmap, os, shutil, sys, tempfile, time
        |os.chdir("/workspace")
@@ -84,7 +85,7 @@ object SelfTestShare:
    * The container half, fed on stdin. After the prelude, the coherency measurements the hand-run
    * probe made: a host write visible through read(), and through an already-established mmap —
    * the AUTO_INVAL_DATA path nothing else exercises. Both waits are bounded, so a broken share is
-   * a failed row rather than a hung verb; the mmap wait starts at the moment read() saw the
+   * a failed row rather than a hung action; the mmap wait starts at the moment read() saw the
    * write, which makes its figure the lag between the two views.
    */
   val PosixSessionProbe: String = ProbePrelude +

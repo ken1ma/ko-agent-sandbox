@@ -10,7 +10,9 @@ import java.io.{ByteArrayOutputStream, IOException, InputStream, OutputStream}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+
+import scala.util.control.NonFatal
 
 import HostCommands.Os
 
@@ -21,7 +23,7 @@ object RunOnHostChannel:
    * channel has none and the shim fails at once; everything else is transaction-scoped. The shim
    * takes the lock, creates its own `ctl.<pid>`, `out.<pid>`, `err.<pid>` and `exit.<pid>`,
    * writes its pid to `req` as one line — a single write, so it frames itself — and then sends
-   * the request over `ctl.<pid>`: `<tool> <argc>\n`, then argc+1 NUL-terminated fields, the
+   * the request over `ctl.<pid>`: `<program> <argc>\n`, then argc+1 NUL-terminated fields, the
    * working directory in its container spelling and then the arguments. It holds `ctl.<pid>`
    * open for the life of the transaction and reads `out`/`err` to EOF and its exit code from
    * `exit`.
@@ -30,7 +32,9 @@ object RunOnHostChannel:
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running command is ended with SIGTERM, the
    * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
-   * never completes, expires on a deadline with no command started. The data FIFOs
+   * never completes, expires on a deadline with no command started. The shim bounds startup
+   * through opening both output streams, then separately the exit-status read, and exits 70 on
+   * either timeout. Waiting for the lock and draining command output have no deadline. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
    *
@@ -40,13 +44,13 @@ object RunOnHostChannel:
    * writer scribbling on `req` or a transaction's FIFOs is the agent breaking its own channel —
    * the broker drops what it cannot frame, and the authority it enforces is unaffected.
    */
-  val SandboxDir = "/tmp/ko-agent-sandbox/host-command"
+  val SandboxDir = "/tmp/ko-agent-sandbox/run-on-host"
 
   /** What the project is mounted at inside the container: the spelling requests arrive in. */
   val WorkspaceMount = "/workspace"
 
   /**
-   * Set in the sandbox to the tools `--run-on-host` names: the shim's cue to wait for a `req`
+   * Set in the sandbox to the programs `--run-on-host` names: the shim's cue to wait for a `req`
    * the broker may not have made yet, and the agent's one variable saying the channel exists.
    */
   val RunOnHostVariable = "KO_AGENT_SANDBOX_RUN_ON_HOST"
@@ -69,7 +73,7 @@ object RunOnHostChannel:
   val MaxLineBytes = 4096
   val DrainBytes = 64 << 20
 
-  final case class Request(tool: String, workingDirectory: String, arguments: Vector[String])
+  final case class Request(program: String, workingDirectory: String, arguments: Vector[String])
 
   /** One request off the stream: Right(None) is EOF at a request boundary; Left is a stream that
     * can no longer be trusted to frame anything, the caller's cue to drop it whole. */
@@ -78,7 +82,7 @@ object RunOnHostChannel:
       case None => Right(None)
       case Some(header) =>
         header.split(" ", 2) match
-          case Array(tool, count) if count.forall(_.isDigit) && count.nonEmpty =>
+          case Array(program, count) if count.forall(_.isDigit) && count.nonEmpty =>
             count.toIntOption match
               case None =>
                 Left(s"request names $count arguments, which is no count at all")
@@ -102,8 +106,8 @@ object RunOnHostChannel:
                   index += 1
                 failed.toLeft(()).map: _ =>
                   val all = fields.result()
-                  Some(Request(tool, all.head, all.tail))
-          case _ => Left(s"request header is not `<tool> <argc>`: $header")
+                  Some(Request(program, all.head, all.tail))
+          case _ => Left(s"request header is not `<program> <argc>`: $header")
 
   /** Right(None) at EOF before any byte; Left on a line passing the bound — unframeable. */
   def readLine(in: InputStream): Either[String, Option[String]] =
@@ -170,12 +174,26 @@ object RunOnHostChannel:
   )
 
   /** Everything one session's broker serves with: the launcher's canonical project root, the
-    * tools `--run-on-host` named, and how a validated request becomes a wrapper command. */
+    * programs `--run-on-host` named, and how a validated request — program, working directory,
+    * build lock file, arguments — becomes a wrapper command. */
   final case class Service(
     project: Path,
-    tools: Set[String],
-    buildCommand: (String, Path, Seq[String]) => Seq[String],
+    programs: Set[String],
+    /** A locked spawn of the wrapper (RunOnHostSession.lockedSpawn, under the broker): dispatch
+      * speaks its protocol. */
+    wrapperCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
+    /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
+      * which the wrapper holds for its life. */
+    buildLock: (String, Path) => Either[String, Path],
+    /** The runtime a program's command in a build directory runs against, given the request's
+      * arguments, prepared while the spawn holds the build lock: the wrapper options naming it
+      * (RunOnHostSandbox.runtimeOptions), none for a program whose wrapper creates its own. */
+    runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
+    /** After a dispatched spawn ended — its command run, refused, or ended with its requester —
+      * with the request's program: what the runtime records once the command is over
+      * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
+    ended: String => Unit = _ => (),
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long the broker waits for a complete request before the handshake expires. */
@@ -184,7 +202,7 @@ object RunOnHostChannel:
 
   /**
    * The broker's life: wait for the sandbox to run, then serve handshakes cycle by cycle while
-   * it still runs — ClipboardBroker.serve's loop, with builds where the clipboard was; each
+   * it still runs — ClipboardBroker.serve's loop, with commands where the clipboard was; each
    * cycle is one reader exec and every transaction its stream delivers. Both waits are bounded
    * pacing, not correctness: an idle cycle blocks in the handshake reader's own open.
    */
@@ -248,11 +266,21 @@ object RunOnHostChannel:
       end(reader)
       reader.waitFor(10, TimeUnit.SECONDS)
 
-  /** The command a broker is currently running, for the shutdown hook: a TERM to the broker ends
-    * the command too, rather than silently leaving it to finish. */
-  @volatile private var currentCommand: Option[Process] = None
+  /** How to end the command a broker is currently running, for the shutdown hook: a TERM to the
+    * broker ends the command too, rather than silently leaving it to finish, and returns only
+    * when the wrapper has ended, its teardown included, before the broker's own session is
+    * ended. */
+  @volatile private var currentCommand: Option[() => Unit] = None
 
-  def endCurrentCommand(): Unit = currentCommand.foreach(_.destroy())
+  def endCurrentCommand(): Unit = currentCommand.foreach(end => end())
+
+  /** Where a dispatched spawn is, for an end asked of it — the requester gone, endCurrentCommand.
+    * Waiting for the build lock, it is destroyed at once. Preparing the runtime, it holds the
+    * lock the preparation runs under, so the end is applied once the word is out: the refusal,
+    * which it exits on by itself. Running the wrapper, it is destroyed, the wrapper's teardown
+    * answering. */
+  private enum SpawnPhase:
+    case Waiting, Preparing, Running, Ending
 
   private def transact(
     transport: Transport,
@@ -339,58 +367,125 @@ object RunOnHostChannel:
     validated(service, request) match
       case Left(refusal) => refuse(transport, id, refusal, log)
       case Right(workingDirectory) =>
-        val outWriter = writer(transport, id, "out")
-        val errWriter = writer(transport, id, "err")
-        val command = service.buildCommand(request.tool, workingDirectory, request.arguments)
-        log(s"${request.tool} in $workingDirectory: ${request.arguments.mkString(" ")}")
-        try
-          val child = ProcessBuilder(command*)
-            .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
-            .start()
-          currentCommand = Some(child)
-          val ended = AtomicBoolean(false)
-          val requesterGone = AtomicBoolean(false)
-          // The writers die only with their requester: a slow reader is the requester's own
-          // pace, never a reason to truncate its output — while a gone one unblocks everything
-          // this transaction still holds.
-          ctl.onExit.thenRun: () =>
-            if !ended.get then
-              requesterGone.set(true)
-              log("the requester is gone; ending the command")
-              child.destroy()
-              end(outWriter)
-              end(errWriter)
-          val pumps = Seq(
-            pump(child.getInputStream, outWriter.getOutputStream),
-            pump(child.getErrorStream, errWriter.getOutputStream),
-          )
-          val exit = child.waitFor()
-          currentCommand = None
-          pumps.foreach(_.join())
-          if requesterGone.get then log(s"ended with $exit for a requester already gone")
-          else
-            // Only after both writers have drained: the shim reads the exit code last, and an
-            // exit writer given up on while the shim was still draining output would leave the
-            // shim blocked on a FIFO no writer will ever open.
-            outWriter.waitFor()
-            errWriter.waitFor()
-            writeExit(transport, id, exit)
-            log(s"exit $exit")
-          ended.set(true)
-        catch
-          case ex: IOException =>
-            log(s"could not start the wrapper: ${ex.getMessage}")
-            writeAll(outWriter.getOutputStream, "")
-            writeAll(errWriter.getOutputStream, s"could not start the build wrapper: ${ex.getMessage}\n")
-            writeExit(transport, id, 2)
-        finally
-          currentCommand = None
-          Seq(outWriter, errWriter).foreach: process =>
-            if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
+        service.buildLock(request.program, workingDirectory) match
+          case Left(reason)    => refuse(transport, id, s"CHANNEL_UNAVAILABLE: $reason", log)
+          case Right(lockFile) => dispatch(transport, service, id, ctl, request, workingDirectory, lockFile, log)
+
+  private def dispatch(
+    transport: Transport,
+    service: Service,
+    id: String,
+    ctl: Process,
+    request: Request,
+    workingDirectory: Path,
+    lockFile: Path,
+    log: String => Unit,
+  ): Unit =
+    val outWriter = writer(transport, id, "out")
+    val errWriter = writer(transport, id, "err")
+    val command = service.wrapperCommand(request.program, workingDirectory, lockFile, request.arguments)
+    log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
+    try
+      // The wrapper's stdin is this broker's pipe, written once — the word below — and then
+      // held: its EOF is the broker gone, killed or ended, and the wrapper ends the command at
+      // it (RunOnHostSandbox.runCommandMain) as this broker ends it at ctl's.
+      val child = ProcessBuilder(command*).start()
+      val ended = AtomicBoolean(false)
+      val requesterGone = AtomicBoolean(false)
+      val phase = AtomicReference(SpawnPhase.Waiting)
+      val endAsked = AtomicBoolean(false)
+      def endChild(): Unit =
+        endAsked.set(true)
+        if phase.get == SpawnPhase.Running || phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Ending) then
+          child.destroy()
+      currentCommand = Some(() => { endChild(); child.waitFor(); () })
+      // The writers die only with their requester: a slow reader is the requester's own
+      // pace, never a reason to truncate its output — while a gone one unblocks everything
+      // this transaction still holds.
+      ctl.onExit.thenRun: () =>
+        if !ended.get then
+          requesterGone.set(true)
+          log("the requester is gone; ending the command")
+          endChild()
+          end(outWriter)
+          end(errWriter)
+      // stderr from the start: the spawn's wait for the build lock is announced there.
+      val errPump = pump(child.getErrorStream, errWriter.getOutputStream)
+      // The spawn's first line says it holds the build lock; the word — the runtime's options,
+      // or the refusal the spawn prints and exits 2 on — is what it execs the wrapper on.
+      // Anything else is the spawn ending before the lock, or ended while it waited, and its
+      // exit is the answer.
+      readLine(child.getInputStream) match
+        case Right(Some(RunOnHostSession.LockedLine))
+            if phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Preparing) =>
+          // Any failure to prepare is the refusal: an exception would leave the spawn waiting
+          // for a word, the lock held.
+          val prepared =
+            try service.runtime(request.program, workingDirectory, request.arguments)
+            catch case NonFatal(ex) => Left(s"preparing the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+          val word = prepared match
+            case Right(arguments) if !endAsked.get =>
+              phase.set(SpawnPhase.Running)
+              RunOnHostSession.runWord(arguments)
+            case Right(_) =>
+              phase.set(SpawnPhase.Ending)
+              RunOnHostSession.refusedWord("refused: the command was ended before it started")
+            case Left(reason) =>
+              log(s"refused: $reason")
+              phase.set(SpawnPhase.Ending)
+              RunOnHostSession.refusedWord(s"refused: $reason")
+          try
+            child.getOutputStream.write(word.getBytes(UTF_8))
+            child.getOutputStream.flush()
+          catch case _: IOException => () // the spawn is gone; waited for below
+          if endAsked.get && phase.get == SpawnPhase.Running then child.destroy()
+        case _ => ()
+      val pumps = Seq(pump(child.getInputStream, outWriter.getOutputStream), errPump)
+      val exit = child.waitFor()
+      currentCommand = None
+      pumps.foreach(_.join())
+      try service.ended(request.program)
+      catch case NonFatal(ex) => log(s"after the command: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+      // Nothing is retired here on a cancel; the broker follows each program, and the two differ.
+      // Stock sbt's server survives a client's disconnect: the disconnect cancels the exec
+      // (CommandExchange.removeChannel, force=false) and the warm server serves the next
+      // command. Stock Mill's daemon shuts itself down on a client's disconnect mid-command
+      // (Server.scala), so the next mill command starts one (BrokerRuntimes.prepare).
+      if requesterGone.get then log(s"ended with $exit for a requester already gone")
+      else
+        // Only after both writers have drained: the shim reads the exit code last, and an
+        // exit writer given up on while the shim was still draining output would leave the
+        // shim blocked on a FIFO no writer will ever open.
+        outWriter.waitFor()
+        errWriter.waitFor()
+        // Set before the exit code goes out: the shim exits as soon as it has read the code,
+        // and on the host its ctl closes before the exit writer's end is observed here. The
+        // command has exited and both streams have drained, so nothing is left to end;
+        // writeExit's bound covers a requester gone before reading the code.
+        ended.set(true)
+        writeExit(transport, id, exit)
+        log(s"exit $exit")
+    catch
+      case ex: IOException =>
+        log(s"could not start the wrapper: ${ex.getMessage}")
+        writeAll(outWriter.getOutputStream, "")
+        writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
+        writeExit(transport, id, 2)
+    finally
+      currentCommand = None
+      Seq(outWriter, errWriter).foreach: process =>
+        if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
 
   private def pump(from: InputStream, to: OutputStream): Thread =
+    // The JVM buffers writes to podman exec's stdin; short build output must reach the agent before EOF.
     val thread = Thread(() =>
-      try { from.transferTo(to); () }
+      try
+        val buffer = new Array[Byte](8192)
+        var count = from.read(buffer)
+        while count != -1 do
+          to.write(buffer, 0, count)
+          to.flush()
+          count = from.read(buffer)
       catch case _: IOException => ()
       finally
         try to.close()
@@ -399,14 +494,14 @@ object RunOnHostChannel:
     thread.start()
     thread
 
-  /** The channel's boundary work: the tool must be one the launch named, and the working directory —
-    * the one value arriving from inside the sandbox — is translated and proven inside the
+  /** The channel's boundary work: the program must be among those `--run-on-host` named, and the working
+    * directory — the one value arriving from inside the sandbox — is translated and proven inside the
     * project before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =
-    if !service.tools(request.tool) then
+    if !service.programs(request.program) then
       Left(
-        s"CHANNEL_UNAVAILABLE: this session's --run-on-host does not name ${request.tool}; " +
-          s"it serves ${service.tools.toSeq.sorted.mkString(", ")}",
+        s"CHANNEL_UNAVAILABLE: this session's --run-on-host does not name ${request.program}; " +
+          s"it serves ${service.programs.toSeq.sorted.mkString(", ")}",
       )
     else
       RunOnHostPrereqs
@@ -419,7 +514,7 @@ object RunOnHostChannel:
         )
 
   // ---------------------------------------------------------------------------
-  // The production main, behind the launcher's private verb
+  // The production main, behind the launcher's private action
   // ---------------------------------------------------------------------------
 
   /**
@@ -427,16 +522,15 @@ object RunOnHostChannel:
    * and the terminal's INT and HUP are ignored before the exec — sh's ignore is inherited, and a
    * JVM leaves an inherited SIG_IGN in place — so a Ctrl-C at the session's terminal cannot take
    * the broker before its sandbox. TERM stays live: a deliberate kill ends the broker, and its
-   * shutdown hook ends the running command with it.
+   * shutdown hook ends the running command and the broker's session with it.
    */
   def spawnBroker(
     podman: String,
     container: String,
     project: Path,
-    tools: Seq[String],
+    programs: Seq[String],
     logFile: Path,
-    autoShutdownForeignSbt: Boolean = false,
-    // `--env` as launched: the names travel as arguments down to each build, the values through
+    // `--env` as launched: the names travel as arguments down to each command, the values through
     // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
     // argument below the launcher carries a value and an explicit one is read by no trusted
     // helper. A name-only forward's own variable is in this environment regardless, inherited as
@@ -449,9 +543,8 @@ object RunOnHostChannel:
           ++ RunOnHostSandbox.selfInvocation(
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
-              tools.mkString(","), logFile.toString,
-            ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
-              ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
+              programs.mkString(","), logFile.toString,
+            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
           ))*,
       )
       forwards.foreach: forward =>
@@ -464,16 +557,14 @@ object RunOnHostChannel:
       true
     catch case _: IOException => false
 
-  /** `--serve-run-on-host <podman> <container> <project> <tools-csv> <log-file>
-    * [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] [mount]`: spawned by the launcher
-    * before it hands over to podman, detached like the reaper. The trailing mount override is the
-    * gate's, whose shim runs at the project's own path rather than /workspace. */
+  /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
+    * [--env=<name>...] [mount]`: spawned by the launcher before it hands over to podman, detached
+    * like the reaper. The trailing mount override is the gate's, whose shim runs at the project's
+    * own path rather than /workspace. */
   def serveMain(args: Seq[String]): Unit =
-    def isOption(arg: String) =
-      arg == RunOnHostSandbox.AutoShutdownForeignSbtOption || arg.startsWith(RunOnHostSandbox.EnvOption)
+    def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
-      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
-        val autoShutdownForeignSbt = rest.contains(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -492,7 +583,55 @@ object RunOnHostChannel:
             case ex: IOException =>
               log(s"project $projectArg: ${ex.getMessage}")
               sys.exit(1)
-        Runtime.getRuntime.addShutdownHook(Thread(() => endCurrentCommand()))
+        val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+        val root = RunOnHostSession.root(uid)
+        // The broker's session: published for the launch's lifetime, after the scavenge every
+        // start runs, and ended at the serve loop's end or from the TERM hook. Its tmp/ is the
+        // sbt server's socket directory, so the socket path budget applies to it.
+        val session =
+          RunOnHostSession.ensureRoot(root, uid).flatMap { _ =>
+            RunOnHostSession
+              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
+            RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
+          }.flatMap: session =>
+            RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording)
+          match
+            case Right(session) => session
+            case Left(reason) =>
+              log(s"the broker's session: $reason")
+              sys.exit(1)
+        try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
+        catch case ex: IOException => log(s"the broker's run file: ${ex.getMessage}")
+        // The forwarded values, from this process's environment under their carrier names, as
+        // the wrapper reads them; the runtime authority the artifact bundles, as the wrapper's.
+        val runtimes = RunOnHostSandbox.BrokerRuntimes(
+          session, project, log, RunOnHostSandbox.bundledRuntimeAuthority(),
+          forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
+        )(scavenge = () =>
+          RunOnHostSession
+            .scavenge(
+              root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              ownSession = Some(session.directory),
+            )
+            .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")))
+        // The runtimes' groups end with the session, their audit logs appended to this log
+        // first; under the runtimes' monitor, for the reason BrokerRuntimes gives.
+        val teardown = RunOnHostSession.Teardown: _ =>
+          runtimes.synchronized:
+            // A daemon a command still running at the broker's end started is observed here,
+            // after endCurrentCommand and before the records are read.
+            runtimes.commandEnded(RunOnHostPrereqs.Program.Gradle)
+            RunOnHostSession
+              .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+                beforeRemoval = condemned =>
+                  RunOnHostSandbox.appendSessionLogs(
+                    logPath, condemned, s"the broker's session ${condemned.getFileName} ended",
+                  ))
+              .foreach(action => log(s"the broker's session ended: $action"))
+        Runtime.getRuntime.addShutdownHook(Thread(() =>
+          endCurrentCommand()
+          teardown(bySignal = true)))
         val transport = Transport(
           execPrefix = Seq(podman, "exec", "-i", container),
           sandboxRunning = () =>
@@ -504,19 +643,31 @@ object RunOnHostChannel:
         )
         val service = Service(
           project = project,
-          tools = toolsCsv.split(",").toSet,
-          buildCommand = (tool, workingDirectory, arguments) =>
-            RunOnHostSandbox.selfInvocation(
-              (Seq("--run-build-on-host", tool, project.toString, workingDirectory.toString)
-                ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
-                ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
-                ++ Seq("--"))*,
-            ) ++ arguments,
+          programs = programsCsv.split(",").toSet,
+          wrapperCommand = (program, workingDirectory, lockFile, arguments) =>
+            RunOnHostSession.lockedSpawn(
+              lockFile,
+              RunOnHostSandbox.selfInvocation(
+                (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
+                  ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
+                  ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
+              ) ++ arguments,
+              underBroker = true,
+            ),
           os = Os.Mac,
+          buildLock = RunOnHostSession.buildLockFile(root, _, _),
+          runtime = (programName, buildDirectory, arguments) =>
+            RunOnHostPrereqs.Program.values.find(_.name == programName)
+              .toRight(s"unknown program $programName")
+              .flatMap(runtimes.prepare(_, buildDirectory, arguments))
+              .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
+          ended = programName =>
+            RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
-        log(s"serving $toolsCsv for $project in $container")
+        log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)
+        teardown(bySignal = false)
         log("the sandbox is gone; exiting")
       case other =>
         Console.err.println(s"--serve-run-on-host: unexpected arguments: ${other.mkString(" ")}")

@@ -155,7 +155,8 @@ class EgressRulesTest extends munit.FunSuite:
   test("only the basename of a recognized agent command selects a provider"):
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
     assertEquals(commandProvider(Some("/usr/local/bin/codex")), Some("openai"))
-    assertEquals(commandProvider(Some("C:\\tools\\agy")), Some("google"))
+    assertEquals(commandProvider(Some("C:\\programs\\agy")), Some("google"))
+    assertEquals(commandProvider(Some("kiro-cli")), Some("aws"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
     assertEquals(commandProvider(Some("opencode")), Some("all"))
     assertEquals(commandProvider(Some("bash")), None)
@@ -205,7 +206,7 @@ class EgressRulesTest extends munit.FunSuite:
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
     assert(readRuleFiles(dir).swap.exists(_.contains("lists no lines")))
 
-  test("the ruleset env args pass the authority selection and each file's variable"):
+  test("the ruleset env args pass the selected profile, provider and each file's variable"):
     assertEquals(
       rulesetEnvArgs(
         "deny-unless-allowed",

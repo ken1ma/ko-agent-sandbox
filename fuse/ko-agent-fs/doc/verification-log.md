@@ -58,7 +58,7 @@ found nothing afterwards.
 became visible to a fresh `read()` inside the filtered session within the 10 ms polling window, and
 a page **mapped before the write** showed the new bytes 0 ms after `read()` did — `AUTO_INVAL_DATA`
 invalidating the cached page as designed. The sandbox→host direction holds on the same stack, and
-is pinned at the filter's own layer by the rig suite.
+is tested at the filter's own layer by the rig suite.
 
 The virtiofs premise, as observed on the same machine: the host shares (`/Users`, `/private`,
 `/var/folders` — the first is the one project directories are under) mount in the VM as
@@ -80,15 +80,15 @@ follows this procedure.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
-Polled from inside the machine (`podman machine ssh`), below the filter, while the host wrote to
-the share: a file's creation, its deletion, and — with its size polled continuously, so the guest's
+Polled from inside the machine (`podman machine ssh`), below the filter, while the host wrote to the
+share: a file's creation, its deletion, and — with its size polled continuously, so the guest's
 attributes were hot — an append each became visible within 30 ms, the resolution of the host-side
 timestamp. Resolving one further path component in the guest costs ~56 µs (2,000 `[ -e ]` of a
 depth-8 path against a depth-2 one): a hypervisor round trip, not a dentry-cache hit, which would be
 microseconds. The guest kernel therefore caches neither virtiofs names nor attributes at any window
-that matters, and the raw-bind speed the perf control measures is the hypervisor answering fast.
-Host→session coherency rests on the hypervisor's behavior alone; the filter's TTL 0 is the only
-cache policy in the path.
+that matters, and the unfiltered bind mount speed the perf control measures is the hypervisor
+answering fast. Host→session coherency rests on the hypervisor's behavior alone; the filter's TTL 0
+is the only cache policy in the path.
 
 ### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
 
@@ -133,8 +133,48 @@ left is one FUSE operation including the daemon's own full-path resolution.
 
 `find . -type f` over the same tree at each layer: macOS 0.14 s (0.036 ms per entry), the guest
 over virtiofs 0.98 s (0.25 ms), the container through the filter 8.1 s (2.1 ms) — the filter is
-88 % of the total. The 8,858-entry tree of `TODO.md`'s real-tree table gives 0.24 s / 1.63 s /
+88 % of the total. The 8,858-entry tree of the real-tree table below gives 0.24 s / 1.63 s /
 12.2 s, 87 %.
+
+### Measured: the filter's ratio over an unfiltered bind mount (macOS Podman machine; undated)
+
+`probe/perf-probe.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs, against
+the same corpus over an unfiltered bind mount. No date, podman or OS version was recorded.
+
+| operation                       | unfiltered | filtered | ratio |
+| ------------------------------- | ---------- | -------- | ----- |
+| `find` (readdir only)           | 65 µs      | 317 µs   | 4.9×  |
+| `find -printf` (readdir + stat) | 147 µs     | 1052 µs  | 7.2×  |
+| `rm -rf`                        | 277 µs     | 1391 µs  | 5.0×  |
+| `cp -r` (create + write)        | 1149 µs    | 5842 µs  | 5.1×  |
+| `ls -lR` (stat + xattr probes)  | 644 µs     | 7793 µs  | 12.1× |
+
+`find` batches reads per directory; `find -printf` needs about one lookup and one getattr round
+trip per entry. `ls -lR` needs about 4–8 round trips: each path-based syscall re-resolves every
+component.
+
+The unfiltered bind mount is fast because the hypervisor answers a guest lookup in ~56 µs and the
+guest caches nothing ("the virtiofs layer itself", above), so what the ratio measures is this
+layer's cost alone.
+
+### Measured: a real tree (same machine; 2026-08-25)
+
+3,190 tracked files at mean depth 6.6 among 8,858 entries, warm:
+
+| operation                              | per file     | total                               |
+| -------------------------------------- | ------------ | ----------------------------------- |
+| `git status`                           | 4.7 ms       | 18 s (15 s, `--untracked-files=no`) |
+| `lstat` of each tracked file, by path  | 3.6 ms       | 11.6 s                              |
+| the same files through a directory fd  | 1.7 ms       | 5.4 s                               |
+| `find . -type f`                       | 1.4 ms/entry | 12 s                                |
+
+A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
+component adds ~0.6 ms, one more LOOKUP round trip (the depth table above). The two `lstat` rows
+are two workloads — git stats every tracked file by its full path from the root and pays the depth,
+`find` and the other `fts` walkers hold directory fds and pay depth 1 — and the 2.2× between them
+is the whole path-walk term. Claude Code runs `git status` at startup: in that project it answers
+`pwd` in 51 s from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the
+host.
 
 ## What a staged lower can represent
 
@@ -163,6 +203,21 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 
 Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
 nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
+
+## Extended attributes
+
+### Measured: xattrs through the filter (podman machine, virtiofs over APFS; 2026-08-14)
+
+`probe/xattr-probe.py`, comparing the filtered session with an unfiltered bind mount as the control:
+
+| operation   | unfiltered bind mount (control) | filtered              |
+| ----------- | ------------------------------- | --------------------- |
+| `setxattr`  | OK                              | `ENOTSUP`             |
+| `listxattr` | OK                              | `ENOTSUP`             |
+| `cp -a`     | exit 0, xattr kept              | exit 0, xattr dropped |
+
+`cp -a` carries no attribute across and says nothing about it, because coreutils reads `ENOTSUP` as
+"the destination does not do xattrs" rather than as a failure.
 
 ## Mount privilege: what a container grants
 

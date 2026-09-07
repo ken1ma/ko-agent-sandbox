@@ -2,11 +2,11 @@
 # Does a JVM under the generated profile reach the build proxy through the standard proxy
 # properties? Three rows split the failure the gate cannot: with props and a live proxy (must
 # fetch), without props (must be denied — the direct path), with props and no proxy (must be
-# refused by connect, proving the profile admits the port and nothing listened).
+# refused by connect, proving the profile allows the port and nothing listened).
 #
 #   sh src/probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
 #
-# The emitted profile grants port 51234 (EmitBuildProfile's constant), so the proxy is bound
+# The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the proxy is bound
 # there. Run it on macOS from the repository root, on each new macOS or JDK release: the JVM's
 # path to the proxy under the profile is what either can move.
 set -u

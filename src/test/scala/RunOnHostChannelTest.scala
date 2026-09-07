@@ -17,32 +17,38 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 import HostCommands.Os
 import RunOnHostChannel.*
 
 class RunOnHostChannelTest extends munit.FunSuite:
 
-  private val tools = Vector("sh", "flock", "mkfifo", "timeout")
-  private def onPath(tool: String): Boolean =
-    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
+  private val programs = Vector("sh", "flock", "mkfifo", "timeout")
+  private def onPath(program: String): Boolean =
+    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, program)))
 
   /** Never the production path, for the reason ClipboardBrokerTest's own gives: both sides are
     * pointed here instead — the broker by its transport, the shim by the line rewritten below. */
   private val FifoDir = Files.createTempDirectory("channel-fifos")
 
-  /** The image's shim with its directory line rewritten and nothing else. A spelling this no
-    * longer finds fails the suite rather than testing a script the image does not ship. Made on
-    * first use, so a platform whose tests all skip never sets POSIX permissions — not at cleanup
-    * either, which is why the copy is tracked rather than the value forced. */
+  /** The seconds the shim copy waits on the broker, in place of the image's: what a dead broker
+    * costs each of the tests below. */
+  private val ShimBound = 5
+
+  /** The image's shim with its directory and bound lines rewritten and nothing else. A spelling
+    * this no longer finds fails the suite rather than testing a script the image does not ship.
+    * Made on first use, so a platform whose tests all skip never sets POSIX permissions — not at
+    * cleanup either, which is why the copy is tracked rather than the value forced. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
     val source = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
     val text = Files.readString(source)
-    val line = s"dir=${RunOnHostChannel.SandboxDir}"
-    require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
+    val rewritten = Map(s"dir=${RunOnHostChannel.SandboxDir}" -> s"dir=$FifoDir", "bound=30" -> s"bound=$ShimBound")
+    rewritten.keys.foreach: line =>
+      require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
     val copy = Files.createTempFile("sandbox-run-on-host", "")
-    Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
+    Files.writeString(copy, rewritten.foldLeft(text)((text, entry) => text.replace(entry._1, entry._2)))
     Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
     shimCopy = Some(copy)
     copy
@@ -57,8 +63,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
   // ---------------------------------------------------------------------------
 
   /** The request bytes exactly as the shim's printf pair produces them. */
-  private def framed(tool: String, cwd: String, args: String*): Array[Byte] =
-    (s"$tool ${args.size}\n" + (cwd +: args).map(_ + "\u0000").mkString).getBytes(UTF_8)
+  private def framed(program: String, cwd: String, args: String*): Array[Byte] =
+    (s"$program ${args.size}\n" + (cwd +: args).map(_ + "\u0000").mkString).getBytes(UTF_8)
 
   test("a request round-trips, empty and awkward arguments included"):
     val bytes = framed("sbt", "/workspace/sub dir", "test", "", "set x := \"a\nb\"", "λ")
@@ -100,7 +106,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   private def service(project: Path, mount: String = WorkspaceMount, deadline: Long = 30_000): Service =
     Service(
-      project, Set("sbt"), (_, _, _) => Seq("true"), Os.Mac,
+      project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
+      buildLock = (_, _) => Right(Path.of("/unused")),
+      runtime = (_, _, _) => Right(Seq.empty),
       mount = mount, requestDeadlineMillis = deadline,
     )
 
@@ -120,7 +128,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     Files.createSymbolicLink(project.resolve("link"), outside)
     refused("/workspace/link") // a symlink leaving the project
 
-  test("a tool the launch did not name is refused, not run"):
+  test("a program the launch did not name is refused, not run"):
     val project = Files.createTempDirectory("channel-project").toRealPath()
     val answer = validated(service(project), Request("mill", "/workspace", Vector.empty))
     assert(answer.left.exists(_.contains("does not name mill")), answer.toString)
@@ -135,26 +143,39 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   private def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Files.walk(path).iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
+      Using.resource(Files.walk(path)): entries =>
+        entries.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
 
   /**
    * The broker served like production — same exec argument pattern, `podman` a script running the
    * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
-   * a request every host can make.
+   * a request every host can make. The wrapper command is the test's, under the real locked
+   * spawn, since dispatch speaks its protocol; `runtime` is what the broker's word carries.
    */
   private def channel(
-    buildCommand: (String, Path, Seq[String]) => Seq[String],
+    wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
+    runtime: (String, Path, Seq[String]) => Either[String, Seq[String]] = (_, _, _) => Right(Seq.empty),
+    ended: String => Unit = _ => (),
   )(check: (Path, Path, () => String) => Unit): Unit =
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
     val host = Files.createDirectory(dir.resolve("host"))
     val project = Files.createDirectory(dir.resolve("project")).toRealPath()
+    val lockFile = host.resolve("build-lock")
+    // On the host `podman exec` returns tens of milliseconds after the container-side process
+    // ends (measured in a session's channel log). The exit writer's lateness is the one the
+    // protocol can observe — the shim's ctl closes before the broker sees that writer end — so
+    // the stub delays that exec alone.
     executable(
       host.resolve("podman"),
       """#!/bin/sh
         |case "$1 $2" in
-        |  "exec -i") shift 3; exec "$@" ;;
+        |  "exec -i") shift 3
+        |    case "$*" in
+        |      *"/exit."*) "$@"; sleep 0.3 ;;
+        |      *) exec "$@" ;;
+        |    esac ;;
         |esac
         |""".stripMargin,
     )
@@ -166,8 +187,13 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val broker = Thread(() =>
       serve(
         transport,
-        service(project, mount = project.toString, deadline = deadline)
-          .copy(buildCommand = buildCommand),
+        service(project, mount = project.toString, deadline = deadline).copy(
+          buildLock = (_, _) => Right(lockFile),
+          wrapperCommand = (program, directory, _, arguments) =>
+            RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),
+          runtime = runtime,
+          ended = ended,
+        ),
         line => log.synchronized { log.append(line).append('\n'); () },
       ),
     )
@@ -199,29 +225,68 @@ class RunOnHostChannelTest extends munit.FunSuite:
     (process.waitFor(), String(out, UTF_8), String(err, UTF_8))
 
   test("a command streams both channels back and returns its own exit code"):
-    channel((tool, cwd, args) =>
-      Seq("sh", "-c", s"echo ran $tool ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
-    ): (project, _, _) =>
+    val endedPrograms = java.util.concurrent.CopyOnWriteArrayList[String]()
+    channel(
+      (program, cwd, args) =>
+        Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
+      ended = endedPrograms.add(_),
+    ): (project, _, brokerLog) =>
       val (exit, out, err) = shimCall(project, "sbt", "test", "-v")
       assertEquals(exit, 7)
       assertEquals(out, s"ran sbt test -v in $project\n")
       assertEquals(err, "complaint\n")
+      // The service hears of the command's end with its program, once the spawn is gone.
+      assertEquals(endedPrograms.asScala.toList, List("sbt"))
+      // The shim leaves as soon as it has its exit code, and the log records that as the
+      // answer's end, never as a requester lost mid-command. The exit line lands after the
+      // shim's own return, by the exit writer's end, so it is awaited.
+      var waited = 0
+      while !brokerLog().contains("exit 7") && waited < 100 do
+        Thread.sleep(100)
+        waited += 1
+      val logged = brokerLog()
+      assert(logged.contains("exit 7"), logged)
+      assert(!logged.contains("requester is gone"), logged)
 
-  test("the banner the injected JAVA_TOOL_OPTIONS causes is dropped, and nothing else is"):
-    val banner = "Picked up JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/x"
+  test("small stdout and stderr writes arrive before the command can finish"):
+    channel((_, cwd, _) =>
+      Seq("sh", "-c", s"printf ready; printf 'waiting\\n' >&2; while [ ! -f '$cwd/release' ]; do sleep 0.1; done"),
+    ): (project, host, _) =>
+      val out = host.resolve("stdout")
+      val err = host.resolve("stderr")
+      val process = ProcessBuilder(Shim.toString, "sbt")
+        .directory(project.toFile)
+        .redirectOutput(out.toFile)
+        .redirectError(err.toFile)
+        .start()
+      process.getOutputStream.close()
+      try
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+        while process.isAlive && System.nanoTime() < deadline &&
+            (Files.readString(out) != "ready" || Files.readString(err) != "waiting\n") do
+          Thread.sleep(20)
+        assert(process.isAlive, "the command must still be waiting for release")
+        assertEquals(Files.readString(out), "ready")
+        assertEquals(Files.readString(err), "waiting\n")
+      finally
+        Files.writeString(project.resolve("release"), "")
+        if !process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) then process.destroyForcibly()
+
+  test("the banner the injected _JAVA_OPTIONS causes is dropped, and nothing else is"):
+    val banner = "Picked up _JAVA_OPTIONS: -Djava.io.tmpdir=/x"
     channel((_, _, _) =>
       Seq(
         "sh", "-c",
-        s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up _JAVA_OPTIONS: -Dx=1' >&2; " +
+        s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up JAVA_TOOL_OPTIONS: -Dx=1' >&2; " +
           s"echo '[warn] $banner' >&2; echo '$banner'",
       ),
     ): (project, _, _) =>
       val (exit, out, err) = shimCall(project, "sbt")
       assertEquals(exit, 0)
       // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
-      // host environment's to explain, a line that merely quotes the banner is the build's, and
+      // host environment's to explain, a line that merely quotes the banner is the command's, and
       // stdout is not the stream the announcement is written to.
-      assertEquals(err, s"complaint\nPicked up _JAVA_OPTIONS: -Dx=1\n[warn] $banner\n")
+      assertEquals(err, s"complaint\nPicked up JAVA_TOOL_OPTIONS: -Dx=1\n[warn] $banner\n")
       assertEquals(out, s"$banner\n")
 
   test("a refused request answers on stderr with exit 2, and the channel keeps serving"):
@@ -233,10 +298,82 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(again, 0)
       assertEquals(out, s"built in $project\n")
 
+  test("an end asked for during preparation waits for the word, so the build lock is held throughout"):
+    // The runtime's preparation, slow enough to be interrupted: it records whether the build
+    // lock is still held halfway through, which a spawn ended early would have freed.
+    val runtime = (_: String, buildDirectory: Path, _: Seq[String]) =>
+      Files.writeString(buildDirectory.resolve("preparing"), "")
+      Thread.sleep(1500)
+      val lockFile = buildDirectory.getParent.resolve("host").resolve("build-lock")
+      val held = ProcessBuilder("flock", "-n", lockFile.toString, "true").start().waitFor() != 0
+      Files.writeString(buildDirectory.resolve(if held then "held" else "free"), "")
+      Right(Seq.empty)
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), runtime = runtime): (project, host, brokerLog) =>
+      def await(what: String)(condition: => Boolean): Unit =
+        var waited = 0
+        while !condition && waited < 100 do
+          Thread.sleep(100)
+          waited += 1
+        assert(condition, what)
+      def lockFree = ProcessBuilder("flock", "-n", host.resolve("build-lock").toString, "true").start().waitFor() == 0
+      // The requester leaves mid-preparation.
+      val shim = ProcessBuilder(Shim.toString, "sbt", "test")
+        .directory(project.toFile)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+      await("preparation started")(Files.exists(project.resolve("preparing")))
+      shim.destroyForcibly()
+      await("preparation finished")(Files.exists(project.resolve("held")) || Files.exists(project.resolve("free")))
+      assert(Files.exists(project.resolve("held")), "the lock was freed while the runtime was prepared")
+      await("the transaction ended")(brokerLog().contains("for a requester already gone"))
+      assert(lockFree, "the lock is freed once the word is out")
+      assert(!brokerLog().contains("exit 0"), "the wrapper never ran: the word was the refusal")
+      // The broker's own end mid-preparation, as its TERM hook asks for it: it returns after
+      // the preparation, and the requester gets the refusal.
+      Files.delete(project.resolve("preparing"))
+      Files.delete(project.resolve("held"))
+      val second = ProcessBuilder(Shim.toString, "sbt", "test").directory(project.toFile).start()
+      second.getOutputStream.close()
+      await("preparation started again")(Files.exists(project.resolve("preparing")))
+      endCurrentCommand()
+      assert(Files.exists(project.resolve("held")), "the end returned before the preparation finished")
+      val err = String(second.getErrorStream.readAllBytes(), UTF_8)
+      assertEquals(second.waitFor(), 2)
+      assertEquals(err, "refused: the command was ended before it started\n")
+      assert(lockFree)
+
+  test("the runtime reaches the wrapper as options; a refusal or an exception preparing it is the command's"):
+    val prepared = java.util.concurrent.atomic.AtomicReference[(String, Path, Seq[String])]()
+    channel(
+      (_, _, args) => Seq("sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--") ++ args,
+      runtime = (program, buildDirectory, arguments) =>
+        prepared.set((program, buildDirectory, arguments))
+        buildDirectory.getFileName.toString match
+          case "sub"    => Left("no runtime for sub")
+          case "broken" => throw java.nio.charset.MalformedInputException(1)
+          case _        => Right(Seq("--proxy-port=1")),
+    ): (project, host, brokerLog) =>
+      val (exit, out, _) = shimCall(project, "sbt", "compile")
+      assertEquals(exit, 0)
+      assertEquals(out, "--proxy-port=1\n--\ncompile\n")
+      assertEquals(prepared.get, ("sbt", project, Seq("compile")))
+      val sub = Files.createDirectory(project.resolve("sub"))
+      val (refused, _, err) = shimCall(sub, "sbt", "compile")
+      assertEquals(refused, 2)
+      assertEquals(err, "refused: no runtime for sub\n")
+      assert(brokerLog().contains("refused: no runtime for sub"), brokerLog())
+      // An exception is answered the same way, and the spawn ends with the lock released.
+      val broken = Files.createDirectory(project.resolve("broken"))
+      val (thrown, _, thrownErr) = shimCall(broken, "sbt", "compile")
+      assertEquals(thrown, 2)
+      assertEquals(thrownErr, "refused: preparing the runtime: MalformedInputException: Input length = 1\n")
+      assertEquals(ProcessBuilder("flock", "-n", host.resolve("build-lock").toString, "true").start().waitFor(), 0)
+
   test("a dead shim ends the running command: teardown follows the descriptor"):
     channel((_, cwd, _) =>
-      // The validated working directory arrives as an argument, so the markers spell it out; the
-      // child's own cwd is the broker's and says nothing.
+      // The validated working directory arrives as an argument, so the markers spell it out;
+      // the child's own cwd is the broker's and says nothing.
       Seq(
         "sh", "-c",
         s"echo started > $cwd/started; trap 'echo 143 > $cwd/ended; exit 143' TERM; " +
@@ -369,12 +506,98 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(Files.size(host.resolve("slow.out")), payload.toLong)
       assertEquals(Files.readString(host.resolve("slow.code")), "5")
 
+  test("a broker gone before the streams open leaves no shim hanging"):
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
+    deleteRecursively(FifoDir)
+    Files.createDirectories(FifoDir)
+    val project = Files.createTempDirectory("channel-gone")
+    def unanswered(standIn: Option[String]): Unit =
+      ProcessBuilder("sh", "-c", s"rm -f $FifoDir/req; mkfifo -m 600 $FifoDir/req").start().waitFor()
+      val broker = standIn.map(script => ProcessBuilder("sh", "-c", script).start())
+      val (exit, _, err) = shimCall(project, "sbt", "test")
+      assertEquals(exit, 70, err)
+      assert(err.contains("did not answer"), err)
+      // The stand-in ends with the shim: its ctl closed, so nothing of the transaction is held.
+      broker.foreach: process =>
+        assert(process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
+      val left = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+      assertEquals(left, Set("req", "lock"))
+    // A req nobody reads: the broker died, its FIFO staying on the container's tmpfs.
+    unanswered(None)
+    // A broker that took the handshake and the request, then died before opening the streams.
+    unanswered(Some(s"id=$$(head -n 1 $FifoDir/req); cat $FifoDir/ctl.$$id > /dev/null"))
+
+  for (ending, expectedExit) <- Vector(
+    "HUP" -> 129,
+    "INT" -> 130,
+    "TERM" -> 143,
+    "PIPE" -> 141,
+    "open failure" -> 2,
+    "broken request pipe" -> 141,
+  ) do
+    test(s"$ending during startup retires the watchdog before cleanup"):
+      assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
+      deleteRecursively(FifoDir)
+      Files.createDirectories(FifoDir)
+      assertEquals(ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor(), 0)
+      val argument = if ending == "broken request pipe" then "x" * (100 * 1024) else "test"
+      val shim = ProcessBuilder(Shim.toString, "sbt", argument)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+      val descendants = scala.collection.mutable.ArrayBuffer.empty[ProcessHandle]
+      var handshake: Option[Process] = None
+      try
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while descendants.isEmpty && System.nanoTime() < deadline do
+          val children = shim.toHandle.descendants()
+          try descendants ++= children.iterator.asScala.filter(_.info().command().orElse("").endsWith("/sleep"))
+          finally children.close()
+          if descendants.isEmpty then Thread.sleep(10)
+        assert(descendants.nonEmpty, s"$ending: the watchdog never started")
+        // Keep the watchdog's handle too, so a failing regression test can clean up its timer.
+        descendants.head.parent().ifPresent(parent => { descendants += parent; () })
+        if ending == "open failure" then
+          val ctl = FifoDir.resolve(s"ctl.${shim.pid()}")
+          Files.delete(ctl)
+          // Opening the directory fails, but cleanup can unlink this symlink successfully.
+          Files.createSymbolicLink(ctl, FifoDir)
+          handshake = Some(ProcessBuilder("head", "-n", "1", FifoDir.resolve("req").toString).start())
+        else if ending == "broken request pipe" then
+          // More than a FIFO buffer: closing the reader interrupts a real request write.
+          handshake = Some(ProcessBuilder("sh", "-c",
+            s"read -r transaction < $FifoDir/req; exec 6< $FifoDir/ctl.$$transaction; exec 6<&-",
+          ).start())
+        else
+          assertEquals(ProcessBuilder("kill", s"-$ending", shim.pid().toString).start().waitFor(), 0)
+        handshake.foreach: process =>
+          assert(process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), "handshake did not finish")
+        assert(shim.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), s"$ending: shim did not exit promptly")
+        assertEquals(shim.exitValue(), expectedExit, ending)
+        Thread.sleep((ShimBound + 1) * 1000L)
+        val entries = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        assertEquals(entries, Set("req", "lock"), ending)
+      finally
+        handshake.foreach(_.destroyForcibly())
+        descendants.reverseIterator.foreach(_.destroyForcibly())
+        shim.destroyForcibly()
+        shim.waitFor()
+
+  test("opening the streams disarms the startup deadline for a longer running command"):
+    channel((_, _, _) => Seq("sh", "-c", s"sleep ${ShimBound + 1}; echo completed; exit 7")):
+      (project, _, _) =>
+        val (exit, out, _) = shimCall(project, "sbt", "test")
+        assertEquals(exit, 7)
+        assertEquals(out, "completed\n")
+        val entries = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        assertEquals(entries, Set("req", "lock"))
+
   test("without a broker the shim fails at once, naming the launch option"):
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     deleteRecursively(FifoDir)
     val project = Files.createTempDirectory("channel-none")
     val (exit, _, err) = shimCall(project, "sbt", "test")
     assertEquals(exit, 1)
     assert(err.contains("--run-on-host"), err)
-    // An unknown tool is a usage error before the channel is consulted.
-    assertEquals(shimCall(project, "gradle", "build")._1, 64)
+    // An unknown program is a usage error before the channel is consulted.
+    assertEquals(shimCall(project, "ant", "build")._1, 64)

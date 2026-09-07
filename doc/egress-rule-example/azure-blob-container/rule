@@ -6,5 +6,5 @@
 # percent-encoding, a dot segment, a backslash or an empty segment — is refused and logged, which
 # also refuses a blob whose name needs escaping on the wire. A SAS upload URL still fails here: a
 # PUT is refused where no line grants it. What travels in an allowed GET's suffix and query is not
-# bounded; SECURITY.md, "Exfiltration through an allowed host".
+# bounded; SECURITY.md, "Exfiltration through allowed network traffic".
 allow https://myaccount.blob.core.windows.net/my-container/ read

@@ -49,7 +49,7 @@ object TLSHelper:
 
     /**
      * `consumed` replays the already-read ClientHello ahead of the socket; `host` is the CONNECT
-     * host, which validateTlsIdentity proved equal to the SNI the client will verify. ALPN pinned
+     * host, which validateTlsIdentity proved equal to the SNI the client will verify. ALPN is restricted
      * to http/1.1: an h2-only client fails the handshake rather than establishing an HTTP/2
      * connection this proxy cannot parse.
      */
@@ -87,7 +87,7 @@ object TLSHelper:
       )
       socket.setSSLParameters(parameters)
 
-      // A stalled handshake would pin this connection's slot; relayInspected widens the timeout once bytes flow, so a
+      // A stalled handshake would hold this connection's slot; relayInspected widens the timeout once bytes flow, so a
       // slow clone is unaffected.
       socket.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
       socket.startHandshake()
@@ -272,7 +272,7 @@ object TLSHelper:
      * any other host on the same CDN. GREASE ECH (RFC 9849, 6.2) — the dummy
      * extension an ECH-capable client without a config sends, browsers by
      * default — is made indistinguishable from the real one, so it is refused
-     * with it; doc/TODO.md has the narrowing an inspected host would admit.
+     * with it; doc/TODO.md has the narrowing an inspected host would allow.
      */
     val EncryptedClientHelloExtension = 0xfe0d
     val MaxTlsRecordPayloadBytes = 18 * 1024

@@ -1,9 +1,10 @@
-// Run Claude Code, Codex, Antigravity, Copilot CLI or OpenCode inside a rootless podman container.
+// Run Claude Code, Codex, Antigravity, Kiro CLI, Copilot CLI or OpenCode inside a rootless podman container.
 //
 // One launcher for Linux, macOS, WSL and native Windows. This file records the decisions, the flags and the sequence
 // of steps; the threat model is SECURITY.md. Its neighbours, each the whole of one concern:
 //
-//   HostCommands.scala          running a host executable, and the platform tag — the bottom layer
+//   HostCommands.scala          host executable resolution and execution, platform selection, diagnostics
+//   FileHelper.scala            state-file reads, replacement writes, locks, path resolution, directory scans
 //   LauncherImages.scala        the images this launcher owns: names, identity, inventory, cleanup
 //   ContainerfileSources.scala  the remote images the bundled Containerfiles name, for the refresh
 //   SandboxLifecycle.scala      the handover to podman, and both paths that remove a run's proxy
@@ -20,9 +21,9 @@
 //    |
 //    +-- current project -------------------> /workspace
 //    |     (--write selects the mount: live — the default — is the
-//    |      ko-agent-fs mountpoint, RW with git and boundary control
-//    |      state frozen (mountKoAgentFs; under guard=none the
-//    |      .git pins of gitGuardVolumes stand in); reject is a
+//    |      ko-agent-fs mountpoint, RW with Git entries and launcher
+//    |      configuration protected (mountKoAgentFs; under guard=none the
+//    |      .git mounts of gitGuardVolumes stand in); reject is a
 //    |      read-only bind of the raw tree)
 //    |
 //    +-- .ko-agent-sandbox: the egress rules and the project's agent
@@ -31,19 +32,20 @@
 //    |      mounts it back RO (boundaryGuardVolume)
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
-//    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.copilot
-//    |                                        and opencode's XDG directories are
-//    |                                        symlinks into it)
+//    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
+//    |                                        ~/.copilot, ~/.local/share/kiro-cli and
+//    |                                        opencode's XDG directories are symlinks
+//    |                                        into it)
 //    |
 //    +-- --run-on-host (macOS only): sandbox-run-on-host relays a command
 //    |      request to a host-side wrapper that runs sbt/mill under a
-//    |      Seatbelt profile — the project (git control state and
+//    |      Seatbelt profile — the project (`.git` and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
 //    |      Coursier JDK, a session directory, and the build's own
 //    |      loopback egress proxy; nothing else (RunOnHostSandbox.scala,
 //    |      RunOnHostChannel.scala; SECURITY.md "Run on host")
 //    |
-//    X-- ~/.ssh                             NOT EXPOSED
+//    X-- ~/.ssh, the SSH agent's socket     NOT EXPOSED
 //    X-- ~/.aws                             NOT EXPOSED
 //    X-- ~/.config                          NOT EXPOSED
 //    X-- podman/Docker socket               NOT EXPOSED
@@ -51,7 +53,7 @@
 //
 //   Internet
 //    |
-//    +-- egress proxy ------------------> the hosts --egress=<profile> admits, CONNECT :443 only
+//    +-- egress proxy ------------------> the hosts --egress=<profile> allows, CONNECT :443 only
 //    |                                       (EgressRules.scala; the flags are below)
 //    |                                    inspected hosts: TLS-inspected reads plus named grants;
 //    |                                       git push refused
@@ -65,8 +67,8 @@
 //
 // podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
-// reopen the boundary. The launcher parses only its authority options and
-// management verbs (parseCommandLine); the first non-option is the command,
+// reopen the boundary. The launcher parses only its session options and
+// management actions (parseCommandLine); the first non-option is the command,
 // and from there everything is forwarded verbatim to the container.
 
 package agentsandbox.launcher
@@ -84,6 +86,7 @@ import ContainerfileSources.*
 import JdkTrust.*
 import EgressRules.*
 import HostCommands.*
+import FileHelper.*
 import KoAgentFs.*
 import LauncherImages.*
 import SandboxProject.*
@@ -286,7 +289,7 @@ object AgentSandboxLauncher:
 
   /**
    * One argument as the reader agrees to it: verbatim when it is one plain word, so that the
-   * usual command reads as typed, and otherwise quoted so that `tool "a b"` and `tool a b` render
+   * usual command reads as typed, and otherwise quoted so that `program "a b"` and `program a b` render
    * apart and a character that would drive or reorder the terminal's display — a control,
    * a bidi or other format character, a line or paragraph separator — is spelled out instead.
    * The spelling is the shell's: single quotes, or `$'...'` around escapes.
@@ -328,37 +331,37 @@ object AgentSandboxLauncher:
 
   /** Bodies stream independently of their total size. Eight concurrent TLS downloads throttled to
     * 1 MiB/s peaked near 60 MB, while sequential multi-gigabyte transfers remained bounded. Even
-    * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB ceiling
+    * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB limit
     * would retain about 135 MiB for native and workload overhead. */
-  val ProxyMemoryCeiling = "256m"
+  val ProxyMemoryLimit = "256m"
 
   /** `podman info --format '{{.Host.MemTotal}}'`, bytes; None when podman did not answer with one. */
   def memoryTotal(answer: HostCommands.Run): Option[Long] =
     if !answer.ok then None else answer.text.trim.toLongOption.filter(_ > 0)
 
   /**
-   * The sandbox's default memory ceiling: 1 GiB under the total of the machine podman runs on —
+   * The sandbox's default memory limit: 1 GiB under the total of the machine podman runs on —
    * the podman machine VM, or the host on native Linux — which is what podman, the workspace
    * filter and the kernel need to keep answering while the sandbox is at its limit; and no more
    * than the machine had available at launch, where that is known (hostMemoryAvailable), since a
    * native host is already running everything else and a VM that is short is short. What one
-   * ceiling cannot bound is the sum: two sessions on one machine, or a host workload that increases
+   * limit cannot bound is the sum: two sessions on one machine, or a host workload that increases
    * after the launch, still add up past it — KO_AGENT_SANDBOX_MEMORY is for that.
    *
-   * The one exception to the available bound is MinimumCeiling (or the total, on a machine
-   * smaller than that), below which the ceiling never goes: podman reads `--memory=0` as no limit
+   * The one exception to the available bound is MinimumMemoryLimit (or the total, on a machine
+   * smaller than that), below which the limit never goes: podman reads `--memory=0` as no limit
    * at all, which a host with nothing available would otherwise get at the moment it can least
    * afford it, and a sandbox capped under what its agent needs dies before it says anything. So
    * with under 1 GiB available the sandbox may still take 1 GiB; the entrypoint's warning is what
    * tells the user the machine was that short. The same floor is what a machine under 2 GiB gets.
    */
-  def memoryCeiling(machineTotal: Long, availableAtLaunch: Option[Long]): Long =
+  def memoryLimit(machineTotal: Long, availableAtLaunch: Option[Long]): Long =
     val fromTotal = machineTotal - (1L << 30)
     val bounded = availableAtLaunch.fold(fromTotal)(Math.min(fromTotal, _))
-    Math.max(bounded, Math.min(MinimumCeiling, machineTotal))
+    Math.max(bounded, Math.min(MinimumMemoryLimit, machineTotal))
 
   /** What the agent CLIs and one modest build need to start at all. */
-  val MinimumCeiling: Long = 1L << 30
+  val MinimumMemoryLimit: Long = 1L << 30
 
   /**
    * MemAvailable of this host, bytes: what podman's containers can take before the host itself
@@ -386,7 +389,7 @@ object AgentSandboxLauncher:
    * warning users learn to ignore. 3 GiB tells the two machine states apart — quiet on an idle
    * default machine, loud once running sessions hold real memory, the state in which a build
    * degrades every session on the machine. The answer is the user's, not the launcher's — a
-   * `[y/N]` prompt, not a refusal: the builder's own heap is pinned (the proxy Containerfile),
+   * `[y/N]` prompt, not a refusal: the builder's own heap is limited (the proxy Containerfile),
    * so proceeding risks a slow or OOM-killed build rather than a frozen machine, a price the
    * one at the console may accept; No stays the default because the sessions at stake may not
    * be theirs to spend. With no console there is nobody to ask, and the build proceeds warned —
@@ -395,27 +398,27 @@ object AgentSandboxLauncher:
   val BuildMemoryWarnThreshold: Long = 3L << 30
 
   /**
-   * The memory scale for a session launch: orange under
-   * MinimumCeiling, where the sandbox takes more than the machine has and the entrypoint's warning
-   * follows; red under half of it, where the session starts starved rather than merely
-   * overcommitted. The image build's gate is not on this scale: a session does not build the
-   * image, and --build's own warning states the gate where it applies.
+   * The memory scale for a session launch: orange under MinimumMemoryLimit, where the sandbox takes
+   * more than the machine has and the entrypoint's warning follows; red under half of it, where the
+   * session starts starved rather than merely overcommitted. The image build's gate is not on this
+   * scale: a session does not build the image, and --build's own warning states the gate where it
+   * applies.
    */
   def launchMemoryHeadroom(available: Long): Headroom =
-    if available >= MinimumCeiling then Headroom.Ample
-    else if available >= MinimumCeiling / 2 then Headroom.Warned
+    if available >= MinimumMemoryLimit then Headroom.Ample
+    else if available >= MinimumMemoryLimit / 2 then Headroom.Warned
     else Headroom.Short
 
   /**
-   * The memory scale for an image build — the build verbs, and the `--stats` report,
+   * The memory scale for an image build — the build actions, and the `--stats` report,
    * which is read before deciding on one: green from BuildMemoryWarnThreshold up — also the
-   * ceiling a 4 GiB machine gives, the least a JVM build in the sandbox fits in
+   * limit a 4 GiB machine gives, the least a JVM build in the sandbox fits in
    * (SmallMachineMemory); orange below it, where a session starts but a build is warned; red
-   * under MinimumCeiling, as at a launch.
+   * under MinimumMemoryLimit, as at a launch.
    */
   def buildMemoryHeadroom(available: Long): Headroom =
     if available >= BuildMemoryWarnThreshold then Headroom.Ample
-    else if available >= MinimumCeiling then Headroom.Warned
+    else if available >= MinimumMemoryLimit then Headroom.Warned
     else Headroom.Short
 
   def buildMemoryWarning(available: Option[Long]): Option[String] =
@@ -423,9 +426,9 @@ object AgentSandboxLauncher:
       s"the machine has ${SandboxStats.humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
-  /** After requirePodman's gate, every podman verb says the machine's headroom once, beside the
-    * `using:` line — the figure the memory ceiling and the build gate act on, visible before
-    * they act, and tinted on the verb's scale (launchMemoryHeadroom, buildMemoryHeadroom). A
+  /** After requirePodman's gate, every podman action says the machine's headroom once, beside the
+    * `using:` line — the figure the memory limit and the build gate act on, visible before
+    * they act, and tinted on the action's scale (launchMemoryHeadroom, buildMemoryHeadroom). A
     * figure the machine cannot give prints nothing. */
   def machineMemoryLine(
     os: Os,
@@ -458,9 +461,9 @@ object AgentSandboxLauncher:
       case _        => Some(machineSsh).filter(_.ok).flatMap(answer => memoryAvailable(answer.text))
 
   /**
-   * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a ceiling exists to
+   * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a limit exists to
    * prevent, and podman's default of twice the memory in swap is the wrong side of that. An
-   * explicit ceiling gets the same treatment, for the same reason.
+   * explicit limit gets the same treatment, for the same reason.
    */
   def memoryArguments(
     explicit: Option[String],
@@ -470,7 +473,7 @@ object AgentSandboxLauncher:
     explicit.map(_.trim).filter(_.nonEmpty) match
       case Some(value) => Vector(s"--memory=$value", s"--memory-swap=$value")
       case None =>
-        machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
+        machineTotal.map(memoryLimit(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
   /**
@@ -495,7 +498,7 @@ object AgentSandboxLauncher:
 
   /**
    * Environment names that look like this launcher's but are not: almost certainly a misspelling
-   * of one above, and a misspelled variable silently configuring nothing — no memory ceiling, the
+   * of one above, and a misspelled variable silently configuring nothing — no memory limit, the
    * wrong volume — is the failure mode the warning in main closes. A warning rather than a refused
    * launch, because a shell profile legitimately sets variables for a newer or older launcher.
    */
@@ -563,10 +566,10 @@ object AgentSandboxLauncher:
       name.drop(prefix.length).forall(ch => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))
 
   /**
-   * The gate every podman-talking verb runs first: a client that runs, and a service that
+   * The gate every podman-talking action runs first: a client that runs, and a service that
    * answers. On macOS and Windows the service is the podman machine, started here when stopped —
    * never created or resized, the boundary SECURITY.md draws ("Silent changes to what you own") —
-   * so `machine init` stays the one manual step of a fresh install: the next verb, usually
+   * so `machine init` stays the one manual step of a fresh install: the next action, usually
    * --build, brings the machine up itself.
    */
   def requirePodman(os: Os, memoryScale: Long => Headroom = launchMemoryHeadroom): Unit =
@@ -608,8 +611,8 @@ object AgentSandboxLauncher:
       run(podman, "machine", "ssh", "cat /proc/meminfo"),
     )
 
-  /** Both build verbs run this after requirePodman: --update rebuilds the leaves through the
-    * same unceilinged `podman build`, so it shares --build's gate. */
+  /** Both build actions run this after requirePodman: --update rebuilds the leaves through the
+    * same `podman build` without a memory limit, so it shares --build's gate. */
   def confirmMemoryForBuilds(os: Os): Unit =
     buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
       warn(message)
@@ -765,8 +768,8 @@ object AgentSandboxLauncher:
   /**
    * `--self-test`'s image: the crate's suites compiled against the pinned toolchain, on top of the
    * sandbox image. Built on demand rather than by --build, so a user who only wants to run agents
-   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and remote
-   * Rust image are unchanged (`fuse/ko-agent-fs/doc/testing.md`).
+   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and the
+   * Rust image --build pulled are unchanged (`fuse/ko-agent-fs/doc/testing.md`).
    *
    * `-f` with `.` as the context, not the directory: the crate this compiles is beside the
    * Containerfile in the unpacked bundle, not under it.
@@ -863,7 +866,7 @@ object AgentSandboxLauncher:
              |podman's layer cache can serve a LABEL derived from a changed
              |build arg stale (buildah #5501); this launcher passes --label to
              |bypass that cache, so this failing means podman dropped --label
-             |too. Remove $image, then rerun the same launcher verb.""".stripMargin
+             |too. Remove $image, then rerun the same launcher action.""".stripMargin
         )
 
   /**
@@ -916,7 +919,7 @@ object AgentSandboxLauncher:
         case Seq("-t", image) => image
 
   /**
-   * Image tags are workstation-wide, so every image-producing verb shares one lock and journal.
+   * Image tags are workstation-wide, so every image-producing action shares one lock and journal.
    * The journal is written before the first build: if the process dies after a tag moves, the next
    * invocation still knows the exact old id. A global lock keeps two launcher versions from
    * retagging `latest` around each other's snapshots.
@@ -926,7 +929,7 @@ object AgentSandboxLauncher:
     withFileLock(imageBuildLockFile(os)):
       body(stateRoot(os).resolve("image-build").resolve("cleanup.ids"))
 
-  /** The lock every image-producing verb holds, and a mount of the filter too, since the verb
+  /** The lock every image-producing action holds, and a mount of the filter too, since the action
     * replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
   def imageBuildLockFile(os: Os): Path = stateRoot(os).resolve("image-build").resolve("lock")
 
@@ -1022,10 +1025,12 @@ object AgentSandboxLauncher:
       fail(s"error: could not create the network $network\n${created.err}")
 
   /**
-   * `--self-test`: build the self-test image if it is not already current, then run the crate's
-   * suites in it (`fuse/ko-agent-fs/doc/testing.md`). Two runs against the same remote Rust image
-   * give the same verdict and leave the same state — the image build is a cache hit, the container
-   * is `--rm`, and nothing is bound in.
+   * `--self-test`: build the self-test images, then run the crate's suites in a container with no
+   * host bind mounts (`fuse/ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
+   * No pull: its only remote source is the Rust image --build pulls to compile the filter that
+   * ships (the test "self-test builds refresh no remote source of their own" holds that), and
+   * verifying against that same image is the point. A successful run without a case filter also
+   * measures the host share through SelfTestShare, which owns its scratch directory and cleanup.
    *
    * The sandbox image is a precondition rather than an artifact to build here: verifying is not the
    * command that decides which agent image a user runs.
@@ -1050,7 +1055,6 @@ object AgentSandboxLauncher:
 
     withImageBuildLock(os): journal =>
       val context = unpackBuildContext()
-      val readContainerfile = buildContextReader(context)
       val existingTags = existingImageTags(podman)
       val sandboxImageId = requiredImageId(existingTags, "ko-agent-sandbox:latest", "self-test did not start")
       val fsSourceId = koAgentFsSourceId(context)
@@ -1066,15 +1070,13 @@ object AgentSandboxLauncher:
         fsSourceId,
         bundleId,
       )
-      val remoteImages =
-        remoteImagesForBuildCommands(commands, readContainerfile, managedImageTags(ImgTagVersion).toSet)
       val images = buildOutputImages(commands)
       val candidates = prepareImageCleanupJournal(
         journal,
         imageIdsForTags(existingTags, images),
         Vector.empty,
       )
-      runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
+      runBuilds(context, commands)
       verifyBuiltBundleLabels(SelfTestImageTags.map(_ -> bundleId))
       val remaining = removeSupersededImages(
         podman,
@@ -1156,7 +1158,7 @@ object AgentSandboxLauncher:
 
   /** The shared front half of the egress preflights: this project's vetted rule files,
     * the provider the given command selects, and the proxy image to consult — with the
-    * command-selection notes a launch would print. `operands` is the verb's optional
+    * command-selection notes a launch would print. `operands` is the action's optional
     * `[--] [command [arguments...]]`, accepted without launching anything. */
   private def egressPreflight(
     os: Os,
@@ -1193,7 +1195,7 @@ object AgentSandboxLauncher:
 
     (projectId, proxyImage, ruleFiles, provider)
 
-  /** The project's rule file as written, one line. Printed by a launch and by the egress verbs
+  /** The project's rule file as written, one line. Printed by a launch and by the egress actions
     * alike; the launch follows it with the widening line once the dry run has answered
     * (printWidening). */
   def printRuleFiles(ruleFiles: Vector[(String, String)]): Unit =
@@ -1257,16 +1259,16 @@ object AgentSandboxLauncher:
    * `--reset`'s operands: none, the current directory's project, or ids as `--stats` prints them —
    * the one name left once a project's directory is gone, the hash in the id being one-way.
    */
-  def projectIdOperands(verb: String, rest: List[String]): Either[String, Vector[String]] =
+  def projectIdOperands(action: String, rest: List[String]): Either[String, Vector[String]] =
     rest.find(id => !isProjectId(id)) match
-      case Some(odd) => Left(s"error: $verb $odd; a project id is as --stats prints it, <slug>-<12 hex digits>")
+      case Some(odd) => Left(s"error: $action $odd; a project id is as --stats prints it, <slug>-<12 hex digits>")
       case None =>
         rest.diff(rest.distinct).headOption match
-          case Some(twice) => Left(s"error: $verb names $twice twice")
+          case Some(twice) => Left(s"error: $action names $twice twice")
           case None        => Right(rest.toVector)
 
   /**
-   * `--reset` (README has what it removes). Every other project's state and the built images are
+   * `--reset` (README.md has what it removes). Every other project's state and the built images are
    * left alone. The roots are checked against the current directory whichever projects are named,
    * as `--reset-all` checks them: the deletions happen under them either way. Every id is reset
    * before any failure is reported, so one project's failed step does not leave the next untouched.
@@ -1363,7 +1365,7 @@ object AgentSandboxLauncher:
     // The audit trail goes with the rest of the project's state: "reset" means "as if this project had never been
     // opened". Copy the files out first if a session's refusals still matter.
     deleteTree(logStateRoot(os).resolve(id))
-    // The host-build cache too: it is the one store a build can poison (SECURITY.md, "Cache
+    // The run-on-host cache too: it is the one store a command can poison (SECURITY.md, "Cache
     // poisoning stops at the project"), and a reset that kept it would not mean "never opened".
     // The root is checked against the directory the reset runs in, as every deletion under it is.
     // A root inside that directory is one its own project's builds refused, so nothing of theirs
@@ -1372,10 +1374,10 @@ object AgentSandboxLauncher:
     // nothing about what a usable root once held, and a named project's builds may well have used
     // a root this directory happens to contain; both are failed steps, and the reset is run again
     // from elsewhere or with the root repaired.
-    buildCacheRoot(os, projectDir) match
-      case Right(root) => deleteTree(RunOnHostPrereqs.buildCacheDir(root, id))
+    runOnHostCacheRoot(os, projectDir) match
+      case Right(root) => deleteTree(RunOnHostPrereqs.runOnHostCacheDir(root, id))
       case Left(refusal @ RunOnHostPrereqs.Refusal.CacheRootInsideProject(_, _)) if !named =>
-        System.err.println(s"note: host-build cache not removed; ${cacheRootError(refusal)}")
+        System.err.println(s"note: run-on-host cache not removed; ${cacheRootError(refusal)}")
       case Left(refusal) =>
         failures += 1
         System.err.println(cacheRootError(refusal))
@@ -1391,7 +1393,7 @@ object AgentSandboxLauncher:
     // generated volume a shared one left in place, a cache under a root the step above could not
     // use, and whatever a failed step left. The cache root is read as --stats reads it: where
     // --stats can show no cache, none keeps the record.
-    val cache = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.buildCacheDir(_, id))
+    val cache = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.runOnHostCacheDir(_, id))
     found |= cache.exists(Files.exists(_)) || Files.exists(projectsStateRoot(os).resolve(id))
     if failures == 0 then
       try dropRecordUnless(projectsStateRoot(os), id, cache.toSeq, volumeKept)
@@ -1410,7 +1412,7 @@ object AgentSandboxLauncher:
 
   /**
    * `--reset-all`, every project's `--reset`. It deliberately does not remove built images or
-   * their valid pending-cleanup journal: image-producing verbs own both, and the images are costly
+   * their valid pending-cleanup journal: image-producing actions own both, and the images are costly
    * to rebuild (`podman image rm` removes them by hand). A malformed journal is repaired because
    * it names no image the launcher can safely remove.
    */
@@ -1419,10 +1421,10 @@ object AgentSandboxLauncher:
     // roots are resolved and checked against the current directory before the first of them.
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
-    // The whole build-cache root, removed after the podman resources and the per-project state:
-    // every project's host-build caches go with everything else, and only the directory
+    // The whole run-on-host cache root, removed after the podman resources and the per-project state:
+    // every project's run-on-host caches go with everything else, and only the directory
     // records follow them.
-    val caches = buildCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
+    val caches = runOnHostCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
     val imageState = stateRoot(os).resolve("image-build")
     val cleanupJournal = imageState.resolve("cleanup.ids")
     if Files.exists(cleanupJournal) then
@@ -1480,12 +1482,12 @@ object AgentSandboxLauncher:
     sys.exit(0)
 
   /**
-   * The build-cache root, refused when it would be inside the project — the check every verb
+   * The run-on-host cache root, refused when it would be inside the project — the check every action
    * that deletes under it makes, as [[requireStateRootOutside]] does for the state root and with
    * the same [[couldBeAProject]] exemption; from an exempt directory only the root's own
    * resolution can refuse. The canonical answer either way, since deletion follows it.
    */
-  private def buildCacheRoot(os: Os, project: Path): Either[RunOnHostPrereqs.Refusal, Path] =
+  private def runOnHostCacheRoot(os: Os, project: Path): Either[RunOnHostPrereqs.Refusal, Path] =
     RunOnHostPrereqs
       .cacheRootOf(os, env)
       .flatMap: root =>
@@ -1498,7 +1500,7 @@ object AgentSandboxLauncher:
     s"error: ${RunOnHostPrereqs.wording(refusal)}"
 
   /**
-   * `--reset-run-on-host`: this project's build caches — what its `--run-on-host` builds
+   * `--reset-run-on-host`: this project's run-on-host caches — what its `--run-on-host` commands
    * resolved — removed as one directory and alone, so the space comes back beside a live
    * session. `--reset` removes them with the rest.
    */
@@ -1506,12 +1508,12 @@ object AgentSandboxLauncher:
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
     val id = projectIdOf(project, os)
-    val root = buildCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
-    val caches = RunOnHostPrereqs.buildCacheDir(root, id)
+    val root = runOnHostCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
+    val caches = RunOnHostPrereqs.runOnHostCacheDir(root, id)
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
-    // a --reset that removed these directories. This verb needs no podman, so where none answers
+    // a --reset that removed these directories. This action needs no podman, so where none answers
     // the record stays.
     val state = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os)).map(_.resolve(id))
     val volumeKept = findOnPath("podman", env("PATH").getOrElse(""), os).fold(true): found =>
@@ -1577,7 +1579,7 @@ object AgentSandboxLauncher:
 
   /**
    * Whether a launch could accept `dir` as this project — the exemption the containment checks
-   * ([[requireStateRootOutside]], [[buildCacheRoot]]) share: a directory a launch itself refuses,
+   * ([[requireStateRootOutside]], [[runOnHostCacheRoot]]) share: a directory a launch itself refuses,
    * a home or a filesystem root, cannot be a project, and the default state and cache layouts
    * (`~/.local/state`, `~/.cache`) are inside a home as the normal case, not a breach. An
    * unanswerable home discovery keeps the checks, the fail-closed side.
@@ -1588,7 +1590,7 @@ object AgentSandboxLauncher:
       case Left(_)           => true
 
   /**
-   * The containment check for the verbs run *from* a directory: refuse when the state root lies
+   * The containment check for the actions run *from* a directory: refuse when the state root lies
    * inside what a launch would accept as this project. Every caller that deletes or reads under
    * the state root calls this before touching it.
    */
@@ -1634,7 +1636,7 @@ object AgentSandboxLauncher:
   /**
    * The record goes when none of `remaining` exists: a record naming nothing keeps a project
    * `--stats` lists after its directory is deleted, its size the path string. `remaining` and
-   * `volumeKept` are what the calling verb leaves in place.
+   * `volumeKept` are what the calling action leaves in place.
    */
   def dropRecordUnless(projectsRoot: Path, projectId: String, remaining: Seq[Path], volumeKept: Boolean): Unit =
     val record = projectsRoot.resolve(projectId)
@@ -1647,7 +1649,7 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
-   * The independent authority options, selected on every launch and never persisted by a
+   * The independent session options, selected on every launch and never persisted by a
    * stage or an agent resume. The writable default is `live` (doc/plan-staged.md has the staged
    * mode and the default flip that follow it); no distributable build may make launches with no
    * `--write` option read-only before the staged workflow is usable.
@@ -1658,16 +1660,19 @@ object AgentSandboxLauncher:
     Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
   val DefaultEgressProfile = "deny-unless-allowed"
 
-  /** The tools `--run-on-host` can name. Available on macOS only, which
+  /** The programs `--run-on-host` can name. Available on macOS only, which
     * launch() enforces: the parser stays pure over the arguments. */
-  val RunOnHostTools = RunOnHostPrereqs.Tool.values.toVector.map(_.name)
+  val RunOnHostPrograms = RunOnHostPrereqs.Program.values.toVector.map(_.name)
+
+  /** Once the consent to shut down the user's own sbt server, which the broker does by default. */
+  val RetiredAutoShutdownOption = "--auto-shutdown-foreign-sbt-on-host"
 
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
     val names = value.split(",", -1).toVector
-    names.find(name => !RunOnHostTools.contains(name)) match
+    names.find(name => !RunOnHostPrograms.contains(name)) match
       case Some(bad) =>
-        Left(s"error: --run-on-host=$bad; the tools are ${RunOnHostTools.mkString(", ")}, exactly")
-      case None if names.distinct != names => Left(s"error: --run-on-host=$value names a tool twice")
+        Left(s"error: --run-on-host=$bad; the programs are ${RunOnHostPrograms.mkString(", ")}, exactly")
+      case None if names.distinct != names => Left(s"error: --run-on-host=$value names a program twice")
       case None                            => Right(names)
 
   /** `--env=NAME` (value: the host's, read at launch) or `--env=NAME=VALUE`. */
@@ -1711,28 +1716,27 @@ object AgentSandboxLauncher:
         Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
       case None => Right(resolved.collect { case Right(arg) => arg })
 
-  /** Parsed launcher invocation: the authority options as given (None when defaulted), then
-    * either one management verb with its operands, or the command forwarded verbatim. */
+  /** Parsed launcher invocation: the session options as given (None when defaulted), then
+    * either one management action with its operands, or the command forwarded verbatim. */
   case class ParsedCommandLine(
     write: Option[String],
     egress: Option[String],
-    verb: Option[(String, List[String])],
+    action: Option[(String, List[String])],
     command: List[String],
     env: Vector[EnvForward] = Vector.empty,
     runOnHost: Option[Vector[String]] = None,
-    autoShutdownForeignSbt: Boolean = false,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
 
-  val ManagementVerbs: Set[String] =
+  val ManagementActions: Set[String] =
     Set(
       "--help", "--build", "--update", "--reset", "--reset-run-on-host", "--reset-all", "--stats",
       "--proxy-log", "--egress-effective", "--self-test",
     )
 
   /**
-   * Outside a management verb's documented operands, the first non-option is the command and
+   * Outside a management action's documented operands, the first non-option is the command and
    * ends launcher parsing; everything after it is passed verbatim. `--` is an optional escape
    * for a command that could look like a launcher option; no launcher option is parsed after
    * the command. An option this launcher does not parse refuses the launch rather than passing
@@ -1749,33 +1753,35 @@ object AgentSandboxLauncher:
       egress: Option[String],
       env: Vector[EnvForward],
       runOnHost: Option[Vector[String]],
-      autoShutdown: Boolean,
     ): Either[String, ParsedCommandLine] =
       rest match
         case Nil =>
-          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost))
         case "--" :: command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
-            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost, autoShutdown))
+            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost))
 
         case arg :: tail if arg.startsWith("--egress=") =>
           if egress.isDefined then Left("error: --egress is given twice")
           else choose("--egress", arg.stripPrefix("--egress="), EgressProfiles)
-            .flatMap(value => loop(tail, write, Some(value), env, runOnHost, autoShutdown))
+            .flatMap(value => loop(tail, write, Some(value), env, runOnHost))
 
         case arg :: tail if arg.startsWith("--run-on-host=") =>
           if runOnHost.isDefined then Left("error: --run-on-host is given twice")
           else parseRunOnHost(arg.stripPrefix("--run-on-host="))
-            .flatMap(tools => loop(tail, write, egress, env, Some(tools), autoShutdown))
+            .flatMap(programs => loop(tail, write, egress, env, Some(programs)))
 
-        case RunOnHostSandbox.AutoShutdownForeignSbtOption :: tail =>
-          if autoShutdown then
-            Left(s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} is given twice")
-          else loop(tail, write, egress, env, runOnHost, true)
+        // Refused by name rather than as unknown: a launch script naming it needs the fact that the
+        // shutdown it asks for is the default (SECURITY.md "Run on host").
+        case RetiredAutoShutdownOption :: _ =>
+          Left(
+            s"error: $RetiredAutoShutdownOption is no longer an option: your own sbt server for the " +
+              "project is shut down by default when the agent runs sbt on the host",
+          )
 
         case arg :: tail if arg.startsWith("--env=") =>
           val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
@@ -1786,13 +1792,12 @@ object AgentSandboxLauncher:
             loop(
               tail, write, egress,
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
-              autoShutdown,
             )
 
         case ("--write" | "--egress" | "--env" | "--run-on-host") :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
-              "--env=<name>[=<value>] and --run-on-host=<tools>",
+              "--env=<name>[=<value>] and --run-on-host=<programs>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -1800,29 +1805,45 @@ object AgentSandboxLauncher:
             ParsedCommandLine(
               write, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
-              Nil, env, runOnHost, autoShutdown,
+              Nil, env, runOnHost,
             ),
           )
 
-        case verb :: tail if ManagementVerbs(verb) =>
-          Right(ParsedCommandLine(write, egress, Some((verb, tail)), Nil, env, runOnHost, autoShutdown))
+        case action :: tail if ManagementActions(action) =>
+          Right(ParsedCommandLine(write, egress, Some((action, tail)), Nil, env, runOnHost))
 
         case arg :: _ if arg.startsWith("--") =>
-          Left(s"error: unknown option $arg\nRun --help for the launcher verbs.")
+          Left(s"error: unknown option $arg\nRun --help for the launcher actions.")
 
         case command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
-    loop(args, None, None, Vector.empty, None, false).flatMap: parsed =>
-      if parsed.autoShutdownForeignSbt && !parsed.runOnHost.exists(_.contains("sbt")) then
-        Left(
-          s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} needs --run-on-host to name sbt",
-        )
-      else Right(parsed)
+    loop(args, None, None, Vector.empty, None)
 
   // -------------------------------------------------------------------------
   // Main
   // -------------------------------------------------------------------------
+
+  /** The launch's `run on host:` lines: the programs chosen and what running them on the host costs
+    * the user; under `--write=reject` a second line, red as a boundary weaker than the option
+    * says, since a host command writes the project as its program does while the session's own
+    * writes are refused (SECURITY.md "Run on host"). */
+  def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
+    val programs = s"run on host: ${chosen(runOnHost.mkString(", "), color)} by --run-on-host; " +
+      "sandbox-run-on-host relays commands to a Seatbelt-confined wrapper on this host" +
+      (if runOnHost.contains("sbt") then "; your own sbt server for this project is shut down when the agent runs sbt"
+       else "") +
+      (if runOnHost.contains("mill")
+       then "; your own mill daemon for this project is shut down when the agent runs mill"
+       else "")
+    val reject = Option.when(writeMode == "reject")(
+      weakened(
+        "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
+          " project as its program does",
+        color,
+      ),
+    )
+    Vector(programs) ++ reject
 
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
@@ -1837,127 +1858,131 @@ object AgentSandboxLauncher:
 
   /**
    * The section appended to the image's agent instructions, telling the agent what to do under
-   * this session's authority selection rather than leaving it to be inferred from failing
+   * this session's options rather than leaving it to be inferred from failing
    * commands. Directive by design: it says what to do, never how to probe. It states the *grant*
    * vocabulary and the proxy owns that: an agent told a grant word the proxy does not define writes
    * a rule file that fails the next launch with "which is no grant", which is a confusing way to
    * learn that these instructions drifted. AgentSandboxLauncherTest holds the
    * instruction vocabulary to the proxy source.
    */
-  def authoritySection(
+  def appendedSection(
     writeMode: String,
     workspaceGuard: String,
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
-    // Whether this host could serve --run-on-host at all (macOS): a session without the option
-    // then gets one discovery line, and other platforms hear nothing about a command they can
-    // never have. Constant per machine, so the agents.md stamp needs no part of it.
-    hostBuildsAvailable: Boolean = false,
+    // Whether this host could serve --run-on-host at all (macOS): decides the discovery line
+    // (doc/run-on-host.md, "The channel and the command"). Constant per machine, so the agents.md
+    // stamp needs no part of it.
+    hostCommandsAvailable: Boolean = false,
     // Why the session has no git, in the container's words (SandboxProject.noGitInstruction):
     // the agent hears it before its first command.
     noGit: Option[String] = None,
   ): String =
-    // The ruleset alone: the dry run's widening line describes the project's file, not what is
-    // enforced, and the same lines go to KO_AGENT_SANDBOX_EGRESS_RULESET (rulesetLinesOf).
-    val indented = rulesetLinesOf(resolved).linesIterator.map("    " + _).mkString("\n")
+    val profileLine = resolved.linesIterator.next()
     val workspace = (writeMode, workspaceGuard) match
-      // The plain reject instruction would be false under --run-on-host: a host build writes the
+      // The plain reject instruction would be false under --run-on-host: a host command writes the
       // project (SECURITY.md "Run on host", the --write=reject composition).
       case ("reject", _) if runOnHost.nonEmpty =>
-        """`/workspace` is read-only to this session's own writes; only builds through
-          |`sandbox-run-on-host` write the project, on the host. For anything a build does not
-          |write, put results under `~` or `/tmp` and tell the user, who relaunches with
-          |`--write=live` for a writable session.""".stripMargin
+        """`/workspace` is read-only to this session's own writes; only commands through
+          |`sandbox-run-on-host` write the project, on the host. For anything a command does not
+          |write, use `~` or `/tmp` for temporary work and return results in the conversation.
+          |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
       case ("reject", _) =>
-        """`/workspace` is read-only this session. Do not attempt writes there; put results under
-          |`~` or `/tmp` and tell the user, who relaunches with `--write=live` for a writable
-          |session.""".stripMargin
+        """`/workspace` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
+          |for temporary work and return results in the conversation. Tell the user to relaunch
+          |with `--write=live` when project files must be written.""".stripMargin
       case ("live", "fuse") =>
         """`/workspace` is writable and shared live with the host project directory through the
-          |`ko-agent-fs` filter. Git control state and `.ko-agent-sandbox` are frozen at any depth;
+          |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
+          |`.ko-agent-sandbox` cannot be modified at any depth;
           |symlink targets must be relative and remain inside the workspace.""".stripMargin
       case ("live", "none") =>
-        s"""`/workspace` is a raw writable bind shared live with the host project directory.
-           |Raw guard: $RawWorkspaceBoundary. Nested repository control state and non-portable
-           |symlinks remain writable.""".stripMargin
+        s"""`/workspace` is a direct writable bind mount of the host project directory, without the
+           |`ko-agent-fs` filter. $RawWorkspaceBoundary. Git configuration, hooks and other Git
+           |entries in nested repositories remain writable. Symlinks can have absolute targets or
+           |targets that resolve outside the project on the host.""".stripMargin
       case _ =>
-        throw IllegalArgumentException(s"unknown workspace authority: $writeMode/$workspaceGuard")
+        throw IllegalArgumentException(s"unknown workspace mode: $writeMode/$workspaceGuard")
     val git = noGit.fold("")(cause =>
       s"""
          |
          |Git does not work in this session: $cause. Do not `git init` or clone in place; leave
          |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin,
     )
-    val hostBuilds =
+    val runOnHostSection =
       if runOnHost.nonEmpty then
-        val commands = runOnHost.map(tool => s"`sandbox-run-on-host $tool …`").mkString(" or ")
+        val names = runOnHost.mkString(", ")
+        val commands = runOnHost.map(program => s"`sandbox-run-on-host $program …`").mkString(" or ")
         s"""
-           |## Host builds
+           |## Run on host
            |
-           |Run this project's builds with $commands: they run on the
-           |host, sandboxed to the project, per-project build caches and one artifact repository,
-           |and they may write the project except git control state and `.ko-agent-sandbox`.
-           |Each sbt invocation starts and ends its own server, so batch commands into one —
-           |`sandbox-run-on-host sbt 'compile; test'`, quoted: sbt reads separate arguments as one
-           |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
-           |that binds one fails there with `Operation not permitted`; that suite alone runs in the
-           |container. Container `sbt` still works, over the same `target/` — host and container
-           |builds compile with different JVMs against different caches, so switching between them
-           |can cost a rebuild or need cleanup first ("The host's own symlinks"). Any other host
-           |build that fails or is refused is reported to the user, never re-run in the container.
-           |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this tool list.
+           |Run $names for this project as $commands: they run on the
+           |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
+           |and they may write the project except `.git` and `.ko-agent-sandbox`.
+           |The daemons of sbt, mill and gradle stay warm across invocations. To run several
+           |commands in one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
+           |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
+           |resort, not an alternative: host and container builds compile with different JVMs
+           |against different caches over the same `target/`, so a container build costs the host a
+           |rebuild or the symlink cleanup described above. Under sbt and mvn the host grants no
+           |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
+           |suite alone runs in the container. Under mill and gradle a build's processes can bind
+           |listeners.
+           |Any other host command that fails or is refused is reported to the user,
+           |never re-run in the container.
+           |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
            |""".stripMargin
-      else if hostBuildsAvailable then
+      else if hostCommandsAvailable then
         s"""
-           |## Host builds
+           |## Run on host
            |
-           |`sandbox-run-on-host` is absent from this session. If sbt, `mill` or Maven builds here
-           |are slow, or the machine is short on memory, tell the user: relaunching with
-           |`--run-on-host=sbt,mill,mvn` runs them on the host — memory reclaimed on exit rather than
-           |left with the podman machine, at host speed, and without the symlink cleanup that
-           |switching between container and host builds needs ("The host's own symlinks").
+           |`sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
+           |builds here are slow, or the machine is short on memory, tell the user: relaunching with
+           |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host — memory reclaimed on exit
+           |rather than left with the podman machine, at host speed, and without the symlink cleanup
+           |that switching between container and host commands needs, as described above.
            |""".stripMargin
       else ""
     // `allow-unless-denied` inverts the default's reading of the lines: what is listed is the
     // exception, not the whole, and a refusal there was chosen, so the agent is not sent to ask
     // for an allow line it already has.
     val publicDefault = permissiveProfile(resolved)
-    val admission =
+    val allowed =
       if publicDefault then
         """Every public host on port 443 is reachable for reading — GET and HEAD, inspected and
-          |logged — except as the lines below say: a host listed with grants is limited to those
+          |logged — except as the ruleset says: a host listed with grants is limited to those
           |grants, a host listed with `tunnel` is an opaque tunnel, and a host under a `deny` line
           |is refused.""".stripMargin
-      else "Anything not admitted below is refused."
+      else "Anything not allowed by the ruleset is refused."
     val refused =
       if publicDefault then
         """A refused host is one the user denied on purpose: name it to the user rather than
           |looking for another route.""".stripMargin
       else
-        """If a package registry or clone host you need is not admitted, do not look for another
+        """If a package registry or clone host you need is not allowed, do not look for another
           |route: name the host to the user, who adds `allow https://<host>/ read` to
           |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
-          |deny-unless-allowed profile or a broader one, if this session's profile does not admit
+          |deny-unless-allowed profile or a broader one, if this session's profile does not allow
           |project hosts at all.""".stripMargin
     s"""
        |
-       |# Authority in force for this session
+       |# What this session may do
        |
        |$workspace$git
-       |$hostBuilds
+       |$runOnHostSection
        |## Egress
        |
-       |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
-       |that can drift. `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
-       |$admission A line grants exactly its words under its
-       |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
-       |serves `clone` and `pull`, and `git push` is always refused; `method=` names the
-       |write methods admitted there. On an inspected host a request takes the line whose
-       |path is its longest match, a tree by prefix, an exact path alone; one matching no line
-       |is refused, and so is one under a line other than the root spelled with
-       |percent-encoding, a dot segment, a backslash or an empty segment.
+       |$profileLine
        |
-       |$indented
+       |For a destination's grants and restrictions, consult `$$KO_AGENT_SANDBOX_EGRESS_RULESET`.
+       |$allowed A line grants exactly its words under its
+       |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
+       |serves `clone` and `pull`; `method=` names the
+       |HTTP methods allowed there. On an inspected host, the rule with the longest matching
+       |path decides which operations are permitted. A rule path ending in `/` matches request
+       |paths with that prefix; other rule paths match exactly. A request matching no rule is
+       |refused. For rules below `/`, request paths are also refused if they contain
+       |percent-encoding, a dot segment, a backslash or an empty segment.
        |
        |$refused
        |""".stripMargin
@@ -1977,17 +2002,17 @@ object AgentSandboxLauncher:
       + noGit.fold("")(cause => s" no-git:${sha256Hex(cause)}")
 
   def main(args: Array[String]): Unit =
-    // The private verbs, before the ordinary parse and in no usage text: they are not launch
+    // The private actions, before the ordinary parse and in no usage text: they are not launch
     // options, and nothing outside this codebase spells them. Each re-invokes the launcher's own
     // executable — jar or native image (RunOnHostSandbox.selfInvocation). --serve-proxy-on-host
-    // hosts a build's egress proxy, configured by the EGRESS_* environment as in the container;
+    // hosts a command's egress proxy, configured by the EGRESS_* environment as in the container;
     // --serve-run-on-host is the session's command broker (RunOnHostChannel), and
-    // --run-build-on-host one channel request as the broker's own child.
+    // --run-command-on-host one channel request as the broker's own child.
     args.headOption match
       case Some("--serve-proxy-on-host") if args.length == 1 =>
         agentsandbox.egress.AgentEgressProxy.serve()
       case Some("--serve-run-on-host")  => RunOnHostChannel.serveMain(args.toSeq.drop(1))
-      case Some("--run-build-on-host")  => RunOnHostSandbox.runBuildMain(args.toSeq.drop(1))
+      case Some("--run-command-on-host")  => RunOnHostSandbox.runCommandMain(args.toSeq.drop(1))
       case _                            => launcherMain(args)
 
   private def launcherMain(args: Array[String]): Unit =
@@ -1996,23 +2021,23 @@ object AgentSandboxLauncher:
 
     val parsed = parseCommandLine(args.toList).fold(fail(_), identity)
 
-    // The verbs that read no authority option refuse one rather than ignoring it: a selection
-    // that configures nothing is the silent-authority failure mode the options must not have.
-    def noAuthorityOptions(verb: String): Unit =
+    // The actions that read no session option refuse one rather than ignoring it: a selection
+    // that configures nothing is the silent failure mode the options must not have.
+    def noSessionOptions(action: String): Unit =
       if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty
         || parsed.runOnHost.isDefined
-      then fail(s"error: $verb reads no launch option; drop --write/--egress/--env/--run-on-host")
-    def noWriteOption(verb: String): Unit =
+      then fail(s"error: $action reads no launch option; drop --write/--egress/--env/--run-on-host")
+    def noWriteOption(action: String): Unit =
       if parsed.write.isDefined || parsed.env.nonEmpty || parsed.runOnHost.isDefined then
-        fail(s"error: $verb reads no --write, --env or --run-on-host option; drop it")
+        fail(s"error: $action reads no --write, --env or --run-on-host option; drop it")
 
-    parsed.verb match
+    parsed.action match
       case Some(("--help", _)) =>
-        noAuthorityOptions("--help")
+        noSessionOptions("--help")
         usage()
 
       case Some(("--build", rest)) =>
-        noAuthorityOptions("--build")
+        noSessionOptions("--build")
         if rest.nonEmpty then fail("error: --build takes no further arguments")
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
@@ -2059,7 +2084,7 @@ object AgentSandboxLauncher:
         sys.exit(0)
 
       case Some(("--update", rest)) =>
-        noAuthorityOptions("--update")
+        noSessionOptions("--update")
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
@@ -2100,20 +2125,20 @@ object AgentSandboxLauncher:
         sys.exit(0)
 
       case Some(("--reset", rest)) =>
-        noAuthorityOptions("--reset")
+        noSessionOptions("--reset")
         val givenIds = projectIdOperands("--reset", rest).fold(fail(_), identity)
         requirePodman(currentOs)
         resetProject(currentOs, givenIds)
 
-      // No id form: a gone project's cache goes with `--reset <id>`, and this verb exists for the
+      // No id form: a gone project's cache goes with `--reset <id>`, and this action exists for the
       // live one, whose directory is there to run from.
       case Some(("--reset-run-on-host", rest)) =>
-        noAuthorityOptions("--reset-run-on-host")
+        noSessionOptions("--reset-run-on-host")
         if rest.nonEmpty then fail("error: --reset-run-on-host takes no further arguments")
         resetRunOnHost(currentOs)
 
       case Some(("--reset-all", rest)) =>
-        noAuthorityOptions("--reset-all")
+        noSessionOptions("--reset-all")
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
         requirePodman(currentOs)
         resetAll(currentOs)
@@ -2121,7 +2146,7 @@ object AgentSandboxLauncher:
       // No requirePodman(): the report is read-only and reads host directories either way; the
       // live section degrades to a note when podman or its machine is not there to answer.
       case Some(("--stats", rest)) =>
-        noAuthorityOptions("--stats")
+        noSessionOptions("--stats")
         if rest.nonEmpty then fail("error: --stats takes no further arguments")
         SandboxStats.stats(currentOs)
 
@@ -2129,11 +2154,11 @@ object AgentSandboxLauncher:
       // logs are documented as readable after every container is gone. proxyLog asks for podman on
       // the branch that needs it.
       case Some(("--proxy-log", rest)) =>
-        noAuthorityOptions("--proxy-log")
+        noSessionOptions("--proxy-log")
         proxyLog(currentOs, rest)
 
       case Some(("--self-test", rest)) =>
-        noAuthorityOptions("--self-test")
+        noSessionOptions("--self-test")
         requirePodman(currentOs, buildMemoryHeadroom)
         selfTest(currentOs, rest)
 
@@ -2150,17 +2175,17 @@ object AgentSandboxLauncher:
         requirePodman(currentOs)
         egressCheck(currentOs, parsed.egressProfile, host, operands.tail)
 
-      case Some((verb, _)) => fail(s"error: unhandled verb $verb") // ManagementVerbs and this match drifted
+      case Some((action, _)) => fail(s"error: unhandled action $action") // ManagementActions and this match drifted
 
       case None => launch(parsed)
 
   /**
-   * Whether the directory's own SELinux context already admits container reads, so a raw bind
-   * needs no relabel: a container type with no MCS categories. A context with categories — what
-   * a previous run's `:Z` leaves — is private to the container it was assigned to, unreadable to a
-   * new one, so it does not count. Only the root is asked: a partially labeled tree fails at
-   * runtime with EACCES on the stray files, the host's own labeling to finish. Fail closed — a
-   * missing stat, an unreadable or unexpected context all answer false.
+   * Whether the directory's own SELinux context already allows container reads, so an unfiltered
+   * bind mount needs no relabel: a container type with no MCS categories. A context with categories
+   * — what a previous run's `:Z` leaves — is private to the container it was assigned to,
+   * unreadable to a new one, so it does not count. Only the root is asked: a partially labeled tree
+   * fails at runtime with EACCES on the stray files, the host's own labeling to finish. Fail closed
+   * — a missing stat, an unreadable or unexpected context all answer false.
    *
    * stat resolves through findOnPath like every host executable: this runs before the sandbox
    * exists, and the working directory is the project directory.
@@ -2175,9 +2200,9 @@ object AgentSandboxLauncher:
    * The zone as a POSIX `TZ` value. A tzdata name passes through; a fixed offset — what the JVM
    * falls back to on a host it cannot map to one, as `GMT+09:00` — is spelled `UTC-9`, because
    * POSIX reads the sign the other way round from ISO: `TZ=GMT+09:00` is nine hours *behind*
-   * UTC to every native tool, while the JVM would read it as ahead. Seconds are dropped: glibc
+   * UTC to every native program, while the JVM would read it as ahead. Seconds are dropped: glibc
    * honours `UTC-5:45:30`, but a JVM reads it as `+05:45` (measured on Java 25), so passing them on
-   * would split the sandbox's own tools two ways; no zone has had one for over fifty years.
+   * would split the sandbox's own programs two ways; no zone has had one for over fifty years.
    */
   def posixTz(zone: ZoneId): String =
     val offset = zone.normalized() match
@@ -2220,7 +2245,7 @@ object AgentSandboxLauncher:
     // container build already runs at host speed on host memory.
     val runOnHost = parsed.runOnHost.getOrElse(Vector.empty)
     if runOnHost.nonEmpty && os != Os.Mac then
-      fail("error: --run-on-host is available on macOS only; on this host, run the build in the container")
+      fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")
 
     val projectDir = resolveProjectDir()
 
@@ -2241,14 +2266,14 @@ object AgentSandboxLauncher:
       findOnPath("getenforce", env("PATH").getOrElse(""), os)
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
-    // A raw bind on an SELinux-enforcing host is readable to the container only after :Z
-    // relabels the project directory — a recursive host-metadata write, which is exactly the authority
-    // reject withholds. Refused rather than relabeled, unless the tree already has a
+    // An unfiltered bind mount on an SELinux-enforcing host is readable to the container only after
+    // :Z relabels the project directory — a recursive host-metadata write, which is exactly the
+    // authority reject withholds. Refused rather than relabeled, unless the tree already has a
     // shared container-accessible context, where a plain read-only bind needs no host write.
     if writeMode == "reject" && selinuxEnforcing && !selinuxContainerReadable(projectDir) then
       fail(
         s"""error: --write=reject cannot mount $projectDir on this SELinux-enforcing host
-           |Reading a raw bind here requires relabeling the project directory (:Z), a recursive
+           |Reading an unfiltered bind mount here requires relabeling the project directory (:Z), a recursive
            |host-metadata write that reject must not perform. Use --write=live — the filter's
            |mountpoint needs no relabel — or relabel the project yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
@@ -2382,7 +2407,7 @@ object AgentSandboxLauncher:
     if egressProfile == "deny-unless-model" && provider.isEmpty then
       warn(
         s"'${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
-          "so deny-unless-model selects no model provider and admits no host; " +
+          "so deny-unless-model selects no model provider and allows no host; " +
           "the default --egress=deny-unless-allowed applies the project's rule file instead",
       )
 
@@ -2399,12 +2424,12 @@ object AgentSandboxLauncher:
 
     val resolvedHostsFile = rulesetCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = rulesetCacheDir.resolve("resolved.warnings")
-    // The stamp covers everything the dry run reads: the image, the authority selection — the
+    // The stamp covers everything the dry run reads: the image, the selected options — the
     // profile and the command-classified provider both determine the resolution — and the files,
     // hashed into its one line because they are multi-part. It is the first line of each cached
     // file rather than a file of its own, and a hit needs both to hold it: concurrent launches of
-    // one project under different authority selections write here without a lock, and a stamp
-    // beside the content can end up describing the other launch's (HostCommands.stampedEntry).
+    // one project under different session options write here without a lock, and a stamp
+    // beside the content can end up describing the other launch's (FileHelper.stampedEntry).
     val rulesetStamp =
       s"$proxyImageId $egressProfile ${provider.getOrElse("none")} " +
         sha256Hex(ruleFiles.map((name, text) => s"$name: $text").mkString("\n"))
@@ -2414,7 +2439,7 @@ object AgentSandboxLauncher:
     // stampedEntry gives back exactly what was cached, trailing newline and all removed, so a hit
     // and a miss are one string. This one is hashed into the agent instructions' stamp: two
     // spellings of the same ruleset would make every launch after a re-resolve rewrite the shared
-    // agents.md for nothing (HostCommands, writeWithMode).
+    // agents.md for nothing (FileHelper.writeWithMode).
     val cachedRuleset =
       (stampedEntry(resolvedHostsFile, rulesetStamp).filter(_.nonEmpty),
         stampedEntry(resolvedWarningsFile, rulesetStamp))
@@ -2436,11 +2461,11 @@ object AgentSandboxLauncher:
 
     // The workspace FUSE filter, checked before any volume is assembled and mounted once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
-    // Every live session's enforcement, on every platform;
-    // the .git pins below are what a guard=none session gets instead. The two are alternatives
-    // rather than a stack: the filter's policy is a strict superset of the pins', and preparing a
-    // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
-    // (observed as a container-start failure, not deduced).
+    // Every live session's enforcement, on every platform; the read-only .git mounts below are what
+    // a guard=none session gets instead. The two are alternatives rather than a stack: the filter's
+    // policy is a strict superset of the mounts' protection, and preparing a bind target means
+    // creating `.git` entries *through* the filter, which the filter denies (observed as a
+    // container-start failure, not deduced).
     val sandboxContainer = sandboxRunContainer(projectId, runSuffix)
 
     // Derived from the mode rather than from the mount, so it exists before the mount does: the
@@ -2501,8 +2526,8 @@ object AgentSandboxLauncher:
       case (_, "none") => None
       case _ => Some(prepareKoAgentFs(podman, os, projectId))
 
-    // gitGuardVolumes has the threat and the layouts. Reject mode needs no pin: the whole tree is
-    // bound read-only, git control state included.
+    // gitGuardVolumes has the threat and the layouts. Reject mode needs no additional mount: the
+    // whole tree is bound read-only, Git metadata included.
     val gitGuardArgs =
       if writeMode == "reject" || filteredWorkspace.isDefined then Vector.empty
       else
@@ -2589,15 +2614,11 @@ object AgentSandboxLauncher:
     val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
 
-    // The egress ruleset, appended to the agent instructions the image ships, so an agent starts the
-    // session knowing what it can reach instead of learning it from a refused request. Same
-    // technique as the CA bundle below — read the image's own file, add this project's part, mount
-    // the result back over it — and the image points the installed agents' instruction files at
-    // this path by symlink, so a single mount reaches all of them. A project shipping its own
-    // AGENTS-CUSTOM.md takes the image's AGENTS-SANDBOX.md alone and supplies the middle part
-    // itself. Cached on (image Id, write mode, workspace guard, ruleset, project
-    // instructions); the
-    // multi-line inputs are hashed into the stamp.
+    // Session-specific instructions point to the ruleset environment variable rather than embed
+    // the host list in every prompt. Read the image's file, append the session's instructions, and
+    // mount the result over it. All installed agents' instruction files link to this path, so one
+    // mount reaches all of them. A project's AGENTS-CUSTOM.md replaces the image's conventions;
+    // AGENTS-SANDBOX.md still comes from the image. agentDocumentStamp keys the cached assembly.
     val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = rulesetCacheDir.resolve("agents.md")
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
@@ -2648,13 +2669,13 @@ object AgentSandboxLauncher:
       // The channel broker's log family, same retention — pruned by whole-run liveness, because the
       // broker lives with the sandbox container rather than the proxy.
       liveRuns.foreach: live =>
-        logsToPrune(retainedLogs(logDir, "channel-").map(_.getFileName.toString), RetainedProxyLogs, live)
+        logsToPrune(retainedLogs(logDir, "run-on-host-").map(_.getFileName.toString), RetainedProxyLogs, live)
           .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
       // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
       // take the rest.
       liveRuns.foreach: live =>
-        val entries = Files.list(tlsDir).iterator().asScala.map(_.getFileName.toString).toVector
+        val entries = directoryEntries(tlsDir).map(_.getFileName.toString)
         tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
 
       writePrivate(hostLogFile, "")
@@ -2689,7 +2710,7 @@ object AgentSandboxLauncher:
           val ca = createCa(projectSlug)
           // The leaf this CA no longer signs is retired by emptying it, not by deleting it: the
           // names stay stable for the copies below and for anything still reading them
-          // (HostCommands, writeWithMode). Empty fails every expiry test below, so the leaf is
+          // (FileHelper.writeWithMode). Empty fails every expiry test below, so the leaf is
           // reissued in this same launch — and it is emptied before the CA is written, so a
           // launch that dies here leaves a leaf that the next one reissues rather than one
           // silently signed by the old CA.
@@ -2768,7 +2789,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
             + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
-            + authoritySection(
+            + appendedSection(
               writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),
         )
@@ -2777,7 +2798,7 @@ object AgentSandboxLauncher:
       // This run's copies, made while the lock still holds so no concurrent launch's rewrite can
       // happen between an expiry check above and a copy below; a file this run wrote into its own
       // directory is mounted where it is. Modes travel with the copy: the leaf key stays
-      // owner-only, and the run directory itself admits only this user.
+      // owner-only, and the run directory itself allows only this user.
       def carried(source: Path): Path =
         if source.startsWith(runFiles) then source
         else
@@ -2813,7 +2834,7 @@ object AgentSandboxLauncher:
             "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key",
           )
 
-      // The bundle replaces the image's; the variables cover tools with a trust store of their own
+      // The bundle replaces the image's; the variables cover programs with a trust store of their own
       // (certifi, Node's roots), and the keystore covers the JVM, which reads neither.
       val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
       // The CA on its own, for sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
@@ -2858,7 +2879,7 @@ object AgentSandboxLauncher:
           "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
         ) ++
           // memoryArguments has why the equal limits disable podman's default swap allowance.
-          memoryArguments(Some(ProxyMemoryCeiling), None, None) ++ Vector(
+          memoryArguments(Some(ProxyMemoryLimit), None, None) ++ Vector(
             "--pids-limit=512",
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
@@ -2883,22 +2904,21 @@ object AgentSandboxLauncher:
       sandboxNetwork,
     ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    // Both authorities and their relevant state, said every launch — and rules that arrived
-    // with the repository never take effect unseen: the files as written, then the dry run's
-    // counts, the proxy's own answers to exactly what is enforced.
-    // The workspace line is also where guard=none is said every session it happens: it is the
-    // weaker boundary, and silence about
-    // it is how a user forgets which one they are running under — the relabel notice included,
-    // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
-    // Each line tints the mode it states; a branch weaker than the default is tinted whole
-    // instead, red (HostCommands.weakened), so no line ever has two colours.
+    // The workspace mode and the egress profile with their relevant state, said every launch — and
+    // rules that arrived with the repository never take effect unseen: the files as written, then
+    // the dry run's counts, the proxy's own answers to exactly what is enforced. The workspace line
+    // is also where guard=none is said every session it happens: it is the weaker boundary, and
+    // silence about it is how a user forgets which one they are running under — the relabel notice
+    // included, so the one unfiltered bind mount arrangement that rewrites host metadata is never a
+    // silent one. Each line tints the mode it states; a branch weaker than the default is tinted
+    // whole instead, red (HostCommands.weakened), so no line ever has two colours.
     System.err.println((writeMode, filteredWorkspace) match
       case ("reject", _) => s"workspace: ${chosen("reject")}; /workspace is read-only this session"
       case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}"
       case (_, None) =>
         weakened(
           s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
-            s"$RawWorkspaceBoundary; mount pins can fall through when the host replaces " +
+            s"$RawWorkspaceBoundary; read-only bind mounts can lose protection when the host replaces " +
             "their source" +
             (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
              else ""),
@@ -2934,13 +2954,13 @@ object AgentSandboxLauncher:
     // How the sandbox reaches it
     // -----------------------------------------------------------------------
     //
-    // --dns=none: proxied tools CONNECT by name and never resolve; the
+    // --dns=none: proxied programs CONNECT by name and never resolve; the
     // effective no-external-DNS property comes from the internal network.
     // Defence in depth, not a fix for a known hole — SECURITY.md has the
     // measurement; do not remove this believing it closes one. --add-host
     // supplies the one name that must work, read back from podman so no
     // subnet is reserved. Both spellings of each variable: traditional
-    // tools read lowercase. HTTP_PROXY is set although plain HTTP is
+    // programs read lowercase. HTTP_PROXY is set although plain HTTP is
     // refused, so an http:// attempt is recorded in the proxy log instead of
     // failing as an unexplained resolution error.
     val egressProxyUrl = s"http://$EgressProxyHost:$EgressProxyPort"
@@ -2956,13 +2976,10 @@ object AgentSandboxLauncher:
       "--env=NO_PROXY=localhost,127.0.0.1",
       "--env=no_proxy=localhost,127.0.0.1",
 
-      // The ruleset, handed to the agent rather than left to be discovered by failing requests. The
-      // value is the proxy's own --print-ruleset answer, its ruleset lines as printed and nothing
-      // derived from them, so there is no second derivation of the list to drift; the metadata
-      // after them — the widening line, about the project's file — stays with the terminal
-      // (rulesetLinesOf), as the authority section does. It grants nothing: an agent can already
-      // enumerate the ruleset by probing, slowly and noisily, and reading a refusal as breakage is
-      // the usual outcome of not knowing.
+      // Keep the proxy's resolved rules available on demand. Metadata about the project file
+      // stays with the terminal; the agent needs the grants actually in force (rulesetLinesOf).
+      // Revealing the rules grants no access: an agent could discover them by probing, slowly
+      // and noisily, and mistake refusals for a broken environment in the meantime.
       s"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(rulesetText)}",
 
       // The entrypoint holds its machine-health warning on screen under the same setting as
@@ -3000,22 +3017,14 @@ object AgentSandboxLauncher:
     val runOnHostArgs =
       if runOnHost.isEmpty then Vector.empty
       else
-        System.err.println(
-          s"run on host: ${chosen(runOnHost.mkString(", "))} by --run-on-host; sandbox-run-on-host " +
-            "relays builds to a Seatbelt-confined wrapper on this host" +
-            (if parsed.autoShutdownForeignSbt
-             then s"; your own live sbt server is ended when it holds the project, by ${
-                 RunOnHostSandbox.AutoShutdownForeignSbtOption}"
-             else ""),
-        )
+        runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
     // -----------------------------------------------------------------------
     // Project bind mount
     // -----------------------------------------------------------------------
-    //
-    // :Z only on native SELinux-enforcing Linux, and only on the raw bind; podman-machine sources
-    // must not be relabelled, and neither must a FUSE mountpoint.
+    //  :Z only on native SELinux-enforcing Linux, and only on the unfiltered bind mount;
+    //podman-machine sources  must not be relabelled, and neither must a FUSE mountpoint.
     val projectVolume = (writeMode, filteredWorkspace) match
       // Never :Z: the reject gate above established the tree is already container-readable, and
       // relabeling is the host write the mode withholds.
@@ -3025,20 +3034,20 @@ object AgentSandboxLauncher:
       case (_, None)                     => s"$projectDir:/workspace:rw"
 
     // -----------------------------------------------------------------------
-    // Memory ceiling
+    // Memory limit
     // -----------------------------------------------------------------------
     //
     // Memory is the runaway this environment invites (the cs java OOM in the Containerfile), and
     // the sandbox must die before the machine does: one in-sandbox build exhausting the VM takes
     // podman's own service with it, and every session on the machine (the troubleshooting
-    // document's "The whole machine degrades"). Hence a ceiling by default, below the machine's
-    // total (memoryCeiling). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
+    // document's "The whole machine degrades"). Hence a limit by default, below the machine's
+    // total (memoryLimit). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
     // other sessions.
     val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
-      warn("podman info reports no machine memory; the sandbox runs without a memory ceiling")
+      warn("podman info reports no machine memory; the sandbox runs without a memory limit")
     machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
       warn(
         s"podman runs on ${SandboxStats.humanBytes(total)} of memory; builds in the sandbox OOM below about 4.0G\n" +
@@ -3090,15 +3099,16 @@ object AgentSandboxLauncher:
       s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
     ) ++ forwardedEnv ++ Vector(
 
-      // The deliberate host exposure; what the agent writes here is untrusted input to host tools (SECURITY.md, "The
+      // The deliberate host exposure; what the agent writes here is untrusted input to host programs (SECURITY.md, "The
       // project directory").
       "--volume", projectVolume,
 
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
       "--mount", "type=volume,dst=/home/nonroot",
 
-      // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini, ~/.copilot and opencode's XDG directories are symlinks
-      // into this volume. This is podman-owned storage, not a bind mount into the host HOME.
+      // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini, ~/.kiro, ~/.copilot, ~/.local/share/kiro-cli and
+      // opencode's XDG directories are symlinks into this volume. This is podman-owned storage, not a bind mount
+      // into the host HOME.
       "--mount", s"type=volume,src=$persistentVolume,dst=/home/nonroot/persistent-volume",
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM
@@ -3168,10 +3178,9 @@ object AgentSandboxLauncher:
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
-      val channelLogFile = logDir.resolve(s"channel-$logStamp-$runSuffix.log")
+      val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
-          autoShutdownForeignSbt = parsed.autoShutdownForeignSbt,
           forwards = parsed.env,
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")

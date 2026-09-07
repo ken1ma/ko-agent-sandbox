@@ -1,9 +1,9 @@
-// The project directory — the directory that becomes /workspace, and everything the launcher decides
-// about it before any resource exists: the real path it resolves to, the directories refused as
-// projects outright, the identity its path hashes to (which names every per-project resource), and
-// the mount guards that pin or refuse its .git and .ko-agent-sandbox layouts. The session's
-// configuration variables are deliberately not here — they describe a launch, not the project,
-// and are beside the --help text they must stay in step with.
+// The project directory — the directory that becomes /workspace, and everything the launcher
+// decides about it before any resource exists: the real path it resolves to, the directories
+// refused as projects outright, the identity its path hashes to (which names every per-project
+// resource), and the mount guards that protect or refuse its .git and .ko-agent-sandbox layouts.
+// The session's configuration variables are deliberately not here — they describe a launch, not the
+// project, and are beside the --help text they must stay in step with.
 
 package agentsandbox.launcher
 
@@ -15,6 +15,7 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 import HostCommands.*
+import FileHelper.*
 
 object SandboxProject:
 
@@ -264,37 +265,36 @@ object SandboxProject:
 
   /**
    * Enforcement under guard=none: default sessions get the workspace
-   * FUSE filter instead, whose policy is a strict superset of these pins
+   * FUSE filter instead, whose policy is a strict superset of these mounts' protection
    * (AgentSandboxLauncher's header map has the split).
    *
    * Host git executes what .git configures — hooks, and commands named in
    * .git/config (core.hooksPath, core.fsmonitor, filters, pagers) — so
    * writing either from inside would turn the user's next `git status` into
-   * execution outside the boundary. A mount point cannot be written,
-   * deleted or replaced from inside; pinning these two pins what git
+   * execution outside the boundary. A read-only bind mount cannot be written,
+   * deleted or replaced from inside; mounting these two read-only protects what git
    * executes while the rest of .git stays writable data (SECURITY.md, "The
    * project directory").
    *
    * Forms:
-   *   - directory: pin config and hooks; an absent one is pinned from the
+   *   - directory: mount config and hooks read-only; an absent one uses the
    *     launcher's own empty source (below) — never created in the project,
    *     and never left to podman, which would manufacture a *directory*
    *     named config on Linux and refuse the missing source on podman
    *     machine;
-   *   - pointer file (linked worktree): pin the file itself, so a rewritten
+   *   - pointer file (linked worktree): mount the file itself read-only, so a rewritten
    *     relative gitdir cannot redirect host git into the writable tree;
-   *   - absent: pin the name over the launcher's empty directory, so a
+   *   - absent: mount the launcher's empty directory read-only at that name, so a
    *     sandbox cannot fabricate a repository for host git to discover;
    *   - a symlink anywhere refuses the launch: podman resolves mount
    *     sources on the host.
    *
-   * The empty sources are the launcher's, under its state root: the project
-   * tree is never written (SECURITY.md, "Silent changes to what you own").
+   * The empty sources are under the launcher's state root. The runtime may create their mount
+   * targets in the project (SECURITY.md, "Silent changes to what you own").
    *
-   * The layout is read once, at launch; a bind mount binds the inode, so a
-   * repository created on the host mid-session appears inside behind the
-   * whole-directory pin, read-only until the next launch. Mid-session
-   * changes only ever remain behind a mount coarser than their layout warrants.
+   * The layout is read once, at launch. If no repository exists then, the empty directory mount
+   * hides any repository the host later creates there. Replacing an existing config or hooks
+   * inode on the host can defeat its read-only protection; SECURITY.md records the measurements.
    */
   def gitGuardVolumes(gitDir: Path, emptyFile: Path, emptyDir: Path): Either[String, Vector[String]] =
     def refuse(path: Path): Either[String, Vector[String]] =
@@ -321,23 +321,24 @@ object SandboxProject:
     else Right(Vector(s"--volume=$emptyDir:/workspace/.git:ro"))
 
   /**
-   * Why git does not work in a session on this project directory, while the host directory the
-   * user launched from is part of a repository. The container has the project directory at
-   * `/workspace` and nothing above or beside it, so git works there only when the repository's
-   * control directory is inside the project: a `.git` directory, or a pointer file whose relative
-   * target stays within it. Every other form leaves `/workspace/.git` naming a path the container
-   * does not have — a submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
+   * Why git does not work in a session on this project directory, while the host directory the user
+   * launched from is part of a repository. The container has the project directory at `/workspace`
+   * and nothing above or beside it, so git works there only when the repository's Git directory is
+   * inside the project: a `.git` directory, or a pointer file whose relative target stays within
+   * it. Every other form leaves `/workspace/.git` naming a path the container does not have — a
+   * submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
    * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
-   * from a subdirectory of the repository — and every git command fails with `not a git repository`,
-   * which an agent reads as breakage. No workspace path holds control bytes in any of them, so
-   * every guard rightly admits the mount.
+   * from a subdirectory of the repository — and every git command fails with `not a git
+   * repository`, which an agent reads as breakage. Lack of Git access alone does not require
+   * refusal; the mount-time guard still checks whether the host's configuration or hooks are
+   * exposed.
    *
    * Said at launch and in the agent's instructions — a warning, never a refusal: the host's git is
    * untouched, and a session that only edits files is a legitimate one.
    *
    * Two questions of one resolution (repositoryAt): whether the host has a repository rooted at a
-   * directory — a nested worktree or submodule is one, its control directory elsewhere — and
-   * whether the container can follow `.git` to that control directory from a given base. A
+   * directory — a nested worktree or submodule is one, its Git directory elsewhere — and
+   * whether the container can follow `.git` to that Git directory from a given base. A
    * `launchFrom` is the nearest directory holding the project from which the repository git uses
    * there is reachable, so `that whole tree is then the project` is true of it: the superproject
    * over a submodule, the repository root over a subdirectory. A separate git dir has none — nor
@@ -367,7 +368,7 @@ object SandboxProject:
 
   /**
    * The repository rooted at a directory, as the host has it, and whether the container would
-   * reach its control directory with `base` as `/workspace`.
+   * reach its Git directory with `base` as `/workspace`.
    *
    * A test of form, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
    * `HEAD`, `objects` and `refs`, the last two through a linked worktree's `commondir`): the
@@ -459,7 +460,7 @@ object SandboxProject:
 
   /** The ancestors host git's search from this directory reaches: a `.git` file it rejects is a
     * failure there, not a step passed over, so the search — and every answer drawn from it — ends
-    * at that directory (`setup_git_directory_gently_1`). A repository whose control directory the
+    * at that directory (`setup_git_directory_gently_1`). A repository whose Git directory the
     * container cannot reach is not such a stop: git works there, and a launch above it still
     * holds the project. */
   private def searched(projectDir: Path): Iterator[Path] =
@@ -500,9 +501,9 @@ object SandboxProject:
       "the repository's `.git` lies above the project directory, which is all the sandbox has"
 
   /**
-   * The launcher-owned empty bind sources gitGuardVolumes pins from. Kept
+   * The launcher-owned empty bind sources gitGuardVolumes mounts read-only. Kept
    * outside the project and re-emptied at every launch *in place*: never
-   * delete-and-recreate, for the reason in HostCommands.writeWithMode, and
+   * delete-and-recreate, for the reason in FileHelper.writeWithMode, and
    * not rename-and-replace either — a concurrent session's running bind
    * keeps this very inode, and its emptiness with it.
    */
@@ -510,23 +511,22 @@ object SandboxProject:
     val root = launcherStateRoot.resolve("empty")
     val dir = root.resolve("dir")
     Files.createDirectories(dir)
-    Files.list(dir).iterator().asScala.foreach(deleteRecursively)
+    directoryEntries(dir).foreach(deleteRecursively)
     val file = root.resolve("file")
     Files.write(file, Array.emptyByteArray)
     (file, dir)
 
   /**
    * Why .ko-agent-sandbox cannot serve as this project's boundary directory, or None. Checked in
-   * every write mode before the rules are read — the read is a host-side read either way.
-   * Refused forms: a symlink of the directory or of an entry (podman resolves mount sources on
-   * the host, and the rule read must see the bytes a mounted-back directory would show);
-   * anything that is not a directory; or an entry that is no configuration of this launcher's —
-   * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
-   * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
-   * agent/ are vetted where they are read (EgressRules.readRuleFiles,
-   * readAgentInstructions), and host-command/ where the host build wrapper reads it
-   * (RunOnHostPrereqs.buildRuleHosts). An absent directory is empty configuration, never a
-   * directory to materialize.
+   * every write mode before the rules are read — the read is a host-side read either way. Refused
+   * forms: a symlink of the directory or of an entry (podman resolves mount sources on the host,
+   * and the rule read must see the bytes a mounted-back directory would show); anything that is not
+   * a directory; or an entry that is no configuration of this launcher's — only recognized
+   * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
+   * config, the same rule each entry applies inside itself. The files inside egress/ and agent/ are
+   * vetted where they are read (EgressRules.readRuleFiles, readAgentInstructions), and
+   * run-on-host/ where the host command wrapper reads it (RunOnHostPrereqs.programRuleHosts). An
+   * absent directory is empty configuration, never a directory to materialize.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
@@ -566,16 +566,16 @@ object SandboxProject:
     if !Files.exists(boundaryDir) then Files.createDirectory(boundaryDir)
     s"--volume=$boundaryDir:/workspace/.ko-agent-sandbox:ro"
 
-  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "host-command")
+  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "run-on-host")
 
   /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
   val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"
 
   /**
    * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
-   * Read on the host, so the same forms egress/ refuses (EgressRules.readRuleFiles) are
-   * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
-   * file, an empty file. Not normalized — it is text, mounted as written.
+   * Read on the host; refuse a stray name, a symlink or a non-regular file rather than silently
+   * ignoring configuration or following a project-controlled link. An empty file removes the
+   * image's working conventions. Not normalized — it is text, mounted as written.
    */
   def readAgentInstructions(agentDir: Path): Either[String, Option[String]] =
     def symlinkRefusal(path: Path): String =
@@ -590,12 +590,8 @@ object SandboxProject:
            |agent is a directory holding $AgentInstructionsFile; move the file there.""".stripMargin
       )
     else
-      val entries = Files
-        .list(agentDir)
-        .iterator()
-        .asScala
+      val entries = directoryEntries(agentDir)
         .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
-        .toVector
         .sortBy(_.getFileName.toString)
 
       val refusal = entries
@@ -607,29 +603,18 @@ object SandboxProject:
           case entry if !Files.isRegularFile(entry) =>
             s"error: $entry is not a regular file\nagent/$AgentInstructionsFile is a text file; " +
               "anything else would leave it silently unread."
-        .orElse:
-          Option.when(readIfPresent(file).exists(_.isBlank))(
-            s"error: $file is empty\nDelete the file; the image's own instructions then apply."
-          )
-
       refusal.toLeft(readIfPresent(file))
 
   /**
-   * Whether an entry of the closed boundary namespace is exempt from its unknown-name refusal:
-   * dot-named editor and OS metadata (.DS_Store, .gitkeep). No configuration will ever be named
-   * that way, so the typo protection loses nothing. One predicate for .ko-agent-sandbox and for
-   * egress/ inside it (EgressRules.readRuleFiles), so browsing the tree on macOS cannot
-   * fail the next launch at either level.
+   * Dot-named entries are reserved for editor and OS metadata (.DS_Store, .gitkeep), never
+   * configuration. The boundary directory and its configuration subdirectories ignore them so
+   * editor or OS metadata cannot make a launch fail the unknown-name check.
    */
   def isMetadataEntry(name: String): Boolean = name.startsWith(".")
 
   private def strayBoundaryEntries(boundaryDir: Path): Vector[String] =
-    Files
-      .list(boundaryDir)
-      .iterator()
-      .asScala
+    directoryEntries(boundaryDir)
       .map(_.getFileName.toString)
       .filterNot(isMetadataEntry)
       .filterNot(BoundaryDirEntries)
-      .toVector
       .sorted

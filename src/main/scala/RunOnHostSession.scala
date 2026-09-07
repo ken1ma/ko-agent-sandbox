@@ -1,6 +1,8 @@
-// The host build's session lifecycle. A session is one wrapper
-// command; its directory is published by rename so it is never seen half-made, its lock states the
-// wrapper's liveness, and its records own the children's. The filesystem and process operations are injected,
+// The host command's lifecycle. A command session is one wrapper invocation; the broker's session
+// is one launch, published and locked the same way by the broker, holding the runtimes its
+// commands share (RunOnHostSandbox.BrokerRuntimes). A session's directory is published by rename
+// so it is never seen half-made, its lock marks its owner as live, and its records identify the
+// child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
 // The rule the records keep: no process may outlive its record. A spawn becomes its
@@ -27,9 +29,19 @@ object RunOnHostSession:
   val TmpDir = "tmp"
   val RecordsDir = "records"
   val ProjectFile = "project"
+  /** The broker's: the launch's sandbox container, by which `--stats` joins the broker to its session. */
+  val RunFile = "run"
   val StagingDir = "staging"
   val CondemnedDir = "condemned"
   val RootLockFile = "root-lock"
+  val BuildLockDir = "build-lock"
+  val BuildFilePrefix = "build-"
+
+  /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
+    * launch's lifetime; a command's, its wrapper's. */
+  enum Kind(val prefix: String):
+    case Broker extends Kind("b")
+    case Command extends Kind("s")
 
   /** One registered process group: the leader's pgid (== its pid) and the leader's start time,
     * spelled exactly as `ps -o lstart=` prints it — compared as a string, never parsed, because
@@ -52,6 +64,9 @@ object RunOnHostSession:
     /** End the whole group, TERM then KILL after a grace, and wait for it to empty. */
     def endGroup(pgid: Long): Unit
 
+    /** `kill -<name> <pid>`, one process; the caller proves the pid by its start time first. */
+    def signal(pid: Long, name: String): Unit
+
   /** How one collected session ended up, for the wrapper's report. */
   enum Collected:
     case GroupEnded(pgid: Long)
@@ -72,6 +87,9 @@ object RunOnHostSession:
   // ---------------------------------------------------------------------------
   // The wrapper root
   // ---------------------------------------------------------------------------
+
+  /** Within RunOnHostPrereqs.SessionTmpMaxLength's budget: every session's `tmp/` is beneath it. */
+  def root(uid: Int): Path = Path.of(s"/private/tmp/ko-agent-$uid")
 
   /**
    * `/private/tmp` is shared and sticky, so the root is trusted the way an XDG runtime directory
@@ -104,11 +122,192 @@ object RunOnHostSession:
     java.nio.file.attribute.PosixFilePermissions
       .asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
 
+  /**
+   * The build lock of one build directory and program, `build-lock/<program>-<hash>`: held by
+   * the command's own process for its whole life, teardown included, so no two launches run or
+   * clean up a command on one build at once, and a broker's death frees nothing the wrapper
+   * holds. The spawn below takes it through flock(2), whose lock belongs to the open file
+   * description: it survives the exec into the wrapper, reaches none of the wrapper's own
+   * children — a JVM's children get only their three standard descriptors — and is released
+   * when the wrapper exits; a killed wrapper's at once, the next start's scavenge behind it. A
+   * spawn blocked on the lock is a child like any other, ended when its requester leaves. Under
+   * the broker it also watches the broker's pipe on its stdin, as the wrapper does, and ends at
+   * its EOF, so a dead broker dispatches nothing, and it execs only on the broker's word
+   * (lockedSpawn), so the broker's own work on the build before the command — its runtime
+   * observed, retired or created — happens under the lock too. The file is never deleted:
+   * deleted and recreated, one name would let two holders lock different inodes.
+   */
+  def buildLockFile(root: Path, program: String, buildDirectory: Path): Either[String, Path] =
+    try
+      Right(Files.createDirectories(root.resolve(BuildLockDir), ownerOnly)
+        .resolve(s"$program-${buildHash(buildDirectory)}"))
+    catch case ex: IOException => Left(s"the build locks under $root: ${ex.getMessage}")
+
+  /** The command under the build lock: perl (registeredSpawn has why) takes the lock and execs
+    * the command holding it, so the lock ends exactly when the command does, however it dies.
+    * When it has to wait it says so on stderr, the requester's. `underBroker`, its stdin is the
+    * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
+    * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
+    * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
+    * message it prints on stderr before exiting 2, the wrapper's own refusal code. Exit 71 is
+    * the spawn ending itself, as in registeredSpawn. */
+  def lockedSpawn(lockFile: Path, command: Seq[String], underBroker: Boolean): Seq[String] =
+    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underBroker then "1" else "0") ++ command
+
+  val LockedLine = "locked"
+
+  private val Nul = 0.toChar.toString
+
+  /** The broker's word to a locked spawn: one line of NUL-separated fields, the verdict first,
+    * each field escaped so that a refusal of several lines — a server's output quoted — and an
+    * argument holding a newline or a NUL arrive whole. */
+  def runWord(arguments: Seq[String]): String = ("run" +: arguments.map(escapeField)).mkString(Nul) + "\n"
+
+  def refusedWord(message: String): String = s"refused$Nul${escapeField(message)}\n"
+
+  private val Escape = 1.toChar
+
+  private def escapeField(field: String): String =
+    field.flatMap:
+      case Escape => s"${Escape}e"
+      case '\n'   => s"${Escape}n"
+      case '\u0000' => s"${Escape}0"
+      case other  => other.toString
+
+  val LockScript: String =
+    """use Fcntl qw(:flock F_SETFD);
+      |my ($lock, $broker, @command) = @ARGV;
+      |open(my $fh, '>>', $lock) or exit 71;
+      |unless (flock($fh, LOCK_EX | LOCK_NB)) {
+      |    print STDERR "waiting for the build lock: another launch's command runs in this build directory\n";
+      |    if ($broker) {
+      |        my $stdin = '';
+      |        vec($stdin, fileno(STDIN), 1) = 1;
+      |        until (flock($fh, LOCK_EX | LOCK_NB)) {
+      |            my $readable = $stdin;
+      |            if (select($readable, undef, undef, 0.2)) {
+      |                exit 71 unless sysread(STDIN, my $byte, 1);
+      |            }
+      |        }
+      |    } else {
+      |        flock($fh, LOCK_EX) or exit 71;
+      |    }
+      |}
+      |if ($broker) {
+      |    syswrite(STDOUT, "locked\n") or exit 71;
+      |    my $word = <STDIN>;
+      |    exit 71 unless defined $word;
+      |    chomp $word;
+      |    my ($verdict, @fields) = split /\0/, $word, -1;
+      |    s/\x01([en0])/$1 eq 'n' ? "\n" : $1 eq '0' ? "\0" : "\x01"/ge for @fields;
+      |    if ($verdict ne 'run') { print STDERR "$fields[0]\n"; exit 2; }
+      |    my $at = 0;
+      |    $at++ while $at < @command && $command[$at] ne '--';
+      |    splice(@command, $at, 0, @fields);
+      |}
+      |fcntl($fh, F_SETFD, 0) or exit 71;
+      |exec { $command[0] } @command or exit 71;""".stripMargin
+
+  /** What names one build directory's lock and records: its canonical spelling's SHA-256, 16
+    * hex digits. */
+  def buildHash(buildDirectory: Path): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+      .digest(buildDirectory.toString.getBytes(UTF_8))
+      .take(8).map(byte => f"$byte%02x").mkString
+
+  /** `build-<hash>`, the canonical build directory the records of that hash serve: published by
+    * rename before the first record of the hash and removed after the last is retired, so a
+    * reader of another session takes one runtime's directory and its processes together, never
+    * a directory of one runtime and a process of its successor; a record without its file is
+    * unproven and skipped. */
+  def buildFile(sessionDirectory: Path, hash: String): Path =
+    sessionDirectory.resolve(s"$BuildFilePrefix$hash")
+
+  def publishBuildFile(sessionDirectory: Path, hash: String, buildDirectory: Path): Either[String, Path] =
+    val file = buildFile(sessionDirectory, hash)
+    try
+      val pending = file.resolveSibling(s"${file.getFileName}.pending")
+      Files.writeString(pending, buildDirectory.toString + "\n", UTF_8)
+      Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+      Right(file)
+    catch case ex: IOException => Left(s"publishing $file: ${ex.getMessage}")
+
+  /** The build directories a session's build files name, by hash. */
+  def buildDirectories(sessionDirectory: Path): Vector[(String, Path)] =
+    listDirectory(sessionDirectory).flatMap: file =>
+      val name = file.getFileName.toString
+      if !name.startsWith(BuildFilePrefix) || name.endsWith(".pending") || !Files.isRegularFile(file) then None
+      else
+        try Some(name.stripPrefix(BuildFilePrefix) -> Path.of(Files.readString(file, UTF_8).trim))
+        catch case _: IOException => None
+
+  /** The other live brokers' sessions under the root: published under the broker prefix and
+    * locked. A broker reads another launch's ownership records from these to decide whether to
+    * refuse (runtimeOwner). */
+  def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
+    allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
+
+  /** Every broker session directory under the root, locked or not — a just-crashed owner's is
+    * unlocked but not yet condemned, and its server group can still be running, so runtimeOwner
+    * must weigh it too (its finding, admission blocked, and the next start's scavenge collects
+    * it). */
+  def allBrokerSessions(root: Path, except: Path): Vector[Path] =
+    listDirectory(root).filter: entry =>
+      entry != except && entry.getFileName.toString.startsWith(Kind.Broker.prefix)
+        && Files.isDirectory(entry)
+
+  /** The sessions under `condemned/`: an owner tearing itself down, or a scavenger, has renamed
+    * its directory here and holds its lock while it ends the recorded groups. Their ownership
+    * records still name the build directories they own, so a start consults them alongside the
+    * live sessions until collection deletes them (runtimeOwner): a server whose socket path has
+    * moved with the rename must not read as free. The scavenger's own pass (run first) collects
+    * any that no live owner still holds. */
+  def collectingSessions(root: Path): Vector[Path] =
+    listDirectory(root.resolve(CondemnedDir)).filter(Files.isDirectory(_))
+
+  /**
+   * Another launch's session that holds the ownership record `record` — `server-sbt-<hash>` or
+   * `daemon-mill-<hash>` — or None. Any broker session under the root — live, or just-crashed
+   * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
+   * finished, owns it; the record is read, never signalled (the group is the owner's to end —
+   * RunOnHostSandbox.BrokerRuntimes and doc/TODO.md "Cross-launch server takeover"). A dead
+   * owner's record blocks admission this time and the next start's scavenge collects it, so its
+   * server or daemon is never left running beside a fresh one.
+   *
+   * The live sessions are enumerated, then looked up; `condemned/` is enumerated only if that
+   * lookup finds nothing (`orElse` is by-name), so its enumeration is strictly later. Teardown
+   * renames a session from the root into `condemned/` in one atomic move, one direction only,
+   * carrying its records with it, and deletes the record last. So a session enumerated live but
+   * renamed away before its record is looked up is already in `condemned/` when that later,
+   * fresh enumeration runs, and one gone from both is a teardown that finished — its server
+   * ended before the record was deleted. `betweenScan` is the tests' seam for the instant
+   * between the live enumeration and its lookup, where that rename races; the caller holding
+   * this hash's build lock keeps a new owner from appearing during the check.
+   */
+  def runtimeOwner(
+    root: Path, except: Path, record: String, betweenScan: () => Unit = () => (),
+  ): Option[Path] =
+    def owns(session: Path): Boolean =
+      Files.exists(session.resolve(RecordsDir).resolve(record))
+    val inRoot = allBrokerSessions(root, except)
+    betweenScan()
+    inRoot.find(owns).orElse(collectingSessions(root).find(owns))
+
+  /** Whether the spawn a record names still runs its command: the leader alive with the recorded
+    * start time, and no exit published beside the record. Neither alone answers: the leader
+    * outlives its command by design, and a group killed whole publishes no exit. */
+  def spawnLives(record: Path, processes: Processes): Boolean =
+    val parsed =
+      try parseRecord(Files.readString(record, UTF_8))
+      catch case _: IOException => None
+    parsed.exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
+      && !Files.exists(exitRecord(record))
+
   // ---------------------------------------------------------------------------
   // Publication
   // ---------------------------------------------------------------------------
 
-  /** A published, locked session. The lock channel lives as long as the wrapper; closing it is
+  /** A published, locked session. The lock channel lives as long as its owner; closing it is
     * what frees the session for a scavenger. */
   final class Session(val directory: Path, lockChannel: FileChannel):
     def tmp: Path = directory.resolve(TmpDir)
@@ -121,11 +320,11 @@ object RunOnHostSession:
    * staging entry through the rename — the scavenger's staging cleanup takes the same lock, so it
    * can never delete a directory whose creator has not locked it yet.
    */
-  def publish(root: Path, project: Path): Either[String, Session] =
+  def publish(root: Path, project: Path, kind: Kind = Kind.Command): Either[String, Session] =
     try
       withRootLock(root):
         val staging = Files.createDirectories(root.resolve(StagingDir), ownerOnly)
-        val entry = Files.createTempDirectory(staging, "s", ownerOnly)
+        val entry = Files.createTempDirectory(staging, kind.prefix, ownerOnly)
         Files.createDirectory(entry.resolve(TmpDir), ownerOnly)
         Files.createDirectory(entry.resolve(RecordsDir), ownerOnly)
         Files.writeString(entry.resolve(ProjectFile), project.toString + "\n", UTF_8)
@@ -136,7 +335,7 @@ object RunOnHostSession:
         )
         if channel.tryLock() == null then
           channel.close()
-          Left(s"could not take the fresh session lock in $entry")
+          Left(s"could not take the new session's lock in $entry")
         else
           val published = root.resolve(entry.getFileName)
           Files.move(entry, published, StandardCopyOption.ATOMIC_MOVE)
@@ -150,18 +349,34 @@ object RunOnHostSession:
     session.close()
 
   /**
+   * A session's teardown: run once, by its owner at the end of its work or by the JVM's shutdown
+   * hook on a signal — SIGINT and SIGTERM end a JVM through its hooks, never by unwinding to
+   * `finally`. Synchronized, not merely once: the JVM halts when its hooks return, so the losing
+   * caller must block until the whole cleanup is done, never return early into a halting JVM.
+   */
+  final class Teardown(body: Boolean => Unit):
+    private var done = false
+    def apply(bySignal: Boolean): Unit = synchronized:
+      if !done then
+        done = true
+        body(bySignal)
+
+  /**
    * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
-   * build's grants are path-based and name the original pathname, so after the rename no process
+   * command's grants are path-based and name the original pathname, so after the rename no process
    * it started can redirect what `collect`'s canonicalization proves — then collect it: recorded
    * groups ended behind their live spawn leaders, the server with them, the directory deleted.
-   * Asking the server by protocol is the scavenger's tool for the leaderless orphan; here the
+   * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
    * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
    * TERM). The session's own lock is held through the collection — the exclusivity every other
-   * collector respects (scavenge) — and released only after. A failed rename falls back to ending
-   * the recorded groups and removing in place, with no shutdown sent to any socket.
+   * collector respects (scavenge) — and released only after. `beforeRemoval` sees the condemned
+   * directory once its groups are ended, the wrapper's moment to read the session's logs
+   * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
+   * and removing in place, with no shutdown sent to any socket and no logs read: at the original
+   * pathname a process the command started could still redirect a read.
    */
   def endSession(root: Path, session: Session, processes: Processes,
-    shutdown: Path => ServerAnswer): Vector[Collected] =
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
     val condemned =
       try
         val condemnedRoot = Files.createDirectories(root.resolve(CondemnedDir), ownerOnly)
@@ -171,7 +386,7 @@ object RunOnHostSession:
       catch case _: IOException => None
     condemned match
       case Some(entry) =>
-        val actions = collect(root, entry, processes, shutdown)
+        val actions = collect(root, entry, processes, shutdown, beforeRemoval)
         session.close()
         actions
       case None =>
@@ -188,12 +403,24 @@ object RunOnHostSession:
    * work an earlier, killed scavenger left — then every unlocked published entry is condemned and
    * collected, then staging litter is cleared under the root lock. A condemned entry is collected
    * only under its own lock — the same lock its session held — so two starts, or a start and the
-   * wrapper's own step 11, never signal or delete the same entry concurrently.
+   * wrapper's own step 11, never signal or delete the same entry concurrently. The build locks
+   * are skipped by name: a directory without a `lock` file reads as a dead session here.
+   *
+   * `ownSession` is the caller's own live session, which it must pass when it scavenges after
+   * publishing — the broker between commands (RunOnHostSandbox.BrokerRuntimes). That session is
+   * skipped entirely: `lockIsFree` opens a second descriptor to the lock file and closes it, and
+   * OpenJDK's `FileChannel.lock` is a POSIX `fcntl` lock, which the kernel drops for the whole
+   * process when *any* descriptor to that file is closed. Probing the caller's own lock would
+   * release it, and another launch could then condemn a live session. A start that scavenges
+   * before publishing (the wrapper, and the broker at startup) holds no session yet and passes
+   * None.
    */
-  def scavenge(root: Path, processes: Processes, shutdown: Path => ServerAnswer)
-    : Vector[(Path, Vector[Collected])] =
+  def scavenge(
+    root: Path, processes: Processes, shutdown: Path => ServerAnswer, ownSession: Option[Path] = None,
+  ): Vector[(Path, Vector[Collected])] =
     val results = Vector.newBuilder[(Path, Vector[Collected])]
     val condemnedRoot = root.resolve(CondemnedDir)
+    val skipNames = Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir)
 
     def collectLocked(entry: Path): Unit =
       lockForCollection(entry) match
@@ -207,7 +434,7 @@ object RunOnHostSession:
       listDirectory(condemnedRoot).foreach(collectLocked)
 
     listDirectory(root)
-      .filterNot(p => Set(StagingDir, CondemnedDir, RootLockFile).contains(p.getFileName.toString))
+      .filterNot(p => skipNames.contains(p.getFileName.toString) || ownSession.contains(p))
       .filter(Files.isDirectory(_))
       .foreach: entry =>
         if lockIsFree(entry.resolve(LockFile)) then
@@ -235,19 +462,25 @@ object RunOnHostSession:
    * server is ended, by asking it.
    */
   def collect(root: Path, condemned: Path, processes: Processes,
-    shutdown: Path => ServerAnswer): Vector[Collected] =
-    val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) :+
-      collectServer(root, condemned, shutdown)
-    if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
+    val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) ++
+      collectServers(root, condemned, shutdown)
+    // Whatever the reader does, the deletion follows it.
+    try beforeRemoval(condemned)
+    finally
+      if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
     actions
 
   /** End every group the records name and prove — the scavenger's core. */
   def endRecordedGroups(recordsDir: Path, processes: Processes): Vector[Collected] =
-    val records = listDirectory(recordsDir).flatMap: file =>
+    listDirectory(recordsDir).flatMap(endRecordedGroup(_, processes))
+
+  /** End the group one record names, if it proves one; None for a file that is no record. */
+  def endRecordedGroup(file: Path, processes: Processes): Option[Collected] =
+    val parsed =
       try parseRecord(Files.readString(file, UTF_8))
       catch case _: IOException => None
-
-    records.map: record =>
+    parsed.map: record =>
       processes.startOf(record.pgid) match
         case Some(start) if start == record.leaderStart =>
           processes.endGroup(record.pgid)
@@ -258,37 +491,47 @@ object RunOnHostSession:
           Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
 
   /**
-   * The portfile attribution: the session's recorded project names
-   * `project/target/active.json`; a `local://` socket under the session's *original* path is our
-   * server and no other. The socket moved with the condemnation rename, so the portfile's
-   * spelling is remapped before the shutdown is sent to it — and sent only to a pathname
-   * proven inside the condemned directory: the portfile is the build's to write, so its spelling
-   * is a claim, and canonicalization is the proof.
+   * The portfile attribution, for each build directory the session's build files name — the
+   * directories its servers ran in — or, for a session without one, its recorded project: the
+   * directory's `project/target/active.json` names a `local://` socket, and one under the
+   * session's *original* path is our server and no other. The socket moved with the
+   * condemnation rename, so the portfile's spelling is remapped before the shutdown is sent to
+   * it — and sent only to a pathname proven inside the condemned directory: the portfile is the
+   * command's to write, so its spelling is a claim, and canonicalization is the proof.
    */
-  def collectServer(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Collected =
-    val original = root.resolve(condemned.getFileName)
+  def collectServers(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Vector[Collected] =
+    val builds = buildDirectories(condemned).map(_(1))
     val projectFile = condemned.resolve(ProjectFile)
-    if !Files.isRegularFile(projectFile) then Collected.ServerSkipped("no recorded project")
+    val directories =
+      if builds.nonEmpty then builds
+      else if !Files.isRegularFile(projectFile) then Vector.empty
+      else
+        try Vector(Path.of(Files.readString(projectFile, UTF_8).trim))
+        catch case _: IOException => Vector.empty
+    if directories.isEmpty then Vector(Collected.ServerSkipped("no recorded project"))
+    else directories.map(collectServer(root.resolve(condemned.getFileName), condemned, _, shutdown))
+
+  private def collectServer(
+    original: Path, condemned: Path, buildDirectory: Path, shutdown: Path => ServerAnswer,
+  ): Collected =
+    val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
+    if !Files.isRegularFile(portfile) then Collected.ServerSkipped(s"no portfile in $buildDirectory")
     else
       try
-        val project = Path.of(Files.readString(projectFile, UTF_8).trim)
-        val portfile = project.resolve("project").resolve("target").resolve("active.json")
-        if !Files.isRegularFile(portfile) then Collected.ServerSkipped("no portfile")
-        else
-          portfileSocket(Files.readString(portfile, UTF_8)) match
-            case Some(socket) if socket.startsWith(original) =>
-              containedSocket(condemned.resolve(original.relativize(socket)), condemned) match
-                case None =>
-                  Collected.ServerSkipped("the portfile socket does not resolve inside the session")
-                case Some(moved) =>
-                  shutdown(moved) match
-                    case ServerAnswer.ShutDown       => Collected.ServerShutDown(moved)
-                    case ServerAnswer.Unreachable(_) =>
-                      Collected.ServerSkipped("nothing behind the socket; the server is gone")
-                    case ServerAnswer.Unanswered(reason) =>
-                      Collected.ServerUnanswered(moved, reason)
-            case Some(_) => Collected.ServerSkipped("portfile socket is not this session's")
-            case None    => Collected.ServerSkipped("portfile is not a local-socket one")
+        portfileSocket(Files.readString(portfile, UTF_8)) match
+          case Some(socket) if socket.startsWith(original) =>
+            containedSocket(condemned.resolve(original.relativize(socket)), condemned) match
+              case None =>
+                Collected.ServerSkipped("the portfile socket does not resolve inside the command directory")
+              case Some(moved) =>
+                shutdown(moved) match
+                  case ServerAnswer.ShutDown       => Collected.ServerShutDown(moved)
+                  case ServerAnswer.Unreachable(_) =>
+                    Collected.ServerSkipped("nothing behind the socket; the server is gone")
+                  case ServerAnswer.Unanswered(reason) =>
+                    Collected.ServerUnanswered(moved, reason)
+          case Some(_) => Collected.ServerSkipped("portfile socket is not this command's")
+          case None    => Collected.ServerSkipped("portfile is not a local-socket one")
       catch case ex: IOException => Collected.ServerSkipped(ex.getMessage)
 
   /**
@@ -315,16 +558,26 @@ object RunOnHostSession:
   // ---------------------------------------------------------------------------
 
   /**
-   * The registration, as the command the wrapper spawns. perl — present on every macOS —
-   * makes itself its own group's leader, publishes `<pgid> <leader start>` beside the record path
+   * The registration, as the command the wrapper spawns. perl makes itself its own group's
+   * leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
    * instead, which is the spawn ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
    * the same way as `<record>.exit`, and the spawn stays until its group is ended: a group is
-   * signalled only behind a live leader, and a build can fork a helper and return, so
+   * signalled only behind a live leader, and a command can fork a helper and return, so
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
+   *
+   * perl, and not a shell or Python: the leader must be the process the broker started, so that
+   * its `Process` handle and the record name one pid, and a shell cannot move itself into a new
+   * group — it has no builtin for `setpgid` on its own pid, and `set -m` moves a child job
+   * instead, one process below the handle. The lock script needs `flock` held across `exec`
+   * (lockedSpawn), which no macOS command offers. Python is not part of macOS: 2.7 was removed
+   * in 12.3, and `/usr/bin/python3` is a stub that installs the Command Line Tools. perl is in
+   * macOS through 26, deprecated with Python and Ruby since Catalina but not removed; the JVM
+   * cannot set a child's group through `ProcessBuilder`, and a compiled helper would need a
+   * toolchain on the host. Should perl go, a bundled helper replaces these two scripts.
    */
   def registeredSpawn(record: Path, command: Seq[String]): Seq[String] =
     Seq("/usr/bin/perl", "-e", RegistrationScript, record.toString) ++ command
@@ -389,9 +642,14 @@ object RunOnHostSession:
         signal("KILL")
         (1 to 50).exists(_ => if members.isEmpty then true else { Thread.sleep(100); false })
 
-    private def lines(command: String*): Vector[String] =
+    def signal(pid: Long, name: String): Unit =
+      java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()
+
+    /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
+    private[launcher] def lines(command: String*): Vector[String] =
       try
-        val process = java.lang.ProcessBuilder(command*).start()
+        val process =
+          java.lang.ProcessBuilder(command*).redirectError(java.lang.ProcessBuilder.Redirect.DISCARD).start()
         val output = String(process.getInputStream.readAllBytes(), UTF_8)
         process.waitFor()
         output.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
@@ -460,10 +718,7 @@ object RunOnHostSession:
 
   private def listDirectory(path: Path): Vector[Path] =
     if !Files.isDirectory(path) then Vector.empty
-    else
-      val stream = Files.list(path)
-      try stream.iterator.asScala.toVector
-      finally stream.close()
+    else FileHelper.directoryEntries(path)
 
   /** Deletion for a session directory: every child but the lock, then — only if nothing else
     * survived — the lock and the directory. The lock pathname outlives every other child so that

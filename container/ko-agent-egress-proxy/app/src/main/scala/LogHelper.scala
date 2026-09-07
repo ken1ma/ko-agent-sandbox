@@ -9,13 +9,13 @@ import java.time.format.DateTimeFormatter
 
 object LogHelper:
   /**
-   * One connection event of the audit log: `verb host method [target] tail` — the grammar
+   * One connection event of the audit log: `action host method [target] tail` — the grammar
    * SECURITY.md ("The audit line grammar") declares stable through field 3. A `-` fills a field
    * the connection ended before revealing; the target appears exactly when a parsed inspected
    * request exists; the tail is human text with no field structure.
    */
-  def auditLine(verb: String, host: String, method: String, target: String, tail: String): String =
-    (Vector(verb, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
+  def auditLine(action: String, host: String, method: String, target: String, tail: String): String =
+    (Vector(action, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
 
   /**
    * Every line the proxy reports, prefixed with the instant it was written, as

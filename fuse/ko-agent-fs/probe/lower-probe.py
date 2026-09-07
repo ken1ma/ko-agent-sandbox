@@ -53,7 +53,7 @@ def record(name: str, *observations: str) -> None:
 
 
 def stack() -> str:
-    """Filtered or not, by the property that separates the filter from the launcher's mount pin:
+    """Filtered or not, by the property that separates the filter from the launcher's read-only bind mount:
     `.git` is refused at any depth — probing inside a fresh subdirectory is what makes that answer
     in a tree that already has a `.git`."""
     probe = tempfile.mkdtemp(prefix=".lower-probe-stack-", dir=".")
@@ -63,7 +63,7 @@ def stack() -> str:
         return "filtered"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
-    return "raw bind (unfiltered)"
+    return "unfiltered bind mount"
 
 
 def ask(step: str, **payload) -> dict:

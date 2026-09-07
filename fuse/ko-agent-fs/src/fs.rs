@@ -2,7 +2,7 @@
 //! backing tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
-//! on a denial, with a structured `DENY` log line.
+//! on a denial, with structured `DENY` log lines capped by `log_deny`.
 //!
 //! Resolution: `doc/architecture.md`, "Inode model". The deny surface, xattrs included: the note above
 //! `impl Filesystem`.
@@ -155,7 +155,7 @@ impl KoAgentFs {
     /// legitimate, because the kernel resolves the sandbox's own symlinks — it reads the link and
     /// looks up each resolved component in turn — so every component of a live chain is a directory
     /// and a symlink can only appear in one that has gone stale. Following one there is exactly
-    /// what would let project data outside Git control state resolve into a gitdir. With the
+    /// what would let writable project data resolve into a gitdir. With the
     /// flag, the resolved object's path *is* the chain the context was computed from, and a stale
     /// chain fails closed with `ELOOP` — no `DENY` line, because no policy decision was reached.
     ///
@@ -199,7 +199,7 @@ impl KoAgentFs {
     ///
     /// Asked only where it can matter, and answered by the fact that defines a gitdir: it holds a
     /// `HEAD`. The question is safe to answer from the tree because a namespace classifies as
-    /// control, so the sandbox cannot write a `HEAD` into one to manufacture a root — and it is
+    /// protected, so the sandbox cannot write a `HEAD` into one to manufacture a root — and it is
     /// never asked again once inside a gitdir, so a `HEAD` the sandbox *can* write (under
     /// `objects/`, say) is never a candidate. Any error answers `false`, leaving the namespace
     /// reading, which is the stricter one.
@@ -482,7 +482,7 @@ fn to_errno(err: NixErrno) -> Errno {
 ///     is at `/workspace`.
 ///
 /// Syntax is what a filter serving an unknown host layout can judge. The rule earns its place on the
-/// second direction anyway: what a caching tool plants is the container's own store path, which
+/// second direction anyway: what a caching program plants is the container's own store path, which
 /// cannot be assumed portable to a host layout this side never sees.
 ///
 /// This is therefore a portability rule and not a containment one — containment is
@@ -495,7 +495,7 @@ fn to_errno(err: NixErrno) -> Errno {
 /// outside the workspace. Neither `rename` nor `link` re-judges — not an oversight to correct:
 /// doing it for a directory means walking everything under it on every rename, at a cost this rule
 /// does not earn. What this refuses is a target written in a non-portable syntax, which is the accidental
-/// tool behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
+/// program behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
 /// still can.
 fn target_has_portable_syntax(target: &Path, depth: usize) -> bool {
     let mut at = depth;
@@ -601,7 +601,7 @@ fn dir_type(kind: nix::dir::Type) -> FileType {
 // The gated ops and what each checks:
 //
 //   create, mkdir, mknod, symlink  the `.git` name rule + destination classification (allow_create)
-//   link                           source (refuse aliasing a control inode out) AND destination
+//   link                           source (refuse aliasing a protected inode out) AND destination
 //   unlink, rmdir                  the target child's classification
 //   rename                         source (RenameFrom) and destination; RENAME_EXCHANGE both ways
 //   setattr (chmod/chown/truncate) the target inode's classification
@@ -691,7 +691,7 @@ impl Filesystem for KoAgentFs {
         let wants_write =
             accmode == libc::O_WRONLY || accmode == libc::O_RDWR || (flags.0 & libc::O_TRUNC) != 0;
 
-        // The write gate: opening a control target for writing is where mutation is refused, so a
+        // The write gate: opening a protected target for writing is where mutation is refused, so a
         // subsequent write() on the returned handle never needs re-checking.
         if wants_write && let Err(err) = self.allow_ino(ino.0, Mutation::Write, "open-write") {
             return reply.error(err);
@@ -955,12 +955,12 @@ impl Filesystem for KoAgentFs {
             return reply.error(err);
         }
         // Not a policy decision — the target is never what the policy classifies (the mutation
-        // tests say why) — but a symlink target is the only session-written content the host's own kernel
-        // later follows as a path, with the user's privileges and nothing having to run.
-        // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only an
-        // approximation; SECURITY.md, "A symlink is the highest-risk case", has the threat.
+        // tests say why) — but a symlink target is the only session-written content the host's own
+        // kernel later follows as a path, with the user's privileges and nothing having to run.
+        // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only
+        // an approximation; SECURITY.md, "The project directory", has the threat.
         //
-        // The population is tools that cache outside the project and link into it, and sbt 2 is the
+        // The population is programs that cache outside the project and link into it, and sbt 2 is the
         // measured case at both ends. Unrefused, it materializes a build-cache hit as a link into
         // its own store — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas` on the
         // host — and the host's next compile of a changed source dies with `NoSuchFileException`
@@ -1334,8 +1334,8 @@ mod tests {
     #[test]
     fn a_pre_epoch_time_round_trips_rather_than_clamping() {
         // Extracting an archive of pre-1970 files is the ordinary way to meet one, and the claim
-        // this pins is `doc/TODO.md`'s: times round-trip. Clamping would rewrite the timestamp the
-        // extraction restores, and a negative time read back without its nanoseconds loses the
+        // this checks is `doc/TODO.md`'s: times round-trip. Clamping would rewrite the timestamp
+        // the extraction restores, and a negative time read back without its nanoseconds loses the
         // fractional second.
         for when in [
             UNIX_EPOCH,

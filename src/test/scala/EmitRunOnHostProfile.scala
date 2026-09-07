@@ -1,13 +1,15 @@
 // The generated Seatbelt profile for the project this runs in, so a real build can be driven
 // under it by hand.
 //
-// Test scope on purpose: src/probe/build-profile-gate.sh and src/probe/build-profile-iterate.sh are its
+// Test scope on purpose: src/probe/run-on-host-profile-gate.sh and src/probe/run-on-host-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [<program>] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>"
 //
 // The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
-// The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's.
+// The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's. The proxy form renders
+// the host proxy's own profile for the java and class path the gate runs its proxy rows with.
 
 package agentsandbox.launcher
 
@@ -15,25 +17,35 @@ import java.nio.file.{Files, Path, Paths}
 
 import RunOnHostPrereqs.*
 
-object EmitBuildProfile:
+object EmitRunOnHostProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]")
+      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|gradle|mvn] [project]")
+      Console.err.println("       EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>")
       sys.exit(2)
-
-    val env: String => Option[String] = name => Option(System.getenv(name))
-    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
 
     def fail(reason: Any): Nothing =
       Console.err.println(s"refused: $reason")
       sys.exit(1)
 
-    val tool = args.lift(2).map(_.toLowerCase) match
-      case None        => Tool.Sbt
-      case Some(name)  => Tool.values.find(_.name == name).getOrElse(fail(s"unknown tool $name"))
+    if args.lift(2).contains("proxy") then
+      if args.length != 5 then fail("the proxy form takes <out.sb> <authority-file> proxy <jdk> <classpath>")
+      val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
+      val profile = RunOnHostSandbox.proxyInputs(runtime, javaHome = args(3), classPath = args(4))
+        .flatMap(SeatbeltProfile.renderProxy).fold(fail, identity)
+      Files.writeString(Paths.get(args(0)), profile)
+      Console.err.println(s"profile: ${args(0)}")
+      sys.exit(0)
 
-    val assembled = RunOnHostSandbox.assemble(project, tool, env).fold(fail, identity)
+    val env: String => Option[String] = name => Option(System.getenv(name))
+    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
+
+    val program = args.lift(2).map(_.toLowerCase) match
+      case None        => Program.Sbt
+      case Some(name)  => Program.values.find(_.name == name).getOrElse(fail(s"unknown program $name"))
+
+    val assembled = RunOnHostSandbox.assemble(project, program, env, project).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
 
@@ -43,29 +55,35 @@ object EmitBuildProfile:
       distribution = assembled.distribution,
       sbtGlobal = assembled.sbtGlobalGranted,
       ivyHome = assembled.ivyHomeGranted,
+      gradleUserHome = assembled.gradleUserHomeGranted,
       m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
       runtime = runtime,
+      network = program match
+        case Program.Gradle => SeatbeltProfile.Network.Gradle
+        case _              => SeatbeltProfile.Network.ProxyOnly,
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
     Files.writeString(Paths.get(args(0)), profile)
-    // The driver needs the session temp: the profile grants it, and the JVM otherwise writes to the
+    // The driver needs the command's temporary directory: the profile grants it, and the JVM otherwise writes to the
     // per-user temporary directory, which it does not grant.
     Files.writeString(Paths.get(args(0) + ".env"), s"SESSION_TMP=$sessionTmp\n")
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
-    Console.err.println(s"session temp: $sessionTmp")
-    Console.err.println(s"build cache: ${assembled.prereqs.coursierV1}")
-    Console.err.println(s"tool: $tool")
+    Console.err.println(s"command temporary directory: $sessionTmp")
+    Console.err.println(s"run-on-host cache: ${assembled.prereqs.coursierV1}")
+    Console.err.println(s"program: $program")
     Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     Console.err.println(s"ivy home: ${assembled.ivyHome}")
+    Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
-    // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran
-    // this inside the build JVM, whose own classpath is sbt's — and copied beside the profile,
+    // portfile and end it (one server per build directory). Walked from the class loaders, not
+    // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
+    // copied beside the profile,
     // because the walk answers `target/bg-jobs/` jars sbt removes with its server (measured: the
     // gate's java -cp found none of them).
     Console.err.println(s"classpath: ${relaunchClasspath(Paths.get(args(0) + ".cp"))}")

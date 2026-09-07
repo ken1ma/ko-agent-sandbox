@@ -1,6 +1,6 @@
 // The project directory as the launcher judges it: identity, the refused directories, and the
 // .git / .ko-agent-sandbox mount guards — where a wrong answer either exposes the host or lets a
-// session write the configuration governing the next one. The .git pin tests cover
+// session write the configuration governing the next one. The .git read-only mount tests cover
 // KO_AGENT_SANDBOX_WORKSPACE_GUARD=none; default sessions get the FUSE filter, whose policy is
 // tested in fuse/ko-agent-fs.
 
@@ -202,7 +202,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(isForbiddenProjectDir(Paths.get("\\\\server\\share\\"), homes))
     assert(!isForbiddenProjectDir(Paths.get("C:\\src\\app"), homes))
 
-  test("the git guard pins config and hooks of a real repository"):
+  test("the git guard mounts a real repository's config and hooks read-only"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     Files.createDirectory(git)
     Files.createFile(git.resolve("config"))
@@ -217,7 +217,7 @@ class SandboxProjectTest extends munit.FunSuite:
       ),
     )
 
-  test("missing config and hooks are pinned from the launcher's empty sources, the project untouched"):
+  test("missing config and hooks are mounted read-only from the launcher's empty sources, the project untouched"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     Files.createDirectory(git)
     assertEquals(
@@ -234,7 +234,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(!Files.exists(git.resolve("config")))
     assert(!Files.exists(git.resolve("hooks")))
 
-  test("a pointer-file .git is pinned whole"):
+  test("a pointer-file .git is mounted read-only in full"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     Files.writeString(git, "gitdir: ../elsewhere/.git/worktrees/x\n")
     assertEquals(
@@ -242,7 +242,7 @@ class SandboxProjectTest extends munit.FunSuite:
       Right(Vector(s"--volume=$git:/workspace/.git:ro")),
     )
 
-  test("an absent .git is pinned over the launcher's empty directory, none created in the project"):
+  test("an absent .git gets the launcher's empty directory mounted read-only, without creating it in the project"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     assertEquals(
       gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
@@ -320,8 +320,9 @@ class SandboxProjectTest extends munit.FunSuite:
     val ownGitdir = gitdirAt(absolute.resolve("real.git"))
     Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
     assertEquals(noGit(absolute), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
-    // A `.git` symlink is the same absence when it leads out of the project: only the mount pins
-    // of WORKSPACE_GUARD=none refuse that form, and the filter serves it as the host wrote it.
+    // A `.git` symlink is the same absence when it leads out of the project: only the read-only
+    // bind mounts of WORKSPACE_GUARD=none refuse that form, and the filter serves it as the host
+    // wrote it.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
     assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, None)))
@@ -331,7 +332,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(noGit(below), Some(NoGit.Above(superproject, Some(superproject))))
     assert(noGitWarning(noGit(below).get).contains(superproject.toString))
     // Below a submodule checkout, and below a linked worktree: host git discovers a repository
-    // whose control directory is elsewhere, which the launch predicate would never call one. The
+    // whose Git directory is elsewhere, which the launch predicate would never call one. The
     // launch offered is the nearest tree that holds the project and has git of its own.
     assertEquals(
       noGit(Files.createDirectories(submodule.resolve("src"))),
@@ -453,12 +454,12 @@ class SandboxProjectTest extends munit.FunSuite:
 
     val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
     assert(gitGuardVolumes(linkedGit, emptyFixture.file, emptyFixture.dir).isLeft)
-    assert(Files.list(target).count() == 0, "wrote through the .git link")
+    assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the .git link")
 
     val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
     assert(boundaryDirError(linkedBoundary).isDefined)
-    assert(Files.list(target).count() == 0, "wrote through the boundary link")
+    assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the boundary link")
 
   test("an absent boundary directory is empty configuration, never a directory to materialize"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
@@ -476,7 +477,7 @@ class SandboxProjectTest extends munit.FunSuite:
     // Refused, not replaced: whatever is there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
-  test(".ko-agent-sandbox is a closed namespace: a stray entry refuses, metadata does not"):
+  test(".ko-agent-sandbox refuses unrecognized configuration entries but accepts editor and OS metadata"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("egress"))
@@ -488,15 +489,15 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The other entries are admitted by name, and a symlink of one refused like egress.
+    // The other entries are allowed by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
-    Files.createDirectory(dir.resolve("host-command"))
+    Files.createDirectory(dir.resolve("run-on-host"))
     assertEquals(boundaryDirError(dir), None)
-    Files.delete(dir.resolve("host-command"))
-    Files.createSymbolicLink(dir.resolve("host-command"), dir.resolve("egress"))
+    Files.delete(dir.resolve("run-on-host"))
+    Files.createSymbolicLink(dir.resolve("run-on-host"), dir.resolve("egress"))
     val linkedTenant = boundaryDirError(dir)
-    assert(linkedTenant.exists(_.contains("host-command")), linkedTenant.toString)
-    Files.delete(dir.resolve("host-command"))
+    assert(linkedTenant.exists(_.contains("run-on-host")), linkedTenant.toString)
+    Files.delete(dir.resolve("run-on-host"))
     Files.delete(dir.resolve("agent"))
     Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
     val linked = boundaryDirError(dir)
@@ -509,7 +510,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val refused = boundaryDirError(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
-  test("agent/ holds one file, with the forms egress/ refuses refused for the same reasons"):
+  test("agent/ accepts empty overrides and refuses stray names, symlinks and non-regular files"):
     val parent = Files.createTempDirectory("agent-forms")
     assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
 
@@ -529,10 +530,12 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(dir.resolve("AGENT-CUSTOM.md"), "x")
     assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
     Files.delete(dir.resolve("AGENT-CUSTOM.md"))
-    Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "\n")
-    assert(readAgentInstructions(dir).swap.exists(_.contains("is empty")))
+    Vector("", "\n", " \t\r\n").foreach: text =>
+      Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), text)
+      assertEquals(readAgentInstructions(dir), Right(Some(text)))
 
     Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
+    assertEquals(readAgentInstructions(dir), Right(None))
     Files.createDirectory(dir.resolve("AGENTS-CUSTOM.md"))
     assert(readAgentInstructions(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("AGENTS-CUSTOM.md"))

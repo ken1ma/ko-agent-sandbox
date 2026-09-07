@@ -1,5 +1,4 @@
-// The boundary as a session sees it — the half of doc/TODO.md's black-box rows whose evidence is
-// inside the container rather than on the host.
+// The boundary as a session sees it. ProxyContainerTest checks the proxy's runtime separately.
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
@@ -16,6 +15,7 @@ import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
+import FileHelper.*
 
 class SessionBoundaryTest extends munit.FunSuite:
 
@@ -95,9 +95,10 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/pids.max")).trim, "2048")
 
-    // A ceiling on every launch, explicit or the machine-derived default, and no swap beyond it.
-    val ceiling = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
-    assertNotEquals(ceiling, "max")
+    // A memory limit on every launch, explicit or the machine-derived default, and no swap beyond
+    // it.
+    val memoryLimit = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
+    assertNotEquals(memoryLimit, "max")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/memory.swap.max")).trim, "0")
 
   test("the network has one interface and no route off it"):
@@ -146,7 +147,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error with the proxy's status instead of as an HTTP code.
     Vector(
-      "https://unlisted.invalid/",  // reserved (RFC 6761): never an admitted host
+      "https://unlisted.invalid/",  // reserved (RFC 6761): never an allowed host
       "https://8.8.8.8/",
       "https://169.254.169.254/",
       "https://10.0.0.1/",
@@ -206,12 +207,12 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a refusal says what to do next, in the words curl, git and the check print"):
     inSession()
-    // RefusalAdvice's rows as the tools show them: curl prints a 403's body
+    // RefusalAdvice's rows as the programs show them: curl prints a 403's body
     // as it is, git prints a text/plain body as `remote:` lines, and sandbox-egress-check is the
     // only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
     def body(args: String*): String = curl(args*).text
-    assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.readOnly))
+    assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.methodNotGranted))
     assert(body("-X", "POST", "-d", "{}", "https://api.github.com/graphql").contains(RefusalAdvice.graphql))
     assert(
       body("-X", "POST", "-d", "{}", "https://github.com/o/r.git/info/lfs/objects/batch")
@@ -226,7 +227,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(!push.ok)
       assert(push.err.contains(s"remote: ${RefusalAdvice.gitPush}"), push.err)
     finally
-      Files.walk(repo).sorted(java.util.Comparator.reverseOrder[Path]).forEach(path => Files.delete(path))
+      deleteRecursively(repo)
 
     val refused = run("sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
@@ -237,9 +238,9 @@ class SessionBoundaryTest extends munit.FunSuite:
       ),
       refused.text,
     )
-    val admitted = run("sandbox-egress-check", "api.github.com")
-    assertEquals(admitted.exit, 0, admitted.err)
-    assert(admitted.text.contains("HEAD / -> HTTP/1.1 "), admitted.text)
+    val allowed = run("sandbox-egress-check", "api.github.com")
+    assertEquals(allowed.exit, 0, allowed.err)
+    assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
@@ -351,7 +352,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()
-    // Existence proves nothing — the session's home is its own writable volume, and any tool it
+    // Existence proves nothing — the session's home is its own writable volume, and any program it
     // runs may create `.config` there. What matters is whether a host path was *mounted*.
     val home = env("HOME").getOrElse("/home/nonroot")
     Vector(s"$home/.ssh", s"$home/.aws", s"$home/.config",
@@ -383,7 +384,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // removed mid-session leaves the name in place but unresolvable, which a walk reports as an
     // opaque UncheckedIOException. Naming it is the same diagnosis the boundary-directory test above
     // gives, and refusing to skip it is what keeps this assertion about every file that is there.
-    val entries = Files.list(Paths.get("/etc/ko-agent-sandbox")).iterator().asScala.toVector
+    val entries = directoryEntries(Paths.get("/etc/ko-agent-sandbox"))
     val unresolvable = entries.filterNot(Files.exists(_))
     assertEquals(
       unresolvable, Vector.empty[Path],

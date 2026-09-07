@@ -7,5 +7,6 @@
 # The response supplies install-time warnings; it does not fail npm install. Use an explicit
 # `npm audit --audit-level=high` when findings should fail a job.
 # Leaving this out blocks automatic inventory disclosure and the POST-body channel, not the
-# lower-bandwidth channel in allowed GET URLs. SECURITY.md, "Exfiltration through an allowed host".
+# lower-bandwidth channel in allowed GET URLs.
+# SECURITY.md, "Exfiltration through allowed network traffic".
 allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST

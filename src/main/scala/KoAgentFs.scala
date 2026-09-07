@@ -12,8 +12,10 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
 import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 import HostCommands.*
+import FileHelper.*
 
 object KoAgentFs:
 
@@ -40,13 +42,11 @@ object KoAgentFs:
    */
   def contextSourceId(context: Path, dir: String): String =
     val root = context.resolve(dir)
-    val entries = Files
-      .walk(root)
-      .iterator()
-      .asScala
-      .filter(Files.isRegularFile(_))
-      .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
-      .toVector
+    val entries = Using.resource(Files.walk(root)): files =>
+      files.iterator().asScala
+        .filter(Files.isRegularFile(_))
+        .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
+        .toVector
     bundleSourceId(entries)
 
   /**
@@ -115,7 +115,7 @@ object KoAgentFs:
    * user's remedy.
    *
    * The script saves the original beside the file first. The backup name
-   * is the tool's name, not `.dist`: `.dist` would claim
+   * is the program's name, not `.dist`: `.dist` would claim
    * as-distributed pristineness nobody verified, while this says who saved
    * it and when it is safe to delete. Saved only if no backup exists yet,
    * so a re-run cannot overwrite the true original with a modified copy.
@@ -248,21 +248,15 @@ object KoAgentFs:
   // ---------------------------------------------------------------------------
 
   /**
-   * Which guard protects the workspace's git control state: `fuse` — the default, what an
-   * unset variable means — mounts /workspace through the FUSE filter; `none` binds it directly
-   * with only the mount pins, the weaker boundary. The variable names the effect and the value
-   * names the guard, so a better one someday is a new value here, not a new variable.
-   * This variable can weaken the boundary, so "security
-   * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
-   * not silently weaken the effective boundary" (design.md's principles) applies to it
-   * exactly: any other value is a refused launch, never a guard quietly switched off
-   * (HostCommands.closedChoice).
+   * `fuse` protects Git entries throughout the workspace; `none` relies on read-only bind mounts
+   * at the workspace root. Reject unknown values so a typo cannot disable the filter
+   * (doc/design.md, "Principles").
    */
   val WorkspaceGuardVariable = "KO_AGENT_SANDBOX_WORKSPACE_GUARD"
   val RawWorkspaceBoundary =
-    "workspace-root .git/config and .git/hooks are pinned when .git is a directory; the whole " +
-      ".git file is pinned in a linked worktree; an empty .git mount is pinned when no repository " +
-      "exists; the workspace-root .ko-agent-sandbox is also pinned"
+    "workspace-root .git/config and .git/hooks are mounted read-only when .git is a directory; the whole " +
+      ".git file is mounted read-only in a linked worktree; an empty directory is mounted read-only at .git " +
+      "when no repository exists; the workspace-root .ko-agent-sandbox is also mounted read-only"
 
   def workspaceGuard(value: Option[String]): Either[String, String] =
     closedChoice(
@@ -369,8 +363,8 @@ object KoAgentFs:
   /**
    * The last-session teardown, run where the daemon runs after a sandbox
    * container exits. The session markers are the reference count: remove
-   * this run's, prune the dead ones (a crashed launcher leaks its marker;
-   * pruning self-heals it), and unmount only when none remain.
+   * this run's, prune the dead ones (a crashed launcher leaves its marker
+   * behind), and unmount only when none remain.
    *
    * Dead is container-gone, and nothing more: a session creates its container
    * before it mounts, so its marker is never there without a container podman

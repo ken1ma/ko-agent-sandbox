@@ -1,5 +1,5 @@
 #!/bin/sh
-# Which SBPL spelling admits a TCP connect to the loopback proxy port — measured with must-fail
+# Which SBPL spelling allows a TCP connect to the loopback proxy port — measured with must-fail
 # controls, the answers SeatbeltProfile's proxy rule encodes.
 #
 # Run it on macOS, on each new macOS release: the spelling and its controls are SBPL behavior

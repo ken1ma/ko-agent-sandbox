@@ -53,7 +53,7 @@ class BouncyCastleHelperTest extends munit.FunSuite:
   test("the leaf names exactly the inspected hosts and chains to the CA"):
     val ca = createCa("proj")
     // A sample list: which hosts the leaf must name is the proxy image's to say at launch; this
-    // pins the encoding — every requested name arrives as a DNS SAN, in order.
+    // checks the encoding — every requested name arrives as a DNS SAN, in order.
     val hosts = Vector("github.com", "gitlab.com", "docs.example.org")
     val leaf = parse(issueLeaf(ca.certificatePem, ca.privateKeyPem, hosts).certificatePem)
     val sans = leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector

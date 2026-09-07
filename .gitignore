@@ -1,6 +1,6 @@
 # our baseline
-*.log
-*.tmp
+log/
+tmp/
 
 # mill
 out/
@@ -13,6 +13,10 @@ target/
 .scala-build/
 .bloop/
 .metals/
+
+# gradle
+.gradle/
+build/
 
 # JVM crash/replay logs
 hs_err_pid*

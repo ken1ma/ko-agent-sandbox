@@ -18,7 +18,7 @@ custody, dynamic sources, expiry and refresh, explicit mechanism choice and prov
 whose writable traffic must be TLS-terminated before a header can be mediated.
 
 An existing `--env=NAME@HOST` binding remains a one-run, one-host binding. Provider mediation is a
-separate launch authority; it neither changes that grammar nor turns a stored credential on by
+separate session option; it neither changes that grammar nor turns a stored credential on by
 itself.
 
 ## Document boundary
@@ -27,9 +27,8 @@ Facts have one binding site:
 
 - `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
 - This document owns service composition, credential sources, refresh and mediated TLS.
-- The egress ruleset owns literal path-prefix matching — SECURITY.md, "Adding hosts, not
-  patterns", and doc/egress-proxy.md, "The rule file", for the grammar. A credential target may
-  refer to that matcher but does not define another one.
+- The egress ruleset owns path matching; a credential target refers to that matcher
+  (`plan-credential-broker-proxy.md`, the `PREFIX` form) and defines no other.
 - The egress ruleset owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
 
@@ -51,7 +50,7 @@ not requirements of this plan.
 
 ## Guarantees
 
-1. A credential has two independent authorities: the egress ruleset admits a destination,
+1. A credential has two independent authorities: the egress ruleset allows a destination,
    and the host launch selects a credential instance. Neither authority implies the other.
 2. A repository, agent command, persisted agent state and service response cannot create, select,
    retarget or refresh a credential instance.
@@ -61,7 +60,7 @@ not requirements of this plan.
    placeholders even when they use the same service, host, header, source value or run.
 5. Injection still requires equality with the complete placeholder in the declared header format.
    It never rewrites a URL, query, body, response or arbitrary occurrence of the bytes.
-6. A denied destination remains denied. A selected service with no admitted target is inert and
+6. A denied destination remains denied. A selected service with no allowed target is inert and
    refuses launch rather than widening egress or silently falling back to an unbrokered value.
 7. The real value exists only in its host source, protected host store, launcher's bounded refresh
    memory, private per-run generation and proxy memory. It never enters sandbox-visible state.
@@ -111,9 +110,9 @@ existing inspected treatment or by the mediated-provider path below.
 The service catalog is a closed image resource, parsed by `--print-ruleset` and the serving proxy.
 The launcher consumes that answer and does not keep a second provider-domain table.
 
-## Host command contract
+## Launcher command-line contract
 
-Management verbs operate outside a project and consume no launch options:
+Management actions operate outside a project and consume no launch options:
 
 ```text
 --credential-set=<service>[/<instance>]
@@ -146,10 +145,10 @@ A launch selects instances explicitly and repeatably:
 --credential=<service>[/<instance>]
 ```
 
-Do not infer credential selection from the agent command, provider egress group, environment,
+Do not infer credential selection from the agent command, selected model provider, environment,
 project directory or presence in the store. Stored authority is dormant until the host selects it.
 
-`--egress-effective` accepts `--credential` and shows every admitted injection target, excluded
+`--egress-effective` accepts `--credential` and shows every allowed injection target, excluded
 target and TLS treatment without resolving a source. `--egress-check=<host>` may test reachability
 and TLS compatibility but never spends or refreshes a credential.
 
@@ -277,7 +276,7 @@ backoff inside the remaining validity window. After expiry, the coordinator publ
 unavailable status, the proxy refuses matching requests with 502 and the audit says
 `credential unavailable`; it never injects an expired value or sends the placeholder as a retry.
 
-Read-only commands never take the refresh path. Removal, import, login and refresh use the same
+Read-only actions never take the refresh path. Removal, import, login and refresh use the same
 instance lock, so concurrent mutation cannot lose half an OAuth credential or let a stale API key
 shadow a newly selected mechanism.
 
@@ -324,7 +323,7 @@ tunnel       opaque writable tunnel
 A selected credential adds a per-run overlay, not a third treatment in the rule grammar:
 
 ```text
-mediated     TLS-terminated writable relay for an admitted provider target
+mediated     TLS-terminated writable relay for an allowed provider target
 ```
 
 The overlay applies only to exact targets in the selected service. A denied host remains absent.
@@ -344,7 +343,8 @@ headers; crash reports and exceptions must not include them.
 
 For one mediated connection:
 
-1. Preserve CONNECT authorization, public-address validation, SNI equality and origin pinning.
+1. Preserve CONNECT authorization, public-address validation, SNI equality and connection to the
+   validated origin address.
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
 4. Apply the configured inspected authorization when the ruleset says inspected.
@@ -362,7 +362,8 @@ agent gets the same measured compatibility gate before its service is listed as 
 
 ## Failure and audit contract
 
-Credential failures are transport errors after local egress admission, never ruleset denials:
+Credential failures are transport errors after the local egress rules allowed the request, never
+ruleset denials:
 
 ```text
 error api.example.com POST /v1 credential unavailable service/instance
@@ -370,7 +371,7 @@ allow api.example.com POST /v1 -> <origin-ip> inject=service/instance
 ```
 
 Use fixed client diagnostics for missing, expired, refresh-failed and reauthentication-required
-states. They name the host management command to run, not source stderr. Origin 401 and 403 remain
+states. They name the management action to run, not source stderr. Origin 401 and 403 remain
 origin responses; the proxy cannot infer whether they mean scope, revocation or application state.
 
 The launch banner and `--egress-effective` show selected instance, mechanism, source kind, active
@@ -397,7 +398,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Deliberate exclusions
 
-- **Automatic provider selection:** command-name inference chooses an egress group, but a
+- **Automatic provider selection:** command-name inference selects a model provider, but a
   credential is stronger authority and requires explicit `--credential` selection.
 - **Project or kit service declarations:** repository-controlled target or host-exec declarations
   would let untrusted input choose where a credential is spent or what runs on the host.
@@ -424,7 +425,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Test every catalog service as a population: identifiers, mechanisms, environment names, exact
   targets, header formats, path matchers and duplicate entries.
 - Assert every target exists in the proxy's own host or provider catalog and every active target is
-  admitted after denials; no service adds reachability.
+  allowed after denials; no service adds reachability.
 - Test absent, repeated, unknown and colliding `--credential` selections and prove the project,
   agent command and stored-state presence cannot select one.
 - Assert one service's source and mechanism are unchanged by adding, removing or resolving every
@@ -455,7 +456,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Use a process barrier across concurrent launchers to prove one source invocation per refresh and
   complete generation publication to every waiting run.
 - Test refresh success, jitter, transient failure, backoff, expiry, reauthentication, removal races
-  and clock movement. Read-only management and egress-check commands invoke the source zero times.
+  and clock movement. Read-only management and egress-check actions invoke the source zero times.
 - Kill the coordinator at every write boundary and prove the next launch sees one valid generation
   or a clear unavailable state, never a truncated value or lost refresh token.
 
@@ -473,9 +474,12 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Delivery order
 
+Each step starts on one of "Required use cases" above; TODO.md, "Credential brokering", has the
+order and its reason.
+
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.
-2. Implement host storage, management verbs and per-run generations for static API keys. Reuse the
+2. Implement host storage, management actions and per-run generations for static API keys. Reuse the
    existing plan's exact-token rewrite on inspected hosts.
 3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the
@@ -503,5 +507,7 @@ production-container cleanup pass together.
   https://github.com/docker/sbx-releases/issues/344
 - docker/sbx-releases #402, refresh side effects and cross-process races:
   https://github.com/docker/sbx-releases/issues/402
+- docker/sbx-releases #492, a removed credential still injected after the sandbox restarts:
+  https://github.com/docker/sbx-releases/issues/492
 - docker/sbx-releases #300, proposed expiring host-exec credential contract:
   https://github.com/docker/sbx-releases/issues/300

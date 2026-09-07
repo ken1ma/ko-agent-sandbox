@@ -5,7 +5,7 @@ scalaVersion := "3.9.0"
 Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 
 libraryDependencies ++= Seq(
-  "org.bouncycastle" % "bcpkix-jdk18on" % "1.85",  // JCA cannot build X.509 certificates
+  "org.bouncycastle" % "bcpkix-jdk18on" % "1.86",  // JCA cannot build X.509 certificates
 
   "org.scalameta" %% "munit" % "1.3.6" % Test,
 )
@@ -56,7 +56,7 @@ Compile / unmanagedResourceDirectories +=
 // The exports open the JDK's internal certificate builder to the proxy sources compiled in below
 // (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the README's
 // native-image command for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
-// a forked test JVM would need sbt's TCP listener to reach it, which the host build sandbox does
+// a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
   "--enable-native-access=ALL-UNNAMED",
@@ -65,21 +65,19 @@ Compile / run / javaOptions ++= Seq(
 )
 Compile / run / fork := true
 
-// The --help text has one home: README.md's Reference block, the copy a reader browses before any
-// jar exists. This task extracts it into the resource AgentSandboxLauncher.UsageText prints, so
-// what --help shows cannot drift from what README shows. Anchored on the heading rather than on an
-// invocation line, which would spell one launch command (java -jar today, a cs-installed command
-// later). Extraction fails the build rather than truncate: the block must follow the heading and
-// run unbroken to the next one.
+// Extract --help from README.md’s Reference block so the published documentation and installed launcher
+// cannot disagree. The block must run unbroken between headings; malformed input fails the build
+// instead of silently truncating the help.
+// Anchor on the heading so changing the invocation from java -jar to a Coursier command does not break extraction.
 Compile / resourceGenerators += Def.task {
   val readme = IO.readLines(baseDirectory.value / "README.md")
   val start = readme.indexWhere(_.trim == "### Reference")
   if start < 0 then
-    sys.error("README.md no longer has the '### Reference' heading the --help text is read from")
+    sys.error("README.md needs a '### Reference' heading for --help extraction")
   val rest = readme.drop(start + 1)
   val block = rest.takeWhile(line => line.trim.isEmpty || line.startsWith("    "))
   if !rest.drop(block.size).headOption.exists(_.matches("#{1,6}(\\s.*)?")) then
-    sys.error("README.md's Reference block no longer runs unbroken to the next heading")
+    sys.error("README.md's Reference block must run unbroken to the next heading")
   val text = block.map(_.stripPrefix("    "))
     .dropWhile(_.trim.isEmpty).reverse.dropWhile(_.trim.isEmpty).reverse
   if text.isEmpty then sys.error("README.md's Reference block is empty")
@@ -91,6 +89,8 @@ Compile / resourceGenerators += Def.task {
 // Bundle the build contexts into the jar so --build works with no checkout present
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
+// Native-image's resource discovery misses required files; the README's command must explicitly include
+// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt runtime authority).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log
   val outputRoot = (Compile / resourceManaged).value / "sandbox-build"
@@ -113,7 +113,8 @@ Compile / resourceGenerators += Def.task {
   // exclude the same set from the podman build context. Two known divergences, neither reachable: "project/project" is
   // a substring test here but segment-anchored (**/) there, so a path like myproject/project would be dropped only
   // here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only target, doc and probe,
-  // since no sbt or editor tool creates the directories below inside a Rust crate — a stray .DS_Store there would reach
+  // since no sbt or editor program creates the directories below inside a Rust crate — a stray .DS_Store there
+  // would reach
   // a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the source digest is
   // computed from the bundle, never from a checkout).
   //

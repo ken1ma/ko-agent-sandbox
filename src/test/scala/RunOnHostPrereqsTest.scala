@@ -5,6 +5,7 @@
 
 package agentsandbox.launcher
 
+import java.net.URI
 import java.nio.file.{Files, Path, Paths}
 
 import RunOnHostPrereqs.*
@@ -76,9 +77,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the project's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(buildCoursierV1(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
+    assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/run-on-host/abc123/coursier/v1"))
     // One removal reaches all of them: what --reset-run-on-host relies on.
-    assert(buildCoursierV1(root, "abc123").startsWith(buildCacheDir(root, "abc123")))
+    assert(coursierV1Of(root, "abc123").startsWith(runOnHostCacheDir(root, "abc123")))
 
   // --------------------------------------------------------------------------
   // Discovery
@@ -277,7 +278,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))),
       Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))),
     )
-    // Absent is mill's own default, a JVM fetched by the build.
+    // Absent is mill's own default, a JVM fetched by the command.
     assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
       Left(Refusal.PrereqMillJvmNotSystem(None)))
 
@@ -402,31 +403,68 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         clue(bad),
       )
 
-  test("the executable name is the bootstrap's own derivation, suffix rules included"):
-    // The `case "$MILL_VERSION"` block of the official script, one row per branch.
-    assertEquals(millExecutableName("1.1.8", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millExecutableName("1.1.8", "x86_64"), "1.1.8-native-mac-amd64")
-    assertEquals(millExecutableName("1.1.8-jvm", "arm64"), "1.1.8")
-    assertEquals(millExecutableName("1.1.8-native", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millExecutableName("0.11.5", "arm64"), "0.11.5")
-    assertEquals(millExecutableName("0.12.14", "arm64"), "0.12.14")
-    assertEquals(millExecutableName("0.13.0-M1", "arm64"), "0.13.0-M1-native-mac-aarch64")
-    assertEquals(millExecutableName("1.1.6-104-5bbe1e", "arm64"), "1.1.6-104-5bbe1e-native-mac-aarch64")
+  test("the launcher is the JVM one for a bare or -jvm pin; a -native pin is refused by name"):
+    assertEquals(millLauncherVersion("1.1.9"), Right("1.1.9-jvm"))
+    assertEquals(millLauncherVersion("1.1.9-jvm"), Right("1.1.9-jvm"))
+    assertEquals(millLauncherVersion("1.1.9-native"), Left(Refusal.PrereqMillNativeLauncher("1.1.9-native")))
+    val worded = wording(Refusal.PrereqMillNativeLauncher("1.1.9-native"))
+    assert(worded.contains("`1.1.9`") && worded.contains("`1.1.9-jvm`"), worded)
 
-  test("a provisioned executable is that exact file, present and executable"):
-    val executable = millDownload.resolve("1.1.8-native-mac-aarch64")
-    assertEquals(millExecutable(millDownload, "1.1.8", "arm64", _ == executable), Right(executable))
+  test("a provisioned launcher is the bootstrap's file for a -jvm pin, present and executable"):
+    val executable = millDownload.resolve("1.1.9")
+    assertEquals(millExecutable(millDownload, "1.1.9-jvm", _ == executable), Right(executable))
     // A similarly prefixed neighbour is not it.
     assertEquals(
-      millExecutable(millDownload, "1.1.8", "arm64", _ == millDownload.resolve("1.1.8-native-mac-aarch64.part")),
-      Left(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)),
+      millExecutable(millDownload, "1.1.9-jvm", _ == millDownload.resolve("1.1.9-native-mac-aarch64")),
+      Left(Refusal.PrereqMillExecutableMissing("1.1.9-jvm", millDownload)),
     )
 
-  test("an unprovisioned executable is a refusal naming the version and the folder to fix"):
-    assertEquals(
-      millExecutable(millDownload, "1.2.0", "arm64", _ => false),
-      Left(Refusal.PrereqMillExecutableMissing("1.2.0", millDownload)),
+  test("an unprovisioned launcher is a refusal naming the host command that provisions it"):
+    val refusal = millExecutable(millDownload, "1.2.0-jvm", _ => false)
+    assertEquals(refusal, Left(Refusal.PrereqMillExecutableMissing("1.2.0-jvm", millDownload)))
+    assert(wording(refusal.swap.toOption.get).contains("MILL_VERSION=1.2.0-jvm ./mill version"))
+
+  test("the daemon configuration changes with what Mill restarts on, from the source Mill selects"):
+    val pinned = Seq("mill-version: 1.1.9", "mill-jvm-version: system")
+    def yaml(extra: String*) = files("build.mill.yaml" -> (pinned ++ extra))
+    def yamlAnd(extra: (String, Seq[String])*) = files(("build.mill.yaml" -> pinned) +: extra*)
+    val baseConfig = millDaemonConfig(project, yaml("extends: ScalaModule"))
+    assertEquals(baseConfig, millDaemonConfig(project, yaml("extends: ScalaModule")), "deterministic")
+    // The header is taken whole: an edit outside the keys restarts too, the cheaper error.
+    assertNotEquals(millDaemonConfig(project, yaml("extends: JavaModule")), baseConfig)
+    // Each key, from each of its sources.
+    assertNotEquals(millDaemonConfig(project, yaml("mill-jvm-opts:", "  - -Xmx1g")), baseConfig)
+    val dotOpts = millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g")))
+    val configOpts = millDaemonConfig(project, yamlAnd(".config/mill-jvm-opts" -> Seq("-Xmx1g")))
+    assertNotEquals(dotOpts, baseConfig)
+    assertNotEquals(configOpts, baseConfig)
+    // An empty file is a source Mill selects, over the header: creating one, in either place,
+    // changes the configuration, and so does removing it.
+    val headerOpts = yaml("mill-jvm-opts: [-Xmx1g]")
+    for empty <- Seq(".mill-jvm-opts", ".config/mill-jvm-opts", ".mill-repositories", ".config/mill-repositories") do
+      val withEmpty = files(("build.mill.yaml" -> (pinned :+ "mill-jvm-opts: [-Xmx1g]")) , empty -> Seq.empty)
+      assertNotEquals(millDaemonConfig(project, withEmpty), millDaemonConfig(project, headerOpts), empty)
+    // One file's lines never read as another's.
+    assertNotEquals(
+      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g", "-Xss1m"))),
+      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g"), ".mill-repositories" -> Seq("-Xss1m"))),
     )
+    assertNotEquals(millDaemonConfig(project, yaml("mill-repositories: [https://r.example]")), baseConfig)
+    val version = files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-jvm-version: system"))
+    assertNotEquals(millDaemonConfig(project, version), baseConfig)
+    val jvm = files("build.mill.yaml" -> Seq("mill-version: 1.1.9", "mill-jvm-version: temurin:25"))
+    assertNotEquals(millDaemonConfig(project, jvm), baseConfig)
+    // A key in a spelling only a YAML parser recognizes changes it all the same.
+    assertNotEquals(
+      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
+      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx2g]")),
+    )
+    // The header of build.mill is its //| lines, and the body is not the header.
+    def header(opt: String, body: String*) =
+      val lines = Seq("//| mill-version: 1.1.9", "//| mill-jvm-opts:", s"//| - $opt", "package build")
+      files("build.mill" -> (lines ++ body))
+    assertNotEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx2g")))
+    assertEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx1g", "object x")))
 
   // --------------------------------------------------------------------------
   // The channel's working directory
@@ -477,17 +515,17 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(cwd("/etc/passwd"), Left(Refusal.WorkingDirectoryOutsideProject("/etc/passwd")))
 
   // --------------------------------------------------------------------------
-  // The session temporary directory
+  // The command's temporary directory
   // --------------------------------------------------------------------------
 
-  test("the session temp budget is what sbt's boot socket leaves of sun_path"):
+  test("the command's temporary path budget is what sbt's boot socket leaves of sun_path"):
     assertEquals(SessionTmpMaxLength, 53)
     val fits = Paths.get("/private/tmp/" + "y" * 40)
     val traps = Paths.get("/private/tmp/" + "y" * 43)
     assertEquals(sessionTmpFits(fits), Right(fits))
     assertEquals(sessionTmpFits(traps), Left(Refusal.SessionTmpTooLong(traps, 53)))
     // The macOS per-user temporary directory is 49 characters before anything is added to it, so
-    // a session directory under it can never fit; the wrapper's root is elsewhere.
+    // a command directory under it can never fit; the wrapper's root is elsewhere.
     assert(sessionTmpFits(Paths.get("/var/folders/w6/grf54s4d7bz6j0fypwdxvmq40000gn/T/ko-agent")).isLeft)
 
   // --------------------------------------------------------------------------
@@ -509,25 +547,25 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(overlaps(project.resolve("sub"), project, Os.Mac))
 
   // --------------------------------------------------------------------------
-  // The build's egress rule file
+  // The program's egress rule file
   // --------------------------------------------------------------------------
 
-  test("the build's rule file accepts read lines, comments and blank lines, in file order, once each"):
+  test("the program's rule file accepts read lines, comments and blank lines, in file order, once each"):
     val text =
-      """# artifact repositories this build resolves from
+      """# artifact repositories this project resolves from
         |allow https://repo.example.org/ read
         |
         |allow https://mirror.example.org/ read  # inline comment
         |allow https://repo.example.org/ read
         |""".stripMargin
     assertEquals(
-      buildRuleHosts(text),
+      programRuleHosts(text),
       Right(Vector("repo.example.org", "mirror.example.org")),
     )
 
   test("an empty or comment-only rule file is valid and contributes nothing"):
     for text <- Seq("", "\n\n", "# nothing yet\n") do
-      assertEquals(buildRuleHosts(text), Right(Vector.empty))
+      assertEquals(programRuleHosts(text), Right(Vector.empty))
 
   test("every line of the proxy's wider grammar is outside the file's"):
     for
@@ -553,57 +591,135 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         "allow",
       )
     do
-      buildRuleHosts(line) match
-        case Left(Refusal.RuleOutsideBuildGrammar(seen)) => assertEquals(seen, line)
+      programRuleHosts(line) match
+        case Left(Refusal.RuleOutsideProgramGrammar(seen)) => assertEquals(seen, line)
         case other => fail(s"'$line' -> $other")
 
   test("a refused line names itself even after a comment is stripped"):
     assertEquals(
-      buildRuleHosts("deny https://x/ # a removal\n"),
-      Left(Refusal.RuleOutsideBuildGrammar("deny https://x/")),
+      programRuleHosts("deny https://x/ # a removal\n"),
+      Left(Refusal.RuleOutsideProgramGrammar("deny https://x/")),
     )
     // A comment starts at a token, as in the proxy: a `#` inside one is the line, not a comment.
     assertEquals(
-      buildRuleHosts("allow https://repo.example.org/ read#comment\n"),
-      Left(Refusal.RuleOutsideBuildGrammar("allow https://repo.example.org/ read#comment")),
+      programRuleHosts("allow https://repo.example.org/ read#comment\n"),
+      Left(Refusal.RuleOutsideProgramGrammar("allow https://repo.example.org/ read#comment")),
     )
-    assertEquals(buildRuleHosts("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
+    assertEquals(programRuleHosts("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
 
   test("the composed rule input is the whole ruleset: deny defaults, Maven Central, then the file"):
     assertEquals(
-      egressRuleText(Tool.Sbt, Vector("repo.example.org")),
+      egressRuleText(Program.Sbt, Vector("repo.example.org")),
       "deny defaults\nallow https://repo1.maven.org/ read\nallow https://repo.example.org/ read",
     )
 
   test("a file restating Maven Central composes it once"):
     assertEquals(
-      egressRuleText(Tool.Sbt, Vector("repo1.maven.org")),
+      egressRuleText(Program.Sbt, Vector("repo1.maven.org")),
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
   test("the sbt global base and Ivy home sit beside the project's Coursier cache, one --reset-run-on-host removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
-      buildSbtGlobal(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
+      sbtGlobalOf(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/sbt-global"),
     )
     assertEquals(
-      buildIvyHome(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/ivy-home"),
+      ivyHomeOf(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/ivy-home"),
     )
     assertEquals(
-      buildM2Repository(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/m2/repository"),
+      m2RepositoryOf(cacheRoot, "proj-abc123"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/m2/repository"),
     )
-    for cache <- Seq(buildSbtGlobal(cacheRoot, "proj-abc123"), buildIvyHome(cacheRoot, "proj-abc123"),
-        buildM2Repository(cacheRoot, "proj-abc123").getParent)
-    do assertEquals(cache.getParent, buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent)
+    for cache <- Seq(sbtGlobalOf(cacheRoot, "proj-abc123"), ivyHomeOf(cacheRoot, "proj-abc123"),
+        m2RepositoryOf(cacheRoot, "proj-abc123").getParent)
+    do assertEquals(cache.getParent, coursierV1Of(cacheRoot, "proj-abc123").getParent.getParent)
 
-  test("the central host is the tool's own: Coursier's for sbt and mill, the super POM's for mvn"):
-    assertEquals(centralHost(Tool.Sbt), "repo1.maven.org")
-    assertEquals(centralHost(Tool.Mill), "repo1.maven.org")
-    assertEquals(centralHost(Tool.Mvn), "repo.maven.apache.org")
-    assertEquals(egressRuleText(Tool.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
+  test("the central host is the program's own: Coursier's for sbt and mill, the alias for gradle and mvn"):
+    assertEquals(centralHost(Program.Sbt), "repo1.maven.org")
+    assertEquals(centralHost(Program.Mill), "repo1.maven.org")
+    assertEquals(centralHost(Program.Gradle), "repo.maven.apache.org")
+    assertEquals(centralHost(Program.Mvn), "repo.maven.apache.org")
+    assertEquals(egressRuleText(Program.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
+
+  // --------------------------------------------------------------------------
+  // Gradle
+  // --------------------------------------------------------------------------
+
+  private val gradleUrl = "https://services.gradle.org/distributions/gradle-9.7.1-bin.zip"
+  private val wrapperDir = project.resolve("gradle/wrapper")
+
+  test("the distribution URL is read as the wrapper reads it: Properties escapes, defaults, relative files"):
+    def read(text: String, projectProperties: Option[String] = None) =
+      gradleDistributionUrl(text, wrapperDir, projectProperties)
+    assertEquals(read(s"distributionUrl=$gradleUrl\n"), Right(URI(gradleUrl)))
+    assertEquals(read("distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\n" +
+      "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n"), Right(URI(gradleUrl)))
+    // A `!` comment line, a key with spaces around `=`, a value continued over a line: Properties' grammar.
+    assertEquals(
+      read("! wrapper\ndistributionUrl = https://services.gradle.org/\\\n    distributions/gradle-9.7.1-bin.zip\n"),
+      Right(URI(gradleUrl)),
+    )
+    // No scheme: a file relative to the properties file's directory, spelled as File.toURI spells it.
+    assertEquals(
+      read("distributionUrl=../../dist/gradle-9.7.1-bin.zip"),
+      Right(java.io.File(wrapperDir.toFile, "../../dist/gradle-9.7.1-bin.zip").toURI),
+    )
+    assertEquals(read("distributionSha256Sum=abc\n"),
+      Left(Refusal.PrereqGradleWrapperUnreadable("no distributionUrl in gradle/wrapper/gradle-wrapper.properties")))
+    assert(read(s"distributionUrl=$gradleUrl\ndistributionBase=PROJECT\n").swap.exists(wording(_).contains("PROJECT")))
+    assert(read(s"distributionUrl=$gradleUrl\ndistributionPath=dists\n").swap.exists(wording(_).contains("dists")))
+    assert(read(s"distributionUrl=$gradleUrl\n", Some("systemProp.gradle.user.home=/elsewhere\n")).swap
+      .exists(wording(_).contains("systemProp.gradle.user.home")))
+    assertEquals(read(s"distributionUrl=$gradleUrl\n", Some("org.gradle.jvmargs=-Xmx1g\n")), Right(URI(gradleUrl)))
+    assert(read("distributionUrl=mailto:x@example.org\n").swap.exists(wording(_).contains("names no file")))
+    assert(read("distributionUrl=https://example.org/\n").swap.exists(wording(_).contains("names no file")))
+    assert(read("distributionUrl=https://example.org/a b.zip\n").swap.exists(wording(_).contains("not a URI")))
+    // A control character never reaches the terminal through a refusal, whatever branch quotes the value.
+    for
+      text <- Seq(
+        "distributionUrl=https://x.example/\u001b[31ma.zip\n",
+        s"distributionUrl=$gradleUrl\ndistributionBase=\u001b[31mX\n",
+      )
+    do
+      val refused = read(text)
+      assert(refused.swap.exists(refusal => !wording(refusal).contains("\u001b")), refused.toString)
+    assert(read("distributionUrl=\\u12\n").swap.exists(wording(_).contains("malformed")))
+
+  test("the Gradle user home is GRADLE_USER_HOME, else ~/.gradle, as the wrapper takes it"):
+    assertEquals(gradleUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.gradle")))
+    assertEquals(
+      gradleUserHome(env("HOME" -> home, "GRADLE_USER_HOME" -> "/opt/gradle")),
+      Some(Paths.get("/opt/gradle")),
+    )
+
+  test("the distribution directory is the wrapper's: the name without its extension, then the URL's MD5 in base 36"):
+    val userHome = Paths.get(s"$home/.gradle")
+    val dists = userHome.resolve("wrapper/dists")
+    val bin = dists.resolve("gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    assertEquals(gradleDistributionDir(userHome, URI(gradleUrl)), bin)
+    // The hash is over the URL without its user information (Download.safeUri), so a credential
+    // in the URL changes nothing.
+    val withCredential = URI("https://user:pw@services.gradle.org/distributions/gradle-9.7.1-bin.zip")
+    assertEquals(gradleDistributionDir(userHome, withCredential), bin)
+    val all = URI("https://services.gradle.org/distributions/gradle-9.7.1-all.zip")
+    assertEquals(gradleDistributionDir(userHome, all), dists.resolve("gradle-9.7.1-all/62v79ucs7za836kmh1huc3s8x"))
+
+  test("the home is the one directory inside, provisioned; else a refusal naming what ./gradlew would fix"):
+    val dir = Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    val gradleHome = dir.resolve("gradle-9.7.1")
+    val executable = gradleHome.resolve("bin/gradle")
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome), _ == executable), Right(gradleHome))
+    val missing = Refusal.PrereqGradleDistributionMissing(gradleUrl, dir)
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq.empty, _ == executable), Left(missing))
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome), _ => false), Left(missing))
+    assertEquals(
+      gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome, dir.resolve("other")), _ == executable),
+      Left(missing),
+    )
+    assert(wording(missing).contains("./gradlew --version"))
 
   // --------------------------------------------------------------------------
   // Maven
@@ -691,18 +807,21 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqJvmNotCoursier("/usr/bin/java"), Refusal.PrereqSbtNotCoursier(Paths.get("/usr/local/bin/sbt")),
       Refusal.PrereqMillBootstrapMissing, Refusal.PrereqMillVersionUnpinned,
       Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmNotSystem(None),
+      Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
+      Refusal.PrereqGradleDistributionMissing(gradleUrl, project),
       Refusal.PrereqMvnWrapperMissing, Refusal.PrereqMvnWrapperNotOnlyScript,
       Refusal.PrereqMvnDistributionIsMvnd(mvnUrl),
       Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),
       Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
       Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
       Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
-      Refusal.RuleOutsideBuildGrammar("allow x tunnel"),
+      Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
     )
     for refusal <- cases do
       assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
     // The ones a host command fixes name that command.
-    assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)).contains("./mill --version"))
+    assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8-jvm", millDownload))
+      .contains("MILL_VERSION=1.1.8-jvm ./mill version"))
     assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))
     val mvndWording = wording(Refusal.PrereqMvnDistributionIsMvnd(mvnUrl))
     assert(mvndWording.contains(".mvn/wrapper/maven-wrapper.properties"))
@@ -712,15 +831,15 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(mvnUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.m2")))
     assertEquals(mvnUserHome(env("HOME" -> home, "MAVEN_USER_HOME" -> "/opt/m2")), Some(Paths.get("/opt/m2")))
 
-  test("the rule file path is per tool under the frozen boundary directory"):
+  test("the rule file path is per program under the frozen boundary directory"):
     val project = Paths.get("/Users/u/proj")
     assertEquals(
-      buildRulePath(project, Tool.Sbt),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/rule"),
+      programRulePath(project, Program.Sbt),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/sbt/egress/rule"),
     )
     assertEquals(
-      buildRulePath(project, Tool.Mill),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/rule"),
+      programRulePath(project, Program.Mill),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/mill/egress/rule"),
     )
 
   // --------------------------------------------------------------------------
@@ -729,5 +848,5 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("realPath answers None for an absent path rather than throwing"):
     assertEquals(realPath(Paths.get("/definitely/not/here")), None)
-    val real = realPath(Files.createTempDirectory("build-sandbox"))
+    val real = realPath(Files.createTempDirectory("command-sandbox"))
     assert(real.isDefined)

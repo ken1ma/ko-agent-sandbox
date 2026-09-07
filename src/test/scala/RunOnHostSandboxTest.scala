@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import RunOnHostSandbox.*
-import RunOnHostPrereqs.Tool
+import scala.jdk.CollectionConverters.*
+import scala.util.chaining.*
+import RunOnHostPrereqs.Program
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
@@ -14,27 +16,31 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val authority = RunOnHostSandbox.bundledRuntimeAuthority()
     assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
 
-  test("the build's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
+  test("the command's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
-    val prereqs = RunOnHostPrereqs.BuildPrereqs(
+    val prereqs = RunOnHostPrereqs.CommandPrereqs(
       project = Path.of("/Users/u/project"), jdkHome = jdk, coursierV1 = Path.of("/cache/v1"),
-      tool = Tool.Sbt, executable = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
+      program = Program.Sbt, executable = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
     )
     val host = Map(
       "HOME" -> "/Users/u", "LANG" -> "en_US.UTF-8", "PATH" -> "/usr/bin:/bin",
       "TERM" -> "xterm", "TMPDIR" -> "/var/folders/xy/T", "JAVA_HOME" -> "/Users/u/jdk-link",
       "HTTPS_PROXY" -> "http://alice:s3cret@proxy.example:3128", "AWS_SECRET_ACCESS_KEY" -> "hunter2",
-      "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "TOKEN" -> "t0ken", "USER" -> "shellname",
+      "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "MILL_OUTPUT_DIR" -> "elsewhere", "TOKEN" -> "t0ken",
+      "USER" -> "shellname",
     )
-    val environment = buildEnvironment(
+    val environment = commandEnvironment(
       host.get,
       Vector(
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
-        "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+        "MILL_OUTPUT_DIR" -> "elsewhere", "_JAVA_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+        "JAVA_TOOL_OPTIONS" -> "-Duser.option=value",
       ),
-      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"), m2Repository = Path.of("/cache/m2"),
-      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
-      sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
+      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
+      gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
+      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millVersion = Some("1.1.9-jvm"),
+      sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
+      proxyPort = 4711, userName = "u",
     )
     // Passed through as they are.
     assertEquals(environment("HOME"), "/Users/u")
@@ -43,40 +49,178 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
+    assert(environment("_JAVA_OPTIONS").contains("-Djava.io.tmpdir=\"/private/tmp/ko-agent-501/s\""))
+    // The sockets are the runtime's: where the broker's server bound them.
+    assertEquals(environment("XDG_RUNTIME_DIR"), "/private/tmp/ko-agent-501/b/tmp")
+    assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("USER"), "u")
     assertEquals(environment("LOGNAME"), "u")
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
+    // The wrapper's launcher version, never the forwarded one.
+    assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=/cache/m2"))
-    // A forward reaches the build; one naming a variable the wrapper sets loses to the wrapper.
+    assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
+    assert(environment("_JAVA_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
+    // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
-    assert(!environment("JAVA_TOOL_OPTIONS").contains("javaagent"))
+    assert(!environment("_JAVA_OPTIONS").contains("javaagent"))
+    assertEquals(environment("JAVA_TOOL_OPTIONS"), "-Duser.option=value")
     // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
-    // tools' own overrides — the mill version ones even when forwarded.
-    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "MILL_VERSION", "TERM", "ALL_PROXY").foreach: name =>
+    // programs' own overrides — mill's version and output-directory ones even when forwarded.
+    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR",
+      "TERM", "ALL_PROXY")
+      .foreach: name =>
       assert(!environment.contains(name), name)
     assert(!environment.values.exists(_.contains("s3cret")), environment.toString)
     assertEquals(
       environment.keySet,
       Set(
-        "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
-        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
-      ) ++ buildProxyVariables(4711).keySet,
+        "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
+        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
+        "MILL_VERSION",
+      ) ++ commandProxyVariables(4711).keySet,
     )
-    // Without a derivable download folder the variable is simply absent.
+    // Without a derivable download folder the variable is absent, and so is the launcher
+    // version for a program that is not mill — a forwarded one included.
     val noFolder =
-      buildEnvironment(
-        host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"), 1, "u",
+      commandEnvironment(
+        host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/g"),
+        Path.of("/m"), None, None, Path.of("/t"), Path.of("/t"), 1, "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
+    assert(!noFolder.contains("MILL_VERSION"))
+
+    val optIn = Vector(
+      "TERM" -> "xterm", "SBT_OPTS" -> "-Xmx2g", "JAVA_OPTS" -> "-Xmx2g",
+      "JAVA_TOOL_OPTIONS" -> "-Dbuild.option=value", "JDK_JAVA_OPTIONS" -> "-Dbuild.option=value",
+      "ALL_PROXY" -> "http://example:3128",
+      "FTP_PROXY" -> "http://example:3128", "SBT_CREDENTIALS" -> "/credentials",
+    )
+    for program <- Program.values do
+      def withForwards(forwards: Vector[(String, String)]): Map[String, String] =
+        commandEnvironment(
+          optIn.toMap.get, forwards, prereqs.copy(program = program),
+          Path.of("/s"), Path.of("/i"), Path.of("/g"), Path.of("/m"), None, None,
+          Path.of("/t"), Path.of("/t"), 1, "u",
+        )
+      val inherited = withForwards(Vector.empty)
+      val explicit = withForwards(optIn)
+      optIn.foreach: (name, value) =>
+        assert(!inherited.contains(name), s"$program: $name must require forwarding")
+        assertEquals(explicit(name), value, clue = program)
+
+  test("each program's JVM paths survive sbt's parsing and inheritance by forked JVMs"):
+    val jdk = Path.of(sys.props("java.home"))
+    val jvm = jdk.resolve("bin/java").toString
+    val settings = Seq("-XshowSettings:properties", "-version")
+    val classpath = Seq(ForkJvmSettings.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]])
+      .map(kind => Path.of(kind.getProtectionDomain.getCodeSource.getLocation.toURI).toString)
+      .distinct.mkString(java.io.File.pathSeparator)
+    // sbt 2.0.8's runner copies these variables into argv without interpreting their quotes.
+    // Its getPreloaded lookup scans argv before splitting _JAVA_OPTIONS the same way.
+    val sbtRunner = """java_tool_options=($JAVA_TOOL_OPTIONS)
+                      |jdk_java_options=($JDK_JAVA_OPTIONS)
+                      |read -a java_options <<< "$_JAVA_OPTIONS"
+                      |for option in "$@" "${java_options[@]}"; do
+                      |  case "$option" in
+                      |    -Dsbt.global.base=*) echo "preloaded = ${option#*=}/preloaded" >&2; break ;;
+                      |  esac
+                      |done
+                      |exec "$JAVA_HOME/bin/java" "$@" "${java_tool_options[@]}" "${jdk_java_options[@]}" \
+                      |  -XshowSettings:properties -version
+                      |""".stripMargin
+    for
+      program <- Program.values
+      path <- Seq("/plain", "/with spaces", "/both'\"quotes", "/back\\slash and * ? [glob]")
+    do
+      val root = Path.of(path)
+      val prereqs = RunOnHostPrereqs.CommandPrereqs(root, jdk, root, program, Path.of("/unused/sbt"))
+      val environment = commandEnvironment(
+        _ => None,
+        Vector(
+          "JAVA_TOOL_OPTIONS" -> "-Djava.io.tmpdir=/tool-option -Dforward.tool=value",
+          "JDK_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/jdk-option -Dforward.jdk=value",
+          "_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/forward",
+        ),
+        prereqs, root.resolve("sbt"), root.resolve("ivy"), root.resolve("gradle"),
+        root.resolve("m2"), None, None, root.resolve("tmp"), root.resolve("sockets"), 4711, "u",
+      )
+      val expected = Map(
+        "java.io.tmpdir" -> root.resolve("tmp"), "java.util.prefs.userRoot" -> root.resolve("tmp"),
+        "sbt.ipcsocket.tmpdir" -> root.resolve("tmp"), "sbt.global.base" -> root.resolve("sbt"),
+        "sbt.ivy.home" -> root.resolve("ivy"), "maven.repo.local" -> root.resolve("m2"),
+      )
+      val launcher =
+        if program == Program.Sbt then
+          Seq("/bin/bash", "-c", sbtRunner, "sbt") ++ sbtCommand(prereqs.executable, root.resolve("sbt")).tail
+        else Seq(jvm) ++ settings
+      // A build supplies its own argv to a forked JVM; only the environment carries these settings.
+      for command <- Seq(launcher, Seq(jvm, "-cp", classpath, "agentsandbox.launcher.ForkJvmSettings")) do
+        val builder = ProcessBuilder(command*)
+        builder.environment().clear()
+        builder.environment().putAll(environment.asJava)
+        val process = builder.start()
+        process.getOutputStream.close()
+        val err = String(process.getErrorStream.readAllBytes(), UTF_8)
+        assertEquals(process.waitFor(), 0, s"$program, $path: $err")
+        expected.foreach: (name, value) =>
+          assert(err.linesIterator.exists(_.trim == s"$name = $value"), s"$program, $name: $err")
+        for name <- Seq("forward.tool", "forward.jdk") do
+          assert(err.linesIterator.exists(_.trim == s"$name = value"), s"$program, $name: $err")
+        if program == Program.Sbt && command == launcher then
+          assert(err.linesIterator.contains(s"preloaded = ${root.resolve("sbt/preloaded")}"), err)
+
+  test("a gradle command's registry is the launch's own, and its toolchain inventory the granted JDK"):
+    val prereqs = RunOnHostPrereqs.CommandPrereqs(
+      Path.of("/p"), Path.of("/jdk"), Path.of("/v1"), Program.Gradle, Path.of("/dists/gradle-9.7.1/bin/gradle"),
+    )
+    assertEquals(
+      gradleCommand(prereqs, Path.of("/private/tmp/ko-agent-501/b/tmp")),
+      Seq(
+        "/dists/gradle-9.7.1/bin/gradle",
+        "-Dorg.gradle.daemon.registry.base=/private/tmp/ko-agent-501/b/tmp/gradle-daemon",
+        "-Dorg.gradle.java.installations.auto-detect=false",
+        "-Dorg.gradle.java.installations.auto-download=false",
+        "-Dorg.gradle.java.installations.paths=/jdk",
+      ),
+    )
+
+  test("a gradle assembly grants the wrapper's one distribution and the project's own Gradle user home"):
+    import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
+    val root = Files.createTempDirectory("gradle")
+    val cache = Files.createDirectories(root.resolve("coursier"))
+    val jdk = Files.createDirectories(cache.resolve("arc/jdk.tar.gz/jdk"))
+    Files.createDirectories(jdk.resolve("bin"))
+    Files.setPosixFilePermissions(Files.createFile(jdk.resolve("bin/java")), permissions("rwxr-xr-x"))
+    val project = Files.createDirectories(root.resolve("project"))
+    val env = Map("HOME" -> root.toString, "COURSIER_CACHE" -> cache.toString, "JAVA_HOME" -> jdk.toString)
+    val absent = assemble(project, Program.Gradle, env.get, project)
+    assert(clue(absent).left.exists(_.contains("no gradle/wrapper/gradle-wrapper.properties")))
+    val properties = Files.createDirectories(project.resolve("gradle/wrapper")).resolve("gradle-wrapper.properties")
+    Files.writeString(properties, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n")
+    val unprovisioned = assemble(project, Program.Gradle, env.get, project)
+    val distributionDir = root.resolve(".gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    assert(clue(unprovisioned).left.exists(text => text.contains(distributionDir.toString)))
+    assert(unprovisioned.left.exists(_.contains("./gradlew")))
+    val gradleHome = Files.createDirectories(distributionDir.resolve("gradle-9.7.1"))
+    Files.createDirectories(gradleHome.resolve("bin"))
+    Files.setPosixFilePermissions(Files.createFile(gradleHome.resolve("bin/gradle")), permissions("rwxr-xr-x"))
+    val assembled = assemble(project, Program.Gradle, env.get, project).fold(fail(_), identity)
+    assertEquals(assembled.prereqs.executable, gradleHome.toRealPath().resolve("bin/gradle"))
+    assertEquals(assembled.distribution, Some(gradleHome.toRealPath()))
+    assertEquals(assembled.gradleUserHomeGranted, Some(assembled.gradleUserHome))
+    assert(Files.isDirectory(assembled.gradleUserHome), "created for the program that reads it")
+    assert(assembled.gradleUserHome.startsWith(root.toRealPath().resolve(".cache/ko-agent-sandbox/run-on-host")))
+    assertEquals(assembled.m2RepositoryGranted, None)
+    assertEquals(assembled.sbtCachesGranted, Seq.empty)
 
   test("a prerequisite file that cannot be read is a worded refusal at the assembly, not a stack trace"):
     import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
     assume(System.getProperty("user.name") != "root", "root reads everything")
-    // A Coursier layout the JVM rule accepts, so the assembly reaches the tool's own files.
+    // A Coursier layout the JVM rule accepts, so the assembly reaches the program's own files.
     val root = Files.createTempDirectory("unreadable")
     val cache = Files.createDirectories(root.resolve("coursier"))
     val jdk = Files.createDirectories(cache.resolve("arc/jdk.tar.gz/jdk"))
@@ -87,14 +231,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val mvnw = project.resolve("mvnw")
     Files.write(mvnw, Array[Byte]('#', '!', 0xff.toByte, '\n'))
     Files.setPosixFilePermissions(mvnw, permissions("rwxr-xr-x"))
-    val invalid = assemble(project, Tool.Mvn, env.get)
+    val invalid = assemble(project, Program.Mvn, env.get, project)
     assert(clue(invalid).left.exists(text => text.contains(mvnw.toString) && text.contains("not valid UTF-8")))
 
     Files.writeString(mvnw, "#!/bin/sh\nhash_string() {\n}\n")
     val properties = Files.createDirectories(project.resolve(".mvn/wrapper")).resolve("maven-wrapper.properties")
     Files.writeString(properties, "distributionUrl=https://example.org/apache-maven-3.9.16-bin.zip\n")
     Files.setPosixFilePermissions(properties, permissions("---------"))
-    val denied = assemble(project, Tool.Mvn, env.get)
+    val denied = assemble(project, Program.Mvn, env.get, project)
     assert(
       clue(denied).left.exists(text => text.contains(properties.toString) && text.contains("permission denied")),
     )
@@ -108,69 +252,245 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("--env names travel as options and come back as names; nothing else is an option"):
     assertEquals(
-      forwardedNames(Seq("--env=TOKEN", AutoShutdownForeignSbtOption, "--env=OTHER")),
+      forwardedNames(Seq("--env=TOKEN", ChannelLogOption + "/l", "--env=OTHER")),
       Vector("TOKEN", "OTHER"),
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
+  test("the broker's runtime travels as three options, all or none, the daemon port with them"):
+    val runtime = Runtime(Path.of("/b"), 4242, Path.of("/b/proxy-sbt-0.log"))
+    assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
+    assertEquals(runtime.tmp, Path.of("/b/tmp"))
+    val withDaemon = runtime.copy(daemonPort = Some(51000))
+    assertEquals(runtimeOf(runtimeOptions(withDaemon)), Right(Some(withDaemon)))
+    assertEquals(runtimeOf(Seq("--env=TOKEN")), Right(None))
+    assert(runtimeOf(Seq("--proxy-port=4242", "--proxy-log=/l")).isLeft)
+    assert(runtimeOf(Seq("--runtime-session=/b", "--proxy-port=x", "--proxy-log=/l")).isLeft)
+    assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-port=x").isLeft)
+    assert(runtimeOf(Seq("--daemon-port=51000")).isLeft)
+
+  test("a mill command's temporary directory is the broker's; sbt keeps its own with the broker's sockets"):
+    val own = Path.of("/r/s1/tmp")
+    val brokers = Path.of("/r/b1/tmp")
+    assertEquals(temporaryDirectories(Program.Sbt, own, brokers), (own, brokers))
+    assertEquals(temporaryDirectories(Program.Mill, own, brokers), (brokers, brokers))
+    assertEquals(temporaryDirectories(Program.Gradle, own, brokers), (brokers, brokers))
+    assertEquals(temporaryDirectories(Program.Mvn, own, brokers), (own, own))
+
+  test("a redirected out/mill-daemon, or an entry of it with a second name, is refused; a plain one admitted"):
+    val root = Files.createTempDirectory("rendezvous")
+    val build = Files.createDirectory(root.resolve("build"))
+    val other = Files.createDirectories(root.resolve("other/out/mill-daemon"))
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "no out/ at all")
+    val daemonDir = Files.createDirectories(build.resolve("out/mill-daemon"))
+    Files.writeString(daemonDir.resolve("processId"), "1")
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "a plain directory")
+    // An entry linked elsewhere, then the directory, then out/ itself.
+    Files.createSymbolicLink(daemonDir.resolve("daemonLock"), other.resolve("daemonLock"))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
+    Files.delete(daemonDir.resolve("daemonLock"))
+    Files.createLink(daemonDir.resolve("stdout"), other.resolve("stdout").pipe(Files.writeString(_, "")))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("more than one name")))
+    Files.delete(daemonDir.resolve("stdout"))
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()))
+    Files.move(daemonDir, root.resolve("aside"))
+    Files.createSymbolicLink(daemonDir, other)
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
+    Files.delete(daemonDir)
+    Files.move(build.resolve("out"), root.resolve("out-aside"))
+    Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
+
+  test("the starter to end is the daemon's parent in the group, other than the leader; any other topology is none"):
+    import MillDaemons.{Member, starterOf}
+    import RunOnHostSession.Record
+    val leader = Record(500, "Sat Sep 12 15:42:15 2026")
+    val daemonMain = "/usr/bin/java -Djava.io.tmpdir=/s/tmp mill.daemon.MillDaemonMain /p/out/mill-daemon"
+    val rows = Vector(
+      "  500   400 Sat Sep 12 15:42:15 2026 /usr/bin/perl -e setpgrp(0, 0) or exit 71; /s/records/daemon-mill-ab",
+      "  501   500 Sat Sep 12 15:42:16 2026 /usr/bin/java -cp /dl/1.1.9 mill.launcher.MillLauncherMain version",
+      s"  502   501 Sat Sep 12 15:42:19 2026 $daemonMain",
+      "garbage",
+    )
+    val group = MillDaemons.parseMembers(rows, leader)
+    assertEquals(group.map(_.pid), Vector(500L, 501L, 502L))
+    assertEquals(group(2), Member(502, 501, "Sat Sep 12 15:42:19 2026", daemonMain))
+    assertEquals(starterOf(group, leader.pgid), Some((group(2), group(1))))
+    // The start time's width is the leader's, whatever ps spells: a padded day, the same width.
+    val padded = MillDaemons.parseMembers(
+      Vector("  500   400 Sat Sep  2 15:42:15 2026 perl", "  501   500 Sat Sep  2 15:42:16 2026 java"),
+      Record(500, "Sat Sep  2 15:42:15 2026"),
+    )
+    assertEquals(padded.map(member => member.start -> member.command), Vector(
+      "Sat Sep  2 15:42:15 2026" -> "perl", "Sat Sep  2 15:42:16 2026" -> "java",
+    ))
+    // A listing whose leader row does not carry the recorded start proves no width: empty.
+    assertEquals(MillDaemons.parseMembers(rows, Record(500, "Sat Sep 12 15:42:14 2026")), Vector.empty)
+    assertEquals(MillDaemons.parseMembers(rows.drop(1), leader), Vector.empty)
+    val perl = group(0)
+    val launcher = group(1)
+    // The daemon's parent is the leader: the group's proof is never signalled.
+    assertEquals(starterOf(Vector(perl, Member(502, 500, "D", daemonMain)), leader.pgid), None)
+    // The daemon's parent is outside the group: a daemon the launcher attached to, not spawned.
+    assertEquals(starterOf(Vector(perl, launcher, Member(502, 77, "D", daemonMain)), leader.pgid), None)
+    // A java that does not exec: the daemon's parent names DaemonMain too, whichever row comes first.
+    val shim = Member(502, 501, "D", daemonMain)
+    val underShim = Member(503, 502, "D2", daemonMain)
+    assertEquals(starterOf(Vector(perl, launcher, underShim, shim), leader.pgid), None)
+    assertEquals(starterOf(Vector(perl, launcher, shim, underShim), leader.pgid).map(_(0).pid), Some(502L))
+    // No daemon yet.
+    assertEquals(starterOf(Vector(perl, launcher), leader.pgid), None)
+
+  test("the starter is TERMed behind the start time its group listing carries; one recycled meanwhile is not"):
+    import MillDaemons.Member
+    val root = Files.createTempDirectory("starter")
+    val record = root.resolve("daemon-mill-ab")
+    Files.writeString(record, "500 L\n")
+    val group = Vector(
+      Member(500, 1, "L", "/usr/bin/perl -e setpgrp(0, 0) or exit 71;"),
+      Member(501, 500, "A", "java -cp /dl/1.1.9 mill.launcher.MillLauncherMain version"),
+      Member(502, 501, "D", "java mill.daemon.MillDaemonMain /p/out/mill-daemon"),
+    )
+    class Fake(var alive: Map[Long, String]) extends RunOnHostSession.Processes:
+      val signalled = scala.collection.mutable.ListBuffer[(Long, String)]()
+      def startOf(pid: Long): Option[String] = alive.get(pid)
+      def endGroup(pgid: Long): Unit = fail(s"ended the group $pgid")
+      def signal(pid: Long, name: String): Unit = signalled += pid -> name
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val listens = (_: Path, pid: Long) => Option.when(pid == 502)(61210)
+    def stillAlive = Fake(Map(500L -> "L", 501L -> "A", 502L -> "D"))
+    // The daemon listens on the candidate and the launcher bears the start time listed: one TERM.
+    val processes = stillAlive
+    assert(MillDaemons.endStarter(record, root, processes, logged += _, _ => group, listens))
+    assertEquals(processes.signalled.toList, List(501L -> "TERM"))
+    assertEquals(logged.toList, List("TERM to the mill starter (pid 501): its daemon (pid 502) listens on port 61210"))
+    logged.clear()
+    // The launcher's pid is recycled after the listing was taken — during lsof, or before the
+    // listing even returns: the start time listed no longer holds, so nothing is signalled or said.
+    val recycledDuringLsof = stillAlive
+    val lsofRecycles = (_: Path, _: Long) => { recycledDuringLsof.alive += 501L -> "B"; Some(61210) }
+    assert(!MillDaemons.endStarter(record, root, recycledDuringLsof, logged += _, _ => group, lsofRecycles))
+    assertEquals(recycledDuringLsof.signalled.toList, Nil)
+    val recycledAfterListing = stillAlive
+    val listingThenRecycle = (_: RunOnHostSession.Record) => { recycledAfterListing.alive += 501L -> "B"; group }
+    assert(!MillDaemons.endStarter(record, root, recycledAfterListing, logged += _, listingThenRecycle, listens))
+    assertEquals(recycledAfterListing.signalled.toList, Nil)
+    // The launcher gone before the signal, or the daemon not yet on its port: nothing.
+    assert(!MillDaemons.endStarter(record, root, Fake(Map(500L -> "L", 502L -> "D")), logged += _, _ => group, listens))
+    assert(!MillDaemons.endStarter(record, root, processes, logged += _, _ => group, (_, _) => None))
+    assertEquals(processes.signalled.size, 1)
+    assertEquals(logged.toList, Nil)
+
+  test("a classpath memo naming a path outside the granted cache is deleted; one inside, a link or none is left"):
+    val build = Files.createTempDirectory("build")
+    val cache = Files.createTempDirectory("cache").toRealPath()
+    val memo = build.resolve("out/mill-daemon/cache/mill-daemon-classpath")
+    Files.createDirectories(memo.getParent)
+    def written(paths: String*): Unit =
+      Files.writeString(memo, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
+    // The profile is the gate's to measure; here the read and the delete are the plain ones.
+    val direct = MillDaemons.Confined(
+      read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
+      delete = file => Files.deleteIfExists(file),
+    )
+    written(s"$cache/https/repo1.maven.org/a.jar", s"$cache/https/repo1.maven.org/b.jar")
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assert(Files.exists(memo))
+    written(s"$cache/https/repo1.maven.org/a.jar", "/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar")
+    val said = MillDaemons.discardForeignMemo(build, cache, direct)
+    assert(said.exists(_.contains("/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar, outside")), said)
+    assert(!Files.exists(memo))
+    // A memo that is a link is not the build's own file: rendezvousIsOwn refuses the command first,
+    // and this deletes nothing through it.
+    Files.createSymbolicLink(memo, build.resolve("elsewhere"))
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assert(Files.isSymbolicLink(memo))
+    Files.delete(memo)
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+
+  test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
+    val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
+    val global = Path.of("/Users/a b/c\"d/sbt")
+    def server(arguments: String*): Seq[String] =
+      val line = serverCommand(sbt, global, arguments)
+      assertEquals(line.take(3), sbtCommand(sbt, global) :+ s"-Dsbt.script=$sbt")
+      assertEquals(line.takeRight(2), Seq("--detach-stdio", "--server"))
+      line.drop(3).dropRight(2)
+    // -D and a value flag reach the server; -J is the client JVM's, -batch and -v the client's
+    // own, and a command with what follows it goes over the socket.
+    assertEquals(
+      server("-Dprobe=1", "-J-Xmx2g", "-batch", "-mem", "512", "compile", "-v"), Seq("-Dprobe=1", "-mem", "512"),
+    )
+    // The empty-build flags are launcher flags even after the command, as the client has them.
+    assertEquals(server("new", "scala/scala3", "--allow-empty"), Seq("--allow-empty"))
+    assertEquals(server("--sbt-create", "compile"), Seq("--sbt-create"))
+    // The `=` form of a value flag splits as the client splits it; the client's own `=` flags stay.
+    assertEquals(server("-sbt-version=2.0.8", "--color=never", "-Dx=y"), Seq("-sbt-version", "2.0.8", "-Dx=y"))
+    // A flag naming a program to run never reaches the server, whatever its form.
+    assertEquals(
+      server("-java-home", "/x", "--sbt-jar=/y.jar", "--sbt-script", "/z", "-Dsbt.script=/w", "-v"), Seq.empty,
+    )
+    // A flag the client does not know is forwarded as the client forwards it.
+    assertEquals(server("-sbt-launch-repo", "https://r", "-x"), Seq("-sbt-launch-repo"))
+
   // --------------------------------------------------------------------------
-  // host-command/, the closed namespace inside the closed namespace
+  // run-on-host/ and its parent both refuse unrecognized configuration entries
   // --------------------------------------------------------------------------
 
   def projectWith(paths: String*): Path =
-    val project = Files.createTempDirectory("host-command")
+    val project = Files.createTempDirectory("run-on-host")
     paths.foreach: path =>
       val full = project.resolve(path)
       Files.createDirectories(full.getParent)
       Files.writeString(full, "")
     project
 
-  test("an absent host-command, or a complete one, is no stray"):
+  test("an absent run-on-host, or a complete one, is no stray"):
     assertEquals(hostCommandStray(Files.createTempDirectory("empty")), None)
     val project = projectWith(
-      ".ko-agent-sandbox/host-command/sbt/egress/rule",
-      ".ko-agent-sandbox/host-command/mill/egress/rule",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
+      ".ko-agent-sandbox/run-on-host/mill/egress/rule",
     )
     assertEquals(hostCommandStray(project), None)
 
   test("a stray name at any level refuses, naming itself; metadata does not"):
     for
       stray <- Seq(
-        ".ko-agent-sandbox/host-command/gradle/egress/rule",
-        ".ko-agent-sandbox/host-command/sbt/egres/rule",
-        ".ko-agent-sandbox/host-command/sbt/egress/rules",
+        ".ko-agent-sandbox/run-on-host/ant/egress/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egres/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egress/rules",
       )
     do
       val refused = hostCommandStray(projectWith(stray))
       assert(refused.isDefined, stray)
       assert(refused.exists(_.contains("update the launcher")), refused.toString)
     val metadata = projectWith(
-      ".ko-agent-sandbox/host-command/.DS_Store",
-      ".ko-agent-sandbox/host-command/sbt/egress/rule",
+      ".ko-agent-sandbox/run-on-host/.DS_Store",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
     )
     assertEquals(hostCommandStray(metadata), None)
     // The retired grammar's file is named as such, with the pointer.
-    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed"))
+    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/allowed"))
     assert(retired.exists(r => r.contains("retired grammar") && r.contains("egress/rule")), retired.toString)
 
   test("a symlinked component refuses by name"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
-    val dir = project.resolve(".ko-agent-sandbox/host-command/mill")
-    Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/host-command/sbt"))
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val dir = project.resolve(".ko-agent-sandbox/run-on-host/mill")
+    Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/run-on-host/sbt"))
     val refused = hostCommandStray(project)
     assert(refused.exists(_.contains("symlink")), refused.toString)
 
   test("a file where a directory belongs refuses instead of reading as absent config"):
-    val project = Files.createTempDirectory("host-command")
-    val dir = project.resolve(".ko-agent-sandbox/host-command")
+    val project = Files.createTempDirectory("run-on-host")
+    val dir = project.resolve(".ko-agent-sandbox/run-on-host")
     Files.createDirectories(dir)
     Files.writeString(dir.resolve("sbt"), "")
     val refused = hostCommandStray(project)
     assert(refused.exists(r => r.contains("sbt") && r.contains("not a directory")), refused.toString)
 
   test("a non-regular file where rule belongs refuses instead of being read"):
-    val project = Files.createTempDirectory("host-command")
-    val egress = project.resolve(".ko-agent-sandbox/host-command/sbt/egress")
+    val project = Files.createTempDirectory("run-on-host")
+    val egress = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
     Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
     val refused = hostCommandStray(project)
     assert(
@@ -178,24 +498,24 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       refused.toString,
     )
 
-  test("readBuildRules reads the tool's file, refuses its strays, and defaults to nothing"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
+  test("readProgramRules reads the program's file, refuses its strays, and defaults to nothing"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
       "allow https://repo.example.org/ read\n",
       UTF_8,
     )
-    assertEquals(readBuildRules(project, Tool.Sbt), Right(Vector("repo.example.org")))
-    assertEquals(readBuildRules(project, Tool.Mill), Right(Vector.empty), "mill has no file here")
+    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
+    assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
 
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
       "allow model-provider openai\n",
       UTF_8,
     )
-    val refused = readBuildRules(project, Tool.Sbt)
+    val refused = readProgramRules(project, Program.Sbt)
     assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.BuildRuleForm)), refused.toString)
+    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.ProgramRuleForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces
@@ -215,7 +535,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("the relaunch classpath walked from the loaders includes these classes and their deps"):
     // What emit prints for the gate: inside sbt's layered loaders java.class.path is sbt's own,
     // so the walk is what has to find the test classes and munit.
-    val classpath = EmitBuildProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
+    val classpath = EmitRunOnHostProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
     assert(classpath.exists(_.contains("munit")), classpath.take(5).toString)
     def includes(entry: String): Boolean =
       val wanted = "agentsandbox/launcher/RunOnHost.class"
@@ -228,16 +548,478 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       else false
     assert(classpath.exists(includes), classpath.take(8).toString)
 
-  test("selfInvocation on a JVM re-runs this classpath under the private verb"):
+  test("selfInvocation on a JVM re-runs this classpath under the private action"):
     val command = selfInvocation("--serve-proxy-on-host")
     assert(command.head.endsWith("/bin/java"), command.toString)
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
     assertEquals(
-      selfInvocation("--run-build-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
-      Seq("--run-build-on-host", "sbt", "/p", "/p/sub", "--"),
+      selfInvocation("--run-command-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
+      Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
     )
+
+  test("the proxy profile's inputs on a JVM are the JDK to run and the class path to read"):
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin")))
+    val inputs = proxyInputs(authority).fold(fail(_), identity)
+    assertEquals(inputs.executables, Seq(Path.of(System.getProperty("java.home")).toRealPath()))
+    assert(inputs.reads.nonEmpty)
+    assert(inputs.reads.forall(entry => Files.exists(entry) && entry.isAbsolute), inputs.reads.take(8).toString)
+    assertEquals(inputs.runtime, authority)
+    // A class-path entry that does not exist is skipped; a relative one is absolute against this
+    // JVM's working directory, and an empty one — a trailing separator included — is that
+    // directory, as the JVM reads them; the proxy runs from / and needs the same entries there.
+    val missing = proxyInputs(authority, classPath = "/no/such/entry.jar").fold(fail(_), identity)
+    assertEquals(missing.reads, Seq.empty)
+    val cwd = Path.of("").toRealPath()
+    val empty = proxyInputs(authority, classPath = "/no/such/entry.jar:").fold(fail(_), identity)
+    assertEquals(empty.reads, Seq(cwd))
+    assertEquals(proxyInputs(authority, classPath = "").fold(fail(_), identity).reads, Seq(cwd))
+    assertEquals(proxyInputs(authority, classPath = "build.sbt").fold(fail(_), identity).reads,
+      Seq(cwd.resolve("build.sbt")))
+    assertEquals(
+      selfClassPath("target/dist/ko-agent-sandbox.jar:"),
+      Seq(Path.of("").toAbsolutePath.resolve("target/dist/ko-agent-sandbox.jar").toString,
+        Path.of("").toAbsolutePath.toString),
+    )
+    assert(proxyInputs(authority, javaHome = "/no/such/jdk").isLeft)
+    // The launch entry is found by resolved path and kept as spelled (launchEntry has why):
+    // launched through a symlink, the entry is the link; its removal is the refusal, naming
+    // the link though its target stays, and a retargeted link is its new target.
+    val dir = Files.createTempDirectory("self")
+    val real = Files.writeString(dir.resolve("real.jar"), "")
+    val other = Files.writeString(dir.resolve("other.jar"), "")
+    val link = Files.createSymbolicLink(dir.resolve("link.jar"), real)
+    val classPath = s"${dir.resolve("unused.jar")}${java.io.File.pathSeparator}$link"
+    val entry = launchEntry(classPath, Some(real))
+    assertEquals(entry, Some(link))
+    assertEquals(selfPresent(entry), Right(Some(real.toRealPath())))
+    Files.delete(link)
+    val refused = proxyInputs(authority, self = entry)
+    assert(refused.swap.exists(_.contains(link.toString)), refused.toString)
+    Files.createSymbolicLink(link, other)
+    assertEquals(selfPresent(entry), Right(Some(other.toRealPath())))
+    // Code off the class path — this process's own under sbt — has no entry, and nothing to refuse.
+    assertEquals(launchEntry(classPath, Some(dir.resolve("elsewhere.jar"))), None)
+    assertEquals(selfPresent(None), Right(None))
+
+  test("a command is refused before its wrapper runs when the launcher's executable is gone, Maven's included"):
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    var proxies = 0
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+      RunOnHostSession.HostProcesses,
+      (_, _, _) => fail("assembled without an executable"),
+      (_, _, _, _) => { proxies += 1; Right(1) },
+      _ => fail("a server started without an executable"),
+      _ => fail("a daemon started without an executable"),
+      executable = () => Left("gone"),
+    )
+    for program <- Program.values do
+      assertEquals(runtimes.prepare(program, project, Seq.empty), Left("gone"), clue = program)
+    assertEquals(proxies, 0)
+
+  test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val endedGroups = scala.collection.mutable.ListBuffer[Long]()
+    // The server stand-in's listening sockets, by the group they belong to: a server's socket
+    // closes with its group.
+    val listeners = scala.collection.mutable.Map[Path, ServerSocketChannel]()
+    val socketOfGroup = scala.collection.mutable.Map[Long, Path]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
+      def endGroup(pgid: Long): Unit =
+        endedGroups += pgid
+        socketOfGroup.remove(pgid).foreach(socket => listeners.remove(socket).foreach(_.close()))
+        ProcessHandle.of(pgid).ifPresent: leader =>
+          leader.descendants().forEach(_.destroyForcibly())
+          leader.destroyForcibly()
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    def await(what: String)(condition: => Boolean): Unit =
+      var waited = 0
+      while !condition && waited < 200 do
+        Thread.sleep(50)
+        waited += 1
+      assert(condition, what)
+    // Where the proxy and the server would be: registered spawns of a sleep, so the records,
+    // their exit files and the groups are real spawns'; the server stand-in also listens on a
+    // socket under the session's tmp and writes the portfile naming it, as a server does.
+    val spawns = scala.collection.mutable.ListBuffer[Process]()
+    def standIn(record: Path): Unit =
+      spawns += ProcessBuilder(RunOnHostSession.registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
+      await(s"$record registered")(Files.exists(record))
+    var neverReady = false
+    var throwsAfterRegistering = false
+    var lastPort = 0
+    val proxy = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+      standIn(record)
+      Files.writeString(proxyLog, "listening\n", UTF_8)
+      if throwsAfterRegistering then throw java.io.IOException("log unreadable")
+      lastPort = spawns.size
+      if neverReady then Left("never ready") else Right(lastPort)
+    val serverStarts = scala.collection.mutable.ListBuffer[ServerStart]()
+    var serverFails = false
+    var serverThrows = false
+    val server = (start: ServerStart) =>
+      serverStarts += start
+      standIn(start.record)
+      if serverThrows then throw IllegalStateException("boom")
+      if serverFails then Left("no portfile")
+      else
+        val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, start.buildDirectory)
+        Files.createDirectories(socket.getParent)
+        listeners.remove(socket).foreach(_.close())
+        Files.deleteIfExists(socket)
+        val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        listener.bind(UnixDomainSocketAddress.of(socket))
+        listeners(socket) = listener
+        socketOfGroup(RunOnHostSession.parseRecord(Files.readString(start.record, UTF_8)).get.pgid) = socket
+        writePortfile(start.buildDirectory, socket)
+        Right(())
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
+    )
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    // The daemon stand-in: a registered spawn of a sleep, the sleep itself standing for the
+    // daemon — the process a reuse proves by pid and start time — on a port of the seam's choosing.
+    val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
+    var daemonFails = false
+    val daemon = (start: DaemonStart) =>
+      daemonStarts += start
+      standIn(start.record)
+      if daemonFails then Left("no daemon in the group")
+      else
+        val leader = ProcessHandle.of(RunOnHostSession.parseRecord(Files.readString(start.record, UTF_8)).get.pgid).get
+        await("the sleep started")(leader.children().findFirst().isPresent)
+        val sleeper = leader.children().findFirst().get.pid
+        val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
+        Right(MillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
+    var assemblies = 0
+    val runtimes = BrokerRuntimes(session, project, logged.append(_), authority, Vector.empty)(
+      processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
+    )
+    val dirA = Files.createDirectory(project.resolve("a"))
+    val dirB = Files.createDirectory(project.resolve("b"))
+    def hashOf(dir: Path) = RunOnHostSession.buildHash(dir)
+    def recordOf(dir: Path, program: String = "sbt") = session.records.resolve(s"proxy-$program-${hashOf(dir)}")
+    def serverOf(dir: Path) = session.records.resolve(s"server-sbt-${hashOf(dir)}")
+    def buildOf(dir: Path) = RunOnHostSession.buildFile(session.directory, hashOf(dir))
+    def logOf(dir: Path, program: String = "sbt") = session.directory.resolve(s"proxy-$program-${hashOf(dir)}.log")
+    def portfileOf(dir: Path) = dir.resolve("project/target/active.json")
+    def pgidOf(record: Path) = RunOnHostSession.parseRecord(Files.readString(record, UTF_8)).get.pgid
+    // A server gone on its own: its socket closes with it, and its spawn publishes the exit.
+    def serverExits(dir: Path): Unit =
+      listeners.remove(RunOnHostSandbox.expectedServerSocket(session.tmp, dir)).foreach(_.close())
+      ProcessHandle.of(pgidOf(serverOf(dir))).get.children().forEach(_.destroyForcibly())
+      await("the exit published")(Files.exists(RunOnHostSession.exitRecord(serverOf(dir))))
+    def current(dir: Path, program: String = "sbt") =
+      Right(Some(Runtime(session.directory, lastPort, logOf(dir, program))))
+    try
+      val first = runtimes.prepare(Program.Sbt, dirA, Seq("-Dprobe=1", "compile"))
+      assertEquals(first, current(dirA))
+      assertEquals(Files.readString(buildOf(dirA), UTF_8).trim, dirA.toString, "the build file names the directory")
+      assertEquals(serverStarts.map(_.arguments).toList, List(Seq("-Dprobe=1", "compile")))
+      assertEquals(serverStarts.head.record, serverOf(dirA))
+      assert(Files.exists(portfileOf(dirA)))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("-Dprobe=2", "test")), first, "reused while all agree")
+      assertEquals(spawns.size, 2)
+      assertEquals(serverStarts.size, 1, "a later request's arguments reach no server")
+      // The server exits — `shutdown`, its idle timeout — and the spawn publishes it: the next
+      // command gets a server, the old group ended behind its leader.
+      val firstServer = pgidOf(serverOf(dirA))
+      serverExits(dirA)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
+      assertEquals(endedGroups.toList, List(firstServer))
+      assertEquals(serverStarts.size, 2)
+      assert(!Files.exists(RunOnHostSession.exitRecord(serverOf(dirA))), "the replacement's record has no exit")
+      assert(logged.exists(_.contains("its server is gone")), logged.toString)
+      // The portfile no longer names the running server: a client would attach elsewhere or
+      // fork its own, so the server is replaced.
+      Files.delete(portfileOf(dirA))
+      val secondServer = pgidOf(serverOf(dirA))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
+      assertEquals(endedGroups.toList, List(firstServer, secondServer))
+      assertEquals(serverStarts.size, 3)
+      assert(logged.exists(_.contains("no longer names its server")), logged.toString)
+      // A portfile naming a connectable socket that is not this directory's derived one does not
+      // authorize reuse: the server record still lives, but prepare replaces the server rather
+      // than send this directory's client to an alien server (a portfile copied from elsewhere).
+      val thirdServer = pgidOf(serverOf(dirA))
+      val alien = session.tmp.resolve("alien").resolve("sock")
+      Files.createDirectories(alien.getParent)
+      val alienListener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+      alienListener.bind(UnixDomainSocketAddress.of(alien))
+      try
+        writePortfile(dirA, alien)
+        assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
+        assertEquals(endedGroups.last, thirdServer, "the server whose portfile named an alien socket is replaced")
+        assertEquals(serverStarts.size, 4)
+      finally alienListener.close()
+      // A replacement whose start throws after registering is discarded like a refused one,
+      // and the next command retries.
+      serverExits(dirA)
+      serverThrows = true
+      assertEquals(
+        runtimes.prepare(Program.Sbt, dirA, Seq("test")),
+        Left("starting the sbt server: IllegalStateException: boom"),
+      )
+      assert(!Files.exists(serverOf(dirA)), "the throwing start's record")
+      serverThrows = false
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
+      assertEquals(serverStarts.size, 6)
+      // The proxy exits: the whole runtime is replaced, the server ended first.
+      val firstProxy = pgidOf(recordOf(dirA))
+      val sixthServer = pgidOf(serverOf(dirA))
+      ProcessHandle.of(firstProxy).get.children().forEach(_.destroyForcibly())
+      await("the exit published")(Files.exists(RunOnHostSession.exitRecord(recordOf(dirA))))
+      val second = runtimes.prepare(Program.Sbt, dirA, Seq("test"))
+      assertEquals(second, current(dirA))
+      assert(second != first, "a new proxy")
+      assertEquals(endedGroups.takeRight(2).toList, List(sixthServer, firstProxy))
+      // The group killed whole: no exit is published, the leader is gone, and the record proves
+      // nothing to end — replaced all the same.
+      val leader = ProcessHandle.of(pgidOf(recordOf(dirA))).get
+      val children = leader.children().toList
+      leader.destroyForcibly()
+      children.forEach(_.destroyForcibly())
+      await("the leader gone")(!leader.isAlive)
+      val before = endedGroups.size
+      val aRuntime = runtimes.prepare(Program.Sbt, dirA, Seq("test"))
+      assertEquals(aRuntime, current(dirA))
+      assertEquals(endedGroups.size, before + 1, "the server's group is ended; the proxy's leader gone is skipped")
+
+      // A second build directory leaves the first warm: each keeps its own proxy, server and
+      // build file; visiting one does not retire the other.
+      val serversAtA = serverStarts.size
+      val bRuntime = runtimes.prepare(Program.Sbt, dirB, Seq("test"))
+      assertEquals(bRuntime, current(dirB))
+      assert(bRuntime != aRuntime, "dirB has its own runtime")
+      assertEquals(serverStarts.size, serversAtA + 1, "dirB started its own server; dirA's stayed")
+      assert(Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)), "dirA stays warm")
+      assert(Files.exists(serverOf(dirB)) && Files.exists(buildOf(dirB)))
+      // Revisiting each reuses its warm runtime; no new server starts.
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("x")), aRuntime, "dirA reused")
+      assertEquals(runtimes.prepare(Program.Sbt, dirB, Seq("x")), bRuntime, "dirB reused")
+      assertEquals(serverStarts.size, serversAtA + 1, "reuse starts no server")
+
+      // A fresh directory's failed starts leave no files, and touch neither warm runtime: a
+      // proxy that never reports ready, a server that does not come up, and a start that throws.
+      val dirC = Files.createDirectory(project.resolve("c"))
+      neverReady = true
+      assertEquals(runtimes.prepare(Program.Sbt, dirC, Seq("test")), Left("never ready"))
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(logOf(dirC)) && !Files.exists(buildOf(dirC)))
+      neverReady = false
+      serverFails = true
+      assertEquals(runtimes.prepare(Program.Sbt, dirC, Seq("test")), Left("no portfile"))
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(serverOf(dirC)) && !Files.exists(buildOf(dirC)))
+      serverFails = false
+      throwsAfterRegistering = true
+      assertEquals(
+        runtimes.prepare(Program.Sbt, dirC, Seq("test")),
+        Left("creating the runtime: IOException: log unreadable"),
+      )
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(logOf(dirC)) && !Files.exists(buildOf(dirC)))
+      throwsAfterRegistering = false
+      assert(Files.exists(serverOf(dirA)) && Files.exists(serverOf(dirB)), "the warm runtimes are untouched")
+
+      // Mill's runtime is its proxy and its daemon, the client confined to the daemon's port;
+      // sbt and mill share the directory's build file, so it outlives the retirement of one
+      // program's runtime while the other's records name the hash.
+      val serversBefore = serverStarts.size
+      def daemonOf(dir: Path) = session.records.resolve(s"daemon-mill-${hashOf(dir)}")
+      def millRuntime(dir: Path) =
+        Runtime(session.directory, lastPort, logOf(dir, "mill"), Some(40_000 + daemonStarts.size))
+      val millA = runtimes.prepare(Program.Mill, dirA, Seq("compile"))
+      assertEquals(millA, Right(Some(millRuntime(dirA))))
+      assertEquals(serverStarts.size, serversBefore, "mill starts no server")
+      assertEquals(daemonStarts.map(_.record).toList, List(daemonOf(dirA)))
+      assert(Files.exists(recordOf(dirA, "mill")) && Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)))
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused while the daemon lives")
+      assertEquals(daemonStarts.size, 1)
+      // A link redirecting the rendezvous is refused before reuse, and the warm daemon is untouched.
+      val daemonDirA = Files.createDirectories(dirA.resolve("out")).resolve("mill-daemon")
+      Files.createSymbolicLink(daemonDirA, Files.createDirectories(dirB.resolve("out/mill-daemon")))
+      val redirected = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assert(redirected.swap.exists(_.contains("redirected mill daemon directory")), redirected.toString)
+      Files.delete(daemonDirA)
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused once the link is gone")
+      assertEquals(daemonStarts.size, 1)
+      // The daemon gone on its own — its idle exit, `shutdown`, the cancel that ends it — with its
+      // starter's leader still alive: replaced, the old group ended.
+      val firstDaemonLeader = pgidOf(daemonOf(dirA))
+      val firstDaemon = ProcessHandle.of(firstDaemonLeader).get.children().findFirst().get
+      firstDaemon.destroyForcibly()
+      await("the daemon gone")(!firstDaemon.isAlive)
+      val millA2 = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assertEquals(millA2, Right(Some(millRuntime(dirA))), "a new daemon")
+      assertEquals(endedGroups.last, firstDaemonLeader)
+      assertEquals(daemonStarts.size, 2)
+      assert(logged.exists(_.contains("its daemon is gone")), logged.toString)
+      // A change to what Mill's launcher restarts the daemon on replaces the daemon, the old
+      // group ended and the assembly redone, before the client could meet the mismatch itself.
+      val secondDaemonLeader = pgidOf(daemonOf(dirA))
+      val assembliesBefore = assemblies
+      Files.writeString(dirA.resolve(".mill-jvm-opts"), "-Xmx1g\n", UTF_8)
+      val millA3 = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assertEquals(millA3, Right(Some(millRuntime(dirA))))
+      assertEquals(endedGroups.last, secondDaemonLeader)
+      assertEquals(assemblies, assembliesBefore + 1, "assembled afresh")
+      assert(logged.exists(_.contains("its configuration changed")), logged.toString)
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA3, "reused under the new configuration")
+      // A daemon start that fails leaves no record, and the next command retries.
+      val thirdDaemonLeader = pgidOf(daemonOf(dirA))
+      ProcessHandle.of(thirdDaemonLeader).get.children().forEach(_.destroyForcibly())
+      await("the daemon gone")(ProcessHandle.of(thirdDaemonLeader).get.children().findFirst().isEmpty)
+      daemonFails = true
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), Left("no daemon in the group"))
+      assert(!Files.exists(daemonOf(dirA)), "the failed start's record")
+      daemonFails = false
+      assertEquals(
+        runtimes.prepare(Program.Mill, dirA, Seq("test")).map(_.flatMap(_.daemonPort)),
+        Right(Some(40_000 + daemonStarts.size)),
+      )
+      // Gradle's runtime is its proxy: no server, no daemon start, reused while the proxy lives.
+      val daemonsBefore = daemonStarts.size
+      val gradleA = runtimes.prepare(Program.Gradle, dirA, Seq("build"))
+      assertEquals(gradleA.map(_.map(_.daemonPort)), Right(Some(None)))
+      assertEquals(gradleA.map(_.map(_.proxyLog)), Right(Some(logOf(dirA, "gradle"))))
+      assertEquals(runtimes.prepare(Program.Gradle, dirA, Seq("test")), gradleA, "reused while the proxy lives")
+      assertEquals(serverStarts.size, serversBefore, "gradle starts no server")
+      assertEquals(daemonStarts.size, daemonsBefore, "gradle starts no daemon")
+      // Maven's proxy is the command's own.
+      assertEquals(runtimes.prepare(Program.Mvn, dirA, Seq.empty), Right(None))
+      // Last, since it discards dirA's server: a redirected socket directory is not reused as
+      // this directory's own server. dirA's socket directory is replaced with a symlink to dirB's,
+      // leaving dirA's portfile spelling unchanged but resolving to dirB. Reuse is refused — a
+      // replacement start is attempted (and here fails by the seam) — so the client never reaches
+      // dirB's server. The socket check compares spellings; the symlink guard catches the
+      // redirection the spelling hides.
+      val aSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirA)
+      val bSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirB)
+      listeners.remove(aSock).foreach(_.close())
+      Files.deleteIfExists(aSock)
+      Files.delete(aSock.getParent)
+      Files.createSymbolicLink(aSock.getParent, bSock.getParent)
+      serverFails = true
+      assert(runtimes.prepare(Program.Sbt, dirA, Seq("test")).isLeft, "a redirected socket directory is not reused")
+      serverFails = false
+      Files.delete(aSock.getParent)
+    finally
+      listeners.values.foreach(_.close())
+      spawns.foreach: spawn =>
+        spawn.descendants().forEach(_.destroyForcibly())
+        spawn.destroyForcibly()
+      session.close()
+
+  test("another live broker owning the build directory is refused, and its server is never signalled"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+    val root = Files.createTempDirectory("owned").toRealPath()
+    RunOnHostSession.ensureRoot(root, uid).getOrElse(fail("root"))
+    val project = Files.createDirectory(root.resolve("project"))
+    val mine = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val peer = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val dir = Files.createDirectory(project.resolve("shared"))
+    val hash = RunOnHostSession.buildHash(dir)
+    // The peer owns dir: its build file names it, and it holds a live server for the hash.
+    RunOnHostSession.publishBuildFile(peer.directory, hash, dir)
+    val peerServerRecord = peer.records.resolve(s"server-sbt-$hash")
+    val peerServer =
+      ProcessBuilder(RunOnHostSession.registeredSpawn(peerServerRecord, Seq("/bin/sleep", "30"))*).start()
+    var waited = 0
+    while !Files.exists(peerServerRecord) && waited < 200 do { Thread.sleep(50); waited += 1 }
+    val peerLeader = RunOnHostSession.parseRecord(Files.readString(peerServerRecord, UTF_8)).get.pgid
+    val endedGroups = scala.collection.mutable.ListBuffer[Long]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
+      def endGroup(pgid: Long): Unit = endedGroups += pgid
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
+    )
+    // A second directory the peer touched with Mill only: its build file names it, but there is
+    // no server-sbt record, so the peer reserves no sbt server there.
+    val millDir = Files.createDirectory(project.resolve("mill-only"))
+    val millHash = RunOnHostSession.buildHash(millDir)
+    RunOnHostSession.publishBuildFile(peer.directory, millHash, millDir)
+    val started = scala.collection.mutable.ListBuffer[Path]()
+    val server = (start: ServerStart) =>
+      started += start.buildDirectory
+      Right(())
+    val emptyAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
+    val daemon = (start: DaemonStart) =>
+      daemonStarts += start.buildDirectory
+      Right(MillDaemons.Daemon(1, "S", 40_001))
+    val runtimes = BrokerRuntimes(mine, project, _ => (), emptyAuthority, Vector.empty)(
+      processes,
+      (_, _, _) => Right(assembled),
+      (_, _, _, _) => Right(1), // a proxy port, no stand-in spawn
+      server,
+      daemon,
+    )
+    try
+      // The peer owns the sbt server for `dir`: refused, and its server never signalled.
+      val refused = runtimes.prepare(Program.Sbt, dir, Seq("compile"))
+      assert(refused.swap.exists(_.contains("another launch's broker")), refused.toString)
+      assert(!endedGroups.contains(peerLeader), "the peer's server was never signalled")
+      assert(peerServer.isAlive, "the peer's server is untouched")
+      assert(!started.contains(dir), "no server was started for the owned directory")
+      // The peer's Mill-only directory reserves no sbt server: this launch starts sbt there.
+      assertEquals(runtimes.prepare(Program.Sbt, millDir, Seq("compile")).map(_.isDefined), Right(true))
+      assert(started.contains(millDir), "sbt started in the Mill-only directory")
+      // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` refuses a mill
+      // command for that directory, while its sbt-only `dir` admits one.
+      Files.writeString(peer.records.resolve(s"daemon-mill-$millHash"), "1 S\n", UTF_8)
+      val refusedMill = runtimes.prepare(Program.Mill, millDir, Seq("compile"))
+      assert(refusedMill.swap.exists(_.contains("owns the mill daemon")), refusedMill.toString)
+      assert(!daemonStarts.contains(millDir), "no daemon was started for the owned directory")
+      assertEquals(
+        runtimes.prepare(Program.Mill, dir, Seq("compile")).map(_.flatMap(_.daemonPort)), Right(Some(40_001)),
+      )
+      assert(daemonStarts.contains(dir), "mill started in the sbt-owned directory")
+    finally
+      peerServer.descendants().forEach(_.destroyForcibly())
+      peerServer.destroyForcibly().waitFor()
+      mine.close(); peer.close()
+
+  test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = Option.when(pid == 4242)("S")
+      def endGroup(pgid: Long): Unit = ()
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    val observed = scala.collection.mutable.ListBuffer[Path]()
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val runtimes = BrokerRuntimes(
+      session, project, logged.append(_), SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty), Vector.empty,
+    )(
+      processes = processes,
+      gradleDaemons = base =>
+        observed += base
+        Vector(4242L -> "S"),
+    )
+    try
+      val record = session.records.resolve(GradleDaemons.recordName(4242))
+      runtimes.commandEnded(Program.Sbt)
+      runtimes.commandEnded(Program.Mvn)
+      assert(observed.isEmpty, "only a gradle command has daemons to observe")
+      runtimes.commandEnded(Program.Gradle)
+      // The registry observed is the launch's, under this session's tmp; the record proves the pid.
+      assertEquals(observed.toList, List(session.tmp))
+      assertEquals(Files.readString(record, UTF_8), "4242 S\n")
+      assertEquals(logged.toList, List("recorded the gradle daemon 4242"))
+    finally session.close()
 
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
@@ -252,9 +1034,16 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(deniedHosts(log), Vector("example.com"))
     assertEquals(deniedHosts(log.resolveSibling("absent")), Vector.empty)
+    // From an offset: what a command added to the broker's log, an earlier command's lines excluded.
+    val before = Files.size(log)
+    assertEquals(deniedHosts(log, before), Vector.empty)
+    Files.writeString(log, "2026-08-31T01:08:28Z deny other.example CONNECT host not allowed\n", UTF_8,
+      java.nio.file.StandardOpenOption.APPEND)
+    assertEquals(deniedHosts(log, before), Vector("other.example"))
+    assertEquals(deniedHosts(log, before + 1_000_000), Vector.empty)
 
   // --------------------------------------------------------------------------
-  // The one-server-per-project refusal
+  // The live server a portfile names
   // --------------------------------------------------------------------------
 
   def projectWithPortfile(socket: Path): Path =
@@ -367,15 +1156,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       UTF_8,
     )
 
-  test("autoShutdownForeignServer refuses a portfile socket that is not the derived one"):
+  test("shutdownForeignServer refuses a portfile socket that is not the derived one"):
     val project = Files.createTempDirectory("foreign")
-    val result = autoShutdownForeignServer(
-      project, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
+    val result = shutdownForeignServer(
+      project, project, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
     )
-    assert(result.swap.exists(_.contains("does not apply")), result)
+    assert(result.swap.exists(_.contains("not the one sbt derives")), result)
     assert(result.swap.exists(_.contains("run `sbt shutdown` there and retry")), result)
 
-  test("autoShutdownForeignServer refuses a derived socket the project itself could have planted"):
+  test("shutdownForeignServer refuses a derived socket the project itself could have planted"):
     // The whole defence of sending the shutdown only to the derived socket is that the project
     // cannot choose it. An environment that puts sbt's server directory inside the project takes
     // that away.
@@ -385,23 +1174,23 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(derived.getParent)
     val log = collection.mutable.Buffer[String]()
     val result =
-      autoShutdownForeignServer(project, derived, env, log.append(_), userHome = Path.of("/u"))
-    assert(result.swap.exists(_.contains("reachable through what a build writes")), result)
+      shutdownForeignServer(project, project, derived, env, log.append(_), userHome = Path.of("/u"))
+    assert(result.swap.exists(_.contains("reachable through what a command writes")), result)
     assertEquals(log.toList, Nil)
 
-  test("autoShutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
+  test("shutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
     val home = Files.createTempDirectory("home")
     val project = Files.createTempDirectory("foreign")
     val derived = sbtServerSocket(project, _ => None, home)
     writePortfile(project, derived)
     val log = collection.mutable.Buffer[String]()
     assertEquals(
-      autoShutdownForeignServer(project, derived, _ => None, log.append(_), userHome = home),
+      shutdownForeignServer(project, project, derived, _ => None, log.append(_), userHome = home),
       Right(()),
     )
-    assert(log.exists(_.contains("shutting down the foreign sbt server")), log)
+    assert(log.exists(_.contains("shutting down the sbt server")), log)
 
-  test("autoShutdownForeignServer refuses when the server never answers the shutdown"):
+  test("shutdownForeignServer refuses when the server never answers the shutdown"):
     // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val project = Files.createTempDirectory("f")
@@ -410,13 +1199,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     listener.bind(UnixDomainSocketAddress.of(derived))
     try
-      val result = autoShutdownForeignServer(
-        project, derived, env, _ => (), shutdownDeadlineMillis = 300,
+      val result = shutdownForeignServer(
+        project, project, derived, env, _ => (), shutdownDeadlineMillis = 300,
       )
       assert(result.swap.exists(_.contains("went unanswered")), result)
     finally listener.close()
 
-  test("autoShutdownForeignServer refuses when the portfile outlives an answered shutdown"):
+  test("shutdownForeignServer refuses when the portfile outlives an answered shutdown"):
     // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val project = Files.createTempDirectory("f")
@@ -443,8 +1232,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     server.start()
     try
-      val result = autoShutdownForeignServer(
-        project, derived, env, _ => (),
+      val result = shutdownForeignServer(
+        project, project, derived, env, _ => (),
         shutdownDeadlineMillis = 2_000, releaseDeadlineMillis = 300,
       )
       assert(result.swap.exists(_.contains("still holds the portfile")), result)
@@ -453,10 +1242,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       listener.close()
       server.join(2_000)
 
-  test("reachableThroughBuildWritable answers by what the walk enters, not by where it ends"):
+  test("reachableThroughCommandWritable answers by what the walk enters, not by where it ends"):
     val project = Files.createTempDirectory("p")
     val outside = Files.createTempDirectory("o")
-    def reachable(target: Path) = reachableThroughBuildWritable(target, project, Seq.empty)
+    def reachable(target: Path) = reachableThroughCommandWritable(target, project, Seq.empty)
     assert(reachable(project.resolve("srv/h/sock")))
     assert(!reachable(outside.resolve("srv/h/sock")))
     // The planting this exists to catch, in both forms a link can take: the endpoint tells
@@ -480,30 +1269,103 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // A relative path resolves against a working directory this process does not control.
     assert(reachable(Path.of("srv/h/sock")))
     // An unanswerable question is reachable: a project that does not resolve cannot clear anything.
-    assert(reachableThroughBuildWritable(outside.resolve("sock"), project.resolve("gone"), Seq.empty))
+    assert(reachableThroughCommandWritable(outside.resolve("sock"), project.resolve("gone"), Seq.empty))
 
-  test("reachableThroughBuildWritable covers the caches a build writes, not the project alone"):
+  test("reachableThroughCommandWritable covers the caches a command writes, not the project alone"):
     val project = Files.createTempDirectory("p")
     val cache = Files.createTempDirectory("c")
     val outside = Files.createTempDirectory("o")
     val planted = cache.resolve("h/sock")
     Files.createDirectories(planted.getParent)
     Files.writeString(planted, "")
-    // A socket an earlier agent's build left in a persistent cache is as planted as one in the
+    // A socket an earlier agent's command left in a persistent cache is as planted as one in the
     // project — and invisible while the project is the only root.
-    assert(!reachableThroughBuildWritable(planted, project, Seq.empty))
-    assert(reachableThroughBuildWritable(planted, project, Seq(cache)))
-    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(planted, project, Seq.empty))
+    assert(reachableThroughCommandWritable(planted, project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(outside.resolve("sock"), project, Seq(cache)))
     // A cache that does not exist yet holds nothing, and must not refuse every shutdown.
-    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache.resolve("gone"))))
+    assert(!reachableThroughCommandWritable(outside.resolve("sock"), project, Seq(cache.resolve("gone"))))
 
-  test("reachableThroughBuildWritable knows both firmlink spellings of every writable root"):
+  test("reachableThroughCommandWritable knows both firmlink spellings of every writable root"):
     // macOS serves the writable volume at / and at /System/Volumes/Data alike, and toRealPath
     // collapses neither, so the alternate spelling would otherwise walk past every root.
     val project = Files.createTempDirectory("p")
     val cache = Files.createTempDirectory("c")
     val outside = Files.createTempDirectory("o")
     def aliased(root: Path) = Path.of(s"/System/Volumes/Data${root.toRealPath()}/h/sock")
-    assert(reachableThroughBuildWritable(aliased(project), project, Seq.empty))
-    assert(reachableThroughBuildWritable(aliased(cache), project, Seq(cache)))
-    assert(!reachableThroughBuildWritable(aliased(outside), project, Seq(cache)))
+    assert(reachableThroughCommandWritable(aliased(project), project, Seq.empty))
+    assert(reachableThroughCommandWritable(aliased(cache), project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(aliased(outside), project, Seq(cache)))
+
+  test("appendSessionLogs reads each log as the file it found, inside the session, bounded, naming what it skipped"):
+    val root = Files.createTempDirectory("session-logs")
+    val condemned = Files.createDirectory(root.resolve("s1"))
+    val tmp = Files.createDirectory(condemned.resolve(RunOnHostSession.TmpDir))
+    val channelLog = root.resolve("channel.log")
+    Files.writeString(channelLog, "before\n", UTF_8)
+    val audit = ("audit line\n" * (SessionLogTailBytes / 8)).getBytes(UTF_8)
+    Files.write(condemned.resolve("proxy.log"), audit)
+    // A sparse file the command could have made as large as it liked: only the tail is read.
+    val sparse = java.io.RandomAccessFile(tmp.resolve("sbt-server-err1.log").toFile, "rw")
+    sparse.write("server said\n".getBytes(UTF_8))
+    sparse.setLength(1L << 30)
+    sparse.close()
+    // A link out of the session: named, never followed.
+    val secret = Files.writeString(root.resolve("secret"), "the user's own file\n", UTF_8)
+    Files.createSymbolicLink(tmp.resolve("sbt-server-err2.log"), secret)
+    // A FIFO: named, never opened, or this teardown would wait on a writer that never comes.
+    assume(ProcessBuilder("mkfifo", tmp.resolve("sbt-server-err3.log").toString).start().waitFor() == 0, "needs mkfifo")
+    Files.writeString(tmp.resolve("other.tmp"), "not a log\n", UTF_8)
+    appendSessionLogs(channelLog, condemned, "command s1 ended by signal")
+    val logged = Files.readString(channelLog, UTF_8)
+    assert(logged.startsWith("before\n"), logged)
+    assert(logged.contains("command s1 ended by signal; its logs follow"), logged)
+    assert(logged.contains(s"==> proxy.log\n[last $SessionLogTailBytes bytes]\n"), logged)
+    assert(logged.contains(s"==> sbt-server-err1.log\n[last $SessionLogTailBytes bytes]\n"), logged)
+    assert(logged.contains("==> sbt-server-err2.log\n[skipped: not a regular file]\n"), logged)
+    assert(logged.contains("==> sbt-server-err3.log\n[skipped: not a regular file]\n"), logged)
+    assert(!logged.contains("the user's own file"), logged)
+    assert(!logged.contains("not a log"), logged)
+    // tmp itself replaced by a link to a directory holding a matching regular file: not listed.
+    val planted = Files.createDirectory(root.resolve("planted"))
+    Files.writeString(planted.resolve("sbt-server-err1.log"), "the user's other file\n", UTF_8)
+    val linked = Files.createDirectory(root.resolve("s3"))
+    Files.createSymbolicLink(linked.resolve(RunOnHostSession.TmpDir), planted)
+    Files.writeString(linked.resolve("proxy.log"), "audit\n", UTF_8)
+    Files.writeString(channelLog, "", UTF_8)
+    appendSessionLogs(channelLog, linked, "command s3 ended by signal")
+    val viaLink = Files.readString(channelLog, UTF_8)
+    assert(viaLink.contains("==> tmp\n[skipped: not a directory]\n"), viaLink)
+    assert(viaLink.contains("==> proxy.log\naudit\n"), viaLink)
+    assert(!viaLink.contains("the user's other file"), viaLink)
+    // Kept whole below the bound, and a session with a proxy log alone lists that alone.
+    val alone = Files.createDirectory(root.resolve("s2"))
+    Files.createDirectory(alone.resolve(RunOnHostSession.TmpDir))
+    Files.writeString(alone.resolve("proxy.log"), "short\n", UTF_8)
+    Files.writeString(channelLog, "", UTF_8)
+    appendSessionLogs(channelLog, alone, "command s2 ended by signal")
+    val again = Files.readString(channelLog, UTF_8)
+    assert(again.contains("==> proxy.log\nshort\n"), again)
+    assert(!again.contains("[last"), again)
+    assert(!again.contains("sbt-server-err"), again)
+    // The broker's session: one proxy log per runtime, and nothing else of the directory.
+    val broker = Files.createDirectory(root.resolve("b1"))
+    Files.createDirectory(broker.resolve(RunOnHostSession.TmpDir))
+    Files.writeString(broker.resolve("proxy-sbt-0a.log"), "sbt audit\n", UTF_8)
+    Files.writeString(broker.resolve("proxy-mill-0b.log"), "mill audit\n", UTF_8)
+    Files.writeString(broker.resolve("server-sbt-0a.log"), "server said\n", UTF_8)
+    Files.writeString(broker.resolve("project"), "/p\n", UTF_8)
+    Files.writeString(channelLog, "", UTF_8)
+    appendSessionLogs(channelLog, broker, "the broker's session b1 ended")
+    val brokers = Files.readString(channelLog, UTF_8)
+    assert(brokers.contains("the broker's session b1 ended; its logs follow"), brokers)
+    assert(brokers.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), brokers)
+    assert(brokers.contains("==> server-sbt-0a.log\nserver said\n"), brokers)
+    assert(!brokers.contains("==> project"), brokers)
+object ForkJvmSettings:
+  def main(args: Array[String]): Unit =
+    val command = ProcessBuilder(
+      Path.of(sys.props("java.home"), "bin/java").toString,
+      "-Djava.io.tmpdir=/build-option", "-XshowSettings:properties", "-version",
+    )
+    sys.exit(command.inheritIO().start().waitFor())

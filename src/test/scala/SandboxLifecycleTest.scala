@@ -119,8 +119,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
       "the teardown step must come after this run's own cleanup",
     )
-    // The script text is pinned here; what it does — no job under off, a pid held, a signal delivered, a
-    // tree ended — is the lifecycle tests below.
+    // The script text is checked here; what it does — no job under off, a pid held, a signal
+    // delivered, a tree ended — is the lifecycle tests below.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
     val broker = ReaperScript.indexOf(
       "if [ \"$8\" != off ]; then\n  ( clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +
@@ -144,7 +144,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
       * own — a handle knows its process's start time, so one whose pid was since reused answers
       * dead and cannot be signalled into another process. */
     childrenAtWait: Vector[ProcessHandle],
-    /** Whether the blocking `exec` child — the stand-in for a hung clipboard tool — is still alive,
+    /** Whether the blocking `exec` child — the stand-in for a hung clipboard program — is still alive,
       * by the handle captured for the pid it recorded before blocking. */
     hungChildAlive: Boolean,
   )
@@ -174,7 +174,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
    * TERM to the reaper's whole process group — an explicit group signal, the form a terminal's
    * INT or HUP take — from a fake that ignores it itself; the reaper then runs under `setsid`, so
    * that group is its own and not this JVM's, and the caller assumes `setsid` is present (stock
-   * macOS has none). Beyond /bin/sh and its `wc` and `sleep`, the host tool this executes is its
+   * macOS has none). Beyond /bin/sh and its `wc` and `sleep`, the host program this executes is its
    * `ps` (hostPs), as the launcher would pass it.
    */
   private def reaperRun(

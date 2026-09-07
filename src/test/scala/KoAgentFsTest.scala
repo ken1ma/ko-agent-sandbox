@@ -7,7 +7,8 @@ import java.nio.file.{Files, Paths}
 import java.nio.file.attribute.{FileTime, PosixFilePermissions}
 import java.time.Instant
 
-import HostCommands.{deleteRecursively, Os}
+import HostCommands.Os
+import FileHelper.deleteRecursively
 import KoAgentFs.*
 
 class KoAgentFsTest extends munit.FunSuite:
@@ -328,7 +329,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("the ko-agent-fs source id of a build context digests exactly its files"):
     // The Path overload must agree with the pure function, because the pure one is what the tests
-    // above pin and the Path one is what --build actually runs.
+    // above check and the Path one is what --build actually runs.
     val context = Files.createTempDirectory("ko-agent-fs-id-test")
     try
       val root = context.resolve("ko-agent-fs")
@@ -390,7 +391,7 @@ class KoAgentFsTest extends munit.FunSuite:
   test("everything that compiles the filter derives its toolchain instead of repeating it"):
     // probe/rig.sh reads the pin out of the Containerfile and the self-test image takes it as an
     // ARG with no default (pinnedRustVersion has why). rig.sh is read from the checkout, since it
-    // is not bundled into the jar (as the README test does, and for the same reason).
+    // is not bundled into the jar (as the SECURITY.md test does, and for the same reason).
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
       .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/Containerfile")))
       .map(_.group(1))
