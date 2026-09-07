@@ -105,7 +105,8 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
   which reaches `127.0.0.1` as v4-mapped `::ffff:127.0.0.1` and dies with `EPERM`; the environment
   contract pins `-Djava.net.preferIPv4Stack=true` for exactly this.
 - Seatbelt counts a local socket as network: without `(local unix-socket (subpath SESSION_TMP))`
-  sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits for it forever.
+  sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits for it forever
+  ("The channel and the command" has the client's wait).
 
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
@@ -353,6 +354,19 @@ source and never on the outputs. Nor can an invocation opt out: sbt's build dire
 its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either
 attaches to the portfile's server or contends for it. `mill` needs none of this, running
 `--no-daemon`; the upstream request that would remove the option is in `sbt-issues.md`.
+
+The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
+changed its mind or gave up on a command that sat silent. So before the wrapper removes the session
+directory of a command ended by that signal, it appends the session's logs to the channel's log, the
+file the launch printed as `host command log` (`RunOnHostSandbox.appendSessionLogs`): the tail of
+the proxy audit log, and sbt's server-stderr file when the client was still waiting for its server.
+The wrapper runs unconfined and the command wrote that directory, so the read comes after the rename
+and the ending of the command's groups, refuses a link at any component, and takes the tail by
+position rather than by the file's size. sbt's thin client starts the server with stdout to
+`/dev/null` and stderr to that file under the command's temporary directory, deletes the file once
+the server has published its portfile, and waits for the portfile with no deadline while the server
+process lives — so the file's presence in the log says the server never came up, and its content
+says why. A command that completed leaves nothing there: its output reached the agent.
 
 ## The Seatbelt profile
 

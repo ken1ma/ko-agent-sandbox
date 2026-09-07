@@ -514,7 +514,7 @@ object RunOnHostChannel:
               (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
                 ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
                 ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
-                ++ Seq("--"))*,
+                ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
             ) ++ arguments,
           os = Os.Mac,
           mount = trailing.headOption.getOrElse(WorkspaceMount),
