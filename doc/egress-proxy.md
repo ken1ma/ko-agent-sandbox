@@ -278,5 +278,5 @@ origin certificates fail validation in the proxy and in the sandbox's clients al
 `https` endpoint under a private CA. Both fail closed with a certificate error. In the proxy
 container a loopback endpoint is the container's own loopback, not the host's, so a helper such as
 cntlm listening on the host's `127.0.0.1` is out of reach; the same variable does reach it from a
-`--run-on-host` build's proxy, which runs on the host (`run-on-host.md`, "The build's egress
+`--run-on-host` command's proxy, which runs on the host (`run-on-host.md`, "The command's egress
 proxy").

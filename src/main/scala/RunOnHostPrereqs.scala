@@ -1,5 +1,5 @@
-// What a host build is allowed to touch, decided before any of it runs: where this project's
-// disposable build caches are stored, which JDK and sbt are the Coursier-managed ones, and which
+// What a host command is allowed to touch, decided before any of it runs: where this project's
+// disposable run-on-host caches are stored, which JDK and sbt are the Coursier-managed ones, and which
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
@@ -18,14 +18,14 @@ import HostCommands.Os
 
 object RunOnHostPrereqs:
 
-  enum Tool:
+  enum Program:
     case Sbt, Mill, Mvn
 
     /** What a launch, a request, the rule file and the shim call it: the executable's name. */
     def name: String = toString.toLowerCase(Locale.ROOT)
 
   /**
-   * Why a build cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
+   * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
    * message: the wrapper prints one wording, the channel another, and the tests match on neither.
    */
   enum Refusal:
@@ -42,15 +42,15 @@ object RunOnHostPrereqs:
     case PrereqMvnDistributionMissing(distributionUrl: String, home: Path)
     case PrerequisiteFileUnreadable(path: Path, reason: String)
     case CacheRootUnusable(reason: String)
-    /** Apart from [[CacheRootUnusable]] because it alone proves the project's builds never wrote
+    /** Apart from [[CacheRootUnusable]] because it alone proves the project's commands never wrote
       * under this root: they refuse it by this same check. */
     case CacheRootInsideProject(root: Path, project: Path)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
-    case RuleOutsideBuildGrammar(line: String)
+    case RuleOutsideProgramGrammar(line: String)
 
   /**
-   * The refusal as the blocked reader sees it: what stopped the build, and what to do next.
+   * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
    * Every case is worded here, so a case the wrapper prints through its enum spelling is a
    * compile error, not a message with a class name in it.
    */
@@ -86,15 +86,15 @@ object RunOnHostPrereqs:
       s"the working directory $requested is not inside the project"
     case Refusal.SessionTmpTooLong(path, max) =>
       s"the session directory $path is longer than $max characters, sbt's socket path budget"
-    case Refusal.RuleOutsideBuildGrammar(line) =>
-      s"'$line' is outside the build's rule grammar — one `$BuildRuleForm` per line"
+    case Refusal.RuleOutsideProgramGrammar(line) =>
+      s"'$line' is outside the program's rule grammar — one `$ProgramRuleForm` per line"
 
-  /** Everything settled before a build is asked for; every path canonical. */
-  case class BuildPrereqs(
+  /** Everything settled before a command is asked for; every path canonical. */
+  case class CommandPrereqs(
     project: Path,
     jdkHome: Path,
     coursierV1: Path,
-    tool: Tool,
+    program: Program,
     executable: Path,
   )
 
@@ -103,7 +103,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The build-cache root, discovered exactly as [[AgentSandboxLauncher.stateRootOf]] discovers the
+   * The run-on-host cache root, discovered exactly as [[AgentSandboxLauncher.stateRootOf]] discovers the
    * state root so the two answer alike on one machine: XDG_CACHE_HOME when set and absolute,
    * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — mill's
    * own bootstrap takes the same fallback there — so the fallback is the path most runs use.
@@ -129,47 +129,47 @@ object RunOnHostPrereqs:
           case Some(path) => Right(path.resolve("ko-agent-sandbox").normalize())
 
   /**
-   * This project's build caches, under one directory so `--reset-run-on-host` for a project is a
+   * This project's run-on-host caches, under one directory so `--reset-run-on-host` for a project is a
    * single removal and a further cache kind can join without moving anything.
    *
    * Coursier's, sbt's global base and Ivy home, and Maven's local repository. mill's executable
    * is provisioned by the user rather than fetched here, so it has no writable home
    * (RunOnHostPrereqs.millExecutable).
    */
-  def buildCacheDir(cacheRoot: Path, projectId: String): Path =
+  def runOnHostCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
 
-  def buildCoursierV1(cacheRoot: Path, projectId: String): Path =
-    buildCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
+  def coursierV1Of(cacheRoot: Path, projectId: String): Path =
+    runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
 
   /**
-   * The confined build's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
+   * The confined command's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
    * session temp: sbt 2 writes a content-addressed store under its global base
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
    * host, where a build against a session-temporary base would have its own outputs dangle the
    * moment the session directory is removed. Beside the Coursier cache, it shares that cache's poison
-   * scope (later builds of the same project, themselves sandboxed) and `--reset-run-on-host`'s removal.
+   * scope (later commands of the same project, themselves sandboxed) and `--reset-run-on-host`'s removal.
    */
-  def buildSbtGlobal(cacheRoot: Path, projectId: String): Path =
-    buildCacheDir(cacheRoot, projectId).resolve("sbt-global")
+  def sbtGlobalOf(cacheRoot: Path, projectId: String): Path =
+    runOnHostCacheDir(cacheRoot, projectId).resolve("sbt-global")
 
   /**
-   * The confined build's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path
+   * The confined command's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path
    * the profile denies. What sbt writes there, and when the redirect may be retired, is
    * run-on-host.md "sbt". Beside the global base for the same reasons it is there.
    */
-  def buildIvyHome(cacheRoot: Path, projectId: String): Path =
-    buildCacheDir(cacheRoot, projectId).resolve("ivy-home")
+  def ivyHomeOf(cacheRoot: Path, projectId: String): Path =
+    runOnHostCacheDir(cacheRoot, projectId).resolve("ivy-home")
 
-  /** The confined build's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
+  /** The confined command's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
     * denies. Maven stores every artifact and plugin it resolves here. */
-  def buildM2Repository(cacheRoot: Path, projectId: String): Path =
-    buildCacheDir(cacheRoot, projectId).resolve("m2").resolve("repository")
+  def m2RepositoryOf(cacheRoot: Path, projectId: String): Path =
+    runOnHostCacheDir(cacheRoot, projectId).resolve("m2").resolve("repository")
 
   /**
    * Refused when the cache root would be inside the project, the check
    * [[AgentSandboxLauncher.requireStateRootOutside]] makes for the state root: a cache the
-   * workspace can reach is a cache the sandbox can rewrite between builds.
+   * workspace can reach is a cache the sandbox can rewrite between commands.
    */
   def cacheRootOutsideProject(
     cacheRoot: Path,
@@ -196,7 +196,7 @@ object RunOnHostPrereqs:
         else Right(root)
 
   /** The user's Coursier cache root — read for the JDK, never granted whole
-    * (run-on-host.md "The JVM", "The build cache"). */
+    * (run-on-host.md "The JVM", "The run-on-host cache"). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
       env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
@@ -217,7 +217,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The JDK the build runs on, from JAVA_HOME alone.
+   * The JDK the command runs on, from JAVA_HOME alone.
    *
    * `java` on PATH is not a second source. On macOS it is `/usr/bin/java`, a stub that resolves
    * through JAVA_HOME or java_home and so reports the right JVM at the wrong path: validating the
@@ -225,7 +225,7 @@ object RunOnHostPrereqs:
    *
    * The answer is one canonical home, never a root holding JDKs. A current Coursier unpacks a JDK
    * into its archive cache under a URL-derived path, so the enclosing directory is the general
-   * `arc` tree — granting that would hand the build every archive Coursier ever extracted.
+   * `arc` tree — granting that would hand the command every archive Coursier ever extracted.
    *
    * `canonicalize` resolves symlinks; None means the path does not exist, which is itself a
    * refusal rather than a reason to fall back. Both sides canonical, the comparison is exact:
@@ -260,7 +260,7 @@ object RunOnHostPrereqs:
               case _ => Left(Refusal.PrereqJvmNotCoursier(value))
 
   /**
-   * The `sbt` the build runs, which must be the one `cs install sbt` produced. An `sbt` found on
+   * The `sbt` the command runs, which must be the one `cs install sbt` produced. An `sbt` found on
    * PATH is accepted only when it canonicalizes into the Coursier install directory, so a symlink
    * from PATH into that directory works and one pointing anywhere else does not.
    */
@@ -335,7 +335,7 @@ object RunOnHostPrereqs:
    * The fallback is the assignment at the top of the script, which mill documents as the
    * recommended way to manage the version (`./mill updateMillScripts`). The script also honours
    * `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this deliberately does
-   * not: the build's environment is a closed set (RunOnHostSandbox.buildEnvironment) that carries
+   * not: the command's environment is a closed set (RunOnHostSandbox.commandEnvironment) that carries
    * neither, so the script resolves from the project alone, and reading them here would grant an
    * executable the script then does not run.
    */
@@ -386,7 +386,7 @@ object RunOnHostPrereqs:
 
   /**
    * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
-   * index, a JDK fetched by the build, where `system` takes `java` from the PATH the wrapper sets.
+   * index, a JDK fetched by the command, where `system` takes `java` from the PATH the wrapper sets.
    *
    * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
    * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
@@ -586,26 +586,26 @@ object RunOnHostPrereqs:
     else Left(Refusal.SessionTmpTooLong(path, SessionTmpMaxLength))
 
   // ---------------------------------------------------------------------------
-  // The build's egress rules
+  // The program's egress rules
   // ---------------------------------------------------------------------------
 
   /**
-   * The tool's default artifact repository, the one host every build's proxy admits on its own.
+   * The program's default artifact repository, the one host every command's proxy admits on its own.
    * Both are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
    * Maven's super POM names `repo.maven.apache.org`.
    */
-  def centralHost(tool: Tool): String = tool match
-    case Tool.Sbt | Tool.Mill => "repo1.maven.org"
-    case Tool.Mvn             => "repo.maven.apache.org"
+  def centralHost(program: Program): String = program match
+    case Program.Sbt | Program.Mill => "repo1.maven.org"
+    case Program.Mvn                => "repo.maven.apache.org"
 
-  def buildRulePath(project: Path, tool: Tool): Path =
-    project.resolve(".ko-agent-sandbox").resolve("host-command").resolve(tool.name).resolve("egress").resolve("rule")
+  def programRulePath(project: Path, program: Program): Path =
+    project.resolve(".ko-agent-sandbox").resolve("host-command").resolve(program.name).resolve("egress").resolve("rule")
 
-  /** The one line form the build's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
-  val BuildRuleForm = "allow https://<host>/ read"
+  /** The one line form the program's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
+  val ProgramRuleForm = "allow https://<host>/ read"
 
   /**
-   * The build's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
+   * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
    * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
    * `allow model-provider` line expand into endpoints that are no artifact repository, and a
    * `tunnel` word means nothing to a proxy running without inspection; anything outside the subset
@@ -614,7 +614,7 @@ object RunOnHostPrereqs:
    * inside a token refused — so a line read here is the line the proxy would read, and
    * `read#typo` is not `read`; the host is what the proxy's own parser will normalize and vet.
    */
-  def buildRuleHosts(text: String): Either[Refusal, Vector[String]] =
+  def programRuleHosts(text: String): Either[Refusal, Vector[String]] =
     val lines = text.linesIterator
       .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
       .filter(_.nonEmpty)
@@ -625,16 +625,16 @@ object RunOnHostPrereqs:
         Option.when(host.nonEmpty && !host.contains('/') && !host.startsWith("*"))(host)
       case _ => None
     lines.find(hostOf(_).isEmpty) match
-      case Some(outside) => Left(Refusal.RuleOutsideBuildGrammar(outside.mkString(" ")))
+      case Some(outside) => Left(Refusal.RuleOutsideProgramGrammar(outside.mkString(" ")))
       case None          => Right(lines.flatMap(hostOf).distinct)
 
   /**
-   * The proxy's rule input for a build: `deny defaults`, then the tool's Maven Central host, then
+   * The proxy's rule input for a command: `deny defaults`, then the program's Maven Central host, then
    * the file's lines — the whole ruleset stated, so the container's catalog contributes nothing.
-   * Deduplicated, so a host the file restates is not warned as a redundant grant at every build.
+   * Deduplicated, so a host the file restates is not warned as a redundant grant at every command.
    */
-  def egressRuleText(tool: Tool, fileHosts: Vector[String]): String =
-    ("deny defaults" +: (centralHost(tool) +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
+  def egressRuleText(program: Program, fileHosts: Vector[String]): String =
+    ("deny defaults" +: (centralHost(program) +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
       .mkString("\n")
 
   // ---------------------------------------------------------------------------

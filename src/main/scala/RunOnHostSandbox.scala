@@ -1,4 +1,4 @@
-// The wrapper: from a project and a tool to a confined build's exit code, through the thirteen
+// The wrapper: from a project and a program to a confined command's exit code, through the thirteen
 // steps — validate, scavenge, publish, proxy, profile, run, end what was started, remove. macOS
 // only, like everything it drives; the assembly and refusal logic are in RunOnHostPrereqs and
 // are unit-tested there, so this file is the sequence of steps plus the host observations no Linux
@@ -20,25 +20,25 @@ import SandboxProject.{isMetadataEntry, projectIdOf}
 object RunOnHostSandbox:
 
   case class Assembled(
-    prereqs: BuildPrereqs,
+    prereqs: CommandPrereqs,
     /** The unpacked distribution the executable runs from: sbt's in the Coursier archive cache,
       * Maven's under the wrapper's `dists`; mill's executable is one file and has none. */
     distribution: Option[Path],
     /** The per-project sbt global base and Ivy home, and Maven's local repository: created and
-      * granted for the tool that reads each (`sbtCachesGranted`, `m2RepositoryGranted`), and for
-      * the other tools paths nothing reads, named all the same so the environment has the same
-      * variable names for every tool — as `millDownloads` is for sbt. */
+      * granted for the program that reads each (`sbtCachesGranted`, `m2RepositoryGranted`), and for
+      * the other programs paths nothing reads, named all the same so the environment has the same
+      * variable names for every program — as `millDownloads` is for sbt. */
     sbtGlobal: Path,
     ivyHome: Path,
     m2Repository: Path,
     /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
-      * build is granted, and what the build's own script is pointed at (buildEnvironment). */
+      * command is granted, and what its build script is pointed at (commandEnvironment). */
     millDownloads: Option[Path],
   ):
-    def sbtGlobalGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(sbtGlobal)
-    def ivyHomeGranted: Option[Path] = Option.when(prereqs.tool == Tool.Sbt)(ivyHome)
-    def m2RepositoryGranted: Option[Path] = Option.when(prereqs.tool == Tool.Mvn)(m2Repository)
-    /** The persistent caches an sbt build writes besides Coursier's. */
+    def sbtGlobalGranted: Option[Path] = Option.when(prereqs.program == Program.Sbt)(sbtGlobal)
+    def ivyHomeGranted: Option[Path] = Option.when(prereqs.program == Program.Sbt)(ivyHome)
+    def m2RepositoryGranted: Option[Path] = Option.when(prereqs.program == Program.Mvn)(m2Repository)
+    /** The persistent caches an sbt command writes besides Coursier's. */
     def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
 
   private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
@@ -69,11 +69,11 @@ object RunOnHostSandbox:
   private def readBytes(path: Path): Array[Byte] = reading(path)(Files.readAllBytes(path))
 
   /** Steps 1–5: everything the profile derives authority from, decided before anything runs. */
-  def assemble(project: Path, tool: Tool, env: String => Option[String]): Either[String, Assembled] =
-    try assembled(project, tool, env)
+  def assemble(project: Path, program: Program, env: String => Option[String]): Either[String, Assembled] =
+    try assembled(project, program, env)
     catch case ex: Unreadable => Left(wording(ex.refusal))
 
-  private def assembled(project: Path, tool: Tool, env: String => Option[String]): Either[String, Assembled] =
+  private def assembled(project: Path, program: Program, env: String => Option[String]): Either[String, Assembled] =
     val os = Os.Mac
     def context[A](step: String)(value: Either[Any, A]): Either[String, A] =
       value.left.map:
@@ -83,8 +83,8 @@ object RunOnHostSandbox:
     for
       coursierCache <- coursierCacheRoot(os, env).toRight("no Coursier cache root")
       jdk <- context("jvm")(resolveJdkHome(env, coursierCache, realPath, isExecutableFile))
-      executableAndDistribution <- tool match
-        case Tool.Sbt =>
+      executableAndDistribution <- program match
+        case Program.Sbt =>
           for
             installDir <- coursierInstallDir(os, env).toRight("no Coursier install directory")
             sbt <- context("sbt executable")(
@@ -99,7 +99,7 @@ object RunOnHostSandbox:
               validateSbtDistribution(inner, coursierCache, realPath, isExecutableFile),
             )
           yield (sbt, Some(home))
-        case Tool.Mill =>
+        case Program.Mill =>
           for
             _ <- context("mill bootstrap")(validateMillBootstrap(project, isExecutableFile))
             _ <- context("mill jvm")(millJvmIsSystem(project, readLines))
@@ -113,7 +113,7 @@ object RunOnHostSandbox:
             )
             real <- realPath(provisioned).toRight(s"$provisioned vanished")
           yield (real, None)
-        case Tool.Mvn =>
+        case Program.Mvn =>
           for
             wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
             _ <- context("mvn wrapper")(validateMvnWrapperScript(readLines(wrapper).getOrElse(Seq.empty)))
@@ -134,18 +134,19 @@ object RunOnHostSandbox:
         cacheRootOutsideProject(configuredRoot, project, os, HostCommands.canonicalizedFuturePath),
       )
       projectId = projectIdOf(project, os)
-      v1 = buildCoursierV1(cacheRoot, projectId)
+      v1 = coursierV1Of(cacheRoot, projectId)
       _ = Files.createDirectories(v1)
-      toolCache = (owner: Tool, dir: Path) => if tool == owner then Files.createDirectories(dir).toRealPath() else dir
-      sbtGlobal = toolCache(Tool.Sbt, buildSbtGlobal(cacheRoot, projectId))
-      ivyHome = toolCache(Tool.Sbt, buildIvyHome(cacheRoot, projectId))
-      m2Repository = toolCache(Tool.Mvn, buildM2Repository(cacheRoot, projectId))
+      programCache = (owner: Program, dir: Path) =>
+        if program == owner then Files.createDirectories(dir).toRealPath() else dir
+      sbtGlobal = programCache(Program.Sbt, sbtGlobalOf(cacheRoot, projectId))
+      ivyHome = programCache(Program.Sbt, ivyHomeOf(cacheRoot, projectId))
+      m2Repository = programCache(Program.Mvn, m2RepositoryOf(cacheRoot, projectId))
     yield Assembled(
-      BuildPrereqs(
+      CommandPrereqs(
         project = project,
         jdkHome = jdk,
         coursierV1 = v1.toRealPath(),
-        tool = tool,
+        program = program,
         executable = executable,
       ),
       distribution,
@@ -157,15 +158,15 @@ object RunOnHostSandbox:
 
   /**
    * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
-   * applies (SandboxProject.boundaryDirError): the tools this wrapper serves, egress/ inside each,
+   * applies (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each,
    * rule inside that — a stray name, the retired grammar's file among them, a symlinked component,
-   * or a component of the wrong type refuses the build, never remains as ignored config. The type rule
+   * or a component of the wrong type refuses the command, never remains as ignored config. The type rule
    * prevents real failures: a file where a directory belongs would read as absent configuration,
    * and a FIFO where the file belongs would block the read forever.
    */
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
-    val tools = Tool.values.toVector.map(_.name)
+    val programs = Program.values.toVector.map(_.name)
     def strays(path: Path, admitted: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
       else
@@ -178,10 +179,10 @@ object RunOnHostSandbox:
 
     if !Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) then None
     else
-      val directories = dir +: tools.flatMap: name =>
+      val directories = dir +: programs.flatMap: name =>
         Vector(dir.resolve(name), dir.resolve(name).resolve("egress"))
-      val ruleFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("rule"))
-      val retiredFiles = tools.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
+      val ruleFiles = programs.map(name => dir.resolve(name).resolve("egress").resolve("rule"))
+      val retiredFiles = programs.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
       def wrongType(path: Path, directory: Boolean): Boolean =
         Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
           (if directory then !Files.isDirectory(path) else !Files.isRegularFile(path))
@@ -192,32 +193,32 @@ object RunOnHostSandbox:
         .orElse(ruleFiles.find(wrongType(_, directory = false))
           .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
         .orElse(retiredFiles.find(Files.exists(_, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-          .map(p => s"$p is a file of the retired grammar; the build's rules are egress/rule, one " +
-            s"`$BuildRuleForm` per line — rewrite the lines there and delete this file"))
+          .map(p => s"$p is a file of the retired grammar; the program's rules are egress/rule, one " +
+            s"`$ProgramRuleForm` per line — rewrite the lines there and delete this file"))
         .orElse:
-          val stray = strays(dir, tools.toSet) ++ tools.flatMap: name =>
+          val stray = strays(dir, programs.toSet) ++ programs.flatMap: name =>
             strays(dir.resolve(name), Set("egress")) ++
               strays(dir.resolve(name).resolve("egress"), Set("rule"))
           Option.when(stray.nonEmpty):
             s"${stray.mkString(", ")}: not configuration this launcher reads — " +
               "a typo, or a newer launcher's file; check the spelling or update the launcher"
 
-  /** The project file's hosts, validated to the build's rule grammar (run-on-host.md
+  /** The project file's hosts, validated to the program's rule grammar (run-on-host.md
     * "Configuration"); an absent file contributes nothing. */
-  def readBuildRules(project: Path, tool: Tool): Either[String, Vector[String]] =
+  def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
     hostCommandStray(project).toLeft(()).flatMap: _ =>
-      val file = buildRulePath(project, tool)
+      val file = programRulePath(project, program)
       if !Files.exists(file) then Right(Vector.empty)
       else
         try
-          buildRuleHosts(Files.readString(file, UTF_8)).left.map(refusal => s"$file: ${wording(refusal)}")
+          programRuleHosts(Files.readString(file, UTF_8)).left.map(refusal => s"$file: ${wording(refusal)}")
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
    * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
    * path that must also be executable. A runtime path is admitted only where testing proves the
    * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
-   * src/probe/build-profile-iterate.sh is how candidate entries are measured.
+   * src/probe/run-on-host-profile-iterate.sh is how candidate entries are measured.
    */
   def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
@@ -241,55 +242,55 @@ object RunOnHostSandbox:
     parseRuntimeAuthority(text.linesIterator.toSeq)
 
   /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
-    * image binary itself — under one of the launcher's private verbs. */
-  def selfInvocation(verbAndArguments: String*): Seq[String] =
+    * image binary itself — under one of the launcher's private actions. */
+  def selfInvocation(actionAndArguments: String*): Seq[String] =
     if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
       val self = ProcessHandle.current().info().command()
       self.orElseThrow(() => IllegalStateException("the native image cannot name itself"))
-        +: verbAndArguments
+        +: actionAndArguments
     else
       Seq(
         Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString,
         "-cp", System.getProperty("java.class.path"),
         "agentsandbox.launcher.AgentSandboxLauncher",
-      ) ++ verbAndArguments
+      ) ++ actionAndArguments
 
-  /** `--run-build-on-host <tool> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] --
+  /** `--run-command-on-host <program> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] --
     * <args...>`: one channel request as a process of its own, so the broker's cancel is a
     * SIGTERM whose answer is this wrapper's shutdown hook. */
-  def runBuildMain(args: Seq[String]): Unit =
+  def runCommandMain(args: Seq[String]): Unit =
     def start(
-      toolName: String,
+      programName: String,
       project: String,
       workingDirectory: String,
       options: List[String],
-      buildArgs: List[String],
+      commandArgs: List[String],
     ): Unit =
-      val tool = Tool.values.find(_.name == toolName).getOrElse:
-        Console.err.println(s"--run-build-on-host: unknown tool $toolName")
+      val program = Program.values.find(_.name == programName).getOrElse:
+        Console.err.println(s"--run-command-on-host: unknown program $programName")
         sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
       val stray = options.filterNot(option => option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption))
       if stray.nonEmpty then
-        Console.err.println(s"--run-build-on-host: unexpected arguments: ${stray.mkString(" ")}")
+        Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
         sys.exit(2)
       sys.exit(
         run(
-          Path.of(project), tool, buildArgs, bundledRuntimeAuthority(), uid,
+          Path.of(project), program, commandArgs, bundledRuntimeAuthority(), uid,
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
           autoShutdownForeignSbt = options.contains(AutoShutdownForeignSbtOption),
           forwarded = forwardedNames(options),
         ),
       )
     args.toList match
-      case toolName :: project :: workingDirectory :: rest if rest.contains("--") =>
-        val (options, buildArgs) = rest.span(_ != "--")
-        start(toolName, project, workingDirectory, options, buildArgs.drop(1))
+      case programName :: project :: workingDirectory :: rest if rest.contains("--") =>
+        val (options, commandArgs) = rest.span(_ != "--")
+        start(programName, project, workingDirectory, options, commandArgs.drop(1))
       case other =>
-        Console.err.println(s"--run-build-on-host: unexpected arguments: ${other.mkString(" ")}")
+        Console.err.println(s"--run-command-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
 
-  /** `--env=<name>` as the broker and the build receive it: the name alone, the value read from
+  /** `--env=<name>` as the broker and the command receive it: the name alone, the value read from
     * the receiving process's own environment under `carrierName` (RunOnHostChannel.spawnBroker).
     * A forward is thus never an argument with a secret in it below the launcher. */
   val EnvOption = "--env="
@@ -297,10 +298,10 @@ object RunOnHostSandbox:
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
-  /** The name a forwarded value is carried under from the launcher to the confined build: one nothing
+  /** The name a forwarded value is carried under from the launcher to the confined command: one nothing
     * reads by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
     * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
-    * read by them first; the requested name is restored inside the build's environment alone,
+    * read by them first; the requested name is restored inside the command's environment alone,
     * where the wrapper's own settings still win over it. */
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
@@ -322,12 +323,12 @@ object RunOnHostSandbox:
       val said =
         if Files.exists(log) then Files.readString(log, UTF_8).linesIterator.take(5).mkString("\n")
         else "(no log was written)"
-      s"the build proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
+      s"the command's proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
 
   /**
    * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
    * server reached through the project's portfile belongs to someone — the user's shell, another
-   * session — and a build that attached to it would run outside this profile. Live means
+   * session — and a command that attached to it would run outside this profile. Live means
    * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
    * the portfile points, uncontained on purpose — the user's own server runs outside any
    * session — and the probe only connects and closes, writing nothing to what it reaches.
@@ -391,9 +392,9 @@ object RunOnHostSandbox:
   private val MaxSymlinkHops = 40
 
   /**
-   * Whether a path the wrapper is about to send to could have been planted by a build. The
-   * question is not where the path ends but whether resolving it ever *enters* somewhere a build
-   * writes: from the first component inside, the build chooses what every later component means,
+   * Whether a path the wrapper is about to send to could have been planted by a command. The
+   * question is not where the path ends but whether resolving it ever *enters* somewhere a command
+   * writes: from the first component inside, the command chooses what every later component means,
    * and a link there can send the rest anywhere — including straight back out, which is why the
    * fully resolved endpoint answers nothing. So the walk follows one hop at a time, checking
    * where each link *is located* before reading where it points, and answers yes the moment a step
@@ -403,7 +404,7 @@ object RunOnHostSandbox:
    * then.
    *
    * The roots are the profile's writable set (`SeatbeltProfile.render`): the project, and the
-   * per-project caches that persist across sessions, so a socket an *earlier* agent's build
+   * per-project caches that persist across sessions, so a socket an *earlier* agent's command
    * planted in a cache is caught as well. Each is compared in both of its macOS spellings, the
    * firmlink aliasing every containment check here shares
    * (`SandboxProject.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
@@ -411,7 +412,7 @@ object RunOnHostSandbox:
    * walk all count as reachable. A target already lexically inside a root is reachable whatever
    * the filesystem currently shows, so that is answered before the walk begins.
    */
-  def reachableThroughBuildWritable(target: Path, project: Path, caches: Seq[Path]): Boolean =
+  def reachableThroughCommandWritable(target: Path, project: Path, caches: Seq[Path]): Boolean =
     def real(path: Path): Option[Path] =
       try Some(path.toRealPath())
       catch case _: IOException => None
@@ -465,16 +466,16 @@ object RunOnHostSandbox:
     portfileSocket: Path,
     env: String => Option[String],
     log: String => Unit,
-    buildCaches: Seq[Path] = Seq.empty,
+    runOnHostCaches: Seq[Path] = Seq.empty,
     userHome: Path = Path.of(System.getProperty("user.home")),
     shutdownDeadlineMillis: Long = 120_000,
     releaseDeadlineMillis: Long = 10_000,
   ): Either[String, Unit] =
     def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} — $cause")
     val derived = sbtServerSocket(project, env, userHome)
-    if reachableThroughBuildWritable(derived, project, buildCaches) then
+    if reachableThroughCommandWritable(derived, project, runOnHostCaches) then
       refused(
-        s"the socket sbt derives for this project ($derived) is reachable through what a build " +
+        s"the socket sbt derives for this project ($derived) is reachable through what a command " +
           s"writes, so $AutoShutdownForeignSbtOption does not apply",
       )
     else if !samePath(derived, portfileSocket) then
@@ -503,8 +504,8 @@ object RunOnHostSandbox:
 
   def run(
     projectArg: Path,
-    tool: Tool,
-    buildArgs: Seq[String],
+    program: Program,
+    commandArgs: Seq[String],
     runtime: SeatbeltProfile.RuntimeAuthority,
     uid: Int,
     log: String => Unit,
@@ -524,8 +525,8 @@ object RunOnHostSandbox:
         project <-
           try Right(projectArg.toAbsolutePath.toRealPath())
           catch case ex: IOException => Left(s"$projectArg: ${ex.getMessage}")
-        assembled <- assemble(project, tool, env)
-        fileHosts <- readBuildRules(project, tool)
+        assembled <- assemble(project, program, env)
+        fileHosts <- readProgramRules(project, program)
         _ <- RunOnHostSession.ensureRoot(root, uid)
         // Scavenge before the one-server refusal: an orphan a kill left is ours to end here,
         // and only a server that survives the scavenge belongs to someone else.
@@ -534,16 +535,16 @@ object RunOnHostSandbox:
           .foreach: (entry, actions) =>
             log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")
         _ <-
-          if tool != Tool.Sbt then Right(())
+          if program != Program.Sbt then Right(())
           else
             livePortfileServer(project) match
               case None => Right(())
               case Some(socket) if autoShutdownForeignSbt =>
-                // The profile's own persistent writable set, so a socket an earlier build planted
+                // The profile's own persistent writable set, so a socket an earlier command planted
                 // in a cache is no more a shutdown target than one planted in the project.
                 autoShutdownForeignServer(
                   project, socket, env, log,
-                  buildCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtCachesGranted,
+                  runOnHostCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtCachesGranted,
                 )
               case Some(socket) =>
                 Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
@@ -582,7 +583,7 @@ object RunOnHostSandbox:
                   case Left(refusal) => Left(wording(refusal))
                   case Right(_) =>
                     runInSession(
-                      session, assembled, fileHosts, buildArgs, runtime, workingDirectory, log,
+                      session, assembled, fileHosts, commandArgs, runtime, workingDirectory, log,
                       forwarded.flatMap(name => env(carrierName(name)).map(name -> _)),
                     )
               finally
@@ -599,19 +600,19 @@ object RunOnHostSandbox:
     session: Session,
     assembled: Assembled,
     fileHosts: Vector[String],
-    buildArgs: Seq[String],
+    commandArgs: Seq[String],
     runtime: SeatbeltProfile.RuntimeAuthority,
     workingDirectory: Option[Path],
     log: String => Unit,
     forwards: Vector[(String, String)],
   ): Either[String, Int] =
-    if assembled.prereqs.tool == Tool.Sbt then
+    if assembled.prereqs.program == Program.Sbt then
       val swept =
         cleanForeignTargetLinks(assembled.prereqs.project, assembled.prereqs.project +: assembled.sbtCachesGranted)
       if swept.nonEmpty then
-        log(s"removed ${swept.size} target/ links resolving outside this build's roots (first: ${swept.head})")
+        log(s"removed ${swept.size} target/ links resolving outside this command's roots (first: ${swept.head})")
     for
-      _ <- startProxy(session, assembled.prereqs.tool, fileHosts)
+      _ <- startProxy(session, assembled.prereqs.program, fileHosts)
       port <- awaitProxyPort(session.directory.resolve("proxy.log"), deadlineMillis = 30_000)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
@@ -625,35 +626,35 @@ object RunOnHostSandbox:
           runtime = runtime,
         ),
       )
-      exit <- runBuild(session, assembled, profile, port, buildArgs, workingDirectory, forwards)
+      exit <- runCommand(session, assembled, profile, port, commandArgs, workingDirectory, forwards)
     yield
-      reportDenied(session.directory.resolve("proxy.log"), assembled.prereqs.tool, log)
+      reportDenied(session.directory.resolve("proxy.log"), assembled.prereqs.program, log)
       exit
 
-  private def startProxy(session: Session, tool: Tool, fileHosts: Vector[String]): Either[String, Process] =
+  private def startProxy(session: Session, program: Program, fileHosts: Vector[String]): Either[String, Process] =
     val command = RunOnHostSession
       .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
-    // Closed like the build's: the proxy needs its own settings and, to leave through an upstream
+    // Closed like the command's: the proxy needs its own settings and, to leave through an upstream
     // proxy as the container's copy does, the one selected variable. Nothing else of the
     // launcher's environment has a reader here.
     builder.environment.clear()
     upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
-    builder.environment.put("EGRESS_RULE", egressRuleText(tool, fileHosts))
+    builder.environment.put("EGRESS_RULE", egressRuleText(program, fileHosts))
     builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
     builder.environment.put("EGRESS_LOG_FILE", session.directory.resolve("proxy.log").toString)
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
     builder.redirectError(ProcessBuilder.Redirect.DISCARD) // the log file is the tee
     try Right(builder.start())
-    catch case ex: IOException => Left(s"starting the build proxy: ${ex.getMessage}")
+    catch case ex: IOException => Left(s"starting the command's proxy: ${ex.getMessage}")
 
-  private def runBuild(
+  private def runCommand(
     session: Session,
     assembled: Assembled,
     profile: String,
     proxyPort: Int,
-    buildArgs: Seq[String],
+    commandArgs: Seq[String],
     workingDirectory: Option[Path],
     forwards: Vector[(String, String)],
   ): Either[String, Int] =
@@ -661,37 +662,37 @@ object RunOnHostSandbox:
     val profileFile = session.directory.resolve("profile.sb")
     Files.writeString(profileFile, profile, UTF_8)
 
-    val toolCommand = prereqs.tool match
-      case Tool.Sbt =>
+    val programCommand = prereqs.program match
+      case Program.Sbt =>
         Seq(prereqs.executable.toString, "--jvm-client", "-batch",
-          "-java-home", prereqs.jdkHome.toString) ++ buildArgs
-      case Tool.Mill =>
-        Seq(prereqs.project.resolve("mill").toString, "--no-daemon") ++ buildArgs
+          "-java-home", prereqs.jdkHome.toString) ++ commandArgs
+      case Program.Mill =>
+        Seq(prereqs.project.resolve("mill").toString, "--no-daemon") ++ commandArgs
       // The distribution's own `mvn`, not the project's `mvnw` (run-on-host.md "Maven");
       // --batch-mode as sbt's -batch.
-      case Tool.Mvn =>
-        Seq(prereqs.executable.toString, "--batch-mode") ++ buildArgs
+      case Program.Mvn =>
+        Seq(prereqs.executable.toString, "--batch-mode") ++ commandArgs
 
     val record = session.records.resolve("client")
     val command = RunOnHostSession.registeredSpawn(
       record,
-      Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ toolCommand,
+      Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ programCommand,
     )
     val builder = ProcessBuilder(command*)
     builder.directory(workingDirectory.getOrElse(prereqs.project).toFile)
     builder.inheritIO()
     builder.environment.clear()
     builder.environment.putAll(
-      buildEnvironment(
+      commandEnvironment(
         name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
         assembled.m2Repository, assembled.millDownloads, session.tmp, proxyPort, System.getProperty("user.name"),
       ).asJava,
     )
 
-    // The spawn publishes the build's exit status and then stays as the group's provable leader
+    // The spawn publishes the command's exit status and then stays as the group's provable leader
     // (RunOnHostSession), so the answer is the exit file, never the spawn's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
-    catch case ex: IOException => Left(s"starting the build: ${ex.getMessage}")
+    catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
@@ -708,14 +709,14 @@ object RunOnHostSandbox:
       .nextOption()
 
   /**
-   * The build's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
+   * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
    * the wrapper's own settings, which win. doc/run-on-host.md, "The session", has the table of
    * what is in it; SECURITY.md, "Run on host", has why it is closed.
    */
-  def buildEnvironment(
+  def commandEnvironment(
     host: String => Option[String],
     forwards: Vector[(String, String)],
-    prereqs: BuildPrereqs,
+    prereqs: CommandPrereqs,
     sbtGlobal: Path,
     ivyHome: Path,
     m2Repository: Path,
@@ -725,10 +726,10 @@ object RunOnHostSandbox:
     userName: String,
   ): Map[String, String] =
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
-    // The settings must reach the JVMs the build forks — a forked test or `run` — and such a JVM
+    // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
     // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would confine
-    // the tool's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
+    // the program's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
     // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
     val javaToolOptions = (Seq(
       s"-Djava.io.tmpdir=$sessionTmp",
@@ -746,10 +747,10 @@ object RunOnHostSandbox:
       "-Djava.net.preferIPv4Stack=true",
     )).mkString(" ")
     val own = Map(
-      // The JDK, then the system directories the runtime authority lets a build execute from
+      // The JDK, then the system directories the runtime authority lets a command execute from
       // (runtime-authority.txt) — never the host's PATH: an entry of it the confinement refuses,
-      // a version manager's shim or a Homebrew tool ahead of the system one, fails the lookup
-      // with EPERM at that entry, and the shell tries no further, so a build the system PATH
+      // a version manager's shim or a Homebrew program ahead of the system one, fails the lookup
+      // with EPERM at that entry, and the shell tries no further, so a command the system PATH
       // serves would break on the shell's.
       "PATH" -> s"${prereqs.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
       "JAVA_HOME" -> prereqs.jdkHome.toString,
@@ -761,22 +762,22 @@ object RunOnHostSandbox:
       "USER" -> userName,
       "LOGNAME" -> userName,
     ) ++
-      // Set for every tool, not mill alone: sbt ignores it, and one unconditional setting is
+      // Set for every program, not mill alone: sbt ignores it, and one unconditional setting is
       // simpler than a conditional. Mill's bootstrap otherwise derives the folder from HOME and
-      // XDG_CACHE_HOME, and this pins it to the folder holding the executable the build is granted.
+      // XDG_CACHE_HOME, and this pins it to the folder holding the executable the command is granted.
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
-      buildProxyVariables(proxyPort)
+      commandProxyVariables(proxyPort)
     passed ++ (forwards.toMap -- MillVersionOverrides) ++ own
 
   /**
-   * The proxy variables the build's environment gets, both spellings, as the sandbox container
-   * gets its own: the build's proxy for the tools that read the environment rather than the JVM
+   * The proxy variables the command's environment gets, both spellings, as the sandbox container
+   * gets its own: the command's proxy for the programs that read the environment rather than the JVM
    * properties, loopback exempt so a test server on it is reached directly. The rest of the
    * family — ALL_PROXY, FTP_PROXY — is simply absent, as the launcher's own HTTPS_PROXY is: that
-   * one names an upstream proxy the confinement refuses, with a credential the build has no
+   * one names an upstream proxy the confinement refuses, with a credential the command has no
    * business reading.
    */
-  def buildProxyVariables(proxyPort: Int): Map[String, String] =
+  def commandProxyVariables(proxyPort: Int): Map[String, String] =
     val proxy = s"http://127.0.0.1:$proxyPort"
     Map(
       "HTTPS_PROXY" -> proxy, "https_proxy" -> proxy, "HTTP_PROXY" -> proxy, "http_proxy" -> proxy,
@@ -784,12 +785,12 @@ object RunOnHostSandbox:
     )
 
   /**
-   * The cost of switching where a build runs, paid before each confined build. sbt 2 leaves `target/` outputs as
+   * The cost of switching where a build runs, paid before each confined command. sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
    * symlink under a `target/` directory that does not resolve inside a granted root — the
-   * dangling included — is removed before the build; the artifacts it named still exist in the
+   * dangling included — is removed before the command; the artifacts it named still exist in the
    * store of the sbt that made them, which relinks on its own next run. The roots are compared
    * resolved, as the links are: a root reached through a symlink, macOS's `/var`, would
    * otherwise match nothing and the sweep would take every link.
@@ -829,11 +830,11 @@ object RunOnHostSandbox:
       Files.readString(proxyLog, UTF_8).linesIterator
         .collect { case Deny(host) => host }.toVector.distinct
 
-  /** The denied-host report, once per refused host, after the build — never an automatic addition. */
-  private def reportDenied(proxyLog: Path, tool: Tool, log: String => Unit): Unit =
+  /** The denied-host report, once per refused host, after the command — never an automatic addition. */
+  private def reportDenied(proxyLog: Path, program: Program, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog)
     if hosts.nonEmpty then
-      log((("Build requested network access to:" +: hosts.map(host => s"  $host")) :+
-        ("Not permitted by the host build sandbox. If the build should reach it, add an" +
-          s" `$BuildRuleForm` line to .ko-agent-sandbox/host-command/${tool.name}/egress/rule."))
+      log((("Command requested network access to:" +: hosts.map(host => s"  $host")) :+
+        ("Not permitted by the host command sandbox. If the command should reach it, add an" +
+          s" `$ProgramRuleForm` line to .ko-agent-sandbox/host-command/${program.name}/egress/rule."))
         .mkString("\n"))

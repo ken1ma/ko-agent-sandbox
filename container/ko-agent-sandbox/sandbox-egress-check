@@ -11,7 +11,7 @@ the body and exits 1. An admitted host gets one HEAD / inside TLS, trusting $SSL
 origin's status line is printed and the exit is 0. A host the ruleset admitted but the network
 failed — a 502 from the proxy, a TLS failure — prints what happened and exits 2.
 
-Each run leaves in the audit log exactly the line the agent's own tool would have: one deny, or
+Each run leaves in the audit log exactly the line the agent's own program would have: one deny, or
 one allow. Python rather than openssl or curl because its ssl module wraps a socket already
 holding the tunnel, which `openssl s_client` cannot, and curl never shows a failed CONNECT's body.
 """

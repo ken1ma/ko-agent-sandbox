@@ -52,7 +52,7 @@ write API, never declares a GET safe.
 
 ### No command-name safe lists
 
-`git`, `npm`, `python`, build tools, MCP servers, and other "normal" programs can execute
+`git`, `npm`, `python`, build programs, MCP servers, and other "normal" programs can execute
 repository-controlled behavior. The outer container/network boundary should contain them all instead
 of trying to classify command names as safe.
 
@@ -352,7 +352,7 @@ Directory names follow the terse Unix tradition where the choice is free: an abb
 the plural marker with the rest of the word (`doc`, like `bin`, `lib`, `src`), and a full word
 names the directory's role in the singular (`probe`, like `spec`, `vendor`, `container`), never its
 contents' count. An abbreviation is cut as short as it stays unambiguous — `conf`, not `config`.
-Where a tool mandates the name, the tool wins: Cargo's `tests/` and `examples/`, sbt's
+Where a program mandates the name, the program wins: Cargo's `tests/` and `examples/`, sbt's
 `src/main/resources` and `src/test`, XDG's `~/.config`; where a grammar spells it, the grammar
 wins: the proxy's `defaults/` is the `defaults` of `deny defaults`. The accepted prices of `doc`
 over `docs`: SECURITY.md stays at the repository root (GitHub's community-health lookup reads only

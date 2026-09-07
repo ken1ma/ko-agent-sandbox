@@ -1,5 +1,5 @@
 // The clipboard protocol, end to end on one host: the reaper's real shell functions against the
-// image's real shim, with podman and the host clipboard tools replaced by scripts. What it holds
+// image's real shim, with podman and the host clipboard programs replaced by scripts. What it holds
 // is the contract between the three parties, which no unit of either side can hold alone.
 
 package agentsandbox.launcher
@@ -12,10 +12,10 @@ import scala.jdk.CollectionConverters.*
 
 class ClipboardBrokerTest extends munit.FunSuite:
 
-  // The shim runs in the Debian image, so its tools are the image's; a macOS host has neither.
-  private val tools = Vector("sh", "flock", "timeout", "setsid", "mkfifo")
-  private def onPath(tool: String): Boolean =
-    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
+  // The shim runs in the Debian image, so its programs are the image's; a macOS host has neither.
+  private val programs = Vector("sh", "flock", "timeout", "setsid", "mkfifo")
+  private def onPath(program: String): Boolean =
+    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, program)))
 
   private val Image = "PNG binary".getBytes(UTF_8)
 
@@ -66,7 +66,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
 
   // `wayland`: the host has only wl-clipboard, so the broker's xclip-first chain must fall through.
   private def exchange(mode: String, wayland: Boolean = false)(check: (Path, Path) => Unit): Unit =
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("clipboard")
     val host = Files.createDirectory(dir.resolve("host"))
     val sandboxBin = Files.createDirectory(dir.resolve("sandbox"))
@@ -81,7 +81,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
         |esac
         |""".stripMargin
     )
-    // The host's real clipboard tools, answering the three calls the broker makes, by absolute
+    // The host's real clipboard programs, answering the three calls the broker makes, by absolute
     // path as the launcher resolves them; the host's PATH is deliberately not offered.
     executable(
       host.resolve("xclip"),
@@ -106,12 +106,12 @@ class ClipboardBrokerTest extends munit.FunSuite:
     Vector("xclip", "xsel", "wl-paste", "wl-copy").foreach: name =>
       Files.createSymbolicLink(sandboxBin.resolve(name), Shim)
     deleteRecursively(FifoDir)
-    val hostTools =
+    val hostPrograms =
       if wayland then s"'' $host/wl-paste $host/wl-copy" else s"$host/xclip '' ''"
     val broker = ProcessBuilder(
       "setsid", "sh", "-c",
       s"${ClipboardBroker.hostShellFunctions(FifoDir.toString)}\n" +
-        s"clipboard_broker $host/podman C $mode $hostTools",
+        s"clipboard_broker $host/podman C $mode $hostPrograms",
     )
     broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     val process = broker.start()
@@ -168,7 +168,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(Files.readString(host.resolve("copied.txt")), "via wl-copy")
 
   test("without a broker the shim fails at once, and an unknown argument pattern is a usage error"):
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val sandboxBin = Files.createTempDirectory("clipboard-none")
     Files.createSymbolicLink(sandboxBin.resolve("xclip"), Shim)
     deleteRecursively(FifoDir)

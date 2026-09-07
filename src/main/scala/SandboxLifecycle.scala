@@ -149,7 +149,7 @@ object SandboxLifecycle:
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
    * (documented at the step that reads them), $8 the clipboard mode, $9
-   * to ${11} its host tools, ${12} the ps its cleanup walks the tree with.
+   * to ${11} its host programs, ${12} the ps its cleanup walks the tree with.
    *
    * The trap is necessary: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.

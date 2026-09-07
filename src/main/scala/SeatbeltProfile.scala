@@ -1,5 +1,5 @@
-// The Seatbelt profile a host build runs under (run-on-host.md "The Seatbelt profile"). Pure — a
-// BuildPrereqs in, SBPL out — so unit tests check the generated SBPL without requiring
+// The Seatbelt profile a host command runs under (run-on-host.md "The Seatbelt profile"). Pure — a
+// CommandPrereqs in, SBPL out — so unit tests check the generated SBPL without requiring
 // macOS.
 //
 // Two properties of SBPL decide how paths are written and how rules are ordered here, both measured by
@@ -18,7 +18,7 @@ package agentsandbox.launcher
 
 import java.nio.file.Path
 
-import RunOnHostPrereqs.{BuildPrereqs, Tool}
+import RunOnHostPrereqs.{CommandPrereqs, Program}
 
 object SeatbeltProfile:
 
@@ -56,7 +56,7 @@ object SeatbeltProfile:
    * it, never the directories above. Measured: with only the deep grants, `java -version` dies in
    * the loader; with the chain present it runs, and the chain is what a coarse `/Users` grant was
    * standing in for. Metadata and not `file-read*`, because on a directory `file-read*` is its
-   * listing: src/probe/build-profile-gate.sh showed a chain granted that way listing all of
+   * listing: src/probe/run-on-host-profile-gate.sh showed a chain granted that way listing all of
    * `~/Library/Caches`. Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with
@@ -75,7 +75,7 @@ object SeatbeltProfile:
 
   /**
    * The character devices a JVM opens before it runs anything. No `/dev/tty`: closing the child's
-   * stdin does not detach its controlling terminal, and a build that can open the terminal can
+   * stdin does not detach its controlling terminal, and a command that can open the terminal can
    * read what the user types. The random devices are read-only.
    */
   val DevicePaths: Seq[Path] = Seq("/dev/null", "/dev/random", "/dev/urandom").map(Path.of(_))
@@ -84,13 +84,13 @@ object SeatbeltProfile:
     """(allow file-read* file-write-data (literal "/dev/null"))""" + "\n" +
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
-  /** What the build may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
+  /** What the command may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
     * running a real build under this profile and reading the denials, never guessed: the contract admits a
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
   case class ProfileInputs(
-    prereqs: BuildPrereqs,
+    prereqs: CommandPrereqs,
     sessionTmp: Path,
     distribution: Option[Path],
     sbtGlobal: Option[Path],
@@ -108,7 +108,7 @@ object SeatbeltProfile:
     val prereqs = inputs.prereqs
     val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
     // Writable implies executable for the project and the session temp, never for the cache:
-    // a child inherits the profile, so a build running what it wrote gains nothing, and a build's
+    // a child inherits the profile, so a command running what it wrote gains nothing, and a build's
     // tests routinely write and run stubs — this repository's do. The cache holds artifacts the
     // JVM reads, and nothing there is run.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
@@ -117,28 +117,29 @@ object SeatbeltProfile:
     val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
     val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
 
-    val tool = prereqs.tool
+    val program = prereqs.program
     everyPath.find(path => !usable(path)) match
-      case _ if tool == Tool.Sbt && inputs.distribution.isEmpty =>
+      case _ if program == Program.Sbt && inputs.distribution.isEmpty =>
         Left(
-          "an sbt profile needs the distribution the sbt script execs; without it the build cannot find sbt-launch.jar",
+          "an sbt profile needs the distribution the sbt script execs; without it the command cannot find" +
+            " sbt-launch.jar",
         )
-      case _ if tool == Tool.Mvn && inputs.distribution.isEmpty =>
-        Left("an mvn profile needs the distribution its mvn runs from; without it the build cannot find lib/")
-      case _ if tool == Tool.Sbt && inputs.sbtGlobal.isEmpty =>
+      case _ if program == Program.Mvn && inputs.distribution.isEmpty =>
+        Left("an mvn profile needs the distribution its mvn runs from; without it the command cannot find lib/")
+      case _ if program == Program.Sbt && inputs.sbtGlobal.isEmpty =>
         Left("an sbt profile needs the global base it grants; without it the server's own state is a denial")
-      case _ if tool == Tool.Sbt && inputs.ivyHome.isEmpty =>
+      case _ if program == Program.Sbt && inputs.ivyHome.isEmpty =>
         Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
-      case _ if tool == Tool.Mvn && inputs.m2Repository.isEmpty =>
+      case _ if program == Program.Mvn && inputs.m2Repository.isEmpty =>
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
-      case _ if tool == Tool.Mill && inputs.distribution.isDefined =>
+      case _ if program == Program.Mill && inputs.distribution.isDefined =>
         Left("a mill profile has no distribution to grant")
-      case _ if tool != Tool.Sbt && inputs.sbtGlobal.isDefined =>
-        Left(s"a ${tool.name} profile has no sbt global base to grant")
-      case _ if tool != Tool.Sbt && inputs.ivyHome.isDefined =>
-        Left(s"a ${tool.name} profile has no Ivy home to grant")
-      case _ if tool != Tool.Mvn && inputs.m2Repository.isDefined =>
-        Left(s"a ${tool.name} profile has no Maven local repository to grant")
+      case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
+        Left(s"a ${program.name} profile has no sbt global base to grant")
+      case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
+        Left(s"a ${program.name} profile has no Ivy home to grant")
+      case _ if program != Program.Mvn && inputs.m2Repository.isDefined =>
+        Left(s"a ${program.name} profile has no Maven local repository to grant")
       case Some(bad) => Left(nonCanonicalReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
@@ -164,20 +165,20 @@ object SeatbeltProfile:
         lines += "(allow process-fork sysctl-read mach-lookup)"
         lines += Devices
         lines += ""
-        lines += ";; Runtime authority: measured by src/probe/build-profile-iterate.sh, never guessed."
+        lines += ";; Runtime authority: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
         inputs.runtime.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
         inputs.runtime.executes.foreach: path =>
           lines += s"(allow process-exec* file-read* ${subpath(path)})"
         lines += ""
-        lines += ";; The build's own tools, never writable by it."
+        lines += ";; The command's own programs, never writable by it."
         readOnly.foreach(path => lines += s"(allow process-exec* file-read* ${subpath(path)})")
         lines += ""
-        lines += ";; What the build may change, and run: a child inherits this profile."
+        lines += ";; What the command may change, and run: a child inherits this profile."
         readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
-        lines += ";; What the build may change but never runs."
+        lines += ";; What the command may change but never runs."
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
-        lines += ";; The build's own proxy, and no other destination."
+        lines += ";; The command's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
         // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
         // ::1 — not a dual-stack JVM's v4-mapped connect, which is why the environment contract pins

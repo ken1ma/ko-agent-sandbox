@@ -106,5 +106,5 @@ echo "=== what a Seatbelt profile would name ==="
 say "PROJECT" "$project"
 say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"
 say "MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/mill/download"
-say "BUILD_CACHE_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
-printf '\nThe sbt distribution is the other half of TOOL; src/probe/sbt-exec-chain.sh finds it.\n'
+say "RUN_ON_HOST_COURSIER_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/coursier/v1"
+printf '\nThe sbt distribution is the other half of PROGRAM; src/probe/sbt-exec-chain.sh finds it.\n'

@@ -65,8 +65,8 @@ class ResetRecordTest extends munit.FunSuite:
         "the launch recorded the project's directory",
       )
 
-      // A cache as a host build would leave, since --reset takes it with the rest.
-      val cache = RunOnHostPrereqs.buildCacheDir(
+      // A cache as a host command would leave, since --reset takes it with the rest.
+      val cache = RunOnHostPrereqs.runOnHostCacheDir(
         RunOnHostPrereqs.cacheRootOf(currentOs, env).fold(refusal => fail(refusal.toString), identity), session.id,
       )
       Files.createDirectories(cache)
@@ -85,7 +85,7 @@ class ResetRecordTest extends munit.FunSuite:
       assert(!ok && output.contains("no project never-000000000000"), output)
       assert(!runOk(podman, "volume", "exists", volume), "the reset left the generated volume")
       assert(!Files.exists(record), "the reset left the record")
-      assert(!Files.exists(cache), "the reset left the host-build cache")
+      assert(!Files.exists(cache), "the reset left the run-on-host cache")
       assert(
         !SandboxStats.projectIds(currentOs, Vector.empty).contains(session.id), "the reset left state under the id",
       )

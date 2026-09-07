@@ -20,7 +20,7 @@ The credential gaps SECURITY.md concedes are the target.
   reaching whatever this project's egress rules admit". A `GET` carries its URL, and a URL is
   a message, so a forwarded token leaves through any inspected host, or inside the opaque model
   tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
-- Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every tool in
+- Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every program in
   the sandbox and by anything that captures the environment or the volume — the class Codex hit
   when shell snapshots persisted secret variables (openai/codex #30971).
 
@@ -60,7 +60,7 @@ an unauthorized repository"; repository scoping is a later increment ("Deliberat
    header the client sent; it never adds a header.
 1. The placeholder is unpredictable to the project: fresh random bytes per launch, in the format
    of the value it stands for (prefix and length preserved for a recognizable prefix such as
-   `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Tools that validate
+   `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Programs that validate
    token syntax before sending keep working; nothing can be derived from it.
 1. The placeholder, its name and its bound host are printed at launch beside the forwarded
    names, and shown by `--egress-effective`; the rules have one home and one display.
@@ -197,7 +197,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
   — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
   rule arithmetic: the gate must fire in `plan-provider-credential-proxy.md`'s management
-  verbs before any run exists, and the dry run mounts nothing by design — a secret file in it
+  actions before any run exists, and the dry run mounts nothing by design — a secret file in it
   would be one more custody site. The executable-source result there passes through the same
   object.
 - Placeholder generation: `SecureRandom`, format rules from guarantee 5.

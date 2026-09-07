@@ -1,7 +1,7 @@
 #!/bin/sh
 # Discover the profile's runtime authority (run-on-host.md "The Seatbelt profile") the only way
 # it admits — by running a real build and reading what it actually needs, never by listing what
-# the host happens to have. Run it when a build stops under the profile and nothing names the
+# the host happens to have. Run it when a command stops under the profile and nothing names the
 # missing grant.
 #
 # `(debug deny)` makes denials visible, which is what Bazel's darwin-sandbox puts at the top of
@@ -13,33 +13,33 @@
 # works, so they start from a set that runs and remove cumulatively, keeping only grants whose
 # absence breaks it.
 #
-#   sh src/probe/build-profile-iterate.sh checks         # which check fails? run this first
-#   sh src/probe/build-profile-iterate.sh ops "<command>"    # which operations does it need?
-#   sh src/probe/build-profile-iterate.sh paths          # what does /bin/sh need?
-#   sh src/probe/build-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
-#   sh src/probe/build-profile-iterate.sh narrow         # drop every grant that is not needed
+#   sh src/probe/run-on-host-profile-iterate.sh checks         # which check fails? run this first
+#   sh src/probe/run-on-host-profile-iterate.sh ops "<command>"    # which operations does it need?
+#   sh src/probe/run-on-host-profile-iterate.sh paths          # what does /bin/sh need?
+#   sh src/probe/run-on-host-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
+#   sh src/probe/run-on-host-profile-iterate.sh narrow         # drop every grant that is not needed
 #
-# Whether the current grant set builds is src/probe/build-profile-gate.sh's question, not this one's.
+# Whether the current grant set builds is src/probe/run-on-host-profile-gate.sh's question, not this one's.
 #
 # Runtime authority accumulates in src/main/resources/agentsandbox/runtime-authority.txt, which you edit by hand: a line
-# added because a build failed once is a grant that outlives every later build, so each belongs
+# added because a command failed once is a grant that outlives every later command, so each belongs
 # there only if it is a stable runtime read and not a path into user data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 
 mode=${1:-checks}
 command=${2:-"about"}
-work=${TMPDIR:-/tmp}/ko-agent-build-profile
+work=${TMPDIR:-/tmp}/ko-agent-run-on-host-profile
 authority=src/main/resources/agentsandbox/runtime-authority.txt
 mkdir -p "$work"
 [ -f "$authority" ] ||
     printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
 
 emit() {
-    rm -f "$work/build.env"
-    sbt -batch "Test/runMain agentsandbox.launcher.EmitBuildProfile $work/build.sb $1" \
+    rm -f "$work/command.env"
+    sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile $work/command.sb $1" \
         >"$work/emit.log" 2>&1 || { echo "emit failed:"; tail -20 "$work/emit.log"; return 1; }
-    mv "$work/build.sb.env" "$work/build.env"
+    mv "$work/command.sb.env" "$work/command.env"
 }
 
 # -java-home because the sbt script declares `java_cmd=java` and would otherwise resolve
@@ -49,17 +49,17 @@ emit() {
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # session temp with everything else.
-# The environment is the build's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
-# build cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
+# The environment is the command's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
+# run-on-host cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the session temp.
-build() {
-    . "$work/build.env"
+run_command() {
+    . "$work/command.env"
     tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"
     PATH="$JAVA_HOME/bin:$PATH" \
-    COURSIER_CACHE=$(sed -n 's/^build cache: //p' "$work/emit.log") \
+    COURSIER_CACHE=$(sed -n 's/^run-on-host cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
     JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global -Dsbt.ivy.home=$SESSION_TMP/ivy-home" \
-    /usr/bin/sandbox-exec -f "$work/build.sb" \
+    /usr/bin/sandbox-exec -f "$work/command.sb" \
         sbt --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
 }
 
@@ -258,7 +258,7 @@ paths)
         fi
     done < "$work/snapshot.txt"
     echo
-    # A kept root entry is rarely the answer: /System is required, but a build has no business
+    # A kept root entry is rarely the answer: /System is required, but a command has no business
     # reading all of it. Try replacing each with its children, keeping the descent only while the
     # command still works, so the result is as deep as the evidence allows.
     echo
@@ -306,10 +306,10 @@ checks)
     # first that fails, so the missing grant is one that check already needs. Output is not redirected:
     # the reason usually goes to the terminal, and redirecting is how it was lost.
     emit "$authority" || exit 1
-    . "$work/build.env"
+    . "$work/command.env"
     check() {
         printf '\n--- %s\n' "$1"; shift
-        if /usr/bin/sandbox-exec -f "$work/build.sb" "$@"; then
+        if /usr/bin/sandbox-exec -f "$work/command.sb" "$@"; then
             echo "    ok"
         else
             echo "    FAILED (exit $?) — this check is the first to require the missing grant"
@@ -325,19 +325,19 @@ checks)
     check "the JDK"                                       "$JAVA_HOME/bin/java" -version
     check "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every check passed; the gate is next: sh src/probe/build-profile-gate.sh quick"
+    echo "every check passed; the gate is next: sh src/probe/run-on-host-profile-gate.sh quick"
     ;;
 narrow)
     emit "$authority" || exit 1
-    if ! build "$work/base.log"; then
-        echo "the current grant set does not build; fix that with the gate before narrowing." >&2
+    if ! run_command "$work/base.log"; then
+        echo "the current grant set does not run the command; fix that with the gate before narrowing." >&2
         exit 1
     fi
-    echo "baseline builds. Removing one grant at a time."
+    echo "the baseline runs the command. Removing one grant at a time."
     kept="$work/kept.txt"; : > "$kept"
     grep -vE '^\s*(#|$)' "$authority" | while IFS= read -r line; do
         grep -vE '^\s*(#|$)' "$authority" | grep -vxF "$line" > "$work/without.txt"
-        if emit "$work/without.txt" && build "$work/try.log"; then
+        if emit "$work/without.txt" && run_command "$work/try.log"; then
             printf '  drop    %s\n' "$line"
         else
             printf '  KEEP    %s\n' "$line"

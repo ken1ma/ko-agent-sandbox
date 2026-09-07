@@ -120,7 +120,7 @@ ENV npm_config_prefix=/home/nonroot/.local
 #
 # gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
 # rustc's own LLVM emits the objects and only shells out to cc to drive ld
-# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's tool table for that
+# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program table for that
 # reason — nothing here invites C development, though gcc compiles C if asked.
 #
 # Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
@@ -171,7 +171,7 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 # each agent's dot-directory is a relative symlink into it, so no relocation
 # variables are needed. opencode's three XDG directories are linked one by
 # one for the same reason: XDG_*_HOME variables would move every other
-# tool's directories too. Its data directory holds the logins (auth.json)
+# program's directories too. Its data directory holds the logins (auth.json)
 # and the sessions, so its config directory alone would lose them; its
 # cache, ~/.cache/opencode, dies with the session like every cache.
 # The volume's content starts as the seed below, which

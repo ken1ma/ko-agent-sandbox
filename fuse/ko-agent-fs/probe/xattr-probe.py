@@ -2,7 +2,7 @@
 """Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
 "Non-TODOs")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
 an execution vector — but the raw bind mount underneath *does* support `user.*` xattrs, so the
-question is not whether ENOSYS is safe. It is whether ENOSYS is a cost the tools notice.
+question is not whether ENOSYS is safe. It is whether ENOSYS is a cost the programs notice.
 
 Answer it by measurement, not by reasoning: run this in a filtered session and again in an
 unfiltered one, and compare. The unfiltered run is the control, exactly as the perf table's raw-bind
@@ -87,8 +87,8 @@ def direct_ops(work: str) -> None:
             row(name, errno_of(caught))
 
 
-def carrying_tools(work: str) -> None:
-    """What a tool that *preserves* xattrs does when the destination refuses them. The source is
+def carrying_programs(work: str) -> None:
+    """What a program that *preserves* xattrs does when the destination refuses them. The source is
     outside the mount, because inside it there may be no way to attach an xattr in the first
     place — which is exactly what extracting an archive or copying a tree into
     /workspace does."""
@@ -134,7 +134,7 @@ def main() -> int:
     work = tempfile.mkdtemp(prefix=".ko-agent-fs-xattr-", dir="/workspace")
     try:
         direct_ops(work)
-        carrying_tools(work)
+        carrying_programs(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

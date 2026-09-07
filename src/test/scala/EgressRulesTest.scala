@@ -155,7 +155,7 @@ class EgressRulesTest extends munit.FunSuite:
   test("only the basename of a recognized agent command selects a provider"):
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
     assertEquals(commandProvider(Some("/usr/local/bin/codex")), Some("openai"))
-    assertEquals(commandProvider(Some("C:\\tools\\agy")), Some("google"))
+    assertEquals(commandProvider(Some("C:\\programs\\agy")), Some("google"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
     assertEquals(commandProvider(Some("opencode")), Some("all"))
     assertEquals(commandProvider(Some("bash")), None)

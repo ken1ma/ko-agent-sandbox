@@ -205,7 +205,7 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
 
 /// Coherency measured rather than assumed (`doc/architecture.md`, "Coherency").
 /// `init` refuses a kernel that cannot offer `AUTO_INVAL_DATA`, but a kernel that offers it and
-/// then does not invalidate would serve a build tool stale bytes — from the page cache, or from a
+/// then does not invalidate would serve a build program stale bytes — from the page cache, or from a
 /// mapping git took before the write. Both of those paths are checked here, and only here:
 /// nothing else in the suites holds a mapping across a host write.
 ///

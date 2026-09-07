@@ -45,16 +45,16 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   launcher's own configuration. Editing it is the host's job (`SECURITY.md`, "A project loosening
   its own confinement"); the same reason on a name that is merely *like* it is the fold rule
   over-reaching, and worth reporting with the exact bytes.
-- `reason=nonportable-target-syntax` on a `symlink` — a tool tried to create a link whose target is
-  absolute or climbs above the workspace root, neither of which can be trusted to resolve to the
+- `reason=nonportable-target-syntax` on a `symlink` — a program tried to create a link whose target
+  is absolute or climbs above the workspace root, neither of which can be trusted to resolve to the
   same host path (`SECURITY.md`, "A symlink is the highest-risk case"; the rule and its limits are
-  `fs.rs`, `target_has_portable_syntax`). Give the tool a relative target resolving inside the
-  workspace, or let it cache inside the project. Tools that link into a store of their own generally
-  fall back to copying: sbt turns off linking for the session on the first refusal and copies out of
-  its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is an absolute
-  link to the interpreter — `--copies` builds the same environment, and a virtualenv under `~` is
-  the better answer anyway, since one under `/workspace` names container paths in its `pyvenv.cfg`
-  and shebangs and is unusable on the host regardless.
+  `fs.rs`, `target_has_portable_syntax`). Give the program a relative target resolving inside the
+  workspace, or let it cache inside the project. Programs that link into a store of their own
+  generally fall back to copying: sbt turns off linking for the session on the first refusal and
+  copies out of its cache instead. The one that does not is `python3 -m venv`, whose `bin/python` is
+  an absolute link to the interpreter — `--copies` builds the same environment, and a virtualenv
+  under `~` is the better answer anyway, since one under `/workspace` names container paths in its
+  `pyvenv.cfg` and shebangs and is unusable on the host regardless.
 
 No DENY line for the failure? Then the `EPERM` did not come from the filter — check the backing
 share's own permissions and SELinux label from inside the machine.

@@ -6,7 +6,7 @@
 #
 #   sh src/probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
 #
-# The emitted profile grants port 51234 (EmitBuildProfile's constant), so the proxy is bound
+# The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the proxy is bound
 # there. Run it on macOS from the repository root, on each new macOS or JDK release: the JVM's
 # path to the proxy under the profile is what either can move.
 set -u

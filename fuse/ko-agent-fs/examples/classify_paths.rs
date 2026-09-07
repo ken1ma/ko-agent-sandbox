@@ -1,4 +1,4 @@
-//! Dev/validation tool: classify workspace-relative paths as OPERATIONAL or CONTROL using the real
+//! Dev/validation program: classify workspace-relative paths as OPERATIONAL or CONTROL using the real
 //! policy, reproducing the FUSE layer's per-inode context walk from the mount root. Reads
 //! newline-separated paths on stdin, writes `VERDICT\tpath` per line.
 //!

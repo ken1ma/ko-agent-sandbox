@@ -36,10 +36,10 @@ object ClipboardBroker:
 
   /**
    * The POSIX twin: `clipboard_broker <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
-   * the reaper to run as a job. The tools are [[hostBackend]]'s, absolute — the reaper's PATH is
+   * the reaper to run as a job. The programs are [[hostBackend]]'s, absolute — the reaper's PATH is
    * [[HostCommands.ScriptPath]], not the one they were found on — and empty where absent, or
    * everywhere on macOS, whose osascript and pbcopy are in /usr/bin. xclip is tried first and the
-   * Wayland tool answers when it fails, as on a Wayland session without XWayland. One request at a
+   * Wayland program answers when it fails, as on a Wayland session without XWayland. One request at a
    * time, which the shim's lock guarantees; a request the mode refuses (`set` under paste) is read
    * and dropped. Restarted while the sandbox runs, because a signal the terminal sends the
    * foreground group can end the exec.
@@ -77,8 +77,8 @@ object ClipboardBroker:
       |  reply() { "$1" exec -i "$2" sh -c '""".stripMargin + sandboxResponseWriter(sandboxDir) + """'; }
       |  while [ "$("$1" container inspect --format '{{.State.Running}}' "$2" 2>/dev/null)" = true ]; do
       |    "$1" exec -i "$2" sh -c '""".stripMargin + sandboxRequestReader(sandboxDir) + """' |
-      |      while read -r verb arg; do
-      |        case "$verb" in
+      |      while read -r action arg; do
+      |        case "$action" in
       |          set) if [ "$3" = bidirectional ]; then head -c "$arg" | copy; else head -c "$arg" >/dev/null; fi ;;
       |          types) { has_image && echo image/png; } | reply "$1" "$2" ;;
       |          get) { [ "$arg" = image/png ] && png; } | reply "$1" "$2" ;;
@@ -101,9 +101,9 @@ object ClipboardBroker:
   private val PowerShellArgs = Vector("-NoProfile", "-NonInteractive", "-Sta", "-Command")
 
   /**
-   * What the host runs for the mode: PowerShell for the resident twin, or the tools the shell twin
+   * What the host runs for the mode: PowerShell for the resident twin, or the programs the shell twin
    * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the project directory,
-   * design.md "No repository-controlled host executable resolution"). Each tool is its own field rather than a name
+   * design.md "No repository-controlled host executable resolution"). Each program is its own field rather than a name
    * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
    * Empty where absent, and everywhere on macOS.
    */
@@ -117,13 +117,13 @@ object ClipboardBroker:
   )
 
   /**
-   * Resolved before the launch makes anything, because a tool missing at request time would read
+   * Resolved before the launch makes anything, because a program missing at request time would read
    * as an empty clipboard or a successful copy. On Linux, xclip serves both directions; without it
    * wl-paste, and wl-copy when the mode writes. macOS always has osascript and pbcopy. Both need
    * the `ps` the reaper's cleanup rests on (probedPs).
    */
   def hostBackend(mode: String, os: Os, pathValue: String): Either[String, HostBackend] =
-    def tool(name: String): String = findOnPath(name, pathValue, os).map(_.toString).getOrElse("")
+    def program(name: String): String = findOnPath(name, pathValue, os).map(_.toString).getOrElse("")
     if mode == "off" then Right(HostBackend())
     else os match
       case Os.Windows =>
@@ -131,7 +131,8 @@ object ClipboardBroker:
           .toRight(s"error: $ClipboardVariable=$mode needs powershell.exe on PATH")
       case Os.Linux =>
         probedPs(mode, os, pathValue).flatMap: ps =>
-          val found = HostBackend(xclip = tool("xclip"), wlPaste = tool("wl-paste"), wlCopy = tool("wl-copy"), ps = ps)
+          val found =
+            HostBackend(xclip = program("xclip"), wlPaste = program("wl-paste"), wlCopy = program("wl-copy"), ps = ps)
           val reads = found.xclip.nonEmpty || found.wlPaste.nonEmpty
           val writes = found.xclip.nonEmpty || (found.wlPaste.nonEmpty && found.wlCopy.nonEmpty)
           if reads && (mode == "paste" || writes) then Right(found)
@@ -141,7 +142,7 @@ object ClipboardBroker:
   /**
    * The `ps` the reaper enumerates the broker's process tree with, proven on this host before an
    * enabled mode is accepted: an absent `ps`, or one that answers `ps -A -o pid=,ppid=` with
-   * nothing (BusyBox's prints another format), would leave a blocked clipboard tool alive after the
+   * nothing (BusyBox's prints another format), would leave a blocked clipboard program alive after the
    * session while the cleanup silently ended the job alone. The proof is this launcher's own row —
    * its pid, and its parent's when the JVM knows one — in exactly the output the reaper parses.
    */

@@ -115,7 +115,7 @@ object KoAgentFs:
    * user's remedy.
    *
    * The script saves the original beside the file first. The backup name
-   * is the tool's name, not `.dist`: `.dist` would claim
+   * is the program's name, not `.dist`: `.dist` would claim
    * as-distributed pristineness nobody verified, while this says who saved
    * it and when it is safe to delete. Saved only if no backup exists yet,
    * so a re-run cannot overwrite the true original with a modified copy.

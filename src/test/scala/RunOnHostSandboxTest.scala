@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import RunOnHostSandbox.*
-import RunOnHostPrereqs.Tool
+import RunOnHostPrereqs.Program
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
@@ -14,11 +14,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val authority = RunOnHostSandbox.bundledRuntimeAuthority()
     assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
 
-  test("the build's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
+  test("the command's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
-    val prereqs = RunOnHostPrereqs.BuildPrereqs(
+    val prereqs = RunOnHostPrereqs.CommandPrereqs(
       project = Path.of("/Users/u/project"), jdkHome = jdk, coursierV1 = Path.of("/cache/v1"),
-      tool = Tool.Sbt, executable = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
+      program = Program.Sbt, executable = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt"),
     )
     val host = Map(
       "HOME" -> "/Users/u", "LANG" -> "en_US.UTF-8", "PATH" -> "/usr/bin:/bin",
@@ -26,7 +26,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       "HTTPS_PROXY" -> "http://alice:s3cret@proxy.example:3128", "AWS_SECRET_ACCESS_KEY" -> "hunter2",
       "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "TOKEN" -> "t0ken", "USER" -> "shellname",
     )
-    val environment = buildEnvironment(
+    val environment = commandEnvironment(
       host.get,
       Vector(
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
@@ -50,12 +50,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=/cache/m2"))
-    // A forward reaches the build; one naming a variable the wrapper sets loses to the wrapper.
+    // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
     assert(!environment("JAVA_TOOL_OPTIONS").contains("javaagent"))
     // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
-    // tools' own overrides — the mill version ones even when forwarded.
+    // programs' own overrides — the mill version ones even when forwarded.
     Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "MILL_VERSION", "TERM", "ALL_PROXY").foreach: name =>
       assert(!environment.contains(name), name)
     assert(!environment.values.exists(_.contains("s3cret")), environment.toString)
@@ -64,11 +64,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Set(
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
         "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
-      ) ++ buildProxyVariables(4711).keySet,
+      ) ++ commandProxyVariables(4711).keySet,
     )
     // Without a derivable download folder the variable is simply absent.
     val noFolder =
-      buildEnvironment(
+      commandEnvironment(
         host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"), 1, "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
@@ -76,7 +76,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("a prerequisite file that cannot be read is a worded refusal at the assembly, not a stack trace"):
     import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
     assume(System.getProperty("user.name") != "root", "root reads everything")
-    // A Coursier layout the JVM rule accepts, so the assembly reaches the tool's own files.
+    // A Coursier layout the JVM rule accepts, so the assembly reaches the program's own files.
     val root = Files.createTempDirectory("unreadable")
     val cache = Files.createDirectories(root.resolve("coursier"))
     val jdk = Files.createDirectories(cache.resolve("arc/jdk.tar.gz/jdk"))
@@ -87,14 +87,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val mvnw = project.resolve("mvnw")
     Files.write(mvnw, Array[Byte]('#', '!', 0xff.toByte, '\n'))
     Files.setPosixFilePermissions(mvnw, permissions("rwxr-xr-x"))
-    val invalid = assemble(project, Tool.Mvn, env.get)
+    val invalid = assemble(project, Program.Mvn, env.get)
     assert(clue(invalid).left.exists(text => text.contains(mvnw.toString) && text.contains("not valid UTF-8")))
 
     Files.writeString(mvnw, "#!/bin/sh\nhash_string() {\n}\n")
     val properties = Files.createDirectories(project.resolve(".mvn/wrapper")).resolve("maven-wrapper.properties")
     Files.writeString(properties, "distributionUrl=https://example.org/apache-maven-3.9.16-bin.zip\n")
     Files.setPosixFilePermissions(properties, permissions("---------"))
-    val denied = assemble(project, Tool.Mvn, env.get)
+    val denied = assemble(project, Program.Mvn, env.get)
     assert(
       clue(denied).left.exists(text => text.contains(properties.toString) && text.contains("permission denied")),
     )
@@ -178,24 +178,24 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       refused.toString,
     )
 
-  test("readBuildRules reads the tool's file, refuses its strays, and defaults to nothing"):
+  test("readProgramRules reads the program's file, refuses its strays, and defaults to nothing"):
     val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
     Files.writeString(
       project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
       "allow https://repo.example.org/ read\n",
       UTF_8,
     )
-    assertEquals(readBuildRules(project, Tool.Sbt), Right(Vector("repo.example.org")))
-    assertEquals(readBuildRules(project, Tool.Mill), Right(Vector.empty), "mill has no file here")
+    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
+    assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
 
     Files.writeString(
       project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
       "allow model-provider openai\n",
       UTF_8,
     )
-    val refused = readBuildRules(project, Tool.Sbt)
+    val refused = readProgramRules(project, Program.Sbt)
     assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.BuildRuleForm)), refused.toString)
+    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.ProgramRuleForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces
@@ -215,7 +215,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("the relaunch classpath walked from the loaders includes these classes and their deps"):
     // What emit prints for the gate: inside sbt's layered loaders java.class.path is sbt's own,
     // so the walk is what has to find the test classes and munit.
-    val classpath = EmitBuildProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
+    val classpath = EmitRunOnHostProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
     assert(classpath.exists(_.contains("munit")), classpath.take(5).toString)
     def includes(entry: String): Boolean =
       val wanted = "agentsandbox/launcher/RunOnHost.class"
@@ -228,15 +228,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       else false
     assert(classpath.exists(includes), classpath.take(8).toString)
 
-  test("selfInvocation on a JVM re-runs this classpath under the private verb"):
+  test("selfInvocation on a JVM re-runs this classpath under the private action"):
     val command = selfInvocation("--serve-proxy-on-host")
     assert(command.head.endsWith("/bin/java"), command.toString)
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
     assertEquals(
-      selfInvocation("--run-build-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
-      Seq("--run-build-on-host", "sbt", "/p", "/p/sub", "--"),
+      selfInvocation("--run-command-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
+      Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
     )
 
   test("deniedHosts reads the audit log's deny lines, once per host"):
@@ -386,7 +386,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val log = collection.mutable.Buffer[String]()
     val result =
       autoShutdownForeignServer(project, derived, env, log.append(_), userHome = Path.of("/u"))
-    assert(result.swap.exists(_.contains("reachable through what a build writes")), result)
+    assert(result.swap.exists(_.contains("reachable through what a command writes")), result)
     assertEquals(log.toList, Nil)
 
   test("autoShutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
@@ -453,10 +453,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       listener.close()
       server.join(2_000)
 
-  test("reachableThroughBuildWritable answers by what the walk enters, not by where it ends"):
+  test("reachableThroughCommandWritable answers by what the walk enters, not by where it ends"):
     val project = Files.createTempDirectory("p")
     val outside = Files.createTempDirectory("o")
-    def reachable(target: Path) = reachableThroughBuildWritable(target, project, Seq.empty)
+    def reachable(target: Path) = reachableThroughCommandWritable(target, project, Seq.empty)
     assert(reachable(project.resolve("srv/h/sock")))
     assert(!reachable(outside.resolve("srv/h/sock")))
     // The planting this exists to catch, in both forms a link can take: the endpoint tells
@@ -480,30 +480,30 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // A relative path resolves against a working directory this process does not control.
     assert(reachable(Path.of("srv/h/sock")))
     // An unanswerable question is reachable: a project that does not resolve cannot clear anything.
-    assert(reachableThroughBuildWritable(outside.resolve("sock"), project.resolve("gone"), Seq.empty))
+    assert(reachableThroughCommandWritable(outside.resolve("sock"), project.resolve("gone"), Seq.empty))
 
-  test("reachableThroughBuildWritable covers the caches a build writes, not the project alone"):
+  test("reachableThroughCommandWritable covers the caches a command writes, not the project alone"):
     val project = Files.createTempDirectory("p")
     val cache = Files.createTempDirectory("c")
     val outside = Files.createTempDirectory("o")
     val planted = cache.resolve("h/sock")
     Files.createDirectories(planted.getParent)
     Files.writeString(planted, "")
-    // A socket an earlier agent's build left in a persistent cache is as planted as one in the
+    // A socket an earlier agent's command left in a persistent cache is as planted as one in the
     // project — and invisible while the project is the only root.
-    assert(!reachableThroughBuildWritable(planted, project, Seq.empty))
-    assert(reachableThroughBuildWritable(planted, project, Seq(cache)))
-    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(planted, project, Seq.empty))
+    assert(reachableThroughCommandWritable(planted, project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(outside.resolve("sock"), project, Seq(cache)))
     // A cache that does not exist yet holds nothing, and must not refuse every shutdown.
-    assert(!reachableThroughBuildWritable(outside.resolve("sock"), project, Seq(cache.resolve("gone"))))
+    assert(!reachableThroughCommandWritable(outside.resolve("sock"), project, Seq(cache.resolve("gone"))))
 
-  test("reachableThroughBuildWritable knows both firmlink spellings of every writable root"):
+  test("reachableThroughCommandWritable knows both firmlink spellings of every writable root"):
     // macOS serves the writable volume at / and at /System/Volumes/Data alike, and toRealPath
     // collapses neither, so the alternate spelling would otherwise walk past every root.
     val project = Files.createTempDirectory("p")
     val cache = Files.createTempDirectory("c")
     val outside = Files.createTempDirectory("o")
     def aliased(root: Path) = Path.of(s"/System/Volumes/Data${root.toRealPath()}/h/sock")
-    assert(reachableThroughBuildWritable(aliased(project), project, Seq.empty))
-    assert(reachableThroughBuildWritable(aliased(cache), project, Seq(cache)))
-    assert(!reachableThroughBuildWritable(aliased(outside), project, Seq(cache)))
+    assert(reachableThroughCommandWritable(aliased(project), project, Seq.empty))
+    assert(reachableThroughCommandWritable(aliased(cache), project, Seq(cache)))
+    assert(!reachableThroughCommandWritable(aliased(outside), project, Seq(cache)))

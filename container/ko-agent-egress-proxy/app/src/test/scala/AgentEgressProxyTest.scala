@@ -2011,7 +2011,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[BadRequest]:
       readCrLfLine(ByteArrayInputStream(ascii("0123456789\r\n")), 4)
 
-  test("audit lines are verb host method [target] tail, with - for fields never learned"):
+  test("audit lines are action host method [target] tail, with - for fields never learned"):
     // SECURITY.md, "The audit line grammar".
     assertEquals(
       auditLine("allow", "github.com", "GET", "/r?tab=readme", "-> 140.82.112.3"),

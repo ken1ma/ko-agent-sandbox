@@ -249,16 +249,16 @@ object WithPodman extends munit.Assertions:
 
   /** `--reset` in a project, as the user runs it after a crash: whether it succeeded, and its own
     * output, all that is worth printing when it did not. */
-  def reset(project: Path, extra: (String, String)*): (Boolean, String) = verb(project, Vector("--reset"), extra*)
+  def reset(project: Path, extra: (String, String)*): (Boolean, String) = action(project, Vector("--reset"), extra*)
 
   /** `--reset <id>...`, run from `from`: the projects' own directories are gone. */
-  def resetIds(from: Path, ids: String*): (Boolean, String) = verb(from, Vector("--reset") ++ ids)
+  def resetIds(from: Path, ids: String*): (Boolean, String) = action(from, Vector("--reset") ++ ids)
 
-  def resetRunOnHost(project: Path): (Boolean, String) = verb(project, Vector("--reset-run-on-host"))
+  def resetRunOnHost(project: Path): (Boolean, String) = action(project, Vector("--reset-run-on-host"))
 
-  private def verb(project: Path, verb: Vector[String], extra: (String, String)*): (Boolean, String) =
-    val log = project.resolve(s"${verb.head.stripPrefix("--")}.log")
-    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ verb)*)
+  private def action(project: Path, action: Vector[String], extra: (String, String)*): (Boolean, String) =
+    val log = project.resolve(s"${action.head.stripPrefix("--")}.log")
+    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ action)*)
     extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(project.toFile)
     builder.redirectErrorStream(true)

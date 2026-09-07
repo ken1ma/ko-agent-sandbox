@@ -21,7 +21,7 @@ object RunOnHostChannel:
    * channel has none and the shim fails at once; everything else is transaction-scoped. The shim
    * takes the lock, creates its own `ctl.<pid>`, `out.<pid>`, `err.<pid>` and `exit.<pid>`,
    * writes its pid to `req` as one line — a single write, so it frames itself — and then sends
-   * the request over `ctl.<pid>`: `<tool> <argc>\n`, then argc+1 NUL-terminated fields, the
+   * the request over `ctl.<pid>`: `<program> <argc>\n`, then argc+1 NUL-terminated fields, the
    * working directory in its container spelling and then the arguments. It holds `ctl.<pid>`
    * open for the life of the transaction and reads `out`/`err` to EOF and its exit code from
    * `exit`.
@@ -46,7 +46,7 @@ object RunOnHostChannel:
   val WorkspaceMount = "/workspace"
 
   /**
-   * Set in the sandbox to the tools `--run-on-host` names: the shim's cue to wait for a `req`
+   * Set in the sandbox to the programs `--run-on-host` names: the shim's cue to wait for a `req`
    * the broker may not have made yet, and the agent's one variable saying the channel exists.
    */
   val RunOnHostVariable = "KO_AGENT_SANDBOX_RUN_ON_HOST"
@@ -69,7 +69,7 @@ object RunOnHostChannel:
   val MaxLineBytes = 4096
   val DrainBytes = 64 << 20
 
-  final case class Request(tool: String, workingDirectory: String, arguments: Vector[String])
+  final case class Request(program: String, workingDirectory: String, arguments: Vector[String])
 
   /** One request off the stream: Right(None) is EOF at a request boundary; Left is a stream that
     * can no longer be trusted to frame anything, the caller's cue to drop it whole. */
@@ -78,7 +78,7 @@ object RunOnHostChannel:
       case None => Right(None)
       case Some(header) =>
         header.split(" ", 2) match
-          case Array(tool, count) if count.forall(_.isDigit) && count.nonEmpty =>
+          case Array(program, count) if count.forall(_.isDigit) && count.nonEmpty =>
             count.toIntOption match
               case None =>
                 Left(s"request names $count arguments, which is no count at all")
@@ -102,8 +102,8 @@ object RunOnHostChannel:
                   index += 1
                 failed.toLeft(()).map: _ =>
                   val all = fields.result()
-                  Some(Request(tool, all.head, all.tail))
-          case _ => Left(s"request header is not `<tool> <argc>`: $header")
+                  Some(Request(program, all.head, all.tail))
+          case _ => Left(s"request header is not `<program> <argc>`: $header")
 
   /** Right(None) at EOF before any byte; Left on a line passing the bound — unframeable. */
   def readLine(in: InputStream): Either[String, Option[String]] =
@@ -170,11 +170,11 @@ object RunOnHostChannel:
   )
 
   /** Everything one session's broker serves with: the launcher's canonical project root, the
-    * tools `--run-on-host` named, and how a validated request becomes a wrapper command. */
+    * programs `--run-on-host` named, and how a validated request becomes a wrapper command. */
   final case class Service(
     project: Path,
-    tools: Set[String],
-    buildCommand: (String, Path, Seq[String]) => Seq[String],
+    programs: Set[String],
+    wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     os: Os,
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
@@ -184,7 +184,7 @@ object RunOnHostChannel:
 
   /**
    * The broker's life: wait for the sandbox to run, then serve handshakes cycle by cycle while
-   * it still runs — ClipboardBroker.serve's loop, with builds where the clipboard was; each
+   * it still runs — ClipboardBroker.serve's loop, with commands where the clipboard was; each
    * cycle is one reader exec and every transaction its stream delivers. Both waits are bounded
    * pacing, not correctness: an idle cycle blocks in the handshake reader's own open.
    */
@@ -341,8 +341,8 @@ object RunOnHostChannel:
       case Right(workingDirectory) =>
         val outWriter = writer(transport, id, "out")
         val errWriter = writer(transport, id, "err")
-        val command = service.buildCommand(request.tool, workingDirectory, request.arguments)
-        log(s"${request.tool} in $workingDirectory: ${request.arguments.mkString(" ")}")
+        val command = service.wrapperCommand(request.program, workingDirectory, request.arguments)
+        log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
         try
           val child = ProcessBuilder(command*)
             .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
@@ -381,7 +381,7 @@ object RunOnHostChannel:
           case ex: IOException =>
             log(s"could not start the wrapper: ${ex.getMessage}")
             writeAll(outWriter.getOutputStream, "")
-            writeAll(errWriter.getOutputStream, s"could not start the build wrapper: ${ex.getMessage}\n")
+            writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
             writeExit(transport, id, 2)
         finally
           currentCommand = None
@@ -399,14 +399,14 @@ object RunOnHostChannel:
     thread.start()
     thread
 
-  /** The channel's boundary work: the tool must be one the launch named, and the working directory —
+  /** The channel's boundary work: the program must be one the launch named, and the working directory —
     * the one value arriving from inside the sandbox — is translated and proven inside the
     * project before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =
-    if !service.tools(request.tool) then
+    if !service.programs(request.program) then
       Left(
-        s"CHANNEL_UNAVAILABLE: this session's --run-on-host does not name ${request.tool}; " +
-          s"it serves ${service.tools.toSeq.sorted.mkString(", ")}",
+        s"CHANNEL_UNAVAILABLE: this session's --run-on-host does not name ${request.program}; " +
+          s"it serves ${service.programs.toSeq.sorted.mkString(", ")}",
       )
     else
       RunOnHostPrereqs
@@ -419,7 +419,7 @@ object RunOnHostChannel:
         )
 
   // ---------------------------------------------------------------------------
-  // The production main, behind the launcher's private verb
+  // The production main, behind the launcher's private action
   // ---------------------------------------------------------------------------
 
   /**
@@ -433,10 +433,10 @@ object RunOnHostChannel:
     podman: String,
     container: String,
     project: Path,
-    tools: Seq[String],
+    programs: Seq[String],
     logFile: Path,
     autoShutdownForeignSbt: Boolean = false,
-    // `--env` as launched: the names travel as arguments down to each build, the values through
+    // `--env` as launched: the names travel as arguments down to each command, the values through
     // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
     // argument below the launcher carries a value and an explicit one is read by no trusted
     // helper. A name-only forward's own variable is in this environment regardless, inherited as
@@ -449,7 +449,7 @@ object RunOnHostChannel:
           ++ RunOnHostSandbox.selfInvocation(
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
-              tools.mkString(","), logFile.toString,
+              programs.mkString(","), logFile.toString,
             ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
               ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
           ))*,
@@ -464,7 +464,7 @@ object RunOnHostChannel:
       true
     catch case _: IOException => false
 
-  /** `--serve-run-on-host <podman> <container> <project> <tools-csv> <log-file>
+  /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
     * [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] [mount]`: spawned by the launcher
     * before it hands over to podman, detached like the reaper. The trailing mount override is the
     * gate's, whose shim runs at the project's own path rather than /workspace. */
@@ -472,7 +472,7 @@ object RunOnHostChannel:
     def isOption(arg: String) =
       arg == RunOnHostSandbox.AutoShutdownForeignSbtOption || arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
-      case Seq(podman, container, projectArg, toolsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
+      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
         val autoShutdownForeignSbt = rest.contains(RunOnHostSandbox.AutoShutdownForeignSbtOption)
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
@@ -504,10 +504,10 @@ object RunOnHostChannel:
         )
         val service = Service(
           project = project,
-          tools = toolsCsv.split(",").toSet,
-          buildCommand = (tool, workingDirectory, arguments) =>
+          programs = programsCsv.split(",").toSet,
+          wrapperCommand = (program, workingDirectory, arguments) =>
             RunOnHostSandbox.selfInvocation(
-              (Seq("--run-build-on-host", tool, project.toString, workingDirectory.toString)
+              (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
                 ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
                 ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
                 ++ Seq("--"))*,
@@ -515,7 +515,7 @@ object RunOnHostChannel:
           os = Os.Mac,
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
-        log(s"serving $toolsCsv for $project in $container")
+        log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)
         log("the sandbox is gone; exiting")
       case other =>
