@@ -1,4 +1,4 @@
-// The host build's session lifecycle. A session is one wrapper
+// The host command's session lifecycle. A session is one wrapper
 // command; its directory is published by rename so it is never seen half-made, its lock states the
 // wrapper's liveness, and its records own the children's. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
@@ -151,10 +151,10 @@ object RunOnHostSession:
 
   /**
    * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
-   * build's grants are path-based and name the original pathname, so after the rename no process
+   * command's grants are path-based and name the original pathname, so after the rename no process
    * it started can redirect what `collect`'s canonicalization proves — then collect it: recorded
    * groups ended behind their live spawn leaders, the server with them, the directory deleted.
-   * Asking the server by protocol is the scavenger's tool for the leaderless orphan; here the
+   * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
    * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
    * TERM). The session's own lock is held through the collection — the exclusivity every other
    * collector respects (scavenge) — and released only after. A failed rename falls back to ending
@@ -262,7 +262,7 @@ object RunOnHostSession:
    * `project/target/active.json`; a `local://` socket under the session's *original* path is our
    * server and no other. The socket moved with the condemnation rename, so the portfile's
    * spelling is remapped before the shutdown is sent to it — and sent only to a pathname
-   * proven inside the condemned directory: the portfile is the build's to write, so its spelling
+   * proven inside the condemned directory: the portfile is the command's to write, so its spelling
    * is a claim, and canonicalization is the proof.
    */
   def collectServer(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Collected =
@@ -321,7 +321,7 @@ object RunOnHostSession:
    * instead, which is the spawn ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
    * the same way as `<record>.exit`, and the spawn stays until its group is ended: a group is
-   * signalled only behind a live leader, and a build can fork a helper and return, so
+   * signalled only behind a live leader, and a command can fork a helper and return, so
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.

@@ -1,41 +1,41 @@
-# Run on Host — sbt, `mill` and Maven builds outside the container
+# Run on Host — sbt, `mill` and Maven commands outside the container
 
-`--run-on-host=<tools>` (macOS only, off by default) relays this project's sbt, `mill` and Maven
-builds to the host, where each runs under a Seatbelt profile of its own. This document is the
-reference for how host builds work and what they require; the table names the code that enforces
+`--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill` and Maven
+commands to the host, where each runs under a Seatbelt profile of its own. This document is the
+reference for how host commands work and what they require; the table names the code that enforces
 each part:
 
 | concern | binding site |
 | --- | --- |
 | the threat model, priced | `SECURITY.md` "Run on host" |
-| the option, the command, what a build may write | README Reference, `--run-on-host` |
+| the option, the command, what a command may write | README Reference, `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the session lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | the wrapper: proxy, environment, diagnostics | `RunOnHostSandbox.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
-| the exit criteria, measured | `src/probe/build-profile-gate.sh` |
+| the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it
 — and whose resident memory, once grown to hold a build, macOS never gets back. On the host the same
 build runs on memory reclaimed when it exits, at host speed.
 
-A host build's recurring cost is startup: sbt's server lives for one `sandbox-run-on-host` command
+A host command's recurring cost is startup: sbt's server lives for one `sandbox-run-on-host` command
 and `mill` runs `--no-daemon` — no warm daemon spans invocations (`SECURITY.md` "One sbt server
 per project" has the security argument) — so every invocation pays JVM start and build load,
 while the on-disk state stays warm: the caches, and the incremental-compile outputs under
 `target/`. This is why the agent instructions say to batch commands into one invocation.
 
-Out of scope, deliberately: arbitrary build tools (`scalafmt` and ad-hoc `scala` stay
+Out of scope, deliberately: arbitrary build programs (`scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
-direct Internet access from the build; any automatic expansion of permissions when a build fails,
-and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH
-credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell` and `sbtn`'s
-interactive modes; mounting the container's workspace at its host path (`TODO.md`, "same-path
-mounting"); Gradle, whose processes talk over loopback TCP (`TODO.md`, "Gradle"). The container
-keeps its toolchain: host builds are the fast path, not a replacement, and a session without
-`--run-on-host` builds in the container as before.
+direct Internet access from the command; any automatic expansion of permissions when a command
+fails, and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git
+credentials, SSH credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell`
+and `sbtn`'s interactive modes; mounting the container's workspace at its host path (`TODO.md`,
+"same-path mounting"); Gradle, whose processes talk over loopback TCP (`TODO.md`, "Gradle"). The
+container keeps its toolchain: host commands are the fast path, not a replacement, and a session
+without `--run-on-host` builds in the container as before.
 
 ## Why only macOS
 
@@ -46,34 +46,34 @@ On Linux, bubblewrap does the *positive* half better than Seatbelt: it starts wi
 and builds up, so the grant table holds by construction, and `--unshare-all` removes the network
 namespace outright, making proxy bypass impossible rather than merely denied. But its mounts are
 established once at start, so covering `.git` at any depth means binding over each one found then —
-and a `.git` created during the build has no mount over it. Landlock is no better: its ruleset is
-fixed at creation. With nothing to gain — a container build already runs at host speed on host
+and a `.git` created during the command has no mount over it. Landlock is no better: its ruleset is
+fixed at creation. With nothing to gain — a container command already runs at host speed on host
 memory, reclaimed on exit — the feature would also cost Linux the one limit the container has that a
-host build does not: the cgroup ceiling that kills a runaway build inside the sandbox instead of
+host command does not: the cgroup ceiling that kills a runaway build inside the sandbox instead of
 taking the machine down.
 
 On Windows, AppContainer expresses the grants perfectly well: a per-user profile with a derived
 SID, inheritable ACEs on the granted roots, private profile storage, network confinement by
 capability plus a WFP rule restricted to the proxy endpoint. What it cannot express is the denies.
 ACL inheritance has no name patterns, so "deny `.git` at any depth" can only be an enumerated set
-of deny ACEs placed by a launch-time scan, and a `.git` created *during* the build inherits the
+of deny ACEs placed by a launch-time scan, and a `.git` created *during* the command inherits the
 project's allow — a race where the deny must hold at every access. A Windows backend needs an
 equivalent of access-time path filters — a filesystem minifilter, or a design that does not put the
 guard in ACLs at all — before it is worth reconsidering.
 
-## The host build's filesystem rules
+## The host command's filesystem rules
 
-The filesystem rules beneath the reach — what a build may touch, in whole — and the two deny rows
-that make host builds safe to expose to a sandbox:
+The filesystem rules beneath the reach — what a command may touch, in whole — and the two deny rows
+that make host commands safe to expose to a sandbox:
 
 - **Writable implies executable for the project and the session temp, and for nothing else.** A
-  child inherits the profile, so a build running what it wrote gains no authority it did not
+  child inherits the profile, so a command running what it wrote gains no authority it did not
   have — and a build's tests routinely write and run stubs, as this repository's own do. The agent
   cache is writable and not executable: it holds artifacts the JVM reads, and nothing there is run.
 - **Seatbelt has no mount namespace**, so `$HOME` cannot be replaced with an empty directory the
-  way a container image would. The profile denies it instead: a build cannot create `$HOME/.netrc`,
-  a Coursier mirror file, or any other configuration a later step would read, because the write is
-  denied rather than because the directory is bare.
+  way a container image would. The profile denies it instead: a command cannot create
+  `$HOME/.netrc`, a Coursier mirror file, or any other configuration a later step would read,
+  because the write is denied rather than because the directory is bare.
 - **Both guard rows fold case.** APFS is case-insensitive by default, so `.GIT` reaches the same
   directory as `.git`, and `ko-agent-fs` already folds on the filter's side; two guards over one
   tree protect only where they agree about a name — a write arrives through the laxer one.
@@ -82,18 +82,18 @@ that make host builds safe to expose to a sandbox:
   `x` reach `.git/config` by a path no write rule matches. `SECURITY.md` dismisses hardlinks for
   the container because `/workspace` and the container root are different filesystems; that
   argument does not transfer here.
-- **The bare-layout gap stays.** A git *layout* the build assembles from ordinary names in the
+- **The bare-layout gap stays.** A git *layout* the command assembles from ordinary names in the
   writable tree is not a `.git` directory, and neither guard refuses it — running host `git` inside
   a directory the agent created is running the agent's output, the same gap `SECURITY.md`
   records for the workspace filter.
 - **The session temporary directory is the only unnamed writable space**, and it is
-  session-scoped: it starts empty and no build reads temporary state left by another. That is not
-  the same as an orderly exit always happening — a killed build can leave a directory, and the next
-  start reclaims it rather than reuses it (`RunOnHostSession.scala`).
+  session-scoped: it starts empty and no command reads temporary state left by another. That is not
+  the same as an orderly exit always happening — a killed command can leave a directory, and the
+  next start reclaims it rather than reuses it (`RunOnHostSession.scala`).
 
 ## Network
 
-The build's only egress is its own proxy (below); Seatbelt permits connections to that loopback
+The command's only egress is its own proxy (below); Seatbelt permits connections to that loopback
 endpoint and nothing else, with UNIX-domain sockets only inside the session temp. Loopback is every
 local service, so no TCP listener or other loopback connect is granted: a test suite that binds
 one — the proxy's own wire-relay tests do — gets `EPERM` on the host and runs in the container.
@@ -110,38 +110,38 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
 
-Every build's proxy admits one host on its own: the tool's Maven Central
+Every command's proxy admits one host on its own: the program's Maven Central
 (`RunOnHostPrereqs.centralHost`). For sbt and `mill`, which resolve through Coursier, that is
 `repo1.maven.org`; for Maven, whose super POM names the alias, it is `repo.maven.apache.org`.
-Each tool resolves against its own host and never against the other's. `repo.scala-sbt.org` is
+Each program resolves against its own host and never against the other's. `repo.scala-sbt.org` is
 deliberately absent: it hosts the Ivy-style plugin repository and is not
 part of sbt's bootstrap — an uncached sbt version named in `project/build.properties` resolves from
-Maven Central. A build that needs more adds it explicitly ("Configuration", below); nothing is
+Maven Central. A command that needs more adds it explicitly ("Configuration", below); nothing is
 inferred or silently permitted.
 
 ## Refusals
 
 Missing prerequisites and denied accesses fail clearly, nothing expands authority, and nothing
-falls back: a host build that cannot run is reported to the user, never re-run in the
+falls back: a host command that cannot run is reported to the user, never re-run in the
 container — the same rule the egress refusal follows.
 
-Every pre-build refusal is a `RunOnHostPrereqs.Refusal` value, one case per category, so the wrapper
-and the channel word the same refusal for their own readers without the tests matching on either
-wording. A denial that happens mid-build falls under no refusal category: a filesystem denial
-reaches the build's own stderr as the OS error, and a network denial is the proxy's audit line,
-which the wrapper reads and reports per host after the build ("Build requested network access
-to: …"). It never adds the host itself.
+Every refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one case per
+category, so the wrapper and the channel word the same refusal for their own readers without the
+tests matching on either wording. A denial while the command runs falls under no refusal category: a
+filesystem denial reaches the command's own stderr as the OS error, and a network denial is the
+proxy's audit line, which the wrapper reads and reports per host after the command ("Command
+requested network access to: …"). It never adds the host itself.
 
-## Tool prerequisites
+## Program prerequisites
 
-The rule that explains all three tools: **the user provisions the executable; the sandbox fetches
+The rule that explains all three programs: **the user provisions the executable; the sandbox fetches
 only artifacts.** sbt's comes from `cs install sbt`, and everything else it needs is a jar the JDK
-reads, fetched into the writable build cache through the proxy. `mill`'s executable *is* the
+reads, fetched into the writable run-on-host cache through the proxy. `mill`'s executable *is* the
 fetched artifact — so it is provisioned, not fetched, and a version bump
 is an explicit host update rather than an automatic update performed by the build definition.
 Maven's is the distribution the project's wrapper unpacked on the host.
-`RunOnHostPrereqs.scala` validates all of the below before a build starts; a violation is a refusal
-naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
+`RunOnHostPrereqs.scala` validates all of the below before a command starts; a violation is a
+refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 ### The JVM
 
@@ -153,9 +153,9 @@ a `JAVA_HOME` resolving outside the Coursier cache.
 
 A current Coursier unpacks a JDK into its archive cache, so the home is a URL-derived path under
 `arc/` with a percent-encoded `+` in it. The grant is that resolved home: granting the `arc` root
-instead would hand the build every archive Coursier ever extracted. The JDK is read-only to the
-build, so sharing the user's copy exposes no write path, and duplicating one per project would cost
-hundreds of megabytes for nothing.
+instead would hand the command every archive Coursier ever extracted. The JDK is read-only to the
+command, so sharing the user's copy exposes no write path, and duplicating one per project would
+cost hundreds of megabytes for nothing.
 
 ### sbt
 
@@ -168,16 +168,16 @@ relative to itself. The home is read from the script's text (`SeatbeltProfile.sb
 running the script to ask would execute what the profile exists to contain, on the host, unconfined.
 
 sbt 2 is client/server by construction — there is no one-shot mode — so the server starts *inside*
-the profile and its state follows `-Dsbt.global.base` into the project's build cache. The base must
-be persistent, not session-temporary: sbt 2 leaves `target/` outputs as symlinks into its
+the profile and its state follows `-Dsbt.global.base` into the project's run-on-host cache. The base
+must be persistent, not session-temporary: sbt 2 leaves `target/` outputs as symlinks into its
 content-addressed store, so a base removed with the session would dangle the build's own outputs.
-The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a
-store the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted
-roots before each build. `~/.sbt/boot` is not granted and has no consumer — with the global base
-redirected, sbt boots from the build cache, warm across sessions. `~/.sbt/1.0`,
-`~/.sbt/2.0` and `~/.m2` are not granted either.
+The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a store
+the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted roots
+before each command. `~/.sbt/boot` is not granted and has no consumer — with the global base
+redirected, sbt boots from the run-on-host cache, warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0`
+and `~/.m2` are not granted either.
 
-The Ivy home follows `-Dsbt.ivy.home` into the build cache the same way, and `~/.ivy2` is not
+The Ivy home follows `-Dsbt.ivy.home` into the run-on-host cache the same way, and `~/.ivy2` is not
 granted. sbt uses that home for three things, read from the sources of sbt 1.12.13 and 2.0.8.
 Resolving a dependency between the projects of one build goes through Ivy
 (`projectDescriptors`), and Ivy takes the lock file `<ivy home>/.sbt.ivy.lock` first.
@@ -213,7 +213,7 @@ The wrapper resolves the version the way the bootstrap does from the project —
 `.config/mill-version`, `build.mill.yaml`, the build script's `//|` header, then the script's own
 default — and derives the executable's file name the way the bootstrap does
 (`RunOnHostPrereqs.millVersion`, `millExecutable`). The script's `MILL_VERSION` and
-`DEFAULT_MILL_VERSION` environment overrides are not read, because the build's environment carries
+`DEFAULT_MILL_VERSION` environment overrides are not read, because the command's environment carries
 neither, so the script and the wrapper resolve alike. Reading the version is a read; asking the
 script by running it would execute agent-authored shell on the host.
 
@@ -230,9 +230,9 @@ denies.
 The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally is not used. Run
 `./mvnw --version` once in a host terminal, and again whenever `distributionUrl` in
 `.mvn/wrapper/maven-wrapper.properties` changes: that run downloads Maven into
-`~/.m2/wrapper/dists`, and the build is granted that one Maven read-only — not the whole `dists`
+`~/.m2/wrapper/dists`, and the command is granted that one Maven read-only — not the whole `dists`
 directory, which holds every Maven the user ever ran a wrapper for. If the wrapper has not
-downloaded it yet, the build is refused, and the refusal names the command to run.
+downloaded it yet, the command is refused, and the refusal says what to run.
 
 Only the `only-script` wrapper type is served, the default that `mvn wrapper:wrapper` generates;
 a project with any other wrapper type is refused, and the refusal names the command that
@@ -242,7 +242,7 @@ directory from more inputs — `distributionBase`, `distributionPath`, a relativ
 `user.home` — which this launcher deliberately does not reproduce: a derivation that reproduced
 some of them would grant a stale copy where the script selects another.
 
-The build runs `bin/mvn --batch-mode` from that directory, not `mvnw`, which looks for Maven under
+The command runs `bin/mvn --batch-mode` from that directory, not `mvnw`, which looks for Maven under
 a home directory it computes itself. The wrapper computes the directory exactly as the script does
 (`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs: `distributionUrl`, rewritten by
 `MVNW_REPOURL` when the launcher's environment sets that mirror override, hashed as a string and
@@ -258,7 +258,7 @@ resolver 1.9, which Maven 3.9 ships. Both properties are measured on Maven 3.9.1
 release, by building `src/probe/mvn-fixture` through a proxy inside the container; the gate's mvn
 rows measure them under the profile. Maven 4 is still a release candidate; it is provisioned the
 same way and is unmeasured. The user's `~/.m2/settings.xml` and `toolchains.xml` are denied, and
-Maven treats them as absent, so a mirror or credential there never reaches a confined build.
+Maven treats them as absent, so a mirror or credential there never reaches a confined command.
 `.mvn/maven.config`, `jvm.config` and `extensions.xml` are project files the agent already
 controls, like `sbt 'set …'`.
 
@@ -270,9 +270,9 @@ before collection, and the portfile-attributed shutdown of an orphaned server. T
 `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
 socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
 
-The build's environment is the contract, not its command line: a closed set the wrapper supplies
-(`RunOnHostSandbox.buildEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
-why. The gate's `build_env` supplies the same set, minus the proxy settings, since its rows run
+The command's environment is the contract, not its command line: a closed set the wrapper supplies
+(`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
+why. The gate's `command_env` supplies the same set, minus the proxy settings, since its rows run
 without a proxy. What the wrapper supplies:
 
 | Environment Variable | Value |
@@ -281,9 +281,9 @@ without a proxy. What the wrapper supplies:
 | `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
 | `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<session>/tmp` |
-| `COURSIER_CACHE` | `<build cache>/coursier/v1` |
+| `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
-| `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the build's proxy |
+| `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
 | `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
 | a name `--env` gave | the value `--env` gave, unless a row above sets that name |
@@ -297,50 +297,50 @@ The `java -D` properties:
 | `https.proxyHost`, `http.proxyHost` | `127.0.0.1` |
 | `https.proxyPort`, `http.proxyPort` | `<port>` |
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
-| `sbt.global.base` | `<build cache>/sbt-global` |
-| `sbt.ivy.home` | `<build cache>/ivy-home` |
-| `maven.repo.local` | `<build cache>/m2/repository` |
+| `sbt.global.base` | `<run-on-host cache>/sbt-global` |
+| `sbt.ivy.home` | `<run-on-host cache>/ivy-home` |
+| `maven.repo.local` | `<run-on-host cache>/m2/repository` |
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
-`<session>` is this build's directory under the wrapper root above, `<cache home>` is
-`${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<build cache>` the
-project's own build-cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The build
-cache" below). One environment serves every tool. sbt's global base and Ivy home and Maven's
-local repository are set for every build; a build of another tool reads none of them, and the
-wrapper neither creates nor grants them for it. The mill download folder, the one holding the
-granted executable, is set for the other builds the same way, and they ignore it.
+`<session>` is this command's directory under the wrapper root above, `<cache home>` is
+`${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<run-on-host cache>` the
+project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The
+run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home and
+Maven's local repository are set for every command; a command of another program reads none of them,
+and the wrapper neither creates nor grants them for it. The mill download folder, the one holding
+the granted executable, is set for the other programs the same way, and they ignore it.
 
-Why the rows are what they are. The host's `TMPDIR` names a directory the build is not granted,
-so the session's replaces it for forked shell tools, as `java.io.tmpdir` does for JVMs. `HOME` is
-passed because the tools' scripts derive paths from it, and nothing under it is granted. `--env`
+Why the rows are what they are. The host's `TMPDIR` names a directory the command is not granted,
+so the session's replaces it for forked shell programs, as `java.io.tmpdir` does for JVMs. `HOME` is
+passed because the programs' scripts derive paths from it, and nothing under it is granted. `--env`
 is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
 pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
-`JAVA_TOOL_OPTIONS` or `HTTPS_PROXY` does not replace the build's own. `MILL_VERSION` and
+`JAVA_TOOL_OPTIONS` or `HTTPS_PROXY` does not replace the command's own. `MILL_VERSION` and
 `DEFAULT_MILL_VERSION` are dropped even when forwarded, because the wrapper granted the executable
 of the version the project pins. Among what is not supplied: `TERM`, `SBT_OPTS`, `JAVA_OPTS`, the
 other `COURSIER_*` variables, `SBT_CREDENTIALS`, `ALL_PROXY`, `FTP_PROXY`, the launcher's own
-`HTTPS_PROXY`, and whatever secret the launching shell exported. A build's own processes see this
-set plus what the tools' shell scripts create on the way — `PWD`, `SHLVL`, `_`; a variable does
+`HTTPS_PROXY`, and whatever secret the launching shell exported. A command's own processes see this
+set plus what the programs' shell scripts create on the way — `PWD`, `SHLVL`, `_`; a variable does
 not come back merely because the launching shell exported it.
 
 ## The channel and the command
 
-`sandbox-run-on-host <tool> [args…]` is a named command, a sibling of `sandbox-apt-get`, rather
-than a shim shadowing `sbt` on `PATH`: where each build ran is then visible in the transcript
+`sandbox-run-on-host <program> [args…]` is a named command, a sibling of `sandbox-apt-get`, rather
+than a shim shadowing `sbt` on `PATH`: where each command ran is then visible in the transcript
 the user reads. It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails*
 in the sandbox and teaches the agent to look for the prefixed name, while `sbt test` in the
 container *succeeds*, slower, and nothing prompts a reconsideration. So the authority section
 states the instruction, and only where it can be true: the launcher knows the platform, so a
 macOS session launched without the option gets one discovery line, and Linux and Windows
-sessions hear nothing about a command they can never have. That makes the host build a norm
+sessions hear nothing about a command they can never have. That makes the host command a norm
 rather than an enforcement: an agent that ignores the instruction gets a slower build, not a
 refusal — a deliberate difference from the egress rule, where the proxy actually refuses.
 
 The transport, its framing and its teardown are `RunOnHostChannel.scala`'s header and the shim's
-own comments. One build runs at a time, serial by design rather than as a shortcut: one sbt server
+own comments. One command runs at a time, serial by design rather than as a shortcut: one sbt server
 per project means a concurrent second sbt request would be *refused* where a queued one simply runs
 next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
-broker open as later work if a tool ever makes it worth having. A *foreign* live server — the
+broker open as later work if a program ever makes it worth having. A *foreign* live server — the
 user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
 launch named `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
 socket it derives itself.
@@ -348,7 +348,7 @@ socket it derives itself.
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-project exclusivity is also the lock over `target/`. A second rendezvous on the
 same tree — a shadow base directory, a relocated portfile — would put two unsynchronized
-compilers in one content-addressed store, which is why container and host builds coexist on the
+compilers in one content-addressed store, which is why container and host commands coexist on the
 source and never on the outputs. Nor can an invocation opt out: sbt's build directory is always
 its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either
 attaches to the portfile's server or contends for it. `mill` needs none of this, running
@@ -359,14 +359,14 @@ attaches to the portfile's server or contends for it. `mill` needs none of this,
 Apple does not document SBPL for third-party use: `sandbox-exec` compiles it through private entry
 points, and the published write-ups are reverse-engineered and date from 2011. Two sources are
 authoritative here — measurement (`src/probe/seatbelt-semantics.sh`,
-`src/probe/build-profile-iterate.sh`), and Apple's own shipped profiles under
+`src/probe/run-on-host-profile-iterate.sh`), and Apple's own shipped profiles under
 `/System/Library/Sandbox/Profiles/`, current and written against the implementation; `system.sb` is
 the one worth reading first. `SeatbeltProfile.scala` encodes the findings, the two that decide
 everything in its header. The rest, measured:
 
 - What the guard rests on (`src/probe/seatbelt-semantics.sh`): the accessed path is canonicalized —
   a write through `link -> .git` is denied — and canonicalization folds case where the volume does;
-  rules are evaluated at access time, so a `.git` created *during* the build is covered; one regex
+  rules are evaluated at access time, so a `.git` created *during* the command is covered; one regex
   spans every depth; and `file-write*` already refuses a hardlink to a denied target, so the
   explicit link clause is redundancy — kept, because the membership of a wildcard operation family
   is Apple's to change.
@@ -387,13 +387,13 @@ Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this f
 exactly — and its generated profile is worth reading and worth *not* copying. It is a blacklist
 (`(allow default)`, then writes and network taken away), which is why Bazel never meets the
 findings above: with nothing denied by default, path resolution cannot fail, so the root entry and
-the ancestor chain never arise. It is also why that design cannot serve here: a build under it reads
-the whole filesystem, and "everything else user-owned inaccessible" is the property this feature
-exists to provide. The difficulty of deny-by-default is the price of that row, not evidence of a
-wrong turn — worth stating because the blacklist form is the obvious simplification when the
+the ancestor chain never arise. It is also why that design cannot serve here: a command under it
+reads the whole filesystem, and "everything else user-owned inaccessible" is the property this
+feature exists to provide. The difficulty of deny-by-default is the price of that row, not evidence
+of a wrong turn — worth stating because the blacklist form is the obvious simplification when the
 whitelist will not start. One setting is taken from Bazel: `(debug deny)`, which makes denials
-visible without the unified log's redaction, and which `src/probe/build-profile-iterate.sh` puts
-at the top of every profile it iterates.
+visible without the unified log's redaction, and which `src/probe/run-on-host-profile-iterate.sh`
+puts at the top of every profile it iterates.
 
 **Runtime authority** — the loader, libc, the CA bundle and the rest a toolchain needs from the
 system — is discovered by running a real build under a deny-default profile and reading the denials,
@@ -401,18 +401,18 @@ never by listing what a host happens to have, and never as a way to reach a user
 set is one file, a resource of the launcher's own artifact
 (`src/main/resources/agentsandbox/runtime-authority.txt`): what the production wrapper grants is
 what the probes measured, and the gate and a session run one authority rather than two copies that
-can drift. `src/probe/build-profile-iterate.sh` is how candidate entries are measured. Do not
+can drift. `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured. Do not
 pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the narrowest rule
 testing justifies.
 
-## The build's egress proxy
+## The command's egress proxy
 
-Each build runs its own proxy process, from the same codebase as the container's.
+Each command runs its own proxy process, from the same codebase as the container's.
 
 Not the session's proxy: that one is per run, on a network created `--internal`, inside the podman
 machine. There is no host route to it, and making one would either publish the session's full
 `--egress` ruleset — `api.anthropic.com` and forges included — to any host process, or relay
-each connection through `podman exec`, paying the VM round trip on exactly the path the build was
+each connection through `podman exec`, paying the VM round trip on exactly the path the command was
 moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
 either way; what is worth controlling is the rules behind it, and a proxy admitting one artifact
 repository is a prize barely worth stealing.
@@ -424,35 +424,35 @@ Binding to the lock keeps the answer unchanged if a warm server spanning invocat
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
 `dist` compiles them in beside their `/defaults` resources, and the wrapper starts the proxy by
 re-invoking its own executable — `java -jar` or the native binary — under a private
-verb. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
+action. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
 only in the container's own network namespace), and the wrapper reads the port from the same ready
 line the container launcher gates on.
 
 It runs unconfined, unlike the container's hardened copy of the same codebase — the one process
-that parses hostile bytes from the build being sandboxed, holding the uid whose files the profile
+that parses hostile bytes from the command being sandboxed, holding the uid whose files the profile
 exists to deny. Accepted, not a hole: a JVM parse bug is an exception, the listener is
 loopback-only, and `HostileInputTest` covers the parser; a Seatbelt profile of the proxy's own is
 low-value defense in depth, deferred in `TODO.md`.
 
 It runs without inspection material: no-material mode enforces the destination host and port at
-CONNECT time and tunnels opaquely, so the build needs no extra trust material and the read-only
+CONNECT time and tunnels opaquely, so the command needs no extra trust material and the read-only
 JDK's own trust store suffices. If inspection is ever wanted, point the JVM at a wrapper-owned
 store with `-Djavax.net.ssl.trustStore` rather than touching the JDK.
 
 It reads `HTTPS_PROXY` as the container's copy does (`egress-proxy.md`, "Through an upstream
-proxy"): on a host behind an upstream proxy the build's artifact fetches leave through it, and a
+proxy"): on a host behind an upstream proxy the command's artifact fetches leave through it, and a
 loopback helper on the host is reachable from here, unlike from the container.
 
 ## Configuration
 
-A build that resolves beyond Maven Central names its repositories in a project file, in the
+A command that resolves beyond Maven Central names its repositories in a project file, in the
 directory that already holds reviewed boundary configuration:
 
 ```text
-.ko-agent-sandbox/host-command/<tool>/egress/rule
+.ko-agent-sandbox/host-command/<program>/egress/rule
 ```
 
-One file per tool, so a repository that builds with more than one grants each only what it
+One file per program, so a repository that uses more than one grants each only what it
 resolves. The grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines
 and comments,
 nothing else — no other grant, no path, no provider, no deny — refused at validation rather than
@@ -467,15 +467,15 @@ launcher reads it on the host, and it is reviewed in a pull request like any oth
 never remains as ignored config (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
-No tool needs a GitHub release CDN: the only fetch that ever used one is the `mill`
+No program needs a GitHub release CDN: the only fetch that ever used one is the `mill`
 bootstrap's own executable download, which the user provisions on the host instead.
 
 Derived paths come from Coursier conventions and environment APIs; advanced overrides
 (`cache-root`, `jvm-root`, `install-root`) are not added until needed.
 
-## The build cache
+## The run-on-host cache
 
-Agent-invoked builds get their own build-cache root, per project:
+Agent-invoked commands get their own run-on-host cache root, per project:
 `${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`. It holds Coursier's
 `v1`, sbt's global base and Ivy home, and Maven's local repository under one directory, so
 `--reset-run-on-host` is a single removal, `--reset` takes it with the project's other state, and
@@ -485,15 +485,16 @@ would resolve against the repository being sandboxed, and a root inside the proj
 outright.
 
 Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it. The cost
-is a cold cache on a project's first agent build, warm from the second onward.
+is a cold cache on a project's first agent command, warm from the second onward.
 
 Why not the launcher state root: the state root is kind-first (`tls/<id>`, `log/<id>`, …) and the
-proxy's audit log must not be stored beside the CA key. On the host the build runs as the user's own
-uid, which owns that key, so file permissions protect nothing and only the profile denies access; a
-separate root makes its job structural — no path the build is ever granted has a sensitive ancestor
-or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache belongs.
+proxy's audit log must not be stored beside the CA key. On the host the command runs as the user's
+own uid, which owns that key, so file permissions protect nothing and only the profile denies
+access; a separate root makes its job structural — no path the command is ever granted has a
+sensitive ancestor or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache
+belongs.
 
-The build reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to
+The command reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to
 the `v1` directory, which the sbt script, sbt's own resolution and Coursier all honour. sbt's own
 two caches and Maven's local repository travel as the `java -D` properties above, which sbt's
 launcher and Maven's CLI read.

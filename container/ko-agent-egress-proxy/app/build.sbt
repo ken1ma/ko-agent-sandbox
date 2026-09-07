@@ -17,7 +17,7 @@ scalacOptions ++= Seq(
 
 // X509Helper issues leaves with the JDK's internal certificate builder, which the JVM keeps behind
 // the module boundary at run time; scalac compiles against it unasked. The Containerfile passes the
-// same two exports to native-image, and the launcher's manifest carries them for the host build's
+// same two exports to native-image, and the launcher's manifest carries them for the host command's
 // proxy.
 Test / fork := true
 Test / javaOptions ++= Seq(

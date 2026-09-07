@@ -206,7 +206,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a refusal says what to do next, in the words curl, git and the check print"):
     inSession()
-    // RefusalAdvice's rows as the tools show them: curl prints a 403's body
+    // RefusalAdvice's rows as the programs show them: curl prints a 403's body
     // as it is, git prints a text/plain body as `remote:` lines, and sandbox-egress-check is the
     // only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
@@ -351,7 +351,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()
-    // Existence proves nothing — the session's home is its own writable volume, and any tool it
+    // Existence proves nothing — the session's home is its own writable volume, and any program it
     // runs may create `.config` there. What matters is whether a host path was *mounted*.
     val home = env("HOME").getOrElse("/home/nonroot")
     Vector(s"$home/.ssh", s"$home/.aws", s"$home/.config",

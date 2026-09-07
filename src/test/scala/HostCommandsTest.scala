@@ -121,14 +121,14 @@ class HostCommandsTest extends munit.FunSuite:
   test("executables resolve only through absolute PATH entries"):
     assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
     val dir = Files.createTempDirectory("path-resolve").toRealPath()
-    val tool = dir.resolve("mytool")
-    Files.createFile(tool)
-    tool.toFile.setExecutable(true)
+    val program = dir.resolve("myprogram")
+    Files.createFile(program)
+    program.toFile.setExecutable(true)
     // `.` and a repository-relative directory are skipped, never searched.
-    assertEquals(findOnPath("mytool", s".:relative/dir:$dir", Os.Linux), Some(tool))
-    assertEquals(findOnPath("mytool", ".:relative/dir", Os.Linux), None)
+    assertEquals(findOnPath("myprogram", s".:relative/dir:$dir", Os.Linux), Some(program))
+    assertEquals(findOnPath("myprogram", ".:relative/dir", Os.Linux), None)
     assertEquals(findOnPath("absent", dir.toString, Os.Linux), None)
-    assertEquals(findOnPath("mytool", "", Os.Linux), None)
+    assertEquals(findOnPath("myprogram", "", Os.Linux), None)
 
   test("an absolute PATH entry inside the project is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
@@ -178,14 +178,14 @@ class HostCommandsTest extends munit.FunSuite:
 
   test("Windows resolution appends executable extensions and splits on ;"):
     val dir = Files.createTempDirectory("path-resolve-win").toRealPath()
-    val tool = dir.resolve("mytool.exe")
-    Files.createFile(tool)
-    tool.toFile.setExecutable(true)
-    assertEquals(findOnPath("mytool", s"relative\\dir;$dir", Os.Windows), Some(tool))
+    val program = dir.resolve("myprogram.exe")
+    Files.createFile(program)
+    program.toFile.setExecutable(true)
+    assertEquals(findOnPath("myprogram", s"relative\\dir;$dir", Os.Windows), Some(program))
     // The bare, extensionless name is not a Windows executable and is never a candidate.
-    val bare = Files.createFile(dir.resolve("othertool"))
+    val bare = Files.createFile(dir.resolve("otherprogram"))
     bare.toFile.setExecutable(true)
-    assertEquals(findOnPath("othertool", dir.toString, Os.Windows), None)
+    assertEquals(findOnPath("otherprogram", dir.toString, Os.Windows), None)
 
   test("every script the launcher writes names its own PATH before running anything"):
     val scripts = Vector(

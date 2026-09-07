@@ -482,7 +482,7 @@ fn to_errno(err: NixErrno) -> Errno {
 ///     is at `/workspace`.
 ///
 /// Syntax is what a filter serving an unknown host layout can judge. The rule earns its place on the
-/// second direction anyway: what a caching tool plants is the container's own store path, which
+/// second direction anyway: what a caching program plants is the container's own store path, which
 /// cannot be assumed portable to a host layout this side never sees.
 ///
 /// This is therefore a portability rule and not a containment one — containment is
@@ -495,7 +495,7 @@ fn to_errno(err: NixErrno) -> Errno {
 /// outside the workspace. Neither `rename` nor `link` re-judges — not an oversight to correct:
 /// doing it for a directory means walking everything under it on every rename, at a cost this rule
 /// does not earn. What this refuses is a target written in a non-portable syntax, which is the accidental
-/// tool behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
+/// program behavior the rule is aimed at; a session set on leaving a link that resolves elsewhere
 /// still can.
 fn target_has_portable_syntax(target: &Path, depth: usize) -> bool {
     let mut at = depth;
@@ -960,7 +960,7 @@ impl Filesystem for KoAgentFs {
         // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only an
         // approximation; SECURITY.md, "A symlink is the highest-risk case", has the threat.
         //
-        // The population is tools that cache outside the project and link into it, and sbt 2 is the
+        // The population is programs that cache outside the project and link into it, and sbt 2 is the
         // measured case at both ends. Unrefused, it materializes a build-cache hit as a link into
         // its own store — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas` on the
         // host — and the host's next compile of a changed source dies with `NoSuchFileException`

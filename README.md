@@ -108,13 +108,13 @@ checkout — [Development](#development).
 
     java -jar ko-agent-sandbox.jar claude   # launch an agent in a trusted directory
 
-1. Insert `--write=reject` before `<command>` when the agent must only read the directory.
+1. Insert `--write=reject` before `<command>` when the agent must not make changes in the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to
    anything other than its own provider; for `opencode` that is every provider group
    (`doc/egress-proxy.md`).
-1. On macOS, insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
-   agent will run builds or tests: a build inside the podman machine takes memory from every
-   other container there and keeps it until the session ends.
+1. macOS only: insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
+   agent will run builds or tests: a build inside the podman machine takes memory that all
+   containers there share, and holds it until the session ends.
 
 ### Reference
 
@@ -138,22 +138,22 @@ checkout — [Development](#development).
                          deny-unless-allowed, admits the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
-      --run-on-host=<tools>
+      --run-on-host=<programs>
                          macOS only: sbt / mill / mvn can be run on the host. This gains
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
-                         command, which runs those build tools OUTSIDE
+                         command, which runs those programs OUTSIDE
                          the container — on this host, confined by a
                          Seatbelt profile to the project (its git
                          control state and .ko-agent-sandbox
-                         unreachable), per-project build caches, and
-                         the build's own egress proxy. Host builds
+                         unreachable), per-project run-on-host caches, and
+                         the command's own egress proxy. Host commands
                          write the project even under --write=reject.
                          SECURITY.md "Run on host" has the why and the cost;
                          doc/run-on-host.md has how it works
       --auto-shutdown-foreign-sbt-on-host
                          with --run-on-host naming sbt: when your own live
-                         sbt server holds the project, a host build shuts
+                         sbt server holds the project, a host command shuts
                          it down and proceeds — one transcript line names
                          the socket — instead of refusing until you run
                          `sbt shutdown` there. The shutdown is sent only to
@@ -162,13 +162,13 @@ checkout — [Development](#development).
                          next sbt command starts a fresh one
       --env=<name>[=<value>]
                          forward the host's <name>, which must be set, into
-                         the sandbox and into every --run-on-host build — or
+                         the sandbox and into every --run-on-host command — or
                          with <value>, set it to that without exporting it
                          on the host. Repeatable; only KO_AGENT_SANDBOX_* is
                          refused. Before forwarding a secret, read SECURITY.md
 
-    Management verbs, each recognized before the command; whatever follows
-    belongs to the verb:
+    Management actions, each recognized before the command; whatever follows
+    belongs to the action:
 
       --build            build the sandbox container image, always pulling remote updates
       --update           update the agents: rebuild only the sandbox container
@@ -177,13 +177,13 @@ checkout — [Development](#development).
       --reset [<id>...]  remove this project's containers (ending any live
                          session), volume (signing its agents out), networks,
                          TLS inspection CA, cached ruleset resolution, logs,
-                         workspace-filter mount and host-build caches;
+                         workspace-filter mount and run-on-host caches;
                          images and any shared volume are left untouched.
                          Ids, as --stats prints them, name projects whose
                          directories are gone instead of the current one
       --reset-run-on-host
-                         remove this project's host-build caches alone —
-                         what --run-on-host builds resolved — leaving its
+                         remove this project's run-on-host caches alone —
+                         what --run-on-host commands resolved — leaving its
                          sessions and state; needs no podman
       --reset-all        the same as --reset, for every project
 
@@ -204,7 +204,7 @@ checkout — [Development](#development).
                          running proxies instead
       --stats            report the machine's memory and storage headroom,
                          live sessions, and per-project disk use across
-                         the launcher's state and build-cache roots and
+                         the launcher's state and run-on-host cache roots and
                          the agents' volumes, each project named by its
                          directory — by its id, which --reset takes, where
                          the directory is gone — and any cache worth a
@@ -263,7 +263,7 @@ checkout — [Development](#development).
 ### `--build`
 
 1. Builds the containers in the diagram with `podman build`.
-    1. Image-producing verbs require their source registries on every run: `--build` reaches
+    1. Image-producing actions require their source registries on every run: `--build` reaches
        Docker Hub, `ghcr.io` and `gcr.io`; `--update` reaches `ghcr.io`; `--self-test` reaches
        Docker Hub. A warm cache does not provide an offline mode.
     1. The images' build context is bundled in the jar, so it runs standalone.

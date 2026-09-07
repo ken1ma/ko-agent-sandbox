@@ -137,7 +137,7 @@ object RulesetHelper:
    * cut there, `https://host/a#b` would read as `https://host/a`, a line admitting more than it
    * says. `deny defaults` is the first line or absent: the file reads in the order the words imply,
    * and a `deny` above it would clear what the next line clears whole. A repeated line is no
-   * refusal: after an intervening line of the other verb it is the last word on its grants, and
+   * refusal: after an intervening line of the other action it is the last word on its grants, and
    * one changing nothing is warned like any other (contribute, take).
    */
   def parseRules(file: String, text: String): Vector[Line] =

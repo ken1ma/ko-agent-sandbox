@@ -84,7 +84,7 @@ object SelfTestShare:
    * The container half, fed on stdin. After the prelude, the coherency measurements the hand-run
    * probe made: a host write visible through read(), and through an already-established mmap —
    * the AUTO_INVAL_DATA path nothing else exercises. Both waits are bounded, so a broken share is
-   * a failed row rather than a hung verb; the mmap wait starts at the moment read() saw the
+   * a failed row rather than a hung action; the mmap wait starts at the moment read() saw the
    * write, which makes its figure the lag between the two views.
    */
   val PosixSessionProbe: String = ProbePrelude +

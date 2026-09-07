@@ -59,7 +59,7 @@ if [ ! -x "$JAVA_HOME/bin/keytool" ]; then
 fi
 
 # The proxy, written where the JDK's own ProxySelector reads it. JAVA_TOOL_OPTIONS would also
-# work, and adds a banner to every JVM start that corrupts output other tools parse; this sets no
+# work, and adds a banner to every JVM start that corrupts output other programs parse; this sets no
 # system property at all. Appended, because a properties file takes the last assignment of a key;
 # http.nonProxyHosts is left as shipped, since it already spells the loopback exemptions NO_PROXY
 # lists.
@@ -69,7 +69,7 @@ set_proxy() {
     # JDK reaches no host at all — a success here would certify a JDK that is half prepared.
     if [ ! -f "$net" ]; then
         echo "${0##*/}: no $net, so this JDK cannot be pointed at the proxy; it is not a runtime" >&2
-        echo "  layout this tool can prepare. Install a full JDK (cs java --jvm temurin:25)." >&2
+        echo "  layout this program can prepare. Install a full JDK (cs java --jvm temurin:25)." >&2
         exit 1
     fi
     # "Already set" means the file's *effective* values are this proxy's, judged by the parser
@@ -106,7 +106,7 @@ EOF
     fi
     # The original beside it before the first append, and only if no copy is there yet, so a
     # re-run cannot overwrite the true original with an already-appended one. Named for this
-    # tool rather than `.dist`, which would claim the file is as distributed, which nobody
+    # program rather than `.dist`, which would claim the file is as distributed, which nobody
     # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
     [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"
     cat >> "$net" <<EOF
@@ -140,7 +140,7 @@ fingerprint_of() {
 #
 # Idempotence must compare the certificate, not just find the alias: a JDK kept on a volume shared
 # across projects can hold this alias for another project's CA, and "already trusted" over the
-# wrong certificate would be exactly the unexplained TLS failure this tool exists to end.
+# wrong certificate would be exactly the unexplained TLS failure this program exists to end.
 want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
 have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \
     | fingerprint_of)

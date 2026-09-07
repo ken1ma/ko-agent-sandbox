@@ -43,7 +43,7 @@ def stack() -> str:
 
 
 def build(root: str) -> int:
-    """A tree a build tool actually produces: a few hundred directories, a handful of small files
+    """A tree a build program actually produces: a few hundred directories, a handful of small files
     in each. 4 KB of content, so the run measures metadata rather than bandwidth."""
     payload = b"x" * 4096
     for index in range(FILES):

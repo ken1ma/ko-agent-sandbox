@@ -212,8 +212,8 @@ from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on 
   — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op fd
   open/close, the inode-table lock, and the single-threaded session serializing round trips.
   Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
-  This is the only gain available to tools like `find`, which hold directory fds and never pay the
-  walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
+  This is the only gain available to programs like `find`, which hold directory fds and never pay
+  the walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
   directory-fd cache *across* operations is excluded: it pins the directory, so one the host
   replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
   through the stale fd, unbounded in time, which is worse than any TTL.
@@ -257,7 +257,7 @@ git context is computed once at creation (`inode.rs`, `lookup`), so it already o
 cache, and every mutation reaches the daemon whatever is cached.
 
 Expected gain: the 2.2× measured above on git's stat pass, so roughly half of Claude Code's startup
-on the real tree; nothing for tools like `find` (the profiling row is what would help them). The
+on the real tree; nothing for programs like `find` (the profiling row is what would help them). The
 bursts that pay set the break-even point: a cached component is re-asked once per T while a walk
 stays under it, so from the measured component cost T = 100 ms keeps ~96 % of the gain at a tenth of
 the window and T = 10 ms loses a third of it. Those are derived, not measured; the sweep below
@@ -328,8 +328,8 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 
 - **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
   rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
-  therefore reads to tools as a filesystem that simply has no extended attributes, and that is an
-  answer every xattr-aware tool already knows how to take.
+  therefore reads to programs as a filesystem that simply has no extended attributes, and that is an
+  answer every xattr-aware program already knows how to take.
 
   Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probe/xattr-probe.py`, the
   filtered session against the raw bind as control:
@@ -343,7 +343,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   The cost is cosmetic: `cp -a` carries no attribute across and says nothing about it, because
   coreutils reads `ENOTSUP` as "the destination does not do xattrs" rather than as a failure.
   Implementing xattrs is a compatibility feature to schedule, not a regression to repair; the new
-  evidence that reopens this is a tool that complains, and the probe is what re-measures then.
+  evidence that reopens this is a program that complains, and the probe is what re-measures then.
 
   Constraints before picking it up: `setxattrat` arrived in Linux 6.13 and `f*xattr` on an
   `O_PATH` fd is `EBADF`, so whether a fd-relative call is available at all depends on the
@@ -362,7 +362,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
   directory or the raw one — scoped to `/workspace` alone, and even shells die at spawn
   because their cwd is inside the dead mount. The failure is already total, loud and
-  fail-closed, so an outside tool would only convert one obvious dead session into
+  fail-closed, so an outside program would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.
 - **A Unicode normalization library in the policy core.** Not needed (`git-metadata.md`, "The
   name rule"); pinned by a test.

@@ -9,8 +9,8 @@
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-tool="$here/target/debug/examples/classify_paths"
-[ -x "$tool" ] && "$tool" </dev/null >/dev/null 2>&1 || \
+program="$here/target/debug/examples/classify_paths"
+[ -x "$program" ] && "$program" </dev/null >/dev/null 2>&1 || \
     ( cd "$here" && cargo build -q --example classify_paths )
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -63,7 +63,7 @@ echo
 echo "# CONTROL-classified writes during normal ops (premise: all in the frozen set)"
 # $module_roots unquoted on purpose: each root is a separate argument to the classifier.
 find .git \( -type f -o -type l \) -newer "$mark" | sort \
-    | "$tool" $module_roots | grep '^CONTROL' | sed 's/^/  /'
+    | "$program" $module_roots | grep '^CONTROL' | sed 's/^/  /'
 echo
 echo "# OPERATIONAL writes at the main gitdir root (premise: all must stay writable)"
-find .git -maxdepth 1 \( -type f -o -type l \) -newer "$mark" | sort | "$tool" | grep '^OPERATIONAL' | sed 's/^/  /'
+find .git -maxdepth 1 \( -type f -o -type l \) -newer "$mark" | sort | "$program" | grep '^OPERATIONAL' | sed 's/^/  /'

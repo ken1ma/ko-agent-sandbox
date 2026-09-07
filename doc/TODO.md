@@ -6,7 +6,7 @@ a concrete gain are recorded in design.md as standing design decisions so they s
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Admit an ECH extension on an inspected host, only if a client that sends GREASE ECH —
-  a browser, a BoringSSL-based tool — enters the image. The proxy is the TLS server there, so
+  a browser, a BoringSSL-based program — enters the image. The proxy is the TLS server there, so
   ignoring an extension it cannot decrypt is what every non-ECH server does: a GREASE client
   continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
   origin never sees the client's hello. On a `tunnel` host the refusal stays: GREASE and real ECH
@@ -152,7 +152,7 @@ row where the probe broke — with a killed run leaving nothing outside the moun
   folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
   halves are deleted when their rows are added. Their machine record adds the upper volume's
   filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
-- [ ] The `--run-on-host`-gated row: a build through the channel, then `target/` read back from
+- [ ] The `--run-on-host`-gated row: a command through the channel, then `target/` read back from
   the container — a host-native build turns host writes from an occasional human edit into
   every build.
 
@@ -195,23 +195,23 @@ on podman-less machines and kills the test JVM.
 
 - [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
   which runs unconfined while parsing hostile bytes as the user's uid
-  (`run-on-host.md` "The build's egress proxy", where the acceptance argument binds:
+  (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds:
   loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
   parser). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
   log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
   own job, and SBPL cannot filter by name — plus its loopback listener.
-- [ ] Filter `mach-lookup` in the host build profile. It is granted unfiltered, and the system tool
-  directories are executable (a build's scripts need `find`, `mount` and whatever else;
-  `runtime-authority.txt`); together those let a build reach any Mach service — `open` through
-  LaunchServices would start an application outside the profile. Measure the services a build
-  actually needs, as `ops` measures operation families, and filter to them
-  (`(allow mach-lookup (global-name …))`, the pattern Apple's profiles use); the gate's
-  forked-process rows are where the answer is checked.
+- [ ] Filter `mach-lookup` in the host command profile. It is granted unfiltered, and the system
+  program directories are executable (a command's scripts need `find`, `mount` and whatever else;
+  `runtime-authority.txt`); together those let a command reach any Mach service — `open` through
+  LaunchServices would start an application outside the profile. Measure the services a command
+  actually needs, as `ops` measures operation families, and filter to them (`(allow mach-lookup
+  (global-name …))`, the pattern Apple's profiles use); the gate's forked-process rows are where the
+  answer is checked.
 
 ## Deferred — Gradle under `--run-on-host`
 
-Gradle does not fit the host build profile, because its processes talk to each other over
-loopback TCP and the profile allows loopback only to the build's own proxy port
+Gradle does not fit the host command profile, because its processes talk to each other over
+loopback TCP and the profile allows loopback only to the command's own proxy port
 (`run-on-host.md`, "Network"). These facts come from Gradle 9.7.1's sources and its daemon
 documentation, read on 2026-09-06:
 
@@ -222,7 +222,7 @@ documentation, read on 2026-09-06:
 - The Gradle client talks to the daemon over TCP too. `--no-daemon` avoids the daemon only when
   `GRADLE_OPTS` matches the build's `org.gradle.jvmargs`; otherwise Gradle forks a single-use
   daemon.
-- Seatbelt cannot allow loopback for "this build's processes" only. The narrowest rule is
+- Seatbelt cannot allow loopback for "this command's processes" only. The narrowest rule is
   `(local ip "localhost:*")` and `(remote ip "localhost:*")`, which is every service on the host
   that listens on loopback. The network section refuses that, and this project's own proxy tests
   run in the container for the same reason.
@@ -248,11 +248,11 @@ Everything else a Gradle backend needs is known, so the open decision is the loo
 
 ## Deferred — same-path workspace mounting under `--run-on-host`
 
-Its own launch option, when it arrives. It aligns source paths and nothing else — the host build's
+Its own launch option, when it arrives. It aligns source paths and nothing else — the host command's
 JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
 does not establish compatibility between the two builds' state. That leaves readable paths in
 build output as the benefit, which did not justify the change. The host path reaches the
-container regardless: the build's streamed output names it (`SECURITY.md`, "Run on host"). Prior
+container regardless: the command's streamed output names it (`SECURITY.md`, "Run on host"). Prior
 art, both mounting the project at its host path for path legibility rather than shared state:
 
 - Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md

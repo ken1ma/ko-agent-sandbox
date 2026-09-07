@@ -524,8 +524,8 @@ object SandboxProject:
    * the directory is a closed namespace, so a typo'd `egres/` is a refused launch and not
    * ignored config, the same rule each entry applies inside itself. The files inside egress/ and
    * agent/ are vetted where they are read (EgressRules.readRuleFiles,
-   * readAgentInstructions), and host-command/ where the host build wrapper reads it
-   * (RunOnHostPrereqs.buildRuleHosts). An absent directory is empty configuration, never a
+   * readAgentInstructions), and host-command/ where the host command wrapper reads it
+   * (RunOnHostPrereqs.programRuleHosts). An absent directory is empty configuration, never a
    * directory to materialize.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =

@@ -16,7 +16,7 @@ Add a repeatable opt-in `--cache-overlay` launch option whose kinds are a closed
 
 Only `coursier` is defined in this increment. Each kind owns its host discovery, fixed container
 destination, path validation and concurrency contract; this is not an arbitrary mount interface.
-Without the option, Coursier and Scala tools use a new writable cache in the session's anonymous
+Without the option, Coursier and Scala programs use a new writable cache in the session's anonymous
 home volume. Downloads disappear with the session. With it, the selected host Coursier `v1`
 artifact cache is the readable lower layer at `~/.cache/coursier/v1`; sandbox writes go to a
 podman `:O` upper layer that disappears with the sandbox container. Extracted archives and JVMs
@@ -35,7 +35,7 @@ The image has 1.1 GB and 3,259 files under `/home/nonroot`:
 
 - 830 MB under `.cache/coursier`;
 - 228 MB under `.local/share/coursier/bin`;
-- the remaining agent-state seeds, shell files and other tool state.
+- the remaining agent-state seeds, shell files and other program state.
 
 A new volume mounted at `/home/nonroot` takes about 2.2 to 2.5 seconds to start because podman
 copies the image directory into it. The same image starts in about 0.2 seconds with `nocopy`.
@@ -50,7 +50,7 @@ those contracts without material startup cost.
 ## Cold default
 
 The launchers installed by `cs setup` are bootstraps. With no cache overlay, the first `sbt`,
-`scala`, `scalafmt` or other Scala-tool invocation in every session can download a substantial
+`scala`, `scalafmt` or other Scala-program invocation in every session can download a substantial
 part of the removed 830 MB again. A narrow egress profile can make that invocation fail when it
 does not admit the required repositories. This cost is accepted: host artifacts remain unexposed
 unless the user opts in, and all unshared downloads remain disposable.
@@ -111,13 +111,13 @@ future reviewed cache kinds do not require a comma-list grammar.
   launch authority, like project-directory canonicalization; it does not follow a
   repository-controlled symlink while discovering the boundary configuration. Any overlap with the
   canonical project is refused below.
-- Management verbs reject this launch-only option, as they reject launch authority they do not
+- Management actions reject this launch-only option, as they reject launch authority they do not
   consume.
 - Once the sandbox command starts, a token with the same spelling is passed to that command rather
   than parsed by the launcher.
 - Do not accept `src:dst` or any caller-selected container destination. podman's volume shorthand
   has Windows drive-colon ambiguity, and an arbitrary destination could shadow managed settings,
-  `/workspace`, installed tools or persistent agent state.
+  `/workspace`, installed programs or persistent agent state.
 
 Absent `COURSIER_CACHE`, bare `coursier` discovery uses:
 
@@ -202,7 +202,7 @@ Do not relocate or remove unrelated runtime caches in this increment. At the end
 `container/ko-agent-sandbox/Containerfile`, after every descendant-image producer has run, add the
 binding population guard over image `/home/nonroot`. It enforces the directory contract in step 6,
 requires `.local/share/coursier` to be absent, records the allowed top-level entries, and enforces
-conservative apparent-size and inode ceilings. A later Scala smoke test or future tool that
+conservative apparent-size and inode ceilings. A later Scala smoke test or future program that
 repopulates image home must fail this guard instead of silently restoring copy-up latency.
 
 ## Launch topology
@@ -302,7 +302,7 @@ inline command that can omit or reorder it.
 - prove repeatability through a parser helper supplied two fixture kinds;
 - reject duplicate and unknown kinds, empty values, relative paths and separated-value spellings;
 - prove first-non-option and `--` forwarding;
-- prove every management verb rejects the launch-only option;
+- prove every management action rejects the launch-only option;
 - test `COURSIER_CACHE` precedence and default `v1` discovery for Linux, macOS and Windows without
   depending on the test host;
 - test canonical path overlap against project, launcher state and install directories, podman
@@ -340,7 +340,7 @@ Add image/toolchain checks:
 - a runtime `cs install` writes under `~/.local/share/coursier/bin` and wins `PATH` precedence;
 - ordinary `cs update` does not modify `/opt/coursier/bin`, and explicitly selecting that directory
   fails without changing the image launchers;
-- the default cold-cache path can launch the advertised Scala tools when egress admits their
+- the default cold-cache path can launch the advertised Scala programs when egress admits their
   required hosts;
 - the image-home allowlist, size and inode limits hold;
 - the nonroot-owned `.cache/coursier` directory is empty, and no Coursier cache content or
@@ -365,7 +365,7 @@ Update each claim at its binding site:
 | option syntax, defaults and exact `v1` meaning | README Reference/`--help` | parser tests |
 | complete host-readable boundary | launcher diagram | README diagram, `SECURITY.md` |
 | private artifacts and mutable-lower risk | `SECURITY.md` | README option warning |
-| installed tools and session cache behavior | `AGENTS-SANDBOX.md` | Containerfile tests |
+| installed programs and session cache behavior | `AGENTS-SANDBOX.md` | Containerfile tests |
 | mount and cleanup mechanism | launcher source | `testWithPodman` lifecycle suites |
 | platform qualification | README option text | platform verification record |
 
@@ -374,11 +374,11 @@ default-mode claim with the opt-in cache exception named. Its diagram must show 
 host-cache lower and disposable per-run upper. Do not repeat the full threat analysis there; point
 to `SECURITY.md`.
 
-At the existing `cs install TOOL` instruction, `AGENTS-SANDBOX.md` should tell an acting agent that
-session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed launchers
-under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that a missing
-Scala artifact is downloaded into disposable session state and that a narrow egress profile can
-prevent the download. It does not need to teach how podman implements overlay mounts.
+At the existing `cs install PROGRAM` instruction, `AGENTS-SANDBOX.md` should tell an acting agent
+that session installs and ordinary `cs update` use `~/.local/share/coursier/bin`; image-managed
+launchers under `/opt/coursier/bin` change only when the image is rebuilt. It should also say that a
+missing Scala artifact is downloaded into disposable session state and that a narrow egress profile
+can prevent the download. It does not need to teach how podman implements overlay mounts.
 
 ## Acceptance checklist
 

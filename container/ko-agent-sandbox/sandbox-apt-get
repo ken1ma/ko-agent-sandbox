@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# The sandbox's apt-get: same verbs, different destination — packages unpack into $HOME with
+# The sandbox's apt-get: same actions, different destination — packages unpack into $HOME with
 # dependencies resolved, because real `apt-get install` can never work on a read-only rootfs as
 # uid 65532, which is why this exists.
 #
@@ -15,7 +15,7 @@
 #
 # What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
 # users or setuid bits a package expects do not materialize. Like everything under ~, it is gone
-# when the session ends — if the same tool gets installed session after session, tell the user;
+# when the session ends — if the same program gets installed session after session, tell the user;
 # only the image installs it for good, one line in the Containerfile.
 set -eu
 
@@ -28,7 +28,7 @@ usage() {
 }
 
 [ $# -ge 1 ] || usage
-verb=$1
+action=$1
 shift
 
 mkdir -p "$apt/lists/partial" "$apt/cache/archives/partial" "$root" "$HOME/.local/bin"
@@ -61,7 +61,7 @@ update_lists() {
     return $status
 }
 
-case $verb in
+case $action in
     update)
         [ $# -eq 0 ] || usage
         update_lists

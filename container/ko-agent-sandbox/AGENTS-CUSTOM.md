@@ -37,7 +37,7 @@ documents, and professional knowledge. Do not explain standard libraries, restat
 or write down universal practice ("pinned exactly", "for security"). A comment argues a decision
 the code cannot demonstrate; it never reassures about a fact running the code demonstrates
 ("JVM accepts this flag"). A dependency behaving contrary to reasonable expectation
-("JVM tools ignore HTTPS_PROXY") does earn its place, even when its own documentation says so: a
+("JVM programs ignore HTTPS_PROXY") does earn its place, even when its own documentation says so: a
 reader who does not expect the behavior never looks it up.
 
 A name says what it can before a comment is written: a comment that only says what a method,

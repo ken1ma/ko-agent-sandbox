@@ -6,7 +6,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Path, Paths}
 
-import RunOnHostPrereqs.{BuildPrereqs, Tool}
+import RunOnHostPrereqs.{CommandPrereqs, Program}
 import SeatbeltProfile.*
 
 class SeatbeltProfileTest extends munit.FunSuite:
@@ -23,11 +23,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
     cacheRoot.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
   private val distribution = distributionExec.getParent.getParent
 
-  private val prereqs = BuildPrereqs(
+  private val prereqs = CommandPrereqs(
     project = project,
     jdkHome = jdkHome,
     coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/coursier/v1"),
-    tool = Tool.Sbt,
+    program = Program.Sbt,
     executable = executable,
   )
 
@@ -37,7 +37,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def inputs(
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
-    tmp: Path = Paths.get("/private/tmp/ko-agent-build/abc/tmp"),
+    tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
   ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime)
 
   private def rendered(in: ProfileInputs = inputs()): String =
@@ -48,10 +48,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("a path that is not canonical is refused, because such a rule would grant"):
-    val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-build/abc/tmp")
+    val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-command/abc/tmp")
     // Not normalized rather than not-real: purity keeps realpath out of here, and `..` is what
     // a test can express.
-    val dotted = Paths.get("/private/tmp/ko-agent-build/../abc")
+    val dotted = Paths.get("/private/tmp/ko-agent-command/../abc")
     assert(render(inputs(tmp = dotted)).isLeft)
     // A merely different-but-canonical spelling still renders; resolving /tmp is the caller's job.
     assert(render(inputs(tmp = viaSymlinkSpelling)).isRight)
@@ -63,11 +63,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val reason = render(inputs(tmp = Paths.get("relative/tmp"))).left.getOrElse("")
     assert(clue(reason).contains("grant"))
 
-  test("the tool and the distribution agree: sbt needs it, mill has none"):
+  test("the program and the distribution agree: sbt needs it, mill has none"):
     assert(render(inputs().copy(distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs)).isLeft)
 
-  test("the tool and the global base agree the same way, and the Ivy home with them"):
+  test("the program and the global base agree the same way, and the Ivy home with them"):
     assert(render(inputs().copy(sbtGlobal = None)).isLeft)
     assert(render(inputs().copy(ivyHome = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None)).isLeft)
@@ -133,7 +133,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(text.contains("jdk-25.0.4+7/Contents/Home\")"))
     assert(text.contains("jdk-25.0.4%252B7"))
 
-  test("the tool's two halves are both granted, and neither is writable"):
+  test("the program's two halves are both granted, and neither is writable"):
     val text = rendered()
     val executionRules = text.linesIterator.filter(_.startsWith("(allow process-exec*")).mkString("\n")
     assert(clue(executionRules).contains(executable.toString))
@@ -155,7 +155,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("/tmp/")))
 
   test("writable implies executable for the project and the session temp, never for the cache"):
-    // A child inherits the profile, so running what the build wrote adds no authority, and a
+    // A child inherits the profile, so running what the command wrote adds no authority, and a
     // suite's stubs are in the temp directory; the cache holds artifacts nothing runs.
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
@@ -197,8 +197,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
       Seq(
         """(allow network-outbound (remote ip "localhost:51234"))""",
         """(allow network-bind network-inbound network-outbound """ +
-          """(local unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")) """ +
-          """(remote unix-socket (subpath "/private/tmp/ko-agent-build/abc/tmp")))""",
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
       ),
     )
 
@@ -232,7 +232,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
 
   private val millPrereqs = prereqs.copy(
-    tool = Tool.Mill,
+    program = Program.Mill,
     executable = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
   )
 
@@ -242,7 +242,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
   private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/m2/repository")
-  private val mvnPrereqs = prereqs.copy(tool = Tool.Mvn, executable = mvnHome.resolve("bin/mvn"))
+  private val mvnPrereqs = prereqs.copy(program = Program.Mvn, executable = mvnHome.resolve("bin/mvn"))
   private def mvnInputs = millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
 
   test("mvn grants its distribution to run and its local repository to write, and no sbt cache"):
@@ -253,7 +253,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!text.contains("sbt-global"))
     assert(!text.contains("ivy-home"))
 
-  test("the tool and the Maven local repository agree: mvn needs it, the others have none"):
+  test("the program and the Maven local repository agree: mvn needs it, the others have none"):
     assert(render(mvnInputs.copy(m2Repository = None)).isLeft)
     assert(render(mvnInputs.copy(distribution = None)).isLeft)
     assert(render(mvnInputs.copy(sbtGlobal = Some(sbtGlobal))).isLeft)

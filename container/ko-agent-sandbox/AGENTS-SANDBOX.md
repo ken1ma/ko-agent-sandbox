@@ -22,8 +22,8 @@ image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image
 user to save the image under the project and pass its path instead.
 
 With the default `ko-agent-fs` workspace guard, a new symlink in `/workspace` needs a relative
-target staying inside it; anything else, an absolute `/workspace/...` included, fails. A tool that
-caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
+target staying inside it; anything else, an absolute `/workspace/...` included, fails. A program
+that caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
 appended authority section says when the weaker raw bind is in force instead.
 
 The host's own symlinks are served as they are, so one with an absolute target dangles in here.
@@ -90,16 +90,16 @@ that. Read the content one file at a time from
 `https://media.githubusercontent.com/media/<owner>/<repo>/<ref>/<path>`.
 
 
-## Installing a tool that is genuinely missing
+## Installing a program that is genuinely missing
 
 Everything installs into `~`, and is gone next session.
 
 ```sh
-uvx TOOL ...                # Python tool, without installing it
+uvx PROGRAM ...             # Python program, without installing it
 uv run --with PKG script.py # script that needs one dependency
-npx -y PKG ...              # Node tool
-cs install TOOL             # JVM tool -> ~/.local/share/coursier/bin, on PATH
-curl -fsSL URL -o ~/.local/bin/TOOL && chmod +x ~/.local/bin/TOOL
+npx -y PKG ...              # Node program
+cs install PROGRAM          # JVM program -> ~/.local/share/coursier/bin, on PATH
+curl -fsSL URL -o ~/.local/bin/PROGRAM && chmod +x ~/.local/bin/PROGRAM
 ```
 
 Last resort, when only a Debian package will do:
@@ -112,7 +112,7 @@ sandbox-apt-get install shellcheck   # `shellcheck` is then on PATH
 It unpacks rather than installs, so a package expecting users, services or setuid bits will not
 work.
 
-Tell the user what you installed and why. If the same tool is needed session after session, say
+Tell the user what you installed and why. If the same program is needed session after session, say
 so — only they can add it to the image.
 
 
@@ -126,19 +126,20 @@ On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants
 refused, and the `403` body says what to do next. If a host will not connect, run
 `sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
 A TLS error on an allowed host is the trust store (next paragraph), or a client the proxy
-closes on: no SNI, Encrypted ClientHello — a browser's GREASE included, so a browser-driven tool
+closes on: no SNI, Encrypted ClientHello — a browser's GREASE included, so a browser-driven program
 fails on every host — or HTTP/2 only. Plain `curl`/`git` are none of these.
 
 `getent hosts` and every other name lookup fail by design; that is never why a fetch failed.
-Tools that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
+Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
 -servername host -proxy egress-proxy:3128`.
 
-A tool with its own trust store needs the proxy's CA: `/etc/ko-agent-sandbox/egress-proxy-ca.crt`,
-or the whole bundle in `$SSL_CERT_FILE`. A JVM needs the proxy as well, and ignores `HTTPS_PROXY`:
-run `sandbox-jdk-use-proxy <jdk-home>` on one you installed yourself. A native-image tool has no
-`conf/` to prepare and reads no environment variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in
-its own spelling — `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...`,
-`cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs nothing.
+A program with its own trust store needs the proxy's CA:
+`/etc/ko-agent-sandbox/egress-proxy-ca.crt`, or the whole bundle in `$SSL_CERT_FILE`. A JVM needs
+the proxy as well, and ignores `HTTPS_PROXY`: run `sandbox-jdk-use-proxy <jdk-home>` on one you
+installed yourself. A native-image program has no `conf/` to prepare and reads no environment
+variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in its own spelling — `scala
+$KO_AGENT_SANDBOX_JAVA_OPTS run ...`, `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt`
+needs nothing.
 
 
 ## Containers in here: only if this session opted in

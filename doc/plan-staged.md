@@ -85,18 +85,18 @@ apply's atomic replacement can be refused on exactly the paths it is applying.
 --stage discard
 ```
 
-The current project identifies the stage for every verb except `list`. There is no bulk discard
-command in this increment. `--reset` and `--reset-all` remove runtime resources but preserve every
+The current project identifies the stage for every action except `list`. There is no bulk discard
+action in this increment. `--reset` and `--reset-all` remove runtime resources but preserve every
 stage. Discard refuses an attached stage and confirms the project directory, pending path count and
 size plus any sealed, partially applied or recovery-needed state; non-interactive use additionally
 requires `--yes`.
 
-`--stage list` lists every stored stage by project; the other verbs address the current project.
+`--stage list` lists every stored stage by project; the other actions address the current project.
 Attachment and list output show the representation version, pending path count and logical size,
 physical stored size, backing volume, attached-session count, lower path and last-use time. No
 pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`, `applying` and
 `recovery-needed` states, with the controlling host process and start time. Stage storage has a
-distinct reserved resource-name pattern that neither reset command matches; tests bind the
+distinct reserved resource-name pattern that neither reset action matches; tests bind the
 preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
 recovery transition is active; it never tears down a stage underneath its control process.
 
@@ -232,7 +232,7 @@ its private Git metadata cannot be applied.
    an implemented representation.
 2. Close the nested-git and bare-layout gaps and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
-   lifecycle and visibility, with the in-situ suite, the launcher verb and the stamp that gates
+   lifecycle and visibility, with the in-situ suite, the launcher action and the stamp that gates
    staged launch.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete

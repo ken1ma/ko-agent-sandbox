@@ -23,9 +23,9 @@ import RunOnHostChannel.*
 
 class RunOnHostChannelTest extends munit.FunSuite:
 
-  private val tools = Vector("sh", "flock", "mkfifo", "timeout")
-  private def onPath(tool: String): Boolean =
-    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, tool)))
+  private val programs = Vector("sh", "flock", "mkfifo", "timeout")
+  private def onPath(program: String): Boolean =
+    sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, program)))
 
   /** Never the production path, for the reason ClipboardBrokerTest's own gives: both sides are
     * pointed here instead — the broker by its transport, the shim by the line rewritten below. */
@@ -57,8 +57,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
   // ---------------------------------------------------------------------------
 
   /** The request bytes exactly as the shim's printf pair produces them. */
-  private def framed(tool: String, cwd: String, args: String*): Array[Byte] =
-    (s"$tool ${args.size}\n" + (cwd +: args).map(_ + "\u0000").mkString).getBytes(UTF_8)
+  private def framed(program: String, cwd: String, args: String*): Array[Byte] =
+    (s"$program ${args.size}\n" + (cwd +: args).map(_ + "\u0000").mkString).getBytes(UTF_8)
 
   test("a request round-trips, empty and awkward arguments included"):
     val bytes = framed("sbt", "/workspace/sub dir", "test", "", "set x := \"a\nb\"", "λ")
@@ -120,7 +120,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     Files.createSymbolicLink(project.resolve("link"), outside)
     refused("/workspace/link") // a symlink leaving the project
 
-  test("a tool the launch did not name is refused, not run"):
+  test("a program the launch did not name is refused, not run"):
     val project = Files.createTempDirectory("channel-project").toRealPath()
     val answer = validated(service(project), Request("mill", "/workspace", Vector.empty))
     assert(answer.left.exists(_.contains("does not name mill")), answer.toString)
@@ -143,10 +143,10 @@ class RunOnHostChannelTest extends munit.FunSuite:
    * a request every host can make.
    */
   private def channel(
-    buildCommand: (String, Path, Seq[String]) => Seq[String],
+    wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
   )(check: (Path, Path, () => String) => Unit): Unit =
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
     val host = Files.createDirectory(dir.resolve("host"))
     val project = Files.createDirectory(dir.resolve("project")).toRealPath()
@@ -167,7 +167,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       serve(
         transport,
         service(project, mount = project.toString, deadline = deadline)
-          .copy(buildCommand = buildCommand),
+          .copy(wrapperCommand = wrapperCommand),
         line => log.synchronized { log.append(line).append('\n'); () },
       ),
     )
@@ -199,8 +199,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
     (process.waitFor(), String(out, UTF_8), String(err, UTF_8))
 
   test("a command streams both channels back and returns its own exit code"):
-    channel((tool, cwd, args) =>
-      Seq("sh", "-c", s"echo ran $tool ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
+    channel((program, cwd, args) =>
+      Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
     ): (project, _, _) =>
       val (exit, out, err) = shimCall(project, "sbt", "test", "-v")
       assertEquals(exit, 7)
@@ -219,7 +219,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       val (exit, out, err) = shimCall(project, "sbt")
       assertEquals(exit, 0)
       // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
-      // host environment's to explain, a line that merely quotes the banner is the build's, and
+      // host environment's to explain, a line that merely quotes the banner is the command's, and
       // stdout is not the stream the announcement is written to.
       assertEquals(err, s"complaint\nPicked up _JAVA_OPTIONS: -Dx=1\n[warn] $banner\n")
       assertEquals(out, s"$banner\n")
@@ -370,11 +370,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(Files.readString(host.resolve("slow.code")), "5")
 
   test("without a broker the shim fails at once, naming the launch option"):
-    assume(tools.forall(onPath), s"needs ${tools.mkString(", ")} on PATH")
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     deleteRecursively(FifoDir)
     val project = Files.createTempDirectory("channel-none")
     val (exit, _, err) = shimCall(project, "sbt", "test")
     assertEquals(exit, 1)
     assert(err.contains("--run-on-host"), err)
-    // An unknown tool is a usage error before the channel is consulted.
+    // An unknown program is a usage error before the channel is consulted.
     assertEquals(shimCall(project, "gradle", "build")._1, 64)

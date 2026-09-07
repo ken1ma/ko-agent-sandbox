@@ -79,7 +79,7 @@ allow https://http4s.org/    read
 
 allow https://scala-cli.virtuslab.org/ read  # Scala CLI, the runner behind `scala`
 
-# build tools
+# build programs
 allow https://www.scala-sbt.org/            read
 allow https://mill-build.org/               read
 allow https://get-coursier.io/              read  # cs
@@ -122,7 +122,7 @@ allow https://kotlinlang.org/        read
 allow https://developer.apple.com/   read
 allow https://swift.org/             read  # redirects to www
 allow https://www.swift.org/         read
-allow https://docs.swift.org/        read  # swift lang, libs, tools, and platform docs
+allow https://docs.swift.org/        read  # swift lang, libs, programs, and platform docs
 # mobile references only; builds stay outside — no Android SDK in the image (dl.google.com absent),
 # and Xcode needs macOS
 

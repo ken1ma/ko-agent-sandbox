@@ -35,7 +35,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     finally Files.delete(probe)
 
   test("ensureRoot creates an absent root owner-only"):
-    val parent = Files.createTempDirectory("build-session")
+    val parent = Files.createTempDirectory("command-session")
     val root = parent.resolve("ko-agent-0")
     assertEquals(ensureRoot(root, uid), Right(root))
     assertEquals(
@@ -44,7 +44,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
 
   test("ensureRoot refuses a symlinked, shared, or foreign root"):
-    val parent = Files.createTempDirectory("build-session")
+    val parent = Files.createTempDirectory("command-session")
     val real = Files.createDirectory(parent.resolve("real"))
     val link = Files.createSymbolicLink(parent.resolve("link"), real)
     assert(ensureRoot(link, uid).isLeft, "a symlink is a redirected root")
@@ -69,7 +69,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   def freshRoot(): Path =
     // Canonical, so the moved-socket pathnames the tests predict match what containment proves.
-    val root = Files.createTempDirectory("build-session").toRealPath().resolve("root")
+    val root = Files.createTempDirectory("command-session").toRealPath().resolve("root")
     ensureRoot(root, uid).toOption.get
 
   test("publish yields a locked session with tmp, records and the project on file"):
@@ -371,17 +371,17 @@ class RunOnHostSessionTest extends munit.FunSuite:
   // The registered spawn, against real processes
   // --------------------------------------------------------------------------
 
-  // The registration spawn is the wrapper's tool and runs outside the profile by construction;
+  // The registration spawn is the wrapper's own process and runs outside the profile by construction;
   // under it, perl dies before registering. Skipped exactly where the gate runs this suite as a
-  // confined build.
-  def notUnderBuildProfile(): Unit =
+  // confined command.
+  def notUnderRunOnHostProfile(): Unit =
     assume(
       !sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-")),
       "the registration spawn never runs under the profile",
     )
 
   test("a spawned process registers pgid and start time by rename before its command runs"):
-    notUnderBuildProfile()
+    notUnderRunOnHostProfile()
     val dir = Files.createTempDirectory("spawn")
     val record = dir.resolve("record")
     val command = registeredSpawn(record, Seq("/bin/sleep", "30"))
@@ -396,7 +396,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     finally process.destroyForcibly().waitFor()
 
   test("the command's exit status is published beside the record, and the leader stays"):
-    notUnderBuildProfile()
+    notUnderRunOnHostProfile()
     val record = Files.createTempDirectory("spawn").resolve("record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sh", "-c", "exit 7"))*).start()
@@ -406,7 +406,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     finally process.destroyForcibly().waitFor()
 
   test("a command's signal death is published as the shell's 128+signal"):
-    notUnderBuildProfile()
+    notUnderRunOnHostProfile()
     val record = Files.createTempDirectory("spawn").resolve("record")
     val process = java.lang.ProcessBuilder(
       registeredSpawn(record, Seq("/bin/sh", "-c", "kill -KILL $$"))*).start()
@@ -414,7 +414,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     finally process.destroyForcibly().waitFor()
 
   test("a spawn gone without an exit status is a Left, not a hang"):
-    notUnderBuildProfile()
+    notUnderRunOnHostProfile()
     val record = Files.createTempDirectory("spawn").resolve("record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
@@ -422,7 +422,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(awaitExit(exitRecord(record), process).isLeft)
 
   test("a spawned process whose record cannot be published ends itself with 71"):
-    notUnderBuildProfile()
+    notUnderRunOnHostProfile()
     val gone = Files.createTempDirectory("spawn").resolve("condemned-away/record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(gone, Seq("/bin/sleep", "30"))*).start()

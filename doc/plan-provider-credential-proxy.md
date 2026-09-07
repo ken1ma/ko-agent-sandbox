@@ -111,9 +111,9 @@ existing inspected treatment or by the mediated-provider path below.
 The service catalog is a closed image resource, parsed by `--print-ruleset` and the serving proxy.
 The launcher consumes that answer and does not keep a second provider-domain table.
 
-## Host command contract
+## Launcher command-line contract
 
-Management verbs operate outside a project and consume no launch options:
+Management actions operate outside a project and consume no launch options:
 
 ```text
 --credential-set=<service>[/<instance>]
@@ -277,7 +277,7 @@ backoff inside the remaining validity window. After expiry, the coordinator publ
 unavailable status, the proxy refuses matching requests with 502 and the audit says
 `credential unavailable`; it never injects an expired value or sends the placeholder as a retry.
 
-Read-only commands never take the refresh path. Removal, import, login and refresh use the same
+Read-only actions never take the refresh path. Removal, import, login and refresh use the same
 instance lock, so concurrent mutation cannot lose half an OAuth credential or let a stale API key
 shadow a newly selected mechanism.
 
@@ -370,7 +370,7 @@ allow api.example.com POST /v1 -> <origin-ip> inject=service/instance
 ```
 
 Use fixed client diagnostics for missing, expired, refresh-failed and reauthentication-required
-states. They name the host management command to run, not source stderr. Origin 401 and 403 remain
+states. They name the management action to run, not source stderr. Origin 401 and 403 remain
 origin responses; the proxy cannot infer whether they mean scope, revocation or application state.
 
 The launch banner and `--egress-effective` show selected instance, mechanism, source kind, active
@@ -455,7 +455,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Use a process barrier across concurrent launchers to prove one source invocation per refresh and
   complete generation publication to every waiting run.
 - Test refresh success, jitter, transient failure, backoff, expiry, reauthentication, removal races
-  and clock movement. Read-only management and egress-check commands invoke the source zero times.
+  and clock movement. Read-only management and egress-check actions invoke the source zero times.
 - Kill the coordinator at every write boundary and prove the next launch sees one valid generation
   or a clear unavailable state, never a truncated value or lost refresh token.
 
@@ -475,7 +475,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.
-2. Implement host storage, management verbs and per-run generations for static API keys. Reuse the
+2. Implement host storage, management actions and per-run generations for static API keys. Reuse the
    existing plan's exact-token rewrite on inspected hosts.
 3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the

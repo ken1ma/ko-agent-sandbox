@@ -1,10 +1,10 @@
 // The generated Seatbelt profile for the project this runs in, so a real build can be driven
 // under it by hand.
 //
-// Test scope on purpose: src/probe/build-profile-gate.sh and src/probe/build-profile-iterate.sh are its
+// Test scope on purpose: src/probe/run-on-host-profile-gate.sh and src/probe/run-on-host-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill] [project]"
 //
 // The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
 // The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's.
@@ -15,11 +15,11 @@ import java.nio.file.{Files, Path, Paths}
 
 import RunOnHostPrereqs.*
 
-object EmitBuildProfile:
+object EmitRunOnHostProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitBuildProfile <out.sb> [authority-file] [sbt|mill] [project]")
+      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill] [project]")
       sys.exit(2)
 
     val env: String => Option[String] = name => Option(System.getenv(name))
@@ -29,11 +29,11 @@ object EmitBuildProfile:
       Console.err.println(s"refused: $reason")
       sys.exit(1)
 
-    val tool = args.lift(2).map(_.toLowerCase) match
-      case None        => Tool.Sbt
-      case Some(name)  => Tool.values.find(_.name == name).getOrElse(fail(s"unknown tool $name"))
+    val program = args.lift(2).map(_.toLowerCase) match
+      case None        => Program.Sbt
+      case Some(name)  => Program.values.find(_.name == name).getOrElse(fail(s"unknown program $name"))
 
-    val assembled = RunOnHostSandbox.assemble(project, tool, env).fold(fail, identity)
+    val assembled = RunOnHostSandbox.assemble(project, program, env).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
 
@@ -56,8 +56,8 @@ object EmitBuildProfile:
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
     Console.err.println(s"session temp: $sessionTmp")
-    Console.err.println(s"build cache: ${assembled.prereqs.coursierV1}")
-    Console.err.println(s"tool: $tool")
+    Console.err.println(s"run-on-host cache: ${assembled.prereqs.coursierV1}")
+    Console.err.println(s"program: $program")
     Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     Console.err.println(s"ivy home: ${assembled.ivyHome}")

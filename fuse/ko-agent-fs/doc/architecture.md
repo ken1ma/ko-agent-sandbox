@@ -109,7 +109,7 @@ with the kernel at `open`, after which bulk read/write bypass the daemon at nati
 Real-time bidirectional visibility is the project's defining requirement — a copy-back overlay was
 rejected at the outset. A FUSE attribute/entry cache with a nonzero TTL lets the kernel answer from
 a stale attribute without re-asking the daemon, so a host edit stays invisible until the TTL
-expires. A build tool keying on mtime would then miss the change and compile stale content — a
+expires. A build program keying on mtime would then miss the change and compile stale content — a
 correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
 *backing's* state at the moment of the call — never older, and never fresher than the backing
 itself. Therefore these are fixed, not settings:

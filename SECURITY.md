@@ -88,7 +88,7 @@ This is the default, with qualifications under Not defended: a session that sets
 ("The `.git` pins of `WORKSPACE_GUARD=none`"); and on some platforms the filter has no measured
 evidence ("The workspace filter, on the platforms where it is unverified").
 
-Under `--run-on-host` the tree gains a second producer the filter never sees: the host build,
+Under `--run-on-host` the tree gains a second producer the filter never sees: the host command,
 writing the host tree directly. The Seatbelt profile's deny rows guard the same property there —
 `.git` and `.ko-agent-sandbox` unreachable at any depth, case folded, links included ("Run on
 host", below).
@@ -242,8 +242,8 @@ the project, a packaging step. It is also where "review the diff" is weakest, si
 innocuous line of target text.
 
 The workspace filter narrows this rather than closing it: it refuses a target that is absolute or
-climbs above the workspace root, which is what a tool plants when it links into a cache of its own.
-Two gaps stay, both argued at the rule (`fs.rs`, `target_has_portable_syntax`): syntax is not
+climbs above the workspace root, which is what a program plants when it links into a cache of its
+own. Two gaps stay, both argued at the rule (`fs.rs`, `target_has_portable_syntax`): syntax is not
 meaning, so a target whose own components are symlinks resolves by whatever they point at on each
 side; and the syntax is judged at creation, so a later `rename` or `link` can re-aim a conforming
 link outside the workspace. A session set on planting a link still can, and the diff is still what
@@ -408,7 +408,7 @@ container's lifetime. Every connection has to pass all of this, in order:
 1. the client's TLS ClientHello is parsed within a fixed byte budget
 1. Encrypted ClientHello is refused: it would hide the name that actually selects a backend.
    GREASE ECH, the dummy extension a browser sends by default (RFC 9849, 6.2), is refused with
-   it, being indistinguishable by design, so a browser-driven tool fails on every host
+   it, being indistinguishable by design, so a browser-driven program fails on every host
 1. SNI must be present, and must equal the hostname in the `CONNECT` — which is also what keeps
    a destination named by address out of both treatments: SNI carries no address, so a client
    connecting to one sends none, and this step refuses the hello. A leaf can name an address
@@ -647,7 +647,7 @@ The sandbox trusts that CA — the project's, or under `allow-unless-denied` the
 bundle assembled on the host from the image's own CA bundle plus it, mounted over
 `/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
 `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO` point at the same
-file, for the tools with a trust store of their own rather than the system's.
+file, for the programs with a trust store of their own rather than the system's.
 
 The image's JDK is covered by the same technique one layer over, because it reads none of the
 above: a JVM consults a `cacerts` keystore and a `net.properties` file. The image ships
@@ -838,98 +838,99 @@ else refuses the launch, like the workspace guard) opens a channel with these pr
 
 ## Run on host
 
-Off by default, and macOS only: `--run-on-host=<tools>` (`sbt`, `mill`, `mvn`) is a container→host
-**execution** path — the one place this design runs code the agent chose outside the container —
-and what bounds it is a Seatbelt profile, not the container the build is no longer in.
+Off by default, and macOS only: `--run-on-host=<programs>` (`sbt`, `mill`, `mvn`) is a
+container→host **execution** path — the one place this design runs code the agent chose outside the
+container — and what bounds it is a Seatbelt profile, not the container the command is no longer in.
 `doc/run-on-host.md` is the reference; the properties, each with its cost:
 
 - **macOS only, structurally, not by neglect.** On Linux there is no VM between the sandbox and
-  the hardware: a container build already runs at host speed on host memory, so host builds would
-  buy nothing — and neither bubblewrap nor Landlock can express the guard rows below, whose
+  the hardware: a container command already runs at host speed on host memory, so host commands
+  would buy nothing — and neither bubblewrap nor Landlock can express the guard rows below, whose
   name-pattern denies are evaluated at access time (a `.git` created *mid-build* is covered),
   while their mounts and rulesets are fixed at start. Windows AppContainers express the grants
   but not the denies: ACL inheritance has no name patterns, so a mid-build `.git` inherits the
   project's allow — a race where the deny must hold at every access. Seatbelt's access-time
   path filters give the guard exactly that, and the feature exists only where it holds.
 
-- **The sandbox asks; the host answers.** The clipboard channel's broker, sized up to a build: it
-  runs each request as a child of its own, streams the build's output back, and hands over the
-  build's exit code. No host listener, no port, and nothing runs that the host did not start
+- **The sandbox asks; the host answers.** The clipboard channel's broker, sized up to a command: it
+  runs each request as a child of its own, streams the command's output back, and hands over the
+  command's exit code. No host listener, no port, and nothing runs that the host did not start
   (`RunOnHostChannel`, the image's `sandbox-run-on-host` shim).
-- **The profile is the boundary; the request is not.** A request names a tool, a working
-  directory and arguments. The tool must be one the launch named. The working directory — the one
+- **The profile is the boundary; the request is not.** A request names a program, a working
+  directory and arguments. The program must be one the launch named. The working directory — the one
   value arriving from inside the sandbox — is canonicalized and proven inside the project before
   anything derives from it, and never changes the profile's project grant. The arguments are
   deliberately not vetted: they select code the agent already chooses (`sbt 'set …'` reaches
   arbitrary Scala without touching `build.sbt`), and the profile confines whatever they select.
-  What a build reaches, in whole: the project read-write minus git control state and
+  What a command reaches, in whole: the project read-write minus git control state and
   `.ko-agent-sandbox` — denied at any depth, case folded, link creation included — its own
-  per-project build caches, one Coursier-managed JDK read-only, the tool's own executable and
-  distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
-  archive cache, the one mill executable the user provisioned, the one Maven the project's
-  wrapper unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when
-  `MAVEN_USER_HOME` is unset — a session temporary directory, and loopback to its own egress
-  proxy, which admits the artifact repositories
-  `.ko-agent-sandbox/host-command/<tool>/egress/rule` names (`allow https://<host>/ read` lines
-  only, a closed namespace like its parent) plus Maven Central. Everything else user-owned is
-  invisible — the launcher state root and the rest of the user's caches included.
-- **The build's environment is a closed set, not the launcher's.** The wrapper builds it whole
+  per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
+  and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
+  archive cache, the one mill executable the user provisioned, the one Maven the project's wrapper
+  unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
+  is unset — a session temporary directory, and loopback to its own egress proxy, which admits the
+  artifact repositories `.ko-agent-sandbox/host-command/<program>/egress/rule` names (`allow
+  https://<host>/ read` lines only, a closed namespace like its parent) plus Maven Central.
+  Everything else user-owned is invisible — the launcher state root and the rest of the user's
+  caches included.
+- **The command's environment is a closed set, not the launcher's.** The wrapper builds it whole
   (`doc/run-on-host.md`, "The session", has the table): its own settings, three pass-throughs,
   and what `--env` named at launch — the same forward the sandbox gets, the same refusal of
   `KO_AGENT_SANDBOX_*`. Closed because the build definition is the one place agent-chosen code
   runs as the user: a secret exported in the shell that launched the session, or the launcher's
   own `HTTPS_PROXY` with an upstream proxy's credential ("Egress proxy"), would otherwise be the
-  build's to read. The wrapper's settings win over a forward, so a forwarded `HTTPS_PROXY` cannot
-  redirect the build past its proxy and a forwarded `JAVA_TOOL_OPTIONS` cannot add to its JVM
-  options; the tools' own overrides — `SBT_OPTS`, `JAVA_OPTS`, `MILL_VERSION` — stay out,
-  forwarded or not, so the build is the one the wrapper granted for. Below the launcher, whose
-  own arguments are what the user typed, forwarded names travel to the broker and each build as
+  command's to read. The wrapper's settings win over a forward, so a forwarded `HTTPS_PROXY` cannot
+  redirect the command past its proxy and a forwarded `JAVA_TOOL_OPTIONS` cannot add to its JVM
+  options; the programs' own overrides — `SBT_OPTS`, `JAVA_OPTS`, `MILL_VERSION` — stay out,
+  forwarded or not, so the command is the one the wrapper granted for. Below the launcher, whose
+  own arguments are what the user typed, forwarded names travel to the broker and each command as
   arguments and the values through their environments under carrier names
   (`RunOnHostSandbox.carrierName`), so an explicit value is read by no unconfined helper before
-  the build's environment is built. The broker inherits the launcher's environment as the
+  the command's environment is built. The broker inherits the launcher's environment as the
   launcher's own JVM ran in it, so a name-only forward names a variable already there.
 - **One sbt server per project, and only this session's own.** A thin sbt client attaches to
   whatever server the project's portfile names and then runs with *that server's* environment —
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live
-  server holds the portfile, starts the build's server inside the profile, and ends it, portfile
-  included, before the session ends. The cost is that no warm daemon spans builds: sbt's server
+  server holds the portfile, starts the command's server inside the profile, and ends it, portfile
+  included, before the session ends. The cost is that no warm daemon spans commands: sbt's server
   lives for one `sandbox-run-on-host` command, `mill` runs `--no-daemon`, and Maven runs once
   and exits. Under `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server
-  first instead of refusing — authority the user typed at launch, and logged into the build's
+  first instead of refusing — authority the user typed at launch, and logged into the command's
   transcript. The
   shutdown is sent only to the socket the wrapper derives from the project path as sbt derives
   it, never to one the portfile names: the portfile is workspace content, so honouring its
   spelling would let the project aim an unconfined write-and-parse at any socket this uid
-  reaches. The derived path is therefore authorization, and refused when a build could have
+  reaches. The derived path is therefore authorization, and refused when a command could have
   planted it: resolving it one link at a time, no step may resolve into the project or into the
   per-project caches that outlive a session, so an environment placing sbt's server directory
   inside either — and a chain that passes through one on its way somewhere innocent — leaves the
   refusal in place instead.
-- **The payload that matters runs later, as you.** A build that writes `.git/hooks/post-checkout`
+- **The payload that matters runs later, as you.** A command that writes `.git/hooks/post-checkout`
   is perfectly contained and entirely beside the point: the payload would run on your next
   `git status`, outside every sandbox. That property has two producers — the workspace filter
-  for writes through `/workspace`, this profile's deny rows for writes by the build — and both are
+  for writes through `/workspace`, this profile's deny rows for writes by the command — and both are
   named where it is stated ("The host's git executing what the sandbox wrote", above).
-- **Cache poisoning stops at the project.** The build writes its own per-project caches, never
+- **Cache poisoning stops at the project.** The command writes its own per-project caches, never
   yours: the Coursier cache, sbt's global base — its boot directory and content-addressed
   store — sbt's Ivy home, which `publishLocal` writes, and Maven's local repository, which holds
-  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent builds
+  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent commands
   of the same project, which are themselves sandboxed, and no other project and no unsandboxed
-  build — and `--reset` discards them all with the project's other state; `--reset-run-on-host`
+  command — and `--reset` discards them all with the project's other state; `--reset-run-on-host`
   discards those caches alone. The separation is by root, one directory holding them
-  (`doc/run-on-host.md`, "The build cache"), because Seatbelt has no mount namespace to overlay
-  with (`plan-coursier.md` reaches the same property for the container by a podman `:O` upper).
-- **The build's output names host paths.** Every compiler message containing an absolute path tells
-  the container the project's path on the host. Disclosure, not authority.
+  (`doc/run-on-host.md`, "The run-on-host cache"), because Seatbelt has no mount namespace to
+  overlay with (`plan-coursier.md` reaches the same property for the container by a podman `:O`
+  upper).
+- **The command's output names host paths.** Every compiler message containing an absolute path
+  tells the container the project's path on the host. Disclosure, not authority.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A
-  host build writes `target/` and whatever else the profile's project grant admits. Composition
+  host command writes `target/` and whatever else the profile's project grant admits. Composition
   rather than escape — both are authority the user typed — but a reject session meant to
   prove the project untouched should not include `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
-  the command with SIGTERM — the wrapper's own hook teardown, which ends the build's process groups,
-  its sbt server and its proxy, and removes the session directory. If SIGKILL prevents that
+  the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
+  groups, its sbt server and its proxy, and removes the session directory. If SIGKILL prevents that
   teardown, the recorded groups remain, and the next start's scavenger ends them by proof, never by
   guess.
 

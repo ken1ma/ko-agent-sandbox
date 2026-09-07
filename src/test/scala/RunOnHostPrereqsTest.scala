@@ -76,9 +76,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the project's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(buildCoursierV1(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
+    assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
     // One removal reaches all of them: what --reset-run-on-host relies on.
-    assert(buildCoursierV1(root, "abc123").startsWith(buildCacheDir(root, "abc123")))
+    assert(coursierV1Of(root, "abc123").startsWith(runOnHostCacheDir(root, "abc123")))
 
   // --------------------------------------------------------------------------
   // Discovery
@@ -277,7 +277,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millJvmIsSystem(project, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))),
       Left(Refusal.PrereqMillJvmNotSystem(Some("temurin:25"))),
     )
-    // Absent is mill's own default, a JVM fetched by the build.
+    // Absent is mill's own default, a JVM fetched by the command.
     assertEquals(millJvmIsSystem(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
       Left(Refusal.PrereqMillJvmNotSystem(None)))
 
@@ -509,25 +509,25 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(overlaps(project.resolve("sub"), project, Os.Mac))
 
   // --------------------------------------------------------------------------
-  // The build's egress rule file
+  // The program's egress rule file
   // --------------------------------------------------------------------------
 
-  test("the build's rule file accepts read lines, comments and blank lines, in file order, once each"):
+  test("the program's rule file accepts read lines, comments and blank lines, in file order, once each"):
     val text =
-      """# artifact repositories this build resolves from
+      """# artifact repositories this project resolves from
         |allow https://repo.example.org/ read
         |
         |allow https://mirror.example.org/ read  # inline comment
         |allow https://repo.example.org/ read
         |""".stripMargin
     assertEquals(
-      buildRuleHosts(text),
+      programRuleHosts(text),
       Right(Vector("repo.example.org", "mirror.example.org")),
     )
 
   test("an empty or comment-only rule file is valid and contributes nothing"):
     for text <- Seq("", "\n\n", "# nothing yet\n") do
-      assertEquals(buildRuleHosts(text), Right(Vector.empty))
+      assertEquals(programRuleHosts(text), Right(Vector.empty))
 
   test("every line of the proxy's wider grammar is outside the file's"):
     for
@@ -553,57 +553,57 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         "allow",
       )
     do
-      buildRuleHosts(line) match
-        case Left(Refusal.RuleOutsideBuildGrammar(seen)) => assertEquals(seen, line)
+      programRuleHosts(line) match
+        case Left(Refusal.RuleOutsideProgramGrammar(seen)) => assertEquals(seen, line)
         case other => fail(s"'$line' -> $other")
 
   test("a refused line names itself even after a comment is stripped"):
     assertEquals(
-      buildRuleHosts("deny https://x/ # a removal\n"),
-      Left(Refusal.RuleOutsideBuildGrammar("deny https://x/")),
+      programRuleHosts("deny https://x/ # a removal\n"),
+      Left(Refusal.RuleOutsideProgramGrammar("deny https://x/")),
     )
     // A comment starts at a token, as in the proxy: a `#` inside one is the line, not a comment.
     assertEquals(
-      buildRuleHosts("allow https://repo.example.org/ read#comment\n"),
-      Left(Refusal.RuleOutsideBuildGrammar("allow https://repo.example.org/ read#comment")),
+      programRuleHosts("allow https://repo.example.org/ read#comment\n"),
+      Left(Refusal.RuleOutsideProgramGrammar("allow https://repo.example.org/ read#comment")),
     )
-    assertEquals(buildRuleHosts("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
+    assertEquals(programRuleHosts("allow https://repo.example.org/ read #comment\n"), Right(Vector("repo.example.org")))
 
   test("the composed rule input is the whole ruleset: deny defaults, Maven Central, then the file"):
     assertEquals(
-      egressRuleText(Tool.Sbt, Vector("repo.example.org")),
+      egressRuleText(Program.Sbt, Vector("repo.example.org")),
       "deny defaults\nallow https://repo1.maven.org/ read\nallow https://repo.example.org/ read",
     )
 
   test("a file restating Maven Central composes it once"):
     assertEquals(
-      egressRuleText(Tool.Sbt, Vector("repo1.maven.org")),
+      egressRuleText(Program.Sbt, Vector("repo1.maven.org")),
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
   test("the sbt global base and Ivy home sit beside the project's Coursier cache, one --reset-run-on-host removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
-      buildSbtGlobal(cacheRoot, "proj-abc123"),
+      sbtGlobalOf(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
     )
     assertEquals(
-      buildIvyHome(cacheRoot, "proj-abc123"),
+      ivyHomeOf(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/ivy-home"),
     )
     assertEquals(
-      buildM2Repository(cacheRoot, "proj-abc123"),
+      m2RepositoryOf(cacheRoot, "proj-abc123"),
       Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/m2/repository"),
     )
-    for cache <- Seq(buildSbtGlobal(cacheRoot, "proj-abc123"), buildIvyHome(cacheRoot, "proj-abc123"),
-        buildM2Repository(cacheRoot, "proj-abc123").getParent)
-    do assertEquals(cache.getParent, buildCoursierV1(cacheRoot, "proj-abc123").getParent.getParent)
+    for cache <- Seq(sbtGlobalOf(cacheRoot, "proj-abc123"), ivyHomeOf(cacheRoot, "proj-abc123"),
+        m2RepositoryOf(cacheRoot, "proj-abc123").getParent)
+    do assertEquals(cache.getParent, coursierV1Of(cacheRoot, "proj-abc123").getParent.getParent)
 
-  test("the central host is the tool's own: Coursier's for sbt and mill, the super POM's for mvn"):
-    assertEquals(centralHost(Tool.Sbt), "repo1.maven.org")
-    assertEquals(centralHost(Tool.Mill), "repo1.maven.org")
-    assertEquals(centralHost(Tool.Mvn), "repo.maven.apache.org")
-    assertEquals(egressRuleText(Tool.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
+  test("the central host is the program's own: Coursier's for sbt and mill, the super POM's for mvn"):
+    assertEquals(centralHost(Program.Sbt), "repo1.maven.org")
+    assertEquals(centralHost(Program.Mill), "repo1.maven.org")
+    assertEquals(centralHost(Program.Mvn), "repo.maven.apache.org")
+    assertEquals(egressRuleText(Program.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
 
   // --------------------------------------------------------------------------
   // Maven
@@ -697,7 +697,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
       Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
       Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
-      Refusal.RuleOutsideBuildGrammar("allow x tunnel"),
+      Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
     )
     for refusal <- cases do
       assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
@@ -712,14 +712,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(mvnUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.m2")))
     assertEquals(mvnUserHome(env("HOME" -> home, "MAVEN_USER_HOME" -> "/opt/m2")), Some(Paths.get("/opt/m2")))
 
-  test("the rule file path is per tool under the frozen boundary directory"):
+  test("the rule file path is per program under the frozen boundary directory"):
     val project = Paths.get("/Users/u/proj")
     assertEquals(
-      buildRulePath(project, Tool.Sbt),
+      programRulePath(project, Program.Sbt),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/rule"),
     )
     assertEquals(
-      buildRulePath(project, Tool.Mill),
+      programRulePath(project, Program.Mill),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/rule"),
     )
 
@@ -729,5 +729,5 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("realPath answers None for an absent path rather than throwing"):
     assertEquals(realPath(Paths.get("/definitely/not/here")), None)
-    val real = realPath(Files.createTempDirectory("build-sandbox"))
+    val real = realPath(Files.createTempDirectory("command-sandbox"))
     assert(real.isDefined)

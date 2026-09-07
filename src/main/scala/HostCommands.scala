@@ -67,7 +67,7 @@ object HostCommands:
    * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
    * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
    * apart; red is a boundary weaker than the default, in force for the session; what the user
-   * chose — a mode, the tools run on host — takes a hue of its own, purple, so it is never read as
+   * chose — a mode, the programs run on host — takes a hue of its own, purple, so it is never read as
    * a severity. A headroom figure is outside the ranking: it is a measurement, and green, orange
    * and red are its scale (Headroom).
    *
@@ -87,7 +87,7 @@ object HostCommands:
     * often pink, its yellow as often olive — so both are the 256-colour cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
-  /** The scale of a headroom figure: green while what the verb is about fits, orange where it is
+  /** The scale of a headroom figure: green while what the action is about fits, orange where it is
     * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and
     * buildMemoryHeadroom each define their own scale). On the figure alone, so the
     * words hold where the escape does not. */
@@ -138,7 +138,7 @@ object HostCommands:
   lazy val colorStdout: Boolean =
     colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
 
-  /** `NO_COLOR` and `TERM=dumb` are what a tool is expected to honour; the launcher adds no
+  /** `NO_COLOR` and `TERM=dumb` are what a program is expected to honour; the launcher adds no
     * variable of its own. */
   def colorAllowed(os: Os, noColor: Option[String], term: Option[String]): Boolean =
     os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
@@ -221,7 +221,7 @@ object HostCommands:
    * outside the project directory. Two different path classes are being
    * kept out, and neither subsumes the other:
    *
-   *   - a relative entry (`.`, `bin`, `../tools`) resolves against the working
+   *   - a relative entry (`.`, `bin`, `../programs`) resolves against the working
    *     directory, so the project supplies the host's podman with nobody having
    *     chosen it — and invoking the returned absolute path forecloses
    *     CreateProcess's implicit current-directory search on Windows for the
@@ -269,7 +269,7 @@ object HostCommands:
    * inherited. Those scripts are `sh -c` text, and on native Linux they
    * inherit the launcher's environment and its working directory — the
    * project directory — so a relative entry in the inherited PATH (`.`,
-   * `bin`, `../tools`) would let the project supply what they run. findOnPath
+   * `bin`, `../programs`) would let the project supply what they run. findOnPath
    * covers the executables the launcher itself invokes; this covers the ones
    * its scripts do.
    *

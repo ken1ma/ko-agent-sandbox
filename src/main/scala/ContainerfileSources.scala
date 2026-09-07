@@ -1,5 +1,5 @@
 // Which images the bundled Containerfiles start from: the remote ones, so the image-producing
-// verbs can refresh them before a build, and the launcher-built ones, which order every cleanup
+// actions can refresh them before a build, and the launcher-built ones, which order every cleanup
 // list. Reading is deliberately narrow: these Containerfiles are this repository's own, so a pattern
 // this does not resolve is a deliberate edit, and refusing it beats approximating it — an
 // approximation would skip a refresh in silence.
@@ -169,7 +169,7 @@ object ContainerfileSources:
               // `--target` stops the build there, and Buildah builds only that stage and what it
               // depends on. Modelling a later one needs the stage graph, so only a first-stage
               // target is read — every one this launcher passes names the first stage, and
-              // anything else stops the verb rather than reading what podman never evaluates.
+              // anything else stops the action rather than reading what podman never evaluates.
               if target.isDefined && stageIndex >= 0 then
                 if stageIndex == 0 && namesStage(target.get) then complete = true
                 else refuse(s"unsupported build target ${target.get}: only the first stage is read")
@@ -215,7 +215,7 @@ object ContainerfileSources:
 
   /**
    * The Containerfile and build arguments one launcher build command hands podman, read back from
-   * the command itself so no Containerfile a verb builds can be left out of the refresh.
+   * the command itself so no Containerfile an action builds can be left out of the refresh.
    */
   private case class BuildSpecification(
     containerfile: String,

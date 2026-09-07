@@ -1,7 +1,7 @@
 // --stats: a read-only report, because a size seen only while resetting is seen too late. The live
 // section is answered first and skipped when the podman machine is stopped — a report starts
 // nothing — and the directory walk is last: a real Coursier cache is millions of inodes, which is
-// why this is a verb and not a line printed at every launch.
+// why this is an action and not a line printed at every launch.
 
 package agentsandbox.launcher
 
@@ -289,7 +289,7 @@ object SandboxStats:
       .mkString("", "\n", "\n")
 
   // -------------------------------------------------------------------------
-  // The verb
+  // The action
   // -------------------------------------------------------------------------
 
   def stats(os: Os): Nothing =

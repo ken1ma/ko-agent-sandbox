@@ -12,9 +12,9 @@ set -eu
 
 usage() { echo "usage: sandbox-run-on-host <sbt|mill|mvn> [args...]" >&2; exit 64; }
 [ "$#" -ge 1 ] || usage
-tool=$1
+program=$1
 shift
-case "$tool" in sbt|mill|mvn) ;; *) usage ;; esac
+case "$program" in sbt|mill|mvn) ;; *) usage ;; esac
 
 # The launcher's broker creates "$dir/req".
 dir=/tmp/ko-agent-sandbox/host-command
@@ -23,7 +23,7 @@ if [ -n "${KO_AGENT_SANDBOX_RUN_ON_HOST:-}" ]; then
   while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
 fi
 [ -p "$dir/req" ] || {
-  echo "sandbox-run-on-host: this session was not launched with --run-on-host=$tool," \
+  echo "sandbox-run-on-host: this session was not launched with --run-on-host=$program," \
     "or the broker has died unexpectedly" >&2
   exit 1
 }
@@ -46,19 +46,19 @@ printf '%s\n' "$pid" > "$dir/req"
 # The broker opens ctl's reading side once it has the handshake; dying before this open leaves a
 # transaction the broker expires on its own deadline, with no command started.
 exec 8> "$dir/ctl.$pid"
-{ printf '%s %s\n' "$tool" "$#"; printf '%s\0' "$PWD" "$@"; } >&8
+{ printf '%s %s\n' "$program" "$#"; printf '%s\0' "$PWD" "$@"; } >&8
 
 # 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell, and holding its ctl or
 # lock descriptor would stall the cancel, or the next command, until the broker ends them.
 cat "$dir/out.$pid" 8>&- 9>&- &
 # The host injects the command's JVM settings through JAVA_TOOL_OPTIONS, because a JVM the command
 # forks inherits the environment and nothing else — its options come from the build definition,
-# and SBT_OPTS or JAVA_OPTS would reach only the JVMs the tool itself starts. Every JVM started
+# and SBT_OPTS or JAVA_OPTS would reach only the JVMs the program itself starts. Every JVM started
 # under it then prints what it picked up, with no flag in HotSpot to stop it: the relay is where
 # that line goes.
 # -a: one NUL byte on stderr would otherwise make grep call the stream binary and print none of it.
 # --line-buffered: grep block-buffers to a pipe, holding the command's stderr back by a bufferful.
-# A line still waits for its newline; nothing here is a tty, so the tools print none unterminated.
+# A line still waits for its newline; nothing here is a tty, so the programs print none unterminated.
 grep -a --line-buffered -v '^Picked up JAVA_TOOL_OPTIONS: ' "$dir/err.$pid" >&2 8>&- 9>&- &
 wait
 # Bounded because with a live broker the exit code follows the drained output within

@@ -56,7 +56,7 @@ Compile / unmanagedResourceDirectories +=
 // The exports open the JDK's internal certificate builder to the proxy sources compiled in below
 // (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the README's
 // native-image command for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
-// a forked test JVM would need sbt's TCP listener to reach it, which the host build sandbox does
+// a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
   "--enable-native-access=ALL-UNNAMED",
@@ -113,7 +113,8 @@ Compile / resourceGenerators += Def.task {
   // exclude the same set from the podman build context. Two known divergences, neither reachable: "project/project" is
   // a substring test here but segment-anchored (**/) there, so a path like myproject/project would be dropped only
   // here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only target, doc and probe,
-  // since no sbt or editor tool creates the directories below inside a Rust crate — a stray .DS_Store there would reach
+  // since no sbt or editor program creates the directories below inside a Rust crate — a stray .DS_Store there
+  // would reach
   // a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the source digest is
   // computed from the bundle, never from a checkout).
   //
