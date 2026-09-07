@@ -351,7 +351,7 @@ object HTTPHelper:
 
     /** The head as the client receives it: status line and end-to-end headers unchanged, but the
       * hop-by-hop headers are this hop's own (they describe the origin↔proxy leg), and this
-      * proxy's answer is always `Connection: close` — a session is one request, and the client
+      * proxy's answer is always `Connection: close` — each connection carries one request, and the client
       * must hear that even when the origin's headers omit it. A client that misses it reuses or
       * pipelines, its next request meets the closed socket's RST, and the RST destroys this
       * response's unread tail in the client's buffer — measured as apt's intermittent
@@ -370,7 +370,7 @@ object HTTPHelper:
 
       builder.toString.getBytes(StandardCharsets.ISO_8859_1)
 
-    /** RFC 9112 §6.3 for the one-request sessions this proxy runs. Mirrors the request side's
+    /** RFC 9112 §6.3 for the connections this proxy closes after one request. Mirrors the request side's
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
       * UntilClose, because this proxy sends `Connection: close` to the origin. */
     def bodyFraming(requestMethod: String): BodyFraming =

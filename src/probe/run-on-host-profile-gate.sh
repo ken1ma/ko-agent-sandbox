@@ -13,7 +13,7 @@
 # negative matrix come from `sbt Test/runMain EmitRunOnHostProfile`; the build rows run through
 # RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile against the
-# wrapper (one server per project). Each wrapper row scavenges, publishes a session, starts the
+# wrapper (one server per project). Each wrapper row scavenges, publishes a command directory, starts the
 # command's own proxy, runs the command under the profile and ends what it started, so the rows measure the
 # lifecycle as well as the profile; there is no warm-up block, and a cold run-on-host cache resolves
 # through the proxy inside the profile, which is the measurement.
@@ -94,10 +94,10 @@ if command -v podman >/dev/null 2>&1
 then provider=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || echo unknown)
     machine "$(podman --version), machine provider: $provider"
 else machine "podman: absent"; fi
-# The guard's fold rule depends on which answer the project's volume gives.
+# The .GIT probe reaches the existing .git only on a case-insensitive volume.
 case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
 : > "$case_probe/a"
-if [ -e "$case_probe/A" ]; then machine "project filesystem: case-folding"
+if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"
 else machine "project filesystem: case-sensitive"; fi
 rm -rf "$case_probe"
 
@@ -115,15 +115,15 @@ emit() { # program
 #
 # The JVM settings travel in JAVA_TOOL_OPTIONS, which the server sbt's client forks inherits; the
 # same -D flags on the command line reach the client alone. XDG_RUNTIME_DIR and
-# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the session temp (RunOnHostPrereqs.
+# SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the command's temporary directory (RunOnHostPrereqs.
 # SessionTmpMaxLength says why its length matters).
 #
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # `env -i`, because the wrapper's environment is a closed set (RunOnHostSandbox.commandEnvironment;
-# run-on-host.md, "The session", has the table) and a row passing on a variable or a PATH entry
-# production withholds would measure nothing. The proxy settings are the one omission: these rows
+# run-on-host.md, "The command's lifetime and environment", has the table). A row passing on a variable
+# or a PATH entry production withholds would measure nothing. The proxy settings are the one omission: these rows
 # run without a proxy, the network rows measuring the denial itself. exec, because with_timeout
 # backgrounds this function and kills $!: without it that pid is a subshell and the timeout kill
 # would orphan the command instead of ending it.
@@ -160,7 +160,7 @@ run_sbt() { # client command...
     sandboxed sbt sbt $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
-# A command through the wrapper: RunOnHost scavenges, publishes a session, starts the command
+# A command through the wrapper: RunOnHost scavenges, publishes a command directory, starts the command
 # proxy, runs the program under the generated profile, ends its server and proxy, and preserves the
 # exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
 # `Command requested network access ...` — which several rows read. $test_cp is captured from emit.
@@ -172,7 +172,7 @@ wrapper() { # program project command...
 }
 deny_project=$project/src/probe/deny-fixture
 ivy_project=$project/src/probe/ivy-fixture
-session_root=/private/tmp/ko-agent-$(id -u)
+command_root=/private/tmp/ko-agent-$(id -u)
 
 # A shell command under a profile, so a row runs exactly what a build's script would.
 sb() { /usr/bin/sandbox-exec -f "$work/gate-$1.sb" /bin/sh -c "$2" >/dev/null 2>"$work/row.err"; }
@@ -277,7 +277,7 @@ profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
 [ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
-# Each profile has its own session temp and run-on-host cache — the fixture is another project, so
+# Each profile has its own command's temporary directory and run-on-host cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
 use_profile() { # program
     . "$work/gate-$1.env"
@@ -293,7 +293,7 @@ use_profile() { # program
     safe_path "the Maven local repository" "$m2_repository"
 }
 for p in $profiles; do
-    echo "$p: $(grep -E '^(session temp|run-on-host cache):' "$work/emit-$p.log" | tr '\n' ' ')"
+    echo "$p: $(grep -E '^(command temporary directory|run-on-host cache):' "$work/emit-$p.log" | tr '\n' ' ')"
 done
 use_profile "$first"
 state_root=${XDG_STATE_HOME:-$HOME/.local/state}/ko-agent-sandbox
@@ -517,7 +517,7 @@ for p in $profiles; do
     expect_denied "$p" "write PROJECT/.git/config" ": >> '$project/.git/config'"
     expect_denied "$p" "create under PROJECT/.git" ": > '$project/.git/$marker'"
     expect_denied "$p" "write PROJECT/sub/nested/.git/hooks/x" ": > '$scratch/sub/nested/.git/hooks/x'"
-    expect_denied "$p" "write PROJECT/.GIT/config (case fold)" ": >> '$scratch/sub/nested/.GIT/config'"
+    expect_denied "$p" "write existing .git/config through .GIT" ": >> '$scratch/sub/nested/.GIT/config'"
     expect_denied "$p" "create PROJECT/.git during the command" "mkdir '$scratch/.git'"
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
@@ -547,10 +547,10 @@ for p in $profiles; do
     echo "allowed writes, under the $p profile"
     expect_allowed "$p" "write run-on-host cache coursier/v1/..." ": > '$cache_v1/$marker'"
     expect_allowed "$p" "write PROJECT/..." ": > '$scratch/ok'"
-    expect_allowed "$p" "write session temporary directory" ": > '$SESSION_TMP/$marker'"
+    expect_allowed "$p" "write command's temporary directory" ": > '$SESSION_TMP/$marker'"
     # The guard is scoped to the project: a build's tests may make throwaway repositories in the
-    # session temp, and this project's own do.
-    expect_allowed "$p" "create .git in the session temporary directory" \
+    # command's temporary directory, and this project's own do.
+    expect_allowed "$p" "create .git in the command's temporary directory" \
         "mkdir -p '$SESSION_TMP/fixture/.git' && : > '$SESSION_TMP/fixture/.git/config'"
 
     echo
@@ -594,12 +594,12 @@ else
         "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
 fi
 
-# --- the session lifecycle ----------------------------------------------------------------------
+# --- the command lifecycle ----------------------------------------------------------------------
 
 echo
-echo "the session lifecycle"
-sessions_now() { ls "$session_root" 2>/dev/null | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$'; }
-lifecycle_rows="two concurrent sessions
+echo "the command lifecycle"
+commands_now() { ls "$command_root" 2>/dev/null | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$'; }
+lifecycle_rows="two concurrent commands
 SIGTERM: the wrapper cleans up behind itself
 SIGKILL mid-command: the running group is ended provably
 SIGKILL: next start condemns and collects
@@ -618,7 +618,7 @@ EOF
 await_client_record() { # victim-pid
     tries=0
     while [ "$tries" -lt 600 ]; do
-        for record in "$session_root"/*/records/client; do
+        for record in "$command_root"/*/records/client; do
             [ -f "$record" ] || continue
             read -r pgid start < "$record" || continue
             [ "$(ps -o ppid= -p "$pgid" 2>/dev/null | tr -d ' ')" = "$1" ] || continue
@@ -641,23 +641,23 @@ if [ "$quick" = 1 ]; then
 elif [ "$program" != all ]; then
     skip_lifecycle "needs both programs"
 else
-    # Concurrency: one sbt and one mill session overlap, each with its own directory and proxy.
+    # Concurrency: one sbt and one mill command overlap, each with its own directory and proxy.
     wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
     wrapper mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
     peak=0; tries=0
     while [ "$tries" -lt 600 ]; do
-        now=$(sessions_now); [ "$now" -gt "$peak" ] && peak=$now
+        now=$(commands_now); [ "$now" -gt "$peak" ] && peak=$now
         kill -0 "$conc_sbt" 2>/dev/null || kill -0 "$conc_mill" 2>/dev/null || break
         tries=$((tries + 1)); sleep 0.5
     done
     wait "$conc_sbt"; conc_a=$?
     wait "$conc_mill"; conc_b=$?
     if [ "$conc_a" -eq 0 ] && [ "$conc_b" -eq 0 ]
-    then report PASS "two concurrent sessions" "both built; peak concurrent session dirs: $peak"
-    else report FAIL "two concurrent sessions" "sbt exit $conc_a, mill exit $conc_b"; fi
+    then report PASS "two concurrent commands" "both built; peak concurrent command directories: $peak"
+    else report FAIL "two concurrent commands" "sbt exit $conc_a, mill exit $conc_b"; fi
 
     # SIGTERM mid-command: the wrapper's shutdown hook — a JVM's `finally` never runs on a signal —
-    # ends the groups and removes the session before the JVM exits (RunOnHostSession).
+    # ends the groups and removes the command's directory before the JVM exits (RunOnHostSession).
     victim_wrapper sigterm.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
@@ -666,10 +666,10 @@ else
     else
         kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
         sleep 1
-        # The victim's own session directory, not a root-wide count: a concurrent legitimate
-        # session is not this row's to judge.
+        # The victim's own directory, not a root-wide count: a concurrent legitimate command
+        # is not this row's to judge.
         victim_session=${client_record%/records/client}
-        if [ ! -d "$victim_session" ] && [ ! -d "$session_root/condemned/${victim_session##*/}" ] \
+        if [ ! -d "$victim_session" ] && [ ! -d "$command_root/condemned/${victim_session##*/}" ] \
             && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ]
         then report PASS "SIGTERM: the wrapper cleans up behind itself"
         else report FAIL "SIGTERM: the wrapper cleans up behind itself" \
@@ -723,7 +723,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             kill -9 "$client_pgid" 2>/dev/null   # the spawn alone: the command is done, the server stays
             sleep 1
             # The recovery run's own command is beside the point (and --version is the cheap one);
-            # its stderr carries the scavenge of the victim's session.
+            # its stderr reports cleanup of the victim's command directory.
             wrapper sbt "$project" --version >"$work/recover.log" 2>&1
             if grep -q 'scavenged' "$work/recover.log"
             then report PASS "SIGKILL: next start condemns and collects" \
@@ -791,9 +791,9 @@ channel_shim() { # log cwd args...
     PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/sandbox-run-on-host" "$@" \
         >"$work/$chan_log" 2>"$work/$chan_log.err"
 }
-channel_settled() { # await the broker between rows: no session, no server, no command proxy
+channel_settled() { # await the broker between rows: no command directory, server or command proxy
     tries=0
-    while { [ "$(sessions_now)" -gt 0 ] || [ -n "$(project_servers)" ] || [ -n "$(stray_proxies)" ]; } \
+    while { [ "$(commands_now)" -gt 0 ] || [ -n "$(project_servers)" ] || [ -n "$(stray_proxies)" ]; } \
         && [ "$tries" -lt 240 ]; do tries=$((tries + 1)); sleep 0.5; done
 }
 if [ "$quick" = 1 ]; then
@@ -850,23 +850,23 @@ EOF
         # is the SIGTERM row's measured teardown.
         channel_shim chan-kill.log "$project" sbt compile & shim=$!
         tries=0
-        while [ "$(sessions_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
-        # The teardown appended the session's logs to the channel log before removing it (appendSessionLogs).
-        if [ "$(sessions_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
+        # Teardown appended the command's logs to the channel log before removing its directory (appendSessionLogs).
+        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
             && [ "$broker_state" = alive ] && grep -q "ended by signal" "$work/channel.log"
         then report PASS "channel: a dead shim ends the running command"
         else report FAIL "channel: a dead shim ends the running command" \
-            "sessions: $(sessions_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state," \
+            "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state," \
             "logs kept: $(grep -c 'ended by signal' "$work/channel.log")"; fi
 
         # The sandbox dies: every exec dies with it, the shim included; the broker ends the command
         # and, with the container gone, itself.
         channel_shim chan-dead.log "$project" sbt compile & shim=$!
         tries=0
-        while [ "$(sessions_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
         echo false > "$work/running"
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         kill_channel_execs
@@ -874,24 +874,24 @@ EOF
         tries=0
         while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
-        if [ "$(sessions_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ]
+        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ]
         then report PASS "channel: a dead sandbox ends the channel and its command"
         else report FAIL "channel: a dead sandbox ends the channel and its command" \
-            "sessions: $(sessions_now), broker $broker_state"; fi
+            "commands: $(commands_now), broker $broker_state"; fi
         rm -rf "$channel_dir"
     fi
 fi
 
-# After every wrapper row: nothing of any session outlives it.
+# After every wrapper row: no process or temporary directory outlives its command.
 leftover=""
 [ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"
 [ -n "$(ivy_servers)" ] && leftover="$leftover ivy-fixture server: $(ivy_servers | tr '\n' ' ')"
 [ -n "$(stray_proxies)" ] && leftover="$leftover proxy: $(stray_proxies | tr '\n' ' ')"
-[ "$(sessions_now)" -gt 0 ] && leftover="$leftover session dirs: $(sessions_now)"
+[ "$(commands_now)" -gt 0 ] && leftover="$leftover command directories: $(commands_now)"
 if [ -z "$leftover" ]
-then report PASS "no proxy or sbt server survives its session"
-else report FAIL "no proxy or sbt server survives its session" "$leftover"; fi
+then report PASS "no proxy or sbt server survives its command"
+else report FAIL "no proxy or sbt server survives its command" "$leftover"; fi
 
 echo
 echo "PASS $pass  FAIL $fail  SKIP $skip"

@@ -48,10 +48,10 @@ emit() {
 # No -Dsbt.server.autostart=false, which sbt 2 cannot honour: its own --no-server
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
-# session temp with everything else.
+# command's temporary directory with everything else.
 # The environment is the command's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
 # run-on-host cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
-# the two socket directories keep sbt inside the session temp.
+# the two socket directories keep sbt inside the command's temporary directory.
 run_command() {
     . "$work/command.env"
     tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"

@@ -211,7 +211,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
     def body(args: String*): String = curl(args*).text
-    assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.readOnly))
+    assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.methodNotGranted))
     assert(body("-X", "POST", "-d", "{}", "https://api.github.com/graphql").contains(RefusalAdvice.graphql))
     assert(
       body("-X", "POST", "-d", "{}", "https://github.com/o/r.git/info/lfs/objects/batch")

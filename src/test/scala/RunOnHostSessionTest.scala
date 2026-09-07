@@ -294,14 +294,14 @@ class RunOnHostSessionTest extends munit.FunSuite:
       Vector(moved),
     )
 
-  test("a portfile naming someone else's socket is not this session's to end"):
+  test("a portfile naming someone else's socket is not this command's to end"):
     val root = freshRoot()
     val (_, _) = deadSessionWithServer(root, _ => Path.of("/somewhere/else/sock"))
     val spoken = ListBuffer[Path]()
     val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
     assertEquals(spoken.toList, Nil)
     val skips = results.flatMap(_(1)).collect { case Collected.ServerSkipped(reason) => reason }
-    assert(skips.exists(_.contains("not this session's")), clue = skips)
+    assert(skips.exists(_.contains("not this command's")), clue = skips)
 
   test("a socket spelled through the session but resolving outside it is never sent a shutdown"):
     val root = freshRoot()

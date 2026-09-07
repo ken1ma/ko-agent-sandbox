@@ -61,7 +61,7 @@ object RefusalAdvice:
 
   val gitFetch = "Clone and fetch are refused here: no git-fetch grant. Ask the user; do not look for another route."
 
-  val noRead = "This host is not readable here: no read grant. Ask the user; do not look for another route."
+  val noRead = "No read grant covers this path. Ask the user; do not look for another route."
 
   val graphql = "GraphQL is a POST. Read through the REST API."
 
@@ -74,9 +74,9 @@ object RefusalAdvice:
 
   val lfsBatch = "LFS batch is refused, and no admitted host serves this forge's LFS content. Ask the user."
 
-  val readOnly = "This host grants no such write here. Do the write on the host."
+  val methodNotGranted = "This HTTP method is not granted here. Ask the user to run the command on the host."
 
-  val requestBody = "A read carries no body. Send the request without one."
+  val bodyFramingHeader = "GET and HEAD must omit Content-Length and Transfer-Encoding here. Remove those headers."
 
   val upgrade = "WebSockets and HTTP/2 upgrades are refused. Use a plain request."
 
@@ -102,6 +102,6 @@ object RefusalAdvice:
     if path.endsWith("/graphql") then graphql
     else if path.endsWith("/info/lfs/objects/batch") then
       if host == "github.com" && admitted(LfsContentHost) then lfsBatchGithub else lfsBatch
-    else readOnly
+    else methodNotGranted
 
 case class BadTls(message: String) extends RuntimeException(message)

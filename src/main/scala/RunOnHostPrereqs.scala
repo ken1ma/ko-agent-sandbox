@@ -85,7 +85,7 @@ object RunOnHostPrereqs:
     case Refusal.WorkingDirectoryOutsideProject(requested) =>
       s"the working directory $requested is not inside the project"
     case Refusal.SessionTmpTooLong(path, max) =>
-      s"the session directory $path is longer than $max characters, sbt's socket path budget"
+      s"the command's temporary directory $path is longer than $max characters, sbt's socket path budget"
     case Refusal.RuleOutsideProgramGrammar(line) =>
       s"'$line' is outside the program's rule grammar — one `$ProgramRuleForm` per line"
 
@@ -144,10 +144,10 @@ object RunOnHostPrereqs:
 
   /**
    * The confined command's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
-   * session temp: sbt 2 writes a content-addressed store under its global base
+   * command's temporary directory: sbt 2 writes a content-addressed store under its global base
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
-   * host, where a build against a session-temporary base would have its own outputs dangle the
-   * moment the session directory is removed. Beside the Coursier cache, it shares that cache's poison
+   * host, where a build against a temporary base would have its own outputs dangle the
+   * moment the command's directory is removed. Beside the Coursier cache, it shares that cache's poison
    * scope (later commands of the same project, themselves sandboxed) and `--reset-run-on-host`'s removal.
    */
   def sbtGlobalOf(cacheRoot: Path, projectId: String): Path =
@@ -564,7 +564,7 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMvnDistributionMissing(distributionUrl, derived))
 
   // ---------------------------------------------------------------------------
-  // The session temporary directory
+  // The command's temporary directory
   // ---------------------------------------------------------------------------
 
   /**

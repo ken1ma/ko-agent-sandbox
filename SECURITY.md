@@ -94,8 +94,8 @@ evidence ("The workspace filter, on the platforms where it is unverified").
 
 Under `--run-on-host` the tree gains a second producer the filter never sees: the host command,
 writing the host tree directly. The Seatbelt profile's deny rows guard the same property there —
-`.git` and `.ko-agent-sandbox` unreachable at any depth, case folded, links included ("Run on
-host", below).
+`.git` and `.ko-agent-sandbox` unreachable at any depth after path resolution, links included,
+with the one gap "Run on host", below, records for a case-insensitive volume.
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own — a security property, not politeness: a change you were not conscious of is one you
@@ -486,7 +486,7 @@ representative reasons:
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
     deny github.com GET /owner/repo read not granted
-    deny github.com GET /owner/repo request body
+    deny github.com GET /owner/repo request body framing header
     deny registry.npmjs.org PUT /lodash PUT not granted
     deny github.com GET /owner/repo Host header evil.example
     deny storage.googleapis.com GET /other-bucket/key path under no line
@@ -548,8 +548,8 @@ the grants of the line it falls under (`doc/egress-proxy.md`, "The rule file"):
 - `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and `POST` to a
   path ending `/git-upload-pack` — the transfer step of `clone` and `fetch`: after discovering
   refs, git sends its wants as a `POST` and the packfile comes back in the response. A download
-  that travels as a `POST`, so a read-only ruleset would still read as "reads allowed" while
-  every `git clone https://…` failed. The discovery is this grant's own request, not `read`'s,
+  that travels as a `POST`, so a ruleset granting only `read` would still say "reads allowed"
+  while every `git clone https://…` failed. The discovery is this grant's own request, not `read`'s,
   so a clone that could not transfer fails at its first request rather than its second
 - `method=POST` on the `github` group's two lines, `/login/device/code` and
   `/login/oauth/access_token`, GitHub's OAuth device flow, which is how Copilot CLI signs in. The
@@ -558,7 +558,7 @@ the grants of the line it falls under (`doc/egress-proxy.md`, "The rule file"):
   code — so it carries no project data. Any session can begin a device login for any GitHub
   OAuth app; none can complete one without a person entering the code in a browser, on a page
   that names the app and its scopes
-- `method=` on a project's own line: the listed write methods at that path, inspected and
+- `method=` on a project's own line: the listed HTTP methods at that path, inspected and
   logged. The defaults have no such line beyond the login pair. `doc/egress-rule-example/
   npm-audit/rule` is the measured case: `POST` to the one audit endpoint the image's npm uses at
   install time — an older npm's endpoint is refused and logged, non-fatally — off by default
@@ -595,7 +595,7 @@ Consequences:
   hosted there stays out of reach.) TODO.md records the download-only
   inspection that would reopen bulk transfer.
 
-The session is one request and its response, then the connection closes. That is what lets the proxy
+Each inspected connection carries one request and its response, then closes. That lets the proxy
 avoid agreeing with the origin server about where a message ends, which is precisely what request
 smuggling exploits: the request body is framed once and forwarded, the proxy then stops reading from
 the client entirely, and `Connection: close` to the origin makes end-of-stream the end of the
@@ -729,15 +729,16 @@ reach from an exact host and adds none, so its worst case is over-blocking. The 
 request path's syntax but cannot know how the origin interprets it: the origin decodes it, and how —
 percent-escapes, `..`, a backslash, an empty segment, letter case — is the one fact a proxy cannot
 know. So the matcher is literal by rule, a path is written in canonical form or the launch fails,
-and a request under a narrowed scope is refused for any of those spellings before it is compared;
-the alternative, guessing the origin's canonicalization, is the bypass class. Under the root a
-request has the host's least grants and gains nothing by any decoding, which is why a read there is
-exempt and a write is not: a `method=` grant at the root opens no spelling the origin decodes. The
-cost is a path the origin would have accepted and this rule refuses, and a path only spellable
-encoded — a space, a non-ASCII name — that cannot be narrowed at all. A path in the wrong case fails
-closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where they are two
-buckets, alike. A redirect is the client's to follow: a same-host redirect out of the tree arrives
-as a fresh request, refused and logged like any other, and the proxy follows nothing itself. What a
+and the checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule
+file"). The proxy does not try to reproduce the origin's path handling. Under the root a request
+has the host's least grants and gains nothing by decoding, so `GET` and `HEAD` are exempt from the
+path-spelling checks there. The other supported methods still refuse percent-encoding and dot
+segments at the root. The cost is a path the origin would have accepted and this rule refuses,
+and a path only spellable encoded — a space, a non-ASCII name — that cannot be narrowed at all.
+A path in the wrong case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and
+on GCS, where they are two buckets, alike. A redirect is the client's to follow: a same-host
+redirect out of the tree arrives as a fresh request, refused and logged like any other, and the
+proxy follows nothing itself. What a
 path bounds is which tenant of a shared host can be reached; it does not bound the message
 ("Exfiltration through an allowed host", above), and it attenuates no credential. The catalog forges
 stay whole by default, since reading public repositories is what the agents are for; a project that
@@ -861,27 +862,28 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   command's exit code. No host listener, no port, and nothing runs that the host did not start
   (`RunOnHostChannel`, the image's `sandbox-run-on-host` shim).
 - **The profile is the boundary; the request is not.** A request names a program, a working
-  directory and arguments. The program must be one the launch named. The working directory — the one
-  value arriving from inside the sandbox — is canonicalized and proven inside the project before
-  anything derives from it, and never changes the profile's project grant. The arguments are
-  deliberately not vetted: they select code the agent already chooses (`sbt 'set …'` reaches
-  arbitrary Scala without touching `build.sbt`), and the profile confines whatever they select.
-  What a command reaches, in whole: the project read-write minus git control state and
-  `.ko-agent-sandbox` — denied at any depth, case folded, link creation included — its own
-  per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
+  directory and arguments. The program must be one the launch named. The requested working
+  directory is resolved and proven inside the project before anything derives from it, and never
+  changes the profile's project grant. The arguments are deliberately not vetted: they select code
+  the agent already chooses (`sbt 'set …'` reaches arbitrary Scala without touching `build.sbt`),
+  and the profile confines whatever they select.
+  What a command reaches, in whole: the project read-write except `.git` and
+  `.ko-agent-sandbox` — denied at any depth after path resolution, link creation included, with
+  the `.GIT` gap `doc/run-on-host.md` records — its own per-project run-on-host caches, one
+  Coursier-managed JDK read-only, the program's own executable
   and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
   archive cache, the one mill executable the user provisioned, the one Maven the project's wrapper
   unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
-  is unset — a session temporary directory, and loopback to its own egress proxy, which admits the
-  artifact repositories `.ko-agent-sandbox/host-command/<program>/egress/rule` names (`allow
+  is unset — a temporary directory for that command, and loopback to its own egress proxy. The
+  proxy admits repositories named in `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow
   https://<host>/ read` lines only, a closed namespace like its parent) plus Maven Central.
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
 - **The command's environment is a closed set, not the launcher's.** The wrapper builds it whole
-  (`doc/run-on-host.md`, "The session", has the table): its own settings, three pass-throughs,
-  and what `--env` named at launch — the same forward the sandbox gets, the same refusal of
-  `KO_AGENT_SANDBOX_*`. Closed because the build definition is the one place agent-chosen code
-  runs as the user: a secret exported in the shell that launched the session, or the launcher's
+  (`doc/run-on-host.md`, "The command's lifetime and environment", has the table): its own settings,
+  three pass-throughs, and what `--env` named at launch — the same forward the sandbox gets, with
+  the same refusal of `KO_AGENT_SANDBOX_*`. Closed because the build definition runs agent-chosen
+  code as the user: a secret exported in the shell that launched the session, or the launcher's
   own `HTTPS_PROXY` with an upstream proxy's credential ("Egress proxy"), would otherwise be the
   command's to read. The wrapper's settings win over a forward, so a forwarded `HTTPS_PROXY` cannot
   redirect the command past its proxy and a forwarded `JAVA_TOOL_OPTIONS` cannot add to its JVM
@@ -892,11 +894,11 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   (`RunOnHostSandbox.carrierName`), so an explicit value is read by no unconfined helper before
   the command's environment is built. The broker inherits the launcher's environment as the
   launcher's own JVM ran in it, so a name-only forward names a variable already there.
-- **One sbt server per project, and only this session's own.** A thin sbt client attaches to
+- **One sbt server per project, owned by the current command.** A thin sbt client attaches to
   whatever server the project's portfile names and then runs with *that server's* environment —
   its cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live
   server holds the portfile, starts the command's server inside the profile, and ends it, portfile
-  included, before the session ends. The cost is that no warm daemon spans commands: sbt's server
+  included, before the wrapper exits. The cost is that no warm daemon spans commands: sbt's server
   lives for one `sandbox-run-on-host` command, `mill` runs `--no-daemon`, and Maven runs once
   and exits. Under `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server
   first instead of refusing — authority the user typed at launch, and logged into the command's
@@ -909,9 +911,9 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   per-project caches that outlive a session, so an environment placing sbt's server directory
   inside either — and a chain that passes through one on its way somewhere innocent — leaves the
   refusal in place instead.
-- **The payload that matters runs later, as you.** A command that writes `.git/hooks/post-checkout`
-  is perfectly contained and entirely beside the point: the payload would run on your next
-  `git status`, outside every sandbox. That property has two producers — the workspace filter
+- **The payload that matters runs later, as you.** If a command could write an executable
+  `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
+  sandbox. Preventing that write has two enforcement points — the workspace filter
   for writes through `/workspace`, this profile's deny rows for writes by the command — and both are
   named where it is stated ("The host's git executing what the sandbox wrote", above).
 - **Cache poisoning stops at the project.** The command writes its own per-project caches, never
@@ -934,9 +936,9 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
   the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
-  groups, its sbt server and its proxy, appends the session's proxy audit log and sbt's
+  groups, its sbt server and its proxy, appends the command's proxy audit log and sbt's
   server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel and the
-  command"), and removes the session directory. If SIGKILL prevents that teardown, the recorded
+  command"), and removes the command's directory. If SIGKILL prevents that teardown, the recorded
   groups remain, and the next start's scavenger ends them by proof, never by guess.
 
 ## No containers inside the sandbox by default

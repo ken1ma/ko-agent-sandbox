@@ -1,6 +1,6 @@
-// The host command's session lifecycle. A session is one wrapper
-// command; its directory is published by rename so it is never seen half-made, its lock states the
-// wrapper's liveness, and its records own the children's. The filesystem and process operations are injected,
+// The host command's lifecycle. A command session is one wrapper invocation. Its directory is
+// published by rename so it is never seen half-made, its lock marks the wrapper as live, and its
+// records identify the child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
 // The rule the records keep: no process may outlive its record. A spawn becomes its
@@ -136,12 +136,12 @@ object RunOnHostSession:
         )
         if channel.tryLock() == null then
           channel.close()
-          Left(s"could not take the fresh session lock in $entry")
+          Left(s"could not take the new command's lock in $entry")
         else
           val published = root.resolve(entry.getFileName)
           Files.move(entry, published, StandardCopyOption.ATOMIC_MOVE)
           Right(Session(published, channel))
-    catch case ex: IOException => Left(s"publishing a session under $root: ${ex.getMessage}")
+    catch case ex: IOException => Left(s"publishing a command directory under $root: ${ex.getMessage}")
 
   /** Remove this session's directory. The lock is released by deletion's end; nothing here needs
     * the root lock. */
@@ -285,7 +285,7 @@ object RunOnHostSession:
             case Some(socket) if socket.startsWith(original) =>
               containedSocket(condemned.resolve(original.relativize(socket)), condemned) match
                 case None =>
-                  Collected.ServerSkipped("the portfile socket does not resolve inside the session")
+                  Collected.ServerSkipped("the portfile socket does not resolve inside the command directory")
                 case Some(moved) =>
                   shutdown(moved) match
                     case ServerAnswer.ShutDown       => Collected.ServerShutDown(moved)
@@ -293,7 +293,7 @@ object RunOnHostSession:
                       Collected.ServerSkipped("nothing behind the socket; the server is gone")
                     case ServerAnswer.Unanswered(reason) =>
                       Collected.ServerUnanswered(moved, reason)
-            case Some(_) => Collected.ServerSkipped("portfile socket is not this session's")
+            case Some(_) => Collected.ServerSkipped("portfile socket is not this command's")
             case None    => Collected.ServerSkipped("portfile is not a local-socket one")
       catch case ex: IOException => Collected.ServerSkipped(ex.getMessage)
 

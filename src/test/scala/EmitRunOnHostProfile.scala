@@ -50,12 +50,12 @@ object EmitRunOnHostProfile:
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
     Files.writeString(Paths.get(args(0)), profile)
-    // The driver needs the session temp: the profile grants it, and the JVM otherwise writes to the
+    // The driver needs the command's temporary directory: the profile grants it, and the JVM otherwise writes to the
     // per-user temporary directory, which it does not grant.
     Files.writeString(Paths.get(args(0) + ".env"), s"SESSION_TMP=$sessionTmp\n")
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
-    Console.err.println(s"session temp: $sessionTmp")
+    Console.err.println(s"command temporary directory: $sessionTmp")
     Console.err.println(s"run-on-host cache: ${assembled.prereqs.coursierV1}")
     Console.err.println(s"program: $program")
     Console.err.println(s"executable: ${assembled.prereqs.executable}")

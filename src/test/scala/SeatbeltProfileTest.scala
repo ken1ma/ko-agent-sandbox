@@ -1,6 +1,6 @@
 // Unit tests assert the generated SBPL without requiring macOS. The rules under test
-// are the ones src/probe/seatbelt-semantics.sh measured: a non-canonical path grants rather than
-// denies, so it is refused; the guard denies come last, because SBPL is last-match-wins.
+// are the ones src/probe/seatbelt-semantics.sh measured. Callers resolve symlinks; the renderer
+// requires absolute, normalized paths and puts guard denies last, because SBPL is last-match-wins.
 
 package agentsandbox.launcher
 
@@ -44,24 +44,33 @@ class SeatbeltProfileTest extends munit.FunSuite:
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
 
   // --------------------------------------------------------------------------
-  // Canonicality — the rule that fails open
+  // Absolute, normalized paths
   // --------------------------------------------------------------------------
 
-  test("a path that is not canonical is refused, because such a rule would grant"):
+  test("every profile path must be absolute and normalized"):
+    val fields: Seq[(String, Path => ProfileInputs)] = Seq(
+      "project" -> (path => inputs().copy(prereqs = prereqs.copy(project = path))),
+      "JDK" -> (path => inputs().copy(prereqs = prereqs.copy(jdkHome = path))),
+      "executable" -> (path => inputs().copy(prereqs = prereqs.copy(executable = path))),
+      "Coursier cache" -> (path => inputs().copy(prereqs = prereqs.copy(coursierV1 = path))),
+      "temporary directory" -> (path => inputs(tmp = path)),
+      "distribution" -> (path => inputs().copy(distribution = Some(path))),
+      "sbt global base" -> (path => inputs().copy(sbtGlobal = Some(path))),
+      "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
+      "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
+      "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
+      "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
+    )
+    for
+      (name, withPath) <- fields
+      path <- Seq(Paths.get("relative/path"), Paths.get("/private/tmp/../other"))
+    do
+      val reason = render(withPath(path)).left.getOrElse(fail(s"$name accepted $path"))
+      assert(reason.contains("supply an absolute path with no . or .. components"), s"$name: $reason")
+
+  test("symlink resolution belongs to the caller, not the renderer's lexical check"):
     val viaSymlinkSpelling = Paths.get("/tmp/ko-agent-command/abc/tmp")
-    // Not normalized rather than not-real: purity keeps realpath out of here, and `..` is what
-    // a test can express.
-    val dotted = Paths.get("/private/tmp/ko-agent-command/../abc")
-    assert(render(inputs(tmp = dotted)).isLeft)
-    // A merely different-but-canonical spelling still renders; resolving /tmp is the caller's job.
     assert(render(inputs(tmp = viaSymlinkSpelling)).isRight)
-
-  test("a relative path is refused"):
-    assert(render(inputs(tmp = Paths.get("relative/tmp"))).isLeft)
-
-  test("the refusal explains why it grants rather than denies"):
-    val reason = render(inputs(tmp = Paths.get("relative/tmp"))).left.getOrElse("")
-    assert(clue(reason).contains("grant"))
 
   test("the program and the distribution agree: sbt needs it, mill has none"):
     assert(render(inputs().copy(distribution = None)).isLeft)
@@ -73,7 +82,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None)).isLeft)
 
-  test("the sbt global base and Ivy home are granted read-write and, like the Coursier cache, never exec"):
+  test("the sbt global base and Ivy home permit reads and writes without a process-exec grant"):
     val text = rendered()
     for cache <- Seq(sbtGlobal, ivyHome) do
       assert(text.contains(s"""(allow file-read* file-write* (subpath "$cache"))"""), text)
@@ -111,7 +120,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
 
-  test("the guard does not reach the session temp: a test's throwaway .git is under the session temporary directory"):
+  test("the guard does not reach the command's temporary directory: a test's throwaway .git is under it"):
     // The project path is the only path in the guard, and it is a subpath filter, never part of
     // the regex.
     val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
@@ -143,7 +152,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!writable.contains(distribution.toString))
     assert(!writable.contains(jdkHome.toString))
 
-  test("only the project, its caches and the session temp are writable"):
+  test("only the project, its caches and the command's temporary directory are writable"):
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
@@ -154,17 +163,20 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("ivy-home")))
     assert(writable.exists(_.contains("/tmp/")))
 
-  test("writable implies executable for the project and the session temp, never for the cache"):
-    // A child inherits the profile, so running what the command wrote adds no authority, and a
-    // suite's stubs are in the temp directory; the cache holds artifacts nothing runs.
-    val writable = rendered().linesIterator
-      .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
-      .toSeq
-    val executable = writable.filter(_.contains("process-exec*"))
-    assertEquals(executable.size, 2)
-    assert(executable.exists(_.contains(project.toString)))
-    assert(executable.exists(_.contains("/tmp/")))
-    assert(!writable.filter(_.contains("coursier/v1")).exists(_.contains("process-exec*")))
+  test("every program permits direct execution from writable project and temporary paths, but not caches"):
+    for profile <- Seq(inputs(), millInputs, mvnInputs) do
+      val writable = rendered(profile).linesIterator
+        .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
+        .toVector
+      val executable = writable.filter(_.contains("process-exec*"))
+      assertEquals(executable.size, 2, profile.prereqs.program.name)
+      assert(executable.exists(_.contains(s"(subpath \"$project\")")))
+      assert(executable.exists(_.contains(s"(subpath \"${profile.sessionTmp}\")")))
+      val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.m2Repository
+      for cache <- caches do
+        val grants = writable.filter(_.contains(s"(subpath \"$cache\")"))
+        assert(grants.nonEmpty, cache.toString)
+        assert(grants.forall(line => line.contains("file-read*") && !line.contains("process-exec*")), cache.toString)
 
   test("every ancestor of a granted path is a literal metadata read, never a listing"):
     // Measured: a subpath grant covers what is under it, never the directories above, and without
@@ -189,7 +201,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
 
-  test("the proxy is the only TCP destination, and UNIX sockets are confined to the session temp"):
+  test("the proxy is the only TCP destination, and UNIX sockets are confined to the command's temporary directory"):
     val text = rendered()
     val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
