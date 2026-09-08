@@ -207,7 +207,14 @@ object EgressRules:
    * (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of groups.
    */
   val AgentProviders: Map[String, String] =
-    Map("codex" -> "openai", "claude" -> "anthropic", "agy" -> "google", "copilot" -> "github", "opencode" -> "all")
+    Map(
+      "codex" -> "openai",
+      "claude" -> "anthropic",
+      "agy" -> "google",
+      "kiro-cli" -> "aws",
+      "copilot" -> "github",
+      "opencode" -> "all",
+    )
 
   def commandProvider(command: Option[String]): Option[String] =
     command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)

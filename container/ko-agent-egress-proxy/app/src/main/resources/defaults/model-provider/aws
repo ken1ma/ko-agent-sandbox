@@ -1,0 +1,27 @@
+# Kiro CLI. Model traffic and account state go to the hosts of the profile's region, us-east-1
+# or eu-central-1, the two Kiro offers: runtime serves inference, management the profile and
+# subscription state, and the legacy q.<region> host is required beside them. The CLI tab of
+# https://kiro.dev/docs/privacy-and-security/firewalls/ is the list, with the purposes.
+allow https://runtime.us-east-1.kiro.dev/       tunnel
+allow https://management.us-east-1.kiro.dev/    tunnel
+allow https://q.us-east-1.amazonaws.com/        tunnel
+allow https://runtime.eu-central-1.kiro.dev/    tunnel
+allow https://management.eu-central-1.kiro.dev/ tunnel
+allow https://q.eu-central-1.amazonaws.com/     tunnel
+
+# Sign-in, `kiro-cli login --use-device-flow`: the code is printed, the browser approves it, and
+# the tokens are polled for and refreshed at a host by account kind. Google and GitHub accounts
+# use Kiro's own, plus the Cognito federation the same page lists for them; Builder ID and IAM
+# Identity Center use AWS SSO OIDC in the instance's region — Builder ID's is us-east-1. An
+# Identity Center in another region is a project's own
+# `allow https://oidc.<region>.amazonaws.com/ tunnel` line: its sign-in fails with
+# `error: dispatch failure`, and the proxy log names the refused host.
+allow https://prod.us-east-1.auth.desktop.kiro.dev/     tunnel
+allow https://cognito-identity.us-east-1.amazonaws.com/ tunnel
+allow https://oidc.us-east-1.amazonaws.com/             tunnel
+
+# Absent, of the same list: telemetry.<region>.kiro.dev and
+# prod.us-east-1.telemetry.desktop.kiro.dev — telemetry, each attempt a refusal in the log, or
+# none with `kiro-cli settings telemetry.enabled false`; prod.download.cli.kiro.dev and
+# desktop-release.q.us-east-1.amazonaws.com — updates and installer downloads, off in the image
+# (app.disableAutoupdates); cli.kiro.dev — the install script.

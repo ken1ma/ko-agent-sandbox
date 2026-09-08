@@ -406,6 +406,20 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
     assertEquals(
+      lines("aws"),
+      Vector(
+        "allow https://runtime.us-east-1.kiro.dev/ tunnel",
+        "allow https://management.us-east-1.kiro.dev/ tunnel",
+        "allow https://q.us-east-1.amazonaws.com/ tunnel",
+        "allow https://runtime.eu-central-1.kiro.dev/ tunnel",
+        "allow https://management.eu-central-1.kiro.dev/ tunnel",
+        "allow https://q.eu-central-1.amazonaws.com/ tunnel",
+        "allow https://prod.us-east-1.auth.desktop.kiro.dev/ tunnel",
+        "allow https://cognito-identity.us-east-1.amazonaws.com/ tunnel",
+        "allow https://oidc.us-east-1.amazonaws.com/ tunnel",
+      ),
+    )
+    assertEquals(
       lines("github"),
       Vector(
         "allow https://api.githubcopilot.com/ tunnel",

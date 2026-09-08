@@ -20,16 +20,17 @@ and refused where no grant admits it ("The rule file" below; SECURITY.md, "Readi
 able to write", has what each grant opens and what inspection costs and buys).
 
 The launcher-owned defaults are every model-provider group — `anthropic`, `openai`, `google`,
-`github`, each that provider's model, authentication and control-plane endpoints as tunnels; the
-`github` group's forge lines are two login `POST`s and one token read, inspected — plus a curated
-catalog of inspected documentation, package-registry and forge hosts, every line a `read`, the
-three forges `read git-fetch`. The proxy image's `defaults/host` and `defaults/model-provider/*`
-files are the membership, with the reason beside each line.
+`aws`, `github`, each that provider's model, authentication and control-plane endpoints as
+tunnels; the `github` group's forge lines are two login `POST`s and one token read, inspected —
+plus a curated catalog of inspected documentation, package-registry and forge hosts, every line
+a `read`, the three forges `read git-fetch`. The proxy image's `defaults/host` and
+`defaults/model-provider/*` files are the membership, with the reason beside each line.
 
 1. `deny-unless-allowed` (the default) — the defaults, then every line of the project's file.
 1. `deny-unless-model` — only the launched agent's provider groups, then the file's `deny`
    lines: `claude` selects `anthropic`, `codex` selects `openai`, `agy` selects `google`,
-   `copilot` selects `github`; `opencode`, which has no fixed provider, selects every group
+   `kiro-cli` selects `aws`, `copilot` selects `github`; `opencode`, which has no fixed
+   provider, selects every group
    under `defaults/model-provider/`. Only the basename of the directly launched command is
    classified; anything else selects no provider, admits no host, and says so at startup.
 1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
