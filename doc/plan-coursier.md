@@ -217,14 +217,10 @@ type=volume,src=<persistent>,dst=/home/nonroot/persistent-volume
 
 The exact ordering and nested-mount behavior must be proven with the full mount set. The
 small home copy-up includes `.cache/coursier`; podman creates only the nested `v1` mountpoint. The
-copy-up must also provide:
-
-- `.claude -> persistent-volume/claude`;
-- `.codex -> persistent-volume/codex`;
-- `.gemini -> persistent-volume/antigravity`;
-- `.copilot -> persistent-volume/copilot`;
-- the persistent volume seeded by `sandbox-entrypoint`;
-- a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and other session-created paths.
+copy-up must also provide everything the image's home seed does — the agents' links into
+`persistent-volume` and their parents (`container/ko-agent-sandbox/Containerfile`), and the volume
+`sandbox-entrypoint` seeds — plus a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and
+other session-created paths.
 
 Construct the overlay as exactly one `--volume` value ending in `:O`. Do not combine `O` with `U`,
 `z`, `Z`, `ro` or another volume option; podman documents `O` as conflicting with the other volume

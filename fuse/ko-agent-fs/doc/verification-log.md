@@ -133,8 +133,45 @@ left is one FUSE operation including the daemon's own full-path resolution.
 
 `find . -type f` over the same tree at each layer: macOS 0.14 s (0.036 ms per entry), the guest
 over virtiofs 0.98 s (0.25 ms), the container through the filter 8.1 s (2.1 ms) — the filter is
-88 % of the total. The 8,858-entry tree of `TODO.md`'s real-tree table gives 0.24 s / 1.63 s /
+88 % of the total. The 8,858-entry tree of the real-tree table below gives 0.24 s / 1.63 s /
 12.2 s, 87 %.
+
+### Measured: the filter's ratio over a raw bind (macOS Podman machine; undated)
+
+`probe/perf-probe.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs, against
+the same corpus over a plain bind mount. No date, podman or OS version was recorded with this run.
+
+| operation                       | raw bind | filtered | ratio | workload                         |
+| ------------------------------- | -------- | -------- | ----- | -------------------------------- |
+| `find` (readdir only)           | 65 µs    | 317 µs   | 4.9×  | batched per directory            |
+| `find -printf` (readdir + stat) | 147 µs   | 1052 µs  | 7.2×  | ≈ a lookup + getattr round trip  |
+| `rm -rf`                        | 277 µs   | 1391 µs  | 5.0×  |                                  |
+| `cp -r` (create + write)        | 1149 µs  | 5842 µs  | 5.1×  |                                  |
+| `ls -lR` (stat + xattr probes)  | 644 µs   | 7793 µs  | 12.1× | ≈ 4–8 round trips: each          |
+|                                 |          |          |       | *path-based* syscall re-resolves |
+|                                 |          |          |       | every component                  |
+
+The raw bind is fast because the hypervisor answers a guest lookup in ~56 µs and the guest caches
+nothing ("the virtiofs layer itself", above), so what the ratio measures is this layer's cost alone.
+
+### Measured: a real tree (same machine; 2026-08-25)
+
+3,190 tracked files at mean depth 6.6 among 8,858 entries, warm:
+
+| operation                              | per file     | total                               |
+| -------------------------------------- | ------------ | ----------------------------------- |
+| `git status`                           | 4.7 ms       | 18 s (15 s, `--untracked-files=no`) |
+| `lstat` of each tracked file, by path  | 3.6 ms       | 11.6 s                              |
+| the same files through a directory fd  | 1.7 ms       | 5.4 s                               |
+| `find . -type f`                       | 1.4 ms/entry | 12 s                                |
+
+A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
+component adds ~0.6 ms, one more LOOKUP round trip (the depth table above). The two `lstat` rows
+are two workloads — git stats every tracked file by its full path from the root and pays the depth,
+`find` and the other `fts` walkers hold directory fds and pay depth 1 — and the 2.2× between them
+is the whole path-walk term. Claude Code runs `git status` at startup: in that project it answers
+`pwd` in 51 s from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the
+host.
 
 ## What a staged lower can represent
 
@@ -163,6 +200,21 @@ directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 
 Filtered and unfiltered runs agree on every row but the first, so on this stack the filter costs
 nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
+
+## Extended attributes
+
+### Measured: xattrs through the filter (podman machine, virtiofs over APFS; 2026-08-14)
+
+`probe/xattr-probe.py`, the filtered session against the raw bind as control:
+
+| operation   | raw bind (control)   | filtered              |
+| ----------- | -------------------- | --------------------- |
+| `setxattr`  | OK                   | `ENOTSUP`             |
+| `listxattr` | OK                   | `ENOTSUP`             |
+| `cp -a`     | exit 0, xattr kept   | exit 0, xattr dropped |
+
+`cp -a` carries no attribute across and says nothing about it, because coreutils reads `ENOTSUP` as
+"the destination does not do xattrs" rather than as a failure.
 
 ## Mount privilege: what a container grants
 

@@ -149,8 +149,8 @@ and trim.
 
 Every ambiguity is a failed launch with the reason and the line printed:
 
-- a filename in `egress/` other than `rule` — the retired `allowed` and `denied` are named as
-  such, with the pointer here — and in `.ko-agent-sandbox/` itself, an entry other than `egress`,
+- a filename in `egress/` other than `rule` — `allowed` and `denied` are refused by name, with
+  the pointer here — and in `.ko-agent-sandbox/` itself, an entry other than `egress`,
   `agent` or `host-command`;
 - a token outside the grammar, an unknown profile, provider, grant word or method, a `#` inside a
   token, a host that is an IP literal or is not a hostname;

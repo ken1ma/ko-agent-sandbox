@@ -145,13 +145,11 @@ There are two ways to draw that line, and they fail in opposite directions:
 A forgotten operational file breaks a git command (caught by the integration suite); a new
 command-executing file is denied by default.
 
-One caution the `rebase-merge` case taught: the operational set is enumerated by the **execution
-question** ("can a write here cause host git to execute?"), *not* "does git write here". Watching
-real git ("Premises", below) validates the opposite direction — that we do not *over*-freeze the
-agent's own legitimate git — but it must not decide what is *safe* to allow. `rebase-merge`,
-`rebase-apply`, and `sequencer` are exactly where the two diverge: git writes them constantly, yet
-group 1 puts them under control. Where compatibility and security conflict, security wins, and the
-affected commands are listed under blocked operations below.
+The operational set is enumerated by the **execution question** ("can a write here cause host git
+to execute?"), *not* "does git write here": watching real git ("Premises", below) checks only that
+legitimate git is not *over*-frozen, never what is safe to allow. Where the two diverge —
+`rebase-merge`, `rebase-apply`, `sequencer` — security wins, and the affected commands are listed
+under blocked operations below.
 
 
 ## The name rule

@@ -27,9 +27,8 @@ Facts have one binding site:
 
 - `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
 - This document owns service composition, credential sources, refresh and mediated TLS.
-- The egress ruleset owns literal path-prefix matching — SECURITY.md, "Adding hosts, not
-  patterns", and doc/egress-proxy.md, "The rule file", for the grammar. A credential target may
-  refer to that matcher but does not define another one.
+- The egress ruleset owns path matching; a credential target refers to that matcher
+  (`plan-credential-broker-proxy.md`, the `PREFIX` form) and defines no other.
 - The egress ruleset owns reachability. A credential service never adds a host.
 - `SECURITY.md` owns the resulting trust model once implementation ships.
 
@@ -473,8 +472,8 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Delivery order
 
-Each step starts on a use case real sessions of `plan-credential-broker-proxy.md` produced, one
-of "Required use cases" above; TODO.md, "Credential brokering", has the order and its reason.
+Each step starts on one of "Required use cases" above; TODO.md, "Credential brokering", has the
+order and its reason.
 
 1. Implement the service catalog, instance model and effective-authority display with no values,
    source execution, TLS changes or proxy substitution.

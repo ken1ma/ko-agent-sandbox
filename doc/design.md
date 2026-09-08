@@ -4,6 +4,13 @@ What was decided and must not silently drift: the standing decisions, recorded s
 reopened; the properties verification has to separate; the prior art they were reviewed against;
 and the principles to preserve. What remains to do is TODO.md; the security model is SECURITY.md.
 
+Two words recur in every document, with one launch behind both. A *run* is the launch as the host
+sees it: the objects created for it — the two networks and the proxy and sandbox containers, removed
+when it ends; the `run-<suffix>` directory holding the CA leaf, swept by a later launch or a reset;
+and its audit log, written per run and kept. A *session* is the same interval from inside: the
+agent's time in the sandbox container, what it can reach, and what outlives it — agent state kept
+across sessions, concurrent sessions of one project, the authority in force for this session.
+
 ## Standing design decisions
 
 Each was reviewed against broader prior art and relevant issue histories, and says what is fixed
@@ -123,12 +130,10 @@ a URL entry beside a domain, coder/boundary has path rules:
 - OpenBSD pf.conf(5), relayd.conf(5), doas.conf(5) and doas(1); relayd's move to last-matching
   rules, 2014-07-09: https://github.com/openbsd/src/commit/cb8b0e5645
 
-SECURITY.md ("Adding hosts, not patterns") has the reasoning;
-`resolveRuleset` enforces it, and the tests hold the ruleset to a plain ordered evaluator
-over a drawn domain. The failure classes kept out — a
-validator and a runtime reading one configuration differently (one resolver, in the proxy, which
-the launcher's dry run executes), and an allow silently overriding a deny (the last word decides,
-in the order written, and a denial names a host or a subtree whole) — are well attested:
+SECURITY.md ("Adding hosts, not patterns") has the reasoning; `resolveRuleset` enforces it. The
+failure classes kept out — a validator and a runtime reading one configuration differently, and an
+allow silently overriding a deny (the last word decides, in the order written, and a denial names
+a host or a subtree whole) — are well attested:
 
 - https://github.com/docker/sbx-releases/issues/410
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/434
@@ -186,7 +191,8 @@ proxy"), and each of these stays out of it for a reason of its own:
   or a chain-attribution question that no present deployment pays for. A static `Basic` value is the
   only authentication.
 - A credential outside the variable's own userinfo: the launcher never parses it, so it is in no
-  argument, banner, log line or error, and the proxy is its one reader.
+  argument, banner, log line or error, and the proxy is its one reader; a second source would need
+  a second reader.
 
 ### No test hook that pauses a launch mid-flight
 
@@ -204,8 +210,11 @@ reach is an interleaving at some other instant — which a pause hook would not 
 ### No scheduled or self-triggering verification
 
 `--self-test` runs when a person runs it. It does not run on a schedule, report anywhere, or start
-itself after detecting an upgrade. A stale stamp refusing a staged launch is the whole of the
-enforcement, and it acts at the moment the answer matters rather than at some earlier one.
+itself after detecting an upgrade. The enforcement is at the launch that would rely on the answer:
+today the filter's own self-test before every filtered launch (`KoAgentFs.prepareKoAgentFs`), which
+refuses the launch when it fails; for the staged engine, the stamp `plan-staged.md` specifies —
+source, machine, kernel and backing filesystem — whose absence or mismatch refuses a staged launch.
+Both act at the moment the answer matters rather than at some earlier one.
 Revisit if an unattended workflow needs a stale verification detected before its next attempted
 launch, rather than a failed launch being enforcement enough — a CI failure a person reads
 later is still that enforcement.

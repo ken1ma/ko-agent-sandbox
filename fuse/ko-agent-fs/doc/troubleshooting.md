@@ -103,13 +103,13 @@ The bind captured the bare mountpoint directory instead of a live mount — the 
 window between the launcher's mount check and the container start. By construction the directory
 under the mount is empty, so nothing is exposed. Quit and relaunch. A *reap* cannot cause this:
 `lock` above holds the mount check and the unmount apart. On a machine with no `flock` it can,
-and then only the marker's age keeps the two apart.
+narrowed only by the marker being written first.
 
 ## Everything works but slowly
 
 Expected, quantified, and being worked: metadata through the filter costs ~5–12× the raw bind
-(`TODO.md`, "Performance", has the table). If it is much worse than that, suspect the layer below —
-see the next section.
+(`verification-log.md`, "The cost of a path walk", has the tables). If it is much worse than that,
+suspect the layer below — see the next section.
 
 `git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
 appears as a long silence before its first word. git stats every tracked file by its full path and

@@ -121,12 +121,10 @@ explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProx
 fails with the message.
 
 "Removed with the run" is the run directory's lifetime, which `SandboxLifecycle` ("Removing
-what the run created") defines, open edges included: a lost reaper, or a launcher SIGKILLed
-mid-start, leaves the file owner-only on the host and mounted in a proxy nobody reaps until
-`--reset`, since the sweep at the next launch keeps every run whose containers exist. Without a
-binding that edge leaves a proxy and two networks; with one, a value too, at the same price and
-for the reason that comment gives. A lingering value is never reused: the next run has its own
-directory and placeholder.
+what the run created") defines, open edges included: where those edges leave a lingering proxy
+and two networks, a binding leaves a lingering value too — owner-only on the host, gone with
+`--reset` — at the same price and for the reason that comment gives. A lingering value is never
+reused: the next run has its own directory and placeholder.
 
 ## Substitution
 

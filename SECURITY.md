@@ -93,9 +93,8 @@ This is the default, with qualifications under Not defended: a session that sets
 evidence ("The workspace filter, on the platforms where it is unverified").
 
 Under `--run-on-host` the tree gains a second producer the filter never sees: the host command,
-writing the host tree directly. The Seatbelt profile's deny rows guard the same property there —
-`.git` and `.ko-agent-sandbox` unreachable at any depth after path resolution, links included,
-with the one gap "Run on host", below, records for a case-insensitive volume.
+writing the host tree directly. The Seatbelt profile's deny rows guard the same property there
+("Run on host", below).
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own — a security property, not politeness: a change you were not conscious of is one you
@@ -405,8 +404,8 @@ container's lifetime. Every connection has to pass all of this, in order:
    finite host map, matched exactly, no wildcards, no suffixes
 1. DNS is resolved once, and the connection is made to that resolved address, so no second lookup
    can return a different answer
-1. every address the name resolved to must be a public one — a name that answers with a loopback or
-   RFC1918 address is refused outright
+1. every address the name resolved to must be a public one — a name that answers with a loopback,
+   RFC1918, link-local or CGNAT address is refused outright
 1. `200 Connection Established` — the reply that accepts a `CONNECT`, and the last HTTP the proxy
    speaks on this connection; from here on the bytes are the client's TLS, not HTTP
 1. the client's TLS ClientHello is parsed within a fixed byte budget
@@ -659,7 +658,7 @@ above: a JVM consults a `cacerts` keystore and a `net.properties` file. The imag
 and appends the proxy to its `net.properties`; the launcher runs it on the image's own JDK in a
 throwaway container with no network, copies the files out, and mounts them read-only over the
 originals — with `JAVA_HOME` read from the image's own environment, so the launcher never
-hardcodes the arch-dependent Temurin directory and an image without a JDK simply skips the mounts.
+hardcodes the arch-dependent Temurin directory and an image without a JDK skips the mounts.
 Every root the image shipped survives: dropping one would stay invisible until a TLS client reaches
 an origin signed by that public CA, so the mounted store test checks the complete root set. The
 store is prepared at launch rather than baked in, since the per-project CA postdates the image.
@@ -686,9 +685,9 @@ session; what refuses that is the write mode itself — "A project loosening its
 above. A symlinked boundary directory, or anything other than a directory in its place, is refused
 rather than read, so what is read is what was reviewed. The directory is also a closed namespace:
 an entry the launcher does not read — a typo'd `egres/`, notes, a backup — refuses the launch
-instead of remaining as ignored config, the same rule `egress/` applies inside itself: one file,
-`rule`, the retired `allowed` and `denied` refused by name (dot-named editor and OS metadata
-excepted; no configuration will ever be named that way). What remains is "A repository that
+instead of remaining as ignored config, the same rule `egress/` applies inside itself
+(`doc/egress-proxy.md` lists the refusals; dot-named editor and OS metadata are excepted, since
+no configuration will ever be named that way). What remains is "A repository that
 ships wide egress rules", above.
 
 ### Adding hosts, not patterns
@@ -887,10 +886,10 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   own `HTTPS_PROXY` with an upstream proxy's credential ("Egress proxy"), would otherwise be the
   command's to read. The wrapper's settings win over a forward, so a forwarded `HTTPS_PROXY` cannot
   redirect the command past its proxy and a forwarded `JAVA_TOOL_OPTIONS` cannot add to its JVM
-  options; the programs' own overrides — `SBT_OPTS`, `JAVA_OPTS`, `MILL_VERSION` — stay out,
-  forwarded or not, so the command is the one the wrapper granted for. Below the launcher, whose
-  own arguments are what the user typed, forwarded names travel to the broker and each command as
-  arguments and the values through their environments under carrier names
+  options; `MILL_VERSION` is dropped even when forwarded, so the command is the one the wrapper
+  granted for. Below the launcher, whose own arguments are what the user typed, forwarded names
+  travel to the broker and each command as arguments and the values through their environments
+  under carrier names
   (`RunOnHostSandbox.carrierName`), so an explicit value is read by no unconfined helper before
   the command's environment is built. The broker inherits the launcher's environment as the
   launcher's own JVM ran in it, so a name-only forward names a variable already there.
@@ -948,8 +947,7 @@ Deliberate, both directions:
 - **Nested** — a runtime inside the sandbox needs `/dev/net/tun`, `/dev/fuse` and, decisively,
   unmasking `/proc/kcore`, `/proc/keys` and friends, because a nested container cannot mount its own
   `/proc` while those locked overmounts are in place. The unmask would widen the host-kernel attack
-  surface reachable from the same container that runs untrusted repository code, and same-uid
-  nesting cannot run the stock `postgres` image anyway — its entrypoint chowns to a second uid.
+  surface reachable from the same container that runs untrusted repository code.
 - **Sibling** — a service container beside the sandbox would be a new host-level object with its own
   attack surface, reachable laterally from the sandbox and running outside its confinement.
 
@@ -988,5 +986,5 @@ and an image pull is an ordinary logged CONNECT to a registry the ruleset admits
 `egress/rule` to add.
 No runtime is preinstalled; podman arrives through the image's `sandbox-install-podman` — which
 refuses outside this mode, and unpacks under `$HOME` as ordinary unprivileged code granted nothing
-by the image. Its storage dies with the session (no cross-session executable cache), and the next
-launch without the variable restores the masks.
+by the image. Its storage dies with the session, and the next launch without the variable restores
+the masks.

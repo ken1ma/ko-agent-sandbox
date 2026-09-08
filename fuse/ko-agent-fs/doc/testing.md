@@ -23,8 +23,8 @@ since its rustup home is read-only and a session cannot add a target to it.
 
 ## Both suites, anywhere podman runs — `--self-test`
 
-    java -jar ko-agent-sandbox.jar --self-test
-    java -jar ko-agent-sandbox.jar --self-test a_handle_held
+    java -jar target/dist/ko-agent-sandbox.jar --self-test
+    java -jar target/dist/ko-agent-sandbox.jar --self-test a_handle_held
 
 The launcher builds `ko-agent-self-test` — the crate's suites compiled against the pinned
 toolchain, on top of the sandbox image — and runs them in a container with `/dev/fuse` and
