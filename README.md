@@ -61,6 +61,7 @@ The sandbox image preinstalls:
 1. Claude Code (Anthropic)
 1. Codex CLI (OpenAI)
 1. Antigravity CLI (Google)
+1. Kiro CLI (AWS)
 1. Copilot CLI (GitHub)
 1. OpenCode (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
@@ -116,7 +117,7 @@ checkout — [Development](#development).
 
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
-    <command> runs inside the sandbox: claude, codex, agy, copilot, opencode, bash, ...
+    <command> runs inside the sandbox: claude, codex, agy, kiro-cli, copilot, opencode, bash, ...
     The first non-option ends launcher parsing and everything after it is
     forwarded verbatim; -- is an optional escape for a command that could
     look like a launcher option.
@@ -288,6 +289,8 @@ checkout — [Development](#development).
        login, then choose "Sign in with Device Code" in the login UI.
     1. `agy`: sign-in works like `claude`: copy the printed URL and paste in an external browser,
        and paste the code back.
+    1. `kiro-cli`: `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter
+       there; without the flag it fails to open a browser and says so.
     1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
        other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
        web reached through the model provider"). Prompts for paths outside `/workspace` and for
@@ -299,12 +302,13 @@ checkout — [Development](#development).
        method; the browser method's callback never reaches the container. GitHub Copilot prints
        a device code like `copilot login`, and the token it stores has the `read:user` scope,
        not `repo`.
-    1. `claude --resume`, `codex resume`, `agy --continue`, `copilot --continue` and
-       `opencode --continue` work.
+    1. `claude --resume`, `codex resume`, `agy --continue`, `kiro-cli chat --resume`,
+       `copilot --continue` and `opencode --continue` work.
     1. To put permission prompts back for an untrusted repository: `codex` reads your own
        `~/.codex/config.toml` over the image's defaults, so set
        `approval_policy = "on-request"` there; `agy` reads `~/.gemini/antigravity-cli/settings.json`,
-       so set `"toolPermission": "request-review"` there (or via `/config`);
+       so set `"toolPermission": "request-review"` there (or via `/config`); `kiro-cli`'s is the
+       seeded agent `~/.kiro/agents/ko-agent-sandbox.json`, so trim its `allowedTools` there;
        `claude`'s are managed settings the image fixes at the highest precedence, so restoring
        them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
        `COPILOT_ALLOW_ALL=false`; `opencode`'s are managed config the image fixes, like

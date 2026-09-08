@@ -156,6 +156,7 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
     assertEquals(commandProvider(Some("/usr/local/bin/codex")), Some("openai"))
     assertEquals(commandProvider(Some("C:\\programs\\agy")), Some("google"))
+    assertEquals(commandProvider(Some("kiro-cli")), Some("aws"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
     assertEquals(commandProvider(Some("opencode")), Some("all"))
     assertEquals(commandProvider(Some("bash")), None)

@@ -174,6 +174,9 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 # program's directories too. Its data directory holds the logins (auth.json)
 # and the sessions, so its config directory alone would lose them; its
 # cache, ~/.cache/opencode, dies with the session like every cache.
+# kiro-cli is split the same way — settings, agents and steering under
+# ~/.kiro, the logins and the rest of its data under
+# ~/.local/share/kiro-cli — so both of its directories are linked.
 # The volume's content starts as the seed below, which
 # sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
 # not only into a fresh volume, as Podman's copy-up would, but into one an
@@ -189,6 +192,9 @@ RUN set -euxo pipefail; \
         $SANDBOX_VOLUME_SEED/claude \
         $SANDBOX_VOLUME_SEED/codex \
         $SANDBOX_VOLUME_SEED/antigravity \
+        $SANDBOX_VOLUME_SEED/kiro \
+        $SANDBOX_VOLUME_SEED/kiro/config \
+        $SANDBOX_VOLUME_SEED/kiro/data \
         $SANDBOX_VOLUME_SEED/copilot \
         $SANDBOX_VOLUME_SEED/opencode \
         $SANDBOX_VOLUME_SEED/opencode/config \
@@ -204,6 +210,8 @@ RUN set -euxo pipefail; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
     # agy reads its state from ~/.gemini, not a name of its own
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
+    ln -s persistent-volume/kiro/config /home/nonroot/.kiro; \
+    ln -s ../../persistent-volume/kiro/data /home/nonroot/.local/share/kiro-cli; \
     ln -s persistent-volume/copilot /home/nonroot/.copilot; \
     ln -s ../persistent-volume/opencode/config /home/nonroot/.config/opencode; \
     ln -s ../../persistent-volume/opencode/data /home/nonroot/.local/share/opencode; \
@@ -212,6 +220,8 @@ RUN set -euxo pipefail; \
         /home/nonroot/.claude \
         /home/nonroot/.codex \
         /home/nonroot/.gemini \
+        /home/nonroot/.kiro \
+        /home/nonroot/.local/share/kiro-cli \
         /home/nonroot/.copilot \
         /home/nonroot/.config/opencode \
         /home/nonroot/.local/share/opencode \
@@ -404,6 +414,63 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
+# Kiro CLI
+# ---------------------------------------------------------------------------
+#
+# AWS distributes kiro-cli as a zip whose install script copies the binaries
+# to ~/.local/bin and edits the shell profile; the binaries go into the
+# read-only image straight from the zip, checked against the .sha256
+# published beside it. All of bin/: kiro-cli execs kiro-cli-chat for the
+# chat and agent commands. `latest`, as for the others; the glibc build,
+# not the musl one, as for OpenCode. The smoke test gets a throwaway HOME
+# because kiro-cli writes state on every invocation and this RUN is root.
+RUN set -euxo pipefail; \
+    KIRO_ZIP="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-$(uname -m)-linux.zip"; \
+    curl -fsSL "$KIRO_ZIP" -o /tmp/kirocli.zip; \
+    printf '%s  /tmp/kirocli.zip\n' "$(curl -fsSL "$KIRO_ZIP.sha256" | awk '{ print $1 }')" \
+        | sha256sum -c -; \
+    unzip -q /tmp/kirocli.zip -d /tmp; \
+    install -m 0755 /tmp/kirocli/bin/* /usr/local/bin/; \
+    rm -r /tmp/kirocli.zip /tmp/kirocli; \
+    HOME=/tmp/kiro-smoke kiro-cli --version >/dev/null; \
+    rm -rf /tmp/kiro-smoke
+
+# Tool prompts off, the Codex counterpart above. kiro-cli's own switch is
+# the per-launch flag --trust-all-tools, so the default agent is instead a
+# seeded custom agent whose allowedTools names every built-in tool and
+# every tool of every MCP server (allowedTools takes no bare "*"). Like
+# agy's settings.json it is user state in the persistent volume: opting
+# back into prompts is an edit there. No resources entry: a custom agent
+# inherits the global steering, where the instructions link below lands,
+# unless chat.disableInheritingDefaultResources is set.
+# app.disableAutoupdates: the startup update check would only be refused
+# by the proxy, its host being absent from model-provider/aws, and updates
+# arrive by rebuilding like the others.
+RUN set -euxo pipefail; \
+    install -d -o nonroot -g nonroot -m 0700 \
+        $SANDBOX_VOLUME_SEED/kiro/config/settings \
+        $SANDBOX_VOLUME_SEED/kiro/config/agents; \
+    printf '%s\n' \
+        '{' \
+        '  "app.disableAutoupdates": true,' \
+        '  "chat.defaultAgent": "ko-agent-sandbox"' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/kiro/config/settings/cli.json; \
+    printf '%s\n' \
+        '{' \
+        '  "description": "Every tool trusted: the container is the boundary",' \
+        '  "tools": [' \
+        '    "*"' \
+        '  ],' \
+        '  "allowedTools": [' \
+        '    "@builtin",' \
+        '    "@*/*"' \
+        '  ]' \
+        '}' \
+        > $SANDBOX_VOLUME_SEED/kiro/config/agents/ko-agent-sandbox.json
+
+
+# ---------------------------------------------------------------------------
 # Copilot CLI
 # ---------------------------------------------------------------------------
 #
@@ -519,7 +586,8 @@ RUN set -euxo pipefail; \
 #
 #   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
 #           first, project-unexcludable, read-only like managed-settings
-#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; copilot
+#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; kiro-cli
+#           ~/.kiro/steering/AGENTS.md; copilot
 #           ~/.copilot/copilot-instructions.md; opencode
 #           ~/.config/opencode/AGENTS.md — no system scope, so each
 #           resolves through the persistent volume. (Codex's
@@ -548,6 +616,8 @@ RUN set -euxo pipefail; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
+    install -d -o nonroot -g nonroot -m 0700 $SANDBOX_VOLUME_SEED/kiro/config/steering; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/kiro/config/steering/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/opencode/config/AGENTS.md
 

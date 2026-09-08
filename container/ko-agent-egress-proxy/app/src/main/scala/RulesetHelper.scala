@@ -114,7 +114,7 @@ object RulesetHelper:
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
   val DefaultProfile = "deny-unless-allowed"
 
-  val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "github")
+  val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
 
   /** The EGRESS_MODEL_PROVIDER value that selects every group above. The launcher sends it for an
     * agent with no fixed provider, opencode, and this file alone expands it, so the launcher keeps

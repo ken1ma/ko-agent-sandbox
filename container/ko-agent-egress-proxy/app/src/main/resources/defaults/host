@@ -31,6 +31,7 @@ allow https://code.claude.com/        read  # claude
 allow https://developers.openai.com/  read  # codex
 allow https://antigravity.google/     read  # agy
 allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
+allow https://kiro.dev/               read  # kiro-cli
 allow https://docs.github.com/        read  # copilot
 # opencode: the docs, and the model catalog it refreshes hourly, from a copy built into the binary.
 # opencode.ai also serves the Zen model API and the console sign-in, both writes, which `read`
