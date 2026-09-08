@@ -1849,9 +1849,9 @@ object AgentSandboxLauncher:
     workspaceGuard: String,
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
-    // Whether this host could serve --run-on-host at all (macOS): a session without the option
-    // then gets one discovery line, and other platforms hear nothing about a command they can
-    // never have. Constant per machine, so the agents.md stamp needs no part of it.
+    // Whether this host could serve --run-on-host at all (macOS): decides the discovery line
+    // (doc/run-on-host.md, "The channel and the command"). Constant per machine, so the agents.md
+    // stamp needs no part of it.
     hostCommandsAvailable: Boolean = false,
     // Why the session has no git, in the container's words (SandboxProject.noGitInstruction):
     // the agent hears it before its first command.

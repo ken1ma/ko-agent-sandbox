@@ -146,38 +146,17 @@ What the suites cover and how to run them, the self-test image and the privilege
   today, so there is nothing to bypass yet).
 
 
-## Correctness
-
-`setattr` applies times through `utimensat`, so `touch -t` and archive extraction round-trip, with
-`UTIME_OMIT` keeping one of the pair from clobbering the other.
-
-
 ## P1 — Performance (the measurements say the target workload would hurt)
 
 The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
-the sandbox's own. `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
-`probe/perf-probe.py` builds its own corpus, so two runs are comparable
-across machines, and reports per-entry times for the workloads below. Run it once in a
-filtered session and once with the guard off — the ratio between the columns is the answer, and
-the control isolates the filter's cost from the backing share.
+the sandbox's own; `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
+`probe/perf-probe.py` builds its own corpus, so two runs are comparable across machines,
+and reports per-entry times per workload. Run it once in a filtered session and once with the guard
+off — the ratio between the columns is the answer, and the control isolates the filter's cost from
+the backing share. The runs are `verification-log.md`, "The cost of a path walk".
 
-Measured on a macOS Podman machine, 2,101 entries of 4 KB files, container → FUSE → daemon →
-virtiofs, against the same corpus over a plain bind mount:
-
-| operation                       | raw bind | filtered | ratio | workload                         |
-| ------------------------------- | -------- | -------- | ----- | -------------------------------- |
-| `find` (readdir only)           | 65 µs    | 317 µs   | 4.9×  | batched per directory            |
-| `find -printf` (readdir + stat) | 147 µs   | 1052 µs  | 7.2×  | ≈ a lookup + getattr round trip  |
-| `rm -rf`                        | 277 µs   | 1391 µs  | 5.0×  |                                  |
-| `cp -r` (create + write)        | 1149 µs  | 5842 µs  | 5.1×  |                                  |
-| `ls -lR` (stat + xattr probes)  | 644 µs   | 7793 µs  | 12.1× | ≈ 4–8 round trips: each          |
-|                                 |          |          |       | *path-based* syscall re-resolves |
-|                                 |          |          |       | every component                  |
-
-The margin over that measured baseline is **~5–12×**. The raw bind is fast because the hypervisor
-answers a guest lookup in ~56 µs and the guest caches nothing (`verification-log.md`, "the virtiofs
-layer itself"), so what the ratio measures is this layer's cost alone: one FUSE round trip through
-the daemon per path component, which TTL 0 makes unavoidable.
+The margin over the raw bind is **~5–12×**, and it is this layer's cost alone: one FUSE round trip
+through the daemon per path component, which TTL 0 makes unavoidable.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
 (tolerable); walk+stat ~1.8 min; a stat per entry as `ls -lR` does, ~13 min — the `sbt`/`metals`
@@ -185,23 +164,8 @@ stat storm, this project's own stated target workload. The dominant term is per-
 entry TTL 0 means every path component of every syscall is a fresh round trip, which no batching
 downstream can amortize.
 
-Measured on a real tree (2026-08-25, the same macOS machine; 3,190 tracked files at mean depth 6.6
-among 8,858 entries), warm:
-
-| operation                              | per file     | total                               |
-| -------------------------------------- | ------------ | ----------------------------------- |
-| `git status`                           | 4.7 ms       | 18 s (15 s, `--untracked-files=no`) |
-| `lstat` of each tracked file, by path  | 3.6 ms       | 11.6 s                              |
-| the same files through a directory fd  | 1.7 ms       | 5.4 s                               |
-| `find . -type f`                       | 1.4 ms/entry | 12 s                                |
-
-A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
-component adds ~0.6 ms, one more LOOKUP round trip (`verification-log.md`, "The cost of a path
-walk"). git stats every tracked file by its full path
-from the root and pays the depth; `find` and the other `fts` walkers hold directory fds and pay
-depth 1 — the two `lstat` rows are those two workloads, and the 2.2× between them is the whole
-path-walk term. Claude Code runs `git status` at startup: in that project it answers `pwd` in 51 s
-from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the host.
+On the real tree the path-walk term is the 2.2× between the two `lstat` rows (`verification-log.md`,
+"a real tree"), and `git status` — which Claude Code runs at startup — is where a user meets it.
 
 - [ ] **Run it on Linux**, where there is no virtiofs under the filter and the ratio should differ
   in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
@@ -298,8 +262,8 @@ launch gate. The gap:
 
 ## P2 — Launcher and deployment integration
 
-The filter is the **default** enforcement on every platform, ahead of that verification;
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the pin instead. What that leaves:
+The filter is the default on every platform ahead of that verification (`SECURITY.md`, "Not
+defended"), which leaves:
 
 - [ ] `SECURITY.md` has a **Not defended** entry for the filter on the platforms where it is
   unverified — verified on macOS and Windows, reasoned on Linux. When Linux has its row that entry
@@ -329,19 +293,8 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 - **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
   rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
   therefore reads to programs as a filesystem that simply has no extended attributes, and that is an
-  answer every xattr-aware program already knows how to take.
-
-  Measured 2026-08-14 on a podman machine (virtiofs over APFS) with `probe/xattr-probe.py`, the
-  filtered session against the raw bind as control:
-
-  | operation   | raw bind (control)   | filtered              |
-  | ----------- | -------------------- | --------------------- |
-  | `setxattr`  | OK                   | `ENOTSUP`             |
-  | `listxattr` | OK                   | `ENOTSUP`             |
-  | `cp -a`     | exit 0, xattr kept   | exit 0, xattr dropped |
-
-  The cost is cosmetic: `cp -a` carries no attribute across and says nothing about it, because
-  coreutils reads `ENOTSUP` as "the destination does not do xattrs" rather than as a failure.
+  answer every xattr-aware program already knows how to take. The cost is cosmetic: `cp -a` drops
+  them silently (`verification-log.md`, "Extended attributes", has the run and why).
   Implementing xattrs is a compatibility feature to schedule, not a regression to repair; the new
   evidence that reopens this is a program that complains, and the probe is what re-measures then.
 
@@ -364,10 +317,8 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   because their cwd is inside the dead mount. The failure is already total, loud and
   fail-closed, so an outside program would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.
-- **A Unicode normalization library in the policy core.** Not needed (`git-metadata.md`, "The
-  name rule"); pinned by a test.
-- **Mirroring a filesystem's case-fold table.** The set is not statically knowable
-  (`security-research.md`, "Real-filesystem case-folding"). Conservative superset plus the
+- **A Unicode normalization library in the policy core, or a mirrored case-fold table.** Settled
+  by `security-research.md`, "Real-filesystem case-folding": the conservative superset plus the
   empirical test above, instead.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.

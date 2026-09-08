@@ -21,7 +21,8 @@ object SandboxLifecycle:
    * On POSIX the launcher execs podman, so terminal, raw mode and signals
    * are exactly direct podman's — the fullscreen TUIs depend on it, which is
    * why cleanup is a detached reaper rather than code after a wait here.
-   * Windows (no execve) and a failed reaper spawn stay resident instead:
+   * Windows (no execve), a native image whose GraalVM refuses the FFM execvp,
+   * and a failed reaper spawn stay resident instead:
    * wait, forward the exit code, and let the run's own hook remove what it
    * made once podman has exited (armRunCleanup).
    *

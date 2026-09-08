@@ -341,7 +341,7 @@ refusal — a deliberate difference from the egress rule, where the proxy actual
 
 The transport, its framing and its teardown are `RunOnHostChannel.scala`'s header and the shim's
 own comments. One command runs at a time, serial by design rather than as a shortcut: one sbt server
-per project means a concurrent second sbt request would be *refused* where a queued one simply runs
+per project means a concurrent second sbt request would be *refused* where a queued one runs
 next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
 broker open as later work if a program ever makes it worth having. A *foreign* live server — the
 user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
@@ -483,8 +483,8 @@ launcher reads it on the host, and it is reviewed in a pull request like any oth
 never remains as ignored config (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
-No program needs a GitHub release CDN: the only fetch that ever used one is the `mill`
-bootstrap's own executable download, which the user provisions on the host instead.
+No program needs a GitHub release CDN: the one download that would, the `mill` executable, is
+provisioned on the host instead.
 
 Derived paths come from Coursier conventions and environment APIs; advanced overrides
 (`cache-root`, `jvm-root`, `install-root`) are not added until needed.
@@ -507,7 +507,7 @@ Why not the launcher state root: the state root is kind-first (`tls/<id>`, `log/
 proxy's audit log must not be stored beside the CA key. On the host the command runs as the user's
 own uid, which owns that key, so file permissions protect nothing and only the profile denies
 access; a separate root makes its job structural — no path the command is ever granted has a
-sensitive ancestor or sibling. `XDG_CACHE_HOME` is also simply where a reconstructible cache
+sensitive ancestor or sibling. `XDG_CACHE_HOME` is also where a reconstructible cache
 belongs.
 
 The command reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to

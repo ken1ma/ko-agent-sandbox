@@ -129,8 +129,8 @@ Zero cache has a measured price: with entry TTL 0, every path component of every
 fresh LOOKUP round trip.
 
 Performance is recovered only by means that keep every answer fresh — batching, parallelism and a
-shorter per-op path, never a cache; `TODO.md`, "Performance", has the measurements and the open
-rows. In place:
+shorter per-op path, never a cache; `verification-log.md` ("The cost of a path walk") has the
+measurements and `TODO.md`, "Performance", the open rows. In place:
 
 - **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
 - **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
@@ -163,7 +163,8 @@ Reach includes concurrency: a project has **one** daemon and one mount, and ever
 project — concurrent ones included — binds the same mountpoint. The sessions share what a raw bind
 would give them — the same files, live, racing like any two processes on one directory — and one
 process a raw bind has not: the daemon, whose death turns `/workspace` into `ENOTCONN` for all of
-that project's sessions at once, fail-closed for each of them.
+that project's sessions at once, fail-closed for each of them. When the project's last session
+ends, the daemon unmounts and exits.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no
