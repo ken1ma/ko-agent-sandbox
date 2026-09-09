@@ -51,7 +51,8 @@ object EgressRules:
   val MetadataPrefixes: Vector[String] = Vector("ruleset summary:", "widening lines (")
 
   /** The dry run's text up to its first metadata line — the ruleset alone — for the consumers that
-    * hold nothing else: the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_RULESET`. */
+    * hold nothing else: the agent's "What this session may do" section and
+    * `KO_AGENT_SANDBOX_EGRESS_RULESET`. */
   def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
@@ -260,7 +261,7 @@ object EgressRules:
   def transportLineOf(log: String): Option[String] =
     log.linesIterator.map(_.dropWhile(_ != ' ').drop(1)).find(_.startsWith("egress transport: "))
 
-  /** The --env arguments passing the authority selection and rule files to the proxy — the
+  /** The --env arguments passing the selected profile, provider and rule files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
   def rulesetEnvArgs(
     profile: String,

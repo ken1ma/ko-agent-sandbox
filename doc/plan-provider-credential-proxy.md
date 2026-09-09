@@ -18,7 +18,7 @@ custody, dynamic sources, expiry and refresh, explicit mechanism choice and prov
 whose writable traffic must be TLS-terminated before a header can be mediated.
 
 An existing `--env=NAME@HOST` binding remains a one-run, one-host binding. Provider mediation is a
-separate launch authority; it neither changes that grammar nor turns a stored credential on by
+separate session option; it neither changes that grammar nor turns a stored credential on by
 itself.
 
 ## Document boundary

@@ -62,9 +62,9 @@ object HostCommands:
    * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
    * `deny-unless-allowed` — so the banner, `--egress-effective` and the rule file read and grep
    * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
-   * severity label, a boundary weaker than the default, or the mode an authority line states, and
-   * colour is what marks those; sbt and mill tint their `[warn]` label and leave the message
-   * alone, and this follows them. The hues rank by consequence, not by convention: a warning and
+   * severity label, a boundary weaker than the default, or the mode the workspace or egress line
+   * states, and colour is what marks those; sbt and mill tint their `[warn]` label and leave the
+   * message alone, and this follows them. The hues rank by consequence, not by convention: a warning and
    * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
    * apart; red is a boundary weaker than the default, in force for the session; what the user
    * chose — a mode, the programs run on host — takes a hue of its own, purple, so it is never read as
@@ -72,7 +72,7 @@ object HostCommands:
    * and red are its scale (Headroom).
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
-   * pasted transcript, and — for the two authority lines — from the instructions the agent is
+   * pasted transcript, and — for the workspace and egress lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
   def caution(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)

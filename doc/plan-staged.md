@@ -1,6 +1,6 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
-The remaining increments of the workspace-authority work. No distributable build may make launches
+The remaining increments of the workspace-mode work. No distributable build may make launches
 with no `--write` option read-only before the staged workflow is usable.
 
 ## Staged mode
@@ -100,7 +100,8 @@ distinct reserved resource-name pattern that neither reset action matches; tests
 preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
 recovery transition is active; it never tears down a stage underneath its control process.
 
-The startup banner gains the stage's state, in the format the implemented authorities already use:
+The startup banner gains the stage's state, in the format the workspace mode and the egress profile
+already use:
 
 ```text
 workspace: STAGED; 17 paths, 42K; 3 attached sessions

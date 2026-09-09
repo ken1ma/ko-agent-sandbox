@@ -332,9 +332,9 @@ not come back merely because the launching shell exported it.
 than a shim shadowing `sbt` on `PATH`: where each command ran is then visible in the transcript
 the user reads. It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails*
 in the sandbox and teaches the agent to look for the prefixed name, while `sbt test` in the
-container *succeeds*, slower, and nothing prompts a reconsideration. So the authority section
-states the instruction, and only where it can be true: the launcher knows the platform, so a
-macOS session launched without the option gets one discovery line, and Linux and Windows
+container *succeeds*, slower, and nothing prompts a reconsideration. So the "What this session may
+do" section states the instruction, and only where it can be true: the launcher knows the platform,
+so a macOS session launched without the option gets one discovery line, and Linux and Windows
 sessions hear nothing about a command they can never have. That makes the host command a norm
 rather than an enforcement: an agent that ignores the instruction gets a slower build, not a
 refusal — a deliberate difference from the egress rule, where the proxy actually refuses.

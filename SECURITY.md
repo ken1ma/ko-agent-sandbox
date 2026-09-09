@@ -775,7 +775,7 @@ The ruleset names destinations, and the grants name operations — reading, plus
 capabilities. Deliberate: public
 reading is meant to be broad — discovering and reading arbitrary public repositories is much of what
 the agents are for — and the launcher passes in no credential whose authority a finer grant would
-attenuate ("Credential theft", above). The one exception is a credential an agent stores itself:
+narrow ("Credential theft", above). The one exception is a credential an agent stores itself:
 Copilot's `repo`-scope token ("The web reached through the model provider", above), which a
 per-repository grant would narrow to the repositories a project names. What bounds it today is the
 treatment, not a grant: every inspected host refuses writes, so through them the excess authority
@@ -900,8 +900,8 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   included, before the wrapper exits. The cost is that no warm daemon spans commands: sbt's server
   lives for one `sandbox-run-on-host` command, `mill` runs `--no-daemon`, and Maven runs once
   and exits. Under `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server
-  first instead of refusing — authority the user typed at launch, and logged into the command's
-  transcript. The
+  first instead of refusing. The user authorized this shutdown at launch; the wrapper records it
+  in the command's transcript. The
   shutdown is sent only to the socket the wrapper derives from the project path as sbt derives
   it, never to one the portfile names: the portfile is workspace content, so honouring its
   spelling would let the project aim an unconfined write-and-parse at any socket this uid
@@ -926,10 +926,10 @@ container — and what bounds it is a Seatbelt profile, not the container the co
   overlay with (`plan-coursier.md` reaches the same property for the container by a podman `:O`
   upper).
 - **The command's output names host paths.** Every compiler message containing an absolute path
-  tells the container the project's path on the host. Disclosure, not authority.
+  tells the container the project's path on the host. Knowing the host path grants no access to it.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A
   host command writes `target/` and whatever else the profile's project grant admits. Composition
-  rather than escape — both are authority the user typed — but a reject session meant to
+  rather than escape — the user selected both at launch — but a reject session meant to
   prove the project untouched should not include `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness; an

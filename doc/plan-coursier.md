@@ -86,7 +86,7 @@ this plan.
 
 ## Command-line contract
 
-Treat the option as launch authority because it exposes additional host files. It is repeatable so
+Treat the option as a session option because it exposes additional host files. It is repeatable so
 future reviewed cache kinds do not require a comma-list grammar.
 
 ```text
@@ -107,12 +107,11 @@ future reviewed cache kinds do not require a comma-list grammar.
 - Refuse an absent or unknown kind, an empty directory, a relative path and a duplicate kind.
   Different recognized kinds may repeat the option.
 - Resolve symlinks and aliases to the canonical existing directory before boundary checks and
-  before constructing the podman argument. This follows a path the user explicitly supplied as
-  launch authority, like project-directory canonicalization; it does not follow a
-  repository-controlled symlink while discovering the boundary configuration. Any overlap with the
-  canonical project is refused below.
-- Management actions reject this launch-only option, as they reject launch authority they do not
-  consume.
+  before constructing the podman argument. This follows a path the user supplied at launch, like
+  project-directory canonicalization; it does not follow a repository-controlled symlink while
+  discovering the boundary configuration. Any overlap with the canonical project is refused below.
+- Management actions reject this launch-only option, as they reject the session options they do
+  not read.
 - Once the sandbox command starts, a token with the same spelling is passed to that command rather
   than parsed by the launcher.
 - Do not accept `src:dst` or any caller-selected container destination. podman's volume shorthand

@@ -108,7 +108,7 @@ object RulesetHelper:
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
 
-  /** The authority profiles, weakest-to-widest; deny-unless-allowed is what an unset
+  /** The egress profiles, weakest-to-widest; deny-unless-allowed is what an unset
     * EGRESS_PROFILE means — the launcher-owned defaults, every line inspected or a model
     * provider's own endpoints, so the default is useful without opening the open internet. */
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
@@ -706,9 +706,10 @@ object RulesetHelper:
   /**
    * The ruleset, one line each, in the rule grammar so a reader learns one grammar — the
    * deterministic serialization of Ruleset, which the digest names, --print-ruleset prints
-   * and serve() logs identically, the launcher reads the leaf's names off and the agent's authority
-   * section holds. It is a serialization, not a rule file: no `deny defaults` header, no promise
-   * to re-parse to itself, and nothing reads it as input. First the profile line — the grammar
+   * and serve() logs identically, the launcher reads the leaf's names off and the agent's
+   * "What this session may do" section holds. It is a serialization, not a rule file: no
+   * `deny defaults` header, no promise to re-parse to itself, and nothing reads it as input. First
+   * the profile line — the grammar
    * alone cannot say "any public host" or "this provider's group only" — then, under
    * allow-unless-denied, the denial patterns as whole-host deny lines, before the allow lines so
    * that a host surviving beneath one reads as the exception the grammar's order makes it, then

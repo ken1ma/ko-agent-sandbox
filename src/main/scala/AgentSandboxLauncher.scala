@@ -66,7 +66,7 @@
 //
 // podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
-// reopen the boundary. The launcher parses only its authority options and
+// reopen the boundary. The launcher parses only its session options and
 // management actions (parseCommandLine); the first non-option is the command,
 // and from there everything is forwarded verbatim to the container.
 
@@ -1648,7 +1648,7 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
-   * The independent authority options, selected on every launch and never persisted by a
+   * The independent session options, selected on every launch and never persisted by a
    * stage or an agent resume. The writable default is `live` (doc/plan-staged.md has the staged
    * mode and the default flip that follow it); no distributable build may make launches with no
    * `--write` option read-only before the staged workflow is usable.
@@ -1712,7 +1712,7 @@ object AgentSandboxLauncher:
         Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")
       case None => Right(resolved.collect { case Right(arg) => arg })
 
-  /** Parsed launcher invocation: the authority options as given (None when defaulted), then
+  /** Parsed launcher invocation: the session options as given (None when defaulted), then
     * either one management action with its operands, or the command forwarded verbatim. */
   case class ParsedCommandLine(
     write: Option[String],
@@ -1838,14 +1838,14 @@ object AgentSandboxLauncher:
 
   /**
    * The section appended to the image's agent instructions, telling the agent what to do under
-   * this session's authority selection rather than leaving it to be inferred from failing
+   * this session's options rather than leaving it to be inferred from failing
    * commands. Directive by design: it says what to do, never how to probe. It states the *grant*
    * vocabulary and the proxy owns that: an agent told a grant word the proxy does not define writes
    * a rule file that fails the next launch with "which is no grant", which is a confusing way to
    * learn that these instructions drifted. AgentSandboxLauncherTest holds the
    * instruction vocabulary to the proxy source.
    */
-  def authoritySection(
+  def appendedSection(
     writeMode: String,
     workspaceGuard: String,
     resolved: String,
@@ -1882,7 +1882,7 @@ object AgentSandboxLauncher:
            |Raw guard: $RawWorkspaceBoundary. Nested repository control state and non-portable
            |symlinks remain writable.""".stripMargin
       case _ =>
-        throw IllegalArgumentException(s"unknown workspace authority: $writeMode/$workspaceGuard")
+        throw IllegalArgumentException(s"unknown workspace mode: $writeMode/$workspaceGuard")
     val git = noGit.fold("")(cause =>
       s"""
          |
@@ -1943,7 +1943,7 @@ object AgentSandboxLauncher:
           |project hosts at all.""".stripMargin
     s"""
        |
-       |# Authority in force for this session
+       |# What this session may do
        |
        |$workspace$git
        |$runOnHostSection
@@ -1998,9 +1998,9 @@ object AgentSandboxLauncher:
 
     val parsed = parseCommandLine(args.toList).fold(fail(_), identity)
 
-    // The actions that read no authority option refuse one rather than ignoring it: a selection
-    // that configures nothing is the silent-authority failure mode the options must not have.
-    def noAuthorityOptions(action: String): Unit =
+    // The actions that read no session option refuse one rather than ignoring it: a selection
+    // that configures nothing is the silent failure mode the options must not have.
+    def noSessionOptions(action: String): Unit =
       if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty
         || parsed.runOnHost.isDefined
       then fail(s"error: $action reads no launch option; drop --write/--egress/--env/--run-on-host")
@@ -2010,11 +2010,11 @@ object AgentSandboxLauncher:
 
     parsed.action match
       case Some(("--help", _)) =>
-        noAuthorityOptions("--help")
+        noSessionOptions("--help")
         usage()
 
       case Some(("--build", rest)) =>
-        noAuthorityOptions("--build")
+        noSessionOptions("--build")
         if rest.nonEmpty then fail("error: --build takes no further arguments")
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
@@ -2061,7 +2061,7 @@ object AgentSandboxLauncher:
         sys.exit(0)
 
       case Some(("--update", rest)) =>
-        noAuthorityOptions("--update")
+        noSessionOptions("--update")
         if rest.nonEmpty then fail("error: --update takes no further arguments")
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
@@ -2102,7 +2102,7 @@ object AgentSandboxLauncher:
         sys.exit(0)
 
       case Some(("--reset", rest)) =>
-        noAuthorityOptions("--reset")
+        noSessionOptions("--reset")
         val givenIds = projectIdOperands("--reset", rest).fold(fail(_), identity)
         requirePodman(currentOs)
         resetProject(currentOs, givenIds)
@@ -2110,12 +2110,12 @@ object AgentSandboxLauncher:
       // No id form: a gone project's cache goes with `--reset <id>`, and this action exists for the
       // live one, whose directory is there to run from.
       case Some(("--reset-run-on-host", rest)) =>
-        noAuthorityOptions("--reset-run-on-host")
+        noSessionOptions("--reset-run-on-host")
         if rest.nonEmpty then fail("error: --reset-run-on-host takes no further arguments")
         resetRunOnHost(currentOs)
 
       case Some(("--reset-all", rest)) =>
-        noAuthorityOptions("--reset-all")
+        noSessionOptions("--reset-all")
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
         requirePodman(currentOs)
         resetAll(currentOs)
@@ -2123,7 +2123,7 @@ object AgentSandboxLauncher:
       // No requirePodman(): the report is read-only and reads host directories either way; the
       // live section degrades to a note when podman or its machine is not there to answer.
       case Some(("--stats", rest)) =>
-        noAuthorityOptions("--stats")
+        noSessionOptions("--stats")
         if rest.nonEmpty then fail("error: --stats takes no further arguments")
         SandboxStats.stats(currentOs)
 
@@ -2131,11 +2131,11 @@ object AgentSandboxLauncher:
       // logs are documented as readable after every container is gone. proxyLog asks for podman on
       // the branch that needs it.
       case Some(("--proxy-log", rest)) =>
-        noAuthorityOptions("--proxy-log")
+        noSessionOptions("--proxy-log")
         proxyLog(currentOs, rest)
 
       case Some(("--self-test", rest)) =>
-        noAuthorityOptions("--self-test")
+        noSessionOptions("--self-test")
         requirePodman(currentOs, buildMemoryHeadroom)
         selfTest(currentOs, rest)
 
@@ -2401,11 +2401,11 @@ object AgentSandboxLauncher:
 
     val resolvedHostsFile = rulesetCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = rulesetCacheDir.resolve("resolved.warnings")
-    // The stamp covers everything the dry run reads: the image, the authority selection — the
+    // The stamp covers everything the dry run reads: the image, the selected options — the
     // profile and the command-classified provider both determine the resolution — and the files,
     // hashed into its one line because they are multi-part. It is the first line of each cached
     // file rather than a file of its own, and a hit needs both to hold it: concurrent launches of
-    // one project under different authority selections write here without a lock, and a stamp
+    // one project under different session options write here without a lock, and a stamp
     // beside the content can end up describing the other launch's (HostCommands.stampedEntry).
     val rulesetStamp =
       s"$proxyImageId $egressProfile ${provider.getOrElse("none")} " +
@@ -2770,7 +2770,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
             + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
-            + authoritySection(
+            + appendedSection(
               writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),
         )
@@ -2885,9 +2885,9 @@ object AgentSandboxLauncher:
       sandboxNetwork,
     ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    // Both authorities and their relevant state, said every launch — and rules that arrived
-    // with the repository never take effect unseen: the files as written, then the dry run's
-    // counts, the proxy's own answers to exactly what is enforced.
+    // The workspace mode and the egress profile with their relevant state, said every launch —
+    // and rules that arrived with the repository never take effect unseen: the files as written,
+    // then the dry run's counts, the proxy's own answers to exactly what is enforced.
     // The workspace line is also where guard=none is said every session it happens: it is the
     // weaker boundary, and silence about
     // it is how a user forgets which one they are running under — the relabel notice included,
@@ -2962,7 +2962,7 @@ object AgentSandboxLauncher:
       // value is the proxy's own --print-ruleset answer, its ruleset lines as printed and nothing
       // derived from them, so there is no second derivation of the list to drift; the metadata
       // after them — the widening line, about the project's file — stays with the terminal
-      // (rulesetLinesOf), as the authority section does. It grants nothing: an agent can already
+      // (rulesetLinesOf), as the appended section does. It grants nothing: an agent can already
       // enumerate the ruleset by probing, slowly and noisily, and reading a refusal as breakage is
       // the usual outcome of not knowing.
       s"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(rulesetText)}",
