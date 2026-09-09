@@ -95,9 +95,10 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/pids.max")).trim, "2048")
 
-    // A ceiling on every launch, explicit or the machine-derived default, and no swap beyond it.
-    val ceiling = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
-    assertNotEquals(ceiling, "max")
+    // A memory limit on every launch, explicit or the machine-derived default, and no swap beyond
+    // it.
+    val memoryLimit = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
+    assertNotEquals(memoryLimit, "max")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/memory.swap.max")).trim, "0")
 
   test("the network has one interface and no route off it"):

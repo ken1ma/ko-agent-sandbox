@@ -28,19 +28,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
 
-  test("the sandbox gets a memory ceiling below the machine's total, and never swaps"):
-    assertEquals(memoryCeiling(8L << 30, None), 7L << 30)
-    assertEquals(memoryCeiling(2L << 30, None), MinimumCeiling)
-    assertEquals(memoryCeiling(1L << 30, None), MinimumCeiling)
-    assertEquals(memoryCeiling(16L << 30, Some(10L << 30)), 10L << 30)
-    assertEquals(memoryCeiling(16L << 30, Some(2L << 30)), 2L << 30)
-    assertEquals(memoryCeiling(16L << 30, Some(20L << 30)), 15L << 30)
+  test("the sandbox gets a memory limit below the machine's total, and never swaps"):
+    assertEquals(memoryLimit(8L << 30, None), 7L << 30)
+    assertEquals(memoryLimit(2L << 30, None), MinimumMemoryLimit)
+    assertEquals(memoryLimit(1L << 30, None), MinimumMemoryLimit)
+    assertEquals(memoryLimit(16L << 30, Some(10L << 30)), 10L << 30)
+    assertEquals(memoryLimit(16L << 30, Some(2L << 30)), 2L << 30)
+    assertEquals(memoryLimit(16L << 30, Some(20L << 30)), 15L << 30)
     // Nothing available, less than the agent needs, and a machine smaller than the minimum.
-    assertEquals(memoryCeiling(16L << 30, Some(0L)), MinimumCeiling)
-    assertEquals(memoryCeiling(16L << 30, Some(200L << 20)), MinimumCeiling)
-    assertEquals(memoryCeiling(512L << 20, None), 512L << 20)
-    assertEquals(memoryCeiling(512L << 20, Some(0L)), 512L << 20)
-    assert(memoryCeiling(1L, Some(0L)) > 0)
+    assertEquals(memoryLimit(16L << 30, Some(0L)), MinimumMemoryLimit)
+    assertEquals(memoryLimit(16L << 30, Some(200L << 20)), MinimumMemoryLimit)
+    assertEquals(memoryLimit(512L << 20, None), 512L << 20)
+    assertEquals(memoryLimit(512L << 20, Some(0L)), 512L << 20)
+    assert(memoryLimit(1L, Some(0L)) > 0)
     assertEquals(
       memoryArguments(None, Some(8L << 30), None),
       Vector(s"--memory=${7L << 30}", s"--memory-swap=${7L << 30}"),
@@ -97,14 +97,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("the memory figure's scale is the action's: the session floor at a launch, the build gate before a build"):
     import HostCommands.Headroom
-    assertEquals(launchMemoryHeadroom(MinimumCeiling), Headroom.Ample)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling - 1), Headroom.Warned)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2), Headroom.Warned)
-    assertEquals(launchMemoryHeadroom(MinimumCeiling / 2 - 1), Headroom.Short)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit), Headroom.Ample)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit - 1), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit / 2), Headroom.Warned)
+    assertEquals(launchMemoryHeadroom(MinimumMemoryLimit / 2 - 1), Headroom.Short)
     assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold), Headroom.Ample)
     assertEquals(buildMemoryHeadroom(BuildMemoryWarnThreshold - 1), Headroom.Warned)
-    assertEquals(buildMemoryHeadroom(MinimumCeiling), Headroom.Warned)
-    assertEquals(buildMemoryHeadroom(MinimumCeiling - 1), Headroom.Short)
+    assertEquals(buildMemoryHeadroom(MinimumMemoryLimit), Headroom.Warned)
+    assertEquals(buildMemoryHeadroom(MinimumMemoryLimit - 1), Headroom.Short)
     // On a terminal the figure alone is tinted, and the label and state stay plain.
     assertEquals(
       machineMemoryLine(Os.Linux, Some(8L << 30), Some(2L << 30), color = true),
@@ -993,8 +993,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
   test("the bundled build context includes every Containerfile and an INDEX"):
-    // The resourceGenerators task in build.sbt put these in the jar; this pins that the launcher can find what --build
-    // unpacks.
+    // The resourceGenerators task in build.sbt put these in the jar; this checks that the launcher
+    // can find what --build unpacks.
     val index = BundledBuildContext.resource("INDEX").linesIterator.filter(_.nonEmpty).toVector
     Vector(
       "debian-temurin/Containerfile",
@@ -1140,11 +1140,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(filtered.contains("at any depth"), filtered)
     assert(filtered.contains("symlink targets"), filtered)
     val raw = appendedSection("live", "none", resolution)
-    assert(raw.contains("raw writable bind"), raw)
+    assert(raw.contains("direct writable bind mount"), raw)
     assert(raw.contains(KoAgentFs.RawWorkspaceBoundary), raw)
-    assert(raw.contains("Nested repository control state"), raw)
-    assert(raw.contains("non-portable"), raw)
-    assert(raw.contains("symlinks remain writable"), raw)
+    assert(raw.contains("entries in nested repositories remain writable"), raw)
+    assert(raw.contains("Symlinks can have absolute targets"), raw)
+    assert(raw.contains("targets that resolve outside the project on the host"), raw)
     // Both name the relaunch path for a host the ruleset does not admit.
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)

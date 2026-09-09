@@ -90,7 +90,11 @@ fn the_everyday_commands_work_on_a_host_repository() {
     );
 
     let log = succeeds("git log", git_in(&workspace, &["log", "--oneline"]));
-    assert_eq!(log.lines().count(), 3, "the commit is not in the log:\n{log}");
+    assert_eq!(
+        log.lines().count(),
+        3,
+        "the commit is not in the log:\n{log}"
+    );
 
     // The backing tree is the same tree.
     let host_log = succeeds(
@@ -234,9 +238,9 @@ fn super_with_nested_submodule(backing: &Path) {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_submodule_in_a_subdirectory_works_like_any_other() {
     // A submodule's name defaults to its path, so `libs/foo` puts the gitdir at
-    // `.git/modules/libs/foo`. Reading it never needed anything — the filter gates no read — so what
-    // this pins is the writing: the operational state of a nested-name submodule must be as writable
-    // as a top-level one's, or every ordinary command in it fails on `index`.
+    // `.git/modules/libs/foo`. Reading it never needed anything — the filter gates no read — so
+    // what this checks is the writing: the operational state of a nested-name submodule must be as
+    // writable as a top-level one's, or every ordinary command in it fails on `index`.
     let mount = TestMount::new(super_with_nested_submodule);
     let submodule = mount.at("libs/foo");
 
@@ -254,8 +258,8 @@ fn a_submodule_in_a_subdirectory_works_like_any_other() {
         git_in(&submodule, &["switch", "-qc", "feature"]),
     );
 
-    // And the widening stops exactly where it should: that gitdir's own control state is frozen,
-    // and so is the namespace above it.
+    // And the widening stops exactly where it should: that gitdir's own protected entries are
+    // frozen, and so is the namespace above it.
     fails(
         "git config --local in the submodule",
         git_in(

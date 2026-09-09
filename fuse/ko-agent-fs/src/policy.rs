@@ -39,10 +39,10 @@ pub enum Decision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitPathClass {
-    /// Operational state git must write, or project data outside Git control state. Writable.
+    /// Writable Git metadata and ordinary project data.
     Operational,
-    /// Control state — config, hooks, redirections. Immutable to the sandbox.
-    Control,
+    /// Entries the sandbox cannot modify, including Git hooks and launcher configuration.
+    Protected,
 }
 
 /// The cached position of an inode relative to the state this filter protects. Stored per inode by
@@ -54,7 +54,8 @@ pub enum GitContext {
     /// Not inside any gitdir — ordinary writable project data.
     NotGit,
     /// Inside a gitdir; the path components relative to that gitdir's root. An empty vector is the
-    /// gitdir entry itself — the `.git` directory root or a `.git` pointer file — which is control.
+    /// gitdir entry itself — the `.git` directory root or a `.git` pointer file — which is
+    /// protected.
     InGit(Vec<Vec<u8>>),
     /// A directory under `<gitdir>/modules` that is not itself a gitdir root — the namespace a
     /// submodule whose name contains a `/` creates.
@@ -64,7 +65,7 @@ pub enum GitContext {
     /// Names alone cannot say which of the two a directory is — `modules/a/b` is `a/b`'s gitdir if
     /// the submodule is at `a/b`, and `a`'s own subdirectory if it is at `a` — so this is the one
     /// position the core cannot derive, and [`gitdir_root`] is what the FUSE layer swaps in once it
-    /// has looked. Control until then, which is what stops a namespace being written into and so
+    /// has looked. Protected until then, which is what stops a namespace being written into and so
     /// made to *look* like a gitdir.
     ModuleNamespace,
     /// The `.ko-agent-sandbox` entry itself or anything below it. No depth is tracked because
@@ -197,8 +198,8 @@ pub fn child_context(parent: &GitContext, child_name: &[u8]) -> GitContext {
 pub fn classify(context: &GitContext) -> GitPathClass {
     match context {
         GitContext::NotGit => GitPathClass::Operational,
-        GitContext::SandboxConfig => GitPathClass::Control,
-        GitContext::ModuleNamespace => GitPathClass::Control,
+        GitContext::SandboxConfig => GitPathClass::Protected,
+        GitContext::ModuleNamespace => GitPathClass::Protected,
         GitContext::InGit(rel) => {
             let refs: Vec<&[u8]> = rel.iter().map(Vec::as_slice).collect();
             classify_within_gitdir(&refs)
@@ -213,7 +214,7 @@ pub fn classify(context: &GitContext) -> GitPathClass {
 ///
 /// `gitdir_roots` supplies the workspace-relative paths of the submodule gitdirs
 /// ([`GitContext::ModuleNamespace`]). A caller that names none is saying there are none, and every
-/// directory under `modules/` then reads as a namespace — control, the stricter answer.
+/// directory under `modules/` then reads as a namespace — protected, the stricter answer.
 pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClass {
     let mut context = GitContext::root();
     let mut walked: Vec<u8> = Vec::new();
@@ -234,10 +235,10 @@ pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClas
 }
 
 /// Classify a path by its components *relative to the enclosing gitdir root*. Empty `components`
-/// is the gitdir entry itself, which is control (it holds the config and hooks).
+/// is the gitdir entry itself, which is protected (it holds the config and hooks).
 ///
 /// Allowlist / fail-closed: `Operational` only for the enumerated writable set; everything else is
-/// `Control`. A git operational file we failed to enumerate breaks that git command loudly (the
+/// `Protected`. A git operational file we failed to enumerate breaks that git command loudly (the
 /// integration suite catches it); a future git file that executes a command is denied by default.
 ///
 /// This sees a path relative to one gitdir; [`child_context`] re-roots nested gitdirs before a path
@@ -245,14 +246,14 @@ pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClas
 /// root (`gitdir`, `commondir`, `config.worktree`) are covered below.
 pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     let first = match components.first() {
-        None => return GitPathClass::Control,
+        None => return GitPathClass::Protected,
         Some(component) => *component,
     };
 
     match first {
-        b"config" | b"config.worktree" => return GitPathClass::Control,
-        b"hooks" => return GitPathClass::Control,
-        b"commondir" | b"gitdir" => return GitPathClass::Control,
+        b"config" | b"config.worktree" => return GitPathClass::Protected,
+        b"hooks" => return GitPathClass::Protected,
+        b"commondir" | b"gitdir" => return GitPathClass::Protected,
         _ => {}
     }
 
@@ -267,7 +268,7 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     // Deliberately NOT operational, though git writes them: `rebase-merge`, `rebase-apply`, and
     // `sequencer` hold the rebase/cherry-pick todo, whose `exec` lines a later host
     // `git rebase --continue` runs — a file whose content git executes, exactly like a hook. They
-    // fall through to Control below, so a rebase/am/sequenced cherry-pick cannot be left in
+    // fall through to Protected below, so a rebase/am/sequenced cherry-pick cannot be left in
     // /workspace for the host to resume. This note marks the spot where they must not be added.
 
     if components.len() == 1 {
@@ -295,14 +296,15 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         }
         // git writes `<name>.lock` beside anything it locks and renames it into place, so a lock
         // inherits its target's class: `HEAD.lock` and `AUTO_MERGE.lock` are operational, while
-        // `config.lock` stays control. Enumerating lockable names by hand instead freezes whichever
-        // one it forgot — `AUTO_MERGE.lock`, breaking `git merge` (`doc/git-metadata.md`, P2).
+        // `config.lock` stays protected. Enumerating lockable names by hand instead freezes
+        // whichever one it forgot — `AUTO_MERGE.lock`, breaking `git merge` (`doc/git-metadata.md`,
+        // P2).
         if let Some(base) = first.strip_suffix(b".lock") {
             return classify_within_gitdir(&[base]);
         }
     }
 
-    GitPathClass::Control
+    GitPathClass::Protected
 }
 
 /// Both the `.git` name rule (a new gitdir the host would discover) and the destination
@@ -311,20 +313,19 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
     if is_dotgit_name(new_name) {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
     }
-    // Named separately from the control-state refusal below, which would also catch it: the deny
-    // log's reason is what a user reads when a legitimate name is refused, and a "control state"
-    // reason would send them looking in `.git` rather than at this rule.
+    // Name the launcher configuration in the refusal so the user checks it rather than Git
+    // metadata.
     if is_sandbox_config_name(new_name) {
         return Decision::Deny(
             "protected-sandbox-config: refusing to create a .ko-agent-sandbox entry",
         );
     }
-    if classify(&child_context(parent_ctx, new_name)) == GitPathClass::Control {
+    if classify(&child_context(parent_ctx, new_name)) == GitPathClass::Protected {
         return Decision::Deny(match parent_ctx {
             GitContext::SandboxConfig => {
                 "protected-sandbox-config: refusing to create inside .ko-agent-sandbox"
             }
-            _ => "protected-git-control: refusing to create control state",
+            _ => "protected-git-control: refusing to create a protected Git entry",
         });
     }
     Decision::Allow
@@ -333,7 +334,7 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
 /// Creation — a rename's destination included — goes through [`authorize_create`] so the name rule
 /// fires.
 pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
-    if classify(ctx) != GitPathClass::Control {
+    if classify(ctx) != GitPathClass::Protected {
         return Decision::Allow;
     }
     Decision::Deny(match (ctx, op) {
@@ -347,10 +348,12 @@ pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
             "protected-sandbox-config: refusing to mutate the launcher's configuration"
         }
         (_, Mutation::Unlink | Mutation::Rmdir) => {
-            "protected-git-control: refusing to remove control state"
+            "protected-git-control: refusing to remove a protected Git entry"
         }
-        (_, Mutation::RenameFrom) => "protected-git-control: refusing to rename control state",
-        (_, _) => "protected-git-control: refusing to mutate control state",
+        (_, Mutation::RenameFrom) => {
+            "protected-git-control: refusing to rename a protected Git entry"
+        }
+        (_, _) => "protected-git-control: refusing to modify a protected Git entry",
     })
 }
 
@@ -483,30 +486,30 @@ mod tests {
     }
 
     #[test]
-    fn the_launcher_configuration_is_control_at_every_depth() {
+    fn the_launcher_configuration_is_protected_at_every_depth() {
         // The second line behind the launcher's read-only mount (`is_sandbox_config_name`). Unlike
         // a gitdir it has no operational half, so depth changes nothing.
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox", &[]),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox/egress", &[]),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox/egress/rule", &[]),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify_relative_path(b"apps/web/.ko-agent-sandbox/egress/rule", &[]),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         // A repository below it is the launcher's own business, not a candidate to re-root into a
         // gitdir with a writable objects/.
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox/.git/objects/ab/cdef", &[]),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         // The name remains writable project data everywhere it is not that name.
         assert_eq!(
@@ -601,7 +604,7 @@ mod tests {
         );
         assert_eq!(
             classify(&GitContext::ModuleNamespace),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert!(matches!(
             authorize_create(&GitContext::ModuleNamespace, b"HEAD"),
@@ -631,8 +634,8 @@ mod tests {
             (b"refs", GitPathClass::Operational),
             (b"HEAD", GitPathClass::Operational),
             (b"index", GitPathClass::Operational),
-            (b"config", GitPathClass::Control),
-            (b"hooks", GitPathClass::Control),
+            (b"config", GitPathClass::Protected),
+            (b"hooks", GitPathClass::Protected),
         ] {
             assert_eq!(
                 classify(&child_context(&foo, name)),
@@ -658,16 +661,16 @@ mod tests {
         );
         assert_eq!(
             classify(&child_context(&foo, b"config")),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&child_context(&foo, b"hooks")),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
     #[test]
-    fn a_worktree_gitdir_re_roots_and_its_redirections_are_control() {
+    fn a_worktree_gitdir_re_roots_and_its_redirections_are_protected() {
         let worktrees = ingit(&[b"worktrees"]);
         let wt = child_context(&worktrees, b"feature"); // .git/worktrees/feature
         assert_eq!(wt, ingit(&[]));
@@ -677,15 +680,15 @@ mod tests {
         );
         assert_eq!(
             classify(&child_context(&wt, b"gitdir")),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&child_context(&wt, b"commondir")),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&child_context(&wt, b"config.worktree")),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
@@ -697,26 +700,26 @@ mod tests {
     }
 
     #[test]
-    fn the_gitdir_entry_and_control_files_are_control() {
-        assert_eq!(classify(&ingit(&[])), GitPathClass::Control);
-        assert_eq!(classify(&ingit(&[b"config"])), GitPathClass::Control);
+    fn the_gitdir_entry_and_protected_files_are_protected() {
+        assert_eq!(classify(&ingit(&[])), GitPathClass::Protected);
+        assert_eq!(classify(&ingit(&[b"config"])), GitPathClass::Protected);
         assert_eq!(
             classify(&ingit(&[b"config.worktree"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
-        assert_eq!(classify(&ingit(&[b"commondir"])), GitPathClass::Control);
+        assert_eq!(classify(&ingit(&[b"commondir"])), GitPathClass::Protected);
     }
 
     #[test]
-    fn hooks_are_control_at_every_depth() {
-        assert_eq!(classify(&ingit(&[b"hooks"])), GitPathClass::Control);
+    fn hooks_are_protected_at_every_depth() {
+        assert_eq!(classify(&ingit(&[b"hooks"])), GitPathClass::Protected);
         assert_eq!(
             classify(&ingit(&[b"hooks", b"pre-commit"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&ingit(&[b"hooks", b"nested", b"x"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
@@ -743,15 +746,15 @@ mod tests {
             classify(&ingit(&[b"shallow.lock"])),
             GitPathClass::Operational
         );
-        // A lock on control state is control, and a lock on an unknown name stays fail-closed.
-        assert_eq!(classify(&ingit(&[b"config.lock"])), GitPathClass::Control);
+        // A protected entry's lock is protected, and a lock on an unknown name stays fail-closed.
+        assert_eq!(classify(&ingit(&[b"config.lock"])), GitPathClass::Protected);
         assert_eq!(
             classify(&ingit(&[b"config.worktree.lock"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&ingit(&[b"unknown-thing.lock"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
@@ -778,34 +781,34 @@ mod tests {
     }
 
     #[test]
-    fn unknown_gitdir_paths_are_control_fail_closed() {
-        assert_eq!(classify(&ingit(&[b"description"])), GitPathClass::Control);
+    fn unknown_gitdir_paths_are_protected_fail_closed() {
+        assert_eq!(classify(&ingit(&[b"description"])), GitPathClass::Protected);
         assert_eq!(
             classify(&ingit(&[b"some-future-exec-file"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
-        assert_eq!(classify(&ingit(&[b"config.lock"])), GitPathClass::Control);
+        assert_eq!(classify(&ingit(&[b"config.lock"])), GitPathClass::Protected);
         assert_eq!(
             classify(&ingit(&[b"HEAD", b"child"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
     #[test]
-    fn rebase_and_sequencer_state_is_control_because_its_todo_can_exec() {
+    fn rebase_and_sequencer_state_is_protected_because_its_todo_can_exec() {
         // Why they are not operational: the "Deliberately NOT operational" note in
-        // `classify_within_gitdir`, at the rule this pins.
+        // `classify_within_gitdir`, at the rule this tests.
         assert_eq!(
             classify(&ingit(&[b"rebase-merge", b"git-rebase-todo"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&ingit(&[b"rebase-apply", b"0001"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&ingit(&[b"sequencer", b"todo"])),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
@@ -844,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_control_state_inside_a_gitdir_is_denied() {
+    fn creating_protected_entries_inside_a_gitdir_is_denied() {
         assert!(matches!(
             authorize_create(&ingit(&[]), b"config"),
             Decision::Deny(_)
@@ -860,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn mutating_control_state_is_denied_for_every_op() {
+    fn mutating_protected_entries_is_denied_for_every_op() {
         // Every variant of Mutation, which is every mutation the FUSE layer routes here — the enum
         // holds exactly that set, precisely so this list is exhaustive rather than aspirational.
         let hooks = ingit(&[b"hooks", b"pre-commit"]);

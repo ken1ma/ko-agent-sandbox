@@ -88,7 +88,7 @@ object TransportHelper:
       val authority = if host.contains(':') then s"[$host]" else host
       s"${if tls then "https" else "http"}://$authority:$port"
 
-    /** Resolved once, before `bind`, and pinned for the run. A private address is fine here —
+    /** Resolved once, before `bind`, and reused throughout the run. A private address is fine here —
       * reaching the upstream proxy is the feature — and so is loopback, which the host-served
       * proxy of a `--run-on-host` build may legitimately name; in the container it is the
       * container's own, and connecting fails there per request, naming the endpoint. */
@@ -205,10 +205,10 @@ object TransportHelper:
    * would: the client's own hello on an opaque host, the inspected connection with the origin's
    * name as SNI otherwise.
    */
-  class UpstreamProxy(val endpoint: UpstreamEndpoint, val pinned: Vector[InetAddress]) extends OriginTransport:
+  class UpstreamProxy(val endpoint: UpstreamEndpoint, val proxyAddresses: Vector[InetAddress]) extends OriginTransport:
 
     val summary = s"egress transport: upstream proxy ${endpoint.spelled} -> " +
-      s"${pinned.map(_.getHostAddress).mkString(" ")} (${endpoint.variable})"
+      s"${proxyAddresses.map(_.getHostAddress).mkString(" ")} (${endpoint.variable})"
 
     def connect(addresses: Vector[InetAddress], port: Int): OriginSocket =
       @tailrec
@@ -239,7 +239,7 @@ object TransportHelper:
     private def tunnelTo(address: InetAddress, port: Int): Either[IOException, Socket] =
       val link =
         val socket =
-          try dial(pinned, endpoint.port)
+          try dial(proxyAddresses, endpoint.port)
           catch case ex: IOException => throw IOException(s"upstream proxy ${endpoint.spelled}: ${ex.getMessage}")
         if !endpoint.tls then socket
         else

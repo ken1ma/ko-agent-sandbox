@@ -1,5 +1,5 @@
 # The curated catalog: what deny-unless-allowed admits on its own, the defaults beside the
-# model-provider groups in model-provider/. Every line is TLS-inspected and grants `read`, GET and
+# model-provider rules in model-provider/. Every line is TLS-inspected and grants `read`, GET and
 # HEAD, plus the words written beside it; SECURITY.md, "Reading without being able to write", has
 # what each grant opens and what the inspection costs and buys.
 #
@@ -35,7 +35,7 @@ allow https://kiro.dev/               read  # kiro-cli
 allow https://docs.github.com/        read  # copilot
 # opencode: the docs, and the model catalog it refreshes hourly, from a copy built into the binary.
 # opencode.ai also serves the Zen model API and the console sign-in, both writes, which `read`
-# refuses; a model-provider group for Zen would tunnel the host, and this line would have to go.
+# refuses; default rules tunneling Zen's host would require removing this inspected grant.
 allow https://opencode.ai/            read
 allow https://models.opencode.ai/     read
 

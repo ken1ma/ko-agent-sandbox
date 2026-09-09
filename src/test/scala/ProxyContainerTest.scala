@@ -41,8 +41,12 @@ class ProxyContainerTest extends munit.FunSuite:
         s"no-new-privileges is not set: ${inspect(proxy, "{{.HostConfig.SecurityOpt}}")}",
       )
       assertEquals(inspect(proxy, "{{.HostConfig.ReadonlyRootfs}}"), "true", "read-only rootfs")
-      assertEquals(inspect(proxy, "{{.HostConfig.Memory}}"), (256L << 20).toString, "memory ceiling")
-      assertEquals(inspect(proxy, "{{.HostConfig.MemorySwap}}"), (256L << 20).toString, "swap ceiling")
+      assertEquals(inspect(proxy, "{{.HostConfig.Memory}}"), (256L << 20).toString, "memory limit")
+      assertEquals(
+        inspect(proxy, "{{.HostConfig.MemorySwap}}"),
+        (256L << 20).toString,
+        "combined memory and swap limit",
+      )
       assertEquals(inspect(proxy, "{{json .HostConfig.Tmpfs}}"), "{}", "explicit tmpfs mounts")
       assert(
         inspect(proxy, "{{json .Config.CreateCommand}}").contains("\"--read-only-tmpfs=false\""),

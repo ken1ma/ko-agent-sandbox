@@ -43,11 +43,11 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   (`git-metadata.md`, "The name rule") refused a legitimate name. Report the exact bytes.
 - `reason=protected-sandbox-config` — a process tried to create or write `.ko-agent-sandbox`, the
   launcher's own configuration. Editing it is the host's job (`SECURITY.md`, "A project loosening
-  its own confinement"); the same reason on a name that is merely *like* it is the fold rule
-  over-reaching, and worth reporting with the exact bytes.
+  its own confinement"); the same reason on a name that is merely *like* it means the name-matching
+  rules refused a legitimate name. Report the exact bytes.
 - `reason=nonportable-target-syntax` on a `symlink` — a program tried to create a link whose target
   is absolute or climbs above the workspace root, neither of which can be trusted to resolve to the
-  same host path (`SECURITY.md`, "A symlink is the highest-risk case"; the rule and its limits are
+  same host path (`SECURITY.md`, "The project directory"; the rule and its limits are
   `fs.rs`, `target_has_portable_syntax`). Give the program a relative target resolving inside the
   workspace, or let it cache inside the project. Programs that link into a store of their own
   generally fall back to copying: sbt turns off linking for the session on the first refusal and
@@ -91,7 +91,7 @@ Every gate prints its reason; the message is the diagnosis.
   machine arrives without it; `--build` re-asks consent). Reproduce by hand:
   `podman machine ssh .local/share/ko-agent-sandbox/ko-agent-fs --self-test`.
 - `refusing to serve ...` naming a path `inside the workspace`, or a `bare repository` — the
-  startup guard (`guard.rs`): a control path — the gitdir, its config, a hook — resolves through
+  startup guard (`guard.rs`): a protected path — the gitdir, its config, a hook — resolves through
   the writable workspace, or the workspace root is itself laid out as a gitdir; the filter cannot
   protect either. The remedy is in the message.
 - `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
@@ -107,9 +107,9 @@ narrowed only by the marker being written first.
 
 ## Everything works but slowly
 
-Expected, quantified, and being worked: metadata through the filter costs ~5–12× the raw bind
-(`verification-log.md`, "The cost of a path walk", has the tables). If it is much worse than that,
-suspect the layer below — see the next section.
+Compare your timings with `verification-log.md`, "The cost of a path walk". The measured metadata
+operations took about 5–12 times as long through the filter as through an unfiltered bind mount.
+If your slowdown is much greater, check the machine as described in the next section.
 
 `git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
 appears as a long silence before its first word. git stats every tracked file by its full path and
@@ -133,9 +133,9 @@ returned `EOF`. Check, in order:
     podman machine ssh 'free -h; df -h /'
     podman machine ssh 'journalctl -k | grep -iE "oom|out of memory" | tail -5'
 
-The sandbox's default memory ceiling and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`) are
+The sandbox's default memory limit and its no-swap rule (README, `KO_AGENT_SANDBOX_MEMORY`) are
 what make sbt die before the VM does, except on a machine the launch already warned was short. With
-more than one session on the machine their ceilings add up past what the VM has, so lower each with
+more than one session on the machine their limits can exceed the VM's memory, so lower each with
 `KO_AGENT_SANDBOX_MEMORY`. Other remedies: raise the machine's memory (`podman machine set --memory
 ...`, machine stopped, your call); keep gigabyte-scale work under `~` in the container, not `/tmp`.
 The entrypoint reads the same `free`/`df` figures at every launch and holds a warning on screen when

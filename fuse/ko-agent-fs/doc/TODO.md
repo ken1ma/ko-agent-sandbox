@@ -18,7 +18,7 @@ only re-running notices a platform default changing underneath a row.
 
 ### The `.git` name rule per backing filesystem
 
-The decisive question is not "what does our fold rule cover" but the property itself:
+The decisive question is not "what do our name-matching rules cover" but the property itself:
 
 > After the sandbox creates a name `N` through the mount, does host `git` — `lstat("<dir>/.git")` on
 > the real backing filesystem — find a repository?
@@ -149,14 +149,14 @@ What the suites cover and how to run them, the self-test image and the privilege
 ## P1 — Performance (the measurements say the target workload would hurt)
 
 The filter enforces the default mode, `--write=live` under `WORKSPACE_GUARD=fuse`, so its cost is
-the sandbox's own; `WORKSPACE_GUARD=none` selects the weaker mount-pin boundary without that cost.
-`probe/perf-probe.py` builds its own corpus, so two runs are comparable across machines,
+the sandbox's own; `WORKSPACE_GUARD=none` selects the weaker read-only bind mount boundary without
+that cost. `probe/perf-probe.py` builds its own corpus, so two runs are comparable across machines,
 and reports per-entry times per workload. Run it once in a filtered session and once with the guard
 off — the ratio between the columns is the answer, and the control isolates the filter's cost from
 the backing share. The runs are `verification-log.md`, "The cost of a path walk".
 
-The margin over the raw bind is **~5–12×**, and it is this layer's cost alone: one FUSE round trip
-through the daemon per path component, which TTL 0 makes unavoidable.
+The margin over the unfiltered bind mount is **~5–12×**, and it is this layer's cost alone: one FUSE
+round trip through the daemon per path component, which TTL 0 makes unavoidable.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~30 s
 (tolerable); walk+stat ~1.8 min; a stat per entry as `ls -lR` does, ~13 min — the `sbt`/`metals`
@@ -178,7 +178,7 @@ On the real tree the path-walk term is the 2.2× between the two `lstat` rows (`
   Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
   This is the only gain available to programs like `find`, which hold directory fds and never pay
   the walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
-  directory-fd cache *across* operations is excluded: it pins the directory, so one the host
+  directory-fd cache *across* operations is excluded: it holds the directory open, so one the host
   replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
   through the stale fd, unbounded in time, which is worse than any TTL.
 - [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help a walk that only

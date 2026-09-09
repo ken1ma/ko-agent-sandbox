@@ -49,7 +49,7 @@ object TLSHelper:
 
     /**
      * `consumed` replays the already-read ClientHello ahead of the socket; `host` is the CONNECT
-     * host, which validateTlsIdentity proved equal to the SNI the client will verify. ALPN pinned
+     * host, which validateTlsIdentity proved equal to the SNI the client will verify. ALPN is restricted
      * to http/1.1: an h2-only client fails the handshake rather than establishing an HTTP/2
      * connection this proxy cannot parse.
      */
@@ -87,7 +87,7 @@ object TLSHelper:
       )
       socket.setSSLParameters(parameters)
 
-      // A stalled handshake would pin this connection's slot; relayInspected widens the timeout once bytes flow, so a
+      // A stalled handshake would hold this connection's slot; relayInspected widens the timeout once bytes flow, so a
       // slow clone is unaffected.
       socket.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
       socket.startHandshake()

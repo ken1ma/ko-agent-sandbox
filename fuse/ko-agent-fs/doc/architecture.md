@@ -159,12 +159,10 @@ the kernel applying ordinary uid/gid/mode checks against the real backing metada
 policy is enforced whoever is asking. Exposure is bounded by the machine running only this
 project's containers.
 
-Reach includes concurrency: a project has **one** daemon and one mount, and every session of that
-project — concurrent ones included — binds the same mountpoint. The sessions share what a raw bind
-would give them — the same files, live, racing like any two processes on one directory — and one
-process a raw bind has not: the daemon, whose death turns `/workspace` into `ENOTCONN` for all of
-that project's sessions at once, fail-closed for each of them. When the project's last session
-ends, the daemon unmounts and exits.
+A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
+write the same files and can overwrite one another's changes. If the daemon dies, `/workspace`
+returns `ENOTCONN` in every attached session, so none can continue accessing the files through the
+mount. When the project's last session ends, the daemon unmounts and exits.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
 layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no

@@ -63,7 +63,7 @@ object RefusalAdvice:
 
   val noRead = "No read grant covers this path. Ask the user; do not look for another route."
 
-  val graphql = "GraphQL is a POST. Read through the REST API."
+  val graphql = "This GraphQL POST is refused. Read through the REST API."
 
   /** Where GitHub serves LFS file contents read-only, one URL per file (SECURITY.md, "Reading
     * without being able to write"). Named in advice only while the ruleset admits it. */
@@ -72,7 +72,7 @@ object RefusalAdvice:
   val lfsBatchGithub =
     s"LFS batch is refused. Read one file from https://$LfsContentHost/media/<owner>/<repo>/<ref>/<path>."
 
-  val lfsBatch = "LFS batch is refused, and no admitted host serves this forge's LFS content. Ask the user."
+  val lfsBatch = "LFS batch is refused. Ask the user to fetch the content on the host."
 
   val methodNotGranted = "This HTTP method is not granted here. Ask the user to run the command on the host."
 

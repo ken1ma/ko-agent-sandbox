@@ -114,7 +114,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
   // --------------------------------------------------------------------------
-  // host-command/, the closed namespace inside the closed namespace
+  // host-command/ and its parent both refuse unrecognized configuration entries
   // --------------------------------------------------------------------------
 
   def projectWith(paths: String*): Path =

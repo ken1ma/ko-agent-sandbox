@@ -183,8 +183,8 @@ Not brokered, for reasons that hold independently of effort:
 
 Additions to SECURITY.md, each at its binding site:
 
-- "Exfiltration through an allowed host": a brokered `--env` value is not in the sandbox; the
-  gap narrows to unbrokered forwards and credentials in the project directory.
+- "Exfiltration through allowed network traffic": a brokered `--env` value is not in the sandbox;
+  the gap narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
   a holder of what the ruleset admits spending. Compromising it compromises both ruleset and

@@ -119,8 +119,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
       "the teardown step must come after this run's own cleanup",
     )
-    // The script text is pinned here; what it does — no job under off, a pid held, a signal delivered, a
-    // tree ended — is the lifecycle tests below.
+    // The script text is checked here; what it does — no job under off, a pid held, a signal
+    // delivered, a tree ended — is the lifecycle tests below.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
     val broker = ReaperScript.indexOf(
       "if [ \"$8\" != off ]; then\n  ( clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +

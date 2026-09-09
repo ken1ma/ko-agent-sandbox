@@ -20,9 +20,9 @@
 //    |
 //    +-- current project -------------------> /workspace
 //    |     (--write selects the mount: live — the default — is the
-//    |      ko-agent-fs mountpoint, RW with git and boundary control
-//    |      state frozen (mountKoAgentFs; under guard=none the
-//    |      .git pins of gitGuardVolumes stand in); reject is a
+//    |      ko-agent-fs mountpoint, RW with Git entries and launcher
+//    |      configuration protected (mountKoAgentFs; under guard=none the
+//    |      .git mounts of gitGuardVolumes stand in); reject is a
 //    |      read-only bind of the raw tree)
 //    |
 //    +-- .ko-agent-sandbox: the egress rules and the project's agent
@@ -38,7 +38,7 @@
 //    |
 //    +-- --run-on-host (macOS only): sandbox-run-on-host relays a command
 //    |      request to a host-side wrapper that runs sbt/mill under a
-//    |      Seatbelt profile — the project (git control state and
+//    |      Seatbelt profile — the project (`.git` and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
 //    |      Coursier JDK, a session directory, and the build's own
 //    |      loopback egress proxy; nothing else (RunOnHostSandbox.scala,
@@ -329,37 +329,37 @@ object AgentSandboxLauncher:
 
   /** Bodies stream independently of their total size. Eight concurrent TLS downloads throttled to
     * 1 MiB/s peaked near 60 MB, while sequential multi-gigabyte transfers remained bounded. Even
-    * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB ceiling
+    * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB limit
     * would retain about 135 MiB for native and workload overhead. */
-  val ProxyMemoryCeiling = "256m"
+  val ProxyMemoryLimit = "256m"
 
   /** `podman info --format '{{.Host.MemTotal}}'`, bytes; None when podman did not answer with one. */
   def memoryTotal(answer: HostCommands.Run): Option[Long] =
     if !answer.ok then None else answer.text.trim.toLongOption.filter(_ > 0)
 
   /**
-   * The sandbox's default memory ceiling: 1 GiB under the total of the machine podman runs on —
+   * The sandbox's default memory limit: 1 GiB under the total of the machine podman runs on —
    * the podman machine VM, or the host on native Linux — which is what podman, the workspace
    * filter and the kernel need to keep answering while the sandbox is at its limit; and no more
    * than the machine had available at launch, where that is known (hostMemoryAvailable), since a
    * native host is already running everything else and a VM that is short is short. What one
-   * ceiling cannot bound is the sum: two sessions on one machine, or a host workload that increases
+   * limit cannot bound is the sum: two sessions on one machine, or a host workload that increases
    * after the launch, still add up past it — KO_AGENT_SANDBOX_MEMORY is for that.
    *
-   * The one exception to the available bound is MinimumCeiling (or the total, on a machine
-   * smaller than that), below which the ceiling never goes: podman reads `--memory=0` as no limit
+   * The one exception to the available bound is MinimumMemoryLimit (or the total, on a machine
+   * smaller than that), below which the limit never goes: podman reads `--memory=0` as no limit
    * at all, which a host with nothing available would otherwise get at the moment it can least
    * afford it, and a sandbox capped under what its agent needs dies before it says anything. So
    * with under 1 GiB available the sandbox may still take 1 GiB; the entrypoint's warning is what
    * tells the user the machine was that short. The same floor is what a machine under 2 GiB gets.
    */
-  def memoryCeiling(machineTotal: Long, availableAtLaunch: Option[Long]): Long =
+  def memoryLimit(machineTotal: Long, availableAtLaunch: Option[Long]): Long =
     val fromTotal = machineTotal - (1L << 30)
     val bounded = availableAtLaunch.fold(fromTotal)(Math.min(fromTotal, _))
-    Math.max(bounded, Math.min(MinimumCeiling, machineTotal))
+    Math.max(bounded, Math.min(MinimumMemoryLimit, machineTotal))
 
   /** What the agent CLIs and one modest build need to start at all. */
-  val MinimumCeiling: Long = 1L << 30
+  val MinimumMemoryLimit: Long = 1L << 30
 
   /**
    * MemAvailable of this host, bytes: what podman's containers can take before the host itself
@@ -387,7 +387,7 @@ object AgentSandboxLauncher:
    * warning users learn to ignore. 3 GiB tells the two machine states apart — quiet on an idle
    * default machine, loud once running sessions hold real memory, the state in which a build
    * degrades every session on the machine. The answer is the user's, not the launcher's — a
-   * `[y/N]` prompt, not a refusal: the builder's own heap is pinned (the proxy Containerfile),
+   * `[y/N]` prompt, not a refusal: the builder's own heap is limited (the proxy Containerfile),
    * so proceeding risks a slow or OOM-killed build rather than a frozen machine, a price the
    * one at the console may accept; No stays the default because the sessions at stake may not
    * be theirs to spend. With no console there is nobody to ask, and the build proceeds warned —
@@ -396,27 +396,27 @@ object AgentSandboxLauncher:
   val BuildMemoryWarnThreshold: Long = 3L << 30
 
   /**
-   * The memory scale for a session launch: orange under
-   * MinimumCeiling, where the sandbox takes more than the machine has and the entrypoint's warning
-   * follows; red under half of it, where the session starts starved rather than merely
-   * overcommitted. The image build's gate is not on this scale: a session does not build the
-   * image, and --build's own warning states the gate where it applies.
+   * The memory scale for a session launch: orange under MinimumMemoryLimit, where the sandbox takes
+   * more than the machine has and the entrypoint's warning follows; red under half of it, where the
+   * session starts starved rather than merely overcommitted. The image build's gate is not on this
+   * scale: a session does not build the image, and --build's own warning states the gate where it
+   * applies.
    */
   def launchMemoryHeadroom(available: Long): Headroom =
-    if available >= MinimumCeiling then Headroom.Ample
-    else if available >= MinimumCeiling / 2 then Headroom.Warned
+    if available >= MinimumMemoryLimit then Headroom.Ample
+    else if available >= MinimumMemoryLimit / 2 then Headroom.Warned
     else Headroom.Short
 
   /**
    * The memory scale for an image build — the build actions, and the `--stats` report,
    * which is read before deciding on one: green from BuildMemoryWarnThreshold up — also the
-   * ceiling a 4 GiB machine gives, the least a JVM build in the sandbox fits in
+   * limit a 4 GiB machine gives, the least a JVM build in the sandbox fits in
    * (SmallMachineMemory); orange below it, where a session starts but a build is warned; red
-   * under MinimumCeiling, as at a launch.
+   * under MinimumMemoryLimit, as at a launch.
    */
   def buildMemoryHeadroom(available: Long): Headroom =
     if available >= BuildMemoryWarnThreshold then Headroom.Ample
-    else if available >= MinimumCeiling then Headroom.Warned
+    else if available >= MinimumMemoryLimit then Headroom.Warned
     else Headroom.Short
 
   def buildMemoryWarning(available: Option[Long]): Option[String] =
@@ -425,7 +425,7 @@ object AgentSandboxLauncher:
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
   /** After requirePodman's gate, every podman action says the machine's headroom once, beside the
-    * `using:` line — the figure the memory ceiling and the build gate act on, visible before
+    * `using:` line — the figure the memory limit and the build gate act on, visible before
     * they act, and tinted on the action's scale (launchMemoryHeadroom, buildMemoryHeadroom). A
     * figure the machine cannot give prints nothing. */
   def machineMemoryLine(
@@ -459,9 +459,9 @@ object AgentSandboxLauncher:
       case _        => Some(machineSsh).filter(_.ok).flatMap(answer => memoryAvailable(answer.text))
 
   /**
-   * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a ceiling exists to
+   * `--memory-swap` equal to `--memory` forbids swap: it is the thrash a limit exists to
    * prevent, and podman's default of twice the memory in swap is the wrong side of that. An
-   * explicit ceiling gets the same treatment, for the same reason.
+   * explicit limit gets the same treatment, for the same reason.
    */
   def memoryArguments(
     explicit: Option[String],
@@ -471,7 +471,7 @@ object AgentSandboxLauncher:
     explicit.map(_.trim).filter(_.nonEmpty) match
       case Some(value) => Vector(s"--memory=$value", s"--memory-swap=$value")
       case None =>
-        machineTotal.map(memoryCeiling(_, availableAtLaunch)).toVector.flatMap: bytes =>
+        machineTotal.map(memoryLimit(_, availableAtLaunch)).toVector.flatMap: bytes =>
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
   /**
@@ -496,7 +496,7 @@ object AgentSandboxLauncher:
 
   /**
    * Environment names that look like this launcher's but are not: almost certainly a misspelling
-   * of one above, and a misspelled variable silently configuring nothing — no memory ceiling, the
+   * of one above, and a misspelled variable silently configuring nothing — no memory limit, the
    * wrong volume — is the failure mode the warning in main closes. A warning rather than a refused
    * launch, because a shell profile legitimately sets variables for a newer or older launcher.
    */
@@ -610,7 +610,7 @@ object AgentSandboxLauncher:
     )
 
   /** Both build actions run this after requirePodman: --update rebuilds the leaves through the
-    * same unceilinged `podman build`, so it shares --build's gate. */
+    * same `podman build` without a memory limit, so it shares --build's gate. */
   def confirmMemoryForBuilds(os: Os): Unit =
     buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
       warn(message)
@@ -1875,12 +1875,14 @@ object AgentSandboxLauncher:
           |session.""".stripMargin
       case ("live", "fuse") =>
         """`/workspace` is writable and shared live with the host project directory through the
-          |`ko-agent-fs` filter. Git control state and `.ko-agent-sandbox` are frozen at any depth;
+          |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
+          |`.ko-agent-sandbox` cannot be modified at any depth;
           |symlink targets must be relative and remain inside the workspace.""".stripMargin
       case ("live", "none") =>
-        s"""`/workspace` is a raw writable bind shared live with the host project directory.
-           |Raw guard: $RawWorkspaceBoundary. Nested repository control state and non-portable
-           |symlinks remain writable.""".stripMargin
+        s"""`/workspace` is a direct writable bind mount of the host project directory, without the
+           |`ko-agent-fs` filter. $RawWorkspaceBoundary. Git configuration, hooks and other Git
+           |entries in nested repositories remain writable. Symlinks can have absolute targets or
+           |targets that resolve outside the project on the host.""".stripMargin
       case _ =>
         throw IllegalArgumentException(s"unknown workspace mode: $writeMode/$workspaceGuard")
     val git = noGit.fold("")(cause =>
@@ -1898,14 +1900,14 @@ object AgentSandboxLauncher:
            |
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
-           |and they may write the project except git control state and `.ko-agent-sandbox`.
+           |and they may write the project except `.git` and `.ko-agent-sandbox`.
            |Each sbt invocation starts and ends its own server, so batch commands into one —
            |`sandbox-run-on-host sbt 'compile; test'`, quoted: sbt reads separate arguments as one
            |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
            |that binds one fails there with `Operation not permitted`; that suite alone runs in the
            |container. Container `sbt` still works, over the same `target/` — host and container
            |builds compile with different JVMs against different caches, so switching between them
-           |can cost a rebuild or need cleanup first ("The host's own symlinks"). Any other host
+           |can cost a rebuild or need the symlink cleanup described above. Any other host
            |command that fails or is refused is reported to the user, never re-run in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
            |""".stripMargin
@@ -1917,7 +1919,7 @@ object AgentSandboxLauncher:
            |are slow, or the machine is short on memory, tell the user: relaunching with
            |`--run-on-host=sbt,mill,mvn` runs them on the host — memory reclaimed on exit rather than
            |left with the podman machine, at host speed, and without the symlink cleanup that
-           |switching between container and host commands needs ("The host's own symlinks").
+           |switching between container and host commands needs, as described above.
            |""".stripMargin
       else ""
     // `allow-unless-denied` inverts the default's reading of the lines: what is listed is the
@@ -1953,10 +1955,11 @@ object AgentSandboxLauncher:
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
        |$admission A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
-       |serves `clone` and `pull`, and `git push` is always refused; `method=` names the
-       |HTTP methods admitted there. On an inspected host a request takes the line whose
-       |path is its longest match, a tree by prefix, an exact path alone; one matching no line
-       |is refused, and so is one under a line other than the root spelled with
+       |serves `clone` and `pull`; `method=` names the
+       |HTTP methods admitted there. On an inspected host, the rule with the longest matching
+       |path decides which operations are permitted. A rule path ending in `/` matches request
+       |paths with that prefix; other rule paths match exactly. A request matching no rule is
+       |refused. For rules below `/`, request paths are also refused if they contain
        |percent-encoding, a dot segment, a backslash or an empty segment.
        |
        |$indented
@@ -2157,12 +2160,12 @@ object AgentSandboxLauncher:
       case None => launch(parsed)
 
   /**
-   * Whether the directory's own SELinux context already admits container reads, so a raw bind
-   * needs no relabel: a container type with no MCS categories. A context with categories — what
-   * a previous run's `:Z` leaves — is private to the container it was assigned to, unreadable to a
-   * new one, so it does not count. Only the root is asked: a partially labeled tree fails at
-   * runtime with EACCES on the stray files, the host's own labeling to finish. Fail closed — a
-   * missing stat, an unreadable or unexpected context all answer false.
+   * Whether the directory's own SELinux context already admits container reads, so an unfiltered
+   * bind mount needs no relabel: a container type with no MCS categories. A context with categories
+   * — what a previous run's `:Z` leaves — is private to the container it was assigned to,
+   * unreadable to a new one, so it does not count. Only the root is asked: a partially labeled tree
+   * fails at runtime with EACCES on the stray files, the host's own labeling to finish. Fail closed
+   * — a missing stat, an unreadable or unexpected context all answer false.
    *
    * stat resolves through findOnPath like every host executable: this runs before the sandbox
    * exists, and the working directory is the project directory.
@@ -2243,14 +2246,14 @@ object AgentSandboxLauncher:
       findOnPath("getenforce", env("PATH").getOrElse(""), os)
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
-    // A raw bind on an SELinux-enforcing host is readable to the container only after :Z
-    // relabels the project directory — a recursive host-metadata write, which is exactly the authority
-    // reject withholds. Refused rather than relabeled, unless the tree already has a
+    // An unfiltered bind mount on an SELinux-enforcing host is readable to the container only after
+    // :Z relabels the project directory — a recursive host-metadata write, which is exactly the
+    // authority reject withholds. Refused rather than relabeled, unless the tree already has a
     // shared container-accessible context, where a plain read-only bind needs no host write.
     if writeMode == "reject" && selinuxEnforcing && !selinuxContainerReadable(projectDir) then
       fail(
         s"""error: --write=reject cannot mount $projectDir on this SELinux-enforcing host
-           |Reading a raw bind here requires relabeling the project directory (:Z), a recursive
+           |Reading an unfiltered bind mount here requires relabeling the project directory (:Z), a recursive
            |host-metadata write that reject must not perform. Use --write=live — the filter's
            |mountpoint needs no relabel — or relabel the project yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
@@ -2438,11 +2441,11 @@ object AgentSandboxLauncher:
 
     // The workspace FUSE filter, checked before any volume is assembled and mounted once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
-    // Every live session's enforcement, on every platform;
-    // the .git pins below are what a guard=none session gets instead. The two are alternatives
-    // rather than a stack: the filter's policy is a strict superset of the pins', and preparing a
-    // pin's bind target means creating `.git` entries *through* the filter, which the filter denies
-    // (observed as a container-start failure, not deduced).
+    // Every live session's enforcement, on every platform; the read-only .git mounts below are what
+    // a guard=none session gets instead. The two are alternatives rather than a stack: the filter's
+    // policy is a strict superset of the mounts' protection, and preparing a bind target means
+    // creating `.git` entries *through* the filter, which the filter denies (observed as a
+    // container-start failure, not deduced).
     val sandboxContainer = sandboxRunContainer(projectId, runSuffix)
 
     // Derived from the mode rather than from the mount, so it exists before the mount does: the
@@ -2503,8 +2506,8 @@ object AgentSandboxLauncher:
       case (_, "none") => None
       case _ => Some(prepareKoAgentFs(podman, os, projectId))
 
-    // gitGuardVolumes has the threat and the layouts. Reject mode needs no pin: the whole tree is
-    // bound read-only, git control state included.
+    // gitGuardVolumes has the threat and the layouts. Reject mode needs no additional mount: the
+    // whole tree is bound read-only, Git metadata included.
     val gitGuardArgs =
       if writeMode == "reject" || filteredWorkspace.isDefined then Vector.empty
       else
@@ -2860,7 +2863,7 @@ object AgentSandboxLauncher:
           "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
         ) ++
           // memoryArguments has why the equal limits disable podman's default swap allowance.
-          memoryArguments(Some(ProxyMemoryCeiling), None, None) ++ Vector(
+          memoryArguments(Some(ProxyMemoryLimit), None, None) ++ Vector(
             "--pids-limit=512",
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
@@ -2885,22 +2888,21 @@ object AgentSandboxLauncher:
       sandboxNetwork,
     ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    // The workspace mode and the egress profile with their relevant state, said every launch —
-    // and rules that arrived with the repository never take effect unseen: the files as written,
-    // then the dry run's counts, the proxy's own answers to exactly what is enforced.
-    // The workspace line is also where guard=none is said every session it happens: it is the
-    // weaker boundary, and silence about
-    // it is how a user forgets which one they are running under — the relabel notice included,
-    // so the one raw-bind arrangement that rewrites host metadata is never a silent one.
-    // Each line tints the mode it states; a branch weaker than the default is tinted whole
-    // instead, red (HostCommands.weakened), so no line ever has two colours.
+    // The workspace mode and the egress profile with their relevant state, said every launch — and
+    // rules that arrived with the repository never take effect unseen: the files as written, then
+    // the dry run's counts, the proxy's own answers to exactly what is enforced. The workspace line
+    // is also where guard=none is said every session it happens: it is the weaker boundary, and
+    // silence about it is how a user forgets which one they are running under — the relabel notice
+    // included, so the one unfiltered bind mount arrangement that rewrites host metadata is never a
+    // silent one. Each line tints the mode it states; a branch weaker than the default is tinted
+    // whole instead, red (HostCommands.weakened), so no line ever has two colours.
     System.err.println((writeMode, filteredWorkspace) match
       case ("reject", _) => s"workspace: ${chosen("reject")}; /workspace is read-only this session"
       case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}"
       case (_, None) =>
         weakened(
           s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
-            s"$RawWorkspaceBoundary; mount pins can fall through when the host replaces " +
+            s"$RawWorkspaceBoundary; read-only bind mounts can lose protection when the host replaces " +
             "their source" +
             (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
              else ""),
@@ -3015,9 +3017,8 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     // Project bind mount
     // -----------------------------------------------------------------------
-    //
-    // :Z only on native SELinux-enforcing Linux, and only on the raw bind; podman-machine sources
-    // must not be relabelled, and neither must a FUSE mountpoint.
+    //  :Z only on native SELinux-enforcing Linux, and only on the unfiltered bind mount;
+    //podman-machine sources  must not be relabelled, and neither must a FUSE mountpoint.
     val projectVolume = (writeMode, filteredWorkspace) match
       // Never :Z: the reject gate above established the tree is already container-readable, and
       // relabeling is the host write the mode withholds.
@@ -3027,20 +3028,20 @@ object AgentSandboxLauncher:
       case (_, None)                     => s"$projectDir:/workspace:rw"
 
     // -----------------------------------------------------------------------
-    // Memory ceiling
+    // Memory limit
     // -----------------------------------------------------------------------
     //
     // Memory is the runaway this environment invites (the cs java OOM in the Containerfile), and
     // the sandbox must die before the machine does: one in-sandbox build exhausting the VM takes
     // podman's own service with it, and every session on the machine (the troubleshooting
-    // document's "The whole machine degrades"). Hence a ceiling by default, below the machine's
-    // total (memoryCeiling). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
+    // document's "The whole machine degrades"). Hence a limit by default, below the machine's
+    // total (memoryLimit). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
     // other sessions.
     val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
-      warn("podman info reports no machine memory; the sandbox runs without a memory ceiling")
+      warn("podman info reports no machine memory; the sandbox runs without a memory limit")
     machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
       warn(
         s"podman runs on ${SandboxStats.humanBytes(total)} of memory; builds in the sandbox OOM below about 4.0G\n" +

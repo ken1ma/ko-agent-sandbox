@@ -391,7 +391,7 @@ if want sbt; then
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/ivy.log" | cut -c1-70)"; fi
 
     # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
-    # the run-on-host cache through it. Both clients run so the --jvm-client pin stays measured. The server's
+    # the run-on-host cache through it. Both clients run so the need for --jvm-client stays measured. The server's
     # java.home is checked against the JDK the profile granted: the server is forked by the
     # client, so nothing about the client's own JVM proves which one the command runs in.
     for client in "--jvm-client" ""; do
@@ -405,7 +405,7 @@ if want sbt; then
         then report PASS "server runs the granted JDK"
         else report FAIL "server runs the granted JDK" "$(grep -m1 'ans:' "$work/jvm.log" | cut -c1-70)"; fi
     else report FAIL "server runs the granted JDK" "$(tail -1 "$work/jvm.log" | cut -c1-70)"; fi
-    # Processes the command itself starts must retain containment, guard rows included. The server
+    # Processes the command itself starts must retain containment, access restrictions included. The server
     # is already the client's forked JVM, so each eval measures a child of a child; run once,
     # under the sbt profile — inheritance across fork and exec is the kernel's behavior, not the
     # profile's, and the per-profile rows below cover both profiles' own grants.
@@ -423,10 +423,10 @@ if want sbt; then
             Seq("/usr/bin/touch", "'"$project"'/.git/'"$marker"'")).!; "forked-exit=" + code }'
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 
-    # --jvm-client is pinned because sbtn returns with nothing built; this row keeps asking whether
+    # --jvm-client is required because sbtn returns with nothing built; this row keeps asking whether
     # that changes. A build's success is the measure — sbtn's --version passes and proves nothing.
     if run_sbt "" compile >"$work/sbtn.log" 2>&1 && grep -q '^\[success\]' "$work/sbtn.log"
-    then report INFO "sbtn compile" "passes: the --jvm-client pin is now a choice"
+    then report INFO "sbtn compile" "passes: the --jvm-client requirement can be reconsidered"
     else report INFO "sbtn compile" "no build: $(grep -v '^$' "$work/sbtn.log" | tail -1 | cut -c1-50)"; fi
     run_sbt --jvm-client shutdown >/dev/null 2>&1
 fi
@@ -452,7 +452,7 @@ if want mill; then
     # The daemon form stays measured, as sbtn does for sbt: if it starts passing, the flag
     # becomes a choice.
     if ( cd "$mill_project" && sandboxed mill ./mill --version ) >"$work/mill-daemon.log" 2>&1
-    then report INFO "./mill --version (daemon)" "passes: the --no-daemon pin is now a choice"
+    then report INFO "./mill --version (daemon)" "passes: the --no-daemon requirement can be reconsidered"
     else
         why=$(grep -v 'Picked up' "$work/mill-daemon.log" | tail -1 | cut -c1-50)
         report INFO "./mill --version (daemon)" "no: $why"

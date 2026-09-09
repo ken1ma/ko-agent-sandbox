@@ -124,7 +124,7 @@ object EgressRules:
    * the session writing where nothing can read, losing the whole record at
    * exit — which is what a retention rule counting sessions rather than
    * liveness does to a project running more than `retain` of them at once.
-   * So `retain` is a floor on what is kept, not a ceiling.
+   * More than `retain` logs can remain while their runs are live.
    */
   def logsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
     names.sorted
@@ -201,11 +201,12 @@ object EgressRules:
       )
 
   /**
-   * Only the basename of the directly launched command is classified; the launcher does not
-   * inspect a script's arguments or guess what it may later execute — a script that starts an agent selects
+   * Only the basename of the directly launched command is classified; the launcher does not inspect
+   * a script's arguments or guess what it may later execute — a script that starts an agent selects
    * no provider and, under deny-unless-model, gets the startup warning instead of a guessed grant.
-   * opencode has no fixed provider and selects `all`, the proxy's word for every group it defines
-   * (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of groups.
+   * opencode has no fixed provider and selects `all`, the proxy's word for every provider it
+   * defines (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of
+   * providers.
    */
   val AgentProviders: Map[String, String] =
     Map(

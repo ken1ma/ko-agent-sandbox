@@ -30,7 +30,7 @@ object RulesetHelper:
    * the resolved scope of its longest literal match (authorizeInspectedRequest).
    *
    * Which lines count is the selected profile's answer (resolveRuleset): the defaults — every
-   * model-provider group plus the curated catalog — modified by the project's file. Whichever
+   * provider's default rules plus the inspected catalog — modified by the project's file. Whichever
    * ruleset is in force is printed at startup and every denial is logged, which is how you find out
    * what an agent actually wanted.
    *
@@ -62,7 +62,6 @@ object RulesetHelper:
   object RulePath:
     val Root = "/"
 
-    /** Whether `path` names `request`: a tree by prefix, an exact path by equality. */
     def contains(path: String, request: String): Boolean =
       if path.endsWith("/") then request.startsWith(path) else request == path
 
@@ -89,9 +88,9 @@ object RulesetHelper:
   enum Rule:
     case DenyDefaults
     case Allow(host: String, path: String, grants: Set[String])
-    case AllowGroup(name: String)
+    case AllowProvider(name: String)
     case Deny(pattern: HostPattern, grants: Set[String])
-    case DenyGroup(name: String)
+    case DenyProvider(name: String)
 
   /** One parsed line, with where it was written — `rule` for the project's file, `defaults/…` for
     * the launcher-owned files — and its text as written, tokens joined by one space. */
@@ -116,9 +115,10 @@ object RulesetHelper:
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
 
-  /** The EGRESS_MODEL_PROVIDER value that selects every group above. The launcher sends it for an
+  /** The EGRESS_MODEL_PROVIDER value that selects every provider above. The launcher sends it for an
     * agent with no fixed provider, opencode, and this file alone expands it, so the launcher keeps
-    * no list of groups. A rule file's `model-provider` lines name one group and refuse it. */
+    * no list of providers. A rule file's `model-provider` lines require a provider name and reject
+    * `all`. */
   val AllProviders = "all"
 
   // ---------------------------------------------------------------------------
@@ -169,8 +169,8 @@ object RulesetHelper:
     tokens match
       case Vector("deny", "defaults")              => Rule.DenyDefaults
       case "deny" +: "defaults" +: _               => refuse("takes no word after defaults")
-      case Vector("allow", "model-provider", name) => Rule.AllowGroup(requireProvider(file, name))
-      case Vector("deny", "model-provider", name)  => Rule.DenyGroup(requireProvider(file, name))
+      case Vector("allow", "model-provider", name) => Rule.AllowProvider(requireProvider(file, name))
+      case Vector("deny", "model-provider", name)  => Rule.DenyProvider(requireProvider(file, name))
       case "allow" +: url +: words if url.startsWith("https://") =>
         val (authority, path) = splitUrl(refuse, url)
         if authority.startsWith("**.") then refuse("names a pattern; an allow names an exact host")
@@ -252,12 +252,10 @@ object RulesetHelper:
   /**
    * The defaults are rules, so they are written as rules: resource files in the grammar,
    * read through the parser a project's file goes through, with the reasoning for each host as a
-   * comment beside it. `defaults/host` is the curated catalog — what deny-unless-allowed admits on
-   * its own; `defaults/model-provider/<name>` is what `allow model-provider <name>` expands to: the
-   * party trusted to receive project data, and only its model, authentication and control-plane
-   * endpoints, never every domain it owns (the github group's forge lines have the case). Each
-   * `tunnel` line there is unbounded, unlogged write access; SECURITY.md, "What is inside TLS",
-   * has why the model endpoints are not TLS-inspected.
+   * comment beside it. `defaults/host` lists inspected hosts; `defaults/model-provider/<name>`
+   * supplies the rules for `allow model-provider <name>`. Provider rules cover model,
+   * authentication and control-plane endpoints, including GitHub's inspected login and token
+   * paths. SECURITY.md, "What is inside TLS", explains why the model endpoints are not inspected.
    *
    * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
    * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
@@ -286,8 +284,8 @@ object RulesetHelper:
       line.rule match
         case Rule.Allow(host, _, grants) if grants(Grant.Tunnel) =>
           throw IllegalStateException(
-            s"defaults/host makes $host a tunnel; the catalog is inspected, and an opaque tunnel belongs to a " +
-              "model-provider group",
+            s"defaults/host makes $host a tunnel; this file accepts inspected rules only. " +
+              "Put model-endpoint tunnel rules in defaults/model-provider/<name>.",
           )
         case _ => ()
     lines
@@ -295,18 +293,17 @@ object RulesetHelper:
   val ModelProviderLines: Map[String, Vector[Line]] =
     ModelProviders.map(name => name -> readDefault(s"model-provider/$name")).toMap
 
-  /** A defaults file's line as the fold reads it. */
-  private def contributionOf(line: Line, source: Source, group: Option[String]): Contribution =
+  private def contributionOf(line: Line, source: Source): Contribution =
     line.rule match
-      case Rule.Allow(host, path, grants) => Contribution(host, path, grants, source, group)
+      case Rule.Allow(host, path, grants) => Contribution(host, path, grants, source)
       case other => throw IllegalStateException(s"${line.spelled} is no allow line: $other")
 
-  private def groupContributions(name: String, via: Option[Line]): Vector[Contribution] =
-    ModelProviderLines(name).map(line => contributionOf(line, Source(line, via), Some(name)))
+  private def providerContributions(name: String, via: Option[Line]): Vector[Contribution] =
+    ModelProviderLines(name).map(line => contributionOf(line, Source(line, via)))
 
   private val DefaultContributions: Vector[Contribution] =
-    CatalogLines.map(line => contributionOf(line, Source(line, None), None))
-      ++ ModelProviders.flatMap(name => groupContributions(name, None))
+    CatalogLines.map(line => contributionOf(line, Source(line, None)))
+      ++ ModelProviders.flatMap(name => providerContributions(name, None))
 
   /** The defaults resolved on their own: what deny-unless-allowed enforces with no project file. */
   val DefaultHosts: Map[String, Treatment] = hostsOf(start(DefaultContributions))
@@ -323,28 +320,22 @@ object RulesetHelper:
     case Inspected(scopes: Map[String, Set[String]])
     case Tunnel
 
-  /** Where a contribution came from: its line, and the file line that expanded it when a group
-    * was allowed by the project. */
+  /** Preserve both the default rule and the project rule that included it in diagnostics. */
   private case class Source(line: Line, via: Option[Line]):
     def spelled: String = via.fold(line.spelled)(expanded => s"${expanded.spelled} (${line.spelled})")
 
-    /** Whether the project's file wrote it, directly or by expanding a group. */
     def fromRule: Boolean = via.exists(_.file == RuleFile) || line.file == RuleFile
 
-  /** One allow line's active grants at its path; a group's line has its group's name, which
-    * is what `deny model-provider` removes. Emptied by denies, it stays in the state as the
+  /** One allow line's active grants at its path. Emptied by denies, it stays in the state as the
     * boundary its path opened: a line is a boundary as well as a grant. */
   private case class Contribution(
     host: String,
     path: String,
     grants: Set[String],
     source: Source,
-    group: Option[String],
   ):
     def active: Boolean = grants.nonEmpty
 
-  /** The fold's state: the contributions in order, the whole-host and `tunnel` denials as patterns
-    * with their lines, the lines that took a grant from each host, and the warnings. */
   private case class State(
     contributions: Vector[Contribution] = Vector.empty,
     patterns: Vector[(HostPattern, Line)] = Vector.empty,
@@ -371,7 +362,7 @@ object RulesetHelper:
    * valid as the image adopts its hosts.
    */
   private def contribute(state: State, contribution: Contribution, check: Boolean): State =
-    val Contribution(host, path, grants, source, _) = contribution
+    val Contribution(host, path, grants, source) = contribution
     val activeOnHost = state.active.filter(_.host == host)
     val tunnels = activeOnHost.filter(_.grants(Grant.Tunnel))
     val inspected = activeOnHost.filter(c => Grant.isInspected(c.grants))
@@ -411,17 +402,16 @@ object RulesetHelper:
       if grants.isEmpty || grants(Grant.Read) then state.patterns :+ (pattern -> line) else state.patterns
     State(contributions, patterns, recordRemovals(state.removals, hit, line), state.warnings ++ warning)
 
-  /** A provider deny's step: the group's contributions active at this position, and no other
-    * line's, removed — PF's anchor, a sub-ruleset handled by name, not a host-wide deny of the
-    * group's grants; the resolver keeps the two operations apart. */
-  private def takeGroup(state: State, name: String, line: Line): State =
-    val hit = state.active.filter(_.group.contains(name)).map(_.host).toSet
-    val contributions =
-      state.contributions.map(c => if c.active && c.group.contains(name) then c.copy(grants = Set.empty) else c)
-    val warning = Option.when(hit.isEmpty)(
-      s"${line.spelled} removes nothing at its position: the group's lines are not in force there",
+  /** A provider denial removes earlier grants on its hosts regardless of which line supplied them.
+    * Attribute the expanded denials and any no-op warning to the single provider line. */
+  private def takeProvider(state: State, name: String, line: Line): State =
+    val hosts = ModelProviderLines(name).collect { case Line(_, _, Rule.Allow(host, _, _)) => host }.distinct
+    val denied = hosts.foldLeft(state): (current, host) =>
+      take(current, HostPattern.Exact(host), Set.empty, line)
+    val warning = Option.when(!state.active.exists(contribution => hosts.contains(contribution.host)))(
+      s"${line.spelled} matches nothing at its position",
     )
-    State(contributions, state.patterns, recordRemovals(state.removals, hit, line), state.warnings ++ warning)
+    denied.copy(warnings = state.warnings ++ warning)
 
   private def recordRemovals(
     removals: Map[String, Vector[Line]],
@@ -436,13 +426,13 @@ object RulesetHelper:
       line.rule match
         case Rule.DenyDefaults => state
         case Rule.Allow(host, path, grants) =>
-          contribute(state, Contribution(host, path, grants, Source(line, None), None), check)
-        case Rule.AllowGroup(name) =>
-          groupContributions(name, Some(line))
+          contribute(state, Contribution(host, path, grants, Source(line, None)), check)
+        case Rule.AllowProvider(name) =>
+          providerContributions(name, Some(line))
             .filter(c => consult(Rule.Allow(c.host, c.path, c.grants)))
             .foldLeft(state)((current, c) => contribute(current, c, check))
         case Rule.Deny(pattern, grants) => take(state, pattern, grants, line)
-        case Rule.DenyGroup(name)       => takeGroup(state, name, line)
+        case Rule.DenyProvider(name)    => takeProvider(state, name, line)
 
   /** The host map a state resolves to: a host holding `tunnel` is opaque; otherwise its scopes are
     * one per path any of its lines opened, boundaries of emptied lines included, each holding the
@@ -547,7 +537,7 @@ object RulesetHelper:
    * Every profile runs the same fold, from its own start and consulting its own lines:
    *
    *   deny-all            = nothing
-   *   deny-unless-model   = the selected groups' lines — one group, or every group under
+   *   deny-unless-model   = the selected providers' lines — one provider, or every provider under
    *                         AllProviders — then the file's deny lines
    *   deny-unless-allowed = the defaults — none after `deny defaults` — then every line
    *   allow-unless-denied = deny-unless-allowed's fold, and every public hostname on port 443 the
@@ -579,7 +569,7 @@ object RulesetHelper:
       throw IllegalArgumentException(s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}")
     val provider = providerValue.filterNot(_ == "none").map: value =>
       if value == AllProviders then value else requireProvider(ModelProviderVariable, value)
-    val selectedGroups =
+    val selectedProviders =
       provider.toVector.flatMap(name => if name == AllProviders then ModelProviders else Vector(name))
 
     val lines = parseRules(RuleFile, ruleText.getOrElse(""))
@@ -608,12 +598,12 @@ object RulesetHelper:
       )
 
     def isDeny(rule: Rule): Boolean = rule match
-      case Rule.Deny(_, _) | Rule.DenyGroup(_) => true
-      case _                                   => false
+      case Rule.Deny(_, _) | Rule.DenyProvider(_) => true
+      case _                                      => false
 
     val (initial, consult, publicDefault) = profile match
       case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false, false)
-      case "deny-unless-model" => (selectedGroups.flatMap(groupContributions(_, None)), isDeny, false)
+      case "deny-unless-model"   => (selectedProviders.flatMap(providerContributions(_, None)), isDeny, false)
       case "deny-unless-allowed" => (defaults, (_: Rule) => true, false)
       case "allow-unless-denied" => (defaults, (_: Rule) => true, true)
     val enforced =
@@ -649,11 +639,11 @@ object RulesetHelper:
       val own = enforced.contributions.filter(_.host == host)
       val held = own.filter(_.active)
       val paths = treatment match
-        case Treatment.Tunnel       => Vector(RulePath.Root)
+        case Treatment.Tunnel            => Vector(RulePath.Root)
         case Treatment.Inspected(scopes) => scopes.keys.toVector
       paths.map: path =>
         val boundary = treatment match
-          case Treatment.Tunnel => held.map(_.source.spelled)
+          case Treatment.Tunnel       => held.map(_.source.spelled)
           case Treatment.Inspected(_) => own.filter(_.path == path).map(_.source.spelled)
         val supplying = held.filter(c => RulePath.contains(c.path, path))
         val grants = supplying.flatMap(_.grants).distinct.map: grant =>
@@ -676,7 +666,7 @@ object RulesetHelper:
             case _ => false
 
     val reachability =
-      selectedGroups.flatMap: selected =>
+      selectedProviders.flatMap: selected =>
         val unreachable = ModelProviderLines(selected).map(_.rule)
           .collect { case Rule.Allow(host, _, _) => host }
           .distinct.sorted
@@ -710,7 +700,7 @@ object RulesetHelper:
    * "What this session may do" section holds. It is a serialization, not a rule file: no
    * `deny defaults` header, no promise to re-parse to itself, and nothing reads it as input. First
    * the profile line — the grammar
-   * alone cannot say "any public host" or "this provider's group only" — then, under
+   * alone cannot say "any public host" or "only this provider's default rules" — then, under
    * allow-unless-denied, the denial patterns as whole-host deny lines, before the allow lines so
    * that a host surviving beneath one reads as the exception the grammar's order makes it, then
    * one allow line per resolved scope with its whole grant set, hosts and paths sorted.

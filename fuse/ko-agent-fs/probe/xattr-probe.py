@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
 "Non-TODOs")? `setxattr`/`removexattr`/`getxattr` are unimplemented, which is fail-closed and not
-an execution vector — but the raw bind mount underneath *does* support `user.*` xattrs, so the
+an execution vector — but the unfiltered bind mount underneath *does* support `user.*` xattrs, so the
 question is not whether ENOSYS is safe. It is whether ENOSYS is a cost the programs notice.
 
 Answer it by measurement, not by reasoning: run this in a filtered session and again in an
-unfiltered one, and compare. The unfiltered run is the control, exactly as the perf table's raw-bind
+unfiltered one, and compare. The unfiltered run is the control, exactly as the perf table's unfiltered bind mount
 column is:
 
     cp .../xattr-probe.py <scratch-project>/
@@ -31,7 +31,7 @@ MARKER = "user.ko-agent-fs-probe"
 
 def stack() -> str:
     """Filtered or not, decided by the one property that separates the filter from the launcher's
-    mount pin: `.git` is refused at *any* depth, not only at the workspace root. Probing inside a
+    read-only bind mount: `.git` is refused at *any* depth, not only at the workspace root. Probing inside a
     fresh subdirectory rather than at the root is what makes that work in a project that already
     has a `.git` — including the empty one an unfiltered launch leaves behind in a project that had
     none (`SECURITY.md`, "Silent changes to what you own"), which is every scratch project that has
@@ -43,7 +43,7 @@ def stack() -> str:
         return "filtered"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
-    return "raw bind (unfiltered)"
+    return "unfiltered bind mount"
 
 
 def row(label: str, outcome: str) -> None:

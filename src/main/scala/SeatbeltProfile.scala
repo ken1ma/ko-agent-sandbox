@@ -175,8 +175,8 @@ object SeatbeltProfile:
         lines += ""
         lines += ";; The command's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
-        // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and
-        // ::1 — not a dual-stack JVM's v4-mapped connect, which is why the environment contract pins
+        // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and ::1 —
+        // not a dual-stack JVM's v4-mapped connect, which is why the environment contract sets
         // preferIPv4Stack (src/probe/jvm-proxy-rule.sh measured all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM

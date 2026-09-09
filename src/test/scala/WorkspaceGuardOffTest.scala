@@ -1,26 +1,22 @@
-// The guard=none session binds `/workspace` directly. It pins `.git/config` and `.git/hooks` when
-// `.git` is a directory, the whole `.git` file in a linked worktree, an empty `.git` mount when no
-// repository exists, and `.ko-agent-sandbox`. Every default session runs the filter instead, so
-// nothing else here can reach this path — the in-session probe skips its git rows whenever the
-// filter is on, which is always. The tests cover a directory repository's pins and the other layouts
-// gitGuardVolumes mounts — a pointer-file `.git` pinned whole, and the empty whole-directory pin a
-// repository-less project gets.
+// The guard=none session binds `/workspace` directly. It mounts `.git/config` and `.git/hooks`
+// read-only when `.git` is a directory, the whole `.git` file in a linked worktree, an empty `.git`
+// mount when no repository exists, and `.ko-agent-sandbox`. Every default session runs the filter
+// instead, so nothing else here can reach this path — the in-session probe skips its git rows
+// whenever the filter is on, which is always. The tests cover a directory repository's mounts and
+// the other layouts gitGuardVolumes mounts — a pointer-file `.git` mounted read-only in full, and
+// the empty whole-directory mount a repository-less project gets.
 //
-// The pins are nested read-only mounts inside a writable bind, the layout Docker Sandboxes #388
-// reported losing under host-side mutation: the nested mount disappears and access falls through to
-// the writable parent. So the mutations below run from the host while the session holds the mount,
-// and each is followed by the question that is the boundary — can the sandbox write through the pin
-// now.
-//
-// It survives mutations that keep the file's inode. It does not survive one that replaces it, which
-// the second test pins along with the delay before the bypass shows; SECURITY.md ("The `.git` pins
-// of `WORKSPACE_GUARD=none`") has what that costs.
-//
-// That second measurement is per host family, and the test expects each family's own answer: the
-// macOS machine's share follows the replacement within seconds, the Windows machine's held against
-// it for the whole window (SECURITY.md has both). Linux rootless is the row still missing
-// (SECURITY.md, "The `.git` pins of `WORKSPACE_GUARD=none`"); a failure there is the result worth
-// recording, not a red suite to silence.
+// These are nested read-only mounts inside a writable bind. Docker Sandboxes #388 reported losing
+// protection with this layout after a host-side mutation. The tests mutate files from the host and
+// check whether the sandbox can write them, independently of whether the mount remains listed.
+//  The protection survives mutations that keep the file's inode, but not one that replaces it,
+//which  the second test measures along with the delay before the bypass shows; SECURITY.md ("The
+//read-only `.git` mounts  under `WORKSPACE_GUARD=none`") has what that costs.
+//  That second measurement is per host family, and the test expects each family's own answer: the
+//macOS machine's share follows the replacement within seconds, the Windows machine's held against
+//it for the whole window (SECURITY.md has both). Linux rootless is the row still missing
+//(SECURITY.md, "The read-only `.git` mounts under `WORKSPACE_GUARD=none`"); a failure there is the
+//result worth  recording, not a red suite to silence.
 //
 // Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
 //
@@ -64,7 +60,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     )
 
   /** The boundary, and so the only assertion. `what` names the host-side operation that ran. */
-  private def stillPinned(session: Session, what: String): Unit =
+  private def assertGitReadOnly(session: Session, what: String): Unit =
     val configWrite = writable(session, Config)
     val hooksWrite = hookWritable(session)
     report(session, what)
@@ -84,7 +80,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     )
     session
 
-  test("the .git pins hold across host-side mutations that keep the file's inode"):
+  test("the read-only .git mounts protect against writes across host-side mutations that keep the file's inode"):
     requireTestWithPodman()
 
     val project = repository()
@@ -95,45 +91,45 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       val session = guardedSession(project)
       live = Some(session)
 
-      stillPinned(session, "the launch")
+      assertGitReadOnly(session, "the launch")
 
       // The control: with the filter off, the rest of .git is ordinary writable workspace. Without
       // it a session that had lost /workspace entirely would satisfy every assertion here.
       assert(
         writable(session, "/workspace/.git/HEAD"),
-        "the whole of .git is read-only; these assertions can no longer tell a pin from a lost mount",
+        "all of .git is read-only; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
-      // Edit in place: the inode the pin resolved at launch is the one being written. Anything that
-      // replaces it belongs to the second test — including `git config`, which writes through a
-      // lock file and renames over.
+      // Edit in place: the inode the mount resolved at launch is the one being written. Anything
+      // that replaces it belongs to the second test — including `git config`, which writes through
+      // a lock file and renames over.
       Files.writeString(config, "\n# host edit\n", StandardOpenOption.APPEND)
-      stillPinned(session, "an in-place host edit")
+      assertGitReadOnly(session, "an in-place host edit")
 
       Files.writeString(config, "\n# a second host edit\n", StandardOpenOption.APPEND)
-      stillPinned(session, "a second in-place host edit")
+      assertGitReadOnly(session, "a second in-place host edit")
 
       // Entries below the hooks directory, created and removed while the session holds it: the
       // directory's own inode is untouched.
       Files.writeString(hooks.resolve("post-commit"), "#!/bin/sh\n")
-      stillPinned(session, "a host-created hook")
+      assertGitReadOnly(session, "a host-created hook")
 
       Files.delete(hooks.resolve("post-commit"))
-      stillPinned(session, "a host-deleted hook")
+      assertGitReadOnly(session, "a host-deleted hook")
 
       // The bypass in the second test arrives seconds after its mutation, not with it, so a run
       // that only ever looked immediately afterwards would call this mode sound.
       Thread.sleep(30000)
-      stillPinned(session, "30s of no host activity")
+      assertGitReadOnly(session, "30s of no host activity")
     finally
       live.foreach(stop)
       discard(project)
 
-  test("a host-side inode replacement is what stops a .git pin being honoured"):
+  test("a host-side inode replacement is what stops a read-only .git mount protecting the file"):
     requireTestWithPodman()
 
-    // One replacement, then watch: a check made in the stale instant after it reports a pin that
-    // is already gone.
+    // One replacement, then watch: a check made in the stale instant after it reports read-only
+    // protection that no longer applies to the host's replacement file.
     //
     // Asserted rather than left failing: no mount over a path closes this, so a red suite would
     // report the same failure every run, while an assertion turns a podman release that changes it
@@ -145,7 +141,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     try
       val session = guardedSession(project)
       live = Some(session)
-      assert(!writable(session, Config), "the pin does not hold even at launch")
+      assert(!writable(session, Config), "the read-only mount does not prevent writes even at launch")
 
       val replacement = config.resolveSibling("config.replacement")
       Files.writeString(replacement, "[core]\n\trepositoryformatversion = 0\n")
@@ -164,19 +160,19 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
 
       // Linux rootless expects the macOS answer until measured.
       if currentOs == Os.Windows then
-        assert(!fellThrough, "the pin fell through on Windows; record the new result (SECURITY.md)")
+        assert(!fellThrough, "the mount lost read-only protection on Windows; record the new result (SECURITY.md)")
       else
-        assert(fellThrough, "the pin now survives a host-side inode replacement; SECURITY.md says it does not")
+        assert(fellThrough, "read-only protection survives a host-side inode replacement; SECURITY.md says it does not")
         assert(
           exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
-          "the pin refuses a second write; the first one reached a different file",
+          "the mount refuses a second write; the first one reached a different file",
         )
         assert(
           Files.readString(config).contains(marker),
           "the sandbox's write went somewhere other than the host's current .git/config",
         )
 
-        // The hooks pin goes the same way once its own inode is replaced. Only its entries
+        // The hooks mount goes the same way once its own inode is replaced. Only its entries
         // changing leaves it alone, which is what the first test exercises.
         val hooks = project.resolve(".git").resolve("hooks")
         Files.move(hooks, hooks.resolveSibling("hooks.renamed"))
@@ -184,17 +180,17 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
         polling.withMaxRetries(120).eventually:
           assert(
             hookWritable(session),
-            "the .git/hooks pin now survives its inode being replaced; SECURITY.md says it does not",
+            ".git/hooks remains protected after its inode is replaced; SECURITY.md says it does not",
           )
     finally
       live.foreach(stop)
       discard(project)
 
-  test("a pointer-file .git is pinned whole, so its redirection cannot be re-aimed"):
+  test("a pointer-file .git is mounted read-only in full, so its redirection cannot be re-aimed"):
     requireTestWithPodman()
 
     // The second of gitGuardVolumes' layouts: a linked worktree's `.git` is a file naming the real
-    // gitdir, and rewriting it re-aims a repository's control state
+    // gitdir, and rewriting it re-aims a repository's Git metadata
     // (fuse/ko-agent-fs/doc/git-metadata.md, group 3). Fabricated rather than a real worktree:
     // the guard reads only the layout, never the target.
     val project = scratchProject()
@@ -218,13 +214,13 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       // The control, as in the first test: the rest of the workspace stays ordinary and writable.
       assert(
         writable(session, "/workspace/ordinary"),
-        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount",
+        "the workspace is not writable; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
-      // An in-place host edit keeps the inode, so the pin holds; replacing the inode is the
-      // second test's measurement, and this layout shares it.
+      // An in-place host edit keeps the inode, so the mount still prevents writes; replacing the
+      // inode is the second test's measurement, and this layout shares it.
       Files.writeString(project.resolve(".git"), "gitdir: /elsewhere/other/.git\n")
-      assert(!writable(session, "/workspace/.git"), "after an in-place host edit the pin fell")
+      assert(!writable(session, "/workspace/.git"), "an in-place host edit defeated the read-only protection")
     finally
       live.foreach(stop)
       discard(project)
@@ -232,9 +228,9 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
   test("a project with no repository gets an empty read-only .git the host cannot seed mid-session"):
     requireTestWithPodman()
 
-    // The third layout: no `.git` at all, so the name is pinned over the launcher's own empty
-    // directory and a sandbox cannot fabricate a repository for host git to discover. The mount
-    // target podman creates in the project is one of SECURITY.md's two enumerated writes
+    // The third layout: no `.git` at all, so the launcher's own empty directory is mounted
+    // read-only at that name and a sandbox cannot fabricate a repository for host git to discover.
+    // The mount target podman creates in the project is one of SECURITY.md's two enumerated writes
     // ("Silent changes to what you own"); what the session sees behind the name is the launcher's
     // empty directory, whatever the host later puts in the project's own.
     val project = scratchProject()
@@ -243,22 +239,22 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       val session = guardedSession(project)
       live = Some(session)
 
-      assert(exec(session, "sh", "-c", "test -d /workspace/.git").ok, "no .git directory is pinned")
+      assert(exec(session, "sh", "-c", "test -d /workspace/.git").ok, "no read-only .git directory is mounted")
       assertEquals(exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "")
       assert(
         !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
-        "SECURITY: the sandbox can write into the pinned .git",
+        "SECURITY: the sandbox can write into the read-only .git mount",
       )
       assert(
         !exec(session, "sh", "-c", "rmdir /workspace/.git").ok,
-        "SECURITY: the sandbox can remove the pinned .git",
+        "SECURITY: the sandbox can remove the read-only .git mount",
       )
       assert(
         writable(session, "/workspace/ordinary"),
-        "the workspace is not writable; these assertions can no longer tell a pin from a lost mount",
+        "the workspace is not writable; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
-      // A repository the host creates mid-session is created in the project's own .git; the pin's
+      // A repository the host creates mid-session is created in the project's own .git; the mount's
       // source is the launcher's empty directory, so the session must keep seeing nothing. The
       // wait matches the second test's observation that a bypass arrives seconds late, never
       // with its mutation.
@@ -267,11 +263,11 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       Thread.sleep(5000)
       assertEquals(
         exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "",
-        "a host-created repository became visible behind the empty pin",
+        "a host-created repository became visible behind the empty mount",
       )
       assert(
         !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
-        "SECURITY: the pinned .git became writable after a host-side git init",
+        "SECURITY: the read-only .git mount became writable after a host-side git init",
       )
     finally
       live.foreach(stop)
