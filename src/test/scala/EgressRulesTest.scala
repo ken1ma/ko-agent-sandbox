@@ -206,7 +206,7 @@ class EgressRulesTest extends munit.FunSuite:
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
     assert(readRuleFiles(dir).swap.exists(_.contains("lists no lines")))
 
-  test("the ruleset env args pass the authority selection and each file's variable"):
+  test("the ruleset env args pass the selected profile, provider and each file's variable"):
     assertEquals(
       rulesetEnvArgs(
         "deny-unless-allowed",

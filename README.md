@@ -69,7 +69,7 @@ The sandbox image preinstalls:
 and configures them to
 
 1. not ask for permissions
-    1. `copilot` needs a flag; see [Running `<command>`](#running-command)
+    1. `copilot` needs a flag; see [`copilot`](#copilot)
 
 
 ## Install
@@ -102,12 +102,88 @@ checkout — [Development](#development).
 
     java -jar target/dist/ko-agent-sandbox.jar claude   # launch an agent in a trusted directory
 
-1. Insert `--write=reject` before `<command>` when the agent must not make changes in the directory.
+1. Insert `--write=reject` before `<command>` (`claude` above) when the agent must not make changes
+   in the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to anything other than its
    own provider; for `opencode` that is all the default providers.
 1. macOS only: insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
    agent will run builds or tests: a build inside the podman machine takes memory that all
    containers there share, and holds it until the session ends.
+
+### Running `<command>`
+
+1. To change `--write=` or `--egress=`, quit, relaunch, and continue the session: `claude --resume`,
+   `codex resume`, `agy --continue`, `kiro-cli chat --resume`, `copilot --continue` and
+   `opencode --continue`.
+
+#### `claude`
+
+1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
+   code back.
+1. Prompts back: they are managed settings the image fixes at the highest precedence, so restoring
+   them is a Containerfile edit and a rebuild.
+1. Ctrl-C twice in quick succession to quit.
+1. Without `KO_AGENT_SANDBOX_CLIPBOARD` (Reference; SECURITY.md "Clipboard") the clipboard does not
+   cross into the container: Ctrl-V answers "No image found in clipboard", and claude 2.1.227's
+   `/tui fullscreen` on macOS Terminal copies nothing out even with Shift/Alt.
+
+#### `codex`
+
+1. Sign-in: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
+   login, then choose "Sign in with Device Code" in the login UI.
+1. Prompts back: your own `~/.codex/config.toml` is read over the image's defaults, so set
+   `approval_policy = "on-request"` there.
+
+#### `agy`
+
+1. Sign-in works like `claude`'s: copy the printed URL and paste in an external browser, and paste
+   the code back.
+1. Prompts back: set `"toolPermission": "request-review"` in
+   `~/.gemini/antigravity-cli/settings.json` (or via `/config`).
+
+#### `kiro-cli`
+
+1. `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter there, and exits
+   once signed in; run `kiro-cli` again to chat. Without the flag it fails to open a browser.
+1. Prompts back: trim `allowedTools` in the seeded agent `~/.kiro/agents/ko-agent-sandbox.json`.
+
+#### `copilot`
+
+1. `copilot login --device-code` prints a URL and a one-time code to enter there; in the TUI,
+   `/login` then "Sign in with a device code". Copilot takes an interactive terminal for a local
+   desktop unless SSH, Codespaces or CI variables say otherwise, so its defaults — plain
+   `copilot login`, and `/login`'s recommended "Sign in with your browser" — run the browser flow,
+   whose callback to `127.0.0.1` never reaches the container.
+1. Unlike the other sign-ins, the token it stores reaches your private repositories (SECURITY.md,
+   "The web reached through the model provider").
+1. Prompts for paths outside `/workspace` and for URLs remain unless you run `copilot --yolo`.
+   Prompts back: `COPILOT_ALLOW_ALL=false`.
+1. Its fullscreen TUI cannot be turned off, so copying text out is `/copy`, which needs
+   `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
+
+#### `opencode`
+
+1. Run `/connect`, then `/models` to pick a model of the connected provider. The default model,
+   `opencode/big-pickle`, posts to `opencode.ai`, which the proxy admits read-only. Anthropic and
+   Google take an API key. For a ChatGPT plan choose the headless method, not the browser method
+   (the same unreachable callback as `copilot`'s). GitHub Copilot prints a device code like
+   `copilot login --device-code`, and the token it stores has the `read:user` scope, not `repo`.
+1. Prompts back: they are managed config the image fixes, like `claude`'s;
+   `--env='OPENCODE_PERMISSION={"*":"ask"}'` overrides it for one launch.
+
+#### Sessions
+
+1. Each launch prints the workspace mode and the resolved egress profile, plus its rule file and
+   any warning, then asks `[Y/n]` over the full command (`KO_AGENT_SANDBOX_SESSION_START`,
+   Reference).
+1. More than one session can run at once from the same project directory; they share the
+   workspace mount and the agent-state volume, and race on both.
+1. Calling another installed agent's command or MCP server reuses that agent's login and
+   configuration. Treat the project directory as their shared trust domain.
+1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (the commands
+   are in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
+   stock `postgres` and `nginx` cannot.
+
 
 ### Reference
 
@@ -122,7 +198,7 @@ checkout — [Development](#development).
     forwarded verbatim; -- is an optional escape for a command that could
     look like a launcher option.
 
-    Authority options, selected on every launch and never persisted:
+    Session options, selected on every launch and never persisted:
       --write=reject|live
                          reject mounts /workspace read-only; live (the
                          default) is the shared writable mount
@@ -272,56 +348,6 @@ checkout — [Development](#development).
    superseded, never a pulled image.
 
 
-### Running `<command>`
-
-1. Each launch prints both authorities — the workspace mode and the resolved egress profile —
-   plus its rule file and any warning, then asks `[Y/n]` over the full command
-   (`KO_AGENT_SANDBOX_SESSION_START`, Reference).
-1. Agent state persists in a per-project named volume.
-    1. `claude`: sign-in prints an authorization URL; open it in an external browser and paste the
-       resulting code back.
-        1. Ctrl-C twice in quick succession to quit.
-        1. Without `KO_AGENT_SANDBOX_CLIPBOARD` (above; SECURITY.md "Clipboard") the clipboard
-           does not cross into the container: Ctrl-V answers "No image found in clipboard", and
-           claude 2.1.227's `/tui fullscreen` on macOS Terminal copies nothing out even with
-           Shift/Alt.
-    1. `codex`: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
-       login, then choose "Sign in with Device Code" in the login UI.
-    1. `agy`: sign-in works like `claude`: copy the printed URL and paste in an external browser,
-       and paste the code back.
-    1. `kiro-cli`: `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter
-       there; without the flag it fails to open a browser and says so.
-    1. `copilot`: `copilot login` prints a device code and the URL to enter it at. Unlike the
-       other sign-ins, the token it stores reaches your private repositories (SECURITY.md, "The
-       web reached through the model provider"). Prompts for paths outside `/workspace` and for
-       URLs remain unless you run `copilot --yolo`. Its fullscreen TUI cannot be turned off, so
-       copying text out is `/copy`, which needs `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
-    1. `opencode`: run `/connect`, then `/models` to pick a model of the connected provider. The
-       default model, `opencode/big-pickle`, posts to `opencode.ai`, which the proxy admits
-       read-only. Anthropic and Google take an API key. For a ChatGPT plan choose the headless
-       method; the browser method's callback never reaches the container. GitHub Copilot prints
-       a device code like `copilot login`, and the token it stores has the `read:user` scope,
-       not `repo`.
-    1. `claude --resume`, `codex resume`, `agy --continue`, `kiro-cli chat --resume`,
-       `copilot --continue` and `opencode --continue` work.
-    1. To put permission prompts back for an untrusted repository: `codex` reads your own
-       `~/.codex/config.toml` over the image's defaults, so set
-       `approval_policy = "on-request"` there; `agy` reads `~/.gemini/antigravity-cli/settings.json`,
-       so set `"toolPermission": "request-review"` there (or via `/config`); `kiro-cli`'s is the
-       seeded agent `~/.kiro/agents/ko-agent-sandbox.json`, so trim its `allowedTools` there;
-       `claude`'s are managed settings the image fixes at the highest precedence, so restoring
-       them is a Containerfile edit and a rebuild; `copilot`'s is one environment variable,
-       `COPILOT_ALLOW_ALL=false`; `opencode`'s are managed config the image fixes, like
-       `claude`'s, and `--env='OPENCODE_PERMISSION={"*":"ask"}'` overrides it for one launch.
-1. More than one session can run at once from the same project directory; they share the
-   workspace mount and the agent-state volume, and race on both.
-1. Calling another installed agent's command or MCP server reuses that agent's login and
-   configuration. Treat the project directory as their shared trust domain.
-1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own (the commands
-   are in AGENTS-SANDBOX.md): `distroless` and `alpine` images work — one uid, so
-   stock `postgres` and `nginx` cannot.
-
-
 ## Egress proxy
 
 Every session reaches the network through one HTTPS proxy: the launcher-owned defaults — the
@@ -345,10 +371,10 @@ session fails closed with certificate errors (`doc/egress-proxy.md`, "Through an
 ## Overriding the agent instructions
 
 Every agent receives one assembled instruction file: sandbox facts from `AGENTS-SANDBOX.md`,
-working conventions from `AGENTS-CUSTOM.md`, and the authority appended for this session. To
-replace only the working conventions for a project, put yours at
+working conventions from `AGENTS-CUSTOM.md`, and "What this session may do", appended per
+session. To replace only the working conventions for a project, put yours at
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`; the image's parts in
-`container/ko-agent-sandbox/` are the starting point. The sandbox facts and session authority are
+`container/ko-agent-sandbox/` are the starting point. The sandbox facts and the appended section are
 not overridable, and the file cannot be empty — delete it to return to the image's. The
 directory's rules apply (SECURITY.md, "Why the rules are per project, in the project, and
 read-only"). Instructions that should merely *add* to the image's belong in the agent's own

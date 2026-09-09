@@ -44,7 +44,7 @@ If `git lfs pull` becomes important:
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
-## Deferred — LAN destinations, as launch-time authority
+## Deferred — LAN destinations, as a session option
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
 rule grammar refuses an IP literal, so a corporate site on the LAN without a public name is
@@ -53,7 +53,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
 - [ ] A launch option naming exact addresses — never a range, never a line in
   `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
   line would name a different machine on every clone, and a reviewer could not say what it
-  reaches. Authority typed at launch, like `--egress=allow-unless-denied`, and tinted in the
+  reaches. Selected at launch, like `--egress=allow-unless-denied`, and tinted in the
   banner the same way.
 - [ ] The vetting admits those addresses and nothing else of the private space, and only when
   the CONNECT names the address itself: a public name resolving to a private address stays

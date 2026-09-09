@@ -8,7 +8,7 @@ You are `nonroot` with `no-new-privileges` set and every Linux capability droppe
 `root` cannot be obtained.
 `apt-get install`, `systemctl` fail.
 `/home/nonroot`, `/tmp` and `/var/tmp` are writable; whether `/workspace` is, is this session's
-write mode — the appended "Authority in force for this session" section says which.
+write mode — the appended "What this session may do" section says which.
 
 `/workspace` is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
@@ -24,7 +24,7 @@ user to save the image under the project and pass its path instead.
 With the default `ko-agent-fs` workspace guard, a new symlink in `/workspace` needs a relative
 target staying inside it; anything else, an absolute `/workspace/...` included, fails. A program
 that caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
-appended authority section says when the weaker raw bind is in force instead.
+appended section says when the weaker raw bind is in force instead.
 
 The host's own symlinks are served as they are, so one with an absolute target dangles in here.
 sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
@@ -64,9 +64,9 @@ not work around them.
   A submodule the host already initialized is a checked-out directory and works normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
 
-Under the raw-bind guard, the appended authority section names the workspace-root paths that are
-pinned. Do not use writable nested repository control state or non-portable symlinks as a
-workaround; make those host-side changes on the host.
+Under the raw-bind guard, the appended section names the workspace-root paths that are pinned.
+Do not use writable nested repository control state or non-portable symlinks as a workaround;
+make those host-side changes on the host.
 
 Under every guard, network `git push` is refused by the egress proxy, and `git commit` fails until
 an identity is set.
@@ -119,7 +119,7 @@ so — only they can add it to the image.
 ## Network
 
 The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this session reaches, and
-with what treatment, is the appended "Authority in force for this session" section;
+with what treatment, is the appended "What this session may do" section;
 `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is

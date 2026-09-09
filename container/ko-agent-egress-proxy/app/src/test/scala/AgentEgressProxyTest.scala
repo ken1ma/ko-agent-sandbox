@@ -465,7 +465,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       resolved.ruleset,
     )
     // A deny applies, and an endpoint it takes is warned, never a failed start: the profile stays
-    // the user's authority decision.
+    // the user's choice.
     val denied = rulesetOf(profile = "deny-unless-model", provider = "openai", rule = "deny https://chatgpt.com/")
     assert(!denied.hosts.contains("chatgpt.com"))
     assert(denied.hosts.contains("api.openai.com"))
@@ -869,7 +869,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       rulesetOf("deny-unless-model", "google").ruleset,
       rulesetOf("deny-unless-model", "anthropic").ruleset,
     )
-    // One file under three profiles: three line sets, so three digests and three authority texts.
+    // One file under three profiles: three line sets, so three digests and three texts.
     val texts = Vector("deny-unless-allowed", "allow-unless-denied", "deny-unless-model")
       .map: profile =>
         rulesetLines(rulesetOf(profile, "anthropic", "deny https://github.com/ git-fetch")).mkString("\n")

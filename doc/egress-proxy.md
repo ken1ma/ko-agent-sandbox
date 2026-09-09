@@ -210,10 +210,11 @@ Each `allow` and `deny` line uses the rule grammar so a reader learns one; but t
 serialization of the ruleset, not a rule file: it has no `deny defaults` header, nothing reads it
 as input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
 names — one stable log line per run, comparable across runs — what the leaf certificate's names
-are read from, and what the agent's authority section and `KO_AGENT_SANDBOX_EGRESS_RULESET` give,
-so two files resolving to one ruleset print one digest and the same lines, and the same file under
-two profiles never does. After them, outside the digest, the metadata: one summary line — the
-counts of inspected and opaque hosts, denial patterns and widening lines — and the widening line.
+are read from, and what the agent's "What this session may do" section and
+`KO_AGENT_SANDBOX_EGRESS_RULESET` give, so two files resolving to one ruleset print one digest and
+the same lines, and the same file under two profiles never does. After them, outside the digest,
+the metadata: one summary line — the counts of inspected and opaque hosts, denial patterns and
+widening lines — and the widening line.
 `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
 a `deny` line's pattern, and under the finite profiles the hosts the file's lines denied.
 

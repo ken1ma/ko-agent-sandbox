@@ -9,7 +9,7 @@ sees it: the objects created for it — the two networks and the proxy and sandb
 when it ends; the `run-<suffix>` directory holding the CA leaf, swept by a later launch or a reset;
 and its audit log, written per run and kept. A *session* is the same interval from inside: the
 agent's time in the sandbox container, what it can reach, and what outlives it — agent state kept
-across sessions, concurrent sessions of one project, the authority in force for this session.
+across sessions, concurrent sessions of one project, what this session may do.
 
 ## Standing design decisions
 
@@ -71,8 +71,8 @@ of trying to classify command names as safe.
 ### The agent-instruction override replaces only the conventions
 
 `.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` replaces the image's `AGENTS-CUSTOM.md` and nothing
-else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and the authority section is
-what it must not be trusted to declare. It is not an agent's own project-level instructions,
+else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and "What this session may
+do" is what it must not be trusted to declare. It is not an agent's own project-level instructions,
 which that agent reads with no launcher help, because the managed-policy location
 loads unconditionally — a project file can add to the image's conventions but never drop them —
 and because `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a
@@ -291,8 +291,8 @@ design; it means the additional boundary should be purchased only when the threa
 
 Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
 a prompt to widen the rules. A prompt is a prompt-injection target, and a grant made through one
-is authority added mid-session, harder to review than a line committed to the repository and
-applied at launch. Authority here stays launch-only: a refusal's `403` body names the
+widens the rules mid-session, harder to review than a line committed to the repository and
+applied at launch. The rules here stay launch-only: a refusal's `403` body names the
 step (`RefusalAdvice` in the proxy), and the user adds the `allow` line to
 `.ko-agent-sandbox/egress/rule` on the host and relaunches.
 
@@ -394,13 +394,13 @@ never its semantics: the plain ordered reading of the rules is the specification
 ```
 
 ```text
-Authority is decided before launch and cannot be widened by the running sandbox: the rule file
-is read on the host and frozen, a refused request names the step but grants nothing, and a
-changed file applies at the next launch.
+What a session may do is decided before launch and cannot be widened by the running sandbox: the
+rule file is read on the host and frozen, a refused request names the step but grants nothing, and
+a changed file applies at the next launch.
 ```
 
 ```text
-The workspace's writability is the user's per-launch authority decision (`--write`).
+The workspace's writability is the user's per-launch choice (`--write`).
 In a writable mode, the workspace is untrusted output: protect implicit host execution
 paths, but keep files outside that control state writable, because editing them is the purpose
 of such a session; a read-only session's purpose is reading, and its results leave
