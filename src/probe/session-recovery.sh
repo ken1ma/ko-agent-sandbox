@@ -2,7 +2,7 @@
 # What the wrapper's orphan recovery and proxy hosting assume, measured before the wrapper encodes
 # them. Five measurements:
 #
-#   M1  the egress proxy runs on macOS from its dist jars, admits repo1.maven.org through a
+#   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org through a
 #       replacement rules (deny defaults plus one read line), refuses everything else, and binds where the
 #       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
 #   M2  a local-mode sbt server's portfile carries no token

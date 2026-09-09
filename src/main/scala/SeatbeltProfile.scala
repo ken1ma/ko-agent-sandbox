@@ -84,7 +84,7 @@ object SeatbeltProfile:
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
 
   /** What the command may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
-    * running a real build under this profile and reading the denials, never guessed: the contract admits a
+    * running a real build under this profile and reading the denials, never guessed: the contract allows a
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 

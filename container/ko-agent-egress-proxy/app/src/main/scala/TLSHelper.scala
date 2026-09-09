@@ -272,7 +272,7 @@ object TLSHelper:
      * any other host on the same CDN. GREASE ECH (RFC 9849, 6.2) — the dummy
      * extension an ECH-capable client without a config sends, browsers by
      * default — is made indistinguishable from the real one, so it is refused
-     * with it; doc/TODO.md has the narrowing an inspected host would admit.
+     * with it; doc/TODO.md has the narrowing an inspected host would allow.
      */
     val EncryptedClientHelloExtension = 0xfe0d
     val MaxTlsRecordPayloadBytes = 18 * 1024

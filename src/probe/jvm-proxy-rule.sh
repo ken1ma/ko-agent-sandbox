@@ -2,7 +2,7 @@
 # Does a JVM under the generated profile reach the build proxy through the standard proxy
 # properties? Three rows split the failure the gate cannot: with props and a live proxy (must
 # fetch), without props (must be denied — the direct path), with props and no proxy (must be
-# refused by connect, proving the profile admits the port and nothing listened).
+# refused by connect, proving the profile allows the port and nothing listened).
 #
 #   sh src/probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
 #

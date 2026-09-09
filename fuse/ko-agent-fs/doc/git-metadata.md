@@ -288,7 +288,7 @@ Existence cannot weaken the answer — a missing operational name is one the san
 only NotFound means absent: an unreadable step, or a config that is not UTF-8, refuses the mount.
 
 The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths its
-subject cannot mutate, and every admitted chain is made of `Protected` components the sandbox can
+subject cannot mutate, and every allowed chain is made of `Protected` components the sandbox can
 neither write nor rename. Only the host can invalidate it, which is the window recorded below.
 
 The same recognition covers the layout with no `.git` name at all: a workspace root that is itself
@@ -331,7 +331,7 @@ The check is also a snapshot, taken before the mount and not repeated. A host th
 hooks into the worktree *after* a session is serving gets no second refusal. Polling for it would
 buy a guarantee only as fresh as its last poll while putting a config read and an `lstat` on the hot
 path, so the answer is to record the window rather than chase it — and the window is the host's own
-to open: the binding rule admits only chains the sandbox cannot mutate. What it costs is that Git
+to open: the binding rule allows only chains the sandbox cannot mutate. What it costs is that Git
 configuration or hooks the host relocates into writable project paths remain writable for the rest
 of that session, just as they would without the mount-time guard.
 

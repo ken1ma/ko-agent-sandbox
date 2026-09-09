@@ -134,7 +134,7 @@ object RulesetHelper:
    * A file's lines as rules, in order. Blank lines vanish, tokens split on whitespace — never comma,
    * which stays inside its token and fails validation instead of silently becoming two — and `#`
    * starts a comment at the start of a line or after whitespace only. Inside a token it is refused:
-   * cut there, `https://host/a#b` would read as `https://host/a`, a line admitting more than it
+   * cut there, `https://host/a#b` would read as `https://host/a`, a line allowing more than it
    * says. `deny defaults` is the first line or absent: the file reads in the order the words imply,
    * and a `deny` above it would clear what the next line clears whole. A repeated line is no
    * refusal: after an intervening line of the other action it is the last word on its grants, and
@@ -388,7 +388,7 @@ object RulesetHelper:
 
   /** A URL deny's step: the grants it names, or every grant, taken from each contribution on the
     * hosts it matches, whichever line gave them. A whole-host or `read` deny is also a pattern
-    * under which no unlisted host — one holding `read` and nothing else — is admitted, which only
+    * under which no unlisted host — one holding `read` and nothing else — is allowed, which only
     * `allow-unless-denied` consults. */
   private def take(state: State, pattern: HostPattern, grants: Set[String], line: Line): State =
     val (contributions, hit) =
@@ -461,7 +461,7 @@ object RulesetHelper:
    * one digest and the same lines, and the same file under two profiles never does — the profile
    * is in it, and the selected provider under deny-unless-model alone, where it changes authority.
    * `denialPatterns` exists under allow-unless-denied alone: the patterns, exact hosts and
-   * subtrees, under which no unlisted host — one no line names — is admitted — whole-host and
+   * subtrees, under which no unlisted host — one no line names — is allowed — whole-host and
    * `read` denies alike, since an unlisted host holds `read` and nothing else, and every host a
    * deny emptied — in normal form: a pattern a subtree covers dropped, an exact pattern of a host
    * the map holds dropped as inert, sorted. Under the finite profiles the host map embodies every
@@ -480,13 +480,13 @@ object RulesetHelper:
       hosts.collect { case (host, Treatment.Tunnel) => host }.toSet
     val inspected: Set[String] = inspectedScopes.keySet
 
-    /** Whether a CONNECT to `host` is admitted: a host on the map, whatever pattern covers it,
+    /** Whether a CONNECT to `host` is allowed: a host on the map, whatever pattern covers it,
       * since an inspected host surviving beneath a denied subtree is exactly what the map
       * records; off it, under allow-unless-denied, one no denial pattern matches. */
-    def admits(host: String): Boolean =
+    def allows(host: String): Boolean =
       hosts.contains(host) || (publicDefault && !denialPatterns.exists(_.matches(host)))
 
-    /** An admitted inspected host's scopes: its lines' where the map lists it, the public
+    /** An allowed inspected host's scopes: its lines' where the map lists it, the public
       * default's `read` at the root where it does not. */
     def scopesOf(host: String): Map[String, Set[String]] =
       inspectedScopes.getOrElse(host, if publicDefault then Map(RulePath.Root -> Set(Grant.Read)) else Map.empty)
@@ -528,7 +528,7 @@ object RulesetHelper:
     def inspectedScopes: Map[String, Map[String, Set[String]]] = ruleset.inspectedScopes
     def tunnelHosts: Set[String] = ruleset.tunnelHosts
     def inspected: Set[String] = ruleset.inspected
-    def admits(host: String): Boolean = ruleset.admits(host)
+    def allows(host: String): Boolean = ruleset.allows(host)
     def scopesOf(host: String): Map[String, Set[String]] = ruleset.scopesOf(host)
 
   /**
@@ -541,7 +541,7 @@ object RulesetHelper:
    *                         AllProviders — then the file's deny lines
    *   deny-unless-allowed = the defaults — none after `deny defaults` — then every line
    *   allow-unless-denied = deny-unless-allowed's fold, and every public hostname on port 443 the
-   *                         map leaves out admitted as an inspected `read` unless a denial
+   *                         map leaves out receives an inspected `read` unless a denial
    *                         pattern covers it
    *
    * Refusals and warnings come from one further fold, every line over the defaults, so that a file
@@ -796,9 +796,9 @@ object RulesetHelper:
     host: String,
     head: HttpRequestHead,
     scopes: Map[String, Set[String]],
-    // Which hosts this session admits, consulted only where a refusal's advice would name another
+    // Which hosts this session allows, consulted only where a refusal's advice would name another
     // host (RefusalAdvice.forRefusedPost); the default names none.
-    admitted: String => Boolean = _ => false,
+    allowed: String => Boolean = _ => false,
   ): Unit =
     if !head.target.startsWith("/") then
       throw Refusal("only origin-form request targets are allowed", RefusalAdvice.originForm)
@@ -845,7 +845,7 @@ object RulesetHelper:
         if !opened then
           throw Refusal(
             s"$method not granted",
-            if method == "POST" then RefusalAdvice.forRefusedPost(host, path, admitted)
+            if method == "POST" then RefusalAdvice.forRefusedPost(host, path, allowed)
             else RefusalAdvice.methodNotGranted,
           )
 
@@ -855,7 +855,7 @@ object RulesetHelper:
   /*
    * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
    * contain one and resolvePublic rejects private answers — and under `allow-unless-denied` it is
-   * the named refusal a literal target gets. Admission is Ruleset.admits. The refusal's
+   * the named refusal a literal target gets. `Ruleset.allows` makes the decision. The refusal's
    * reason is presentation: `host denied (<line>)` where a file line matched the host, from
    * provenance, `host not allowed` otherwise.
    */
@@ -871,7 +871,7 @@ object RulesetHelper:
     if isIpLiteral(host) then
       throw Refusal("IP-literal target", RefusalAdvice.ipLiteral)
 
-    if !resolved.admits(host) then
+    if !resolved.allows(host) then
       resolved.provenance.denialOf(host) match
         case Some(sources) =>
           throw Refusal(s"host denied (${sources.mkString("; ")})", RefusalAdvice.hostDenied)

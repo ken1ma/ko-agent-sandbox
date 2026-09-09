@@ -95,7 +95,7 @@ directives, matched by name with no order among them, which Reyk Floeter replace
 last-matching `pass`/`block` rules "inspired by pf" (the commit below). That history is why this
 grammar has textual order and no specificity precedence: a later root `deny` beats an earlier
 `/api/` allow of the same grant however specific the path, where a most-specific-wins rule
-would admit it. Provider rules follow the same ordering, regardless of where earlier grants came
+would allow it. Provider rules follow the same ordering, regardless of where earlier grants came
 from; `egress-proxy.md`, "The rule file", defines their expansion.
 doas uses the same ordering at smaller scale: `permit`/`deny`, last match wins, and no match denies.
 It is the precedent for keeping the vocabulary this small. The lessons kept: the file's order is its
@@ -185,7 +185,7 @@ proxy"), and each of these stays out of it for a reason of its own:
   transport without that choice appearing anywhere the user reads.
 - `NO_PROXY` and per-origin direct exceptions: a second path around the upstream transport, and
   one a failure could widen.
-- Hostname-form upstream CONNECT: some upstream proxies admit only a hostname authority and refuse
+- Hostname-form upstream CONNECT: some upstream proxies allow only a hostname authority and refuse
   a numeric one. That incompatibility is reported, never worked around by sending the name: the
   upstream proxy would then resolve the origin itself, severing the proof that the address checked
   for private ranges is the one reached, and its resolver would join the trusted computing base.
@@ -273,7 +273,7 @@ third boundary file in `.ko-agent-sandbox`. Password-protected containers (`*.p1
 inert without the password, and these formats have no standard password file or environment-variable
 name. Keep the rule procedural: a credential in the project directory violates the operating model,
 and it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
-forge token left there, not the risk — every admitted host is a possible recipient of what the
+forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
 
 ### No gVisor or microVM isolation layer
@@ -357,7 +357,7 @@ are linked inline where that decision is recorded; these are the broader sources
   https://github.com/mattolson/agent-sandbox https://github.com/89luca89/clampdown
 - Refusal reasons handed to the agent — sandbox-runtime's `deniedDomainReasons`, Codex's
   `codex.network_proxy.policy_decision` reasons, Copilot's firewall report; here fixed and
-  launcher-owned, since the ruleset admits hosts, not patterns:
+  launcher-owned, since the ruleset allows hosts, not patterns:
   https://github.com/anthropic-experimental/sandbox-runtime
   https://github.com/openai/codex/tree/main/codex-rs/network-proxy
   https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-firewall

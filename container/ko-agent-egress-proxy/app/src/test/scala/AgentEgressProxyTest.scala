@@ -363,7 +363,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("the default rules contain only the expected hosts, paths and grants"):
     // Additional tunnel hosts would permit uninspected writes; broader forge grants would let
-    // deny-unless-model admit a push or a browse of the forge.
+    // deny-unless-model allow a push or a browse of the forge.
     CatalogLines.foreach: line =>
       line.rule match
         case Rule.Allow(_, path, grants) =>
@@ -443,7 +443,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[Refusal](authorize("api.anthropic.com", 443, resolved))
     assertEquals(resolved.denialPatterns, Vector.empty)
 
-  test("deny-unless-model admits the selected provider and consults the file's deny lines alone"):
+  test("deny-unless-model allows the selected provider and consults the file's deny lines alone"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "anthropic")
     assertEquals(
       resolved.hosts,
@@ -478,7 +478,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(none.hosts, Map.empty[String, Treatment])
     assertEquals(rulesetLines(none), Vector("egress profile: deny-unless-model; model provider: none"))
 
-  test("deny-unless-model under `all` admits every provider the proxy defines, and no catalog host"):
+  test("deny-unless-model under `all` allows every provider the proxy defines, and no catalog host"):
     val every = rulesetOf(profile = "deny-unless-model", provider = AllProviders)
     // The same hosts that `deny defaults` followed by every provider's allow line resolves to.
     val spelled = ("deny defaults" +: ModelProviders.map(name => s"allow model-provider $name")).mkString("\n")
@@ -498,7 +498,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // The variable's word, not the grammar's.
     assert(refusalOf("allow model-provider all").contains("names the model provider 'all'"))
 
-  test("deny-unless-model for copilot admits two login POSTs, one token read and four tunnels"):
+  test("deny-unless-model for copilot allows two login POSTs, one token read and four tunnels"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "github")
     assertEquals(
       resolved.inspectedScopes,
@@ -545,7 +545,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
 
-  test("allow-unless-denied admits any public host, keeps the defaults' inspected hosts narrowed; a denial wins"):
+  test("allow-unless-denied allows any public host, keeps the defaults' inspected hosts narrowed; a denial wins"):
     val resolved = rulesetOf(profile = "allow-unless-denied", rule = "deny https://telemetry.example.com/")
     assert(resolved.publicDefault)
     assertEquals(authorize("anything.example.org", 443, resolved), "anything.example.org")
@@ -714,7 +714,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
             if prefix.isEmpty then 0 else 1,
           )
           hosts.foreach: host =>
-            assert(!resolved.admits(host), s"$profile $prefix$deny: $host")
+            assert(!resolved.allows(host), s"$profile $prefix$deny: $host")
             if profile != "deny-all" then
               assertEquals(
                 intercept[Refusal](authorize(host, 443, resolved)).getMessage,
@@ -732,7 +732,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           val allow = s"allow https://$host$path $grant"
           Vector("deny-unless-allowed", "allow-unless-denied").foreach: profile =>
             val denied = rulesetOf(profile = profile, rule = s"deny defaults\n$allow\n$deny")
-            assert(!denied.admits(host), s"$profile: $allow followed by $deny")
+            assert(!denied.allows(host), s"$profile: $allow followed by $deny")
             val restored = rulesetOf(profile = profile, rule = s"deny defaults\n$deny\n$allow")
             val allowed = rulesetOf(profile = profile, rule = s"deny defaults\n$allow")
             assertEquals(restored.hosts(host), allowed.hosts(host), s"$profile: $deny followed by $allow")
@@ -744,7 +744,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
                 host, head(s"$method $target HTTP/1.1\r\nHost: $host\r\n\r\n"), restored.scopesOf(host),
               )
             val deniedAgain = rulesetOf(profile = profile, rule = s"deny defaults\n$deny\n$allow\n$deny")
-            assert(!deniedAgain.admits(host), s"$profile: repeated $deny after $allow")
+            assert(!deniedAgain.allows(host), s"$profile: repeated $deny after $allow")
 
   test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
     val narrowed = rulesetOf(rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/ read")
@@ -1774,7 +1774,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         refused(s"$method /o/r HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", whole("read", "git-fetch")),
         s"$method not granted",
       )
-    // Push discovery is refused under read and git-fetch, admitted under a POST grant at the repository.
+    // Push discovery is refused under read and git-fetch, allowed under a POST grant at the repository.
     val pushDiscovery = "GET /o/r.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n"
     assertEquals(refused(pushDiscovery, whole("read", "git-fetch")), "git push ref discovery")
     request(pushDiscovery, Map("/" -> Set("read"), "/o/" -> Set("read", "POST")))
@@ -1793,7 +1793,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
     // A malformed escape is no discovery of either service: the GET stays an ordinary read.
     request("GET /o/r.git/info/refs?service=git-receive%2xpack HTTP/1.1\r\nHost: github.com\r\n\r\n", whole("read"))
-    // npm: the audit line beside the root read admits the audit POST at its exact path, an older
+    // npm: the audit line beside the root read allows the audit POST at its exact path, an older
     // npm's endpoint is refused, and a scoped package keeps reading under the root.
     val npm = Map("/" -> Set("read"), "/-/npm/v1/security/advisories/bulk" -> Set("read", "POST"))
     request(
@@ -1896,7 +1896,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
 
   test("git fetch from a nested GitLab subgroup is allowed, push is not"):
-    // gitlab.com nests a repository under arbitrarily deep subgroups; the whole-path rule admits the depth, never a
+    // gitlab.com nests a repository under arbitrarily deep subgroups; the whole-path rule allows the depth, never a
     // different final segment.
     authorizeInspectedRequest(
       "gitlab.com",
@@ -2181,21 +2181,21 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   /** One row per outcome of a `throw Refusal(` in the sources, keyed by the site. The
     * population test counts the sites against the sources, so a refusal added without a row
-    * fails it. `host` is the request's own — the one host an advice may name unadmitted. */
+    * fails it. `host` is the request's own — the one host an advice may name without the ruleset allowing it. */
   private case class RefusalRow(site: String, host: String, expected: String, refuse: () => Unit)
 
   private def post(
     host: String,
     path: String,
     scopes: Map[String, Set[String]],
-    admitted: String => Boolean = _ => false,
+    allowed: String => Boolean = _ => false,
   ): () => Unit =
     () =>
       authorizeInspectedRequest(
         host,
         head(s"POST $path HTTP/1.1\r\nHost: $host\r\nContent-Length: 0\r\n\r\n"),
         scopes,
-        admitted,
+        allowed,
       )
 
   private lazy val refusalRows: Vector[RefusalRow] =
@@ -2300,7 +2300,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "authorizeInspectedRequest method not granted", github, lfsBatchGithub,
         post(github, "/o/r.git/info/lfs/objects/batch", fetch, defaultsRuleset.hosts.contains),
       ),
-      // The content host is named only while the ruleset admits it, and only for the forge it serves.
+      // The content host is named only while the ruleset allows it, and only for the forge it serves.
       RefusalRow(
         "authorizeInspectedRequest method not granted", github, lfsBatch,
         post(
@@ -2375,7 +2375,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   /** A hostname as it would appear in advice: dotted lowercase labels. */
   private val HostToken = """[a-z0-9-]+(?:\.[a-z0-9-]+)+""".r
 
-  test("every refusal names its next step: one line, control-free, naming no unadmitted host"):
+  test("every refusal names its next step: one line, control-free, naming no host the ruleset does not allow"):
     val sourceDir = java.nio.file.Paths.get("src", "main", "scala")
     val sites =
       java.nio.file.Files.list(sourceDir).iterator.asScala
@@ -2394,10 +2394,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
       HostToken.findAllIn(advice).foreach: named =>
         assert(named == row.host || defaultsRuleset.hosts.contains(named), s"${row.site} names $named")
 
-  test("the host-not-allowed step names a configuration that can admit the host, or none"):
-    // The named line, in a clean project file, admits the host; a defaults host is refused under the
+  test("the host-not-allowed step names a configuration that can allow the host, or none"):
+    // The named line, in a clean project file, allows the host; a defaults host is refused under the
     // default profile only through `deny defaults`, and the step says so rather than naming a line
-    // the defaults already have. The relaunch is named as possible only ("can admit"), since the
+    // the defaults already have. The relaunch is named as possible only ("can allow"), since the
     // project's file may deny the host under the default profile (the deny-all row above).
     import RefusalAdvice.hostNotAllowed
     val addition = "'allow https://tracker.example/ read' in .ko-agent-sandbox/egress/rule"
@@ -2413,7 +2413,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Vector("github.com", "tracker.example").foreach: host =>
         val advice = hostNotAllowed(host, profile)
         assert(advice.contains(s"a relaunch under $DefaultProfile"), advice)
-        assert(advice.endsWith("can admit it."), advice)
+        assert(advice.endsWith("can allow it."), advice)
     assert(hostNotAllowed("github.com", DefaultProfile).contains("deny defaults"))
 
   test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):

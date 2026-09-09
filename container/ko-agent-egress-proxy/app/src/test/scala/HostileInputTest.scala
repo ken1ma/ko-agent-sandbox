@@ -286,7 +286,7 @@ class HostileInputTest extends munit.FunSuite:
     )
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
-  test("no rule file, however malformed, admits a host or a grant nobody named"):
+  test("no rule file, however malformed, allows a host or a grant nobody named"):
     // The fail-open direction for rule parsing: a file that resolves at all must resolve to
     // defaults hosts plus the ones its own text spells, never to a host the arithmetic invented,
     // and every grant on a resolved scope is a word some line wrote.
@@ -315,7 +315,7 @@ class HostileInputTest extends munit.FunSuite:
         val ruleset = resolveRuleset(Some("deny-unless-allowed"), None, Some(value))
         val named = value.toLowerCase
         ruleset.hosts.keySet.foreach: host =>
-          assert(DefaultHosts.contains(host) || named.contains(host), s"'$value' admitted the unnamed host '$host'")
+          assert(DefaultHosts.contains(host) || named.contains(host), s"'$value' allowed the unnamed host '$host'")
         ruleset.inspectedScopes.foreach: (host, scopes) =>
           scopes.foreach: (path, grants) =>
             assert(grants.nonEmpty && grants.subsetOf(words), s"'$value' granted '$host' $grants")
@@ -434,7 +434,7 @@ class HostileInputTest extends munit.FunSuite:
   private def pathContains(path: String, request: String): Boolean =
     if path.endsWith("/") then request.startsWith(path) else request == path
 
-  /** The evaluator: "tunnel", "admitted" or "refused" for one request under one file. */
+  /** The evaluator: "tunnel", "allowed" or "refused" for one request under one file. */
   private def evaluate(
     profile: String,
     provider: Option[String],
@@ -499,7 +499,7 @@ class HostileInputTest extends munit.FunSuite:
       case Kind.PushDiscovery  => grants("POST")
       case Kind.UploadPack     => !request.ambiguous && (grants("git-fetch") || grants("POST"))
       case Kind.Write          => !request.ambiguous && grants(request.method)
-    if opened then "admitted" else "refused"
+    if opened then "allowed" else "refused"
 
   private def production(resolved: ResolvedEgress, host: String, request: Request): String =
     try
@@ -511,7 +511,7 @@ class HostileInputTest extends munit.FunSuite:
           ascii(s"${request.method} ${request.target} HTTP/1.1\r\nHost: $host\r\n$framing\r\n"),
         )
         authorizeInspectedRequest(host, head, resolved.scopesOf(host))
-        "admitted"
+        "allowed"
     catch case _: Refusal => "refused"
 
   test("the ruleset authorizes exactly what the plain ordered evaluator does, over the drawn domain"):
@@ -565,6 +565,6 @@ class HostileInputTest extends munit.FunSuite:
     assert(files > 0 && refusedFiles > 0, s"$files files resolved, $refusedFiles refused")
     Vector(
       "tunnel",
-      "admitted",
+      "allowed",
       "refused",
     ).foreach(outcome => assert(outcomes(outcome) > 0, s"no $outcome outcome was ever drawn"))

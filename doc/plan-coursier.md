@@ -25,7 +25,7 @@ remain session-local because their cache entries can be host-OS-specific.
 Keep the installed Coursier launchers in the image, outside `$HOME`.
 
 This option expands the readable host boundary and is disabled by default. It never broadens
-egress: a cache miss still succeeds only when the selected `--egress` profile admits the artifact
+egress: a cache miss still succeeds only when the selected `--egress` profile allows the artifact
 host. The image relocation and optional host overlay ship as one increment; implementation commits
 may sequence them, but completion means the whole acceptance checklist passes.
 
@@ -52,7 +52,7 @@ those contracts without material startup cost.
 The launchers installed by `cs setup` are bootstraps. With no cache overlay, the first `sbt`,
 `scala`, `scalafmt` or other Scala-program invocation in every session can download a substantial
 part of the removed 830 MB again. A narrow egress profile can make that invocation fail when it
-does not admit the required repositories. This cost is accepted: host artifacts remain unexposed
+does not allow the required repositories. This cost is accepted: host artifacts remain unexposed
 unless the user opts in, and all unshared downloads remain disposable.
 
 Do not add a default cache image or retain an image-owned cache in this increment. Either would
@@ -335,7 +335,7 @@ Add image/toolchain checks:
 - a runtime `cs install` writes under `~/.local/share/coursier/bin` and wins `PATH` precedence;
 - ordinary `cs update` does not modify `/opt/coursier/bin`, and explicitly selecting that directory
   fails without changing the image launchers;
-- the default cold-cache path can launch the advertised Scala programs when egress admits their
+- the default cold-cache path can launch the advertised Scala programs when egress allows their
   required hosts;
 - the image-home allowlist, size and inode limits hold;
 - the nonroot-owned `.cache/coursier` directory is empty, and no Coursier cache content or

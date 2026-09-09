@@ -26,7 +26,7 @@ access; "The web reached through the model provider" describes those exceptions.
 
 This guarantee concerns automatic forwarding. A credential placed in the project directory is
 accessible like any other project file; one forwarded with `--env` is available in the sandbox's
-environment. Egress rules limit where it can be sent, not its authority at an admitted destination
+environment. Egress rules limit where it can be sent, not its authority at an allowed destination
 ("Exfiltration through allowed network traffic", below). Only the launch command line can specify
 `--env`; a project file cannot choose which host variables it receives. The launcher refuses
 `KO_AGENT_SANDBOX_*`, which describe its enforcement settings, and prints every forwarded name. Any
@@ -44,7 +44,7 @@ The defaults refuse `git push`; a project can grant it through `method=POST` or 
 "Reading without being able to write" below explains the rules, costs, and limits.
 
 **Being used to attack someone else.** The egress rules limit reachable targets and operations; they
-do not establish that an allowed request is harmless. Whatever the profile — the widest admits any
+do not establish that an allowed request is harmless. Whatever the profile — the widest allows any
 public hostname on port 443 — the proxy refuses other ports and private addresses, cloud metadata
 services such as 169.254.169.254 included: the proxy validates every resolved address at connection
 time.
@@ -219,7 +219,7 @@ the operation, not just the signed-in user's bucket access. Such jobs can read o
 without the sandbox contacting a storage host. Google's [batch-inference
 documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/predictions/get-batch-predictions)
 describes those execution identities. Storage, Compute and IAM use separate hosts, reachable only
-where the profile or a project rule admits them. The project can deny the three aiplatform hosts
+where the profile or a project rule allows them. The project can deny the three aiplatform hosts
 while retaining the Business AI Code API, or use `deny model-provider google` to deny every host in
 Google's default rules, unless a later rule grants access again. Resetting the project's agent-state
 volume discards the stored token ("What the persistent volume holds", below).
@@ -409,8 +409,8 @@ connection passes these checks and transitions in order:
 1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`,
    `0177.0.0.1` and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone
    is a known bypass class
-1. the resolved ruleset admits the hostname: an exact entry in its host map allows it;
-   `allow-unless-denied` also admits an unlisted name unless a resolved denial pattern matches it.
+1. the resolved ruleset allows the hostname: by an exact entry in its host map, or — under
+   `allow-unless-denied` — as an unlisted name no resolved denial pattern matches.
    The map already incorporates rule order, including grants that follow denials
 1. DNS is resolved once to obtain the candidate addresses
 1. every address the name resolved to must be a public one — a name that answers with a loopback,
@@ -439,7 +439,8 @@ them (README, `--egress-check`).
 
 With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through an upstream proxy"),
 step 6 connects through the upstream proxy with a `CONNECT` naming the validated numeric address.
-The local checks still decide admission; the upstream proxy does not resolve the origin hostname.
+The local checks still decide what is allowed; the upstream proxy does not resolve the origin
+hostname.
 The returned tunnel carries the same steps 8 to 11. The upstream proxy cannot override a local
 refusal. An upstream refusal or connection failure produces `502`, with no direct-connect fallback.
 The variable reaches the proxy container's environment by name — podman copies a value-less `--env`
@@ -460,9 +461,9 @@ Timestamps use UTC with second precision, for example `2026-08-26T11:59:38Z`. Ev
 timestamp, including startup lines; the examples below omit it.
 
 The host is the `CONNECT` target as the sandbox requested it — what was asked for, not necessarily a
-hostname admitted by the ruleset. The method is `CONNECT` for tunnel-level events and the inspected
+hostname allowed by the ruleset. The method is `CONNECT` for tunnel-level events and the inspected
 method inside one; `-` fills a field the connection ended before revealing, so the field never
-carries a token the proxy did not admit — a refused method is named in the text instead. The target
+carries a token the proxy did not allow — a refused method is named in the text instead. The target
 appears exactly when a parsed inspected request exists, query string included: the URL is the
 message an allowed `GET` can carry ("Exfiltration through allowed network traffic", above), so the
 log records it whole, which is also why the log files are owner-only. Whole, but not arbitrary — a
@@ -634,11 +635,11 @@ its profile and `egress/rule` apply — which the launcher does not keep a copy 
 off the `allow` lines of the proxy image's own `--print-ruleset` under the same rules at launch, so
 a custom proxy image, or a project adding an inspected host, gets a matching leaf and there is no
 second list to drift. The proxy still refuses to start unless the certificate names exactly the
-inspected set of the ruleset it resolved. A missing name would cause a TLS error for an admitted
+inspected set of the ruleset it resolved. A missing name would cause a TLS error for an allowed
 inspected host. An extra name would let the proxy authenticate as a host outside its inspection set,
 potentially including an opaque model endpoint.
 
-Under `allow-unless-denied`, admitted unlisted hosts receive inspected `read` access. They cannot
+Under `allow-unless-denied`, allowed unlisted hosts receive inspected `read` access. They cannot
 all be named in a leaf issued at launch, so the proxy issues a leaf at each host's first connection,
 which needs a CA key inside the proxy container — the process facing the internet, and under this
 profile all of it. The CA is created for the run and trusted by that session alone through a bundle
@@ -700,8 +701,8 @@ The rule file's lines name exact hostnames, as URLs; the one wildcard is `**.dom
 side — `deny https://**.domain/`. This asymmetry is deliberate.
 
 Exact-host grants make the allowed destinations explicit and enumerable for review. Wildcard
-grants would also admit matching hosts added later. For a shared apex like a cloud provider's,
-`allow https://*.example.com/` could admit names an attacker can register or take over. The breadth
+grants would also allow matching hosts added later. For a shared apex like a cloud provider's,
+`allow https://*.example.com/` could allow names an attacker can register or take over. The breadth
 is in the grant, not the matcher, so no careful pattern syntax removes it. For an inspected host
 under the finite profiles, an open-ended subtree also cannot satisfy the design's certificate check:
 the leaf issued at launch must enumerate the inspected host set. Grants therefore name exact hosts.
@@ -716,7 +717,7 @@ follows is why. A `deny` names a host or a subtree, never a path, because a gran
 spelling that works while a denial by path needs every spelling that reaches the tenant, and the
 proxy, comparing literally, cannot know them. With the defaults granting `git-fetch` on
 `github.com`, a hypothetical `deny https://github.com/secret-org/` would be escaped by
-`/%73ecret-org/…`, which misses the deny, matches the root line and is admitted, GitHub decoding
+`/%73ecret-org/…`, which misses the deny, matches the root line and is allowed, GitHub decoding
 `%73` to `s`; by `/Secret-Org/…`, GitHub folding case; by `/secret-org./` and `/secret-org;v=1/` on
 an origin that strips a segment's trailing dot or a `;parameter`; and by `/orgs/secret-org` or a
 search page, reaching the organisation under paths the deny never named. Each escape gains access: a
@@ -750,7 +751,7 @@ discovery and `git-receive-pack` paths allows push; the launch's widening report
 request-level auditing an explicit decision about the whole ruleset. Restricting an existing tunnel
 to inspected reads requires only a deny and an allow for that host.
 
-A wildcard *removal* is the mirror image: it only ever shrinks what is admitted, so its worst case
+A wildcard *removal* is the mirror image: it only ever shrinks what is allowed, so its worst case
 is denying a wanted host — fail-closed — never reaching a new one. `**.foo.com` is the concise
 way to drop a provider that ships several subdomains without re-listing its current ones; `deny
 model-provider NAME` names every host in that provider's default rules as its endpoints change
@@ -865,7 +866,7 @@ the mechanism. Its security properties and costs are:
   read-only — the cs-installed `sbt` and the distribution it execs in the Coursier archive cache,
   the one mill executable the user provisioned, the one Maven the project's wrapper unpacked under
   `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
-  temporary directory for that command, and loopback to its own egress proxy. The proxy admits
+  temporary directory for that command, and loopback to its own egress proxy. The proxy allows
   repositories named in `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow
   https://<host>/ read` lines only; unrecognized configuration entries are refused, as in the parent
   directory) plus Maven Central.
@@ -972,7 +973,7 @@ its setuid privilege, limiting a nested user namespace to one mapped uid: an ima
 `USER` or chowns to a second uid fails by design — this repository's own images among them, so the
 sandbox still cannot build itself. The egress topology is inherited, not escaped: inner containers
 share the sandbox's network namespace, their only route out is still the proxy, and an image pull is
-an ordinary logged CONNECT to a registry the ruleset admits — Docker Hub, `ghcr.io`, `quay.io`,
+an ordinary logged CONNECT to a registry the ruleset allows — Docker Hub, `ghcr.io`, `quay.io`,
 `gcr.io` and ECR Public are built in, any other registry is the project's `egress/rule` to add. No
 runtime is preinstalled. The image's `sandbox-install-podman` refuses to run outside this mode;
 within it, the script unpacks Podman under `$HOME` without acquiring additional privileges. Its

@@ -80,7 +80,7 @@ object AgentEgressProxy:
    * pure computation the launcher runs --network=none to read back what would
    * be enforced. The ruleset lines are also where the launcher reads the leaf
    * certificate's names from. Warnings — a deny matching nothing, a redundant
-   * grant, a selected provider the profile does not fully admit — go to
+   * grant, a selected provider the profile does not fully allow — go to
    * stderr, so the data lines pipe cleanly.
    *
    * The lines say what this ruleset *would* inspect, not what a given
@@ -126,7 +126,7 @@ object AgentEgressProxy:
 
     // The decision is authorizeRequest's own — the very function a CONNECT meets — so this
     // diagnostic cannot disagree with enforcement: an IP-literal target, a denied host and a
-    // non-admitted host all answer here exactly as they would on the wire, in enforcement's
+    // non-allowed host all answer here exactly as they would on the wire, in enforcement's
     // words. Only an accepted host's treatment is looked up on top, its resolved lines, one
     // per scope.
     val decisions =
@@ -153,7 +153,7 @@ object AgentEgressProxy:
 
     // The transport a launch would use, through the same parser, resolution and CONNECT: one
     // tunnel to the first vetted address, closed before any TLS — enough to say whether the
-    // upstream proxy admits a numeric CONNECT to this host, without asking the origin anything.
+    // upstream proxy allows a numeric CONNECT to this host, without asking the origin anything.
     UpstreamEndpoint.configured(variable => Option(System.getenv(variable))).foreach: endpoint =>
       val transport =
         try UpstreamProxy(endpoint, endpoint.resolve())
@@ -272,7 +272,7 @@ object AgentEgressProxy:
    * nothing is an error, not a narrower ruleset, since the launcher never issues a leaf for such a
    * ruleset and a supplied one means the two disagree about what this ruleset is. Under
    * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
-   * inspected, and without the CA each would be the writable tunnel this profile no longer admits,
+   * inspected, and without the CA each would be the writable tunnel this profile no longer allows,
    * so their absence refuses the start. Either pair under the other profile is refused likewise
    * (SECURITY.md, "Who holds the CA key").
    */
@@ -323,7 +323,7 @@ object AgentEgressProxy:
     def inspectionSummary: String =
       inspection match
         case Some(_) if resolved.publicDefault =>
-          s"tls inspection: every admitted host, except the ${resolved.tunnelHosts.size} tunnel hosts"
+          s"tls inspection: every allowed host, except the ${resolved.tunnelHosts.size} tunnel hosts"
         case Some(_) =>
           s"tls inspection: active for the ${resolved.inspected.size} inspected hosts"
         case None =>
@@ -368,7 +368,7 @@ object AgentEgressProxy:
   def handle(client: Socket, run: Run): Unit =
     // The audit context, filled in as parsing learns it: a `-` in the line marks a field the
     // connection ended before revealing. The host is the target as the sandbox requested it —
-    // what was asked for, not necessarily a hostname admitted by the ruleset. auditLine has the grammar.
+    // what was asked for, not necessarily a hostname allowed by the ruleset. auditLine has the grammar.
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
@@ -399,7 +399,7 @@ object AgentEgressProxy:
 
       case ex: BadRequest =>
         // Parse failures keep `-` in the method field: it never holds a token the proxy did not
-        // admit, so a refused method is named in the text, not promoted to the vocabulary.
+        // allow, so a refused method is named in the text, not promoted to the vocabulary.
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
         respondQuietly(client, 400, "Bad Request")
 
@@ -416,7 +416,7 @@ object AgentEgressProxy:
           case _ if addresses.isEmpty    => "resolution:"
           case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
-        // The stage in the body, as a refusal's reason is: the ruleset admitted this host, so the
+        // The stage in the body, as a refusal's reason is: the ruleset allowed this host, so the
         // agent's next step is to report what failed, and only sandbox-egress-check shows it.
         respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
 
@@ -446,14 +446,14 @@ object AgentEgressProxy:
 
       validateTlsIdentity(connectHost, hello)
 
-      // A tunnel host is opaque; every other admitted host is inspected, with its lines' scopes or
+      // A tunnel host is opaque; every other allowed host is inspected, with its lines' scopes or
       // the public default's (Ruleset.scopesOf) — unless this run has no material at all.
       run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedConnection(
             client, origin, connectHost, hello, inspection,
             run.resolved.scopesOf(connectHost),
-            run.resolved.admits,
+            run.resolved.allows,
           )
 
         case None =>
@@ -515,7 +515,7 @@ object AgentEgressProxy:
     hello: TlsClientHello,
     inspection: TlsInspection,
     hostScopes: Map[String, Set[String]],
-    admitted: String => Boolean,
+    allowed: String => Boolean,
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes, host)
 
@@ -534,7 +534,7 @@ object AgentEgressProxy:
         method = head.method
         target = head.target
 
-        authorizeInspectedRequest(host, head, hostScopes, admitted)
+        authorizeInspectedRequest(host, head, hostScopes, allowed)
 
         val originTls = inspection.connect(origin.socket, host)
 

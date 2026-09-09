@@ -1145,7 +1145,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(raw.contains("entries in nested repositories remain writable"), raw)
     assert(raw.contains("Symlinks can have absolute targets"), raw)
     assert(raw.contains("targets that resolve outside the project on the host"), raw)
-    // Both name the relaunch path for a host the ruleset does not admit.
+    // Both name the relaunch path for a host the ruleset does not allow.
     Vector(readOnly, filtered, raw).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
@@ -1186,9 +1186,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(publicDefault.contains("reachable for reading"), publicDefault)
     assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
-    assert(!publicDefault.contains("Anything not admitted below is refused"), publicDefault)
+    assert(!publicDefault.contains("Anything not allowed below is refused"), publicDefault)
     assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
-    assert(filtered.contains("Anything not admitted below is refused"), filtered)
+    assert(filtered.contains("Anything not allowed below is refused"), filtered)
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
     // A session without git: the agent hears it before its first command, in the words naming
     // what the container lacks (SandboxProject.noGitInstruction).
