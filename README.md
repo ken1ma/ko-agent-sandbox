@@ -112,65 +112,59 @@ unavailable because the artifact name has not been decided.
    agent will run builds or tests: a build inside the podman machine takes memory that all
    containers there share, and holds it until the session ends.
 
-Press Ctrl-C twice in quick succession to quit.
-
 ### Running `<command>`
 
 1. To change `--write=` or `--egress=`, quit, relaunch, and continue the session: `claude --resume`,
    `codex resume`, `agy --continue`, `kiro-cli chat --resume`, `copilot --continue` and
    `opencode --continue`.
+1. Press Ctrl-C twice in quick succession to quit.
 
 #### `claude`
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
-1. To restore permission prompts, edit the managed settings in the Containerfile and rebuild
-   the image. These settings take precedence over user settings.
-1. Without `KO_AGENT_SANDBOX_CLIPBOARD` (Reference; SECURITY.md "Clipboard") the clipboard does not
-   cross into the container: Ctrl-V answers "No image found in clipboard", and claude 2.1.227's
-   `/tui fullscreen` on macOS Terminal copies nothing out even with Shift/Alt.
+1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
+   `bidirectional`.
 
 #### `codex`
 
 1. Sign-in: "Enable device code authorization for Codex" in ChatGPT Settings → Security and
    login, then choose "Sign in with Device Code" in the login UI.
-1. To restore permission prompts: set `approval_policy = "on-request"` in
-   `~/.codex/config.toml`. Your configuration overrides the image's defaults.
 
 #### `agy`
 
 1. Sign-in works like `claude`'s: copy the printed URL and paste in an external browser, and paste
    the code back.
-1. To restore permission prompts: set `"toolPermission": "request-review"` in
-   `~/.gemini/antigravity-cli/settings.json` (or via `/config`).
 
 #### `kiro-cli`
 
 1. `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter there, and exits
-   once signed in; run `kiro-cli` again to chat. Without the flag it fails to open a browser.
-1. To restore permission prompts: remove entries from `allowedTools` in the supplied agent
-   configuration, `~/.kiro/agents/ko-agent-sandbox.json`.
+   once signed in; run `kiro-cli` again to chat.
 
 #### `copilot`
 
-1. Sign in with `copilot login --device-code`, or run `/login` and choose "Sign in with a device
-   code". Browser sign-in does not work because its callback cannot reach the container.
+1. Run `/login` and choose "Sign in with a device code".
 1. Unlike the other sign-ins, the stored token grants access to your private repositories
    (SECURITY.md, "The web reached through the model provider").
 1. Prompts for paths outside `/workspace` and for URLs remain unless you run `copilot --yolo`.
-   To restore permission prompts: set `COPILOT_ALLOW_ALL=false`.
 1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out; this requires
    `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
 
 #### `opencode`
 
-1. Run `/connect`, then `/models` to pick a model of the connected provider. The default model,
-   `opencode/big-pickle`, posts to `opencode.ai`, which the proxy admits read-only. Anthropic and
-   Google take an API key. For a ChatGPT plan choose the headless method, not the browser method
-   (the same unreachable callback as `copilot`'s). GitHub Copilot prints a device code like
-   `copilot login --device-code`, and the token it stores has the `read:user` scope, not `repo`.
-1. To restore permission prompts: override the image's managed configuration for one launch with
-   `--env='OPENCODE_PERMISSION={"*":"ask"}'`.
+1. Run `/connect`, then `/models` to pick a model of the connected provider.
+    1. Anthropic and Google take an API key.
+    1. For a ChatGPT plan choose the headless method, not the browser method.
+    1. GitHub Copilot prints a device code, and the token it stores has the `read:user` scope,
+       not `repo`.
+1. The default model, `opencode/big-pickle`, posts to `opencode.ai`, where the proxy allows only
+   reads, so its requests are refused.
+
+#### Sign-in
+
+The agents' own browser sign-ins do not work: the agent listens for the callback on 127.0.0.1
+inside the container, and the browser on the host redirects to the host's own 127.0.0.1, where
+nothing listens.
 
 #### Sessions
 
@@ -205,7 +199,7 @@ Press Ctrl-C twice in quick succession to quit.
                          default) is the shared writable mount
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
-                         deny-unless-allowed, admits the launcher-owned
+                         deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
       --run-on-host=<programs>
@@ -348,6 +342,21 @@ Press Ctrl-C twice in quick succession to quit.
 1. For workspace-filter failures: `fuse/ko-agent-fs/doc/troubleshooting.md`, keyed by symptom.
 1. `--build`, `--update` and `--self-test` all end by removing the launcher images they
    superseded, never a pulled image.
+
+
+### Restoring permission prompts
+
+1. `claude`: edit the managed settings in the Containerfile and rebuild the image. They take
+   precedence over user settings.
+1. `codex`: set `approval_policy = "on-request"` in `~/.codex/config.toml`. Your configuration
+   overrides the image's defaults.
+1. `agy`: set `"toolPermission": "request-review"` in `~/.gemini/antigravity-cli/settings.json`
+   (or via `/config`).
+1. `kiro-cli`: remove entries from `allowedTools` in the supplied agent configuration,
+   `~/.kiro/agents/ko-agent-sandbox.json`.
+1. `copilot`: set `COPILOT_ALLOW_ALL=false`.
+1. `opencode`: override the image's managed configuration for one launch with
+   `--env='OPENCODE_PERMISSION={"*":"ask"}'`.
 
 
 ## Egress proxy

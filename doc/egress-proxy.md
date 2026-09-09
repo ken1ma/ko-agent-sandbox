@@ -13,10 +13,10 @@ lines and named by a digest. Two files of different rules may resolve to one rul
 
 ## Choosing an egress profile
 
-Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. An admitted
+Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. An allowed
 host has one of two treatments: a `tunnel`, opaque, nothing seen or logged past the `CONNECT`;
 or inspected — TLS terminated, each request decided against the grants of its resolved scope,
-and refused where no grant admits it ("The rule file" below; SECURITY.md, "Reading without being
+and refused where no grant allows it ("The rule file" below; SECURITY.md, "Reading without being
 able to write", has what each grant opens and what inspection costs and buys).
 
 The proxy supplies default rules for every supported model provider: `anthropic`, `openai`,
@@ -33,9 +33,9 @@ include inspected documentation, package-registry and forge hosts, with `read` o
    `kiro-cli` selects `aws`, `copilot` selects `github`; `opencode`, which has no fixed
    provider, selects every provider under `defaults/model-provider/`.
    Only the basename of the directly launched command is classified; anything else selects no
-   provider, admits no host, and says so at startup.
+   provider, allows no host, and says so at startup.
 1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
-   443 it leaves out admitted as an inspected `read`: `GET` and `HEAD`, logged, all other methods
+   443 it leaves out receives an inspected `read`: `GET` and `HEAD`, logged, all other methods
    refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
    `read` and nothing else, so a `tunnel` deny takes nothing from it. Choose it for work whose
    hosts cannot be listed in advance, such as web browsing or dependency downloads. Public hosts
@@ -272,7 +272,7 @@ that is wrong and never the value. `--build`'s pulls and builds, and `podman mac
 the host's variables as podman does on its own; of a session's containers only the proxy receives
 the one selected variable, and the sandbox none of them.
 
-What changes is only how an admitted address is reached: the ruleset decides every destination as
+What changes is only how an allowed address is reached: the ruleset decides every destination as
 before, the name is resolved once and every answer must be public, and the upstream proxy is
 asked for a tunnel to that numeric address — never for the hostname, which it would resolve
 itself, outside the check. A failure on that path is an `error` line and a 502, never a direct

@@ -54,7 +54,7 @@ class EgressSessionTest extends munit.FunSuite:
           line.substring(line.indexOf("issuer:") + "issuer:".length).trim
       .getOrElse("(no issuer line)")
 
-  /** A host the ruleset never admitted, or a name resolving outside public address space: both are
+  /** A host the ruleset never allowed, or a name resolving outside public address space: both are
     * refused at the CONNECT, before a tunnel exists, so curl reports the proxy's status as an error
     * rather than as an HTTP code. */
   private def refusedAtConnect(session: Session, url: String, why: String): Unit =
@@ -65,7 +65,7 @@ class EgressSessionTest extends munit.FunSuite:
       s"$url failed, but not with a refusal from the proxy: ${attempt.err}",
     )
 
-  /** An admitted host whose *origin* leg the proxy would not complete. Its CONNECT succeeded and
+  /** An allowed host whose *origin* leg the proxy would not complete. Its CONNECT succeeded and
     * the proxy terminated the client's TLS, so the refusal arrives as a status inside the tunnel
     * and curl exits 0 — which is precisely why an unverified origin would be indistinguishable from
     * a verified one in here, and why the proxy's own audit line is what settles the cause. */
@@ -131,7 +131,7 @@ class EgressSessionTest extends munit.FunSuite:
       )
 
       // The bound: allowing four hosts allows four hosts. A reserved name (RFC 6761), so that no
-      // growth of the defaults can ever turn the sentinel into an admitted host.
+      // growth of the defaults can ever turn the sentinel into an allowed host.
       refusedAtConnect(session, "https://unlisted.invalid/", "a host the ruleset never named was allowed")
 
   test("a deny of one grant takes that grant alone: the forge stays readable and stops being clonable"):
@@ -162,7 +162,7 @@ class EgressSessionTest extends munit.FunSuite:
     withSession(None): session =>
       assert(exec(session, clone*).ok, "the clone fails under the defaults too; this fixture proves nothing")
 
-  test("a host-wide deny with a narrower allow beneath it admits one owner and refuses the rest, clone included"):
+  test("a host-wide deny with a narrower allow beneath it allows one owner and refuses the rest, clone included"):
     requireTestWithPodman()
 
     // The forge denied whole, then one owner re-granted for the clone and the device login's path
@@ -183,15 +183,15 @@ class EgressSessionTest extends munit.FunSuite:
       assertEquals(status(session, readme), "200", "the read under the prefix is refused")
       assertEquals(
         status(session, "https://raw.githubusercontent.com/github/docs/main/README.md"), "403",
-        "SECURITY: a read outside the prefix was admitted",
+        "SECURITY: a read outside the prefix was allowed",
       )
       assertEquals(
         status(session, "https://raw.githubusercontent.com/octocat/../github/docs/main/README.md"), "403",
-        "SECURITY: a dot segment under the prefix was admitted",
+        "SECURITY: a dot segment under the prefix was allowed",
       )
       assertEquals(
         status(session, "https://raw.githubusercontent.com/octocat/%2e%2e/github/docs/main/README.md"), "403",
-        "SECURITY: a percent-encoded dot segment under the prefix was admitted",
+        "SECURITY: a percent-encoded dot segment under the prefix was allowed",
       )
       // The device flow's first POST, at its own path: GitHub answers a client-id error, which is
       // the origin speaking — the proxy's refusal would be a 403 with its own body.
@@ -316,12 +316,12 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
-  test("the npm audit line admits the audit POST beside an install with a scoped package"):
+  test("the npm audit line allows the audit POST beside an install with a scoped package"):
     requireTestWithPodman()
 
     // The example's one line, over the defaults' root read: the install's reads under the root
     // keep working with the `%2f` npm spells a scoped package's name with, and the audit POST at
-    // its exact path is admitted, logged as such.
+    // its exact path is allowed, logged as such.
     withSession(Some("allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST\n")): session =>
       val install = exec(
         session,
@@ -339,5 +339,5 @@ class EgressSessionTest extends munit.FunSuite:
       )
       assert(
         audit.exists(line => line.contains(" allow registry.npmjs.org POST /-/npm/v1/security/advisories/bulk")),
-        "the audit POST was not admitted at its path",
+        "the audit POST was not allowed at its path",
       )

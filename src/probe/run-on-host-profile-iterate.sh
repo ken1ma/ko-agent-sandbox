@@ -1,6 +1,6 @@
 #!/bin/sh
 # Discover the profile's runtime authority (run-on-host.md "The Seatbelt profile") the only way
-# it admits — by running a real build and reading what it actually needs, never by listing what
+# it allows — by running a real build and reading what it actually needs, never by listing what
 # the host happens to have. Run it when a command stops under the profile and nothing names the
 # missing grant.
 #

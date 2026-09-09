@@ -147,7 +147,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error with the proxy's status instead of as an HTTP code.
     Vector(
-      "https://unlisted.invalid/",  // reserved (RFC 6761): never an admitted host
+      "https://unlisted.invalid/",  // reserved (RFC 6761): never an allowed host
       "https://8.8.8.8/",
       "https://169.254.169.254/",
       "https://10.0.0.1/",
@@ -238,9 +238,9 @@ class SessionBoundaryTest extends munit.FunSuite:
       ),
       refused.text,
     )
-    val admitted = run("sandbox-egress-check", "api.github.com")
-    assertEquals(admitted.exit, 0, admitted.err)
-    assert(admitted.text.contains("HEAD / -> HTTP/1.1 "), admitted.text)
+    val allowed = run("sandbox-egress-check", "api.github.com")
+    assertEquals(allowed.exit, 0, allowed.err)
+    assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()

@@ -5,8 +5,9 @@ package agentsandbox.egress
 
 case class BadRequest(message: String) extends RuntimeException(message)
 
-/** A connection that closed after zero bytes: routine pooled-client behavior after admission,
-  * logged as `error`; the ruleset refused nothing (SECURITY.md, "The audit line grammar"). */
+/** A connection that closed after zero bytes: routine pooled-client behavior after the ruleset
+  * allowed the connection, logged as `error`; the ruleset refused nothing (SECURITY.md, "The
+  * audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
 /** An origin EOF where response framing promised more. Distinct from IOException because the
@@ -22,7 +23,7 @@ case class Refusal(message: String, advice: String) extends RuntimeException(mes
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
  * can take there, or the one instruction to pass to the user. Never a way around the ruleset, and never a
- * host this session's ruleset does not admit — forRefusedPost checks before naming one. Fixed text
+ * host this session's ruleset does not allow — forRefusedPost checks before naming one. Fixed text
  * plus what the request itself named, so a body never carries project data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
@@ -44,11 +45,11 @@ object RefusalAdvice:
           "for another route."
       else s"Not in this session's egress rules. Ask the user to add $addition on the host."
     else
-      s"This session's egress profile, $profile, admits no project hosts. Ask the user; a relaunch under " +
-        (if defaults then s"$default can admit it." else s"$default with $addition can admit it.")
+      s"This session's egress profile, $profile, allows no project hosts. Ask the user; a relaunch under " +
+        (if defaults then s"$default can allow it." else s"$default with $addition can allow it.")
 
   // The line is on the body's first line already (`host denied (<line>)`); a `**.domain` pattern
-  // repeated here would name a host the ruleset does not admit.
+  // repeated here would name a host the ruleset does not allow.
   val hostDenied = "Denied by this project's rules. Ask the user; do not look for another route."
 
   val port = "Only port 443 is reachable."
@@ -66,7 +67,7 @@ object RefusalAdvice:
   val graphql = "This GraphQL POST is refused. Read through the REST API."
 
   /** Where GitHub serves LFS file contents read-only, one URL per file (SECURITY.md, "Reading
-    * without being able to write"). Named in advice only while the ruleset admits it. */
+    * without being able to write"). Named in advice only while the ruleset allows it. */
   val LfsContentHost = "media.githubusercontent.com"
 
   val lfsBatchGithub =
@@ -88,7 +89,7 @@ object RefusalAdvice:
 
   /** The paths are the ruleset's own words for this host, so naming them names nothing new. */
   def pathOutside(paths: Set[String]): String =
-    s"This host is admitted under ${paths.toVector.sorted.mkString(" and ")} only. " +
+    s"This host is allowed under ${paths.toVector.sorted.mkString(" and ")} only. " +
       "Ask the user; do not look for another route."
 
   /** The ClientHello stage answers after the 200, so this reaches no client; the agent
@@ -98,10 +99,10 @@ object RefusalAdvice:
   /** Chosen by the path the request named — parsed by this proxy, never read from a body — so the
     * two POSTs whose refusal costs a read get the read's other route: GraphQL (`/graphql` on
     * GitHub, `/api/graphql` on GitLab) and the LFS batch endpoint. */
-  def forRefusedPost(host: String, path: String, admitted: String => Boolean): String =
+  def forRefusedPost(host: String, path: String, allowed: String => Boolean): String =
     if path.endsWith("/graphql") then graphql
     else if path.endsWith("/info/lfs/objects/batch") then
-      if host == "github.com" && admitted(LfsContentHost) then lfsBatchGithub else lfsBatch
+      if host == "github.com" && allowed(LfsContentHost) then lfsBatchGithub else lfsBatch
     else methodNotGranted
 
 case class BadTls(message: String) extends RuntimeException(message)

@@ -50,7 +50,7 @@ not requirements of this plan.
 
 ## Guarantees
 
-1. A credential has two independent authorities: the egress ruleset admits a destination,
+1. A credential has two independent authorities: the egress ruleset allows a destination,
    and the host launch selects a credential instance. Neither authority implies the other.
 2. A repository, agent command, persisted agent state and service response cannot create, select,
    retarget or refresh a credential instance.
@@ -60,7 +60,7 @@ not requirements of this plan.
    placeholders even when they use the same service, host, header, source value or run.
 5. Injection still requires equality with the complete placeholder in the declared header format.
    It never rewrites a URL, query, body, response or arbitrary occurrence of the bytes.
-6. A denied destination remains denied. A selected service with no admitted target is inert and
+6. A denied destination remains denied. A selected service with no allowed target is inert and
    refuses launch rather than widening egress or silently falling back to an unbrokered value.
 7. The real value exists only in its host source, protected host store, launcher's bounded refresh
    memory, private per-run generation and proxy memory. It never enters sandbox-visible state.
@@ -148,7 +148,7 @@ A launch selects instances explicitly and repeatably:
 Do not infer credential selection from the agent command, selected model provider, environment,
 project directory or presence in the store. Stored authority is dormant until the host selects it.
 
-`--egress-effective` accepts `--credential` and shows every admitted injection target, excluded
+`--egress-effective` accepts `--credential` and shows every allowed injection target, excluded
 target and TLS treatment without resolving a source. `--egress-check=<host>` may test reachability
 and TLS compatibility but never spends or refreshes a credential.
 
@@ -323,7 +323,7 @@ tunnel       opaque writable tunnel
 A selected credential adds a per-run overlay, not a third treatment in the rule grammar:
 
 ```text
-mediated     TLS-terminated writable relay for an admitted provider target
+mediated     TLS-terminated writable relay for an allowed provider target
 ```
 
 The overlay applies only to exact targets in the selected service. A denied host remains absent.
@@ -362,7 +362,8 @@ agent gets the same measured compatibility gate before its service is listed as 
 
 ## Failure and audit contract
 
-Credential failures are transport errors after local egress admission, never ruleset denials:
+Credential failures are transport errors after the local egress rules allowed the request, never
+ruleset denials:
 
 ```text
 error api.example.com POST /v1 credential unavailable service/instance
@@ -424,7 +425,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Test every catalog service as a population: identifiers, mechanisms, environment names, exact
   targets, header formats, path matchers and duplicate entries.
 - Assert every target exists in the proxy's own host or provider catalog and every active target is
-  admitted after denials; no service adds reachability.
+  allowed after denials; no service adds reachability.
 - Test absent, repeated, unknown and colliding `--credential` selections and prove the project,
   agent command and stored-state presence cannot select one.
 - Assert one service's source and mechanism are unchanged by adding, removing or resolving every

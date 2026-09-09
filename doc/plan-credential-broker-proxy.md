@@ -17,7 +17,7 @@ reached through the model provider") is a provider instance of
 The credential gaps SECURITY.md concedes are the target.
 
 - A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
-  reaching whatever this project's egress rules admit". A `GET` carries its URL, and a URL is
+  reaching whatever this project's egress rules allow". A `GET` carries its URL, and a URL is
   a message, so a forwarded token leaves through any inspected host, or inside the opaque model
   tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
 - Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every program in
@@ -90,7 +90,7 @@ SECURITY.md, "Adding hosts, not patterns"), and the ruleset's own path, if the h
 has one, applies first. Where requests may go and where a credential may be spent are two facts
 and stay two lines; the comparison is one function.
 
-`EnvironmentName` admits no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
+`EnvironmentName` accepts no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
 stays command-line-only; a repository file cannot bind a host. `KO_AGENT_SANDBOX_*` stays refused.
 
 Refusals, each fatal at launch and naming the fix:
@@ -187,7 +187,7 @@ Additions to SECURITY.md, each at its binding site:
   the gap narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
-  a holder of what the ruleset admits spending. Compromising it compromises both ruleset and
+  a holder of what the ruleset allows spending. Compromising it compromises both ruleset and
   credential — one boundary. What a lost reaper leaves, and that `--reset` is what removes it
   ("Custody").
 - "The audit line grammar": the `inject` field.

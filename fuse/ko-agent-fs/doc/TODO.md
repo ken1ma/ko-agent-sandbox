@@ -240,7 +240,7 @@ decides.
       asked, silently.
 - [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
       `verification-log.md`. Only then a persisted value.
-- [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, admitted
+- [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, allowed
       by the unknown-filename rule (doc/egress-proxy.md, "The rule file"). A project sets its own
       coherency window, and a session cannot edit the file. Deferred until the sweep has a value
       worth persisting.

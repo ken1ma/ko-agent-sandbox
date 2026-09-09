@@ -9,7 +9,7 @@ allow https://api.business.githubcopilot.com/   tunnel  # business plan
 allow https://api.enterprise.githubcopilot.com/ tunnel  # enterprise plan
 
 # The forge stays TLS-inspected here as in the catalog, and these rules grant no read of it: this
-# file is what deny-unless-model admits for copilot, and it must not admit git push or a browse of
+# file is what deny-unless-model allows for copilot, and it must not allow git push or a browse of
 # the forge. In Copilot CLI's device flow, the first endpoint issues the code the agent prints;
 # the second polls for the token once the browser has approved.
 allow https://github.com/login/device/code             method=POST

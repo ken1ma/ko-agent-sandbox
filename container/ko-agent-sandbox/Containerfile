@@ -555,9 +555,9 @@ RUN set -euxo pipefail; \
 # user's and the project's files, so neither can turn these back.
 # permission allow: the counterpart of Claude's bypassPermissions above.
 # OPENCODE_PERMISSION is read after this file, so a launch that forwards it
-# puts the prompts back (README, "Running <command>").
+# puts the prompts back (README, "Restoring permission prompts").
 # share disabled: /share would post the session to opncd.ai, or to an
-# enterprise's own URL, either of which a project rule line could admit.
+# enterprise's own URL, either of which a project rule line could allow.
 # autoupdate false: the binary is the image's, and the check alone reads the
 # GitHub release API at every start.
 RUN set -euxo pipefail; \

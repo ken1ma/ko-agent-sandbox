@@ -1,4 +1,4 @@
-# The curated catalog: what deny-unless-allowed admits on its own, the defaults beside the
+# The curated catalog: what deny-unless-allowed allows on its own, the defaults beside the
 # model-provider rules in model-provider/. Every line is TLS-inspected and grants `read`, GET and
 # HEAD, plus the words written beside it; SECURITY.md, "Reading without being able to write", has
 # what each grant opens and what the inspection costs and buys.
@@ -56,7 +56,7 @@ allow https://www.w3.org/               read  # W3C standards and drafts
 
 # specs
 # www.unicode.org holds the UAX reports, charts and Public/ data; its root page redirects to
-# home.unicode.org, the non-technical site, which is not admitted
+# home.unicode.org, the non-technical site, which is not allowed
 allow https://www.unicode.org/     read
 allow https://semver.org/          read  # Semantic Versioning
 allow https://spec.commonmark.org/ read  # CommonMark / Markdown

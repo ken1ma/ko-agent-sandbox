@@ -590,7 +590,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The program's default artifact repository, the one host every command's proxy admits on its own.
+   * The program's default artifact repository, the one host every command's proxy allows on its own.
    * Both are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
    * Maven's super POM names `repo.maven.apache.org`.
    */
@@ -680,7 +680,7 @@ object RunOnHostPrereqs:
             else
               canonicalize(joined) match
                 // Exact: `real` and `project` are both canonical, so their spellings are the
-                // volume's own, and folding would admit a case-different sibling on a
+                // volume's own, and folding would allow a case-different sibling on a
                 // case-sensitive volume.
                 case Some(real) if real.startsWith(project) => Right(real)
                 case _                                           => refuse

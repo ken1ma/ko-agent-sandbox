@@ -52,7 +52,7 @@
 //
 //   Internet
 //    |
-//    +-- egress proxy ------------------> the hosts --egress=<profile> admits, CONNECT :443 only
+//    +-- egress proxy ------------------> the hosts --egress=<profile> allows, CONNECT :443 only
 //    |                                       (EgressRules.scala; the flags are below)
 //    |                                    inspected hosts: TLS-inspected reads plus named grants;
 //    |                                       git push refused
@@ -1926,22 +1926,22 @@ object AgentSandboxLauncher:
     // exception, not the whole, and a refusal there was chosen, so the agent is not sent to ask
     // for an allow line it already has.
     val publicDefault = permissiveProfile(resolved)
-    val admission =
+    val allowed =
       if publicDefault then
         """Every public host on port 443 is reachable for reading — GET and HEAD, inspected and
           |logged — except as the lines below say: a host listed with grants is limited to those
           |grants, a host listed with `tunnel` is an opaque tunnel, and a host under a `deny` line
           |is refused.""".stripMargin
-      else "Anything not admitted below is refused."
+      else "Anything not allowed below is refused."
     val refused =
       if publicDefault then
         """A refused host is one the user denied on purpose: name it to the user rather than
           |looking for another route.""".stripMargin
       else
-        """If a package registry or clone host you need is not admitted, do not look for another
+        """If a package registry or clone host you need is not allowed, do not look for another
           |route: name the host to the user, who adds `allow https://<host>/ read` to
           |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
-          |deny-unless-allowed profile or a broader one, if this session's profile does not admit
+          |deny-unless-allowed profile or a broader one, if this session's profile does not allow
           |project hosts at all.""".stripMargin
     s"""
        |
@@ -1953,10 +1953,10 @@ object AgentSandboxLauncher:
        |
        |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
        |that can drift. `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
-       |$admission A line grants exactly its words under its
+       |$allowed A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
        |serves `clone` and `pull`; `method=` names the
-       |HTTP methods admitted there. On an inspected host, the rule with the longest matching
+       |HTTP methods allowed there. On an inspected host, the rule with the longest matching
        |path decides which operations are permitted. A rule path ending in `/` matches request
        |paths with that prefix; other rule paths match exactly. A request matching no rule is
        |refused. For rules below `/`, request paths are also refused if they contain
@@ -2160,7 +2160,7 @@ object AgentSandboxLauncher:
       case None => launch(parsed)
 
   /**
-   * Whether the directory's own SELinux context already admits container reads, so an unfiltered
+   * Whether the directory's own SELinux context already allows container reads, so an unfiltered
    * bind mount needs no relabel: a container type with no MCS categories. A context with categories
    * — what a previous run's `:Z` leaves — is private to the container it was assigned to,
    * unreadable to a new one, so it does not count. Only the root is asked: a partially labeled tree
@@ -2387,7 +2387,7 @@ object AgentSandboxLauncher:
     if egressProfile == "deny-unless-model" && provider.isEmpty then
       warn(
         s"'${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
-          "so deny-unless-model selects no model provider and admits no host; " +
+          "so deny-unless-model selects no model provider and allows no host; " +
           "the default --egress=deny-unless-allowed applies the project's rule file instead",
       )
 
@@ -2782,7 +2782,7 @@ object AgentSandboxLauncher:
       // This run's copies, made while the lock still holds so no concurrent launch's rewrite can
       // happen between an expiry check above and a copy below; a file this run wrote into its own
       // directory is mounted where it is. Modes travel with the copy: the leaf key stays
-      // owner-only, and the run directory itself admits only this user.
+      // owner-only, and the run directory itself allows only this user.
       def carried(source: Path): Path =
         if source.startsWith(runFiles) then source
         else

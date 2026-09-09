@@ -110,7 +110,7 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
 
-Every command's proxy admits one host on its own: the program's Maven Central
+Every command's proxy allows one host on its own: the program's Maven Central
 (`RunOnHostPrereqs.centralHost`). For sbt and `mill`, which resolve through Coursier, that is
 `repo1.maven.org`; for Maven, whose super POM names the alias, it is `repo.maven.apache.org`.
 Each program resolves against its own host and never against the other's. `repo.scala-sbt.org` is
@@ -428,7 +428,7 @@ There is no host route to it, and making one would either publish the sandbox se
 `--egress` ruleset — `api.anthropic.com` and forges included — to any host process, or relay
 each connection through `podman exec`, paying the VM round trip on exactly the path the command was
 moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
-either way; what is worth controlling is the rules behind it, and a proxy admitting one artifact
+either way; what is worth controlling is the rules behind it, and a proxy allowing one artifact
 repository is a prize barely worth stealing.
 
 The command's proxy lives until the wrapper cleans up that invocation. Its lock tracks this

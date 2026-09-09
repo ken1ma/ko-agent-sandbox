@@ -173,7 +173,7 @@ impl Workspace {
     /// walks: each named component that lies inside the workspace must classify as `Protected`
     /// before it is even looked up — existence cannot weaken the answer, because a missing
     /// operational name is one the sandbox can create. Returns the resolved path, or `None` when it
-    /// does not exist, which is reached only through components the rule admitted. `subject` names
+    /// does not exist, which is reached only through components the rule allowed. `subject` names
     /// what is being resolved, for the refusal an operator reads.
     fn resolve_checked(&self, path: &Path, subject: &str) -> Result<Option<PathBuf>, Refusal> {
         let roots: Vec<&[u8]> = self.gitdir_roots.iter().map(Vec::as_slice).collect();

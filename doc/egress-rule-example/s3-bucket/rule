@@ -1,6 +1,6 @@
 # The .ko-agent-sandbox/egress/rule of a project that reads one of its own S3 buckets. S3's
 # virtual-hosted URL names the bucket in the host, <bucket>.s3.<region>.amazonaws.com, so the
-# exact host already admits that bucket and no other; the tree then keeps the reach to one key
+# exact host already allows that bucket and no other; the tree then keeps the reach to one key
 # prefix within it, and a key outside — or one spelled with percent-encoding, a dot segment, a
 # backslash or an empty segment — is refused and logged. A bucket whose name contains dots does
 # not fit S3's wildcard certificate and takes the path-style form instead, where the region's

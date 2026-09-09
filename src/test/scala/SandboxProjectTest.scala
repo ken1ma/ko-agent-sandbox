@@ -489,7 +489,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The other entries are admitted by name, and a symlink of one refused like egress.
+    // The other entries are allowed by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
     Files.createDirectory(dir.resolve("host-command"))
     assertEquals(boundaryDirError(dir), None)

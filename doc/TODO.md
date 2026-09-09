@@ -16,7 +16,7 @@ a concrete gain are recorded in design.md as standing design decisions so they s
 
 ## Deferred — GREASE ECH on inspected hosts
 
-- [ ] Admit an ECH extension on an inspected host, only if a client that sends GREASE ECH —
+- [ ] Allow an ECH extension on an inspected host, only if a client that sends GREASE ECH —
   a browser, a BoringSSL-based program — enters the image. The proxy is the TLS server there, so
   ignoring an extension it cannot decrypt is what every non-ECH server does: a GREASE client
   continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
@@ -55,12 +55,12 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   line would name a different machine on every clone, and a reviewer could not say what it
   reaches. Selected at launch, like `--egress=allow-unless-denied`, and tinted in the
   banner the same way.
-- [ ] The vetting admits those addresses and nothing else of the private space, and only when
+- [ ] The vetting allows those addresses and nothing else of the private space, and only when
   the CONNECT names the address itself: a public name resolving to a private address stays
   refused, or a name whose answer changes, or has one public and one private record, reaches
   the LAN through the name.
 - [ ] An exception to the lifecycle's step 10 for the listed addresses, and only those: a
-  ClientHello with no SNI is the form a client sends to an address and is admitted there, one
+  ClientHello with no SNI is the form a client sends to an address and is allowed there, one
   naming any host stays refused. Opaque, as the simplest form; an inspected address is
   possible — the leaf can include an `iPAddress` name — and is its own further decision. Opaque,
   the consequence is stated with it: nothing binds the tunnel to a name, so the origin's
@@ -69,7 +69,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
   sees none of it.
 - [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
-  the hello admitted at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
+  the hello allowed at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
   logged; and the sandbox then holds
   the host's network position against services that authenticate by location — router and NAS
   pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
@@ -88,7 +88,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
 - [ ] Explicit resolvers for the proxy container, only when podman's resolver — which follows the
   host's on Linux and the host's through the machine elsewhere — stops answering for someone.
   Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
-  name is a refusal naming the non-public answer, never a private address admitted.
+  name is a refusal naming the non-public answer, never a private address allowed.
 - [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
   podman machines, and record whether each can route to a private endpoint; one that cannot must
   fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
@@ -98,7 +98,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
 
 The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an
 operator
-asks is no longer "is this host admitted" — `--egress-check` answers that — but "which line
+asks is no longer "is this host allowed" — `--egress-check` answers that — but "which line
 decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
 against the file through the same code that would run it; the equivalent here is a trace:
 
@@ -280,7 +280,7 @@ Everything else a Gradle backend needs is known, so the open decision is the loo
   directory where direct process execution is denied.
 - `GRADLE_USER_HOME` is set to a directory in the run-on-host cache. `JAVA_HOME` is the JDK, and
   `org.gradle.java.installations.auto-download=false` stops Gradle from downloading another one.
-- Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy admits that host by default,
+- Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy allows that host by default,
   as it does for Maven. `plugins.gradle.org` goes in the rule file.
 
 - [ ] Decide: a Gradle-only profile that allows loopback both ways, with the cost stated in

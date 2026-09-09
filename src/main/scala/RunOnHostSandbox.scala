@@ -169,14 +169,14 @@ object RunOnHostSandbox:
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
     val programs = Program.values.toVector.map(_.name)
-    def strays(path: Path, admitted: Set[String]): Vector[String] =
+    def strays(path: Path, allowed: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
       else
         val stream = Files.list(path)
         val entries =
           try stream.iterator().asScala.toVector
           finally stream.close()
-        entries.map(_.getFileName.toString).filterNot(isMetadataEntry).filterNot(admitted).sorted
+        entries.map(_.getFileName.toString).filterNot(isMetadataEntry).filterNot(allowed).sorted
           .map(name => s"$path/$name")
 
     if !Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) then None
@@ -218,7 +218,7 @@ object RunOnHostSandbox:
 
   /**
    * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
-   * path that must also be executable. A runtime path is admitted only where testing proves the
+   * path that must also be executable. A runtime path is allowed only where testing proves the
    * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
    * src/probe/run-on-host-profile-iterate.sh is how candidate entries are measured.
    */
