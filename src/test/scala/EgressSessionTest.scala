@@ -310,7 +310,7 @@ class EgressSessionTest extends munit.FunSuite:
       // answering at all is what "still signs in" means.
       assert(
         curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
-        "the group's agent endpoint is unreachable under the lockdown",
+        "the provider's agent endpoint is unreachable under the lockdown",
       )
       // Nothing inspected survives, so this session inspects nothing — and the defaults are gone.
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")

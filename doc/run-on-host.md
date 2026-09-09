@@ -49,8 +49,8 @@ established once at start, so covering `.git` at any depth means binding over ea
 and a `.git` created during the command has no mount over it. Landlock is no better: its ruleset is
 fixed at creation. With nothing to gain — a container command already runs at host speed on host
 memory, reclaimed on exit — the feature would also cost Linux the one limit the container has that a
-host command does not: the cgroup ceiling that kills a runaway build inside the sandbox instead of
-taking the machine down.
+host command does not: the cgroup memory limit that kills a runaway build inside the sandbox instead
+of taking the machine down.
 
 On Windows, AppContainer expresses the grants perfectly well: a per-user profile with a derived
 SID, inheritable ACEs on the granted roots, private profile storage, network confinement by
@@ -63,8 +63,7 @@ guard in ACLs at all — before it is worth reconsidering.
 
 ## The host command's filesystem rules
 
-The filesystem rules beneath the reach — what a command may touch, in whole — and the two deny rows
-that make host commands safe to expose to a sandbox:
+The filesystem rules define what a host command can access:
 
 - **Commands can start programs they write in the project or their temporary directory.** A
   child inherits the profile, so running those programs adds no authority. Tests routinely write
@@ -79,15 +78,14 @@ that make host commands safe to expose to a sandbox:
   path and is denied (`src/probe/seatbelt-semantics.sh`, E5). A `.GIT` the command creates where
   no `.git` exists keeps that spelling and is not denied, though host `git` run in that directory
   would open it as `.git`; the workspace filter refuses the name. `TODO.md` holds the fix.
-- **Both guard rows deny link creation, not only writes.** On the host the project and its `.git`
-  are one filesystem, so `link(PROJECT/.git/config, PROJECT/x)` would succeed and a later write to
-  `x` reach `.git/config` by a path no write rule matches. `SECURITY.md` dismisses hardlinks for
-  the container because `/workspace` and the container root are different filesystems; that
-  argument does not transfer here.
-- **The bare-layout gap stays.** A git *layout* the command assembles from ordinary names in the
-  writable tree is not a `.git` directory, and neither guard refuses it — running host `git` inside
-  a directory the agent created is running the agent's output, the same gap `SECURITY.md`
-  records for the workspace filter.
+- **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
+  a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
+  `.git/config`.
+  Both paths are on the host's project filesystem, so a filesystem boundary does not prevent this.
+- **Commands can create a bare Git layout from ordinary names in the writable tree.** Neither the
+  Seatbelt profile nor the workspace filter refuses those names. Running host `git` inside a
+  directory the agent created is running the agent's output, the same gap `SECURITY.md` records
+  for the workspace filter.
 - **Each command gets a fresh temporary directory.** A killed command can leave one behind;
   the next command reclaims it rather than reusing it (`RunOnHostSession.scala`).
 
@@ -104,7 +102,7 @@ Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
   compiler ("host must be * or localhost").
 - The "localhost" class covers native `127.0.0.1` and `::1` but not a JVM's dual-stack connect,
   which reaches `127.0.0.1` as v4-mapped `::ffff:127.0.0.1` and dies with `EPERM`; the environment
-  contract pins `-Djava.net.preferIPv4Stack=true` for exactly this.
+  contract sets `-Djava.net.preferIPv4Stack=true` for exactly this.
 - Seatbelt counts a local socket as network: without `(local unix-socket (subpath SESSION_TMP))`
   sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits for it forever
   ("The channel and the command" has the client's wait).
@@ -197,9 +195,9 @@ check that by reading `Defaults.scala` again, not by a gate run.
 
 The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints that it
 is starting the server and returns with no build run — a gate row keeps measuring it, and if it
-starts passing, the pin becomes a choice. The distribution's `sbt` resolves `java` from `PATH`, so
-the wrapper puts the granted JDK's `bin` first: the client starts the server by re-running the
-script, and `-java-home` reaches the client alone.
+starts passing, the wrapper can reconsider requiring `--jvm-client`. The distribution's `sbt`
+resolves `java` from `PATH`, so the wrapper puts the granted JDK's `bin` first: the client starts
+the server by re-running the script, and `-java-home` reaches the client alone.
 
 ### `mill`
 
@@ -479,8 +477,8 @@ inspection. The wrapper hands the proxy `deny defaults`, Maven Central, then the
 
 The file inherits the directory's properties: the workspace filter freezes it at any depth, the
 launcher reads it on the host, and it is reviewed in a pull request like any other file.
-`host-command/` extends `.ko-agent-sandbox`'s closed namespace — a stray entry fails the launch and
-never remains as ignored config (`SandboxProject.boundaryDirError`,
+`host-command/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a stray
+entry fails the launch instead of being ignored (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is

@@ -85,7 +85,7 @@ where a reader changing one is looking. What is worth knowing before reading it:
 `EPERM` specifically rather than merely as an error. Over it run the read path; the adversarial set
 (`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hardlink
 aliasing in both directions, the full name-rule corpus, an existing `.git` pointer file, a symlinked
-`hooks/`, nested `modules/` and `worktrees/` control state, a directory handle held across the
+`hooks/`, nested `modules/` and `worktrees/` protected entries, a directory handle held across the
 rename that vacates its name); real git, where the everyday commands
 must pass, `rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist
 cannot quietly reopen them, and the host's own hook must still run; and the concurrency/TOCTOU pair,

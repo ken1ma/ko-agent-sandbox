@@ -8,5 +8,5 @@
 # allow https://s3.<region>.amazonaws.com/<bucket>/ read, the line gcs-bucket narrows. Reads
 # only: a presigned upload URL still fails here, since a PUT is refused where no line grants it.
 # What travels in an allowed GET's suffix and query is not bounded; SECURITY.md, "Exfiltration
-# through an allowed host".
+# through allowed network traffic".
 allow https://my-bucket.s3.us-east-1.amazonaws.com/public/ read

@@ -31,7 +31,7 @@ FILES = int(os.environ.get("FILES", "1800"))
 
 def stack() -> str:
     """Filtered or not, decided by the one property that separates the filter from the launcher's
-    mount pin: `.git` is refused at any depth, not only at the workspace root."""
+    read-only bind mount: `.git` is refused at any depth, not only at the workspace root."""
     probe = tempfile.mkdtemp(prefix=".perf-probe-stack-", dir="/workspace")
     try:
         os.mkdir(os.path.join(probe, ".git"))
@@ -39,7 +39,7 @@ def stack() -> str:
         return "filtered"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
-    return "raw bind (unfiltered)"
+    return "unfiltered bind mount"
 
 
 def build(root: str) -> int:

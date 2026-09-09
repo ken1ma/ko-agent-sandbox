@@ -207,7 +207,7 @@ object ContainerfileSources:
    * Anything else — `--build-arg=NAME=value`, `--file`, a `--build-context` naming an image, or a
    * `--build-arg NAME` whose value podman takes from the environment — would resolve a different
    * source from the one podman builds, so it is refused rather than read. The generated-command
-   * test pins the set from the other side.
+   * test checks this set against the commands the launcher produces.
    */
   val BuildCommandFlags =
     Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true,

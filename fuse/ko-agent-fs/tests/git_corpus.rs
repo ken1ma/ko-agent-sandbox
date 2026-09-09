@@ -1,5 +1,5 @@
-//! Static corpus of what real git writes, pinned from `probe/observe-git.sh` (`doc/git-metadata.md`,
-//! "Premises"); needs no git at test time.
+//! Static corpus of what real git writes, recorded from `probe/observe-git.sh`
+//! (`doc/git-metadata.md`, "Premises"); needs no git at test time.
 
 use ko_agent_fs::policy::{GitPathClass, classify_relative_path};
 
@@ -17,10 +17,10 @@ fn operational(path: &str) {
 }
 
 #[track_caller]
-fn control(path: &str) {
+fn protected(path: &str) {
     assert_eq!(
         classify_relative_path(path.as_bytes(), GITDIR_ROOTS),
-        GitPathClass::Control,
+        GitPathClass::Protected,
         "expected {path} to be frozen"
     );
 }
@@ -77,7 +77,7 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
 }
 
 #[test]
-fn control_state_stays_frozen() {
+fn protected_entries_stay_frozen() {
     for path in [
         // The command-defining config files and the hook tree: what the filter exists to freeze.
         ".git/config",
@@ -95,11 +95,11 @@ fn control_state_stays_frozen() {
         ".git/worktrees/wt/gitdir",
         ".git/worktrees/wt/commondir",
         ".git/worktrees/wt/config.worktree",
-        // A lock on control state is control: the inheritance rule must not become a way in.
+        // A protected entry's lock is protected: the inheritance rule must not become a way in.
         ".git/config.lock",
         ".git/config.worktree.lock",
     ] {
-        control(path);
+        protected(path);
     }
 }
 
@@ -112,7 +112,7 @@ fn rebase_and_sequencer_todo_state_is_frozen() {
         ".git/rebase-apply/0001",
         ".git/sequencer/todo",
     ] {
-        control(path);
+        protected(path);
     }
 }
 
@@ -120,6 +120,6 @@ fn rebase_and_sequencer_todo_state_is_frozen() {
 fn the_dotgit_entry_itself_is_frozen_however_it_is_named() {
     // A new `.git` (dir or pointer file) is name-refused at create; an existing one is immutable.
     for path in [".git", "sub/.git", "deep/nested/.git"] {
-        control(path);
+        protected(path);
     }
 }

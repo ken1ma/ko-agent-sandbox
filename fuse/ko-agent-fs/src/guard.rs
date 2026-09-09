@@ -44,11 +44,11 @@ pub fn check_hook_location(backing_root: &Path) -> Result<(), Refusal> {
 struct Workspace {
     root: PathBuf,
     /// Submodule gitdir roots as workspace-relative byte paths — discovered by the `HEAD` each
-    /// gitdir holds, the same question the FUSE layer asks of the tree (`fs.rs`,
-    /// `is_gitdir_root`), so this guard's `Control` means the runtime's `Control`. Without them,
-    /// everything under `modules/` would read as namespace — Control, and so *exempt* here —
-    /// while the runtime serves an identified gitdir's `objects/` writable: the fail-open
-    /// direction, closed by asking the tree the same question at the same answer.
+    /// gitdir holds, the same question the FUSE layer asks of the tree (`fs.rs`, `is_gitdir_root`),
+    /// so this guard's `Protected` means the runtime's `Protected`. Without them, everything under
+    /// `modules/` would read as namespace — Protected, and so *exempt* here — while the runtime
+    /// serves an identified gitdir's `objects/` writable: the fail-open direction, closed by asking
+    /// the tree the same question at the same answer.
     gitdir_roots: Vec<Vec<u8>>,
 }
 
@@ -170,11 +170,11 @@ impl Workspace {
     }
 
     /// Resolve an absolute `path` the way the host kernel will, proving the binding rule as it
-    /// walks: each named component that lies inside the workspace must classify `Control` before
-    /// it is even looked up — existence cannot weaken the answer, because a missing operational
-    /// name is one the sandbox can create. Returns the resolved path, or `None` when it does not
-    /// exist, which is reached only through components the rule admitted. `subject` names what is
-    /// being resolved, for the refusal an operator reads.
+    /// walks: each named component that lies inside the workspace must classify as `Protected`
+    /// before it is even looked up — existence cannot weaken the answer, because a missing
+    /// operational name is one the sandbox can create. Returns the resolved path, or `None` when it
+    /// does not exist, which is reached only through components the rule admitted. `subject` names
+    /// what is being resolved, for the refusal an operator reads.
     fn resolve_checked(&self, path: &Path, subject: &str) -> Result<Option<PathBuf>, Refusal> {
         let roots: Vec<&[u8]> = self.gitdir_roots.iter().map(Vec::as_slice).collect();
         let mut pending: VecDeque<OsString> = components_of(path).into();
@@ -190,7 +190,7 @@ impl Workspace {
             } else {
                 let next = current.join(&part);
                 if let Some(rel) = self.relative_bytes(&next)
-                    && classify_relative_path(&rel, &roots) != GitPathClass::Control
+                    && classify_relative_path(&rel, &roots) != GitPathClass::Protected
                 {
                     return Err(self.refuse_operational(subject, &next));
                 }
@@ -208,7 +208,7 @@ impl Workspace {
                             reason: format!(
                                 "cannot resolve {next:?} while locating {subject}: {err}"
                             ),
-                            remedy: "The filter will not serve control state it cannot resolve."
+                            remedy: "Repair the reported Git path or symlink on the host, then relaunch."
                                 .to_string(),
                         });
                     }
@@ -220,14 +220,13 @@ impl Workspace {
                                     "{subject} takes more than {MAX_SYMLINK_HOPS} symlink hops to \
                                      resolve"
                                 ),
-                                remedy: "The filter will not serve control state it cannot \
-                                         resolve."
+                                remedy: "Repair the reported Git path or symlink on the host, then relaunch."
                                     .to_string(),
                             });
                         }
                         let target = fs::read_link(&next).map_err(|err| Refusal {
                             reason: format!("cannot read the symlink {next:?}: {err}"),
-                            remedy: "The filter will not serve control state it cannot resolve."
+                            remedy: "Repair the reported Git path or symlink on the host, then relaunch."
                                 .to_string(),
                         })?;
                         for component in components_of(&target).into_iter().rev() {
@@ -264,7 +263,7 @@ impl Workspace {
 
         if metadata.file_type().is_symlink() {
             // The launcher refuses a symlinked `.git` outright and so does this: a link decides
-            // where the whole of the control state is, and following it would make the guarded set
+            // where Git metadata resides, and following it would make the guarded set
             // depend on where it points at this instant.
             return Err(Refusal {
                 reason: format!("{dotgit:?} is a symlink"),
@@ -862,8 +861,8 @@ mod tests {
     #[test]
     fn a_hooks_path_masked_by_a_later_section_is_still_refused() {
         // End to end, the property `every_hooks_path_is_reported_because_sections_are_invisible`
-        // pins at the scanner: the repository git would run `./githooks` from is refused, whatever
-        // follows it in the file.
+        // checks at the scanner: the repository git would run `./githooks` from is refused,
+        // whatever follows it in the file.
         let root = scratch("hookspath-masked");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("githooks")).unwrap();
@@ -982,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn a_control_file_aliased_through_a_reaimable_workspace_intermediate_is_refused() {
+    fn a_protected_file_aliased_through_a_reaimable_workspace_intermediate_is_refused() {
         // The two-hop chain a final-target check misses: at validation the chain ends outside the
         // workspace, but its intermediate is an ordinary workspace name the sandbox can re-aim.
         let outside = scratch("two-hop-target");
@@ -1021,7 +1020,7 @@ mod tests {
         // With the submodule's HEAD present, `modules/sub` is a gitdir root and its `objects` is
         // operational — writable at runtime, so a config aliased there is refused. Without the
         // HEAD nothing under `modules/` ever becomes writable, and the same link resolves through
-        // control state alone to a file that does not exist: an absent config, served.
+        // protected paths alone to a file that does not exist: an absent config, served.
         let root = scratch("modules-roots");
         fs::create_dir_all(root.join(".git/modules/sub")).unwrap();
         fs::write(
@@ -1059,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_or_undecodable_control_files_refuse_rather_than_read_as_absent() {
+    fn unreadable_or_undecodable_protected_files_refuse_rather_than_read_as_absent() {
         // Only NotFound means absent. A config that cannot be decoded holds values that cannot be
         // compared with the path hooks run from, and a config that cannot be read at all is the
         // same doubt.
@@ -1128,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn a_symlink_loop_on_a_control_path_is_refused_rather_than_spun_on() {
+    fn a_symlink_loop_on_a_protected_path_is_refused_rather_than_spun_on() {
         let root = scratch("symlink-loop");
         fs::create_dir_all(root.join(".git")).unwrap();
         std::os::unix::fs::symlink("config", root.join(".git/config")).unwrap();

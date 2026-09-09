@@ -76,7 +76,7 @@ impl InodeTable {
     /// `is_gitdir_root` ([`GitContext::ModuleNamespace`]) only matters where the context would
     /// otherwise be a namespace. It is read on the allocating path alone: a reused entry keeps the
     /// context it was created with, so a directory that *becomes* a gitdir root after its first
-    /// lookup stays a namespace — control — until the kernel forgets it. Both drift directions
+    /// lookup stays a namespace — protected — until the kernel forgets it. Both drift directions
     /// give the stricter answer.
     pub fn lookup(&mut self, parent: u64, name: &OsStr, is_gitdir_root: bool) -> u64 {
         let key = (parent, name.to_os_string());
@@ -226,14 +226,14 @@ mod tests {
         let dotgit = look(&mut table, ROOT_INO, ".git");
         assert_eq!(
             classify(&table.get(dotgit).unwrap().git),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
 
         let hooks = look(&mut table, dotgit, "hooks");
         let hook = look(&mut table, hooks, "pre-commit");
         assert_eq!(
             classify(&table.get(hook).unwrap().git),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
 
         let refs = look(&mut table, dotgit, "refs");
@@ -265,11 +265,11 @@ mod tests {
         let hooks = look(&mut table, foo, "hooks");
         assert_eq!(
             classify(&table.get(hooks).unwrap().git),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
         assert_eq!(
             classify(&table.get(libs).unwrap().git),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 
@@ -285,7 +285,7 @@ mod tests {
         let objects = look(&mut table, foo, "objects");
         assert_eq!(
             classify(&table.get(objects).unwrap().git),
-            GitPathClass::Control
+            GitPathClass::Protected
         );
     }
 }

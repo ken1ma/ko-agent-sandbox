@@ -145,7 +145,7 @@ A launch selects instances explicitly and repeatably:
 --credential=<service>[/<instance>]
 ```
 
-Do not infer credential selection from the agent command, provider egress group, environment,
+Do not infer credential selection from the agent command, selected model provider, environment,
 project directory or presence in the store. Stored authority is dormant until the host selects it.
 
 `--egress-effective` accepts `--credential` and shows every admitted injection target, excluded
@@ -343,7 +343,8 @@ headers; crash reports and exceptions must not include them.
 
 For one mediated connection:
 
-1. Preserve CONNECT authorization, public-address validation, SNI equality and origin pinning.
+1. Preserve CONNECT authorization, public-address validation, SNI equality and connection to the
+   validated origin address.
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
 4. Apply the configured inspected authorization when the ruleset says inspected.
@@ -396,7 +397,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ## Deliberate exclusions
 
-- **Automatic provider selection:** command-name inference chooses an egress group, but a
+- **Automatic provider selection:** command-name inference selects a model provider, but a
   credential is stronger authority and requires explicit `--credential` selection.
 - **Project or kit service declarations:** repository-controlled target or host-exec declarations
   would let untrusted input choose where a credential is spent or what runs on the host.

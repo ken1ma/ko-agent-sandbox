@@ -201,7 +201,7 @@ Do not relocate or remove unrelated runtime caches in this increment. At the end
 `container/ko-agent-sandbox/Containerfile`, after every descendant-image producer has run, add the
 binding population guard over image `/home/nonroot`. It enforces the directory contract in step 6,
 requires `.local/share/coursier` to be absent, records the allowed top-level entries, and enforces
-conservative apparent-size and inode ceilings. A later Scala smoke test or future program that
+conservative apparent-size and inode limits. A later Scala smoke test or future program that
 repopulates image home must fail this guard instead of silently restoring copy-up latency.
 
 ## Launch topology
@@ -346,7 +346,7 @@ Run the exact final mount topology on macOS, native Linux and Windows/WSL2. Reco
 total times separately for three warm-machine runs in each mode. Performance acceptance is based
 on removing the copy-up regression, not a brittle CI wall-clock threshold:
 
-- image `/home/nonroot` stays below the chosen size/inode ceilings;
+- image `/home/nonroot` stays below the chosen size/inode limits;
 - sandbox start no longer scales with the host cache's byte or inode count;
 - overlay startup remains in the same order as the measured empty-volume baseline;
 - `podman create` remains outside any timing attributed to an interactive command's lifetime.

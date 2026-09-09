@@ -64,7 +64,7 @@ fn openat_write(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
 }
 
 /// `linkat(2)` from a held directory handle to a name at the mount root: the same stale-handle
-/// question asked of the source-side rule that refuses aliasing a control inode out to a writable
+/// question asked of the source-side rule that refuses aliasing a protected inode out to a writable
 /// name (`doc/git-metadata.md`, "Operations that make these mutations").
 fn linkat_out(dirfd: &File, relative: &str, root: &OwnedFd, newname: &str) -> nix::Result<()> {
     let old = CString::new(relative).expect("a relative path without a NUL");
@@ -307,7 +307,7 @@ fn ordinary_dot_git_prefixed_names_are_allowed() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_existing_dotgit_pointer_file_is_immutable() {
-    // A `.git` file holding `gitdir:` re-aims a real repository's control state; rewriting it must
+    // A `.git` file holding `gitdir:` re-aims a real repository's Git metadata; rewriting it must
     // be refused, not just its creation.
     let mount = TestMount::new(|backing| {
         fs::create_dir_all(backing.join("linked")).unwrap();
@@ -335,7 +335,7 @@ fn an_existing_dotgit_pointer_file_is_immutable() {
 }
 
 // ---------------------------------------------------------------------------
-// Mutating an existing repository's control state
+// Mutating an existing repository's protected entries
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -430,7 +430,7 @@ fn config_and_redirections_are_immutable() {
         "rewrite a worktree commondir",
         fs::write(mount.at(".git/worktrees/wt/commondir"), b"/tmp/attacker\n"),
     );
-    // A nested gitdir's own control state is protected by the same rules, through the re-root.
+    // Re-rooting applies the same protection to the nested gitdir.
     denied(
         "write a submodule gitdir's config",
         fs::write(mount.at(".git/modules/sub/config"), b"[core]\n"),
@@ -462,7 +462,7 @@ fn rebase_and_sequencer_todo_state_is_immutable() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn hardlink_aliasing_cannot_smuggle_control_state_out() {
+fn hardlink_aliasing_cannot_smuggle_protected_entries_out() {
     // A hardlink shares the inode, so aliasing a hook to a writable name would let a write through
     // the alias mutate the frozen inode. Refused on the source side as well as the destination.
     let mount = TestMount::new(repository);
@@ -580,7 +580,7 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn a_handle_held_across_a_rename_inside_a_gitdir_cannot_reach_its_control_state() {
+fn a_handle_held_across_a_rename_inside_a_gitdir_cannot_reach_its_protected_entries() {
     // The same divergence reached from inside a gitdir, which is why the answer cannot be a rule
     // about the workspace root: everything under `refs/` is operational, so renaming a directory
     // there and symlinking the vacated name back at the gitdir root are both legitimately allowed —
@@ -628,7 +628,7 @@ fn relocated_hooks(backing: &Path) {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
-    // What does hold: the symlink *node* is control state, so the sandbox cannot point hook
+    // What does hold: the symlink *node* is protected, so the sandbox cannot point hook
     // resolution at a directory of its choosing. (Where the host already points it is the separate,
     // documented gap below.)
     let mount = TestMount::new(relocated_hooks);
@@ -791,8 +791,8 @@ fn a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_no
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn operational_git_state_stays_writable() {
-    // Freezing control state must not freeze the state git rewrites constantly, or no git command
-    // would work inside the workspace at all.
+    // Freezing protected entries must not freeze the state git rewrites constantly, or no git
+    // command would work inside the workspace at all.
     let mount = TestMount::new(repository);
 
     allowed(

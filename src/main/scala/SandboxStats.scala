@@ -39,7 +39,7 @@ object SandboxStats:
    * `0.3 / 11G` as (`0.3`, `11G`): a part beside its whole reads as a ratio when both are in
    * the whole's unit, so the part is rendered there — rounded as any figure, and the unit
    * written once, on the whole. The part is then known to a tenth of the whole's unit, a tenth
-   * of a 1.0G ceiling at worst: the ratio's precision, on purpose, not the part's, so 30 MiB
+   * of a 1.0G limit at worst: the ratio's precision, on purpose, not the part's, so 30 MiB
    * under 6.7G reads 0.1.
    */
   def humanPair(part: Long, whole: Long): (String, String) =
@@ -61,7 +61,7 @@ object SandboxStats:
 
   /**
    * `memory: 58% (4.2G) available`, `storage: 58% (937G) free`: the share first, for a
-   * reader who knows the machine's size, and beside it the figure the ceilings and the
+   * reader who knows the machine's size, and beside it the figure the limits and the
    * `--reset-run-on-host` flag act on, `tint` applied to just those. `whole` is positive; a
    * machine that cannot say its size gets no line.
    */

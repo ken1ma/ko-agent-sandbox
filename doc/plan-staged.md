@@ -170,11 +170,10 @@ every selected path is displayed.
 
 Trusted fixed code performs apply without project Git, hooks, filters, pagers or executables. It
 recursively resolves current host gitdirs, commondirs, configuration includes and hook locations,
-then refuses every path host Git treats as control state. It applies the existing conservative
-raw-byte name rules to `.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting
-bare Git layout, host-incompatible paths, symlink escapes and path-replacement races. The same
-classification is rerun immediately before each affected mutation because host Git state can
-change during review.
+then refuses every protected Git path. It applies the existing conservative raw-byte name rules to
+`.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting bare Git layout,
+host-incompatible paths, symlink escapes and path-replacement races. The same classification is
+rerun immediately before each affected mutation because host Git state can change during review.
 
 Only regular files, directories, safe symlinks and hardlinks are eligible for apply. Planning
 refuses FIFOs, sockets and device nodes rather than reproducing special files in the project
@@ -185,7 +184,7 @@ directory.
 The live daemon writes a host-only, sandbox-unmodifiable journal. It records semantic mutations:
 first writable open or create, truncate, mode or type change, rename or exchange, link, symlink,
 unlink and directory removal. Repeated writes to one path are coalesced and contents are not
-recorded. Each journal has fixed byte, exact-path and aggregate-directory ceilings. After either
+recorded. Each journal has fixed byte, exact-path and aggregate-directory limits. After either
 entry table fills, new keys fold into fixed total counters, and the journal records the loss of
 detail. Journals rotate and retain within fixed file-count and total-byte budgets across daemon
 lifetimes. The daemon durably reserves a journal slot before authorizing a mutation. A reservation
@@ -238,17 +237,17 @@ its private Git metadata cannot be applied.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-5. Make `reject` the default only after step 4. Remove the workspace pin mode and make any present
-   `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration message: `fuse` needs
-   no replacement — the filter is `--write=live`'s only guard then — and the weaker `none`
-   mode has no equivalent. Remove the pin mode's launcher branch, Git pin construction,
-   `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned empty mount sources
-   only where another mount still needs one; and update the documents that describe the pin mode
-   and the writable default — README, SECURITY.md ("Silent changes to what you own", "The `.git`
-   pins of `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same change. Persistent stages
-   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
-   opened; launcher comments, help, README and SECURITY must point to explicit stage discard. Remove
-   completed TODO rows rather than retaining a change history.
+5. Make `reject` the default only after step 4. Remove the writable mode without the filter and
+   make any present `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration
+   message: `fuse` needs no replacement — the filter is `--write=live`'s only guard then — and the
+   weaker `none` mode has no equivalent. Remove that mode's launcher branch, Git
+   mount construction, `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned
+   empty mount sources only where another mount still needs one; and update the documents that
+   describe that mode and the writable default — README, SECURITY.md ("Silent changes to what you
+   own", "The read-only `.git` mounts under `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same
+   change. Persistent stages narrow the meaning of reset: `--reset` and `--reset-all` no longer mean
+   the project was never opened; launcher comments, help, README and SECURITY must point to explicit
+   stage discard. Remove completed TODO rows rather than retaining a change history.
 
 ## Verification
 

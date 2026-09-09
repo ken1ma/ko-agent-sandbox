@@ -159,10 +159,10 @@ object RunOnHostSandbox:
     )
 
   /**
-   * host-command/ is a closed namespace inside a closed namespace, the same rule its parent
-   * applies (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each,
-   * rule inside that — a stray name, the retired grammar's file among them, a symlinked component,
-   * or a component of the wrong type refuses the command, never remains as ignored config. The type rule
+   * host-command/ accepts only recognized configuration entries, as does its parent directory
+   * (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each, rule
+   * inside that — a stray name, the retired grammar's file among them, a symlinked component, or a
+   * component of the wrong type refuses the command, never remains as ignored config. The type rule
    * prevents real failures: a file where a directory belongs would read as absent configuration,
    * and a FIFO where the file belongs would block the read forever.
    */
@@ -837,7 +837,8 @@ object RunOnHostSandbox:
     ) ++
       // Set for every program, not mill alone: sbt ignores it, and one unconditional setting is
       // simpler than a conditional. Mill's bootstrap otherwise derives the folder from HOME and
-      // XDG_CACHE_HOME, and this pins it to the folder holding the executable the command is granted.
+      // XDG_CACHE_HOME, and this sets it to the folder holding the executable the command is
+      // granted.
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
       commandProxyVariables(proxyPort)
     passed ++ (forwards.toMap -- MillVersionOverrides) ++ own

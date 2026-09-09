@@ -248,21 +248,15 @@ object KoAgentFs:
   // ---------------------------------------------------------------------------
 
   /**
-   * Which guard protects the workspace's git control state: `fuse` — the default, what an
-   * unset variable means — mounts /workspace through the FUSE filter; `none` binds it directly
-   * with only the mount pins, the weaker boundary. The variable names the effect and the value
-   * names the guard, so a better one someday is a new value here, not a new variable.
-   * This variable can weaken the boundary, so "security
-   * configuration must fail closed: unknown, malformed, or ambiguously interpreted policy must
-   * not silently weaken the effective boundary" (design.md's principles) applies to it
-   * exactly: any other value is a refused launch, never a guard quietly switched off
-   * (HostCommands.closedChoice).
+   * `fuse` protects Git entries throughout the workspace; `none` relies on read-only bind mounts
+   * at the workspace root. Reject unknown values so a typo cannot disable the filter
+   * (doc/design.md, "Principles").
    */
   val WorkspaceGuardVariable = "KO_AGENT_SANDBOX_WORKSPACE_GUARD"
   val RawWorkspaceBoundary =
-    "workspace-root .git/config and .git/hooks are pinned when .git is a directory; the whole " +
-      ".git file is pinned in a linked worktree; an empty .git mount is pinned when no repository " +
-      "exists; the workspace-root .ko-agent-sandbox is also pinned"
+    "workspace-root .git/config and .git/hooks are mounted read-only when .git is a directory; the whole " +
+      ".git file is mounted read-only in a linked worktree; an empty directory is mounted read-only at .git " +
+      "when no repository exists; the workspace-root .ko-agent-sandbox is also mounted read-only"
 
   def workspaceGuard(value: Option[String]): Either[String, String] =
     closedChoice(

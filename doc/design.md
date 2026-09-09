@@ -59,8 +59,8 @@ the one condition that would reopen it.
 
 ### No generic "GET is safe, POST is dangerous" rule
 
-SECURITY.md, "Exfiltration through an allowed host". The inspected treatment removes a host's
-write API, never declares a GET safe.
+Inspection enforces method and path grants; it does not establish that a request is harmless.
+SECURITY.md, "Exfiltration through allowed network traffic", explains the limits.
 
 ### No command-name safe lists
 
@@ -95,15 +95,17 @@ directives, matched by name with no order among them, which Reyk Floeter replace
 last-matching `pass`/`block` rules "inspired by pf" (the commit below). That history is why this
 grammar has textual order and no specificity precedence: a later root `deny` beats an earlier
 `/api/` allow of the same grant however specific the path, where a most-specific-wins rule
-would admit it. doas is the same model at smaller scale — `permit`/`deny`, last match wins, no
-match denies — and the precedent for keeping the vocabulary this small. The lessons kept: the
-file's order is its meaning; broad restrictions precede their narrower exceptions; the resolved
-ruleset may compile the rules into host and path scopes, and that compilation must not change
-their simple ordered meaning — PF's discipline for its skip steps, held here by the tests'
-plain ordered evaluator, which the ruleset is checked against over a drawn domain.
-doas's `-C`, which evaluates the file against a hypothetical command through the code that
-would enforce it, is the precedent for the request-level explanation TODO.md defers: driven by
-the enforcing resolver, never by a second interpretation of the file.
+would admit it. Provider rules follow the same ordering, regardless of where earlier grants came
+from; `egress-proxy.md`, "The rule file", defines their expansion.
+doas uses the same ordering at smaller scale: `permit`/`deny`, last match wins, and no match denies.
+It is the precedent for keeping the vocabulary this small. The lessons kept: the file's order is its
+meaning; broad restrictions precede their narrower exceptions; the resolved ruleset may compile the
+rules into host and path scopes, and that compilation must not change their simple ordered meaning —
+PF's discipline for its skip steps, held here by the tests' plain ordered evaluator, which the
+ruleset is checked against over a drawn domain. doas's `-C`, which evaluates the file against a
+hypothetical command through the code that would enforce it, is the precedent for the request-level
+explanation TODO.md defers: driven by the enforcing resolver, never by a second interpretation of
+the file.
 
 What is deliberately not borrowed: a path on `deny`, since a denial by path fails open against
 the origin's canonicalization — an HTTP origin, not the proxy, is the final authority on how a
@@ -237,13 +239,13 @@ art:
 A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a file
 inside them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`,
 `readAgentInstructions`, tested). podman resolves mount sources on the host, so mounting through a
-repository-controlled link would expose its target into the sandbox, and following the link to pin
-its resolved target would make the pinned paths depend on where the link points at launch time.
-The refusal is loud, names the path, and comes before the launcher creates anything, so setup writes
-nothing through a pre-seeded link (tested: "a refused symlink form leaves no artifact through the
-link"); the project directory itself is `toRealPath()`-canonical before any of this. Prior art for
-both failure cases — a sandbox that crashed mid-setup on a symlink, and setup code whose
-mount-target creation wrote through one to paths outside its root:
+repository-controlled link would expose its target into the sandbox, and following the link to mount
+its resolved target read-only would make the protected paths depend on where the link points at
+launch time. The refusal is loud, names the path, and comes before the launcher creates anything, so
+setup writes nothing through a pre-seeded link (tested: "a refused symlink form leaves no artifact
+through the link"); the project directory itself is `toRealPath()`-canonical before any of this.
+Prior art for both failure cases — a sandbox that crashed mid-setup on a symlink, and setup code
+whose mount-target creation wrote through one to paths outside its root:
 
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/221
 - https://github.com/bazelbuild/bazel/issues/28515
@@ -402,7 +404,7 @@ a changed file applies at the next launch.
 ```text
 The workspace's writability is the user's per-launch choice (`--write`).
 In a writable mode, the workspace is untrusted output: protect implicit host execution
-paths, but keep files outside that control state writable, because editing them is the purpose
+paths, but keep other project files writable, because editing them is the purpose
 of such a session; a read-only session's purpose is reading, and its results leave
 through the conversation.
 ```

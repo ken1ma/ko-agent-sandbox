@@ -194,7 +194,7 @@ launcher execs away on POSIX, so neither side has an obvious place to run it.
   mechanism cannot reach the Windows power manager.
 - Simpler work that comes with it: `--build`/`--update` wrapped in `caffeinate -i`
   unconditionally on macOS (finite work, no reason to ask), and *not* a session-wide env-var wrap —
-  the launcher's only scope is the whole session, so an idle open agent would pin the laptop awake,
+  the launcher's only scope is the whole session, so an idle open agent would keep the laptop awake,
   which is the reason the lease is scoped to a command at all.
 
 **Open questions:** whether the feature carries its weight at all, and whether a container→host

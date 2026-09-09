@@ -3,18 +3,21 @@
 Be concise and keep everything easy to reason about: the human reader's attention is the
 scarcest budget, but don't under-report.
 
-Anything pointed out or found while working is evidence of a class, never its extent. Define the
-class as what must hold, of what, and the mechanism that breaks it — not the wording or file that
-exposed it — and find its level one step at a time, from the site through the mechanism to what the
-mechanism serves, stopping at the last step whose members all violate the same rule and take the
-same kind of fix. Before the first edit, write in the reply, in one sentence, what must hold and of
-what; then inventory every producer, consumer, entry point, lifecycle variant, test, and document
-that could violate it — the whole workspace, not the files in hand — and account for each as fixed,
-conforming, or deliberately excluded with a concrete reason. Search structure and trace behavior —
-wording search is not an inventory. If only the reported instance appears, the class is too narrow.
-Fix the canonical enforcement point, add a test over the whole class, and do not report completion
-until every member is accounted for; the reply carries that sentence and the excluded members, never
-the inventory.
+Treat each reported or discovered problem as a reason to look for other affected cases. Define what
+must hold, what it applies to, and what causes it to fail, rather than grouping cases by wording or
+filename. Start at the reported location, trace the code or process that causes the problem, then
+examine every use of that code or process. Broaden the search step by step; stop at the largest set
+whose cases all violate the same requirement and need the same kind of fix.
+
+Before the first edit, state in one sentence what must hold and what it applies to. Then examine the
+whole workspace: every place that creates or uses the affected data, every way to invoke the
+affected behavior, every variation in setup, use and cleanup, and the related tests and
+documentation. Account for each as fixed, already correct, or deliberately excluded with a concrete
+reason. Inspect the structure and trace behavior; matching words alone does not identify every
+affected case. If only the reported case appears, broaden the search. Fix the place responsible for
+enforcing the requirement and add a test covering all affected cases. Do not report completion until
+every case is accounted for. Include the requirement sentence and the excluded cases in the reply,
+not the full inventory.
 
 Preserve the boundaries, such as scope and ownership, including how work is separated for review.
 If completing the request requires changing or crossing a boundary, name it and its consequence
@@ -71,7 +74,7 @@ the shorter instruction. Test each sentence by what the reader does differently.
 Reference for a reader trying to *understand* — the security model, the design documents — is the
 opposite, and its test is what the reader *understands* differently. Which mode a passage is in
 follows the reader's state, not the file it sits in, and one document holds both. A message read
-while blocked — an error, a refusal, a prompt — is act mode and names what to do next.
+while blocked — an error, a refusal, a prompt — names what to do next.
 
 Until the first release, persisted text describes the current design, not its development history:
 no reader has a before-state, so delete change markers ("used to", "now", "became") and correction

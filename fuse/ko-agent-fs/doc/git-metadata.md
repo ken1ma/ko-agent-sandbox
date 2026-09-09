@@ -42,7 +42,8 @@ Hooks are not the only file whose *content* git executes. The rebase/cherry-pick
 lines, and a later host `git rebase --continue` (or `cherry-pick --continue`) runs them. This is the
 same class as a hook, and easy to miss precisely because git writes these paths during ordinary
 operation: watching what git writes suggests "operational, keep writable", but the execution
-question — can a write here make host git execute? — says "frozen". They are treated as control.
+question — can a write here make host git execute? — says "frozen". The filter protects them against
+modification.
 
 **Vector:** write a `rebase-merge`/`rebase-apply`/`sequencer` todo the host later continues.
 
@@ -95,7 +96,7 @@ inside `.git/worktrees/<name>/`, `$GIT_COMMON_DIR` — relocate where `git` look
 - *Creation* — a new `.git` (dir or file) anywhere in the tree makes host `git` discover a
   repository the sandbox fully controls: it can populate that gitdir's `config` and `hooks` at
   leisure, because to the filter they are just ordinary files until a `.git` entry names them.
-- *Rewriting* — editing an existing `.git` pointer file re-aims a real repository's control state at
+- *Rewriting* — editing an existing `.git` pointer file re-aims a real repository's Git metadata at
   a directory the sandbox owns.
 
 Both halves must be closed. Blocking creation alone leaves the pointer rewrite open; blocking
@@ -109,7 +110,7 @@ From the three groups, the state that must be immutable to the sandbox:
 1. **Any new entry named `.git`** — directory *or* file, at any depth. (Name rule below.)
 2. **Any existing `.git` pointer file** — the `gitdir:` indirection, immutable so it cannot be
    re-aimed.
-3. **Within any gitdir**, the control state:
+3. **Within any gitdir**, the protected entries:
    - `config`, `config.worktree`
    - `hooks/**`
    - `commondir` and `gitdir` — the redirections of group 3 above, which relocate where `config` and
@@ -127,12 +128,12 @@ The whole of `.git` cannot be read-only: `git` must write its
 operational state for `status`, `commit`, `checkout`, `fetch`, `merge` to work at all — `index`,
 `HEAD` and the other `*_HEAD` refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`,
 `COMMIT_EDITMSG`, `MERGE_MSG`, and so on. (`rebase` is the deliberate exception — its todo is
-control; see group 1 and blocked operations.)
+protected; see group 1 and blocked operations.)
 
-So inside a gitdir the filter must split writable operational state from immutable control state.
-There are two ways to draw that line, and they fail in opposite directions:
+So inside a gitdir the filter must keep operational state writable while protecting the other
+entries. There are two ways to draw that line, and they fail in opposite directions:
 
-- **Denylist** — deny the known control paths (`config*`, `hooks/**`, `commondir`), allow the rest.
+- **Denylist** — deny known protected paths (`config*`, `hooks/**`, `commondir`), allow the rest.
   A future `git` that introduces a new command-executing file under `$GIT_DIR` is **open** until we
   notice. Fail-open on `git` evolution.
 - **Allowlist** — allow the known operational paths (`objects/**`, `refs/**`, `logs/**`, `index`,
@@ -188,21 +189,20 @@ coverage as an assumption, and `TODO.md` lists which those are.
 
 ## Positional, not string-based
 
-Whether a given inode is control state depends on its position relative to the **nearest enclosing
+Whether an inode is protected depends on its position relative to the **nearest enclosing
 gitdir root**, resolved during the fd-relative walk — not on matching an absolute path string.
 `hooks/` is protected because it is `<gitdir>/hooks`, and the same rule re-applies at each nested
 gitdir discovered along the path (`modules/<n>/`, `worktrees/<n>/`). Path reconstruction plus a
 string test is exactly the TOCTOU, `..` and symlink attacks `architecture.md` ("Inode model")
 rules out; the classifier consumes the resolver's position state instead.
 
-Position is derived from names with one exception, and it is worth knowing where the exception is.
-A submodule's name defaults to its *path*, so `modules/a/b` is `a/b`'s gitdir when the submodule is
-at `a/b` and `a`'s own subdirectory when it is at `a` — the same string, two positions, and nothing
-in the path distinguishes them ("Premises", P1). The FUSE layer therefore asks the tree
-which it is, by the `HEAD` a gitdir holds, and the core is told rather than deriving it. The
-untold answer is the strict one: until a root is identified, everything under `modules/` is control,
-which is also what stops the sandbox writing a `HEAD` into a namespace to be asked a question it
-chose the answer to.
+Position is derived from names with one exception, and it is worth knowing where the exception is. A
+submodule's name defaults to its *path*, so `modules/a/b` is `a/b`'s gitdir when the submodule is at
+`a/b` and `a`'s own subdirectory when it is at `a` — the same string, two positions, and nothing in
+the path distinguishes them ("Premises", P1). The FUSE layer therefore asks the tree which it is, by
+the `HEAD` a gitdir holds, and the core is told rather than deriving it. The untold answer is the
+strict one: until a root is identified, everything under `modules/` is protected, which is also what
+stops the sandbox writing a `HEAD` into a namespace to be asked a question it chose the answer to.
 
 
 ## Operations that make these mutations
@@ -227,12 +227,12 @@ operands. Creation-side name matching and destination-side protection must both 
 `link` is the subtle one, and doubly-checked. A hardlink shares an **inode**, so it bypasses
 path-based classification: `link <gitdir>/hooks/pre-commit → src/alias` gives the frozen inode a
 second, *writable* name, and a write through `src/alias` then mutates the hook. So `link` is refused
-both destination-side (a link named into a protected tree) **and source-side** (aliasing a control
+both destination-side (a link named into a protected tree) **and source-side** (aliasing a protected
 inode out — `authorize(source, Link)`). Symlinks need no such rule: they redirect by *path*, and the
 target path is re-classified through the resolver's own walk, so a symlink into `hooks/` is caught
 when the resolved target is opened for write.
 
-Residual: a hardlink the *host* already created between a control inode and a worktree path lets
+Residual: a hardlink the *host* already created between a protected inode and a worktree path lets
 a write to the worktree path reach the frozen inode. Detecting that needs every write to prove its
 inode is not also reachable under a gitdir — not feasible per write. It is out of scope as host-
 created setup (the host is trusted; Git's default layout creates no hardlink between a hook and a
@@ -252,44 +252,43 @@ into the **worktree**, two ways:
 In both cases the files host `git` executes are stored at an ordinary worktree path, which this
 filter classifies as writable project data — so no per-operation rule can protect them. **The filter
 therefore refuses to serve such a tree at all** (`guard::check_hook_location`, run before the
-mount); the mounted suite pins both the refusal and its necessity
+mount); the mounted suite verifies both the refusal and its necessity
 (`relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them`).
 
 What the per-operation rules do hold is narrower than it looks, and worth stating exactly: the
 sandbox cannot *re-aim* hook resolution. `.git/config` is frozen, so it cannot introduce or change
-`core.hooksPath`, and the `.git/hooks` symlink node is control state, so it cannot be deleted or
+`core.hooksPath`, and the `.git/hooks` symlink node is protected, so it cannot be deleted or
 replaced. What they cannot cover is a target the **host** already points hooks at, which is what the
 refusal is for. Blocking the write *through* `.git/hooks/` would protect nothing: the same bytes are
 reachable under the target's own ordinary name (`shared-hooks/pre-commit`), so a rule about the
 symlink path closes nothing. Any real fix has to protect the *target*.
 
 **Why refusing rather than resolving.** Resolving the hook location and classifying that subtree as
-control would keep those repositories working, but buys a conditional guarantee with a git-config
-parser and a second control root in the audited core, and the snapshot it rests on is one the host
+protected would keep those repositories working, but buys a conditional guarantee with a git-config
+parser and a second protected root in the audited core, and the snapshot it rests on is one the host
 can invalidate mid-session. Refusing is the same answer the launcher already gives a symlinked
 `.git/hooks` (`SandboxProject.gitGuardVolumes`), and it is accurate: the filter declines to
 imply cover it cannot deliver.
 
-**The binding rule.** Relocated hooks are one instance of a class the guard closes whole: bytes
-host `git` consumes as control must not depend on any workspace path the policy classifies
-operational. The guard resolves every control source — the gitdir a `.git` pointer names, its
-`commondir` and the common config behind it, `config` and `config.worktree`, each `hooksPath`
-value from every directory git runs hooks in (the worktree for most hooks, `$GIT_DIR` for the
-receive side, the common gitdir conservatively — a relative value means a different directory to
-each), the hook directory and every entry in it — component by component, and every
-workspace-resident component traversed must classify `Control`, or the resolution has permanently
-left the workspace. Components, not only symlink nodes: an operational *directory* on a chain is a
-future symlink slot the sandbox can rename away and replant, and a chain that leaves the workspace
+**The binding rule.** Relocated hooks are one instance of a class the guard closes whole: Git
+configuration, hooks and redirection files must not be reachable through a workspace path the policy
+classifies as writable. The guard resolves every source — the gitdir a `.git` pointer names, its
+`commondir` and the common config behind it, `config` and `config.worktree`, each `hooksPath` value
+from every directory git runs hooks in (the worktree for most hooks, `$GIT_DIR` for the receive
+side, the common gitdir conservatively — a relative value means a different directory to each), the
+hook directory and every entry in it — component by component, and every workspace-resident
+component traversed must classify as `Protected`, or the resolution has permanently left the
+workspace. Components, not only symlink nodes: an operational *directory* on a chain is a future
+symlink slot the sandbox can rename away and replant, and a chain that leaves the workspace
 re-enters the rule if a link points back in. `canonicalize` cannot express this — it returns the
-endpoint and erases the chain — so the walk is explicit and depth-bounded, and it classifies
-against the same submodule gitdir roots the runtime discovers by their `HEAD`, so guard-`Control`
-means runtime-`Control` (`.git/modules/<sub>/objects` is writable at runtime and no exemption
-here). Existence cannot weaken the answer — a missing operational name is one the sandbox can
-create — and only NotFound means absent: an unreadable step, or a config that is not UTF-8,
-refuses the mount.
+endpoint and erases the chain — so the walk is explicit and depth-bounded, and it classifies against
+the same submodule gitdir roots the runtime discovers by their `HEAD`, so guard-`Protected` means
+runtime-`Protected` (`.git/modules/<sub>/objects` is writable at runtime and no exemption here).
+Existence cannot weaken the answer — a missing operational name is one the sandbox can create — and
+only NotFound means absent: an unreadable step, or a config that is not UTF-8, refuses the mount.
 
-The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths
-its subject cannot mutate, and every admitted chain is made of Control components the sandbox can
+The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths its
+subject cannot mutate, and every admitted chain is made of `Protected` components the sandbox can
 neither write nor rename. Only the host can invalidate it, which is the window recorded below.
 
 The same recognition covers the layout with no `.git` name at all: a workspace root that is itself
@@ -317,24 +316,24 @@ unterminated quote, and a bare `path` key, which under `include` or `includeIf` 
 scanner never opens. All are rare in a *repository-local* config, and the message tells the operator
 what to change.
 
-Scope: the repository at the workspace root, matching the launcher's own root-only pin, plus the
-bare-root check above. What lies below the root is unchecked, recorded in `TODO.md` and named in
-`SECURITY.md`: a repository the **host** nested deeper — its control state under `.git` names is
-frozen like any other's, but control bytes the host routed into the worktree (relocated hooks, a
-redirected gitdir) are served writable; the sandbox cannot create this layout. And a **bare
-layout**, which the sandbox *can* create — `git init --bare` and `git clone --bare|--mirror`
-write only ordinary names, and no per-name rule can refuse `HEAD`, `objects` and `refs`
-individually without refusing legitimate projects ("Consequences", below) — anywhere below the
-root, or at the root itself once the mount-time check has passed: a session starting in a
-repository-less workspace can lay the triple at the root mid-session.
+Scope: the repository at the workspace root, matching the launcher's read-only mounts at that root,
+plus the bare-root check above. What lies below the root is unchecked, recorded in `TODO.md` and
+named in `SECURITY.md`: a repository the **host** nested deeper — its protected entries under `.git`
+names are frozen like any other's, but Git metadata the host routed into the worktree (relocated
+hooks, a redirected gitdir) are served writable; the sandbox cannot create this layout. And a **bare
+layout**, which the sandbox *can* create — `git init --bare` and `git clone --bare|--mirror` write
+only ordinary names, and no per-name rule can refuse `HEAD`, `objects` and `refs` individually
+without refusing legitimate projects ("Consequences", below) — anywhere below the root, or at the
+root itself once the mount-time check has passed: a session starting in a repository-less workspace
+can lay the triple at the root mid-session.
 
 The check is also a snapshot, taken before the mount and not repeated. A host that relocates its
 hooks into the worktree *after* a session is serving gets no second refusal. Polling for it would
 buy a guarantee only as fresh as its last poll while putting a config read and an `lstat` on the hot
 path, so the answer is to record the window rather than chase it — and the window is the host's own
-to open: the binding rule admits only chains the sandbox cannot mutate. What it costs is that
-control state the host rearranges mid-session is writable for the rest of that session, exactly as
-if it had been rearranged before it and the guard had not existed.
+to open: the binding rule admits only chains the sandbox cannot mutate. What it costs is that Git
+configuration or hooks the host relocates into writable project paths remain writable for the rest
+of that session, just as they would without the mount-time guard.
 
 
 ## What this intentionally does *not* protect, and why that is safe
@@ -362,9 +361,8 @@ project directory", has the security reason for each):
 - `git worktree add <path>` with `<path>` in `/workspace` — writes a `.git` **file** at the new
   worktree. Blocked.
 - Submodule checkout that would materialize a submodule's worktree `.git` file in `/workspace` —
-  the operational state of the `.git/modules/<n>/` side is permitted (that gitdir's own control
-  state is frozen like any other's, by the recursion in "The immutable set"), the new `.git`
-  pointer in the worktree is blocked.
+  operational state in `.git/modules/<n>/` stays writable, while its protected entries stay frozen
+  by the recursion in "The immutable set". The new `.git` pointer in the worktree is refused.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
 - `git rebase` (any form — the merge backend writes `rebase-merge/` even for a clean rebase),
   `git am` (writes `rebase-apply/`), and `git cherry-pick`/`git revert` of a *range* or when a
@@ -479,7 +477,7 @@ written does not make it safe to allow. Only real git against a real mount exerc
   live-mount tests, not a hole, but a maintenance signal to add it to the allowlist and to
   `git_corpus.rs`. The `rebase-merge`/`rebase-apply`/`sequencer` exception is group 1's; do not add
   them on the grounds that git writes them.
-- **P3 — the control files are written only at creation time.** `config`, `config.worktree`,
+- **P3 — the protected entries are written only at creation time.** `config`, `config.worktree`,
   `hooks/**`, `commondir`, `gitdir`, `description`, `branches/**` are written by init,
   `submodule add` and `worktree add`, never during ordinary commit/checkout/merge/fetch — which is
   why freezing them costs an existing repository nothing, and why creating a submodule or linked

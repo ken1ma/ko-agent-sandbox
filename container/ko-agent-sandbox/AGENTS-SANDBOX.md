@@ -24,12 +24,12 @@ user to save the image under the project and pass its path instead.
 With the default `ko-agent-fs` workspace guard, a new symlink in `/workspace` needs a relative
 target staying inside it; anything else, an absolute `/workspace/...` included, fails. A program
 that caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
-appended section says when the weaker raw bind is in force instead.
+appended section says when the project uses a direct bind mount without this filter instead.
 
-The host's own symlinks are served as they are, so one with an absolute target dangles in here.
+Symlinks created on the host keep their targets. Absolute targets can be missing in the container.
 sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
 Dead links can occur in any `target` tree, the meta-build's `project/target` and each subproject's
-included. This removes just those, leaving control state alone:
+included. This removes just those, leaving `.git` and `.ko-agent-sandbox` untouched:
 
 ```sh
 find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
@@ -64,12 +64,13 @@ not work around them.
   A submodule the host already initialized is a checked-out directory and works normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
 
-Under the raw-bind guard, the appended section names the workspace-root paths that are pinned.
-Do not use writable nested repository control state or non-portable symlinks as a workaround;
-make those host-side changes on the host.
+Without the `ko-agent-fs` filter, the appended section names the workspace-root paths protected by
+read-only mounts. Do not bypass these restrictions through writable Git configuration, hooks or
+other Git entries in nested repositories, symlinks with absolute targets, or symlinks whose targets
+can resolve outside the project on the host. Make those changes on the host.
 
-Under every guard, network `git push` is refused by the egress proxy, and `git commit` fails until
-an identity is set.
+Leave `git push` to the user on the host. The default egress rules refuse it. `git commit` fails
+until an identity is set.
 
 `git config --global`, `git -c` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` do work. Do not use them to
 invent a name and email — ask the user, and leave the work as uncommitted changes meanwhile.
@@ -81,9 +82,9 @@ Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large checkout or bu
 take the whole podman machine down with it.
 
 When every command turns slow, read `/proc/pressure/memory` — it is the machine's, not this
-container's; `some avg60` above 10 means the machine is short — and
-`/sys/fs/cgroup/memory.events`, where a non-zero `oom_kill` means this container hit its own
-ceiling. Either way run fewer things in parallel, and tell the user which of the two it was.
+container's; `some avg60` above 10 means the machine is short on memory — and
+`/sys/fs/cgroup/memory.events`, where a non-zero `oom_kill` means this container reached its memory
+limit. Either way run fewer things in parallel, and tell the user which of the two it was.
 
 An LFS-tracked file checks out as its pointer stub, and installing `git-lfs` will not change
 that. Read the content one file at a time from
@@ -118,28 +119,28 @@ so — only they can add it to the image.
 
 ## Network
 
-The only egress is an HTTPS tunnel through `HTTPS_PROXY`. Which hosts this session reaches, and
-with what treatment, is the appended "What this session may do" section;
-`KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
+The only network access outside the sandbox is through `HTTPS_PROXY`. The appended "What this
+session may do" section lists the reachable hosts, permitted operations and whether requests are
+inspected; `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run
 `sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
-A TLS error on an allowed host is the trust store (next paragraph), or a client the proxy
-closes on: no SNI, Encrypted ClientHello — a browser's GREASE included, so a browser-driven program
-fails on every host — or HTTP/2 only. Plain `curl`/`git` are none of these.
+For a TLS error on an allowed host, check the trust store (next paragraph). The proxy also closes
+connections from clients that omit SNI, send Encrypted ClientHello — including a browser's GREASE —
+or support only HTTP/2. Plain `curl` and `git` do not have those protocol incompatibilities.
 
-`getent hosts` and every other name lookup fail by design; that is never why a fetch failed.
+External DNS lookups fail by design. Proxied requests use the proxy's DNS, so a failed lookup inside
+the sandbox does not explain a failed proxied fetch.
 Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
 -servername host -proxy egress-proxy:3128`.
 
 A program with its own trust store needs the proxy's CA:
 `/etc/ko-agent-sandbox/egress-proxy-ca.crt`, or the whole bundle in `$SSL_CERT_FILE`. A JVM needs
 the proxy as well, and ignores `HTTPS_PROXY`: run `sandbox-jdk-use-proxy <jdk-home>` on one you
-installed yourself. A native-image program has no `conf/` to prepare and reads no environment
-variable, so hand it `$KO_AGENT_SANDBOX_JAVA_OPTS` in its own spelling — `scala
-$KO_AGENT_SANDBOX_JAVA_OPTS run ...`, `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt`
-needs nothing.
+installed yourself. The native-image `scala` and `cs` launchers need the proxy and CA options on
+their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
+`cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs no additional setup.
 
 
 ## Containers in here: only if this session opted in
@@ -159,8 +160,8 @@ At `same-uid` a runtime runs, within four limits:
   still the proxy's.
 - **Most registries need a rule.** Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and
   `public.ecr.aws` are in the defaults; for any other, ask the user to add
-  `allow https://<registry>/ read` to `.ko-agent-sandbox/egress/rule`. A stalled pull is a
-  refused host.
+  `allow https://<registry>/ read` to `.ko-agent-sandbox/egress/rule`. If a pull stalls, run
+  `sandbox-egress-check <registry>` and report its output to the user.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
 podman is not preinstalled. `sandbox-install-podman` fetches and configures it:

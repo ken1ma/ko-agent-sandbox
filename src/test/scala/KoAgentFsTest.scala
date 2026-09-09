@@ -328,7 +328,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("the ko-agent-fs source id of a build context digests exactly its files"):
     // The Path overload must agree with the pure function, because the pure one is what the tests
-    // above pin and the Path one is what --build actually runs.
+    // above check and the Path one is what --build actually runs.
     val context = Files.createTempDirectory("ko-agent-fs-id-test")
     try
       val root = context.resolve("ko-agent-fs")

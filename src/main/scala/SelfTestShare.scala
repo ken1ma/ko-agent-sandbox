@@ -65,8 +65,8 @@ object SelfTestShare:
     )
 
   /** The stack check both programs open with — `.git` refused at *any* depth is the property that
-    * separates the filter from the launcher's mount pins, and probing in a fresh subdirectory is
-    * what makes it answer in a tree that already has a `.git`. */
+    * separates the filter from the launcher's read-only bind mounts, and probing in a fresh
+    * subdirectory is what makes it answer in a tree that already has a `.git`. */
   private val ProbePrelude: String =
     s"""import mmap, os, shutil, sys, tempfile, time
        |os.chdir("/workspace")

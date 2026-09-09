@@ -428,13 +428,12 @@ object HostCommands:
    * moment: a name that disappears even briefly fails that launch, and a name that exists holding
    * half a file is worse. Rename is what leaves neither state visible. The temporary has a
    * generated name, so two launches racing here cannot collide on it.
-   *
-   * A write that would change neither the content nor the mode is skipped: a cache stamp that
-   * misses on identical output must not churn the shared source's inode under a concurrent
-   * launch's copy. A real change replaces the inode and reaches only the runs that copy after it —
-   * a mount cannot follow a file out from under it (SECURITY.md, "The `.git` pins of
-   * `WORKSPACE_GUARD=none`", has the measurement), which is why containers mount per-run copies rather than these
-   * files.
+   *  A write that would change neither the content nor the mode is skipped: a cache stamp that
+   *misses on identical output must not churn the shared source's inode under a concurrent  launch's
+   *copy. A real change replaces the inode and reaches only the runs that copy after it —  a mount
+   *cannot follow a file out from under it (SECURITY.md, "The read-only `.git` mounts under
+   *`WORKSPACE_GUARD=none`", has the measurement), which is why containers mount per-run copies
+   *rather than these  files.
    *
    * The mode is requested at creation and set again after the write, and both halves earn their
    * place. Creating with it is what leaves no window: a file created under the umask and chmodded
