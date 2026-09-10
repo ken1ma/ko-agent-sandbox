@@ -1,5 +1,6 @@
-// The host command's lifecycle. A command session is one wrapper invocation. Its directory is
-// published by rename so it is never seen half-made, its lock marks the wrapper as live, and its
+// The host command's lifecycle. A command session is one wrapper invocation; the broker's session
+// is one launch, published and locked the same way by the broker. A session's directory is
+// published by rename so it is never seen half-made, its lock marks its owner as live, and its
 // records identify the child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
@@ -30,6 +31,13 @@ object RunOnHostSession:
   val StagingDir = "staging"
   val CondemnedDir = "condemned"
   val RootLockFile = "root-lock"
+  val BuildLockDir = "build-lock"
+
+  /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
+    * launch's lifetime; a command's, its wrapper's. */
+  enum Kind(val prefix: String):
+    case Broker extends Kind("b")
+    case Command extends Kind("s")
 
   /** One registered process group: the leader's pgid (== its pid) and the leader's start time,
     * spelled exactly as `ps -o lstart=` prints it — compared as a string, never parsed, because
@@ -73,6 +81,9 @@ object RunOnHostSession:
   // The wrapper root
   // ---------------------------------------------------------------------------
 
+  /** Within RunOnHostPrereqs.SessionTmpMaxLength's budget: every session's `tmp/` is beneath it. */
+  def root(uid: Int): Path = Path.of(s"/private/tmp/ko-agent-$uid")
+
   /**
    * `/private/tmp` is shared and sticky, so the root is trusted the way an XDG runtime directory
    * is — this user's, mode 0700, no symlink — and refused otherwise. Created when absent; created
@@ -104,11 +115,66 @@ object RunOnHostSession:
     java.nio.file.attribute.PosixFilePermissions
       .asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
 
+  /**
+   * The build lock of one build directory and program, `build-lock/<program>-<hash>`: held by
+   * the command's own process for its whole life, teardown included, so no two launches run or
+   * clean up a command on one build at once, and a broker's death frees nothing the wrapper
+   * holds. The spawn below takes it through flock(2), whose lock belongs to the open file
+   * description: it survives the exec into the wrapper, reaches none of the wrapper's own
+   * children — a JVM's children get only their three standard descriptors — and is released
+   * when the wrapper exits; a killed wrapper's at once, the next start's scavenge behind it. A
+   * spawn blocked on the lock is a child like any other, ended when its requester leaves. Under
+   * the broker it also watches the broker's pipe on its stdin, as the wrapper does, and ends at
+   * its EOF, so a dead broker dispatches nothing. The file is never deleted: deleted and
+   * recreated, one name would let two holders lock different inodes.
+   */
+  def buildLockFile(root: Path, program: String, buildDirectory: Path): Either[String, Path] =
+    try
+      Right(Files.createDirectories(root.resolve(BuildLockDir), ownerOnly)
+        .resolve(s"$program-${buildHash(buildDirectory)}"))
+    catch case ex: IOException => Left(s"the build locks under $root: ${ex.getMessage}")
+
+  /** The command under the build lock: perl takes the lock and execs the command holding it.
+    * When it has to wait it says so on stderr, the requester's, and with `endAtStdinEof` it
+    * ends at its stdin's EOF meanwhile, the broker gone (RunOnHostChannel.dispatch). Exit 71 is
+    * the spawn ending itself, as in registeredSpawn. */
+  def lockedSpawn(lockFile: Path, command: Seq[String], endAtStdinEof: Boolean): Seq[String] =
+    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if endAtStdinEof then "1" else "0") ++ command
+
+  val LockScript: String =
+    """use Fcntl qw(:flock F_SETFD);
+      |my ($lock, $pipe, @command) = @ARGV;
+      |open(my $fh, '>>', $lock) or exit 71;
+      |unless (flock($fh, LOCK_EX | LOCK_NB)) {
+      |    print STDERR "waiting for the build lock: another launch's command runs in this build directory\n";
+      |    if ($pipe) {
+      |        my $stdin = '';
+      |        vec($stdin, fileno(STDIN), 1) = 1;
+      |        until (flock($fh, LOCK_EX | LOCK_NB)) {
+      |            my $readable = $stdin;
+      |            if (select($readable, undef, undef, 0.2)) {
+      |                exit 71 unless sysread(STDIN, my $byte, 1);
+      |            }
+      |        }
+      |    } else {
+      |        flock($fh, LOCK_EX) or exit 71;
+      |    }
+      |}
+      |fcntl($fh, F_SETFD, 0) or exit 71;
+      |exec { $command[0] } @command or exit 71;""".stripMargin
+
+  /** What names one build directory's lock and records: its canonical spelling's SHA-256, 16
+    * hex digits. */
+  def buildHash(buildDirectory: Path): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+      .digest(buildDirectory.toString.getBytes(UTF_8))
+      .take(8).map(byte => f"$byte%02x").mkString
+
   // ---------------------------------------------------------------------------
   // Publication
   // ---------------------------------------------------------------------------
 
-  /** A published, locked session. The lock channel lives as long as the wrapper; closing it is
+  /** A published, locked session. The lock channel lives as long as its owner; closing it is
     * what frees the session for a scavenger. */
   final class Session(val directory: Path, lockChannel: FileChannel):
     def tmp: Path = directory.resolve(TmpDir)
@@ -121,11 +187,11 @@ object RunOnHostSession:
    * staging entry through the rename — the scavenger's staging cleanup takes the same lock, so it
    * can never delete a directory whose creator has not locked it yet.
    */
-  def publish(root: Path, project: Path): Either[String, Session] =
+  def publish(root: Path, project: Path, kind: Kind = Kind.Command): Either[String, Session] =
     try
       withRootLock(root):
         val staging = Files.createDirectories(root.resolve(StagingDir), ownerOnly)
-        val entry = Files.createTempDirectory(staging, "s", ownerOnly)
+        val entry = Files.createTempDirectory(staging, kind.prefix, ownerOnly)
         Files.createDirectory(entry.resolve(TmpDir), ownerOnly)
         Files.createDirectory(entry.resolve(RecordsDir), ownerOnly)
         Files.writeString(entry.resolve(ProjectFile), project.toString + "\n", UTF_8)
@@ -136,18 +202,31 @@ object RunOnHostSession:
         )
         if channel.tryLock() == null then
           channel.close()
-          Left(s"could not take the new command's lock in $entry")
+          Left(s"could not take the new session's lock in $entry")
         else
           val published = root.resolve(entry.getFileName)
           Files.move(entry, published, StandardCopyOption.ATOMIC_MOVE)
           Right(Session(published, channel))
-    catch case ex: IOException => Left(s"publishing a command directory under $root: ${ex.getMessage}")
+    catch case ex: IOException => Left(s"publishing a session under $root: ${ex.getMessage}")
 
   /** Remove this session's directory. The lock is released by deletion's end; nothing here needs
     * the root lock. */
   def remove(session: Session): Unit =
     deleteSessionTree(session.directory)
     session.close()
+
+  /**
+   * A session's teardown: run once, by its owner at the end of its work or by the JVM's shutdown
+   * hook on a signal — SIGINT and SIGTERM end a JVM through its hooks, never by unwinding to
+   * `finally`. Synchronized, not merely once: the JVM halts when its hooks return, so the losing
+   * caller must block until the whole cleanup is done, never return early into a halting JVM.
+   */
+  final class Teardown(body: Boolean => Unit):
+    private var done = false
+    def apply(bySignal: Boolean): Unit = synchronized:
+      if !done then
+        done = true
+        body(bySignal)
 
   /**
    * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
@@ -191,7 +270,8 @@ object RunOnHostSession:
    * work an earlier, killed scavenger left — then every unlocked published entry is condemned and
    * collected, then staging litter is cleared under the root lock. A condemned entry is collected
    * only under its own lock — the same lock its session held — so two starts, or a start and the
-   * wrapper's own step 11, never signal or delete the same entry concurrently.
+   * wrapper's own step 11, never signal or delete the same entry concurrently. The build locks
+   * are skipped by name: a directory without a `lock` file reads as a dead session here.
    */
   def scavenge(root: Path, processes: Processes, shutdown: Path => ServerAnswer)
     : Vector[(Path, Vector[Collected])] =
@@ -210,7 +290,8 @@ object RunOnHostSession:
       listDirectory(condemnedRoot).foreach(collectLocked)
 
     listDirectory(root)
-      .filterNot(p => Set(StagingDir, CondemnedDir, RootLockFile).contains(p.getFileName.toString))
+      .filterNot(p =>
+        Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir).contains(p.getFileName.toString))
       .filter(Files.isDirectory(_))
       .foreach: entry =>
         if lockIsFree(entry.resolve(LockFile)) then

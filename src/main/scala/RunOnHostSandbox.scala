@@ -278,6 +278,17 @@ object RunOnHostSandbox:
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
         sys.exit(2)
+      // The broker's pipe (RunOnHostChannel.dispatch): its EOF is the broker gone, and the command
+      // ends with it through the shutdown hook, as it ends with the requester's ctl. The status is
+      // nobody's to read. A def, not the thread's own lambda: a lambda ending in sys.exit types
+      // as Nothing, which the JVM's lambda factory refuses for Runnable's void at link time.
+      def endWithBroker(): Unit =
+        try while System.in.read() != -1 do ()
+        catch case _: IOException => ()
+        sys.exit(143)
+      val brokerGone = Thread(() => endWithBroker())
+      brokerGone.setDaemon(true)
+      brokerGone.start()
       sys.exit(
         run(
           Path.of(project), program, commandArgs, bundledRuntimeAuthority(), uid,
@@ -574,7 +585,7 @@ object RunOnHostSandbox:
     projectArg: Path,
     program: Program,
     commandArgs: Seq[String],
-    runtime: SeatbeltProfile.RuntimeAuthority,
+    authority: SeatbeltProfile.RuntimeAuthority,
     uid: Int,
     log: String => Unit,
     // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
@@ -588,7 +599,7 @@ object RunOnHostSandbox:
     channelLog: Option[Path] = None,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
-    val root = Path.of(s"/private/tmp/ko-agent-$uid")
+    val root = RunOnHostSession.root(uid)
 
     val prepared: Either[String, (Assembled, Vector[String])] =
       for
@@ -630,38 +641,31 @@ object RunOnHostSandbox:
             log(s"refused: $reason")
             2
           case Right(session) =>
-            // Also on a shutdown hook: SIGINT and SIGTERM end a JVM through its hooks, never by
-            // unwinding to `finally` — and the registered groups are outside the terminal's own,
-            // so nothing but this would end them on a Ctrl-C. Synchronized, not merely once: the
-            // JVM halts when its hooks return, so the losing caller must block until the whole
-            // cleanup is done, never return early into a halting JVM.
-            object teardown:
-              private var done = false
-              def apply(bySignal: Boolean): Unit = synchronized:
-                if !done then
-                  done = true
-                  RunOnHostSession
-                    .endSession(root, session, RunOnHostSession.HostProcesses,
-                      SbtServerShutdown.shutdown(_),
-                      beforeRemoval =
-                        if bySignal then condemned => channelLog.foreach(appendSessionLogs(_, condemned))
-                        else _ => ())
-                    .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
-                    .foreach(kept => log(s"kept for the next start to retry: $kept"))
+            // Also on a shutdown hook (RunOnHostSession.Teardown): the registered groups are
+            // outside the terminal's own, so nothing but this would end them on a Ctrl-C.
+            val teardown = RunOnHostSession.Teardown: bySignal =>
+              RunOnHostSession
+                .endSession(root, session, RunOnHostSession.HostProcesses,
+                  SbtServerShutdown.shutdown(_),
+                  beforeRemoval =
+                    if bySignal then condemned => channelLog.foreach(appendSessionLogs(_, condemned))
+                    else _ => ())
+                .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
+                .foreach(kept => log(s"kept for the next start to retry: $kept"))
             val hook = Thread(() => teardown(bySignal = true))
-            Runtime.getRuntime.addShutdownHook(hook)
+            java.lang.Runtime.getRuntime.addShutdownHook(hook)
             val outcome =
               try
                 sessionTmpFits(session.tmp) match
                   case Left(refusal) => Left(wording(refusal))
                   case Right(_) =>
                     runInSession(
-                      session, assembled, fileHosts, commandArgs, runtime, workingDirectory, log,
+                      session, assembled, fileHosts, commandArgs, authority, workingDirectory, log,
                       forwarded.flatMap(name => env(carrierName(name)).map(name -> _)),
                     )
               finally
                 teardown(bySignal = false)
-                try Runtime.getRuntime.removeShutdownHook(hook)
+                try java.lang.Runtime.getRuntime.removeShutdownHook(hook)
                 catch case _: IllegalStateException => () // already shutting down; the hook ran
             outcome match
               case Left(reason) =>
@@ -669,12 +673,24 @@ object RunOnHostSandbox:
                 2
               case Right(exit) => exit
 
+  /** One program's proxy, as a command runs against it: the port its profile and environment
+    * name, and the log its denied-host report reads. Created by the wrapper for the command it
+    * runs, in the command's session, and ended with that session. */
+  case class Runtime(proxyPort: Int, proxyLog: Path)
+
+  private def createRuntime(session: Session, program: Program, fileHosts: Vector[String]): Either[String, Runtime] =
+    val proxyLog = session.directory.resolve("proxy.log")
+    for
+      _ <- startProxy(session, program, fileHosts, proxyLog)
+      port <- awaitProxyPort(proxyLog, deadlineMillis = 30_000)
+    yield Runtime(port, proxyLog)
+
   private def runInSession(
     session: Session,
     assembled: Assembled,
     fileHosts: Vector[String],
     commandArgs: Seq[String],
-    runtime: SeatbeltProfile.RuntimeAuthority,
+    authority: SeatbeltProfile.RuntimeAuthority,
     workingDirectory: Option[Path],
     log: String => Unit,
     forwards: Vector[(String, String)],
@@ -685,8 +701,7 @@ object RunOnHostSandbox:
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this command's roots (first: ${swept.head})")
     for
-      _ <- startProxy(session, assembled.prereqs.program, fileHosts)
-      port <- awaitProxyPort(session.directory.resolve("proxy.log"), deadlineMillis = 30_000)
+      runtime <- createRuntime(session, assembled.prereqs.program, fileHosts)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
           prereqs = assembled.prereqs,
@@ -695,16 +710,18 @@ object RunOnHostSandbox:
           sbtGlobal = assembled.sbtGlobalGranted,
           ivyHome = assembled.ivyHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
-          proxyPort = port,
-          runtime = runtime,
+          proxyPort = runtime.proxyPort,
+          runtime = authority,
         ),
       )
-      exit <- runCommand(session, assembled, profile, port, commandArgs, workingDirectory, forwards)
+      exit <- runCommand(session, assembled, profile, runtime.proxyPort, commandArgs, workingDirectory, forwards)
     yield
-      reportDenied(session.directory.resolve("proxy.log"), assembled.prereqs.program, log)
+      reportDenied(runtime.proxyLog, assembled.prereqs.program, log)
       exit
 
-  private def startProxy(session: Session, program: Program, fileHosts: Vector[String]): Either[String, Process] =
+  private def startProxy(
+    session: Session, program: Program, fileHosts: Vector[String], proxyLog: Path,
+  ): Either[String, Process] =
     val command = RunOnHostSession
       .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
@@ -716,7 +733,7 @@ object RunOnHostSandbox:
     builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
     builder.environment.put("EGRESS_RULE", egressRuleText(program, fileHosts))
     builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
-    builder.environment.put("EGRESS_LOG_FILE", session.directory.resolve("proxy.log").toString)
+    builder.environment.put("EGRESS_LOG_FILE", proxyLog.toString)
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
     builder.redirectError(ProcessBuilder.Redirect.DISCARD) // the log file is the tee
     try Right(builder.start())
@@ -753,7 +770,10 @@ object RunOnHostSandbox:
     )
     val builder = ProcessBuilder(command*)
     builder.directory(workingDirectory.getOrElse(prereqs.project).toFile)
-    builder.inheritIO()
+    // Not the wrapper's own stdin, which under the broker is its liveness pipe (runCommandMain).
+    builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+    builder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
+    builder.redirectError(ProcessBuilder.Redirect.INHERIT)
     builder.environment.clear()
     builder.environment.putAll(
       commandEnvironment(

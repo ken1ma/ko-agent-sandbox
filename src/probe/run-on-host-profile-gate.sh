@@ -155,20 +155,30 @@ sandboxed() { # program command...
     profile=$work/gate-$1.sb; shift
     with_timeout "${GATE_ROW_TIMEOUT:-600}" command_env "$cache_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
 }
-run_sbt() { # client command...
+run_sbt() { # client command...: the executable the wrapper runs; the profile PATH holds no sbt
     client=$1; shift
-    sandboxed sbt sbt $client -batch -java-home "$JAVA_HOME" "$@"
+    sandboxed sbt "$sbt_executable" $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
 # A command through the wrapper: RunOnHost scavenges, publishes a command directory, starts the command
 # proxy, runs the program under the generated profile, ends its server and proxy, and preserves the
 # exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
-# `Command requested network access ...` — which several rows read. $test_cp is captured from emit.
+# `Command requested network access ...` — which several rows read. $test_cp and $lock_script
+# are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
+# takes (locked_wrapper).
+build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
+locked_wrapper() { # program project command...
+    lw_program=$1; lw_project=$2; shift 2
+    lock=$(build_lock "$lw_program" "$lw_project") || return 2
+    # exec, so the with_timeout background pid is this perl and then the wrapper JVM, not a
+    # subshell whose kill would miss them (victim_wrapper's own reason).
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+        agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
+        src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
+}
 wrapper() { # program project command...
     wrapper_program=$1; wrapper_project=$2; shift 2
-    with_timeout "${GATE_ROW_TIMEOUT:-900}" "$JAVA_HOME/bin/java" -cp "$test_cp" \
-        agentsandbox.launcher.RunOnHost "$wrapper_program" "$wrapper_project" \
-        src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
+    with_timeout "${GATE_ROW_TIMEOUT:-900}" locked_wrapper "$wrapper_program" "$wrapper_project" "$@"
 }
 deny_project=$project/src/probe/deny-fixture
 ivy_project=$project/src/probe/ivy-fixture
@@ -276,6 +286,7 @@ sbt --jvm-client -batch shutdown >/dev/null 2>&1
 profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
+lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
 [ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
 # Each profile has its own command's temporary directory and run-on-host cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
@@ -598,7 +609,11 @@ fi
 
 echo
 echo "the command lifecycle"
-commands_now() { ls "$command_root" 2>/dev/null | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$'; }
+# Command sessions alone: the broker's own session (b<random>) and the build locks are not commands.
+commands_now() {
+    ls "$command_root" 2>/dev/null \
+        | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$' -e '^build-lock$' -e '^b[0-9]'
+}
 lifecycle_rows="two concurrent commands
 SIGTERM: the wrapper cleans up behind itself
 SIGKILL mid-command: the running group is ended provably
@@ -633,7 +648,9 @@ await_client_record() { # victim-pid
 # the subshell running this function, java is its child, and every staged kill — and the spawn's
 # parent-pid check above — would signal or look at the wrong process.
 victim_wrapper() { # log-name
-    exec "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost \
+    lock=$(build_lock sbt "$project") || exit 2
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+        agentsandbox.launcher.RunOnHost \
         sbt "$project" src/main/resources/agentsandbox/runtime-authority.txt -- compile >"$work/$1" 2>&1
 }
 if [ "$quick" = 1 ]; then
@@ -752,7 +769,9 @@ channel_dir=/tmp/ko-agent-sandbox/host-command
 channel_rows="channel: sbt test returns the command's own exit code
 channel: a working directory outside the project is refused
 channel: a dead shim ends the running command
-channel: a dead sandbox ends the channel and its command"
+channel: a dead sandbox ends the channel and its command
+channel: TERM to the broker ends its command before the broker exits
+channel: a killed broker's command ends with it"
 skip_channel() {
     while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
 $channel_rows
@@ -821,14 +840,17 @@ case "\$1 \$2" in
 esac
 EOF
     chmod +x "$work/podman"
-    echo true > "$work/running"
-    rm -rf "$channel_dir"
-    "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
-        --serve-run-on-host "$work/podman" C "$project" sbt "$work/channel.log" "$project" \
-        >/dev/null 2>&1 & channel_broker=$!
-    tries=0
-    while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
-    if [ ! -p "$channel_dir/req" ]; then
+    start_channel_broker() { # false when it made no FIFO
+        echo true > "$work/running"
+        rm -rf "$channel_dir"
+        "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
+            --serve-run-on-host "$work/podman" C "$project" sbt "$work/channel.log" "$project" \
+            >/dev/null 2>&1 & channel_broker=$!
+        tries=0
+        while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
+        [ -p "$channel_dir/req" ]
+    }
+    if ! start_channel_broker; then
         skip_channel "the broker made no FIFOs: $(tail -1 "$work/channel.log" 2>/dev/null | cut -c1-50)"
     else
         # The exit criterion's row: an agent-invoked `sbt test`, its exit code the command's own.
@@ -879,6 +901,37 @@ EOF
         else report FAIL "channel: a dead sandbox ends the channel and its command" \
             "commands: $(commands_now), broker $broker_state"; fi
         rm -rf "$channel_dir"
+
+        # The broker's own end mid-command. TERM: its hook ends the wrapper and waits for the
+        # wrapper's teardown, so the moment the broker is gone the command's directory, server and
+        # proxy are gone too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe,
+        # and its EOF ends the command by the same teardown. The shim is left blocked on its exit
+        # read (no timeout(1) here) and killed after.
+        broker_end_row() { # row signal
+            before=$(grep -c 'ended by signal' "$work/channel.log")
+            if ! start_channel_broker; then report FAIL "$1" "the broker made no FIFOs"; return; fi
+            channel_shim "chan-broker-$2.log" "$project" sbt compile & shim=$!
+            tries=0
+            while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+            kill "-$2" "$channel_broker" 2>/dev/null
+            tries=0
+            while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
+                tries=$((tries + 1)); sleep 0.5
+            done
+            [ "$2" = KILL ] && channel_settled
+            if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
+                && ! kill -0 "$channel_broker" 2>/dev/null \
+                && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
+            then report PASS "$1"
+            else report FAIL "$1" "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
+broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), \
+logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; fi
+            kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
+            kill_channel_execs
+            rm -rf "$channel_dir"
+        }
+        broker_end_row "channel: TERM to the broker ends its command before the broker exits" TERM
+        broker_end_row "channel: a killed broker's command ends with it" KILL
     fi
 fi
 

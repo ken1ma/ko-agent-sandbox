@@ -91,6 +91,26 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(Files.isDirectory(session.directory))
     remove(session)
 
+  test("the two session kinds are told apart by their directory's prefix"):
+    val root = freshRoot()
+    val broker = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val command = publish(root, Path.of("/p")).toOption.get
+    assert(broker.directory.getFileName.toString.startsWith("b"), clue = broker.directory)
+    assert(command.directory.getFileName.toString.startsWith("s"), clue = command.directory)
+    remove(broker)
+    remove(command)
+
+  test("a build lock file is neither a session nor scavenged"):
+    val root = freshRoot()
+    val build = Path.of("/Users/u/proj/sub")
+    val file = buildLockFile(root, "sbt", build).toOption.get
+    assertEquals(file, root.resolve(BuildLockDir).resolve(s"sbt-${buildHash(build)}"))
+    assertEquals(buildHash(build).length, 16)
+    Files.createFile(file)
+    assertEquals(scavenge(root, processes(), _ => ServerAnswer.ShutDown), Vector.empty)
+    assert(Files.isRegularFile(file), "the lock file outlives every scavenge")
+    assert(!Files.exists(root.resolve(CondemnedDir).resolve(BuildLockDir)))
+
   // --------------------------------------------------------------------------
   // Scavenging the dead
   // --------------------------------------------------------------------------
@@ -106,6 +126,31 @@ class RunOnHostSessionTest extends munit.FunSuite:
     // A SIGKILLed wrapper: the lock is freed, the directory and records stay.
     session.close()
     session.directory
+
+  test("a dead broker session's records are ended like a command's"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    for (name, pid) <- Seq("proxy-sbt-abc" -> 21L, "server-sbt-abc" -> 22L, "daemon-mill-def" -> 23L) do
+      Files.writeString(session.records.resolve(name), renderRecord(Record(pid, s"START-$pid")), UTF_8)
+    val dead = die(session)
+    val fakes = processes(21L -> "START-21", 22L -> "START-22", 23L -> "START-23")
+    scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList.sorted, List(21L, 22L, 23L))
+    assert(!Files.exists(dead))
+
+  test("a dead command session beside a live broker session is collected alone"):
+    val root = freshRoot()
+    val broker = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    Files.writeString(broker.records.resolve("server-sbt-abc"), renderRecord(Record(31, "START-31")), UTF_8)
+    val command = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(command.records.resolve("client"), renderRecord(Record(32, "START-32")), UTF_8)
+    val dead = die(command)
+    val fakes = processes(31L -> "START-31", 32L -> "START-32")
+    scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(32L), "the broker's live session keeps its records")
+    assert(!Files.exists(dead))
+    assert(Files.isDirectory(broker.directory))
+    remove(broker)
 
   test("a dead session's matching group is ended and the directory removed"):
     val root = freshRoot()
@@ -442,6 +487,41 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val process =
       java.lang.ProcessBuilder(registeredSpawn(gone, Seq("/bin/sleep", "30"))*).start()
     assertEquals(process.waitFor(), 71)
+
+  test("a locked spawn holds the build lock for its life, and the next taker runs once it is gone"):
+    notUnderRunOnHostProfile()
+    val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
+    val holder =
+      java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/sleep", "30"), endAtStdinEof = false)*).start()
+    try
+      // The holder takes the lock at its own pace: a taker started too early runs at once, so
+      // takers are started until one reports the wait — and then is still alive, blocked. One
+      // line, not the stream: a blocked taker holds its stderr open until it exits.
+      def taker() = java.lang.ProcessBuilder(
+        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), endAtStdinEof = false)*).start()
+      var waiting: Option[Process] = None
+      val deadline = System.nanoTime + 10_000_000_000L
+      while waiting.isEmpty && System.nanoTime < deadline do
+        val candidate = taker()
+        val said = java.io.BufferedReader(java.io.InputStreamReader(candidate.getErrorStream, UTF_8)).readLine()
+        if said != null && said.contains("waiting for the build lock") then waiting = Some(candidate)
+        else
+          assertEquals(candidate.waitFor(), 7, "a taker that did not wait ran")
+          Thread.sleep(50)
+      val blocked = waiting.getOrElse(fail("no taker ever found the lock held"))
+      assert(blocked.isAlive, "the taker blocks while the holder lives")
+      // A taker dispatched by a broker: its stdin's EOF is the broker gone, and it ends itself.
+      val orphan = java.lang.ProcessBuilder(
+        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), endAtStdinEof = true)*).start()
+      java.io.BufferedReader(java.io.InputStreamReader(orphan.getErrorStream, UTF_8)).readLine()
+      orphan.getOutputStream.close()
+      assert(orphan.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "the pipe's EOF ends the wait")
+      assertEquals(orphan.exitValue, 71)
+      assert(holder.isAlive)
+      holder.destroyForcibly().waitFor()
+      assert(blocked.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "the holder's death frees the lock")
+      assertEquals(blocked.exitValue, 7)
+    finally holder.destroyForcibly().waitFor()
 
   // --------------------------------------------------------------------------
   // The shutdown speaker, against a real local socket

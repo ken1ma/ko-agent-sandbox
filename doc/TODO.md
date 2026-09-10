@@ -300,6 +300,17 @@ art, both mounting the project at its host path for path legibility rather than 
 - Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
   https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/
 
+## Deferred — readable session directory names under `--run-on-host`
+
+- [ ] Name the sessions `broker-<random>` and `command-<random>` instead of `b<random>` and
+  `s<random>` (`RunOnHostSession.Kind`), once the path can afford it: the session's `tmp/` hosts
+  sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength` leaves that path 53 characters,
+  of which the root and Java's 20-digit temp-directory name take 51. Either sbt's boot socket
+  comes to need fewer than its 50 characters past the directory (`sbt-issues.md`, the thin-client
+  entry — its fix as requested only turns the crash into a message, and lifts no length), or the
+  session names get a shorter random part of their own, with the collision retry
+  `Files.createTempDirectory` does today.
+
 ## Before the first release — continuous integration
 
 There is no CI. The README's developer commands run the launcher, proxy and filter suites;

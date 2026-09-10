@@ -154,8 +154,9 @@ Flat siblings, not a nesting: sbt's boot socket path must fit `sun_path`
 one exclusion: `build-lock/` joins `staging/`, `condemned/` and `root-lock` in the names it skips,
 since a directory without a `lock` file reads as a dead session to it, and a build lock deleted
 and recreated would let two brokers hold different inodes of one lock; a unit test scavenges
-with a build lock held. The build locks are the one other new entry, taken as `root-lock` is,
-through a `FileChannel`. The words are the repository's: **the broker's session** and **the
+with a build lock held. The build locks are the one other new entry, held by the command's own
+process through `flock(2)` across its spawn's exec (section 3). The words are the repository's:
+**the broker's session** and **the
 command's session**; the processes are **the broker's proxy**, **the broker's sbt server** and
 **the broker's mill daemon**; and **a runtime** is one program's proxy plus its server or daemon,
 a word this document uses for that alone — the profile's *runtime authority* stays that phrase.
@@ -176,13 +177,16 @@ and a process of its successor; a record without its `build-<hash>` is unproven 
   answers at the build directory's portfile, then the session removed. Nothing is added to that
   call: TERM is the clean end for a provable group — the server flushes its portfile on it — and
   the protocol step exists for the orphan the scavenger cannot prove.
-- **TERM.** The broker's shutdown hook ends the running command, as now, and then the runtimes the
-  same way.
-- **SIGKILL, or the machine dying under it.** The broker's lock frees, the records stay, and the
-  next start — the next launch's broker, or any wrapper — scavenges the session with the existing
-  machinery: groups ended behind their live leaders, the sbt server ended by portfile attribution
-  since its socket is under that session's `tmp/`. Until such a start, the orphaned server lives;
-  that is today's window for a killed wrapper, unchanged in kind.
+- **TERM.** The broker's shutdown hook ends the running command and waits for the wrapper's
+  teardown, then ends the runtimes the same way.
+- **SIGKILL, or the machine dying under it.** The wrapper's stdin is the broker's pipe, so a
+  broker gone by any death ends the running command the way the requester's closed `ctl` does,
+  through the wrapper's own teardown, under the build lock the wrapper itself holds (section
+  3). The broker's records stay, and the next start — the next launch's broker, or any
+  wrapper — scavenges the session with the existing machinery: groups ended behind their live
+  leaders, the sbt server ended by portfile attribution since its socket is under that session's
+  `tmp/`. Until such a start, the orphaned server lives: today's window for a killed wrapper,
+  unchanged in kind.
 - **A command's end or cancel** ends the command's own session and group only. What that means to
   the server or daemon is per program (6.3, 7.5).
 - **A record is reused only after its group is ended.** A registered spawn stays alive as its
@@ -226,16 +230,24 @@ invariant the tests keep, not an accident: concurrent host commands within one l
 scope for Phase 1, and a request queued behind a running one sees the runtime the first left.
 
 Across launches the same holds by a **build lock**: a file under `build-lock/`, named by the
-program and a hash of the canonical build directory, that every broker — and the gate's test
-entry — holds from step 1 until the command it dispatched has ended, and that a broker taking a
-foreign runtime over (6.4, 7.3) holds from its first observation until its own runtime is up.
-So while any broker's client runs, no other broker observes, ends or starts anything for that
-build; while one takes over, no broker dispatches a client to the runtime being ended. Two
-launches on one project therefore queue behind each other's commands, and "never a broker's
-build in flight" is enforced, not observed. A lock a dead broker held is released by the OS with its
-descriptor, as `root-lock` is, so a killed launch blocks nobody. The lock covers clients the
-brokers dispatch; a client from the user's terminal is covered by the idle observation of 7.3
-alone.
+program and a hash of the canonical build directory, that the command's own process holds for
+its whole life. The spawn takes it through `flock(2)` before it execs the wrapper
+(`RunOnHostSession.lockedSpawn`): the lock belongs to the open file description, so it survives
+the exec, reaches none of the wrapper's children, and is released only when the wrapper exits,
+its teardown included — a broker's death, which ends the wrapper through its pipe (section 2),
+frees nothing the wrapper holds. A broker taking a foreign runtime over (6.4, 7.3) holds the
+lock from its first observation until its own runtime is up, and the broker's own work under
+it before a command — observing, starting or retiring a runtime (steps 2 and 3) — has the spawn
+take the lock first and exec the wrapper on the broker's word (implementation step 2). So while
+any launch's client runs or cleans up, no other launch observes, ends or starts anything for
+that build; while one takes over, none dispatches a client to the runtime being ended. Two
+launches on one project therefore queue behind each other's commands — the spawn says so on the
+requester's stderr — and "never a broker's build in flight" is enforced, not observed. A spawn
+blocked on the lock is ended when its requester leaves, as a running command is, and watches the
+broker's pipe as the wrapper does, so a dead broker dispatches nothing. The lock covers clients
+the brokers dispatch, and the gate takes it around its test entry through the same spawn, whose
+exec keeps the wrapper's pid for the gate's kill rows; a client from the user's terminal is
+covered by the idle observation of 7.3 alone.
 
 The wrapper keeps its own session, its registered client group, its shutdown-hook teardown and its
 exit-code protocol. Given no runtime parameters — the gate's test entry, section 9 — it creates
@@ -1119,12 +1131,12 @@ Small patches, each with an independently testable invariant, in dependency orde
 ## Phase 1
 
 1. The broker's session kind in `RunOnHostSession` (a second published, locked session with
-   records), the build lock held around each dispatched command, and the wrapper taking a
-   runtime as parameters or owning one for a command — today's behavior throughout, the gate
-   green unchanged.
-2. The broker's proxy: started in the broker's session with the rules read then, its port passed
-   to the wrapper, the reuse key over the build directory, the per-command denied-host offset.
-   Servers still per command.
+   records), the build lock held around each dispatched command, and the wrapper's runtime as
+   the value it creates for one command — today's behavior throughout, the gate green unchanged.
+2. The broker's proxy: started in the broker's session with the rules read then, its port and
+   session directory passed to the wrapper as the runtime parameters, the spawn taking the build
+   lock before that preparation and execing the wrapper on the broker's word, the reuse key over
+   the build directory, the per-command denied-host offset. Servers still per command.
 3. The sbt server started by the broker under the server profile, the client profile's socket
    reach (`Network.SbtClient`), the own-server case in `livePortfileServer`, cancel, the
    broker's teardown on container end, TERM and scavenge. Gate rows of 6.5.

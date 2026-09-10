@@ -100,7 +100,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   private def service(project: Path, mount: String = WorkspaceMount, deadline: Long = 30_000): Service =
     Service(
-      project, Set("sbt"), (_, _, _) => Seq("true"), Os.Mac,
+      project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
+      buildLock = (_, _) => Right(Path.of("/unused")),
       mount = mount, requestDeadlineMillis = deadline,
     )
 
@@ -175,7 +176,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       serve(
         transport,
         service(project, mount = project.toString, deadline = deadline)
-          .copy(wrapperCommand = wrapperCommand),
+          .copy(wrapperCommand = (program, directory, _, arguments) => wrapperCommand(program, directory, arguments)),
         line => log.synchronized { log.append(line).append('\n'); () },
       ),
     )
