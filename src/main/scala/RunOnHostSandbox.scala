@@ -13,6 +13,7 @@ import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
 import java.nio.file.attribute.BasicFileAttributes
 
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 import RunOnHostPrereqs.*
 import RunOnHostSession.{ServerAnswer, Session}
@@ -258,8 +259,9 @@ object RunOnHostSandbox:
       ) ++ actionAndArguments
 
   /** `--run-command-on-host <program> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...]
-    * [--channel-log=<file>] -- <args...>`: one channel request as a process of its own, so the
-    * broker's cancel is a SIGTERM whose answer is this wrapper's shutdown hook. */
+    * [--channel-log=<file>] [--proxy-port=<port> --proxy-log=<file>] -- <args...>`: one channel
+    * request as a process of its own, so the broker's cancel is a SIGTERM whose answer is this
+    * wrapper's shutdown hook. The proxy options name the broker's runtime (Runtime). */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
       programName: String,
@@ -273,11 +275,16 @@ object RunOnHostSandbox:
         sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
       val stray = options.filterNot(option =>
-        option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption) || option.startsWith(ChannelLogOption),
+        option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption) || option.startsWith(ChannelLogOption)
+          || option.startsWith(ProxyPortOption) || option.startsWith(ProxyLogOption),
       )
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
         sys.exit(2)
+      val runtime = runtimeOf(options).fold(
+        reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
+        identity,
+      )
       // The broker's pipe (RunOnHostChannel.dispatch): its EOF is the broker gone, and the command
       // ends with it through the shutdown hook, as it ends with the requester's ctl. The status is
       // nobody's to read. A def, not the thread's own lambda: a lambda ending in sys.exit types
@@ -297,6 +304,7 @@ object RunOnHostSandbox:
           forwarded = forwardedNames(options),
           channelLog = options.find(_.startsWith(ChannelLogOption))
             .map(option => Path.of(option.stripPrefix(ChannelLogOption))),
+          runtime = runtime,
         ),
       )
     args.toList match
@@ -319,19 +327,40 @@ object RunOnHostSandbox:
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
+  /** The broker's runtime as the wrapper's options, both or neither. */
+  val ProxyPortOption = "--proxy-port="
+  val ProxyLogOption = "--proxy-log="
+
+  def runtimeOptions(runtime: Runtime): Seq[String] =
+    Seq(s"$ProxyPortOption${runtime.proxyPort}", s"$ProxyLogOption${runtime.proxyLog}")
+
+  def runtimeOf(options: Seq[String]): Either[String, Option[Runtime]] =
+    def value(prefix: String) = options.find(_.startsWith(prefix)).map(_.stripPrefix(prefix))
+    (value(ProxyPortOption), value(ProxyLogOption)) match
+      case (None, None) => Right(None)
+      case (Some(port), Some(log)) =>
+        port.toIntOption.map(port => Some(Runtime(port, Path.of(log)))).toRight(s"$ProxyPortOption$port is no port")
+      case _ => Left(s"$ProxyPortOption and $ProxyLogOption come together")
+
   /** The last bytes of each command log appended to the channel log: a stalled command's last
     * lines are the finding, and a build's audit log can run long. */
   val SessionLogTailBytes = 64 << 10
 
-  /** Logs retained before the command's directory is removed: the proxy's audit log and sbt's
-    * server-stderr file. run-on-host.md "The channel and the command" has why every signal
-    * keeps them and what the second file's presence means. `condemned` is the command directory
-    * at its condemned pathname with its groups ended (RunOnHostSession.endSession), so no
-    * process the command started can change what is read; the tmp check below and sessionLogTail
-    * keep each read inside the command directory. */
-  def appendSessionLogs(channelLog: Path, condemned: Path): Unit =
+  /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
+    * `proxy.log`, the broker's one per runtime — and sbt's server-stderr file. run-on-host.md
+    * "The channel and the command" has why every signal keeps them and what the last file's
+    * presence means. `condemned` is the session directory at its condemned pathname with its
+    * groups ended (RunOnHostSession.endSession), so no process the session started can change
+    * what is read; the tmp check below and sessionLogTail keep each read inside the directory.
+    * `ended` is the block's first line, naming the session and how it ended. */
+  def appendSessionLogs(channelLog: Path, condemned: Path, ended: String): Unit =
     val block = StringBuilder()
-    block.append(s"${java.time.Instant.now()} ended by signal; command ${condemned.getFileName}'s logs follow\n")
+    block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
+    val proxyLogs =
+      try
+        Files.list(condemned).iterator().asScala
+          .filter(file => file.getFileName.toString.matches("proxy.*\\.log")).toVector.sorted
+      catch case _: IOException => Vector.empty
     // The command's write grant is the tmp subpath, which covers the tmp entry itself: it can
     // replace the directory with a link, which the rename preserves: listed only as a directory
     // by its own attributes.
@@ -345,7 +374,7 @@ object RunOnHostSandbox:
           Files.list(tmp).iterator().asScala
             .filter(_.getFileName.toString.startsWith("sbt-server-err")).toVector.sorted
         catch case _: IOException => Vector.empty
-    (condemned.resolve("proxy.log") +: serverStderr).foreach: file =>
+    (proxyLogs ++ serverStderr).foreach: file =>
       sessionLogTail(file).foreach: tail =>
         block.append(s"==> ${file.getFileName}\n").append(tail)
         if !tail.endsWith("\n") then block.append('\n')
@@ -389,20 +418,18 @@ object RunOnHostSandbox:
   def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
     val Ready = raw""".*agent-egress-proxy listening on :(\d+).*""".r
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
+    // Decoded leniently: the log carries what the proxy's clients asked for.
+    def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
     var found: Option[Int] = None
     while found.isEmpty && System.nanoTime < deadline do
-      val line =
-        if Files.exists(log) then
-          Files.readString(log, UTF_8).linesIterator.collectFirst { case Ready(port) => port.toInt }
-        else None
-      line match
+      text.linesIterator.collectFirst { case Ready(port) => port.toInt } match
         case Some(port) => found = Some(port)
         case None       => Thread.sleep(50)
     found.toRight:
       val said =
-        if Files.exists(log) then Files.readString(log, UTF_8).linesIterator.take(5).mkString("\n")
+        if Files.exists(log) then text.linesIterator.take(5).mkString("\n")
         else "(no log was written)"
-      s"the command's proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
+      s"the proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
 
   /**
    * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
@@ -597,17 +624,18 @@ object RunOnHostSandbox:
     forwarded: Vector[String] = Vector.empty,
     // Where a command ended by signal leaves its session's logs (appendSessionLogs).
     channelLog: Option[Path] = None,
+    // The broker's runtime for this command (Runtime).
+    runtime: Option[Runtime] = None,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = RunOnHostSession.root(uid)
 
-    val prepared: Either[String, (Assembled, Vector[String])] =
+    val prepared: Either[String, Assembled] =
       for
         project <-
           try Right(projectArg.toAbsolutePath.toRealPath())
           catch case ex: IOException => Left(s"$projectArg: ${ex.getMessage}")
         assembled <- assemble(project, program, env)
-        fileHosts <- readProgramRules(project, program)
         _ <- RunOnHostSession.ensureRoot(root, uid)
         // Scavenge before the one-server refusal: an orphan a kill left is ours to end here,
         // and only a server that survives the scavenge belongs to someone else.
@@ -629,13 +657,13 @@ object RunOnHostSandbox:
                 )
               case Some(socket) =>
                 Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
-      yield (assembled, fileHosts)
+      yield assembled
 
     prepared match
       case Left(reason) =>
         log(s"refused: $reason")
         2
-      case Right((assembled, fileHosts)) =>
+      case Right(assembled) =>
         RunOnHostSession.publish(root, assembled.prereqs.project) match
           case Left(reason) =>
             log(s"refused: $reason")
@@ -648,7 +676,11 @@ object RunOnHostSandbox:
                 .endSession(root, session, RunOnHostSession.HostProcesses,
                   SbtServerShutdown.shutdown(_),
                   beforeRemoval =
-                    if bySignal then condemned => channelLog.foreach(appendSessionLogs(_, condemned))
+                    if bySignal then
+                      condemned =>
+                        channelLog.foreach(
+                          appendSessionLogs(_, condemned, s"command ${condemned.getFileName} ended by signal"),
+                        )
                     else _ => ())
                 .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
                 .foreach(kept => log(s"kept for the next start to retry: $kept"))
@@ -660,8 +692,8 @@ object RunOnHostSandbox:
                   case Left(refusal) => Left(wording(refusal))
                   case Right(_) =>
                     runInSession(
-                      session, assembled, fileHosts, commandArgs, authority, workingDirectory, log,
-                      forwarded.flatMap(name => env(carrierName(name)).map(name -> _)),
+                      session, assembled, commandArgs, authority, workingDirectory, log,
+                      forwarded.flatMap(name => env(carrierName(name)).map(name -> _)), runtime,
                     )
               finally
                 teardown(bySignal = false)
@@ -674,34 +706,117 @@ object RunOnHostSandbox:
               case Right(exit) => exit
 
   /** One program's proxy, as a command runs against it: the port its profile and environment
-    * name, and the log its denied-host report reads. Created by the wrapper for the command it
-    * runs, in the command's session, and ended with that session. */
+    * name, and the log its denied-host report reads. Created with the program's rule file as
+    * read then, in the session whose record names its group — the broker's for its launch's sbt
+    * and mill commands (BrokerRuntimes), the command's own for Maven and for the gate's entry —
+    * and ended with that session. */
   case class Runtime(proxyPort: Int, proxyLog: Path)
 
-  private def createRuntime(session: Session, program: Program, fileHosts: Vector[String]): Either[String, Runtime] =
-    val proxyLog = session.directory.resolve("proxy.log")
+  /** The proxy registered at `record`, logging to `proxyLog`. */
+  private def createRuntime(
+    program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
+  ): Either[String, Runtime] =
     for
-      _ <- startProxy(session, program, fileHosts, proxyLog)
+      _ <- startProxy(record, program, fileHosts, proxyLog)
       port <- awaitProxyPort(proxyLog, deadlineMillis = 30_000)
     yield Runtime(port, proxyLog)
+
+  /**
+   * The broker's runtimes: at most one per program, kept across the launch's commands while
+   * they come from the runtime's build directory and its proxy lives, and retired — its group
+   * ended and its record and log deleted — for a command from another directory or once the
+   * proxy is gone (proxyLives). Maven's is never here: it runs once and exits, and its proxy
+   * runs with the command. Preparation and the session's end share this object's monitor: a
+   * TERM during a proxy start would otherwise end the session between the spawn's registration
+   * and the teardown's listing, leaving the proxy unrecorded. `processes` and `create` are the
+   * tests' seams, which register a stand-in spawn where the proxy would be.
+   */
+  final class BrokerRuntimes(session: Session, project: Path, log: String => Unit)(
+    processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
+    create: (Program, Vector[String], Path, Path) => Either[String, Runtime] = createRuntime,
+  ):
+    private case class Live(buildDirectory: Path, record: Path, runtime: Runtime)
+    private var live = Map.empty[Program, Live]
+
+    /** The runtime a command in `buildDirectory` runs against, None for Maven's. Called while
+      * the command's spawn holds the build lock. */
+    def prepare(program: Program, buildDirectory: Path): Either[String, Option[Runtime]] = synchronized:
+      if program == Program.Mvn then Right(None)
+      else
+        live.get(program) match
+          case Some(current) if current.buildDirectory == buildDirectory && proxyLives(current) =>
+            Right(Some(current.runtime))
+          case other =>
+            other.foreach: current =>
+              val why = if proxyLives(current) then s"a command in $buildDirectory" else "its proxy is gone"
+              // Forgotten only once discarded: a retirement that throws is retried by the next command.
+              log(s"retired ${current.record.getFileName}, $why: ${discard(current.record, current.runtime.proxyLog)}")
+              live -= program
+            val name = s"proxy-${program.name}-${RunOnHostSession.buildHash(buildDirectory)}"
+            val record = session.records.resolve(name)
+            val proxyLog = session.directory.resolve(s"$name.log")
+            // An exception after the spawn registered is a failed start like any other.
+            val started =
+              try readProgramRules(project, program).flatMap(create(program, _, record, proxyLog))
+              catch case NonFatal(ex) => Left(s"starting the proxy: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+            started match
+              case Right(runtime) =>
+                live += program -> Live(buildDirectory, record, runtime)
+                log(s"created $name for $buildDirectory, port ${runtime.proxyPort}")
+                Right(Some(runtime))
+              case Left(reason) =>
+                // A spawn that registered and never reported ready: left alone, its group would
+                // outlive the record the next attempt's spawn renames over, and its late ready
+                // line would be read as that attempt's.
+                discard(record, proxyLog)
+                Left(reason)
+
+    /** The proxy lives while its spawn does — the leader, with the identity the record names —
+      * and has not published its child's exit (RunOnHostSession.exitRecord). Neither alone
+      * answers: the leader outlives the proxy by design, and a group killed whole publishes no
+      * exit. */
+    private def proxyLives(current: Live): Boolean =
+      val record =
+        try RunOnHostSession.parseRecord(Files.readString(current.record, UTF_8))
+        catch case _: IOException => None
+      record.exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
+        && !Files.exists(RunOnHostSession.exitRecord(current.record))
+
+    /** End the group the record proves, and delete the record, its exit file and the log — the
+      * log too, since a successor of the same name would read this proxy's ready line as its
+      * own. Answers what became of the group. */
+    private def discard(record: Path, proxyLog: Path): String =
+      val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(record, processes) else None
+      try
+        Files.deleteIfExists(record)
+        Files.deleteIfExists(RunOnHostSession.exitRecord(record))
+        Files.deleteIfExists(proxyLog)
+      catch case ex: IOException => log(s"discarding ${record.getFileName}: ${ex.getMessage}")
+      ended.map(_.toString).getOrElse("no record")
 
   private def runInSession(
     session: Session,
     assembled: Assembled,
-    fileHosts: Vector[String],
     commandArgs: Seq[String],
     authority: SeatbeltProfile.RuntimeAuthority,
     workingDirectory: Option[Path],
     log: String => Unit,
     forwards: Vector[(String, String)],
+    brokerRuntime: Option[Runtime],
   ): Either[String, Int] =
-    if assembled.prereqs.program == Program.Sbt then
+    val program = assembled.prereqs.program
+    if program == Program.Sbt then
       val swept =
         cleanForeignTargetLinks(assembled.prereqs.project, assembled.prereqs.project +: assembled.sbtCachesGranted)
       if swept.nonEmpty then
         log(s"removed ${swept.size} target/ links resolving outside this command's roots (first: ${swept.head})")
     for
-      runtime <- createRuntime(session, assembled.prereqs.program, fileHosts)
+      runtime <- brokerRuntime.map(Right(_)).getOrElse:
+        readProgramRules(assembled.prereqs.project, program).flatMap(
+          createRuntime(program, _, session.records.resolve("proxy"), session.directory.resolve("proxy.log")),
+        )
+      // The broker's log has served earlier commands: the report reads what this one adds.
+      reportFrom = logLength(runtime.proxyLog)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
           prereqs = assembled.prereqs,
@@ -716,14 +831,17 @@ object RunOnHostSandbox:
       )
       exit <- runCommand(session, assembled, profile, runtime.proxyPort, commandArgs, workingDirectory, forwards)
     yield
-      reportDenied(runtime.proxyLog, assembled.prereqs.program, log)
+      reportDenied(runtime.proxyLog, reportFrom, program, log)
       exit
 
+  private def logLength(file: Path): Long =
+    try Files.size(file)
+    catch case _: IOException => 0L
+
   private def startProxy(
-    session: Session, program: Program, fileHosts: Vector[String], proxyLog: Path,
+    record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
   ): Either[String, Process] =
-    val command = RunOnHostSession
-      .registeredSpawn(session.records.resolve("proxy"), selfInvocation("--serve-proxy-on-host"))
+    val command = RunOnHostSession.registeredSpawn(record, selfInvocation("--serve-proxy-on-host"))
     val builder = ProcessBuilder(command*)
     // Closed like the command's: the proxy needs its own settings and, to leave through an upstream
     // proxy as the container's copy does, the one selected variable. Nothing else of the
@@ -737,7 +855,7 @@ object RunOnHostSandbox:
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
     builder.redirectError(ProcessBuilder.Redirect.DISCARD) // the log file is the tee
     try Right(builder.start())
-    catch case ex: IOException => Left(s"starting the command's proxy: ${ex.getMessage}")
+    catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
 
   private def runCommand(
     session: Session,
@@ -916,17 +1034,19 @@ object RunOnHostSandbox:
     walk(project, inTarget = false)
     removed.result()
 
-  /** The hosts the proxy refused, from its audit log's `deny <host> CONNECT` lines. */
-  def deniedHosts(proxyLog: Path): Vector[String] =
+  /** The hosts the proxy refused, from its audit log's `deny <host> CONNECT` lines at byte
+    * offset `from` and after. */
+  def deniedHosts(proxyLog: Path, from: Long = 0): Vector[String] =
     val Deny = raw""".*\bdeny (\S+) CONNECT.*""".r
     if !Files.exists(proxyLog) then Vector.empty
     else
-      Files.readString(proxyLog, UTF_8).linesIterator
-        .collect { case Deny(host) => host }.toVector.distinct
+      val bytes = Files.readAllBytes(proxyLog)
+      String(bytes, math.min(from, bytes.length).toInt, bytes.length - math.min(from, bytes.length).toInt, UTF_8)
+        .linesIterator.collect { case Deny(host) => host }.toVector.distinct
 
   /** The denied-host report, once per refused host, after the command — never an automatic addition. */
-  private def reportDenied(proxyLog: Path, program: Program, log: String => Unit): Unit =
-    val hosts = deniedHosts(proxyLog)
+  private def reportDenied(proxyLog: Path, from: Long, program: Program, log: String => Unit): Unit =
+    val hosts = deniedHosts(proxyLog, from)
     if hosts.nonEmpty then
       log((("Command requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the host command sandbox. If the command should reach it, add an" +

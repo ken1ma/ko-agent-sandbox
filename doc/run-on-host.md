@@ -91,7 +91,7 @@ The filesystem rules define what a host command can access:
 
 ## Network
 
-The command's only egress is its own proxy (below); Seatbelt permits connections to that loopback
+The command's only egress is its proxy (below); Seatbelt permits connections to that loopback
 endpoint and nothing else, with UNIX-domain sockets only inside the command's temporary directory.
 Loopback reaches local services, so no TCP listener or other loopback connect is granted. A test
 suite that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host and runs in
@@ -130,7 +130,8 @@ category, so the wrapper and the channel word the same refusal for their own rea
 tests matching on either wording. A denial while the command runs falls under no refusal category: a
 filesystem denial reaches the command's own stderr as the OS error, and a network denial is the
 proxy's audit line, which the wrapper reads and reports per host after the command ("Command
-requested network access to: …"). It never adds the host itself.
+requested network access to: …") — from the log's length at the command's start, so a shared
+proxy's earlier denials are not this command's. It never adds the host itself.
 
 ## Program prerequisites
 
@@ -369,7 +370,9 @@ position rather than by the file's size. sbt's thin client starts the server wit
 `/dev/null` and stderr to that file under the command's temporary directory, deletes the file once
 the server has published its portfile, and waits for the portfile with no deadline while the server
 process lives — so the file's presence in the log says the server never came up, and its content
-says why. A command that completed leaves nothing there: its output reached the agent.
+says why. A command that completed leaves nothing there: its output reached the agent. The
+broker's session ends the same way, at the launch's end or on TERM: its proxies' audit logs are
+appended before its directory is removed.
 
 ## The Seatbelt profile
 
@@ -424,7 +427,15 @@ testing justifies.
 
 ## The command's egress proxy
 
-Each command runs its own proxy process, from the same codebase as the container's.
+The proxy is a process from the same codebase as the container's. Under sbt and `mill` it is the
+broker's: started in the broker's session when the first command of that program arrives, with
+the program's rule file as read then, and kept for the commands that follow from the same build
+directory — the request's working directory, whose `project/target/active.json` or `out/` the
+build owns. A request from another build directory retires it, its group ended and its record
+deleted, and starts another: one per program at a time, so alternating between a root and a
+nested build restarts it at each switch. A proxy that is gone is replaced the same way before
+the next command. Maven's is the command's, started by the wrapper in the
+command's session and ended with it, as every program's is under the gate's test entry.
 
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
 There is no host route to it, and making one would either publish the sandbox session's full
@@ -434,16 +445,22 @@ moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback liste
 either way; what is worth controlling is the rules behind it, and a proxy allowing one artifact
 repository is a prize barely worth stealing.
 
-The command's proxy lives until the wrapper cleans up that invocation. Its lock tracks this
-lifetime, which can extend past the client process: the server the client forks resolves artifacts
-and lives until the wrapper ends it.
+The proxy lives as long as the session holding its record: the broker's until it retires the
+proxy or ends with the launch, the command's until the wrapper cleans up that invocation — past
+the client process, since the server the client forks resolves artifacts and lives until the
+wrapper ends it.
+
+A rule-file edit takes effect when a proxy is next created, never by restarting a running one,
+which holds the lines it was created with: after a switch of build directory, or at the next
+launch, as the session's own rule file takes effect at the next launch. Until then a host removed
+from the file stays reachable from that proxy, and one added is not.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/defaults` resources, and the wrapper starts the proxy by
-re-invoking its own executable — `java -jar` or the native binary — under a private
+`dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts
+the proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
 action. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
-only in the container's own network namespace), and the wrapper reads the port from the same ready
-line the container launcher gates on.
+only in the container's own network namespace), and its starter reads the port from the same
+ready line the container launcher gates on.
 
 It runs unconfined, unlike the container's hardened copy of the same codebase — the one process
 that parses hostile bytes from the command being sandboxed, holding the uid whose files the profile
