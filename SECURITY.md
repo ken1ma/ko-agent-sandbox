@@ -929,8 +929,11 @@ the mechanism. Its security properties and costs are:
   the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
   groups, its sbt server and its proxy, appends the command's proxy audit log and sbt's
   server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel and the
-  command"), and removes the command's directory. If SIGKILL prevents that teardown, the recorded
-  groups remain, and the next start's scavenger ends them by proof, never by guess.
+  command"), and removes the command's directory. The wrapper holds the broker's pipe the same
+  way: a broker gone, ended or killed, closes it, and the wrapper ends its command by the same
+  teardown; a broker ended by TERM exits only after that teardown. If SIGKILL prevents the
+  wrapper's teardown, the recorded groups remain, and the next start's scavenger ends them by
+  proof, never by guess.
 
 ## No containers inside the sandbox by default
 

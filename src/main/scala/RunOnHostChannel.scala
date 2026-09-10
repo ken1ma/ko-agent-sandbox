@@ -170,12 +170,16 @@ object RunOnHostChannel:
   )
 
   /** Everything one session's broker serves with: the launcher's canonical project root, the
-    * programs `--run-on-host` named, and how a validated request becomes a wrapper command. */
+    * programs `--run-on-host` named, and how a validated request — program, working directory,
+    * build lock file, arguments — becomes a wrapper command. */
   final case class Service(
     project: Path,
     programs: Set[String],
-    wrapperCommand: (String, Path, Seq[String]) => Seq[String],
+    wrapperCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
+    /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
+      * which the wrapper holds for its life. */
+    buildLock: (String, Path) => Either[String, Path],
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long the broker waits for a complete request before the handshake expires. */
@@ -249,10 +253,13 @@ object RunOnHostChannel:
       reader.waitFor(10, TimeUnit.SECONDS)
 
   /** The command a broker is currently running, for the shutdown hook: a TERM to the broker ends
-    * the command too, rather than silently leaving it to finish. */
+    * the command too, rather than silently leaving it to finish, and returns only when the
+    * wrapper has ended, its teardown included, before the broker's own session is ended. */
   @volatile private var currentCommand: Option[Process] = None
 
-  def endCurrentCommand(): Unit = currentCommand.foreach(_.destroy())
+  def endCurrentCommand(): Unit = currentCommand.foreach: child =>
+    child.destroy()
+    child.waitFor()
 
   private def transact(
     transport: Transport,
@@ -339,58 +346,73 @@ object RunOnHostChannel:
     validated(service, request) match
       case Left(refusal) => refuse(transport, id, refusal, log)
       case Right(workingDirectory) =>
-        val outWriter = writer(transport, id, "out")
-        val errWriter = writer(transport, id, "err")
-        val command = service.wrapperCommand(request.program, workingDirectory, request.arguments)
-        log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
-        try
-          val child = ProcessBuilder(command*)
-            .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
-            .start()
-          currentCommand = Some(child)
-          val ended = AtomicBoolean(false)
-          val requesterGone = AtomicBoolean(false)
-          // The writers die only with their requester: a slow reader is the requester's own
-          // pace, never a reason to truncate its output — while a gone one unblocks everything
-          // this transaction still holds.
-          ctl.onExit.thenRun: () =>
-            if !ended.get then
-              requesterGone.set(true)
-              log("the requester is gone; ending the command")
-              child.destroy()
-              end(outWriter)
-              end(errWriter)
-          val pumps = Seq(
-            pump(child.getInputStream, outWriter.getOutputStream),
-            pump(child.getErrorStream, errWriter.getOutputStream),
-          )
-          val exit = child.waitFor()
-          currentCommand = None
-          pumps.foreach(_.join())
-          if requesterGone.get then log(s"ended with $exit for a requester already gone")
-          else
-            // Only after both writers have drained: the shim reads the exit code last, and an
-            // exit writer given up on while the shim was still draining output would leave the
-            // shim blocked on a FIFO no writer will ever open.
-            outWriter.waitFor()
-            errWriter.waitFor()
-            // Set before the exit code goes out: the shim exits as soon as it has read the code,
-            // and on the host its ctl closes before the exit writer's end is observed here. The
-            // command has exited and both streams have drained, so nothing is left to end;
-            // writeExit's bound covers a requester gone before reading the code.
-            ended.set(true)
-            writeExit(transport, id, exit)
-            log(s"exit $exit")
-        catch
-          case ex: IOException =>
-            log(s"could not start the wrapper: ${ex.getMessage}")
-            writeAll(outWriter.getOutputStream, "")
-            writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
-            writeExit(transport, id, 2)
-        finally
-          currentCommand = None
-          Seq(outWriter, errWriter).foreach: process =>
-            if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
+        service.buildLock(request.program, workingDirectory) match
+          case Left(reason)    => refuse(transport, id, s"CHANNEL_UNAVAILABLE: $reason", log)
+          case Right(lockFile) => dispatch(transport, service, id, ctl, request, workingDirectory, lockFile, log)
+
+  private def dispatch(
+    transport: Transport,
+    service: Service,
+    id: String,
+    ctl: Process,
+    request: Request,
+    workingDirectory: Path,
+    lockFile: Path,
+    log: String => Unit,
+  ): Unit =
+    val outWriter = writer(transport, id, "out")
+    val errWriter = writer(transport, id, "err")
+    val command = service.wrapperCommand(request.program, workingDirectory, lockFile, request.arguments)
+    log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
+    try
+      // The wrapper's stdin is this broker's pipe, never written to: its EOF is the broker gone,
+      // killed or ended, and the wrapper ends the command at it (RunOnHostSandbox.runCommandMain)
+      // as this broker ends it at ctl's.
+      val child = ProcessBuilder(command*).start()
+      currentCommand = Some(child)
+      val ended = AtomicBoolean(false)
+      val requesterGone = AtomicBoolean(false)
+      // The writers die only with their requester: a slow reader is the requester's own
+      // pace, never a reason to truncate its output — while a gone one unblocks everything
+      // this transaction still holds.
+      ctl.onExit.thenRun: () =>
+        if !ended.get then
+          requesterGone.set(true)
+          log("the requester is gone; ending the command")
+          child.destroy()
+          end(outWriter)
+          end(errWriter)
+      val pumps = Seq(
+        pump(child.getInputStream, outWriter.getOutputStream),
+        pump(child.getErrorStream, errWriter.getOutputStream),
+      )
+      val exit = child.waitFor()
+      currentCommand = None
+      pumps.foreach(_.join())
+      if requesterGone.get then log(s"ended with $exit for a requester already gone")
+      else
+        // Only after both writers have drained: the shim reads the exit code last, and an
+        // exit writer given up on while the shim was still draining output would leave the
+        // shim blocked on a FIFO no writer will ever open.
+        outWriter.waitFor()
+        errWriter.waitFor()
+        // Set before the exit code goes out: the shim exits as soon as it has read the code,
+        // and on the host its ctl closes before the exit writer's end is observed here. The
+        // command has exited and both streams have drained, so nothing is left to end;
+        // writeExit's bound covers a requester gone before reading the code.
+        ended.set(true)
+        writeExit(transport, id, exit)
+        log(s"exit $exit")
+    catch
+      case ex: IOException =>
+        log(s"could not start the wrapper: ${ex.getMessage}")
+        writeAll(outWriter.getOutputStream, "")
+        writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
+        writeExit(transport, id, 2)
+    finally
+      currentCommand = None
+      Seq(outWriter, errWriter).foreach: process =>
+        if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
 
   private def pump(from: InputStream, to: OutputStream): Thread =
     val thread = Thread(() =>
@@ -431,7 +453,7 @@ object RunOnHostChannel:
    * and the terminal's INT and HUP are ignored before the exec — sh's ignore is inherited, and a
    * JVM leaves an inherited SIG_IGN in place — so a Ctrl-C at the session's terminal cannot take
    * the broker before its sandbox. TERM stays live: a deliberate kill ends the broker, and its
-   * shutdown hook ends the running command with it.
+   * shutdown hook ends the running command and the broker's session with it.
    */
   def spawnBroker(
     podman: String,
@@ -496,7 +518,28 @@ object RunOnHostChannel:
             case ex: IOException =>
               log(s"project $projectArg: ${ex.getMessage}")
               sys.exit(1)
-        Runtime.getRuntime.addShutdownHook(Thread(() => endCurrentCommand()))
+        val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+        val root = RunOnHostSession.root(uid)
+        // The broker's session: published for the launch's lifetime, after the scavenge every
+        // start runs, and ended at the serve loop's end or from the TERM hook.
+        val session =
+          RunOnHostSession.ensureRoot(root, uid).flatMap { _ =>
+            RunOnHostSession
+              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
+            RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
+          } match
+            case Right(session) => session
+            case Left(reason) =>
+              log(s"the broker's session: $reason")
+              sys.exit(1)
+        val teardown = RunOnHostSession.Teardown: _ =>
+          RunOnHostSession
+            .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+            .foreach(action => log(s"the broker's session ended: $action"))
+        Runtime.getRuntime.addShutdownHook(Thread(() =>
+          endCurrentCommand()
+          teardown(bySignal = true)))
         val transport = Transport(
           execPrefix = Seq(podman, "exec", "-i", container),
           sandboxRunning = () =>
@@ -509,18 +552,24 @@ object RunOnHostChannel:
         val service = Service(
           project = project,
           programs = programsCsv.split(",").toSet,
-          wrapperCommand = (program, workingDirectory, arguments) =>
-            RunOnHostSandbox.selfInvocation(
-              (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
-                ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
-                ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
-                ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
-            ) ++ arguments,
+          wrapperCommand = (program, workingDirectory, lockFile, arguments) =>
+            RunOnHostSession.lockedSpawn(
+              lockFile,
+              RunOnHostSandbox.selfInvocation(
+                (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
+                  ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
+                  ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
+                  ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
+              ) ++ arguments,
+              endAtStdinEof = true,
+            ),
           os = Os.Mac,
+          buildLock = RunOnHostSession.buildLockFile(root, _, _),
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
         log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)
+        teardown(bySignal = false)
         log("the sandbox is gone; exiting")
       case other =>
         Console.err.println(s"--serve-run-on-host: unexpected arguments: ${other.mkString(" ")}")

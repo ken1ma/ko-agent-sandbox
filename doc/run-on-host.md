@@ -267,9 +267,12 @@ controls, like `sbt 'set …'`.
 `RunOnHostSession.scala` tracks one wrapper invocation, which it calls a command session. Its
 directory is published by rename so it is never seen half-made; a lock marks the wrapper as live,
 and records identify its child processes. Cleanup moves the directory out of the active set before
-ending those processes and any orphaned sbt server its portfile identifies. The wrapper root is
-`/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
-socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
+ending those processes and any orphaned sbt server its portfile identifies. The broker holds a
+session of the same kind for the launch's lifetime, and each command it dispatches holds a build
+lock — one per program and build directory, under `build-lock/` — for the command's life, so two
+launches on one project queue behind each other's commands; the waiting one says so on its
+stderr. The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket
+path must fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
 
 The command's environment is the contract, not its command line: a closed set the wrapper supplies
 (`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
