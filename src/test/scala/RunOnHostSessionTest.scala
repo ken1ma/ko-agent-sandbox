@@ -11,6 +11,13 @@ import scala.jdk.CollectionConverters.*
 
 import RunOnHostSession.*
 
+object RunOnHostSessionTest:
+  /** The registration spawn is the wrapper's own process and runs outside the profile by
+    * construction; under it, perl dies before registering. True exactly where the gate runs the
+    * suites as a confined command, whose tests spawning one skip. */
+  val underRunOnHostProfile: Boolean =
+    sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
+
 class RunOnHostSessionTest extends munit.FunSuite:
 
   // --------------------------------------------------------------------------
@@ -431,14 +438,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
   // The registered spawn, against real processes
   // --------------------------------------------------------------------------
 
-  // The registration spawn is the wrapper's own process and runs outside the profile by construction;
-  // under it, perl dies before registering. Skipped exactly where the gate runs this suite as a
-  // confined command.
   def notUnderRunOnHostProfile(): Unit =
-    assume(
-      !sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-")),
-      "the registration spawn never runs under the profile",
-    )
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
 
   test("a spawned process registers pgid and start time by rename before its command runs"):
     notUnderRunOnHostProfile()
@@ -492,13 +493,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
     notUnderRunOnHostProfile()
     val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
     val holder =
-      java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/sleep", "30"), endAtStdinEof = false)*).start()
+      java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/sleep", "30"), underBroker = false)*).start()
     try
       // The holder takes the lock at its own pace: a taker started too early runs at once, so
       // takers are started until one reports the wait — and then is still alive, blocked. One
       // line, not the stream: a blocked taker holds its stderr open until it exits.
       def taker() = java.lang.ProcessBuilder(
-        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), endAtStdinEof = false)*).start()
+        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), underBroker = false)*).start()
       var waiting: Option[Process] = None
       val deadline = System.nanoTime + 10_000_000_000L
       while waiting.isEmpty && System.nanoTime < deadline do
@@ -512,7 +513,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assert(blocked.isAlive, "the taker blocks while the holder lives")
       // A taker dispatched by a broker: its stdin's EOF is the broker gone, and it ends itself.
       val orphan = java.lang.ProcessBuilder(
-        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), endAtStdinEof = true)*).start()
+        lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), underBroker = true)*).start()
       java.io.BufferedReader(java.io.InputStreamReader(orphan.getErrorStream, UTF_8)).readLine()
       orphan.getOutputStream.close()
       assert(orphan.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "the pipe's EOF ends the wait")
@@ -522,6 +523,42 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assert(blocked.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "the holder's death frees the lock")
       assertEquals(blocked.exitValue, 7)
     finally holder.destroyForcibly().waitFor()
+
+  test("a locked spawn under the broker reports the lock, then execs on the word, refuses on it, or ends at EOF"):
+    notUnderRunOnHostProfile()
+    val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
+    def spawn(command: String*): (Process, java.io.BufferedReader) =
+      val process = java.lang.ProcessBuilder(lockedSpawn(lockFile, command, underBroker = true)*).start()
+      val out = java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8))
+      assertEquals(out.readLine(), LockedLine)
+      (process, out)
+    def answer(process: Process, word: String): Unit =
+      process.getOutputStream.write(word.getBytes(UTF_8))
+      process.getOutputStream.flush()
+    // The word's arguments go before the command's `--`, whatever follows it.
+    val (run, out) = spawn("/bin/sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--", "-x")
+    answer(run, runWord(Seq("--proxy-port=1", "--proxy-log=/l")))
+    assertEquals(out.readLine(), "--proxy-port=1")
+    assertEquals(out.readLine(), "--proxy-log=/l")
+    assertEquals(out.readLine(), "--")
+    assertEquals(out.readLine(), "-x")
+    assertEquals(run.waitFor(), 0)
+    // The pipe stays the exec'd command's stdin, its EOF still the broker gone.
+    val (held, _) = spawn("/bin/sh", "-c", "cat")
+    answer(held, runWord(Seq.empty))
+    assert(
+      !held.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS),
+      "the command's stdin is the pipe, still open",
+    )
+    held.getOutputStream.close()
+    assertEquals(held.waitFor(), 0)
+    val (refused, _) = spawn("/bin/sh", "-c", "exit 0")
+    answer(refused, refusedWord("refused: no runtime"))
+    assertEquals(String(refused.getErrorStream.readAllBytes(), UTF_8), "refused: no runtime\n")
+    assertEquals(refused.waitFor(), 2)
+    val (orphan, _) = spawn("/bin/sh", "-c", "exit 0")
+    orphan.getOutputStream.close()
+    assertEquals(orphan.waitFor(), 71)
 
   // --------------------------------------------------------------------------
   // The shutdown speaker, against a real local socket

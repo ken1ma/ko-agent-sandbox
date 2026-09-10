@@ -102,6 +102,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     Service(
       project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
       buildLock = (_, _) => Right(Path.of("/unused")),
+      runtime = (_, _) => Right(Seq.empty),
       mount = mount, requestDeadlineMillis = deadline,
     )
 
@@ -141,16 +142,19 @@ class RunOnHostChannelTest extends munit.FunSuite:
   /**
    * The broker served like production — same exec argument pattern, `podman` a script running the
    * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
-   * a request every host can make.
+   * a request every host can make. The wrapper command is the test's, under the real locked
+   * spawn, since dispatch speaks its protocol; `runtime` is what the broker's word carries.
    */
   private def channel(
     wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
+    runtime: (String, Path) => Either[String, Seq[String]] = (_, _) => Right(Seq.empty),
   )(check: (Path, Path, () => String) => Unit): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
     val host = Files.createDirectory(dir.resolve("host"))
     val project = Files.createDirectory(dir.resolve("project")).toRealPath()
+    val lockFile = host.resolve("build-lock")
     // On the host `podman exec` returns tens of milliseconds after the container-side process
     // ends (measured in a session's channel log). The exit writer's lateness is the one the
     // protocol can observe — the shim's ctl closes before the broker sees that writer end — so
@@ -175,8 +179,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val broker = Thread(() =>
       serve(
         transport,
-        service(project, mount = project.toString, deadline = deadline)
-          .copy(wrapperCommand = (program, directory, _, arguments) => wrapperCommand(program, directory, arguments)),
+        service(project, mount = project.toString, deadline = deadline).copy(
+          wrapperCommand = (program, directory, _, arguments) =>
+            RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),
+          runtime = runtime,
+        ),
         line => log.synchronized { log.append(line).append('\n'); () },
       ),
     )
@@ -251,6 +258,78 @@ class RunOnHostChannelTest extends munit.FunSuite:
       val (again, out, _) = shimCall(project, "sbt")
       assertEquals(again, 0)
       assertEquals(out, s"built in $project\n")
+
+  test("an end asked for during preparation waits for the word, so the build lock is held throughout"):
+    // The runtime's preparation, slow enough to be interrupted: it records whether the build
+    // lock is still held halfway through, which a spawn ended early would have freed.
+    val runtime = (_: String, buildDirectory: Path) =>
+      Files.writeString(buildDirectory.resolve("preparing"), "")
+      Thread.sleep(1500)
+      val lockFile = buildDirectory.getParent.resolve("host").resolve("build-lock")
+      val held = ProcessBuilder("flock", "-n", lockFile.toString, "true").start().waitFor() != 0
+      Files.writeString(buildDirectory.resolve(if held then "held" else "free"), "")
+      Right(Seq.empty)
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), runtime = runtime): (project, host, brokerLog) =>
+      def await(what: String)(condition: => Boolean): Unit =
+        var waited = 0
+        while !condition && waited < 100 do
+          Thread.sleep(100)
+          waited += 1
+        assert(condition, what)
+      def lockFree = ProcessBuilder("flock", "-n", host.resolve("build-lock").toString, "true").start().waitFor() == 0
+      // The requester leaves mid-preparation.
+      val shim = ProcessBuilder(Shim.toString, "sbt", "test")
+        .directory(project.toFile)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+      await("preparation started")(Files.exists(project.resolve("preparing")))
+      shim.destroyForcibly()
+      await("preparation finished")(Files.exists(project.resolve("held")) || Files.exists(project.resolve("free")))
+      assert(Files.exists(project.resolve("held")), "the lock was freed while the runtime was prepared")
+      await("the transaction ended")(brokerLog().contains("for a requester already gone"))
+      assert(lockFree, "the lock is freed once the word is out")
+      assert(!brokerLog().contains("exit 0"), "the wrapper never ran: the word was the refusal")
+      // The broker's own end mid-preparation, as its TERM hook asks for it: it returns after
+      // the preparation, and the requester gets the refusal.
+      Files.delete(project.resolve("preparing"))
+      Files.delete(project.resolve("held"))
+      val second = ProcessBuilder(Shim.toString, "sbt", "test").directory(project.toFile).start()
+      second.getOutputStream.close()
+      await("preparation started again")(Files.exists(project.resolve("preparing")))
+      endCurrentCommand()
+      assert(Files.exists(project.resolve("held")), "the end returned before the preparation finished")
+      val err = String(second.getErrorStream.readAllBytes(), UTF_8)
+      assertEquals(second.waitFor(), 2)
+      assertEquals(err, "refused: the command was ended before it started\n")
+      assert(lockFree)
+
+  test("the runtime reaches the wrapper as options; a refusal or an exception preparing it is the command's"):
+    val prepared = java.util.concurrent.atomic.AtomicReference[(String, Path)]()
+    channel(
+      (_, _, args) => Seq("sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--") ++ args,
+      runtime = (program, buildDirectory) =>
+        prepared.set((program, buildDirectory))
+        buildDirectory.getFileName.toString match
+          case "sub"    => Left("no runtime for sub")
+          case "broken" => throw java.nio.charset.MalformedInputException(1)
+          case _        => Right(Seq("--proxy-port=1")),
+    ): (project, host, brokerLog) =>
+      val (exit, out, _) = shimCall(project, "sbt", "compile")
+      assertEquals(exit, 0)
+      assertEquals(out, "--proxy-port=1\n--\ncompile\n")
+      assertEquals(prepared.get, ("sbt", project))
+      val sub = Files.createDirectory(project.resolve("sub"))
+      val (refused, _, err) = shimCall(sub, "sbt", "compile")
+      assertEquals(refused, 2)
+      assertEquals(err, "refused: no runtime for sub\n")
+      assert(brokerLog().contains("refused: no runtime for sub"), brokerLog())
+      // An exception is answered the same way, and the spawn ends with the lock released.
+      val broken = Files.createDirectory(project.resolve("broken"))
+      val (thrown, _, thrownErr) = shimCall(broken, "sbt", "compile")
+      assertEquals(thrown, 2)
+      assertEquals(thrownErr, "refused: preparing the runtime: MalformedInputException: Input length = 1\n")
+      assertEquals(ProcessBuilder("flock", "-n", host.resolve("build-lock").toString, "true").start().waitFor(), 0)
 
   test("a dead shim ends the running command: teardown follows the descriptor"):
     channel((_, cwd, _) =>

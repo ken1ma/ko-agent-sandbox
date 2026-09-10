@@ -125,8 +125,10 @@ object RunOnHostSession:
    * when the wrapper exits; a killed wrapper's at once, the next start's scavenge behind it. A
    * spawn blocked on the lock is a child like any other, ended when its requester leaves. Under
    * the broker it also watches the broker's pipe on its stdin, as the wrapper does, and ends at
-   * its EOF, so a dead broker dispatches nothing. The file is never deleted: deleted and
-   * recreated, one name would let two holders lock different inodes.
+   * its EOF, so a dead broker dispatches nothing, and it execs only on the broker's word
+   * (lockedSpawn), so the broker's own work on the build before the command — its runtime
+   * observed, retired or created — happens under the lock too. The file is never deleted:
+   * deleted and recreated, one name would let two holders lock different inodes.
    */
   def buildLockFile(root: Path, program: String, buildDirectory: Path): Either[String, Path] =
     try
@@ -135,19 +137,31 @@ object RunOnHostSession:
     catch case ex: IOException => Left(s"the build locks under $root: ${ex.getMessage}")
 
   /** The command under the build lock: perl takes the lock and execs the command holding it.
-    * When it has to wait it says so on stderr, the requester's, and with `endAtStdinEof` it
-    * ends at its stdin's EOF meanwhile, the broker gone (RunOnHostChannel.dispatch). Exit 71 is
+    * When it has to wait it says so on stderr, the requester's. `underBroker`, its stdin is the
+    * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
+    * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
+    * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
+    * message it prints on stderr before exiting 2, the wrapper's own refusal code. Exit 71 is
     * the spawn ending itself, as in registeredSpawn. */
-  def lockedSpawn(lockFile: Path, command: Seq[String], endAtStdinEof: Boolean): Seq[String] =
-    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if endAtStdinEof then "1" else "0") ++ command
+  def lockedSpawn(lockFile: Path, command: Seq[String], underBroker: Boolean): Seq[String] =
+    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underBroker then "1" else "0") ++ command
+
+  val LockedLine = "locked"
+
+  private val Nul = 0.toChar.toString
+
+  /** The broker's word to a locked spawn: one line of NUL-separated fields, the verdict first. */
+  def runWord(arguments: Seq[String]): String = ("run" +: arguments).mkString(Nul) + "\n"
+
+  def refusedWord(message: String): String = s"refused$Nul$message\n"
 
   val LockScript: String =
     """use Fcntl qw(:flock F_SETFD);
-      |my ($lock, $pipe, @command) = @ARGV;
+      |my ($lock, $broker, @command) = @ARGV;
       |open(my $fh, '>>', $lock) or exit 71;
       |unless (flock($fh, LOCK_EX | LOCK_NB)) {
       |    print STDERR "waiting for the build lock: another launch's command runs in this build directory\n";
-      |    if ($pipe) {
+      |    if ($broker) {
       |        my $stdin = '';
       |        vec($stdin, fileno(STDIN), 1) = 1;
       |        until (flock($fh, LOCK_EX | LOCK_NB)) {
@@ -159,6 +173,17 @@ object RunOnHostSession:
       |    } else {
       |        flock($fh, LOCK_EX) or exit 71;
       |    }
+      |}
+      |if ($broker) {
+      |    syswrite(STDOUT, "locked\n") or exit 71;
+      |    my $word = <STDIN>;
+      |    exit 71 unless defined $word;
+      |    chomp $word;
+      |    my ($verdict, @fields) = split /\0/, $word, -1;
+      |    if ($verdict ne 'run') { print STDERR "$fields[0]\n"; exit 2; }
+      |    my $at = 0;
+      |    $at++ while $at < @command && $command[$at] ne '--';
+      |    splice(@command, $at, 0, @fields);
       |}
       |fcntl($fh, F_SETFD, 0) or exit 71;
       |exec { $command[0] } @command or exit 71;""".stripMargin
@@ -330,11 +355,14 @@ object RunOnHostSession:
 
   /** End every group the records name and prove — the scavenger's core. */
   def endRecordedGroups(recordsDir: Path, processes: Processes): Vector[Collected] =
-    val records = listDirectory(recordsDir).flatMap: file =>
+    listDirectory(recordsDir).flatMap(endRecordedGroup(_, processes))
+
+  /** End the group one record names, if it proves one; None for a file that is no record. */
+  def endRecordedGroup(file: Path, processes: Processes): Option[Collected] =
+    val parsed =
       try parseRecord(Files.readString(file, UTF_8))
       catch case _: IOException => None
-
-    records.map: record =>
+    parsed.map: record =>
       processes.startOf(record.pgid) match
         case Some(start) if start == record.leaderStart =>
           processes.endGroup(record.pgid)

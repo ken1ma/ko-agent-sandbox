@@ -167,6 +167,8 @@ run_sbt() { # client command...: the executable the wrapper runs; the profile PA
 # are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
 # takes (locked_wrapper).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
+# The hash that names a build directory's lock and the broker's records for it (RunOnHostSession.buildHash).
+build_hash() { lock=$(build_lock sbt "$1") && printf '%s\n' "${lock##*-}"; }
 locked_wrapper() { # program project command...
     lw_program=$1; lw_project=$2; shift 2
     lock=$(build_lock "$lw_program" "$lw_project") || return 2
@@ -220,15 +222,33 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
-# A command's proxy a timed-out or killed wrapper left: the wrapper's own scavenger ends these at its
-# next start, but the gate must not leave them when it exits before running one. Only this run's:
-# its wrappers run on the run's scratch classpath, which the proxy re-invokes on its own command
-# line — a concurrent gate's or a real command's proxy carries a different path and is not this
-# gate's to end.
+# This run's proxies: a command's, and under the channel rows the broker's. A timed-out or killed
+# wrapper's, and a killed broker's, is ended by the next start's scavenge, but the gate must not
+# leave one when it exits before running a start. Only this run's: its wrappers run on the run's
+# scratch classpath, which the proxy re-invokes on its own command line — a concurrent gate's or
+# a real command's proxy carries a different path and is not this gate's to end.
 stray_proxies() {
     for pid in $(pgrep -f -- '--serve-proxy-on-host' 2>/dev/null); do
         ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$work" && printf '%s\n' "$pid"
     done
+}
+# The proxies no broker's session records: a command's own. A broker's proxy is meant to outlive
+# each command, so the rows between commands settle on these.
+command_proxies() {
+    recorded=$(cat "$command_root"/b*/records/proxy-* 2>/dev/null | awk '{print $1}')
+    for pid in $(stray_proxies); do
+        pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+        printf '%s\n' "$recorded" | grep -qx "$pgid" || printf '%s\n' "$pid"
+    done
+}
+# The broker's sbt runtime record for a build directory, `<pgid> <start>`, and whether its group leader lives.
+broker_proxy_record() { # build-directory
+    cat "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null
+}
+record_alive() { # record-line
+    [ -n "$1" ] || return 1
+    ra_pgid=${1%% *}; ra_start=$(printf '%s' "${1#* }" | sed 's/^ *//;s/ *$//')
+    [ "$(ps -o lstart= -p "$ra_pgid" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$ra_start" ]
 }
 # One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
@@ -328,9 +348,10 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""; scratch_mvn=""; sibling_repo=""
+scratch_sbt=""; scratch_mill=""; scratch_mvn=""; sibling_repo=""; gate_rule_dir=""
 marker=gate-marker.${work##*.}
 cleanup() {
+    [ -n "$gate_rule_dir" ] && rm -rf "$gate_rule_dir"
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     [ -n "$scratch_mvn" ] && rm -rf "$scratch_mvn"
@@ -761,12 +782,17 @@ fi
 # The real shim against the real broker, the `podman exec` transport a local script and the
 # sandbox this host. The wrapper behind it is the same one the rows above measured; what these
 # add is the channel — framing, streamed output and the command's own exit code, the
-# working-directory boundary, and teardown by descriptor lifetime.
+# working-directory boundary, and teardown by descriptor lifetime — and the broker's proxy, which
+# the commands of one build directory share and a rule edit reaches only when it is next created.
 
 echo
 echo "the channel"
 channel_dir=/tmp/ko-agent-sandbox/host-command
 channel_rows="channel: sbt test returns the command's own exit code
+channel: the broker's proxy serves the commands of one build directory
+channel: the denied-host report is per command
+channel: a request from a nested build directory retires the root's runtime, and back
+channel: a rule-file edit reaches the next created runtime, not the running one
 channel: a working directory outside the project is refused
 channel: a dead shim ends the running command
 channel: a dead sandbox ends the channel and its command
@@ -812,7 +838,8 @@ channel_shim() { # log cwd args...
 }
 channel_settled() { # await the broker between rows: no command directory, server or command proxy
     tries=0
-    while { [ "$(commands_now)" -gt 0 ] || [ -n "$(project_servers)" ] || [ -n "$(stray_proxies)" ]; } \
+    while { [ "$(commands_now)" -gt 0 ] || [ -n "$(project_servers)" ] || [ -n "$(deny_servers)" ] \
+        || [ -n "$(command_proxies)" ]; } \
         && [ "$tries" -lt 240 ]; do tries=$((tries + 1)); sleep 0.5; done
 }
 if [ "$quick" = 1 ]; then
@@ -862,6 +889,80 @@ EOF
             "exit $status: $(tail -1 "$work/chan-test.log.err" | cut -c1-60)"; fi
         channel_settled
 
+        # The broker's proxy: one record per runtime in the broker's session, the same one after
+        # the next command of the same build directory, and none in any command's own directory.
+        root_record=$(broker_proxy_record "$project")
+        with_timeout 300 channel_shim chan-reuse.log "$project" sbt --version
+        channel_settled
+        if [ -n "$root_record" ] && record_alive "$root_record" \
+            && [ "$(broker_proxy_record "$project")" = "$root_record" ] && [ -z "$(command_proxies)" ]
+        then report PASS "channel: the broker's proxy serves the commands of one build directory" \
+            "record $root_record"
+        else report FAIL "channel: the broker's proxy serves the commands of one build directory" \
+            "record before: $root_record, after: $(broker_proxy_record "$project"), \
+command proxies: $(command_proxies | tr '\n' ' ')"; fi
+
+        # The report reads what the command added to the shared log: a refused host in one
+        # command, none in the next of the same runtime.
+        # Its own variable: with_timeout's `status` is overwritten by the second command's.
+        with_timeout 600 channel_shim chan-deny1.log "$deny_project" sbt update; deny_status=$?
+        channel_settled
+        with_timeout 300 channel_shim chan-deny2.log "$deny_project" sbt --version
+        channel_settled
+        if [ "$deny_status" -ne 0 ] && grep -q 'denied.example.com' "$work/chan-deny1.log.err" \
+            && ! grep -q 'Command requested network access' "$work/chan-deny2.log.err"
+        then report PASS "channel: the denied-host report is per command"
+        else report FAIL "channel: the denied-host report is per command" \
+            "update exit $deny_status; reported: $(grep -c 'Command requested network access' \
+                "$work/chan-deny1.log.err" "$work/chan-deny2.log.err" | tr '\n' ' ')"; fi
+
+        # A rule-file edit: the runtime running on the file it was created with keeps refusing
+        # the host; the runtime created after it — here by the switch of build directory — admits
+        # it, so the command fails at the host's resolution with nothing to report. The file is
+        # this gate's, made where the project has none and removed by cleanup.
+        rule_dir=$project/.ko-agent-sandbox/host-command
+        if [ -e "$project/.ko-agent-sandbox" ]; then
+            report SKIP "channel: a rule-file edit reaches the next created runtime, not the running one" \
+                "the project has its own .ko-agent-sandbox"
+            report SKIP "channel: a request from a nested build directory retires the root's runtime, and back" \
+                "its measurement runs inside the rule-edit row"
+        else
+            deny_record=$(broker_proxy_record "$deny_project")
+            gate_rule_dir=$project/.ko-agent-sandbox
+            mkdir -p "$rule_dir/sbt/egress"
+            printf 'allow https://denied.example.com/ read\n' > "$rule_dir/sbt/egress/rule"
+            with_timeout 600 channel_shim chan-deny3.log "$deny_project" sbt update
+            channel_settled
+            still_denied=$(grep -c 'denied.example.com' "$work/chan-deny3.log.err")
+            same_runtime=$([ "$(broker_proxy_record "$deny_project")" = "$deny_record" ] && echo yes || echo no)
+            with_timeout 300 channel_shim chan-root.log "$project" sbt --version
+            channel_settled
+            root_back=$(broker_proxy_record "$project")
+            deny_after_root=$(broker_proxy_record "$deny_project")
+            deny_alive_after_root=$(record_alive "$deny_record" && echo yes || echo no)
+            with_timeout 600 channel_shim chan-deny4.log "$deny_project" sbt update
+            channel_settled
+            root_after_deny=$(broker_proxy_record "$project")
+            deny_log=$(ls "$command_root"/b*/proxy-sbt-"$(build_hash "$deny_project")".log 2>/dev/null | head -1)
+            # Admitted, the host reaches resolution, which fails: an `error` line, never a `deny`.
+            if [ "$still_denied" -gt 0 ] && [ "$same_runtime" = yes ] \
+                && ! grep -q 'Command requested network access' "$work/chan-deny4.log.err" \
+                && [ -n "$deny_log" ] && grep -q 'denied.example.com CONNECT' "$deny_log" \
+                && ! grep -q 'deny denied.example.com CONNECT' "$deny_log"
+            then report PASS "channel: a rule-file edit reaches the next created runtime, not the running one"
+            else report FAIL "channel: a rule-file edit reaches the next created runtime, not the running one" \
+                "still denied: $still_denied, same runtime: $same_runtime, \
+reported after: $(grep -c 'Command requested network access' "$work/chan-deny4.log.err"), \
+proxy log: ${deny_log:-none}"; fi
+            if [ -n "$root_back" ] && [ -z "$deny_after_root" ] && [ "$deny_alive_after_root" = no ] \
+                && [ -z "$root_after_deny" ] && ! record_alive "$root_back"
+            then report PASS "channel: a request from a nested build directory retires the root's runtime, and back"
+            else report FAIL "channel: a request from a nested build directory retires the root's runtime, and back" \
+                "root after switch back: ${root_back:-none}, deny record left: ${deny_after_root:-none}, \
+deny leader alive: $deny_alive_after_root, root record after deny: ${root_after_deny:-none}"; fi
+            rm -rf "$gate_rule_dir"; gate_rule_dir=""
+        fi
+
         with_timeout 120 channel_shim chan-refused.log /private/tmp sbt --version; status=$?
         if [ "$status" -eq 2 ] && grep -q 'CHANNEL_UNAVAILABLE' "$work/chan-refused.log.err"
         then report PASS "channel: a working directory outside the project is refused"
@@ -876,13 +977,16 @@ EOF
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
-        # Teardown appended the command's logs to the channel log before removing its directory (appendSessionLogs).
-        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
-            && [ "$broker_state" = alive ] && grep -q "ended by signal" "$work/channel.log"
+        # Teardown appended the command's logs to the channel log before removing its directory
+        # (appendSessionLogs); the broker's proxy is untouched by its command's end.
+        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(command_proxies)" ] \
+            && [ "$broker_state" = alive ] && grep -q "ended by signal" "$work/channel.log" \
+            && record_alive "$(broker_proxy_record "$project")"
         then report PASS "channel: a dead shim ends the running command"
         else report FAIL "channel: a dead shim ends the running command" \
             "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state," \
-            "logs kept: $(grep -c 'ended by signal' "$work/channel.log")"; fi
+            "logs kept: $(grep -c 'ended by signal' "$work/channel.log")," \
+            "broker's proxy: $(broker_proxy_record "$project")"; fi
 
         # The sandbox dies: every exec dies with it, the shim included; the broker ends the command
         # and, with the container gone, itself.
@@ -896,17 +1000,21 @@ EOF
         tries=0
         while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
-        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ]
+        # The broker's own teardown ended its proxy with its session.
+        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ] \
+            && [ -z "$(stray_proxies)" ]
         then report PASS "channel: a dead sandbox ends the channel and its command"
         else report FAIL "channel: a dead sandbox ends the channel and its command" \
-            "commands: $(commands_now), broker $broker_state"; fi
+            "commands: $(commands_now), broker $broker_state, proxies: $(stray_proxies | tr '\n' ' ')"; fi
         rm -rf "$channel_dir"
 
         # The broker's own end mid-command. TERM: its hook ends the wrapper and waits for the
-        # wrapper's teardown, so the moment the broker is gone the command's directory, server and
-        # proxy are gone too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe,
-        # and its EOF ends the command by the same teardown. The shim is left blocked on its exit
-        # read (no timeout(1) here) and killed after.
+        # wrapper's teardown, then ends the broker's session and its proxy, so the moment the
+        # broker is gone the command's directory, the server and every proxy are gone too. KILL:
+        # nothing waits, but the wrapper's stdin is the broker's pipe, and its EOF ends the
+        # command by the same teardown; the broker's proxy stays, recorded in its session, until
+        # the next start scavenges it — the wrapper's recovery run here. The shim is left blocked
+        # on its exit read (no timeout(1) here) and killed after.
         broker_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")
             if ! start_channel_broker; then report FAIL "$1" "the broker made no FIFOs"; return; fi
@@ -918,13 +1026,21 @@ EOF
             while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
                 tries=$((tries + 1)); sleep 0.5
             done
-            [ "$2" = KILL ] && channel_settled
-            if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ] \
+            if [ "$2" = KILL ]; then
+                channel_settled
+                orphan=$(stray_proxies | tr '\n' ' ')
+                wrapper sbt "$project" --version >"$work/recover-broker.log" 2>&1
+                proxies_ended=$([ -n "$orphan" ] && grep -q 'scavenged b' "$work/recover-broker.log" \
+                    && [ -z "$(stray_proxies)" ] && echo yes || echo no)
+            else
+                proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
+            fi
+            if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$proxies_ended" = yes ] \
                 && ! kill -0 "$channel_broker" 2>/dev/null \
                 && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
             then report PASS "$1"
             else report FAIL "$1" "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
-broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), \
+broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), proxies ended: $proxies_ended, \
 logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; fi
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
             kill_channel_execs

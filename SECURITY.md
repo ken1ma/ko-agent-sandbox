@@ -866,10 +866,13 @@ the mechanism. Its security properties and costs are:
   read-only — the cs-installed `sbt` and the distribution it execs in the Coursier archive cache,
   the one mill executable the user provisioned, the one Maven the project's wrapper unpacked under
   `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
-  temporary directory for that command, and loopback to its own egress proxy. The proxy allows
-  repositories named in `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow
-  https://<host>/ read` lines only; unrecognized configuration entries are refused, as in the parent
-  directory) plus Maven Central.
+  temporary directory for that command, and loopback to one egress proxy: the broker's for that
+  program under sbt and `mill`, kept across the launch's commands of one build directory, or the
+  command's own under Maven. The proxy allows repositories named in
+  `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
+  unrecognized configuration entries are refused, as in the parent directory) plus Maven Central,
+  as the file read when that proxy started: a host removed from the file stays reachable from the
+  broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
 - **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
@@ -927,13 +930,15 @@ the mechanism. Its security properties and costs are:
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
   the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
-  groups, its sbt server and its proxy, appends the command's proxy audit log and sbt's
-  server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel and the
-  command"), and removes the command's directory. The wrapper holds the broker's pipe the same
-  way: a broker gone, ended or killed, closes it, and the wrapper ends its command by the same
-  teardown; a broker ended by TERM exits only after that teardown. If SIGKILL prevents the
-  wrapper's teardown, the recorded groups remain, and the next start's scavenger ends them by
-  proof, never by guess.
+  groups, its sbt server and, under Maven, its proxy, appends the command's proxy audit log and
+  sbt's server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel
+  and the command"), and removes the command's directory. The wrapper holds the broker's pipe the
+  same way: a broker gone, ended or killed, closes it, and the wrapper ends its command by the
+  same teardown; a broker ended by TERM exits only after that teardown, and then ends its own
+  session — its proxies' groups, their audit logs appended to the channel's log first — as it
+  does at the launch's end. If SIGKILL prevents the wrapper's or the broker's teardown, the
+  recorded groups remain, the broker's proxies among them, and the next start's scavenger ends
+  them by proof, never by guess.
 
 ## No containers inside the sandbox by default
 

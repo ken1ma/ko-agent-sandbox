@@ -10,7 +10,9 @@ import java.io.{ByteArrayOutputStream, IOException, InputStream, OutputStream}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+
+import scala.util.control.NonFatal
 
 import HostCommands.Os
 
@@ -175,11 +177,17 @@ object RunOnHostChannel:
   final case class Service(
     project: Path,
     programs: Set[String],
+    /** A locked spawn of the wrapper (RunOnHostSession.lockedSpawn, under the broker): dispatch
+      * speaks its protocol. */
     wrapperCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
       * which the wrapper holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
+    /** The runtime a program's command in a build directory runs against, prepared while the
+      * spawn holds the build lock: the wrapper options naming it (RunOnHostSandbox.runtimeOptions),
+      * none for a program whose wrapper creates its own. */
+    runtime: (String, Path) => Either[String, Seq[String]],
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long the broker waits for a complete request before the handshake expires. */
@@ -252,14 +260,21 @@ object RunOnHostChannel:
       end(reader)
       reader.waitFor(10, TimeUnit.SECONDS)
 
-  /** The command a broker is currently running, for the shutdown hook: a TERM to the broker ends
-    * the command too, rather than silently leaving it to finish, and returns only when the
-    * wrapper has ended, its teardown included, before the broker's own session is ended. */
-  @volatile private var currentCommand: Option[Process] = None
+  /** How to end the command a broker is currently running, for the shutdown hook: a TERM to the
+    * broker ends the command too, rather than silently leaving it to finish, and returns only
+    * when the wrapper has ended, its teardown included, before the broker's own session is
+    * ended. */
+  @volatile private var currentCommand: Option[() => Unit] = None
 
-  def endCurrentCommand(): Unit = currentCommand.foreach: child =>
-    child.destroy()
-    child.waitFor()
+  def endCurrentCommand(): Unit = currentCommand.foreach(end => end())
+
+  /** Where a dispatched spawn is, for an end asked of it — the requester gone, endCurrentCommand.
+    * Waiting for the build lock, it is destroyed at once. Preparing the runtime, it holds the
+    * lock the preparation runs under, so the end is applied once the word is out: the refusal,
+    * which it exits on by itself. Running the wrapper, it is destroyed, the wrapper's teardown
+    * answering. */
+  private enum SpawnPhase:
+    case Waiting, Preparing, Running, Ending
 
   private def transact(
     transport: Transport,
@@ -365,13 +380,19 @@ object RunOnHostChannel:
     val command = service.wrapperCommand(request.program, workingDirectory, lockFile, request.arguments)
     log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
     try
-      // The wrapper's stdin is this broker's pipe, never written to: its EOF is the broker gone,
-      // killed or ended, and the wrapper ends the command at it (RunOnHostSandbox.runCommandMain)
-      // as this broker ends it at ctl's.
+      // The wrapper's stdin is this broker's pipe, written once — the word below — and then
+      // held: its EOF is the broker gone, killed or ended, and the wrapper ends the command at
+      // it (RunOnHostSandbox.runCommandMain) as this broker ends it at ctl's.
       val child = ProcessBuilder(command*).start()
-      currentCommand = Some(child)
       val ended = AtomicBoolean(false)
       val requesterGone = AtomicBoolean(false)
+      val phase = AtomicReference(SpawnPhase.Waiting)
+      val endAsked = AtomicBoolean(false)
+      def endChild(): Unit =
+        endAsked.set(true)
+        if phase.get == SpawnPhase.Running || phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Ending) then
+          child.destroy()
+      currentCommand = Some(() => { endChild(); child.waitFor(); () })
       // The writers die only with their requester: a slow reader is the requester's own
       // pace, never a reason to truncate its output — while a gone one unblocks everything
       // this transaction still holds.
@@ -379,13 +400,41 @@ object RunOnHostChannel:
         if !ended.get then
           requesterGone.set(true)
           log("the requester is gone; ending the command")
-          child.destroy()
+          endChild()
           end(outWriter)
           end(errWriter)
-      val pumps = Seq(
-        pump(child.getInputStream, outWriter.getOutputStream),
-        pump(child.getErrorStream, errWriter.getOutputStream),
-      )
+      // stderr from the start: the spawn's wait for the build lock is announced there.
+      val errPump = pump(child.getErrorStream, errWriter.getOutputStream)
+      // The spawn's first line says it holds the build lock; the word — the runtime's options,
+      // or the refusal the spawn prints and exits 2 on — is what it execs the wrapper on.
+      // Anything else is the spawn ending before the lock, or ended while it waited, and its
+      // exit is the answer.
+      readLine(child.getInputStream) match
+        case Right(Some(RunOnHostSession.LockedLine))
+            if phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Preparing) =>
+          // Any failure to prepare is the refusal: an exception would leave the spawn waiting
+          // for a word, the lock held.
+          val prepared =
+            try service.runtime(request.program, workingDirectory)
+            catch case NonFatal(ex) => Left(s"preparing the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+          val word = prepared match
+            case Right(arguments) if !endAsked.get =>
+              phase.set(SpawnPhase.Running)
+              RunOnHostSession.runWord(arguments)
+            case Right(_) =>
+              phase.set(SpawnPhase.Ending)
+              RunOnHostSession.refusedWord("refused: the command was ended before it started")
+            case Left(reason) =>
+              log(s"refused: $reason")
+              phase.set(SpawnPhase.Ending)
+              RunOnHostSession.refusedWord(s"refused: $reason")
+          try
+            child.getOutputStream.write(word.getBytes(UTF_8))
+            child.getOutputStream.flush()
+          catch case _: IOException => () // the spawn is gone; waited for below
+          if endAsked.get && phase.get == SpawnPhase.Running then child.destroy()
+        case _ => ()
+      val pumps = Seq(pump(child.getInputStream, outWriter.getOutputStream), errPump)
       val exit = child.waitFor()
       currentCommand = None
       pumps.foreach(_.join())
@@ -533,10 +582,18 @@ object RunOnHostChannel:
             case Left(reason) =>
               log(s"the broker's session: $reason")
               sys.exit(1)
+        val runtimes = RunOnHostSandbox.BrokerRuntimes(session, project, log)()
+        // The runtimes' proxies end with the session, their audit logs appended to this log
+        // first; under the runtimes' monitor, for the reason BrokerRuntimes gives.
         val teardown = RunOnHostSession.Teardown: _ =>
-          RunOnHostSession
-            .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
-            .foreach(action => log(s"the broker's session ended: $action"))
+          runtimes.synchronized:
+            RunOnHostSession
+              .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+                beforeRemoval = condemned =>
+                  RunOnHostSandbox.appendSessionLogs(
+                    logPath, condemned, s"the broker's session ${condemned.getFileName} ended",
+                  ))
+              .foreach(action => log(s"the broker's session ended: $action"))
         Runtime.getRuntime.addShutdownHook(Thread(() =>
           endCurrentCommand()
           teardown(bySignal = true)))
@@ -561,10 +618,15 @@ object RunOnHostChannel:
                   ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
                   ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
               ) ++ arguments,
-              endAtStdinEof = true,
+              underBroker = true,
             ),
           os = Os.Mac,
           buildLock = RunOnHostSession.buildLockFile(root, _, _),
+          runtime = (programName, buildDirectory) =>
+            RunOnHostPrereqs.Program.values.find(_.name == programName)
+              .toRight(s"unknown program $programName")
+              .flatMap(runtimes.prepare(_, buildDirectory))
+              .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
         log(s"serving $programsCsv for $project in $container")

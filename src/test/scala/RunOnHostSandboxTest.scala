@@ -113,6 +113,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
+  test("the broker's runtime travels as two options, both or neither"):
+    val runtime = Runtime(4242, Path.of("/b/proxy-sbt-0.log"))
+    assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
+    assertEquals(runtimeOf(Seq("--env=TOKEN")), Right(None))
+    assert(runtimeOf(Seq("--proxy-port=4242")).isLeft)
+    assert(runtimeOf(Seq("--proxy-port=x", "--proxy-log=/l")).isLeft)
+
   // --------------------------------------------------------------------------
   // host-command/ and its parent both refuse unrecognized configuration entries
   // --------------------------------------------------------------------------
@@ -239,6 +246,93 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
     )
 
+  test("a runtime is reused while its proxy lives, replaced on its exit or another build; a failed start is discarded"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    val root = Files.createTempDirectory("broker-runtimes")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val endedGroups = scala.collection.mutable.ListBuffer[Long]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
+      def endGroup(pgid: Long): Unit =
+        endedGroups += pgid
+        ProcessHandle.of(pgid).ifPresent: leader =>
+          leader.descendants().forEach(_.destroyForcibly())
+          leader.destroyForcibly()
+    def await(what: String)(condition: => Boolean): Unit =
+      var waited = 0
+      while !condition && waited < 200 do
+        Thread.sleep(50)
+        waited += 1
+      assert(condition, what)
+    // Where the proxy would be: a registered spawn of a sleep, so the record, its exit file and
+    // the group are the real spawn's.
+    val spawns = scala.collection.mutable.ListBuffer[Process]()
+    var neverReady = false
+    var throwsAfterRegistering = false
+    val create = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+      spawns += ProcessBuilder(RunOnHostSession.registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
+      await(s"$record registered")(Files.exists(record))
+      Files.writeString(proxyLog, "listening\n", UTF_8)
+      if throwsAfterRegistering then throw java.io.IOException("log unreadable")
+      if neverReady then Left("never ready") else Right(Runtime(spawns.size, proxyLog))
+    val runtimes = BrokerRuntimes(session, project, _ => ())(processes, create)
+    val dirA = Files.createDirectory(project.resolve("a"))
+    val dirB = Files.createDirectory(project.resolve("b"))
+    def recordOf(dir: Path) = session.records.resolve(s"proxy-sbt-${RunOnHostSession.buildHash(dir)}")
+    def logOf(dir: Path) = session.directory.resolve(s"proxy-sbt-${RunOnHostSession.buildHash(dir)}.log")
+    try
+      val first = runtimes.prepare(Program.Sbt, dirA)
+      assertEquals(first, Right(Some(Runtime(1, logOf(dirA)))))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA), first, "reused while the proxy lives")
+      assertEquals(spawns.size, 1)
+      // The proxy exits: the spawn publishes it, and the next command gets a replacement, the
+      // old group ended behind its leader.
+      val firstGroup = RunOnHostSession.parseRecord(Files.readString(recordOf(dirA), UTF_8)).get.pgid
+      ProcessHandle.of(firstGroup).get.children().forEach(_.destroyForcibly())
+      await("the exit published")(Files.exists(RunOnHostSession.exitRecord(recordOf(dirA))))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(2, logOf(dirA)))))
+      assertEquals(endedGroups.toList, List(firstGroup))
+      assert(!Files.exists(RunOnHostSession.exitRecord(recordOf(dirA))), "the replacement's record has no exit")
+      // The group killed whole: no exit is published, the leader is gone, and the record proves
+      // nothing to end — replaced all the same.
+      val secondLeader = ProcessHandle.of(
+        RunOnHostSession.parseRecord(Files.readString(recordOf(dirA), UTF_8)).get.pgid,
+      ).get
+      val secondChildren = secondLeader.children().toList
+      secondLeader.destroyForcibly()
+      secondChildren.forEach(_.destroyForcibly())
+      await("the leader gone")(!secondLeader.isAlive)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(3, logOf(dirA)))))
+      assertEquals(endedGroups.toList, List(firstGroup), "a leader gone is skipped, never signalled")
+      // Another build directory retires it: record and log gone with the group.
+      assertEquals(runtimes.prepare(Program.Sbt, dirB), Right(Some(Runtime(4, logOf(dirB)))))
+      assertEquals(endedGroups.size, 2)
+      assert(!Files.exists(recordOf(dirA)) && !Files.exists(logOf(dirA)), "the retired runtime's files")
+      assert(Files.exists(recordOf(dirB)))
+      // A start that never reports ready leaves neither a group nor the files a retry would
+      // rename over.
+      neverReady = true
+      assertEquals(runtimes.prepare(Program.Sbt, dirA), Left("never ready"))
+      assertEquals(endedGroups.size, 4, "dirB's runtime retired, then the failed start's group ended")
+      assert(!Files.exists(recordOf(dirA)) && !Files.exists(logOf(dirA)), "the failed start's files")
+      neverReady = false
+      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(6, logOf(dirA)))))
+      // A start that throws after registering is discarded the same way.
+      throwsAfterRegistering = true
+      assertEquals(runtimes.prepare(Program.Sbt, dirB), Left("starting the proxy: IOException: log unreadable"))
+      assertEquals(endedGroups.size, 6, "dirA's runtime retired, then the throwing start's group ended")
+      assert(!Files.exists(recordOf(dirB)) && !Files.exists(logOf(dirB)), "the throwing start's files")
+      throwsAfterRegistering = false
+      // Maven's proxy is the command's own.
+      assertEquals(runtimes.prepare(Program.Mvn, dirA), Right(None))
+      assertEquals(spawns.size, 7)
+    finally
+      spawns.foreach: spawn =>
+        spawn.descendants().forEach(_.destroyForcibly())
+        spawn.destroyForcibly()
+      session.close()
+
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
     Files.writeString(
@@ -252,6 +346,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(deniedHosts(log), Vector("example.com"))
     assertEquals(deniedHosts(log.resolveSibling("absent")), Vector.empty)
+    // From an offset: what a command added to the broker's log, an earlier command's lines excluded.
+    val before = Files.size(log)
+    assertEquals(deniedHosts(log, before), Vector.empty)
+    Files.writeString(log, "2026-08-31T01:08:28Z deny other.example CONNECT host not allowed\n", UTF_8,
+      java.nio.file.StandardOpenOption.APPEND)
+    assertEquals(deniedHosts(log, before), Vector("other.example"))
+    assertEquals(deniedHosts(log, before + 1_000_000), Vector.empty)
 
   // --------------------------------------------------------------------------
   // The one-server-per-project refusal
@@ -527,10 +628,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // A FIFO: named, never opened, or this teardown would wait on a writer that never comes.
     assume(ProcessBuilder("mkfifo", tmp.resolve("sbt-server-err3.log").toString).start().waitFor() == 0, "needs mkfifo")
     Files.writeString(tmp.resolve("other.tmp"), "not a log\n", UTF_8)
-    appendSessionLogs(channelLog, condemned)
+    appendSessionLogs(channelLog, condemned, "command s1 ended by signal")
     val logged = Files.readString(channelLog, UTF_8)
     assert(logged.startsWith("before\n"), logged)
-    assert(logged.contains("ended by signal; command s1's logs follow"), logged)
+    assert(logged.contains("command s1 ended by signal; its logs follow"), logged)
     assert(logged.contains(s"==> proxy.log\n[last $SessionLogTailBytes bytes]\n"), logged)
     assert(logged.contains(s"==> sbt-server-err1.log\n[last $SessionLogTailBytes bytes]\n"), logged)
     assert(logged.contains("==> sbt-server-err2.log\n[skipped: not a regular file]\n"), logged)
@@ -544,7 +645,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createSymbolicLink(linked.resolve(RunOnHostSession.TmpDir), planted)
     Files.writeString(linked.resolve("proxy.log"), "audit\n", UTF_8)
     Files.writeString(channelLog, "", UTF_8)
-    appendSessionLogs(channelLog, linked)
+    appendSessionLogs(channelLog, linked, "command s3 ended by signal")
     val viaLink = Files.readString(channelLog, UTF_8)
     assert(viaLink.contains("==> tmp\n[skipped: not a directory]\n"), viaLink)
     assert(viaLink.contains("==> proxy.log\naudit\n"), viaLink)
@@ -554,8 +655,20 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectory(alone.resolve(RunOnHostSession.TmpDir))
     Files.writeString(alone.resolve("proxy.log"), "short\n", UTF_8)
     Files.writeString(channelLog, "", UTF_8)
-    appendSessionLogs(channelLog, alone)
+    appendSessionLogs(channelLog, alone, "command s2 ended by signal")
     val again = Files.readString(channelLog, UTF_8)
     assert(again.contains("==> proxy.log\nshort\n"), again)
     assert(!again.contains("[last"), again)
     assert(!again.contains("sbt-server-err"), again)
+    // The broker's session: one proxy log per runtime, and nothing else of the directory.
+    val broker = Files.createDirectory(root.resolve("b1"))
+    Files.createDirectory(broker.resolve(RunOnHostSession.TmpDir))
+    Files.writeString(broker.resolve("proxy-sbt-0a.log"), "sbt audit\n", UTF_8)
+    Files.writeString(broker.resolve("proxy-mill-0b.log"), "mill audit\n", UTF_8)
+    Files.writeString(broker.resolve("project"), "/p\n", UTF_8)
+    Files.writeString(channelLog, "", UTF_8)
+    appendSessionLogs(channelLog, broker, "the broker's session b1 ended")
+    val brokers = Files.readString(channelLog, UTF_8)
+    assert(brokers.contains("the broker's session b1 ended; its logs follow"), brokers)
+    assert(brokers.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), brokers)
+    assert(!brokers.contains("==> project"), brokers)
