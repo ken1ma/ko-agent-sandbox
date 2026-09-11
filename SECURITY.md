@@ -870,15 +870,19 @@ the mechanism. Its security properties and costs are:
   unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
   is unset — a temporary directory for that command, the broker's own under `mill`, where the
   daemon's forked JVMs write, for an sbt command the sockets of the launch's sbt server under the
-  broker's own directory, for a `mill` command the one loopback port of the launch's mill daemon,
-  and loopback to one egress proxy: the broker's for that program under sbt
+  broker's own directory, for a `mill` command the one port of the launch's mill daemon,
+  and the port of one egress proxy: the broker's for that program under sbt
   and `mill`, kept across the launch's commands of one build directory, or the command's own under
-  Maven. The mill daemon itself, alone among the host processes, may bind loopback listeners on any
-  port — Mill binds port 0, and no rule confines a bind to one port — and every process the daemon
-  forks inherits that grant: a test under `mill` can bind a loopback listener other host processes
-  can connect to, where one under sbt or Maven gets `EPERM`. The cost is Mill's alone: the client's
-  own profile reaches the daemon's one port and the proxy, and the daemon's outbound is the proxy
-  alone. The proxy allows repositories named in
+  Maven. The mill daemon itself, alone among the host processes, may bind listeners on any port —
+  Mill binds port 0, and no rule confines a bind to one port — and every process the daemon forks
+  inherits that grant: a test under `mill` can bind a TCP or UDP listener where one under sbt or
+  Maven gets `EPERM`, and at any address of this host, not loopback alone: SBPL's `localhost`
+  class admits a bind to the wildcard or to the LAN address, and a socket so bound answers at the
+  LAN address (measured from this host, `src/probe/run-on-host-broker-session.sh` G1, G9, G10;
+  the filter admits by the local address, so a LAN peer's connection is the same case). The cost
+  is Mill's alone, and the table at the end of this section states it beside the other programs':
+  the client's own profile reaches the daemon's one port and the proxy, and the daemon's outbound
+  is the proxy's port alone. The proxy allows repositories named in
   `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
   unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
   the file read when that proxy started: a host removed from the file stays reachable from the
@@ -905,7 +909,7 @@ the mechanism. Its security properties and costs are:
   environment — its cache, its confinement or lack of it — so the broker starts the server or
   daemon itself, inside its own profile, before the first sbt or `mill` command of a build
   directory, and every command from that directory attaches to it: the sbt client through the
-  sockets under the broker's own directory, the `mill` client through the one loopback port the
+  sockets under the broker's own directory, the `mill` client through the one port the
   broker proved the daemon listening on, read from `out/mill-daemon/socketPort` as a candidate
   the file never authorizes; a link redirecting `out/mill-daemon` or an entry in it refuses the
   command, since Mill's launcher would otherwise act on another build directory's daemon through
@@ -985,6 +989,24 @@ the mechanism. Its security properties and costs are:
   protocol at the socket its portfile names, sent only once that socket is proven inside the dead
   session's directory; a daemon whose group leader is gone is nothing a file attributes, and
   exits on Mill's own idle timeout.
+
+What a build's processes can do on your host's network, per program, beyond the egress rule file —
+the reach you accept by naming the program in `--run-on-host`:
+
+| program | listens | connects | you give up, each row adding to the last |
+|---|---|---|---|
+| sbt, Maven | nothing: a bind gets `EPERM` | the proxy's port | a service sharing that port |
+| `mill` | any port, any address | the proxy's and the daemon's ports | a build serving the LAN |
+| `gradle` (planned) | as `mill` | any port of this host | and every service on this host |
+
+"Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
+alone (the boundary bullet above; `doc/run-on-host.md` "Network"). sbt's UNIX sockets under the
+launch's directories are not network; the `mill` daemon's port is reached by its clients alone. A
+port grant is a port at every address of this host too: the proxy listens on the loopback address,
+so the grant reaches, beside it, only a service listening on that port at another address.
+Gradle is planned (`doc/plan-host-build-daemons-and-gradle.md`, Phase 2): its daemon, workers and
+file-lock socket bind ports of the kernel's choosing and connect to each other's, so it needs both
+grants.
 
 ## No containers inside the sandbox by default
 

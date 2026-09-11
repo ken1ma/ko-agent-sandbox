@@ -213,11 +213,8 @@ on podman-less machines and kills the test JVM.
 
 - [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
   which runs unconfined while parsing hostile bytes as the user's uid
-  (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds:
-  loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
-  parser). The profile, if its protection ever justifies its cost: read-only JDK and launcher jar,
-  writes to its log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is
-  the proxy's own job, and SBPL cannot filter by name — plus its loopback listener.
+  (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds).
+  Designed: `plan-host-build-daemons-and-gradle.md`, "The proxy's own profile", step 7.
 - [ ] Filter `mach-lookup` in the host command profile. It is granted unfiltered, and the system
   program directories are executable (a command's scripts need `find`, `mount` and whatever else;
   `runtime-authority.txt`); together those let a command reach any Mach service — `open` through
@@ -376,45 +373,12 @@ the project's run-on-host cache like any other jar, and start it as
 
 ## Deferred — Gradle under `--run-on-host`
 
-Gradle does not fit the host command profile, because its processes talk to each other over
-loopback TCP and the profile allows loopback only to the command's own proxy port
-(`run-on-host.md`, "Network"). These facts come from Gradle 9.7.1's sources and its daemon
-documentation, read on 2026-09-06:
-
-- Every process Gradle forks — a test executor, a process-isolated worker, the Kotlin compiler
-  daemon — connects back to the build over TCP: `DefaultWorkerProcessBuilder` gets the address
-  from `MessagingServer.accept`, and the messaging server is `TcpIncomingConnector`
-  (`platforms/core-runtime/messaging`).
-- The Gradle client talks to the daemon over TCP too. `--no-daemon` avoids the daemon only when
-  `GRADLE_OPTS` matches the build's `org.gradle.jvmargs`; otherwise Gradle forks a single-use
-  daemon.
-- Seatbelt cannot allow loopback for "this command's processes" only. The narrowest rule is
-  `(local ip "localhost:*")` and `(remote ip "localhost:*")`, which is every service on the host
-  that listens on loopback. The network section refuses that, and this project's own proxy tests
-  run in the container for the same reason.
-
-Everything else a Gradle backend needs is known, so the open decision is the loopback rule alone:
-
-- The project has a `gradlew` script, and the user has run it once on the host, so the Gradle
-  it downloaded is already under `GRADLE_USER_HOME` (default `~/.gradle`). The wrapper finds
-  that directory the way Gradle's `PathAssembler` does: `wrapper/dists/<name>/<hash>/<one
-  directory>`, where the hash is the MD5 of the distribution URL written in base 36. The build
-  is granted that directory read-only.
-- The build runs `bin/gradle --no-daemon` from that directory, not `gradlew`: with
-  `GRADLE_USER_HOME` moved into the run-on-host cache, `gradlew` would download Gradle again into a
-  directory where direct process execution is denied.
-- `GRADLE_USER_HOME` is set to a directory in the run-on-host cache. `JAVA_HOME` is the JDK, and
-  `org.gradle.java.installations.auto-download=false` stops Gradle from downloading another one.
-- Gradle's `mavenCentral()` is `repo.maven.apache.org`, so the proxy allows that host by default,
-  as it does for Maven. `plugins.gradle.org` goes in the rule file.
-
-- [ ] Decide: a Gradle-only profile that allows loopback both ways, with the cost stated in
-  `SECURITY.md`; Gradle under the proxy-only rule, with `gradle test` documented as failing with
-  `EPERM`; or no Gradle.
-
-`plan-host-build-daemons-and-gradle.md`, section 19, records what sbt and Mill settled about a
-cancel, a restart the tool does itself, and the user's own daemon — each to be answered from
-Gradle's sources before a mechanism is written.
+Gradle does not fit the host command profile: its daemon, workers and file-lock socket bind TCP
+and UDP ports of the kernel's choosing and connect to each other's, and the profile grants no
+listener and no connect but the proxy's port (`run-on-host.md`, "Network"). Designed and decided:
+`plan-host-build-daemons-and-gradle.md`, Phase 2 and "Revision — Phase 2 scope" — Gradle runs
+under Mill's daemon grant plus outbound to any port of this host, the cost stated in
+`SECURITY.md`'s per-program table. Removed when Phase 2 lands.
 
 ## Deferred — same-path workspace mounting under `--run-on-host`
 

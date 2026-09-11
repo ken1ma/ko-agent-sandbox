@@ -295,7 +295,7 @@ if want mill && [ -n "$existing" ]; then
 fi
 # Every server or daemon this run starts — `emit`'s included — is ended at exit, whether or not
 # `shutdown` could reach it: a server whose client hung is one `shutdown` cannot find. mill's
-# daemon holds out/mill-daemon/daemonLock and a loopback port that a mill executable under the profile
+# daemon holds out/mill-daemon/daemonLock and a port that a mill executable under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
     for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done

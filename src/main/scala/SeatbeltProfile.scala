@@ -91,11 +91,12 @@ object SeatbeltProfile:
   /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
     * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
     * an sbt client, the sockets under the broker's `tmp/`, where its server listens; for the
-    * mill daemon, loopback listeners on any port, since it binds port 0 and no rule confines a
-    * bind to one — a grant everything the daemon forks inherits, so a build under mill can bind
-    * a loopback listener where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
+    * mill daemon, listeners on any port, since it binds port 0 and no rule confines a bind to
+    * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
+    * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
+    * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
     * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
-    * MillDaemons). Measured: src/probe/run-on-host-broker-session.sh L1–L4. */
+    * MillDaemons). Measured: src/probe/run-on-host-broker-session.sh L1–L4, G1, G9, G10. */
   enum Network:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
@@ -228,7 +229,8 @@ object SeatbeltProfile:
           case Network.MillDaemon =>
             // "localhost:*", since the daemon binds port 0 and the filter names no range; the
             // starter's own connect stays denied, which is what leaves the daemon behind.
-            lines += ";; The mill daemon: loopback listeners, any port; inherited by what the build forks."
+            lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
+              " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
           case Network.MillClient(port) =>
             lines += ";; The broker's mill daemon, on the one port it was proved listening on."
