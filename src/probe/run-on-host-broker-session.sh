@@ -4,6 +4,11 @@
 #
 #   L1-L4  SBPL: a loopback listener on port 0 under (local ip "localhost:*"), its control, and an
 #          exact-port outbound rule that reaches its port and not the neighbor's
+#   G1-G12 SBPL for Gradle (plan section 12) and for the reach of "localhost": a UDP socket and a
+#          TCP listener bound to the wildcard address on port 0, reached at the loopback address,
+#          and what happens at this host's LAN address, inbound and outbound, TCP and UDP, under the
+#          Gradle candidate and under the mill daemon's rule; the wildcard bind's control; an
+#          exact-port rule at the LAN address; a remote destination under the candidate
 #   S1-S6  sbt 1.13.0 and 2.0.8, one scratch project each: a server started by the owner's command
 #          line publishes its portfile before a deadline; a client with its own tmp attaches and
 #          forks nothing; the client's unix-socket rule; a TERMed client cancels its exec, and what
@@ -45,6 +50,10 @@ if [ ! -f src/probe/mill-fixture/mill ]; then
     echo "Run from the repository root; src/probe/mill-fixture/mill is not here." >&2
     exit 2
 fi
+case "${1:-all}" in
+    all|sbpl) groups=${1:-all} ;;
+    *) echo "usage: $0 [all|sbpl]   (sbpl: the L and G rows alone, about a minute)" >&2; exit 2 ;;
+esac
 
 pass=0; fail=0
 report() { # PASS|FAIL|INFO label detail
@@ -133,7 +142,8 @@ save_logs() {
     rm -rf "$logs" && mkdir -p "$logs" || return
     (cd "$work" && find . -type f \
         \( -name '*.log' -o -name 'sockets-*' -o -name '*.exit' -o -name '*.timeout' -o -name '*.sb' \
-           -o -name 'env*' -o -name 'timeline*' -o -name '*.scan*' -o -name 'l5*' -o -name 'settle*' \) \
+           -o -name 'env*' -o -name 'timeline*' -o -name '*.scan*' -o -name 'l5*' -o -name 'settle*' \
+           -o -name '*.out' \) \
         -not -path '*/out/*' -not -path '*/target/*' -not -path '*/global/*' -not -path '*/ivy/*' \
         -not -path './mill/tmp/*' | while read -r file; do
             mkdir -p "$logs/$(dirname "$file")" && cp "$file" "$logs/$file"
@@ -255,6 +265,11 @@ write_env() { # file tmp runtime-dir extra-java-tool-options [NAME=VALUE...]
       for pair in "$@"; do printf '%s\n' "$pair"; done; } > "$out"
 }
 first_line() { grep -v '^$' "$1" 2>/dev/null | grep -v 'Picked up' | head -1 | cut -c1-70; }
+finish() {
+    echo
+    echo "PASS $pass  FAIL $fail"
+    [ "$fail" -eq 0 ]; exit
+}
 # The wording of a failed bounded run, for a FAIL detail.
 failed() { # record log
     case "$(status_of "$1")" in
@@ -344,6 +359,268 @@ else
     for pid in $(head -5 "$work/l5.missed"); do ps -o pid=,user=,comm= -p "$pid" | sed 's/^/        /'; done
     head -5 "$work/l5.errors" | show_table
 fi
+
+# --- G: the SBPL rules a Gradle profile needs -----------------------------------------------------
+
+# Gradle's TCP listeners bind the loopback address on port 0 (TcpIncomingConnector, InetAddressFactory),
+# which L1 covers; its file-lock socket binds the wildcard address on port 0 (DefaultFileLockCommunicator),
+# and a build's own tests bind where they like. The candidate profile grants any bind and names
+# "localhost" for what arrives and leaves; whether that class stops at loopback or covers every
+# address of this host is what these rows measure, under the candidate and under the mill daemon's
+# rule, which admits the same binds (run-on-host.md "Network" records the answer). The LAN rows
+# send to this host's own LAN address: the packet's addresses are the LAN's even when the route is
+# local, and the unconfined controls show the receiver hears it that way.
+echo
+echo "G: SBPL rules for Gradle"
+cat > "$work/udp-recv.py" <<'PY'
+# Bind port 0 on the wildcard address, or the one given, print the port, wait for one datagram,
+# answer it: exit 0 on receipt, 3 on the deadline, 4 when the receive itself fails.
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0", 0))
+print(s.getsockname()[1], flush=True)
+s.settimeout(15)
+try:
+    data, peer = s.recvfrom(64)
+except socket.timeout:
+    sys.exit(3)
+except OSError as ex:
+    print("receive failed: %s" % ex, flush=True)
+    sys.exit(4)
+print("received from %s:%d" % peer, flush=True)
+try:
+    s.sendto(b"ack", peer)
+except OSError as ex:
+    print("answer failed: %s" % ex, flush=True)
+PY
+cat > "$work/udp-send.py" <<'PY'
+# One datagram to HOST PORT, then its answer: exit 0 on an answer, 3 on none, 4 when the send
+# itself fails, 5 when the receive does.
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+try:
+    s.sendto(b"ping", (sys.argv[1], int(sys.argv[2])))
+except OSError as ex:
+    print("send failed: %s" % ex, flush=True)
+    sys.exit(4)
+try:
+    s.recvfrom(64)
+except socket.timeout:
+    sys.exit(3)
+except OSError as ex:
+    print("receive failed: %s" % ex, flush=True)
+    sys.exit(5)
+PY
+cat > "$work/tcp-listen.py" <<'PY'
+# Bind port 0 on the wildcard address, or the one given, print the port, accept one connection:
+# exit 0 on accept, 3 on the deadline, 4 when the accept itself fails.
+import socket, sys
+s = socket.socket()
+s.bind((sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0", 0))
+s.listen(1)
+print(s.getsockname()[1], flush=True)
+s.settimeout(15)
+try:
+    conn, peer = s.accept()
+except socket.timeout:
+    sys.exit(3)
+except OSError as ex:
+    print("accept failed: %s" % ex, flush=True)
+    sys.exit(4)
+print("accepted from %s:%d" % peer, flush=True)
+PY
+lan_ip=$(ipconfig getifaddr "$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')" 2>/dev/null)
+[ -n "$lan_ip" ] && echo "LAN address: $lan_ip" || echo "no LAN address: the LAN rows are not measured"
+gradle_rules='(allow network-bind (local ip "*:*"))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))'
+profile "$work/g.sb" "$gradle_rules"
+# Each probe sets `seen` to one outcome word and its detail. The outcomes a rule can produce:
+# `answered` (the sender got the answer too), `heard`, `accepted`, `nothing` (the socket's own
+# deadline passed with nothing arriving), `refused` (the receive, accept or send died on the
+# operating system's denial) and `no bind` (the bind did). Anything else — the deadline of the
+# process itself, a launch that failed, an error that is not the denial — is `failed`, and a row
+# expecting a denial fails on it: an observation that did not happen approves nothing.
+# COMMAND under PROFILE (`-` for none), in a group, its first output line awaited: `port` holds
+# it, or is empty. Usage: confined record profile command...
+confined() {
+    record=$1; sb=$2; shift 2
+    : > "$record.out"
+    if [ "$sb" = - ]; then group_start "$record" "$work" "$@" >"$record.out" 2>"$record.log"
+    else group_start "$record" "$work" /usr/bin/sandbox-exec -f "$sb" "$@" >"$record.out" 2>"$record.log"; fi
+    if until_true 5 sh -c "[ -s '$record.out' ]"; then port=$(head -1 "$record.out"); else port=""; fi
+}
+# The socket's own outcome once the process has ended: HEARD-WORD when its output says so, else
+# by its exit — 3 is the socket's deadline, 4 the socket's failure, which is `refused` only on
+# the denial. Usage: socket_outcome record heard-pattern heard-word
+socket_outcome() {
+    until_true 20 exited "$1" || : > "$1.timeout"
+    if has_line "$2" "$1.out"; then seen="$3 port $port; $(sed -n 2p "$1.out")"
+    elif [ "$(status_of "$1")" = 3 ]; then seen="nothing arrived at port $port"
+    elif [ "$(status_of "$1")" = 4 ] && has_line "$denied" "$1.out"; then seen="refused: $(sed -n 2p "$1.out")"
+    else seen="failed: $(failed "$1" "$1.log")$(sed -n 2p "$1.out")"; fi
+}
+bind_outcome() { # record: the process printed no port
+    until_true 20 exited "$1" || : > "$1.timeout"
+    if [ "$(status_of "$1")" != 124 ] && has_line "$denied" "$1.log"; then seen="no bind: $(first_line "$1.log")"
+    else seen="failed: $(failed "$1" "$1.log")"; fi
+}
+# A wildcard UDP socket under PROFILE, one datagram from an unconfined sender to HOST.
+udp_probe() { # profile host [bind-address]
+    confined "$work/g-recv" "$1" python3 "$work/udp-recv.py" ${3:+"$3"}
+    rpid=$leader
+    if [ -n "$port" ]; then
+        python3 "$work/udp-send.py" "$2" "$port" >"$work/g-send.log" 2>&1; sent=$?
+        socket_outcome "$work/g-recv" '^received' heard
+        # The receiver's silence counts only behind a sender that sent and waited out its answer.
+        case "$seen" in
+            heard*) [ "$sent" -eq 0 ] && seen="answered ${seen#heard }" ;;
+            nothing*) [ "$sent" -eq 3 ] || seen="failed: sender exit $sent: $(first_line "$work/g-send.log")" ;;
+        esac
+    else bind_outcome "$work/g-recv"; fi
+    end_group "$rpid"
+}
+# A wildcard TCP listener under PROFILE, one unconfined connect to HOST.
+tcp_probe() { # profile host [bind-address]
+    confined "$work/g-listen" "$1" python3 "$work/tcp-listen.py" ${3:+"$3"}
+    lpid=$leader
+    if [ -n "$port" ]; then
+        /bin/bash -c "exec 3<>/dev/tcp/$2/$port" 2>"$work/g-connect.log"
+        socket_outcome "$work/g-listen" '^accepted' accepted
+        case "$seen" in nothing*) seen="$seen; connect: $(first_line "$work/g-connect.log")" ;; esac
+    else bind_outcome "$work/g-listen"; fi
+    end_group "$lpid"
+}
+# An unconfined wildcard UDP socket, one datagram from a sender under PROFILE to HOST: `answered`,
+# `heard` (the sender got no answer), `nothing` when the socket's deadline passed with the sender
+# denied, or `failed`.
+udp_send_probe() { # profile host
+    confined "$work/g-uncon" - python3 "$work/udp-recv.py"
+    upid=$leader
+    if [ -n "$port" ]; then
+        if [ "$1" = - ]; then python3 "$work/udp-send.py" "$2" "$port" >"$work/g-csend.log" 2>&1; sent=$?
+        else /usr/bin/sandbox-exec -f "$1" python3 "$work/udp-send.py" "$2" "$port" >"$work/g-csend.log" 2>&1
+             sent=$?; fi
+        socket_outcome "$work/g-uncon" '^received' heard
+        case "$seen" in
+            heard*) [ "$sent" -eq 0 ] && seen="answered ${seen#heard }" ;;
+            nothing*) if has_line "send failed: .*$denied" "$work/g-csend.log"; then seen="$seen; send denied"
+                      elif [ "$sent" -eq 3 ]; then seen="$seen; the datagram left and never arrived"
+                      else seen="failed: sender exit $sent: $(first_line "$work/g-csend.log")"; fi ;;
+        esac
+    else bind_outcome "$work/g-uncon"; fi
+    end_group "$upid"
+}
+# The unconfined control first — the LAN address must be heard, or the row measures nothing —
+# then the probe under PROFILE at this host's LAN address, reported as the measurement it is; a
+# failed observation is still a FAIL. Usage: lan_row label probe profile [bind-address]
+lan_row() {
+    if [ -z "$lan_ip" ]; then report SKIP "$1" "no LAN address"; return; fi
+    "$2" - "$lan_ip" ${4:+"$4"}
+    case "$seen" in
+        heard*|answered*|accepted*) ;;
+        *) report FAIL "$1" "control: unconfined, the LAN address is not heard: $seen"; return ;;
+    esac
+    "$2" "$3" "$lan_ip" ${4:+"$4"}
+    case "$seen" in failed*) report FAIL "$1" "$seen" ;; *) report INFO "$1" "$seen" ;; esac
+}
+
+# G1: what the Mill rule already admits — a wildcard UDP bind or not — decides whether the bind
+# grant must widen to "*:*" at all.
+udp_probe "$work/l1.sb" 127.0.0.1
+report INFO "G1 wildcard UDP bind under (local ip localhost:*)" "$seen"
+udp_probe "$work/l2.sb" 127.0.0.1
+case "$seen" in
+    "no bind"*) report PASS "G2 control: no rule denies the wildcard UDP bind" "$seen" ;;
+    *) report FAIL "G2 control: no rule denies the wildcard UDP bind" "$seen" ;;
+esac
+udp_probe "$work/g.sb" 127.0.0.1
+case "$seen" in
+    answered*) report PASS "G3 wildcard UDP socket answers at the loopback address" "$seen" ;;
+    *) report FAIL "G3 wildcard UDP socket answers at the loopback address" "$seen" ;;
+esac
+lan_row "G4 wildcard UDP socket at the LAN address" udp_probe "$work/g.sb"
+tcp_probe "$work/g.sb" 127.0.0.1
+case "$seen" in
+    accepted*) report PASS "G5 wildcard TCP listener accepts at the loopback address" "$seen" ;;
+    *) report FAIL "G5 wildcard TCP listener accepts at the loopback address" "$seen" ;;
+esac
+lan_row "G6 wildcard TCP listener at the LAN address" tcp_probe "$work/g.sb"
+# G7, G8: the outbound side, against an unconfined wildcard socket: any loopback port, and the LAN
+# address. TCP by connect, UDP by a datagram from a confined sender.
+group_start "$work/g7" "$work" python3 "$work/tcp-listen.py" >"$work/g7.out" 2>"$work/g7.log"
+g7_leader=$leader
+until_true 5 sh -c "[ -s '$work/g7.out' ]"
+g7_port=$(head -1 "$work/g7.out")
+if /usr/bin/sandbox-exec -f "$work/g.sb" /bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/$g7_port" 2>"$work/g7-loop.log"
+then report PASS "G7 outbound reaches any loopback port" "127.0.0.1:$g7_port"
+else report FAIL "G7 outbound reaches any loopback port" "$(first_line "$work/g7-loop.log")"; fi
+end_group "$g7_leader"
+# G6's unconfined control has shown the LAN address reachable by then.
+if [ -z "$lan_ip" ]; then report SKIP "G7 outbound denies the LAN address" "no LAN address"
+else
+    group_start "$work/g7b" "$work" python3 "$work/tcp-listen.py" >"$work/g7b.out" 2>"$work/g7b.log"
+    g7b_leader=$leader
+    until_true 5 sh -c "[ -s '$work/g7b.out' ]"
+    g7b_port=$(head -1 "$work/g7b.out")
+    if /usr/bin/sandbox-exec -f "$work/g.sb" /bin/bash -c "exec 3<>/dev/tcp/$lan_ip/$g7b_port" 2>"$work/g7-lan.log"
+    then report INFO "G7 outbound at the LAN address" "connected to $lan_ip:$g7b_port"
+    elif has_line "$denied" "$work/g7-lan.log"
+    then report INFO "G7 outbound at the LAN address" "denied: $(first_line "$work/g7-lan.log")"
+    else report FAIL "G7 outbound at the LAN address" "failed otherwise: $(first_line "$work/g7-lan.log")"; fi
+    end_group "$g7b_leader"
+fi
+udp_send_probe "$work/g.sb" 127.0.0.1
+case "$seen" in
+    answered*) report PASS "G8 outbound UDP reaches any loopback port" "$seen" ;;
+    *) report FAIL "G8 outbound UDP reaches any loopback port" "$seen" ;;
+esac
+lan_row "G8 outbound UDP at the LAN address" udp_send_probe "$work/g.sb"
+# G9, G10: the same under the mill daemon's rule, (local ip "localhost:*") for bind and inbound,
+# which what the daemon forks inherits: a wildcard bind reached at the LAN address, and a bind
+# to the LAN address itself.
+lan_row "G9 mill rule: wildcard TCP listener at the LAN address" tcp_probe "$work/l1.sb"
+lan_row "G9 mill rule: wildcard UDP socket at the LAN address" udp_probe "$work/l1.sb"
+lan_row "G10 mill rule: TCP listener bound to the LAN address" tcp_probe "$work/l1.sb" "$lan_ip"
+lan_row "G10 mill rule: UDP socket bound to the LAN address" udp_probe "$work/l1.sb" "$lan_ip"
+# G11: the exact-port rule every client and the proxy rule use, (remote ip "localhost:<port>"),
+# against a listener bound to the LAN address on that port: whether the port grant is one address
+# or every address of this host. An unconfined listener bound to the LAN address, its port then
+# named in the rule; the connect under it.
+if [ -z "$lan_ip" ]; then report SKIP "G11 exact-port outbound at the LAN address" "no LAN address"
+else
+    group_start "$work/g11" "$work" python3 "$work/tcp-listen.py" "$lan_ip" >"$work/g11.out" 2>"$work/g11.log"
+    g11_leader=$leader
+    until_true 5 sh -c "[ -s '$work/g11.out' ]"
+    g11_port=$(head -1 "$work/g11.out")
+    profile "$work/g11.sb" "(allow network-outbound (remote ip \"localhost:$g11_port\"))"
+    if /usr/bin/sandbox-exec -f "$work/g11.sb" /bin/bash -c "exec 3<>/dev/tcp/$lan_ip/$g11_port" \
+        2>"$work/g11-lan.log"
+    then report INFO "G11 exact-port outbound at the LAN address" "connected to $lan_ip:$g11_port"
+    elif has_line "$denied" "$work/g11-lan.log"
+    then report INFO "G11 exact-port outbound at the LAN address" "denied: $(first_line "$work/g11-lan.log")"
+    else report FAIL "G11 exact-port outbound at the LAN address" \
+        "failed otherwise: $(first_line "$work/g11-lan.log")"; fi
+    end_group "$g11_leader"
+fi
+# G12: a remote destination under the candidate's (remote ip "localhost:*"): an IP literal keeps
+# DNS out, and the connect or send must die on the denial, never on a slow timeout.
+if /usr/bin/sandbox-exec -f "$work/g.sb" /bin/bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>"$work/g12-tcp.log"
+then report FAIL "G12 candidate denies a remote TCP destination" "connected to 1.1.1.1:443"
+elif has_line "$denied" "$work/g12-tcp.log"
+then report PASS "G12 candidate denies a remote TCP destination" "denied: $(first_line "$work/g12-tcp.log")"
+else report FAIL "G12 candidate denies a remote TCP destination" \
+    "failed otherwise: $(first_line "$work/g12-tcp.log")"; fi
+# The send itself must be the denial: the helper's receive can be denied on its own.
+if /usr/bin/sandbox-exec -f "$work/g.sb" python3 "$work/udp-send.py" 1.1.1.1 53 >"$work/g12-udp.log" 2>&1
+then report FAIL "G12 candidate denies a remote UDP destination" "1.1.1.1:53 answered"
+elif has_line "send failed: .*$denied" "$work/g12-udp.log"
+then report PASS "G12 candidate denies a remote UDP destination" "denied: $(first_line "$work/g12-udp.log")"
+else report FAIL "G12 candidate denies a remote UDP destination" \
+    "failed otherwise: $(first_line "$work/g12-udp.log")"; fi
+
+if [ "${groups:-all}" = sbpl ]; then finish; fi
 
 # --- S: sbt, per version -------------------------------------------------------------------------
 
@@ -855,6 +1132,4 @@ $(failed "$mp/starter" "$mp/starter.log")"
     end_daemons
 fi
 
-echo
-echo "PASS $pass  FAIL $fail"
-[ "$fail" -eq 0 ]
+finish

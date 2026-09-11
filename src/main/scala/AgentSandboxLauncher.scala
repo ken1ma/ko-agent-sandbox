@@ -1903,9 +1903,9 @@ object AgentSandboxLauncher:
            |one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments
            |as one command, and `compile test` fails to parse. Under sbt and mvn the host grants no
            |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
-           |suite alone runs in the container. Under mill a build's processes can bind loopback
-           |listeners. Container `sbt` still works, over the same `target/` — host and container
-           |builds compile with different JVMs against different caches, so switching between them
+           |suite alone runs in the container. Under mill a build's processes can bind listeners.
+           |Container `sbt` still works, over the same `target/` — host and container builds
+           |compile with different JVMs against different caches, so switching between them
            |can cost a rebuild or need the symlink cleanup described above. Any other host
            |command that fails or is refused is reported to the user, never re-run in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.

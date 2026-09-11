@@ -95,6 +95,59 @@ otherwise, the built behavior is:
 8. **The daemon configuration takes the build file's header whole**, each source under its own
    name (`RunOnHostPrereqs.millDaemonConfig` has why).
 
+## Revision — Phase 2 scope (2026-09-11)
+
+Re-read before step 6 against Gradle's current releases and sources (9.7.1, master at
+2026-09-11) and Phase 1 as built; where sections 12–23 say otherwise, this binds:
+
+1. **One fixture, 9.7.1, and no version check.** Superseded lines get no fixture or branch, as
+   sbt's did; `doc/run-on-host.md` records 9.7.1 as the release measured and why older lines
+   are out — 8.14 does not run on the JDK 25 the launcher requires, and 9.7.1 runs on JDK 17 to
+   26 (Gradle's compatibility matrix) — and Gradle itself refuses a JDK it cannot run on. The
+   JDK is the launcher's own JAVA_HOME check (`RunOnHostPrereqs.resolveJdkHome`), so section 17's
+   Coursier inventory, its refusals and the per-line JDK column of section 14 are dropped.
+2. **The client starts the daemon; the broker ends it by proof.** Gradle's daemon detaches
+   itself at start (`DaemonMain` calls `ProcessEnvironment.maybeDetachProcess`, `setsid` on
+   POSIX), so it leaves the command's group and session on its own, and ending the command's
+   recorded group leaves it alive. Its pid is its group id, and its workers and test executors are
+   forked into that group, so the `daemon-gradle-<hash>` record takes each daemon's
+   `<pid> <start time>` once observed after every command, a cancelled one included — the
+   process whose working directory is the home's `daemon/<version>` and whose command names
+   `GradleDaemon` — and the launch's end signals the group behind that proof, daemon and
+   descendants at once, as every recorded group. A daemon no observation reached — one started
+   under a broker that died during the command — is confined, holds nothing, and exits on
+   Gradle's idle timeout, three hours, once idle: the acceptance `SECURITY.md` "Run on host"
+   makes for a Mill daemon whose leader is gone, stated there for Gradle too. One hung in its
+   build never becomes idle (`getIdleMillis` is zero outside the idle state), so the residual is
+   the daemon both unrecorded and hung. No `gradle --stop`.
+3. **Reuse and cancel are Gradle's.** Gradle matches a compatible daemon under the broker's own
+   home and starts another on a mismatch, inside the profile; the broker keeps no reuse key
+   beyond the proxy. On a client disconnect the daemon cancels the build and, still busy after
+   its ten-second grace, stops itself (`WatchForDisconnection`, `DaemonStateCoordinator`); the
+   next command attaches or starts one. Gate rows assert both; no mechanism.
+4. **No warning.** `--run-on-host=gradle` is the opt-in, and the help and `SECURITY.md`'s
+   per-program table carry the cost; section 13's warning and its test are dropped.
+5. **The prerequisite is the provisioned distribution, nothing parsed.** The distribution
+   directory Gradle's wrapper would use for the project's `distributionUrl` exists under the
+   broker's `GRADLE_USER_HOME` with `bin/gradle`, granted read and exec as Mill's launcher is, or
+   the command is refused naming the provisioning command; the URL is not a boundary, since the
+   user provisions it unconfined, so section 15's official-URL rule and version check are dropped
+   — Gradle says when a version cannot run on the JDK, and `doc/run-on-host.md` records 9.7.1
+   as the release measured. Section 18's three properties stay as three `-D`s on the command
+   line, so a toolchain the profile would deny anyway fails naming the toolchain, not `EPERM`.
+   `doc/TODO.md`'s "Gradle under `--run-on-host`" entry points here, and is removed with step 10.
+6. The UDP lock communicator (`DefaultFileLockCommunicator`) and the port-0 TCP listeners are in
+   current master, so section 12's probes went first. Measured (G1–G10): SBPL's `localhost`
+   class is this host's addresses, the wildcard bind included, and no spelling names loopback
+   alone; the candidate rule set keeps other hosts out as destinations (G12) and cannot keep a
+   wildcard-bound listener from the LAN. Decided on that measurement: Gradle runs on the host
+   under Mill's daemon grant plus outbound to any port of this host, and `SECURITY.md`'s
+   per-program table says what the user gives up (section 12, "Security model" and 7.4 carry
+   the measured wording). The plan's earlier "loopback" wording rested on a premise the probe
+   refuted.
+
+The Phase 2 list under "Implementation order" is the revised one.
+
 ---
 
 # Security model: one important exception
@@ -104,23 +157,23 @@ profile a stock tool of that program can run under:
 
 ```text
 sbt
-  loopback to the proxy; UNIX-domain sockets under the broker's and the command's directories
+  the proxy's port; UNIX-domain sockets under the broker's and the command's directories
 
 Maven
-  loopback to the proxy
+  the proxy's port
 
 Mill
-  the daemon's group: loopback to the proxy, plus loopback listeners (bind and accept on any
-  loopback port, since the daemon binds port 0)
-  each client: loopback to the proxy, plus outbound to the daemon's one port
+  the daemon's group: the proxy's port, plus listeners on any port at any address of this
+  host (the daemon binds port 0 on the loopback address; SBPL's "localhost" class admits the
+  wildcard and the LAN address too — measured, G1, G9, G10)
+  each client: the proxy's port, plus outbound to the daemon's one port
 
 Gradle
-  loopback TCP and UDP both ways, on any port
-  LAN and direct Internet stay denied; Internet only through the egress proxy
+  Mill's daemon grant, plus outbound to any port of this host, TCP and UDP
+  other hosts stay denied as destinations, LAN and Internet; Internet only through the egress proxy
 ```
 
-Gradle is deliberately different. Established for stock Gradle 9, to be verified against the Gradle
-7/8 fixtures:
+Gradle is deliberately different. Established for stock Gradle 9.7.1:
 
 1. Gradle internal messaging uses TCP listeners bound to port 0, for daemon/client and
    worker-process communication.
@@ -690,14 +743,15 @@ client profile   today's mill profile
                  + (allow network-outbound (remote ip "localhost:<P>"))
 ```
 
-Exact SBPL is measured (`src/probe/loopback-rule.sh` extended with bind and accept rows), never
+Exact SBPL is measured (`src/probe/run-on-host-broker-session.sh`, L1–L4 and G1–G10), never
 taken from documentation. The client rule confines outbound to one port, and `localhost:0` binds
-cannot be confined to one, so the daemon's grant covers every loopback port. That grant is
-inherited by everything the daemon forks: a test suite under Mill can now bind a loopback listener,
-which today gets `EPERM` for every program. Other host processes can connect to such a listener,
-and it runs under the profile. `SECURITY.md` states this as Mill's cost, in the same terms Gradle's
-is stated in Phase 2; "no loopback listener" stays true for sbt and Maven, and the agent
-instructions say which programs it holds for.
+cannot be confined to one, so the daemon's grant covers every port — at every address of this
+host, since the "localhost" class admits a bind to the wildcard or to the LAN address (G1, G9,
+G10). That grant is inherited by everything the daemon forks: a test suite under Mill can bind a
+listener, which under sbt or Maven gets `EPERM`, and a LAN peer can reach it while it runs under
+the profile. `SECURITY.md` states this as Mill's cost, in the same terms Gradle's is stated in
+Phase 2; "no listener" stays true for sbt and Maven, and the agent instructions say which
+programs it holds for.
 
 ### 7.5 Cancel, self-exit, restart
 
@@ -795,7 +849,11 @@ authority; no boolean, and no generic "localhost any" case reused casually.
   client-disconnect cancel and its forked JVM; the sbt 2 `proc` registry; the Mill starter, the
   port from `lsof`, the exact-port and neighbor-port clients, the per-command environment, the
   daemon's end on a cancel and on its timeout; and a foreign daemon ended by the starter's
-  fingerprint mismatch, the hazard 7.2 step 0 exists for.
+  fingerprint mismatch, the hazard 7.2 step 0 exists for. For Gradle and the reach of
+  `localhost` (G1–G10): a UDP socket and a TCP listener bound to the wildcard address, as its
+  file-lock socket is, or to the LAN address, under the Gradle candidate and under the mill
+  daemon's rule, heard at the loopback and at the LAN address, inbound and outbound — the
+  measurement "Security model" and section 12 rest on.
 - Gate rows, extending the existing gate and its `--no-daemon`/`sbtn` INFO rows rather than a new
   framework: the acceptance blocks of 6.5 and 7.6; the proxy reused by the server across
   commands; the per-command denied-host report under the shared log; a `-Dprobe=1` on the
@@ -914,6 +972,53 @@ Decided 2026-09-10, with the reasons each rests on:
 
 ---
 
+# The proxy's own profile
+
+Independent of Gradle, ahead of it: the one launcher process that parses bytes the confined
+command sends — every CONNECT line and host name — runs unconfined today, as the user, with the
+acceptance `doc/run-on-host.md` "The command's egress proxy" states. It gets a profile of its own.
+
+**What must hold.** The host proxy runs under a Seatbelt profile that grants its executable, its
+log and the network, and nothing of the user's files; the same profile for every proxy the
+launcher starts on the host — the broker's per build directory and program, the command's own
+under Maven, the gate's — since one `RunOnHostSandbox.startProxy` starts them all.
+
+**The profile** (`SeatbeltProfile.renderProxy`, sharing `render`'s parts: the root component and
+ancestor literals, `Devices`, the measured `RuntimeAuthority`):
+
+```text
+(deny default)
+process-exec* file-read*   the launcher's own executable — the native image, or the JDK and each
+                           class-path entry of the jar form (RunOnHostSandbox.selfInvocation)
+file-read* / process-exec* the runtime authority, as the command profile
+file-write*                the log file alone, a literal: the proxy appends to it
+                           (AgentEgressProxy.teeOutput), and the broker reads its ready line
+network-outbound           every remote, `(remote ip "*:*")`: host filtering is the proxy's own
+                           job, and SBPL cannot filter by name
+network-outbound           the resolver's socket, /private/var/run/mDNSResponder:
+                           `InetAddress.getAllByName` is how it resolves
+network-bind, -inbound     `(local ip "localhost:*")`: the loopback address is the proxy's own
+                           EGRESS_BIND, since no rule names loopback alone
+```
+
+No project, no cache, no guard: nothing under the user's home is granted but the log. The
+environment is already the closed one `startProxy` builds. The upstream proxy variable, when
+forwarded, changes nothing: outbound is unrestricted.
+
+**Tests.** `SeatbeltProfileTest`: the network lines, the log as the only write, no grant under
+the home, a relative log path refused. The gate: its proxy rows already run every fetch through
+the proxy, so they prove the confined one works, the resolver rule included; added rows, under
+the emitted proxy profile, prove a read of the user's home and a write beside the log denied. A
+read the proxy needs and the command never did shows there, and
+`src/probe/run-on-host-profile-iterate.sh` finds it as for any command.
+
+**Documents.** `doc/run-on-host.md` "The command's egress proxy": the acceptance paragraph
+becomes the profile's statement, with the why of unrestricted outbound; `doc/TODO.md`'s entry is
+deleted when this lands. The per-program table in `SECURITY.md` is untouched: the proxy is not a
+build process.
+
+---
+
 # Phase 2 — Gradle 7/8/9
 
 Start after the broker session and runtime ownership exist. Gradle does **not** depend on Mill's
@@ -921,31 +1026,33 @@ exact-port technique; it shares the session, teardown, proxy and reuse-key infra
 
 ## 12. Explicit Gradle security exception
 
-Gradle host execution uses stock Gradle with a Gradle-specific loopback profile.
+Gradle host execution uses stock Gradle under a Gradle-specific profile: Mill's daemon profile
+plus outbound to any port of this host.
 
 Do not attempt: daemon-port discovery followed by exact-port client confinement; TCP relay tricks;
 patching Gradle; Java agents or `connect()` instrumentation; ephemeral-port range manipulation;
 custom worker launch interception. None solves the stock-Gradle requirement, because Gradle also
 creates dynamically allocated worker TCP endpoints and UDP file-lock endpoints.
 
-The Gradle profile grants the minimum loopback TCP/UDP authority probes prove necessary, and
-nothing else changes:
+The Gradle profile grants what the probes proved Gradle needs, and nothing else changes:
 
 ```text
 Gradle host process/build code
-  arbitrary required loopback TCP/UDP: YES
-  arbitrary LAN TCP/UDP:              NO
-  direct Internet TCP/UDP:            NO
+  listeners, any port, any address of this host, TCP and UDP: YES (Mill's grant; G1, G9, G10)
+  connections to any port of this host:                       YES (G7, G8)
+  connections to other hosts, LAN or Internet:                NO (G12, TCP and UDP)
   Internet through egress proxy:      according to the normal Gradle egress rule
   arbitrary host filesystem:          NO
   .git mutation:                      NO
   survive owning launch:              NO
 ```
 
-The exact SBPL is determined experimentally for each acceptance release, scoped to loopback
-addresses rather than generic network permissions. If Seatbelt cannot express "loopback both ways,
-non-loopback still denied" for Gradle's TCP and UDP behavior, that is a blocker to report, never a
-reason to fall back to unrestricted networking.
+SBPL names no loopback alone: its `localhost` class is this host's addresses, the wildcard
+included (`doc/run-on-host.md` "Network"; measured G1–G10 before this was written into code).
+So the exception is not stated as "loopback": `SECURITY.md`'s per-program table states the two
+things a Gradle build can do that an sbt build cannot — serve a LAN peer while it runs, as a Mill
+build already can, and talk to every service listening on this host. Its row is there, marked
+planned until the program lands.
 
 In code, `Network.GradleLoopback` joins the enum of section 8.
 
@@ -1148,8 +1255,8 @@ Each claim changes in the same change that makes it true.
   command that provisions it, with 7.1's reason; the Mill section replaces `--no-daemon` and the
   false "`out/mill-daemon/` cleared before each command" with 7.2–7.5, the foreign daemon ended
   as the foreign server is; the channel section's "one server per project" argument stays, with the
-  broker as the owner and the consented shutdown now the default; Phase 2 adds the Gradle matrix
-  and the fatal-JDK rule.
+  broker as the owner and the consented shutdown now the default; Phase 2 adds the Gradle
+  section, with 9.7.1 as the release measured and the provisioning command.
 - `SECURITY.md` "Run on host": "One sbt server per project, owned by the current command" becomes
   one per build directory, owned by the launch's broker and kept warm; a cancel follows stock sbt
   (the exec is cancelled, the warm server survives); the user's own terminal server is shut down
@@ -1159,7 +1266,8 @@ Each claim changes in the same change that makes it true.
   confined server while the launch lives; the egress statement gains that a running
   runtime's proxy admits the rule file it was created with, so a host removed from the file is
   revoked when that runtime is next created, as the session's is at the next launch;
-  "no loopback listener" is qualified for Mill with the concrete widening of 7.4; "Teardown
+  "no listener" is qualified for Mill with the concrete widening of 7.4, and the per-program
+  table states each program's reach and what the user gives up; "Teardown
   follows descriptor lifetime" gains the broker's own end, stated as the requirement it is: no
   server or daemon
   survives the launch that owns it, and a later launch adopts none whose owner is gone; Phase 2
@@ -1174,8 +1282,8 @@ Each claim changes in the same change that makes it true.
   the README's launch advice drops it; the `--run-on-host` text says that a terminal sbt server
   you have running is shut down when the agent runs sbt in that directory, that a second launch is
   refused a build directory the first still owns, and that your own sbt 2 attaches to the launch's
-  confined server while it lives; Phase 2 adds `gradle`, the JDK matrix, and the provisioning and
-  loopback sentences.
+  confined server while it lives; Phase 2 adds `gradle` and the provisioning sentence, the cost
+  being `SECURITY.md`'s table row.
 - `doc/TODO.md`: "a bound on a silent host command" is resolved for sbt by the broker's portfile
   deadline (6.1) and is rewritten to what remains, the generic no-output bound; "Gradle under
   `--run-on-host`" is removed when Phase 2 lands; a Mill blocker is added only if 7.7 triggers.
@@ -1207,15 +1315,25 @@ Small patches, each with an independently testable invariant, in dependency orde
 
 ## Phase 2
 
-6. `Network.GradleLoopback`, and probes for TCP **and** UDP.
-7. The once-per-launch warning.
-8. Static wrapper, version and distribution prerequisites.
-9. Installed Coursier-JDK inventory and the fatal exact-JDK refusals.
-10. Gradle 7.6.6 + JDK 17; 11. Gradle 8.14.5 + JDK 21; 12. Gradle 9.7.1 + JDK 25.
-13. Toolchain inventory, no auto-detection, no auto-download.
-14. Daemon, worker and test-process teardown coverage.
-15. Loopback-versus-non-loopback gate rows.
-16. Phase 2 documentation.
+Revised by "Revision — Phase 2 scope":
+
+6. The SBPL rows for Gradle, G1–G10, measured: `localhost` is this host's addresses, so
+   `Network.GradleLoopback` encodes Mill's daemon grant plus outbound to any port of this host,
+   and lands with step 8's `Program.Gradle`.
+7. The proxy's own profile ("The proxy's own profile"): `SeatbeltProfile.renderProxy`,
+   `startProxy` under `sandbox-exec`, the tests and the document paragraph.
+8. `Program.Gradle` and its prerequisites: the provisioned distribution under the broker's
+   `GRADLE_USER_HOME` or a refusal naming the provisioning command, the JDK from JAVA_HOME, the
+   three toolchain properties on the command line.
+9. The Gradle runtime under the broker: the client starts the daemon under the profile, the
+   daemon's pid and start time recorded after each command, teardown by the recorded groups,
+   reuse and cancel left to Gradle. Gate rows: persistence, teardown of workers and test
+   executors, an unrelated service of this host reachable, other hosts denied as destinations,
+   proxy egress works, the user's own `~/.gradle` daemons untouched, a toolchain the project asks
+   for failing by name.
+10. Phase 2 documentation: README and help, `SECURITY.md`'s table row and teardown sentence,
+    `doc/run-on-host.md`'s Gradle section with 9.7.1 as the release measured, the TODO entry
+    removed.
 
 Gradle consumes the broker session and runtime ownership of Phase 1; it never duplicates a
 lifecycle.

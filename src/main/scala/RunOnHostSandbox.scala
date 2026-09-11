@@ -717,7 +717,7 @@ object RunOnHostSandbox:
   /** One program's runtime, as a command runs against it: the session holding its records —
     * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
     * the profile and the environment name, the proxy's log, which the denied-host report
-    * reads, and for mill the one loopback port of its daemon, the port a client's profile admits.
+    * reads, and for mill the one port of its daemon, the port a client's profile admits.
     * Created with the program's rule file as read then, in the session whose records
     * name its groups — the broker's for its launch's sbt and mill commands (BrokerRuntimes), the
     * command's own for Maven and for the gate's entry — and ended with that session. */

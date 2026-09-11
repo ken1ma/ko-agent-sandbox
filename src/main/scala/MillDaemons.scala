@@ -1,7 +1,7 @@
 // The launch's mill daemon (run-on-host.md "mill"): started by the project's stock bootstrap under
 // the daemon profile — whose denied connect leaves the daemon behind in the starter's group —
 // identified there by its command line, proved by pid and start time, and granted the one
-// loopback port `lsof` shows it listening on, which `out/mill-daemon/socketPort` may name but
+// port `lsof` shows it listening on, which `out/mill-daemon/socketPort` may name but
 // never authorizes. Before the broker's starts, a daemon of the user's own for the build
 // directory is ended by proof once idle, as the user's sbt server is shut down by protocol.
 // macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
@@ -21,7 +21,7 @@ import RunOnHostSession.{Processes, Session}
 object MillDaemons:
 
   /** A daemon on the host: its pid with the `ps -o lstart=` start time every later reuse or
-    * signal proves first, and the loopback port it listens on. */
+    * signal proves first, and the port it listens on. */
   case class Daemon(pid: Long, start: String, port: Int)
 
   /** The daemon's main class, on its command line and nowhere on the launcher's. */
@@ -168,7 +168,7 @@ object MillDaemons:
   private val Member = raw"\s*(\d+)\s+(.*)".r
 
   /** The port a client is confined to: `out/mill-daemon/socketPort`'s candidate — an integer in
-    * port range, nothing more — verified as a loopback port the proved daemon listens on. The
+    * port range, nothing more — verified as a port the proved daemon listens on. The
     * file is the build's to write, so a candidate the daemon does not listen on is a refusal,
     * and so is no candidate at all: the client reads the same file and would fail anyway. */
   private def verifiedPort(buildDirectory: Path, pid: Long): Either[String, Int] =
@@ -182,10 +182,10 @@ object MillDaemons:
       listening = listeningPorts(pid)
       found = candidate.filter(listening.contains)
       if found.isEmpty then Thread.sleep(200)
-    val ports = if listening.isEmpty then "no loopback port" else listening.mkString(", ")
+    val ports = if listening.isEmpty then "no port" else listening.mkString(", ")
     found.toRight(s"the daemon (pid $pid) listens on $ports, and $file names ${candidate.getOrElse("no port")}")
 
-  /** The loopback ports `lsof` shows the pid listening on. */
+  /** The TCP ports `lsof` shows the pid listening on. */
   private def listeningPorts(pid: Long): Vector[Int] =
     lines("lsof", "-a", "-p", pid.toString, "-iTCP", "-sTCP:LISTEN", "-nP", "-Fn")
       .collect { case Listener(port) => port.toInt }

@@ -42,9 +42,9 @@ direct Internet access from the command; any automatic expansion of permissions 
 fails, and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git
 credentials, SSH credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell`
 and `sbtn`'s interactive modes; mounting the container's workspace at its host path (`TODO.md`,
-"same-path mounting"); Gradle, whose processes talk over loopback TCP (`TODO.md`, "Gradle"). The
-container keeps its toolchain: host commands are the fast path, not a replacement, and a session
-without `--run-on-host` builds in the container as before.
+"same-path mounting"); Gradle, whose processes talk to each other over ports of the kernel's
+choosing (`TODO.md`, "Gradle"). The container keeps its toolchain: host commands are the fast
+path, not a replacement, and a session without `--run-on-host` builds in the container as before.
 
 ## Why only macOS
 
@@ -100,25 +100,26 @@ The filesystem rules define what a host command can access:
 
 ## Network
 
-The command's only egress is its proxy (below); Seatbelt permits connections to that loopback
-endpoint and nothing else, with UNIX-domain sockets only inside the command's temporary directory
-and, for an sbt client, the broker's, where its server listens. Loopback reaches local services,
-so no other loopback connect is granted, and no TCP listener but the mill daemon's: a test suite
+The command's only egress is its proxy (below); Seatbelt permits connections to the proxy's port
+— at every address of this host, the proxy listening on the loopback one — and nothing else,
+with UNIX-domain sockets only inside the command's temporary directory and, for an sbt client,
+the broker's, where its server listens. A port grant reaches this host's other services the same
+way, so no other port is granted, and no listener but the mill daemon's: a test suite
 that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host under sbt and Maven
 and runs in the container, while under `mill` it runs on the host, since the daemon's listener
-grant covers every loopback port and everything the daemon forks inherits it (`SECURITY.md` "Run
-on host" states that cost). Per program (`SeatbeltProfile.Network` is the typed input the dispatch
-shows):
+grant covers every port at every address of this host and everything the daemon forks inherits
+it (`SECURITY.md` "Run on host" states that cost). Per program (`SeatbeltProfile.Network` is the
+typed input the dispatch shows):
 
 | process | network |
 |---|---|
-| sbt server | loopback to the proxy; UNIX sockets bound and connected under the broker's `tmp/` |
+| sbt server | the proxy's port; UNIX sockets bound and connected under the broker's `tmp/` |
 | sbt client | the same under the command's `tmp/`, plus connects under the broker's `tmp/` |
-| `mill` daemon | loopback to the proxy; loopback listeners, any port, since it binds port 0 |
-| `mill` client | loopback to the proxy, and to the daemon's one port |
-| Maven | loopback to the proxy; UNIX sockets under the command's `tmp/` |
+| `mill` daemon | the proxy's port; listeners, any port, any address of this host (below) |
+| `mill` client | the proxy's port, and the daemon's one port |
+| Maven | the proxy's port; UNIX sockets under the command's `tmp/` |
 
-Five measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
+Six measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
 `src/probe/run-on-host-broker-session.sh`); none is chosen from documentation:
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
@@ -131,8 +132,13 @@ Five measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`
   ("The channel and the command" has the client's wait).
 - The mill daemon's `(local ip "localhost:*")` admits a port-0 bind and accept, and no rule
   confines a port-0 bind to one port (L1–L4).
-- A client's `(remote ip "localhost:<port>")` reaches that port and is denied the neighboring
-  one (L3, L4, M3), and only the JVM launcher connects under it: the native image's connect is
+- The `localhost` class is this host's addresses, not loopback: under that rule a bind to the
+  wildcard or to the LAN address is admitted, and the socket answers at the LAN address, TCP and
+  UDP; `(remote ip "localhost:*")` connects there too. No spelling names loopback alone, since
+  the compiler takes no other host (G1, G4–G10).
+- A client's `(remote ip "localhost:<port>")` reaches that port at every address of this host
+  (G11), is denied the neighboring one (L3, L4, M3), and only the JVM launcher connects under it:
+  the native image's connect is
   dual-stack, for the reason above, and stays denied with the property on its command line (M2).
   That is why the wrapper runs the JVM launcher ("`mill`").
 
@@ -264,15 +270,15 @@ read; asking the script by running it would execute agent-authored shell on the 
 through Coursier's index into a writable, executable place, which is what the JVM rule refuses —
 and is what makes the daemon's JVM the granted JDK, the first `java` on the command's `PATH`.
 
-Mill is client/daemon by construction: the launcher starts a daemon that binds a loopback port
-of the kernel's choosing, writes it to `out/mill-daemon/socketPort`, and connects
+Mill is client/daemon by construction: the launcher starts a daemon that binds a port of the
+kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
 (`Server.scala`, `ServerLauncher.scala`, Mill 1.1.9). The broker starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
 it (`MillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
 
 1. The **starter**: the build directory's `./mill version`, as a registered spawn in the broker's
-   session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with loopback
-   listeners granted and no outbound but the proxy — with the closed environment and the
+   session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with listeners
+   granted and no outbound but the proxy — with the closed environment and the
    broker's `tmp/` as its temporary directory. The launcher starts the daemon, the daemon binds
    its port, and the launcher's own connect is denied, so it retries for ten seconds, exits
    nonzero, and the daemon stays in the spawn's group (measured, M1). Its output goes to
