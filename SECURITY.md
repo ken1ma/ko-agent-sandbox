@@ -386,10 +386,10 @@ request are trusted as they arrive. npm's install-time audit is off by default (
 of `doc/egress-rule-example/npm-audit/rule`, "Reading without being able to write" below); where
 a project enables it, its warnings do not stop installation.
 
-**Container, runtime and kernel escape.** On Linux the boundary ultimately rests on rootless podman,
-the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to contain a
-working kernel or container-runtime exploit; if that enters the threat model, the answer is a
-stronger isolation layer (gVisor, a microVM), bought at its compatibility cost, not more flags here.
+**Container, runtime and kernel escape.** On Linux the boundary ultimately depends on rootless
+podman, the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to
+contain a working kernel or container-runtime exploit; if that enters the threat model, the answer
+is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, not more flags here.
 
 **Resource exhaustion.** The PID limit and memory limit bound runaway process and memory use.
 CPU, disk growth under `/workspace`, network bandwidth, and denial of service against the host
@@ -672,11 +672,11 @@ store is prepared at launch rather than baked in, since the per-project CA postd
 
 Programs not covered by the launcher's prepared trust stores need separate handling. A JVM the agent
 installs itself (`cs java --jvm ...`) brings its own untouched store —
-`sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, so the gap is one command
-rather than a dead end; the certificate it reads is mounted beside the agent instructions, and is
-the same public one already inside the bundle. A GraalVM native image — the
-`cs` and `scala` launchers — has no `conf/` and reads no variable, so the proxy and CA
-settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand.
+`sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
+certificate it reads is mounted beside the agent instructions, and is the same public one already
+inside the bundle. A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and
+reads no variable, so the proxy and CA settings travel as `-D` options in
+`KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand.
 A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
 uninspected OpenAI.
 
@@ -716,15 +716,15 @@ the lines apply in and how a request finds its line are `doc/egress-proxy.md`, "
 follows is why. A `deny` names a host or a subtree, never a path, because a grant by path needs one
 spelling that works while a denial by path needs every spelling that reaches the tenant, and the
 proxy, comparing literally, cannot know them. With the defaults granting `git-fetch` on
-`github.com`, a hypothetical `deny https://github.com/secret-org/` would be escaped by
+`github.com`, a hypothetical `deny https://github.com/secret-org/` would be bypassed by
 `/%73ecret-org/…`, which misses the deny, matches the root line and is allowed, GitHub decoding
 `%73` to `s`; by `/Secret-Org/…`, GitHub folding case; by `/secret-org./` and `/secret-org;v=1/` on
 an origin that strips a segment's trailing dot or a `;parameter`; and by `/orgs/secret-org` or a
-search page, reaching the organisation under paths the deny never named. Each escape gains access: a
-denial by path fails open. The ordering the grammar gives instead — a host-wide `deny` with the
-narrower `allow` beneath it — fails closed: every spelling that misses the narrower allow stays
-governed by the host-wide deny, so an escape loses access. A case-folding keyword would close one of
-these on one origin and none of the others, so it is not a way in.
+search page, reaching the organisation under paths the deny never named. Each such spelling gains
+access: a denial by path fails open. The ordering the grammar gives instead — a host-wide `deny`
+with the narrower `allow` beneath it — fails closed: every spelling that misses the narrower allow
+stays governed by the host-wide deny and is refused. A case-folding keyword would close one of these
+on one origin and none of the others.
 
 A path on an `allow` line, written after a host-wide `deny`, restricts access relative to a
 whole-host grant. It does not prove tenant isolation for every possible origin. The proxy checks a
@@ -841,37 +841,39 @@ allows agent-chosen code to execute on the host under a Seatbelt profile. The pr
 confinement for these commands; they execute outside the container. `doc/run-on-host.md` describes
 the mechanism. Its security properties and costs are:
 
-- **macOS only, structurally, not by neglect.** On Linux there is no VM between the sandbox and
-  the hardware: a container command already runs at host speed on host memory, so host commands
-  would buy nothing — and neither bubblewrap nor Landlock can express the access restrictions below:
-  their name-pattern denies are evaluated at access time (a `.git` created *mid-build* is covered),
-  while their mounts and rulesets are fixed at start. Windows AppContainers express the grants
-  but not the denies: ACL inheritance has no name patterns, so a mid-build `.git` inherits the
-  project's allow — a race where the deny must hold at every access. Seatbelt's access-time
-  path filters give the guard exactly that, and the feature exists only where it holds.
+- **macOS only, structurally, not by neglect.** The `.git` and `.ko-agent-sandbox` denies below must
+  hold at every access, for a directory the command creates as much as for one present at its
+  start. Seatbelt evaluates its path filters at each access; the confinement Linux and Windows
+  offer is fixed when the command starts (`doc/run-on-host.md`, "Why only macOS", details the
+  alternatives):
+  - Linux: bubblewrap's mounts and a Landlock ruleset cover no `.git` created during the command.
+    A host command also gains nothing there: a container command already runs at host speed on
+    host memory.
+  - Windows: AppContainer's ACLs express the grants but not the denies: ACL inheritance has no
+    name patterns, so a `.git` created during the command inherits the project's allow.
 
 - **The sandbox asks; the host answers.** A host-side broker uses a FIFO channel like the clipboard
   broker's. It starts each command as its child, streams output back, and returns the exit code.
   There is no host listener or port; the host broker initiates execution (`RunOnHostChannel`, the
   image's `sandbox-run-on-host` shim).
 - **The profile is the boundary; the request is not.** A request names a program, a working
-  directory and arguments. The program must be one the launch named. The requested working directory
-  is resolved and proven inside the project before anything derives from it, and never changes the
-  profile's project grant. The arguments are deliberately not vetted: they select code the agent
-  already chooses (`sbt 'set …'` reaches arbitrary Scala without touching `build.sbt`), and the
-  profile confines whatever they select. A command's access consists of: the project read-write
-  except `.git` and `.ko-agent-sandbox` — denied at any depth after path resolution, link creation
-  included, with the `.GIT` gap `doc/run-on-host.md` records — its own per-project run-on-host
-  caches, one Coursier-managed JDK read-only, the program's own executable and distribution
-  read-only — the cs-installed `sbt` and the distribution it execs in the Coursier archive cache,
-  the one mill executable the user provisioned, the one Maven the project's wrapper unpacked under
-  `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
-  temporary directory for that command, and loopback to one egress proxy: the broker's for that
-  program under sbt and `mill`, kept across the launch's commands of one build directory, or the
-  command's own under Maven. The proxy allows repositories named in
+  directory and arguments. The program must be among those `--run-on-host` named. The requested
+  working directory is resolved and proven inside the project before anything derives from it, and
+  never changes the profile's project grant. The arguments are deliberately not vetted: they select
+  code the agent already chooses (`sbt 'set …'` reaches arbitrary Scala without touching
+  `build.sbt`), and the profile confines whatever they select. A command's access consists of: the
+  project read-write except `.git` and `.ko-agent-sandbox` — denied at any depth after path
+  resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records — its own
+  per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
+  and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
+  archive cache, the one mill executable the user provisioned, the one Maven the project's wrapper
+  unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
+  is unset — a temporary directory for that command, and loopback to one egress proxy: the broker's
+  for that program under sbt and `mill`, kept across the launch's commands of one build directory,
+  or the command's own under Maven. The proxy allows repositories named in
   `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
-  unrecognized configuration entries are refused, as in the parent directory) plus Maven Central,
-  as the file read when that proxy started: a host removed from the file stays reachable from the
+  unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
+  the file read when that proxy started: a host removed from the file stays reachable from the
   broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
@@ -955,17 +957,17 @@ Test services can instead run as ordinary processes inside the sandbox, with the
 capabilities and egress confinement: PostgreSQL through `initdb`/`pg_ctl`, for example, or an S3
 endpoint through a JVM mock such as Adobe S3Mock.
 
-**The opt-in, and its price.** `KO_AGENT_SANDBOX_NESTING` accepts `none` or `same-uid`; unset or
-empty selects `none`, and any other value fails the launch. Selecting `same-uid` relaxes these
-controls for every process in the session, including untrusted repository code. `NestingLoosenings`
-records why each change is required:
+**The opt-in, and the controls it relaxes.** `KO_AGENT_SANDBOX_NESTING` accepts `none` or
+`same-uid`; unset or empty selects `none`, and any other value fails the launch. Selecting
+`same-uid` relaxes these controls for every process in the session, including untrusted repository
+code. `NestingLoosenings` records why each change is required:
 
 - `--security-opt=unmask=ALL` re-exposes the informational files — `/proc/keys`,
   `/proc/timer_list`, `/proc/sched_debug` — while `/proc/kcore` stays unreadable, owned by a real
   root this rootless container never maps. That class of leak matters in the kernel-exploit
   scenario this design already places out of scope ("Container, runtime and kernel escape", above).
 - `--security-opt=label=disable` removes the machine's SELinux layer from around this one sandbox
-  for the session; the boundary then rests on what the design counts on everywhere else —
+  for the session; the boundary then depends on the controls the design uses everywhere else —
   namespaces, dropped capabilities, seccomp, the read-only rootfs and the egress proxy.
 - `--cap-add=SYS_CHROOT` reaches every process in the session, not just the nested runtime, because
   podman grants a capability to a non-root user ambiently. Acceptable because chroot is not a
@@ -974,7 +976,7 @@ records why each change is required:
 
 `/dev/fuse` is not among them: nested storage runs on kernel-native overlay inside the user
 namespace — measured, the container rootfs mounts as `overlay` and the test matrix passes with
-the fuse-overlayfs binary removed — so the kernel's FUSE code stays out of reach.
+the fuse-overlayfs binary removed — so the kernel's FUSE code stays unreachable.
 
 The remaining controls bound nested execution. `no-new-privileges` prevents `newuidmap` from gaining
 its setuid privilege, limiting a nested user namespace to one mapped uid: an image that switches

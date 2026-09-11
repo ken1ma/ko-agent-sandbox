@@ -1,6 +1,6 @@
 # Design decisions
 
-What was decided and must not silently drift: the standing decisions, recorded so they stop being
+What was decided and must not change silently: the standing decisions, recorded so they stop being
 reopened; the properties verification has to separate; the prior art they were reviewed against;
 and the principles to preserve. What remains to do is TODO.md; the security model is SECURITY.md.
 
@@ -40,13 +40,13 @@ system").
 
 Under `allow-unless-denied` the proxy issues a leaf per unlisted host from a CA created for the run
 (SECURITY.md, "Who holds the CA key"). Two designs that would keep the CA key on the host were
-rejected. A signing broker — the proxy asking the launcher to sign each leaf — keeps the letter of
-"the launcher holds the key" and loses its sense: the broker is a signing oracle for whatever the
-proxy asks, so the key's location no longer bounds what a compromised proxy can issue, only where
-the bytes are stored, at the cost of a channel and a round trip per host. A run intermediate signed
-by the project CA would keep the project-level trust store and JDK keystore, and would let a leaf a
-compromised proxy issued chain to the project CA and be honoured by every other session of the
-project, which is what the run scope exists to prevent. A launch-issued leaf beside the run CA
+rejected. A signing broker — the proxy asking the launcher to sign each leaf — satisfies "the
+launcher holds the key" literally but not its purpose: the broker is a signing oracle for whatever
+the proxy asks, so the key's location no longer bounds what a compromised proxy can issue, only
+where the bytes are stored, at the cost of a channel and a round trip per host. A run intermediate
+signed by the project CA would keep the project-level trust store and JDK keystore, and would let a
+leaf a compromised proxy issued chain to the project CA and be honoured by every other session of
+the project, which is what the run scope exists to prevent. A launch-issued leaf beside the run CA
 proves nothing either: a missing or extra name, the two defects the "names exactly" check exists
 for, cannot happen when the proxy issues what it inspects.
 
@@ -114,10 +114,10 @@ an address means; PF's `quick` and relayd's `match`, and IAM's deny-overrides, e
 kind of rule behavior — a precedence apart from the order, a denial no later line can undo; the
 profile system in place of relayd's unmatched-filter default; first-match evaluation, Squid's
 and nginx's, which reads the exception before the rule; a wildcard on the granting side. The
-decision the grammar rests on: syntax buys the file's meaning — one parser, one resolver the
-launcher's dry run executes, exact hosts so a grant is enumerable and the leaf certificate can
-name it, every ambiguity a refused launch — and not the project's choices, which `tunnel` is
-right there to make; restricting the grammar further would add no security about what a
+decision behind the grammar: the syntax alone decides the file's meaning — one parser, one
+resolver the launcher's dry run executes, exact hosts so a grant is enumerable and the leaf
+certificate can name it, every ambiguity a refused launch — and not the project's choices, which
+`tunnel` is right there to make; restricting the grammar further would add no security about what a
 reviewed project may open.
 
 A URL is the form every comparable project's operator already writes, and a path on the granting
@@ -134,7 +134,7 @@ a URL entry beside a domain, coder/boundary has path rules:
 
 SECURITY.md ("Adding hosts, not patterns") has the reasoning; `resolveRuleset` enforces it. The
 failure classes kept out — a validator and a runtime reading one configuration differently, and an
-allow silently overriding a deny (the last word decides, in the order written, and a denial names
+allow silently overriding a deny (the later line decides, in the order written, and a denial names
 a host or a subtree whole) — are well attested:
 
 - https://github.com/docker/sbx-releases/issues/410
@@ -190,7 +190,7 @@ proxy"), and each of these stays out of it for a reason of its own:
   upstream proxy would then resolve the origin itself, severing the proof that the address checked
   for private ranges is the one reached, and its resolver would join the trusted computing base.
 - More than one hop, SOCKS, NTLM, Kerberos and Negotiate: each adds a handshake, an identity broker
-  or a chain-attribution question that no present deployment pays for. A static `Basic` value is the
+  or a chain-attribution question that no present deployment needs. A static `Basic` value is the
   only authentication.
 - A credential outside the variable's own userinfo: the launcher never parses it, so it is in no
   argument, banner, log line or error, and the proxy is its one reader; a second source would need
@@ -206,8 +206,8 @@ a variable read on the launch path. It would need to be known, documented in `--
 closed like every other variable: boundary code carrying a hook that exists only for a test, on the
 path that decides whether the filter is mounted at all.
 
-`MountLifecycleTest` reaches the same evidence without it; its header has how. What stays out of
-reach is an interleaving at some other instant — which a pause hook would not enumerate either.
+`MountLifecycleTest` provides the same evidence without it; its header has how. It does not cover
+an interleaving at some other instant, and a pause hook would not enumerate one either.
 
 ### No scheduled or self-triggering verification
 
@@ -266,15 +266,15 @@ Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env
 like inside the sandbox. Here the boundary is that the project directory is hostile data and nothing
 credentialed goes in (SECURITY.md, "Credential theft"); a name mask leaves that boundary where it is
 and hides one class of files by name, without strengthening the boundary: a secret under any other
-name, in `config.yaml`, or in git history stays visible. It also costs every project to serve the
-undisciplined one: a default `.env` mask breaks tests that read `.env`, the first `-name .env`
-removes the protection, and the user who commits a credential is the one least likely to review a
-third boundary file in `.ko-agent-sandbox`. Password-protected containers (`*.p12`, `*.pfx`) are
-inert without the password, and these formats have no standard password file or environment-variable
-name. Keep the rule procedural: a credential in the project directory violates the operating model,
-and it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
-forge token left there, not the risk — every allowed host is a possible recipient of what the
-sandbox holds.
+name, in `config.yaml`, or in git history stays visible. A mask also applies to every project to
+protect the few that store a credential under such a name: a default `.env` mask breaks tests that
+read `.env`, the first `-name .env` removes the protection, and the user who commits a credential is
+the one least likely to review a third boundary file in `.ko-agent-sandbox`. Password-protected
+containers (`*.p12`, `*.pfx`) are inert without the password, and these formats have no standard
+password file or environment-variable name. Keep the rule procedural: a credential in the project
+directory violates the operating model, and it is the user's to keep out. A `deny` of the forge in
+`egress/rule` removes one way to spend a forge token left there, not the risk — every allowed host
+is a possible recipient of what the sandbox holds.
 
 ### No gVisor or microVM isolation layer
 
@@ -284,7 +284,7 @@ host-kernel/container-runtime exploitation enters the threat model.
 The gVisor issue history also shows that stronger runtime isolation brings additional
 rootless/nesting/mount compatibility complexity — e.g. rootless uid mapping breaking same-uid host
 file access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
-design; it means the additional boundary should be purchased only when the threat model requires it.
+design; it means the additional boundary is added only when the threat model requires it.
 
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
@@ -328,8 +328,8 @@ Conflating them is what makes verification look larger than it is.
 Every case asserts a premise behaviorally, at the layer the product uses it — never a version, a
 mount option or a declared feature. That is the rule the virtiofs premise is already recorded under
 (`../fuse/ko-agent-fs/doc/verification-log.md`), and it keeps the suite indifferent to *why* an
-environment moved: a podman upgrade, a recreated machine, a host OS update and a changed storage
-driver all reach it the same way, and no case has to anticipate which.
+environment changed: a podman upgrade, a recreated machine, a host OS update and a changed storage
+driver each appear to it as a changed behavior, and no case has to anticipate which.
 
 ## Prior-art references worth retaining
 
@@ -368,9 +368,9 @@ Directory names follow the terse Unix tradition where the choice is free: an abb
 the plural marker with the rest of the word (`doc`, like `bin`, `lib`, `src`), and a full word
 names the directory's role in the singular (`probe`, like `spec`, `vendor`, `container`), never its
 contents' count. An abbreviation is cut as short as it stays unambiguous — `conf`, not `config`.
-Where a program mandates the name, the program wins: Cargo's `tests/` and `examples/`, sbt's
-`src/main/resources` and `src/test`, XDG's `~/.config`; where a grammar spells it, the grammar
-wins: the proxy's `defaults/` is the `defaults` of `deny defaults`. The accepted prices of `doc`
+Where a program mandates the name, that name is used: Cargo's `tests/` and `examples/`, sbt's
+`src/main/resources` and `src/test`, XDG's `~/.config`; where a grammar spells it, that spelling
+is used: the proxy's `defaults/` is the `defaults` of `deny defaults`. The accepted costs of `doc`
 over `docs`: SECURITY.md stays at the repository root (GitHub's community-health lookup reads only
 root, `.github/` and `docs/`); a future GitHub Pages site publishes through an Actions workflow
 rather than the branch-folder setting; a future mdoc build sets `mdocIn` instead of inheriting
