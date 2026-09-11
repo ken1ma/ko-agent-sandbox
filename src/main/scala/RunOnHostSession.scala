@@ -1,7 +1,8 @@
 // The host command's lifecycle. A command session is one wrapper invocation; the broker's session
-// is one launch, published and locked the same way by the broker. A session's directory is
-// published by rename so it is never seen half-made, its lock marks its owner as live, and its
-// records identify the child processes. The filesystem and process operations are injected,
+// is one launch, published and locked the same way by the broker, holding the runtimes its
+// commands share (RunOnHostSandbox.BrokerRuntimes). A session's directory is published by rename
+// so it is never seen half-made, its lock marks its owner as live, and its records identify the
+// child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
 // The rule the records keep: no process may outlive its record. A spawn becomes its
@@ -32,6 +33,7 @@ object RunOnHostSession:
   val CondemnedDir = "condemned"
   val RootLockFile = "root-lock"
   val BuildLockDir = "build-lock"
+  val BuildFilePrefix = "build-"
 
   /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
     * launch's lifetime; a command's, its wrapper's. */
@@ -195,6 +197,94 @@ object RunOnHostSession:
       .digest(buildDirectory.toString.getBytes(UTF_8))
       .take(8).map(byte => f"$byte%02x").mkString
 
+  /** `build-<hash>`, the canonical build directory the records of that hash serve: published by
+    * rename before the first record of the hash and removed after the last is retired, so a
+    * reader of another session takes one runtime's directory and its processes together, never
+    * a directory of one runtime and a process of its successor; a record without its file is
+    * unproven and skipped. */
+  def buildFile(sessionDirectory: Path, hash: String): Path =
+    sessionDirectory.resolve(s"$BuildFilePrefix$hash")
+
+  def publishBuildFile(sessionDirectory: Path, hash: String, buildDirectory: Path): Either[String, Path] =
+    val file = buildFile(sessionDirectory, hash)
+    try
+      val pending = file.resolveSibling(s"${file.getFileName}.pending")
+      Files.writeString(pending, buildDirectory.toString + "\n", UTF_8)
+      Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+      Right(file)
+    catch case ex: IOException => Left(s"publishing $file: ${ex.getMessage}")
+
+  /** The build directories a session's build files name, by hash. */
+  def buildDirectories(sessionDirectory: Path): Vector[(String, Path)] =
+    listDirectory(sessionDirectory).flatMap: file =>
+      val name = file.getFileName.toString
+      if !name.startsWith(BuildFilePrefix) || name.endsWith(".pending") || !Files.isRegularFile(file) then None
+      else
+        try Some(name.stripPrefix(BuildFilePrefix) -> Path.of(Files.readString(file, UTF_8).trim))
+        catch case _: IOException => None
+
+  /** The other live brokers' sessions under the root: published under the broker prefix and
+    * locked. A broker reads another launch's `server-sbt-<hash>` ownership record from these to
+    * decide whether to refuse (RunOnHostSandbox.BrokerRuntimes.serverOwner). */
+  def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
+    allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
+
+  /** Every broker session directory under the root, locked or not — a just-crashed owner's is
+    * unlocked but not yet condemned, and its server group can still be running, so serverOwner
+    * must weigh it too (its finding, admission blocked, and the next start's scavenge collects
+    * it). */
+  def allBrokerSessions(root: Path, except: Path): Vector[Path] =
+    listDirectory(root).filter: entry =>
+      entry != except && entry.getFileName.toString.startsWith(Kind.Broker.prefix)
+        && Files.isDirectory(entry)
+
+  /** The sessions under `condemned/`: an owner tearing itself down, or a scavenger, has renamed
+    * its directory here and holds its lock while it ends the recorded groups. Their ownership
+    * records still name the build directories they own, so a start consults them alongside the
+    * live sessions until collection deletes them (serverOwner): a server whose socket path has
+    * moved with the rename must not read as free. The scavenger's own pass (run first) collects
+    * any that no live owner still holds. */
+  def collectingSessions(root: Path): Vector[Path] =
+    listDirectory(root.resolve(CondemnedDir)).filter(Files.isDirectory(_))
+
+  /**
+   * Another launch's session that holds a `server-sbt-<hash>` ownership record, or None. Any
+   * broker session under the root — live, or just-crashed and not yet collected — or a session
+   * under `condemned/` whose teardown or scavenge has not finished, owns it; the record is read,
+   * never signalled (the group is the owner's to end — RunOnHostSandbox.BrokerRuntimes and
+   * doc/TODO.md "Cross-launch server takeover"). A dead owner's record blocks admission this
+   * time and the next start's scavenge collects it, so its server is never left running beside a
+   * fresh one.
+   *
+   * The live sessions are enumerated, then looked up; `condemned/` is enumerated only if that
+   * lookup finds nothing (`orElse` is by-name), so its enumeration is strictly later. Teardown
+   * renames a session from the root into `condemned/` in one atomic move, one direction only,
+   * carrying its records with it, and deletes the record last. So a session enumerated live but
+   * renamed away before its record is looked up is already in `condemned/` when that later,
+   * fresh enumeration runs, and one gone from both is a teardown that finished — its server
+   * ended before the record was deleted. `betweenScan` is the tests' seam for the instant
+   * between the live enumeration and its lookup, where that rename races; the caller holding
+   * this hash's build lock keeps a new owner from appearing during the check.
+   */
+  def serverOwner(
+    root: Path, except: Path, hash: String, betweenScan: () => Unit = () => (),
+  ): Option[Path] =
+    def owns(session: Path): Boolean =
+      Files.exists(session.resolve(RecordsDir).resolve(s"server-sbt-$hash"))
+    val inRoot = allBrokerSessions(root, except)
+    betweenScan()
+    inRoot.find(owns).orElse(collectingSessions(root).find(owns))
+
+  /** Whether the spawn a record names still runs its command: the leader alive with the recorded
+    * start time, and no exit published beside the record. Neither alone answers: the leader
+    * outlives its command by design, and a group killed whole publishes no exit. */
+  def spawnLives(record: Path, processes: Processes): Boolean =
+    val parsed =
+      try parseRecord(Files.readString(record, UTF_8))
+      catch case _: IOException => None
+    parsed.exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
+      && !Files.exists(exitRecord(record))
+
   // ---------------------------------------------------------------------------
   // Publication
   // ---------------------------------------------------------------------------
@@ -297,11 +387,22 @@ object RunOnHostSession:
    * only under its own lock — the same lock its session held — so two starts, or a start and the
    * wrapper's own step 11, never signal or delete the same entry concurrently. The build locks
    * are skipped by name: a directory without a `lock` file reads as a dead session here.
+   *
+   * `ownSession` is the caller's own live session, which it must pass when it scavenges after
+   * publishing — the broker between commands (RunOnHostSandbox.BrokerRuntimes). That session is
+   * skipped entirely: `lockIsFree` opens a second descriptor to the lock file and closes it, and
+   * OpenJDK's `FileChannel.lock` is a POSIX `fcntl` lock, which the kernel drops for the whole
+   * process when *any* descriptor to that file is closed. Probing the caller's own lock would
+   * release it, and another launch could then condemn a live session. A start that scavenges
+   * before publishing (the wrapper, and the broker at startup) holds no session yet and passes
+   * None.
    */
-  def scavenge(root: Path, processes: Processes, shutdown: Path => ServerAnswer)
-    : Vector[(Path, Vector[Collected])] =
+  def scavenge(
+    root: Path, processes: Processes, shutdown: Path => ServerAnswer, ownSession: Option[Path] = None,
+  ): Vector[(Path, Vector[Collected])] =
     val results = Vector.newBuilder[(Path, Vector[Collected])]
     val condemnedRoot = root.resolve(CondemnedDir)
+    val skipNames = Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir)
 
     def collectLocked(entry: Path): Unit =
       lockForCollection(entry) match
@@ -315,8 +416,7 @@ object RunOnHostSession:
       listDirectory(condemnedRoot).foreach(collectLocked)
 
     listDirectory(root)
-      .filterNot(p =>
-        Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir).contains(p.getFileName.toString))
+      .filterNot(p => skipNames.contains(p.getFileName.toString) || ownSession.contains(p))
       .filter(Files.isDirectory(_))
       .foreach: entry =>
         if lockIsFree(entry.resolve(LockFile)) then
@@ -345,8 +445,8 @@ object RunOnHostSession:
    */
   def collect(root: Path, condemned: Path, processes: Processes,
     shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
-    val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) :+
-      collectServer(root, condemned, shutdown)
+    val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) ++
+      collectServers(root, condemned, shutdown)
     // Whatever the reader does, the deletion follows it.
     try beforeRemoval(condemned)
     finally
@@ -373,37 +473,47 @@ object RunOnHostSession:
           Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
 
   /**
-   * The portfile attribution: the session's recorded project names
-   * `project/target/active.json`; a `local://` socket under the session's *original* path is our
-   * server and no other. The socket moved with the condemnation rename, so the portfile's
-   * spelling is remapped before the shutdown is sent to it — and sent only to a pathname
-   * proven inside the condemned directory: the portfile is the command's to write, so its spelling
-   * is a claim, and canonicalization is the proof.
+   * The portfile attribution, for each build directory the session's build files name — the
+   * directories its servers ran in — or, for a session without one, its recorded project: the
+   * directory's `project/target/active.json` names a `local://` socket, and one under the
+   * session's *original* path is our server and no other. The socket moved with the
+   * condemnation rename, so the portfile's spelling is remapped before the shutdown is sent to
+   * it — and sent only to a pathname proven inside the condemned directory: the portfile is the
+   * command's to write, so its spelling is a claim, and canonicalization is the proof.
    */
-  def collectServer(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Collected =
-    val original = root.resolve(condemned.getFileName)
+  def collectServers(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Vector[Collected] =
+    val builds = buildDirectories(condemned).map(_(1))
     val projectFile = condemned.resolve(ProjectFile)
-    if !Files.isRegularFile(projectFile) then Collected.ServerSkipped("no recorded project")
+    val directories =
+      if builds.nonEmpty then builds
+      else if !Files.isRegularFile(projectFile) then Vector.empty
+      else
+        try Vector(Path.of(Files.readString(projectFile, UTF_8).trim))
+        catch case _: IOException => Vector.empty
+    if directories.isEmpty then Vector(Collected.ServerSkipped("no recorded project"))
+    else directories.map(collectServer(root.resolve(condemned.getFileName), condemned, _, shutdown))
+
+  private def collectServer(
+    original: Path, condemned: Path, buildDirectory: Path, shutdown: Path => ServerAnswer,
+  ): Collected =
+    val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
+    if !Files.isRegularFile(portfile) then Collected.ServerSkipped(s"no portfile in $buildDirectory")
     else
       try
-        val project = Path.of(Files.readString(projectFile, UTF_8).trim)
-        val portfile = project.resolve("project").resolve("target").resolve("active.json")
-        if !Files.isRegularFile(portfile) then Collected.ServerSkipped("no portfile")
-        else
-          portfileSocket(Files.readString(portfile, UTF_8)) match
-            case Some(socket) if socket.startsWith(original) =>
-              containedSocket(condemned.resolve(original.relativize(socket)), condemned) match
-                case None =>
-                  Collected.ServerSkipped("the portfile socket does not resolve inside the command directory")
-                case Some(moved) =>
-                  shutdown(moved) match
-                    case ServerAnswer.ShutDown       => Collected.ServerShutDown(moved)
-                    case ServerAnswer.Unreachable(_) =>
-                      Collected.ServerSkipped("nothing behind the socket; the server is gone")
-                    case ServerAnswer.Unanswered(reason) =>
-                      Collected.ServerUnanswered(moved, reason)
-            case Some(_) => Collected.ServerSkipped("portfile socket is not this command's")
-            case None    => Collected.ServerSkipped("portfile is not a local-socket one")
+        portfileSocket(Files.readString(portfile, UTF_8)) match
+          case Some(socket) if socket.startsWith(original) =>
+            containedSocket(condemned.resolve(original.relativize(socket)), condemned) match
+              case None =>
+                Collected.ServerSkipped("the portfile socket does not resolve inside the command directory")
+              case Some(moved) =>
+                shutdown(moved) match
+                  case ServerAnswer.ShutDown       => Collected.ServerShutDown(moved)
+                  case ServerAnswer.Unreachable(_) =>
+                    Collected.ServerSkipped("nothing behind the socket; the server is gone")
+                  case ServerAnswer.Unanswered(reason) =>
+                    Collected.ServerUnanswered(moved, reason)
+          case Some(_) => Collected.ServerSkipped("portfile socket is not this command's")
+          case None    => Collected.ServerSkipped("portfile is not a local-socket one")
       catch case ex: IOException => Collected.ServerSkipped(ex.getMessage)
 
   /**

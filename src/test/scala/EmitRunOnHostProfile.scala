@@ -46,6 +46,7 @@ object EmitRunOnHostProfile:
       m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
       runtime = runtime,
+      network = SeatbeltProfile.Network.ProxyOnly,
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
@@ -64,8 +65,9 @@ object EmitRunOnHostProfile:
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
-    // portfile and refuse (one server per project). Walked from the class loaders, not java.class.path — runMain ran
-    // this inside the build JVM, whose own classpath is sbt's — and copied beside the profile,
+    // portfile and end it (one server per build directory). Walked from the class loaders, not
+    // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
+    // copied beside the profile,
     // because the walk answers `target/bg-jobs/` jars sbt removes with its server (measured: the
     // gate's java -cp found none of them).
     Console.err.println(s"classpath: ${relaunchClasspath(Paths.get(args(0) + ".cp"))}")

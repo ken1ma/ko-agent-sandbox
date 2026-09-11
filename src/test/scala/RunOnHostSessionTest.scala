@@ -4,7 +4,7 @@ import java.net.{StandardProtocolFamily, UnixDomainSocketAddress}
 import java.nio.ByteBuffer
 import java.nio.channels.ServerSocketChannel
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, Path, StandardCopyOption}
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters.*
@@ -98,6 +98,21 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(Files.isDirectory(session.directory))
     remove(session)
 
+  test("scavenge skips the caller's own session rather than probe its lock"):
+    // ownSession names the broker's own live session, which scavenge must not reach: lockIsFree
+    // would open and close a second descriptor to its lock file, and closing any descriptor
+    // releases the process's POSIX fcntl lock, so probing would unlock a live session. In one JVM
+    // the release is invisible (the lock reads as held either way), so this asserts only that the
+    // own session is left out of the scan and its results; the cross-process release is the gate's.
+    val root = freshRoot()
+    val own = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val other = die(publish(root, Path.of("/p")).toOption.get)
+    val results = scavenge(root, processes(), _ => ServerAnswer.ShutDown, ownSession = Some(own.directory))
+    assert(Files.isDirectory(own.directory), clue = own.directory)
+    assert(!results.exists(_._1 == own.directory), clue = results)
+    assert(!Files.exists(other), clue = "a dead peer is still collected while the own session is skipped")
+    remove(own)
+
   test("the two session kinds are told apart by their directory's prefix"):
     val root = freshRoot()
     val broker = publish(root, Path.of("/p"), Kind.Broker).toOption.get
@@ -133,6 +148,64 @@ class RunOnHostSessionTest extends munit.FunSuite:
     // A SIGKILLed wrapper: the lock is freed, the directory and records stay.
     session.close()
     session.directory
+
+  test("serverOwner finds an owner in the root or condemned, and across the rename between the two"):
+    val root = freshRoot()
+    val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val owner = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val hash = "abcdef0123456789"
+    Files.writeString(owner.records.resolve(s"server-sbt-$hash"), renderRecord(Record(1, "S")), UTF_8)
+    // A live owner holding the record is found; a hash no one owns is not.
+    assertEquals(serverOwner(root, mine.directory, hash), Some(owner.directory))
+    assertEquals(serverOwner(root, mine.directory, "0000000000000000"), None)
+    // A just-crashed owner — unlocked, still in the root, not yet condemned — still owns: its
+    // server group can be running, so admission is blocked until the next start collects it.
+    owner.close()
+    assertEquals(serverOwner(root, mine.directory, hash), Some(owner.directory), "a dead owner in the root still owns")
+    // The owner renames into condemned/ in the instant between the root enumeration and its
+    // lookup: the lookup then misses it in the root, but the later condemned enumeration finds
+    // it, so admission stays blocked across the teardown rename.
+    val condemned = Files.createDirectories(root.resolve(CondemnedDir))
+    val moved = condemned.resolve(owner.directory.getFileName)
+    var scans = 0
+    val found = serverOwner(root, mine.directory, hash, betweenScan = () =>
+      scans += 1
+      if scans == 1 then Files.move(owner.directory, moved, StandardCopyOption.ATOMIC_MOVE))
+    assertEquals(found, Some(moved), "the owner renamed away between the scans is found in condemned")
+    remove(mine)
+
+  test("a build file is published by rename, read back by hash, and skipped while pending"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val hash = buildHash(Path.of("/p/sub"))
+    assertEquals(
+      publishBuildFile(session.directory, hash, Path.of("/p/sub")),
+      Right(buildFile(session.directory, hash)),
+    )
+    Files.writeString(session.directory.resolve(s"${BuildFilePrefix}deadbeef.pending"), "/p/half\n", UTF_8)
+    assertEquals(buildDirectories(session.directory), Vector(hash -> Path.of("/p/sub")))
+    remove(session)
+
+  test("the other live brokers' sessions are the locked ones under the broker prefix"):
+    val root = freshRoot()
+    val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val other = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val command = publish(root, Path.of("/p")).toOption.get
+    val dead = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    dead.close()
+    assertEquals(liveBrokerSessions(root, mine.directory), Vector(other.directory))
+    remove(mine); remove(other); remove(command); remove(dead)
+
+  test("a spawn lives while its leader matches the record and no exit is published"):
+    val root = freshRoot()
+    val record = root.resolve("r")
+    Files.writeString(record, renderRecord(Record(7, "START-A")), UTF_8)
+    assert(spawnLives(record, processes(7L -> "START-A")))
+    assert(!spawnLives(record, processes(7L -> "RECYCLED")))
+    assert(!spawnLives(record, processes()))
+    Files.writeString(exitRecord(record), "0\n", UTF_8)
+    assert(!spawnLives(record, processes(7L -> "START-A")))
+    assert(!spawnLives(root.resolve("absent"), processes(7L -> "START-A")))
 
   test("a dead broker session's records are ended like a command's"):
     val root = freshRoot()
@@ -346,6 +419,26 @@ class RunOnHostSessionTest extends munit.FunSuite:
       Vector(moved),
     )
 
+  test("a dead broker session's servers are collected by the build files, one portfile each"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val builds = Seq("x", "y").map(name => Files.createTempDirectory(s"build-$name"))
+    builds.foreach: build =>
+      val hash = buildHash(build)
+      publishBuildFile(session.directory, hash, build)
+      val socket = session.tmp.resolve(hash).resolve("sock")
+      Files.createDirectories(socket.getParent)
+      Files.createFile(socket)
+      Files.createDirectories(build.resolve("project/target"))
+      Files.writeString(build.resolve("project/target/active.json"), s"""{"uri":"local://$socket"}""", UTF_8)
+    val dead = die(session)
+    val spoken = ListBuffer[Path]()
+    val results = scavenge(root, processes(), path => { spoken += path; ServerAnswer.ShutDown })
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    assertEquals(spoken.toList.sorted, builds.map(build => condemned.resolve(s"tmp/${buildHash(build)}/sock")).sorted)
+    assertEquals(results.flatMap(_(1)).collect { case Collected.ServerShutDown(p) => p }.size, 2)
+    assert(!Files.exists(condemned))
+
   test("a portfile naming someone else's socket is not this command's to end"):
     val root = freshRoot()
     val (_, _) = deadSessionWithServer(root, _ => Path.of("/somewhere/else/sock"))
@@ -488,6 +581,37 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val process =
       java.lang.ProcessBuilder(registeredSpawn(gone, Seq("/bin/sleep", "30"))*).start()
     assertEquals(process.waitFor(), 71)
+
+  test("the build lock admits one retirer at a time: a retirement's validate-and-signal never overlaps another"):
+    // A cancelled command's server is retired under the directory's build lock (RunOnHostChannel);
+    // a peer's takeover ends the same recorded group under the same lock (noForeignServer). The
+    // lock is what keeps the two from interleaving endRecordedGroup's identity check and its
+    // signal, so the pid cannot be recycled between them. Two under-broker holders of one lock:
+    // the second reports the lock only once the first has released, so their critical sections —
+    // where the retirement runs — never overlap.
+    notUnderRunOnHostProfile()
+    val lockFile = Files.createTempDirectory("retire-lock").resolve("sbt-x")
+    def helper(): (Process, java.io.BufferedReader) =
+      val process = java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/true"), underBroker = true)*).start()
+      (process, java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8)))
+    def release(process: Process): Unit =
+      process.getOutputStream.write(runWord(Seq.empty).getBytes(UTF_8))
+      process.getOutputStream.close()
+      process.waitFor()
+    val (first, firstOut) = helper()
+    assertEquals(firstOut.readLine(), LockedLine, "the first retirer holds the lock")
+    val (second, secondOut) = helper()
+    try
+      val secondReached = java.util.concurrent.atomic.AtomicReference[String]()
+      val reader = Thread(() => secondReached.set(secondOut.readLine()))
+      reader.setDaemon(true)
+      reader.start()
+      Thread.sleep(500)
+      assertEquals(secondReached.get, null, "the second retirer waits; the critical sections do not overlap")
+      release(first)
+      reader.join(5_000)
+      assertEquals(secondReached.get, LockedLine, "the second retirer enters only once the first released")
+    finally release(second)
 
   test("a locked spawn holds the build lock for its life, and the next taker runs once it is gone"):
     notUnderRunOnHostProfile()

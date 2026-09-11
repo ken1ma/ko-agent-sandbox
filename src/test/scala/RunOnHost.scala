@@ -10,7 +10,8 @@
 // the perl script and `--build-lock <program> <project>` the lock file, for the gate to compose.
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
-// server holds the target project's portfile — the one-server-per-project refusal — and whose exit is sys.exit's.
+// server holds the target project's portfile — the wrapper would end it (one server per build
+// directory) — and whose exit is sys.exit's.
 // Exits with the command's code; a refusal is 2, on stderr.
 
 package agentsandbox.launcher

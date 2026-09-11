@@ -228,12 +228,11 @@ on podman-less machines and kills the test JVM.
 
 ## Deferred — a bound on a silent host command
 
-sbt's thin client waits for its server's portfile with no deadline (`run-on-host.md`, "The channel
-and the command"), so a server that never publishes one is a command silent until the agent gives
-up: measured once at ten minutes, with the server's stderr gone with the command's directory.
-The channel log keeps that file for a command ended by signal, and nothing bounds the wait: not the
-client, not the wrapper, not the broker, whose writers die only with their requester, and not the
-shim, which reads output to EOF. Two forms would, and both wait on a measurement:
+An sbt server's start is bounded by the broker's progress bound (`run-on-host.md`, "The channel
+and the command"). A command that stalls after its server is up — or a `mill` or Maven command at
+any point — is silent until the agent gives up: nothing bounds it, not the wrapper, not the
+broker, whose writers die only with their requester, and not the shim, which reads output to EOF.
+One form would, and it waits on a measurement:
 
 - [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
   so the command's logs are kept, with a stderr line naming the bound and the host command log.
@@ -242,14 +241,40 @@ shim, which reads output to EOF. Two forms would, and both wait on a measurement
   download, which the proxy logs once at its start, a slow test — because a value below one is not
   a one-off failure: the rerun hits the same silence, and the project cannot build on the host
   until the constant changes. Five minutes is the smallest value defensible without measurement.
-- [ ] sbt-specific, in the wrapper: no progress before the portfile exists — neither output nor
-  growth of the proxy audit log — for N seconds ends the command, with the server-stderr file's
-  content in the diagnostic. Safe at sixty seconds for a first run, whose downloads and build
-  loading count as progress, at the cost of piping the command's output through the wrapper.
 
-Not a form: a bound on the time to first output. The client prints four lines before it waits, and
-every JVM prints its `JAVA_TOOL_OPTIONS` banner within a second, so every host command has written
-something before it can stall.
+Not a form: a bound on the time to first output. Every JVM prints its `JAVA_TOOL_OPTIONS` banner
+within a second, so every host command has written something before it can stall.
+
+## Deferred — cross-launch server takeover
+
+Two `ko-agent-sandbox` launches on one project share nothing: each broker keeps its own sbt
+servers, and one launch's command for a build directory another launch's broker still owns is
+refused rather than served (`SECURITY.md` "Run on host"; `RunOnHostSandbox.BrokerRuntimes`). The
+build lock already serializes the *commands* of one directory across launches, so a running
+command never overlaps; what is deferred is a launch *ending or adopting another live launch's
+warm server* so the second need not wait for the first launch to end. This is separate from
+sharing one server between two launches (the deferred design of
+`plan-host-build-daemons-and-gradle.md`, section 11): takeover ends the other launch's server and
+starts its own; sharing runs both launches' clients against one server.
+
+The reason it is deferred, not done: a broker ending another broker's server means one process
+signalling another's recorded process group, and `endRecordedGroup` validates the leader's pid and
+start time and then signals — so a peer ending the same group, and the pid being recycled between
+the check and the signal, would send the signal to an unrelated group. Making that safe needs a
+shared exclusion held from the identity check through the signal, across:
+
+- **cancellation** — the owner retiring its own server after a cancel,
+- **replacement** — the owner replacing a server whose proxy or portfile changed,
+- **teardown** — the owner ending all its servers at the launch's end, including on `SIGTERM`,
+- **scavenging** — a start collecting a *dead* owner's leftover server (this one already has its
+  exclusion: the scavenger condemns the dead session by rename under a lock, so no live broker
+  races it; a live owner is what the takeover must coordinate with).
+
+The build lock, held per program and build directory, is the natural exclusion, but every one of
+those paths must take it around the whole validate-and-signal, and teardown taking build locks on
+`SIGTERM` is the hard part. When built, this needs deterministic concurrency tests that pause one
+retirement between the identity check and the signal while another retires and recycles the group
+(through the injected `Processes` seam, without real OS pids), covering all four paths.
 
 ## Deferred — Gradle under `--run-on-host`
 

@@ -102,7 +102,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     Service(
       project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
       buildLock = (_, _) => Right(Path.of("/unused")),
-      runtime = (_, _) => Right(Seq.empty),
+      runtime = (_, _, _) => Right(Seq.empty),
       mount = mount, requestDeadlineMillis = deadline,
     )
 
@@ -148,7 +148,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
   private def channel(
     wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
-    runtime: (String, Path) => Either[String, Seq[String]] = (_, _) => Right(Seq.empty),
+    runtime: (String, Path, Seq[String]) => Either[String, Seq[String]] = (_, _, _) => Right(Seq.empty),
   )(check: (Path, Path, () => String) => Unit): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
@@ -180,6 +180,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       serve(
         transport,
         service(project, mount = project.toString, deadline = deadline).copy(
+          buildLock = (_, _) => Right(lockFile),
           wrapperCommand = (program, directory, _, arguments) =>
             RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),
           runtime = runtime,
@@ -262,7 +263,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
   test("an end asked for during preparation waits for the word, so the build lock is held throughout"):
     // The runtime's preparation, slow enough to be interrupted: it records whether the build
     // lock is still held halfway through, which a spawn ended early would have freed.
-    val runtime = (_: String, buildDirectory: Path) =>
+    val runtime = (_: String, buildDirectory: Path, _: Seq[String]) =>
       Files.writeString(buildDirectory.resolve("preparing"), "")
       Thread.sleep(1500)
       val lockFile = buildDirectory.getParent.resolve("host").resolve("build-lock")
@@ -305,11 +306,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(lockFree)
 
   test("the runtime reaches the wrapper as options; a refusal or an exception preparing it is the command's"):
-    val prepared = java.util.concurrent.atomic.AtomicReference[(String, Path)]()
+    val prepared = java.util.concurrent.atomic.AtomicReference[(String, Path, Seq[String])]()
     channel(
       (_, _, args) => Seq("sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--") ++ args,
-      runtime = (program, buildDirectory) =>
-        prepared.set((program, buildDirectory))
+      runtime = (program, buildDirectory, arguments) =>
+        prepared.set((program, buildDirectory, arguments))
         buildDirectory.getFileName.toString match
           case "sub"    => Left("no runtime for sub")
           case "broken" => throw java.nio.charset.MalformedInputException(1)
@@ -318,7 +319,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       val (exit, out, _) = shimCall(project, "sbt", "compile")
       assertEquals(exit, 0)
       assertEquals(out, "--proxy-port=1\n--\ncompile\n")
-      assertEquals(prepared.get, ("sbt", project))
+      assertEquals(prepared.get, ("sbt", project, Seq("compile")))
       val sub = Files.createDirectory(project.resolve("sub"))
       val (refused, _, err) = shimCall(sub, "sbt", "compile")
       assertEquals(refused, 2)
@@ -333,8 +334,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   test("a dead shim ends the running command: teardown follows the descriptor"):
     channel((_, cwd, _) =>
-      // The validated working directory arrives as an argument, so the markers spell it out; the
-      // child's own cwd is the broker's and says nothing.
+      // The validated working directory arrives as an argument, so the markers spell it out;
+      // the child's own cwd is the broker's and says nothing.
       Seq(
         "sh", "-c",
         s"echo started > $cwd/started; trap 'echo 143 > $cwd/ended; exit 143' TERM; " +

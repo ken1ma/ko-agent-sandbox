@@ -108,9 +108,9 @@ unavailable because the artifact name has not been decided.
    in the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to anything other than its
    own provider; for `opencode` that is all the default providers.
-1. macOS only: insert `--run-on-host=sbt,mill,mvn --auto-shutdown-foreign-sbt-on-host` when the
-   agent will run builds or tests: a build inside the podman machine takes memory that all
-   containers there share, and holds it until the session ends.
+1. macOS only: insert `--run-on-host=sbt,mill,mvn` when the agent will run builds or tests: a
+   build inside the podman machine takes memory that all containers there share, and holds it
+   until the session ends.
 
 ### Running `<command>`
 
@@ -208,23 +208,20 @@ above, a device code or a code pasted back, need no redirect.
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
                          command, which runs those programs OUTSIDE
-                         the container — on this host, confined by a
-                         Seatbelt profile to the project (.git and
-                         .ko-agent-sandbox unreachable), per-project
-                         run-on-host caches, and the command's own egress
-                         proxy. Host commands write the project even under
-                         --write=reject.
+                         the container, confined by a Seatbelt profile to
+                         the project (.git and .ko-agent-sandbox
+                         unreachable), per-project run-on-host caches, and
+                         one egress proxy. Host commands write the project even under
+                         --write=reject. With sbt, the launch keeps a warm
+                         server per build directory across its commands. An
+                         sbt server you run from a terminal is shut down,
+                         once its build is done, when the agent runs sbt in
+                         that directory; a second launch on the same project
+                         is refused a build directory the first launch still
+                         owns; and your own sbt 2 attaches to the launch's
+                         confined server while it lives.
                          SECURITY.md "Run on host" has the why and the cost;
                          doc/run-on-host.md has how it works
-      --auto-shutdown-foreign-sbt-on-host
-                         with --run-on-host naming sbt: when your own live
-                         sbt server holds the project, a host command shuts
-                         it down and proceeds — one transcript line names
-                         the socket — instead of refusing until you run
-                         `sbt shutdown` there. The shutdown is sent only to
-                         the socket sbt derives for this project. Your warm
-                         server dies with whatever clients it had; your
-                         next sbt command starts a fresh one
       --env=<name>[=<value>]
                          forward the host's <name>, which must be set, into
                          the sandbox and into every --run-on-host command — or

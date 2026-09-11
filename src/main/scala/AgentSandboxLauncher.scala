@@ -1663,6 +1663,9 @@ object AgentSandboxLauncher:
     * launch() enforces: the parser stays pure over the arguments. */
   val RunOnHostPrograms = RunOnHostPrereqs.Program.values.toVector.map(_.name)
 
+  /** Once the consent to end a foreign sbt server; the broker ends one by default now. */
+  val RetiredAutoShutdownOption = "--auto-shutdown-foreign-sbt-on-host"
+
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
     val names = value.split(",", -1).toVector
     names.find(name => !RunOnHostPrograms.contains(name)) match
@@ -1721,7 +1724,6 @@ object AgentSandboxLauncher:
     command: List[String],
     env: Vector[EnvForward] = Vector.empty,
     runOnHost: Option[Vector[String]] = None,
-    autoShutdownForeignSbt: Boolean = false,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -1750,33 +1752,35 @@ object AgentSandboxLauncher:
       egress: Option[String],
       env: Vector[EnvForward],
       runOnHost: Option[Vector[String]],
-      autoShutdown: Boolean,
     ): Either[String, ParsedCommandLine] =
       rest match
         case Nil =>
-          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost))
         case "--" :: command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
-            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost, autoShutdown))
+            .flatMap(value => loop(tail, Some(value), egress, env, runOnHost))
 
         case arg :: tail if arg.startsWith("--egress=") =>
           if egress.isDefined then Left("error: --egress is given twice")
           else choose("--egress", arg.stripPrefix("--egress="), EgressProfiles)
-            .flatMap(value => loop(tail, write, Some(value), env, runOnHost, autoShutdown))
+            .flatMap(value => loop(tail, write, Some(value), env, runOnHost))
 
         case arg :: tail if arg.startsWith("--run-on-host=") =>
           if runOnHost.isDefined then Left("error: --run-on-host is given twice")
           else parseRunOnHost(arg.stripPrefix("--run-on-host="))
-            .flatMap(programs => loop(tail, write, egress, env, Some(programs), autoShutdown))
+            .flatMap(programs => loop(tail, write, egress, env, Some(programs)))
 
-        case RunOnHostSandbox.AutoShutdownForeignSbtOption :: tail =>
-          if autoShutdown then
-            Left(s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} is given twice")
-          else loop(tail, write, egress, env, runOnHost, true)
+        // Refused by name rather than as unknown: a launch script that still names it needs the
+        // fact that the shutdown it asked for is the default now (SECURITY.md "Run on host").
+        case RetiredAutoShutdownOption :: _ =>
+          Left(
+            s"error: $RetiredAutoShutdownOption is no longer an option: an sbt server holding the " +
+              "project is ended by default when the agent runs sbt on the host",
+          )
 
         case arg :: tail if arg.startsWith("--env=") =>
           val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
@@ -1787,7 +1791,6 @@ object AgentSandboxLauncher:
             loop(
               tail, write, egress,
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
-              autoShutdown,
             )
 
         case ("--write" | "--egress" | "--env" | "--run-on-host") :: _ =>
@@ -1801,25 +1804,20 @@ object AgentSandboxLauncher:
             ParsedCommandLine(
               write, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
-              Nil, env, runOnHost, autoShutdown,
+              Nil, env, runOnHost,
             ),
           )
 
         case action :: tail if ManagementActions(action) =>
-          Right(ParsedCommandLine(write, egress, Some((action, tail)), Nil, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, Some((action, tail)), Nil, env, runOnHost))
 
         case arg :: _ if arg.startsWith("--") =>
           Left(s"error: unknown option $arg\nRun --help for the launcher actions.")
 
         case command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost, autoShutdown))
+          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
-    loop(args, None, None, Vector.empty, None, false).flatMap: parsed =>
-      if parsed.autoShutdownForeignSbt && !parsed.runOnHost.exists(_.contains("sbt")) then
-        Left(
-          s"error: ${RunOnHostSandbox.AutoShutdownForeignSbtOption} needs --run-on-host to name sbt",
-        )
-      else Right(parsed)
+    loop(args, None, None, Vector.empty, None)
 
   // -------------------------------------------------------------------------
   // Main
@@ -1901,8 +1899,8 @@ object AgentSandboxLauncher:
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
-           |Each sbt invocation starts and ends its own server, so batch commands into one —
-           |`sandbox-run-on-host sbt 'compile; test'`, quoted: sbt reads separate arguments as one
+           |sbt's server stays warm across invocations. To run several commands in one, quote them:
+           |`sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments as one
            |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
            |that binds one fails there with `Operation not permitted`; that suite alone runs in the
            |container. Container `sbt` still works, over the same `target/` — host and container
@@ -3007,9 +3005,7 @@ object AgentSandboxLauncher:
         System.err.println(
           s"run on host: ${chosen(runOnHost.mkString(", "))} by --run-on-host; sandbox-run-on-host " +
             "relays commands to a Seatbelt-confined wrapper on this host" +
-            (if parsed.autoShutdownForeignSbt
-             then s"; your own live sbt server is ended when it holds the project, by ${
-                 RunOnHostSandbox.AutoShutdownForeignSbtOption}"
+            (if runOnHost.contains("sbt") then "; your own sbt server for this project is ended when the agent runs sbt"
              else ""),
         )
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
@@ -3175,7 +3171,6 @@ object AgentSandboxLauncher:
       val channelLogFile = logDir.resolve(s"channel-$logStamp-$runSuffix.log")
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
-          autoShutdownForeignSbt = parsed.autoShutdownForeignSbt,
           forwards = parsed.env,
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")

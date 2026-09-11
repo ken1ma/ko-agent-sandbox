@@ -1,8 +1,9 @@
 // The wrapper: from a project and a program to a confined command's exit code, through the thirteen
-// steps — validate, scavenge, publish, proxy, profile, run, end what was started, remove. macOS
-// only, like everything it drives; the assembly and refusal logic are in RunOnHostPrereqs and
-// are unit-tested there, so this file is the sequence of steps plus the host observations no Linux
-// test can make.
+// steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and
+// the broker's runtimes, the proxy and sbt server the commands of one build directory share
+// (BrokerRuntimes). macOS only, like everything it drives; the assembly and refusal logic are in
+// RunOnHostPrereqs and are unit-tested there, so this file is the sequence of steps plus the host
+// observations no Linux test can make.
 
 package agentsandbox.launcher
 
@@ -258,10 +259,10 @@ object RunOnHostSandbox:
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ actionAndArguments
 
-  /** `--run-command-on-host <program> <project> <cwd> [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...]
-    * [--channel-log=<file>] [--proxy-port=<port> --proxy-log=<file>] -- <args...>`: one channel
+  /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
+    * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file>] -- <args...>`: one channel
     * request as a process of its own, so the broker's cancel is a SIGTERM whose answer is this
-    * wrapper's shutdown hook. The proxy options name the broker's runtime (Runtime). */
+    * wrapper's shutdown hook. The runtime options name the broker's runtime (Runtime). */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
       programName: String,
@@ -275,8 +276,9 @@ object RunOnHostSandbox:
         sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
       val stray = options.filterNot(option =>
-        option == AutoShutdownForeignSbtOption || option.startsWith(EnvOption) || option.startsWith(ChannelLogOption)
-          || option.startsWith(ProxyPortOption) || option.startsWith(ProxyLogOption),
+        option.startsWith(EnvOption) || option.startsWith(ChannelLogOption)
+          || option.startsWith(RuntimeSessionOption) || option.startsWith(ProxyPortOption)
+          || option.startsWith(ProxyLogOption),
       )
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
@@ -300,7 +302,6 @@ object RunOnHostSandbox:
         run(
           Path.of(project), program, commandArgs, bundledRuntimeAuthority(), uid,
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
-          autoShutdownForeignSbt = options.contains(AutoShutdownForeignSbtOption),
           forwarded = forwardedNames(options),
           channelLog = options.find(_.startsWith(ChannelLogOption))
             .map(option => Path.of(option.stripPrefix(ChannelLogOption))),
@@ -327,45 +328,51 @@ object RunOnHostSandbox:
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
-  /** The broker's runtime as the wrapper's options, both or neither. */
+  /** The broker's runtime as the wrapper's options, all three or none. */
+  val RuntimeSessionOption = "--runtime-session="
   val ProxyPortOption = "--proxy-port="
   val ProxyLogOption = "--proxy-log="
 
   def runtimeOptions(runtime: Runtime): Seq[String] =
-    Seq(s"$ProxyPortOption${runtime.proxyPort}", s"$ProxyLogOption${runtime.proxyLog}")
+    Seq(
+      s"$RuntimeSessionOption${runtime.session}", s"$ProxyPortOption${runtime.proxyPort}",
+      s"$ProxyLogOption${runtime.proxyLog}",
+    )
 
   def runtimeOf(options: Seq[String]): Either[String, Option[Runtime]] =
     def value(prefix: String) = options.find(_.startsWith(prefix)).map(_.stripPrefix(prefix))
-    (value(ProxyPortOption), value(ProxyLogOption)) match
-      case (None, None) => Right(None)
-      case (Some(port), Some(log)) =>
-        port.toIntOption.map(port => Some(Runtime(port, Path.of(log)))).toRight(s"$ProxyPortOption$port is no port")
-      case _ => Left(s"$ProxyPortOption and $ProxyLogOption come together")
+    (value(RuntimeSessionOption), value(ProxyPortOption), value(ProxyLogOption)) match
+      case (None, None, None) => Right(None)
+      case (Some(session), Some(port), Some(log)) =>
+        port.toIntOption.map(port => Some(Runtime(Path.of(session), port, Path.of(log))))
+          .toRight(s"$ProxyPortOption$port is no port")
+      case _ => Left(s"$RuntimeSessionOption, $ProxyPortOption and $ProxyLogOption come together")
 
   /** The last bytes of each command log appended to the channel log: a stalled command's last
     * lines are the finding, and a build's audit log can run long. */
   val SessionLogTailBytes = 64 << 10
 
   /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
-    * `proxy.log`, the broker's one per runtime — and sbt's server-stderr file. run-on-host.md
-    * "The channel and the command" has why every signal keeps them and what the last file's
-    * presence means. `condemned` is the session directory at its condemned pathname with its
-    * groups ended (RunOnHostSession.endSession), so no process the session started can change
-    * what is read; the tmp check below and sessionLogTail keep each read inside the directory.
-    * `ended` is the block's first line, naming the session and how it ended. */
+    * `proxy.log`, the broker's one per runtime — the sbt servers' stderr files (serverStderr),
+    * and the stderr file a thin client leaves under `tmp/` when it forked a server of its own.
+    * run-on-host.md "The channel and the command" has why every signal keeps them and what a
+    * server's file holds. `condemned` is the session directory at its condemned pathname with
+    * its groups ended (RunOnHostSession.endSession), so no process the session started can
+    * change what is read; the tmp check below and sessionLogTail keep each read inside the
+    * directory. `ended` is the block's first line, naming the session and how it ended. */
   def appendSessionLogs(channelLog: Path, condemned: Path, ended: String): Unit =
     val block = StringBuilder()
     block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
     val proxyLogs =
       try
         Files.list(condemned).iterator().asScala
-          .filter(file => file.getFileName.toString.matches("proxy.*\\.log")).toVector.sorted
+          .filter(file => file.getFileName.toString.matches("(proxy|server).*\\.log")).toVector.sorted
       catch case _: IOException => Vector.empty
     // The command's write grant is the tmp subpath, which covers the tmp entry itself: it can
     // replace the directory with a link, which the rename preserves: listed only as a directory
     // by its own attributes.
     val tmp = condemned.resolve(RunOnHostSession.TmpDir)
-    val serverStderr =
+    val clientForkedStderr =
       if !Files.isDirectory(tmp, LinkOption.NOFOLLOW_LINKS) then
         block.append(s"==> ${RunOnHostSession.TmpDir}\n[skipped: not a directory]\n")
         Vector.empty
@@ -374,7 +381,7 @@ object RunOnHostSandbox:
           Files.list(tmp).iterator().asScala
             .filter(_.getFileName.toString.startsWith("sbt-server-err")).toVector.sorted
         catch case _: IOException => Vector.empty
-    (proxyLogs ++ serverStderr).foreach: file =>
+    (proxyLogs ++ clientForkedStderr).foreach: file =>
       sessionLogTail(file).foreach: tail =>
         block.append(s"==> ${file.getFileName}\n").append(tail)
         if !tail.endsWith("\n") then block.append('\n')
@@ -386,21 +393,21 @@ object RunOnHostSandbox:
     * positioned at the tail rather than sized by the file — a sparse file's size is the command's
     * to choose. Absent is None; anything but a regular file is named and not opened, since an
     * open FIFO would hold this teardown. */
-  private def sessionLogTail(file: Path): Option[String] =
+  private def sessionLogTail(file: Path, bytes: Int = SessionLogTailBytes): Option[String] =
     try
       val attributes = Files.readAttributes(file, classOf[BasicFileAttributes], LinkOption.NOFOLLOW_LINKS)
       if !attributes.isRegularFile then Some("[skipped: not a regular file]\n")
       else
         val channel = Files.newByteChannel(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
         try
-          val start = math.max(0L, channel.size() - SessionLogTailBytes)
+          val start = math.max(0L, channel.size() - bytes)
           channel.position(start)
-          val buffer = ByteBuffer.allocate(SessionLogTailBytes)
+          val buffer = ByteBuffer.allocate(bytes)
           var open = true
           while open && buffer.hasRemaining do
             if channel.read(buffer) < 0 then open = false
           val text = String(buffer.array, 0, buffer.position(), UTF_8)
-          Some(if start > 0 then s"[last $SessionLogTailBytes bytes]\n$text" else text)
+          Some(if start > 0 then s"[last $bytes bytes]\n$text" else text)
         finally channel.close()
     catch
       case _: java.nio.file.NoSuchFileException => None
@@ -432,15 +439,17 @@ object RunOnHostSandbox:
       s"the proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
 
   /**
-   * The launch refusal SECURITY.md "Run on host" records: one sbt server per project. A live
-   * server reached through the project's portfile belongs to someone — the user's shell, another
-   * command — and a command that attached to it would run outside this profile. Live means
+   * The live server a build directory's portfile names, if any: SECURITY.md "Run on host"
+   * records the one-server rule it serves. A thin client attaches to whatever server the
+   * portfile names and then runs with that server's environment and confinement, so before the
+   * broker starts its own server, a live one here is ended (BrokerRuntimes.noForeignServer), and
+   * while the broker's runs, a live socket inside the broker's `tmp/` is that server. Live means
    * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
    * the portfile points, uncontained on purpose — the user's own server runs outside any
    * sandbox — and the probe only connects and closes, writing nothing to what it reaches.
    */
-  def livePortfileServer(project: Path): Option[Path] =
-    val portfile = project.resolve("project").resolve("target").resolve("active.json")
+  def livePortfileServer(buildDirectory: Path): Option[Path] =
+    val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
     if !Files.isRegularFile(portfile) then None
     else
       try
@@ -457,10 +466,8 @@ object RunOnHostSandbox:
       finally channel.close()
     catch case _: IOException => false
 
-  val AutoShutdownForeignSbtOption = "--auto-shutdown-foreign-sbt-on-host"
-
   def foreignServerRefusal(socket: Path): String =
-    s"a live sbt server holds this project's portfile (socket $socket); " +
+    s"a live sbt server holds this build directory's portfile (socket $socket); " +
       "run `sbt shutdown` there and retry"
 
   /**
@@ -476,14 +483,14 @@ object RunOnHostSandbox:
    * invisible from this process, so a server launched with it derives elsewhere and is never
    * found at this socket — the refusal below, not a wrong shutdown.
    */
-  def sbtServerSocket(project: Path, env: String => Option[String], userHome: Path): Path =
+  def sbtServerSocket(buildDirectory: Path, env: String => Option[String], userHome: Path): Path =
     // java.io.File joins throughout, as sbt's `/` does: an empty parent resolves against the
     // root, where Path.resolve would keep the result relative.
     def file(value: String) = java.io.File(value)
     extension (parent: java.io.File) def /(child: String) = java.io.File(parent, child)
     def trimmed(name: String): Option[java.io.File] =
       env(name).filter(_.nonEmpty).map(value => file(value.trim))
-    val uri = project.resolve("project").resolve("target").resolve("active.json").toUri.toString
+    val uri = buildDirectory.resolve("project").resolve("target").resolve("active.json").toUri.toString
     val digest = java.security.MessageDigest.getInstance("SHA-1").digest(uri.getBytes(UTF_8))
     val hash = digest.map(byte => f"$byte%02x").mkString.take(20)
     val globalBase =
@@ -559,16 +566,18 @@ object RunOnHostSandbox:
           catch case _: IOException => true
 
   /**
-   * The consented resolution: under the launch option, end the foreign server instead of
-   * refusing. The socket the shutdown is sent to is derived from the project path the way sbt
-   * derives it, never read from the portfile, and the portfile's word is only compared against it: workspace
+   * The user's own server, ended before the broker starts its own: a protocol shutdown, which
+   * the server runs after the exec it is on, so a build in flight there completes first. The
+   * socket the shutdown is sent to is derived from the build directory the way sbt derives it,
+   * never read from the portfile, and the portfile's word is only compared against it: workspace
    * content must not choose where an unconfined write-and-parse goes. The derivation is
    * authorization, so it is checked as well as computed — a derived socket the project could
    * have planted is refused, since the project chooses its own content and would then be
    * choosing the target. Every doubt falls back to the refusal, naming what stopped the shutdown.
    */
-  def autoShutdownForeignServer(
+  def shutdownForeignServer(
     project: Path,
+    buildDirectory: Path,
     portfileSocket: Path,
     env: String => Option[String],
     log: String => Unit,
@@ -578,27 +587,24 @@ object RunOnHostSandbox:
     releaseDeadlineMillis: Long = 10_000,
   ): Either[String, Unit] =
     def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} — $cause")
-    val derived = sbtServerSocket(project, env, userHome)
+    val derived = sbtServerSocket(buildDirectory, env, userHome)
     if reachableThroughCommandWritable(derived, project, runOnHostCaches) then
       refused(
-        s"the socket sbt derives for this project ($derived) is reachable through what a command " +
-          s"writes, so $AutoShutdownForeignSbtOption does not apply",
+        s"the socket sbt derives for this build directory ($derived) is reachable through what a " +
+          "command writes, so no shutdown is sent to it",
       )
     else if !samePath(derived, portfileSocket) then
-      refused(
-        s"its socket is not the one sbt derives for this project ($derived), " +
-          s"so $AutoShutdownForeignSbtOption does not apply",
-      )
+      refused(s"its socket is not the one sbt derives for this build directory ($derived)")
     else
-      log(s"shutting down the foreign sbt server at $derived ($AutoShutdownForeignSbtOption)")
+      log(s"shutting down the sbt server at $derived: it holds the portfile of $buildDirectory")
       SbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
         case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
         // Unreachable is the server gone between the liveness probe and now — the outcome sought.
         case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
           val deadline = System.nanoTime + releaseDeadlineMillis * 1_000_000
-          while livePortfileServer(project).isDefined && System.nanoTime < deadline do
+          while livePortfileServer(buildDirectory).isDefined && System.nanoTime < deadline do
             Thread.sleep(50)
-          if livePortfileServer(project).isEmpty then Right(())
+          if livePortfileServer(buildDirectory).isEmpty then Right(())
           else refused("the server answered the shutdown but still holds the portfile")
 
   private def samePath(a: Path, b: Path): Boolean =
@@ -617,8 +623,6 @@ object RunOnHostSandbox:
     log: String => Unit,
     // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
     workingDirectory: Option[Path] = None,
-    // Launch-typed consent, never a request's: the channel forwards what the user launched with.
-    autoShutdownForeignSbt: Boolean = false,
     // What `--env` named at launch, the same authority; the values are in this process's
     // environment under carrierName.
     forwarded: Vector[String] = Vector.empty,
@@ -637,26 +641,17 @@ object RunOnHostSandbox:
           catch case ex: IOException => Left(s"$projectArg: ${ex.getMessage}")
         assembled <- assemble(project, program, env)
         _ <- RunOnHostSession.ensureRoot(root, uid)
-        // Scavenge before the one-server refusal: an orphan a kill left is ours to end here,
-        // and only a server that survives the scavenge belongs to someone else.
-        _ = RunOnHostSession
-          .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
-          .foreach: (entry, actions) =>
-            log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")
-        _ <-
-          if program != Program.Sbt then Right(())
-          else
-            livePortfileServer(project) match
-              case None => Right(())
-              case Some(socket) if autoShutdownForeignSbt =>
-                // The profile's own persistent writable set, so a socket an earlier command planted
-                // in a cache is no more a shutdown target than one planted in the project.
-                autoShutdownForeignServer(
-                  project, socket, env, log,
-                  runOnHostCaches = Seq(assembled.prereqs.coursierV1) ++ assembled.sbtCachesGranted,
-                )
-              case Some(socket) =>
-                Left(s"${foreignServerRefusal(socket)}, or relaunch with $AutoShutdownForeignSbtOption")
+        // Scavenge before anything runs — an orphan a kill left is ours to end here — but only
+        // when not dispatched by a broker: the broker owns scavenging (at its startup and before
+        // each runtime it prepares), and a dispatched command scavenging the root could condemn
+        // the live broker's own session. channelLog is set exactly when the broker dispatched
+        // this command; the gate's own entry, with none, still scavenges.
+        _ =
+          if channelLog.isEmpty then
+            RunOnHostSession
+              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .foreach: (entry, actions) =>
+                log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")
       yield assembled
 
     prepared match
@@ -705,94 +700,394 @@ object RunOnHostSandbox:
                 2
               case Right(exit) => exit
 
-  /** One program's proxy, as a command runs against it: the port its profile and environment
-    * name, and the log its denied-host report reads. Created with the program's rule file as
-    * read then, in the session whose record names its group — the broker's for its launch's sbt
-    * and mill commands (BrokerRuntimes), the command's own for Maven and for the gate's entry —
-    * and ended with that session. */
-  case class Runtime(proxyPort: Int, proxyLog: Path)
+  /** One program's runtime, as a command runs against it: the session holding its records —
+    * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
+    * the profile and the environment name, and the proxy's log, which the denied-host report
+    * reads. Created with the program's rule file as read then, in the session whose records
+    * name its groups — the broker's for its launch's sbt and mill commands (BrokerRuntimes), the
+    * command's own for Maven and for the gate's entry — and ended with that session. */
+  case class Runtime(session: Path, proxyPort: Int, proxyLog: Path):
+    def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
 
-  /** The proxy registered at `record`, logging to `proxyLog`. */
-  private def createRuntime(
+  /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
+  private def createProxy(
     program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
-  ): Either[String, Runtime] =
-    for
-      _ <- startProxy(record, program, fileHosts, proxyLog)
-      port <- awaitProxyPort(proxyLog, deadlineMillis = 30_000)
-    yield Runtime(port, proxyLog)
+  ): Either[String, Int] =
+    startProxy(record, program, fileHosts, proxyLog).flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
+
+  /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
+    * `-D` and `-J` arguments it takes, and the record its group is registered at. */
+  case class ServerStart(
+    assembled: Assembled, buildDirectory: Path, hash: String, arguments: Seq[String], record: Path, runtime: Runtime,
+  )
 
   /**
-   * The broker's runtimes: at most one per program, kept across the launch's commands while
-   * they come from the runtime's build directory and its proxy lives, and retired — its group
-   * ended and its record and log deleted — for a command from another directory or once the
-   * proxy is gone (proxyLives). Maven's is never here: it runs once and exits, and its proxy
-   * runs with the command. Preparation and the session's end share this object's monitor: a
-   * TERM during a proxy start would otherwise end the session between the spawn's registration
-   * and the teardown's listing, leaving the proxy unrecorded. `processes` and `create` are the
-   * tests' seams, which register a stand-in spawn where the proxy would be.
+   * The broker's runtimes: one per build directory and program — a proxy, and for sbt the server
+   * the program's clients attach to — kept warm across the launch's commands from that directory
+   * while its proxy lives. Visiting another build directory leaves the runtimes already made
+   * alive (`live` is keyed by program and the build directory's hash), so alternating between a
+   * root and a nested build keeps both warm. A runtime is replaced only when its own proxy is
+   * gone; an sbt server gone on its own — `shutdown`, sbt's idle exit, or a cancel
+   * — is replaced under the same proxy, its records and build file deleted only when the last
+   * runtime of the hash is retired. A cancelled command's server is not retired: as with stock
+   * sbt, the disconnect cancels the exec and the warm server is reused. Maven is never here: it
+   * runs once and exits,
+   * its proxy with the command. The gate's entry holds one of these over the command's own
+   * session for its one command, so the one lifecycle has two callers and no second owner.
+   *
+   * A broker signals only its own servers (SECURITY.md "Run on host"): when another launch owns
+   * the build directory's sbt server, this broker refuses rather than end it. `scavenge` runs
+   * before each preparation so a dead owner is collected by the exclusive scavenger — never
+   * signalled here — before a fresh server starts. Preparation and the session's end share this
+   * object's monitor. The seams register a stand-in spawn where the proxy or server would be, and
+   * stub the scavenger.
    */
-  final class BrokerRuntimes(session: Session, project: Path, log: String => Unit)(
+  final class BrokerRuntimes(
+    session: Session,
+    project: Path,
+    log: String => Unit,
+    authority: SeatbeltProfile.RuntimeAuthority,
+    forwards: Vector[(String, String)],
+  )(
     processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
-    create: (Program, Vector[String], Path, Path) => Either[String, Runtime] = createRuntime,
+    assemble: (Path, Program) => Either[String, Assembled] =
+      (project, program) => RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name))),
+    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy,
+    server: ServerStart => Either[String, Unit] = start => startSbtServer(session, authority, forwards, start),
+    scavenge: () => Unit = () => (),
   ):
-    private case class Live(buildDirectory: Path, record: Path, runtime: Runtime)
-    private var live = Map.empty[Program, Live]
+    private case class Live(buildDirectory: Path, hash: String, assembled: Assembled, runtime: Runtime)
+    // Keyed by program and the build directory's hash: one runtime per (directory, program), all
+    // kept warm.
+    private var live = Map.empty[(Program, String), Live]
+    private val env: String => Option[String] = name => Option(System.getenv(name))
+    private val root = session.directory.getParent
 
-    /** The runtime a command in `buildDirectory` runs against, None for Maven's. Called while
-      * the command's spawn holds the build lock. */
-    def prepare(program: Program, buildDirectory: Path): Either[String, Option[Runtime]] = synchronized:
-      if program == Program.Mvn then Right(None)
-      else
-        live.get(program) match
-          case Some(current) if current.buildDirectory == buildDirectory && proxyLives(current) =>
-            Right(Some(current.runtime))
-          case other =>
-            other.foreach: current =>
-              val why = if proxyLives(current) then s"a command in $buildDirectory" else "its proxy is gone"
-              // Forgotten only once discarded: a retirement that throws is retried by the next command.
-              log(s"retired ${current.record.getFileName}, $why: ${discard(current.record, current.runtime.proxyLog)}")
-              live -= program
-            val name = s"proxy-${program.name}-${RunOnHostSession.buildHash(buildDirectory)}"
-            val record = session.records.resolve(name)
-            val proxyLog = session.directory.resolve(s"$name.log")
-            // An exception after the spawn registered is a failed start like any other.
-            val started =
-              try readProgramRules(project, program).flatMap(create(program, _, record, proxyLog))
-              catch case NonFatal(ex) => Left(s"starting the proxy: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-            started match
-              case Right(runtime) =>
-                live += program -> Live(buildDirectory, record, runtime)
-                log(s"created $name for $buildDirectory, port ${runtime.proxyPort}")
-                Right(Some(runtime))
-              case Left(reason) =>
-                // A spawn that registered and never reported ready: left alone, its group would
-                // outlive the record the next attempt's spawn renames over, and its late ready
-                // line would be read as that attempt's.
-                discard(record, proxyLog)
-                Left(reason)
+    private def proxyRecord(program: Program, hash: String): Path =
+      session.records.resolve(s"proxy-${program.name}-$hash")
+    private def serverRecord(hash: String): Path = session.records.resolve(s"server-sbt-$hash")
 
-    /** The proxy lives while its spawn does — the leader, with the identity the record names —
-      * and has not published its child's exit (RunOnHostSession.exitRecord). Neither alone
-      * answers: the leader outlives the proxy by design, and a group killed whole publishes no
-      * exit. */
-    private def proxyLives(current: Live): Boolean =
-      val record =
-        try RunOnHostSession.parseRecord(Files.readString(current.record, UTF_8))
-        catch case _: IOException => None
-      record.exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
-        && !Files.exists(RunOnHostSession.exitRecord(current.record))
+    /** The runtime a command in `buildDirectory` runs against, None for Maven's; `arguments` are
+      * the request's, for a server this call starts. Called while the command's spawn holds the
+      * build lock. A dead owner is collected first, so a stale portfile or record cannot block a
+      * fresh start. */
+    def prepare(program: Program, buildDirectory: Path, arguments: Seq[String]): Either[String, Option[Runtime]] =
+      synchronized:
+        // Scavenge before every dispatched command, Maven's included: a dead owner in any build
+        // directory must be collected on the next launch's next command, not only when that
+        // command needs a runtime of its own.
+        scavenge()
+        if program == Program.Mvn then Right(None)
+        else
+          val hash = RunOnHostSession.buildHash(buildDirectory)
+          val key = (program, hash)
+          live.get(key) match
+            case Some(current) if lives(proxyRecord(program, hash)) =>
+              if program != Program.Sbt then Right(Some(current.runtime))
+              else
+                // The client attaches to this build directory's own server: reuse only when the
+                // portfile names the exact socket sbt derives for it under this session's tmp/,
+                // and the record's group still lives. namesOwnDerivedSocket checks the spelling
+                // and that neither the socket nor its directory is a symlink, so a portfile
+                // copied from — or a socket directory redirected to — another warm build
+                // directory does not send this client to that server. Otherwise the server is
+                // gone or the portfile no longer names it, and a fresh one starts under the same
+                // proxy (startServer sweeps first).
+                val serverLives = lives(serverRecord(hash))
+                if serverLives && namesOwnDerivedSocket(buildDirectory) then Right(Some(current.runtime))
+                else
+                  val why = if serverLives then "the portfile no longer names its server" else "its server is gone"
+                  log(s"retired ${serverRecord(hash).getFileName}, $why: ${discard(serverRecord(hash))}")
+                  startServer(current, arguments).map(_ => Some(current.runtime))
+            case Some(current) =>
+              // The proxy is gone: replace the whole runtime for this key, its records and build
+              // file deleted. Forgotten only once discarded: a retirement that throws is retried.
+              log(s"retired the ${program.name} runtime for $buildDirectory, its proxy is gone: " +
+                discardRuntime(program, hash, current.runtime.proxyLog))
+              live -= key
+              create(program, buildDirectory, hash, arguments)
+            case None =>
+              create(program, buildDirectory, hash, arguments)
 
-    /** End the group the record proves, and delete the record, its exit file and the log — the
-      * log too, since a successor of the same name would read this proxy's ready line as its
-      * own. Answers what became of the group. */
-    private def discard(record: Path, proxyLog: Path): String =
+    private def create(
+      program: Program, buildDirectory: Path, hash: String, arguments: Seq[String],
+    ): Either[String, Option[Runtime]] =
+      val name = s"proxy-${program.name}-$hash"
+      val proxyLog = session.directory.resolve(s"$name.log")
+      // An exception after a spawn registered is a failed start like any other.
+      val started =
+        try
+          for
+            _ <- RunOnHostSession.publishBuildFile(session.directory, hash, buildDirectory)
+            assembled <- assemble(project, program)
+            hosts <- readProgramRules(project, program)
+            port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
+            current = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog))
+            _ <- if program == Program.Sbt then startServer(current, arguments) else Right(())
+          yield current
+        catch case NonFatal(ex) => Left(s"creating the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+      started match
+        case Right(current) =>
+          live += (program, hash) -> current
+          log(s"created $name for $buildDirectory, port ${current.runtime.proxyPort}")
+          Right(Some(current.runtime))
+        case Left(reason) =>
+          // A spawn that registered and never reported ready: left alone, its group would
+          // outlive the record the next attempt's spawn renames over, and its late ready line
+          // would be read as that attempt's.
+          discardRuntime(program, hash, proxyLog)
+          Left(reason)
+
+    /** The server of a runtime whose proxy is up, once no other launch owns the build
+      * directory's server and no foreign server holds its portfile; a start that fails, by
+      * refusal or exception, leaves no group behind its record. */
+    private def startServer(current: Live, arguments: Seq[String]): Either[String, Unit] =
+      val record = serverRecord(current.hash)
+      val started =
+        try
+          noForeignServer(current).flatMap: _ =>
+            // After any foreign server is gone, not before: shutdownForeignServer waits for the
+            // user's build to finish, and sweeping its `target/` links mid-build would corrupt
+            // it. Before the spawn: our server fails loading on a link into a denied store.
+            sweepTargetLinks(current.assembled)
+            server(ServerStart(
+              current.assembled, current.buildDirectory, current.hash, arguments, record, current.runtime,
+            ))
+        catch case NonFatal(ex) => Left(s"starting the sbt server: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+      started.left.map: reason =>
+        discard(record)
+        reason
+
+    /** The links a tree the user's own sbt built leaves under `target/` (cleanForeignTargetLinks),
+      * which our server would fail loading on. Run only when a server starts, after any foreign
+      * server for the directory is shut down. */
+    private def sweepTargetLinks(assembled: Assembled): Unit =
+      val project = assembled.prereqs.project
+      val swept = cleanForeignTargetLinks(project, project +: assembled.sbtCachesGranted)
+      if swept.nonEmpty then
+        log(s"removed ${swept.size} target/ links resolving outside the command's roots (first: ${swept.head})")
+
+    /**
+     * No server but this broker's may hold the build directory's portfile when its own starts
+     * (SECURITY.md "Run on host", one server per build directory). This broker never signals
+     * another broker's server:
+     *
+     *  - Another launch owns the directory's sbt server when its session — live under the root,
+     *    or in `condemned/` while its teardown or the scavenger is still collecting it — has a
+     *    `server-sbt-<hash>` record (`serverOwner`). The command is refused; ending each other's
+     *    servers across launches is the deferred takeover of `doc/TODO.md`. The record is the
+     *    ownership, not `build-<hash>`, so a launch that ran only Mill in the directory — which
+     *    publishes `build-<hash>` but no sbt server — reserves nothing. The condemned scan keeps
+     *    the claim through the owner's teardown, when its socket path has moved with the rename
+     *    and a missing portfile would otherwise read as free. A dead owner is collected by
+     *    `scavenge` (run first in prepare) before this check, so what remains is a launch still
+     *    running.
+     *  - This launch's own derived socket, live but proved by no record, is a server it left
+     *    unaccounted; refused, to be ended by hand — starting a second on the same socket would
+     *    fail at the bind.
+     *  - Any other live portfile socket is the user's own server, ended by protocol at the
+     *    socket sbt derives (shutdownForeignServer); the portfile's own spelling is never
+     *    connected to. A stale or planted portfile naming some other socket, and a missing
+     *    portfile, authorize a start — which writes this directory's own portfile — only once the
+     *    ownership check above has passed.
+     */
+    private def noForeignServer(current: Live): Either[String, Unit] =
+      serverOwner(current.hash) match
+        case Some(other) =>
+          Left(
+            s"another launch's broker (${other.getFileName}) owns the sbt server for ${current.buildDirectory}; " +
+              "this launch does not end another's server — retry once that launch has ended, or use a " +
+              "different build directory",
+          )
+        case None =>
+          val derived = expectedServerSocket(session.tmp, current.buildDirectory)
+          livePortfileServer(current.buildDirectory) match
+            case Some(socket) if namesOwnDerivedSocket(current.buildDirectory) =>
+              Left(
+                s"a live sbt server holds the portfile of ${current.buildDirectory} at its own derived socket " +
+                  s"$socket, which no record of this launch proves; end it by hand and retry",
+              )
+            case Some(socket) if socket == derived || RunOnHostSession.containedSocket(socket, session.tmp).isDefined =>
+              Right(()) // a stale or planted/redirected portfile under this launch; our start overwrites it
+            case Some(socket) =>
+              // The profile's own persistent writable set, so a socket an earlier command planted
+              // in a cache is no more a shutdown target than one planted in the project.
+              shutdownForeignServer(
+                project, current.buildDirectory, socket, env, log,
+                runOnHostCaches = Seq(current.assembled.prereqs.coursierV1) ++ current.assembled.sbtCachesGranted,
+              )
+            case None => Right(())
+
+    /** The session of another launch that owns the sbt server for `hash`, or None
+      * (RunOnHostSession.serverOwner: live sessions, then condemned, race-safe across the
+      * teardown rename). Read, never signalled: that group is the owner's to end (`doc/TODO.md`,
+      * "Cross-launch server takeover"). */
+    private def serverOwner(hash: String): Option[Path] =
+      RunOnHostSession.serverOwner(root, session.directory, hash)
+
+    /** Whether `buildDirectory`'s portfile names this launch's own server for it: the exact
+      * socket sbt derives under this session's `tmp/`, connectable, with neither the socket entry
+      * nor its parent a symlink. The symlink checks matter because the server profile grants the
+      * build write across `tmp/`: without them, moving the socket directory aside and linking it
+      * to another warm directory's would redirect this client while the spelling stayed the
+      * same. */
+    private def namesOwnDerivedSocket(buildDirectory: Path): Boolean =
+      val derived = expectedServerSocket(session.tmp, buildDirectory)
+      livePortfileServer(buildDirectory).contains(derived)
+        && !Files.isSymbolicLink(derived) && !Files.isSymbolicLink(derived.getParent)
+
+    private def lives(record: Path): Boolean = RunOnHostSession.spawnLives(record, processes)
+
+    /** End what the runtime's records prove — the server, then the proxy — and delete them
+      * with the proxy log, since a successor of the same name would read this proxy's ready
+      * line as its own, and the build file last, once no record of the hash remains: another
+      * program's runtime for the same directory still publishes under it. Answers what became
+      * of the groups. */
+    private def discardRuntime(program: Program, hash: String, proxyLog: Path): String =
+      val server = Option.when(program == Program.Sbt)(s"server ${discard(serverRecord(hash))}")
+      val proxy = s"proxy ${discard(proxyRecord(program, hash))}"
+      try
+        Files.deleteIfExists(proxyLog)
+        Files.deleteIfExists(session.directory.resolve(s"server-sbt-$hash.sb"))
+        val recordsOfHash = Program.values.flatMap(other => Seq(proxyRecord(other, hash), serverRecord(hash)))
+        if !recordsOfHash.exists(Files.exists(_)) then
+          Files.deleteIfExists(RunOnHostSession.buildFile(session.directory, hash))
+      catch case ex: IOException => log(s"discarding the runtime for hash $hash: ${ex.getMessage}")
+      (server.toSeq :+ proxy).mkString(", ")
+
+    /** End the group one record proves, and delete the record and its exit file. */
+    private def discard(record: Path): String =
       val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(record, processes) else None
       try
         Files.deleteIfExists(record)
         Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-        Files.deleteIfExists(proxyLog)
       catch case ex: IOException => log(s"discarding ${record.getFileName}: ${ex.getMessage}")
       ended.map(_.toString).getOrElse("no record")
+
+  /** The server command line as sbt's thin client issues it when it starts a server
+    * (NetworkClient.serverCommand, v1.13.0 and v2.0.8), less the client's `-batch` and
+    * `-java-home` — the script takes `java` from PATH, where the environment puts the granted
+    * JDK first — plus the request's `-D` and `-J` arguments, which the script applies to the JVM
+    * it starts; `.sbtopts` and `.jvmopts` it reads from the build directory as it always does. */
+  def serverCommand(executable: Path, arguments: Seq[String]): Seq[String] =
+    Seq(executable.toString, s"-Dsbt.script=$executable")
+      ++ arguments.filter(argument => argument.startsWith("-D") || argument.startsWith("-J"))
+      ++ Seq("--detach-stdio", "--server")
+
+  /** The socket sbt derives for a build directory's server under this session's `tmp/`: the
+    * server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
+    * `<tmp>/<SHA-1 of the portfile URI>/sock` (sbtServerSocket). The reuse and startup checks
+    * compare the portfile against this exact path, not merely "a socket under tmp/", so a
+    * portfile copied from another build directory never authorizes reuse or "up". */
+  def expectedServerSocket(sessionTmp: Path, buildDirectory: Path): Path =
+    val serverDir: String => Option[String] =
+      name => Option.when(name == "SBT_GLOBAL_SERVER_DIR")(sessionTmp.toString)
+    sbtServerSocket(buildDirectory, serverDir, Path.of("/"))
+
+  /** Where a server's stderr goes: in the session directory, which the profile grants no process
+    * — a file under `tmp/` the server could replace with a link or a FIFO before the broker
+    * opens it for the next server — and where appendSessionLogs keeps it with the session's
+    * other logs; appended to across the servers of one build directory. */
+  def serverStderr(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
+
+  /** How long a starting server may make no progress — neither its stderr file nor the proxy
+    * log growing, and no portfile — before the start fails. Progress rather than time, because
+    * a first start resolves sbt's own dependencies through the proxy; sbt's own client waits
+    * with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
+  val ServerStartSilenceMillis = 120_000L
+
+  /** The server as the plan of 6.1: a registered spawn under the server profile, the build
+    * directory its working directory, stdin and stdout `/dev/null`, stderr to serverStderr, and
+    * the closed environment with the broker's `tmp/` as its temporary and socket directory. Up
+    * when the build directory's portfile names a connectable socket under that `tmp/`. */
+  private def startSbtServer(
+    session: Session,
+    authority: SeatbeltProfile.RuntimeAuthority,
+    forwards: Vector[(String, String)],
+    start: ServerStart,
+  ): Either[String, Unit] =
+    val assembled = start.assembled
+    val prereqs = assembled.prereqs
+    val stderr = serverStderr(session, start.hash)
+    for
+      profile <- SeatbeltProfile.render(
+        SeatbeltProfile.ProfileInputs(
+          prereqs = prereqs,
+          sessionTmp = session.tmp,
+          distribution = assembled.distribution,
+          sbtGlobal = assembled.sbtGlobalGranted,
+          ivyHome = assembled.ivyHomeGranted,
+          m2Repository = assembled.m2RepositoryGranted,
+          proxyPort = start.runtime.proxyPort,
+          runtime = authority,
+          network = SeatbeltProfile.Network.ProxyOnly,
+        ),
+      )
+      spawn <-
+        try
+          val profileFile = session.directory.resolve(s"server-sbt-${start.hash}.sb")
+          Files.writeString(profileFile, profile, UTF_8)
+          val builder = ProcessBuilder(
+            RunOnHostSession.registeredSpawn(
+              start.record,
+              Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
+                ++ serverCommand(prereqs.executable, start.arguments),
+            )*,
+          )
+          builder.directory(start.buildDirectory.toFile)
+          builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+          builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+          builder.redirectError(ProcessBuilder.Redirect.appendTo(stderr.toFile))
+          builder.environment.clear()
+          builder.environment.putAll(
+            commandEnvironment(
+              name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
+              assembled.m2Repository, assembled.millDownloads, session.tmp, session.tmp, start.runtime.proxyPort,
+              System.getProperty("user.name"),
+            ).asJava,
+          )
+          Right(builder.start())
+        catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
+      _ <- awaitServer(session, start, spawn, stderr)
+    yield ()
+
+  private def awaitServer(session: Session, start: ServerStart, spawn: Process, stderr: Path): Either[String, Unit] =
+    val exit = RunOnHostSession.exitRecord(start.record)
+    def said = s"its stderr:\n${sessionLogTail(stderr, 4096).getOrElse("(nothing was written)\n")}"
+    def sizes = (logLength(stderr), logLength(start.runtime.proxyLog))
+    var last = sizes
+    var since = System.nanoTime
+    var result: Option[Either[String, Unit]] = None
+    while result.isEmpty do
+      val spawnEnded = !spawn.isAlive // read before the file: a spawn dying after its rename still answers
+      if Files.exists(exit) then
+        val status = try Files.readString(exit, UTF_8).trim catch case _: IOException => "?"
+        result = Some(Left(s"the sbt server exited ($status) before publishing its portfile; $said"))
+      else if spawnEnded then
+        result = Some(Left(s"the sbt server's spawn ended (exit ${spawn.exitValue}) without registering it"))
+      else
+        livePortfileServer(start.buildDirectory) match
+          case Some(socket)
+              if socket == expectedServerSocket(session.tmp, start.buildDirectory)
+                && !Files.isSymbolicLink(socket) && !Files.isSymbolicLink(socket.getParent) =>
+            result = Some(Right(()))
+          case Some(socket) =>
+            result = Some(Left(
+              s"a live sbt server holds the portfile of ${start.buildDirectory} at $socket, and it is not the " +
+                "unredirected socket this launch's server derives",
+            ))
+          case None =>
+            val now = sizes
+            if now != last then
+              last = now
+              since = System.nanoTime
+            else if System.nanoTime - since > ServerStartSilenceMillis * 1_000_000 then
+              result = Some(Left(
+                s"the sbt server published no portfile, and neither its stderr nor the proxy log grew, for " +
+                  s"${ServerStartSilenceMillis / 1000}s; $said",
+              ))
+            else Thread.sleep(100)
+    result.get
 
   private def runInSession(
     session: Session,
@@ -805,16 +1100,11 @@ object RunOnHostSandbox:
     brokerRuntime: Option[Runtime],
   ): Either[String, Int] =
     val program = assembled.prereqs.program
-    if program == Program.Sbt then
-      val swept =
-        cleanForeignTargetLinks(assembled.prereqs.project, assembled.prereqs.project +: assembled.sbtCachesGranted)
-      if swept.nonEmpty then
-        log(s"removed ${swept.size} target/ links resolving outside this command's roots (first: ${swept.head})")
+    val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
     for
-      runtime <- brokerRuntime.map(Right(_)).getOrElse:
-        readProgramRules(assembled.prereqs.project, program).flatMap(
-          createRuntime(program, _, session.records.resolve("proxy"), session.directory.resolve("proxy.log")),
-        )
+      runtime <- brokerRuntime.map(Right(_)).getOrElse(
+        ownRuntime(session, assembled, buildDirectory, commandArgs, authority, forwards, log),
+      )
       // The broker's log has served earlier commands: the report reads what this one adds.
       reportFrom = logLength(runtime.proxyLog)
       profile <- SeatbeltProfile.render(
@@ -827,12 +1117,39 @@ object RunOnHostSandbox:
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = runtime.proxyPort,
           runtime = authority,
+          network =
+            if program == Program.Sbt then SeatbeltProfile.Network.SbtClient(runtime.tmp)
+            else SeatbeltProfile.Network.ProxyOnly,
         ),
       )
-      exit <- runCommand(session, assembled, profile, runtime.proxyPort, commandArgs, workingDirectory, forwards)
+      exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards)
     yield
       reportDenied(runtime.proxyLog, reportFrom, program, log)
       exit
+
+  /** The runtime a command without the broker's runs against: the gate's entry, and Maven under
+    * the broker. Created in the command's own session — by the broker's functions for the
+    * programs whose runtime the broker holds, and as the command's proxy alone for Maven — and
+    * ended with the session. */
+  private def ownRuntime(
+    session: Session,
+    assembled: Assembled,
+    buildDirectory: Path,
+    commandArgs: Seq[String],
+    authority: SeatbeltProfile.RuntimeAuthority,
+    forwards: Vector[(String, String)],
+    log: String => Unit,
+  ): Either[String, Runtime] =
+    val program = assembled.prereqs.program
+    BrokerRuntimes(session, assembled.prereqs.project, log, authority, forwards)(assemble = (_, _) => Right(assembled))
+      .prepare(program, buildDirectory, commandArgs)
+      .flatMap:
+        case Some(runtime) => Right(runtime)
+        case None =>
+          val proxyLog = session.directory.resolve("proxy.log")
+          readProgramRules(assembled.prereqs.project, program)
+            .flatMap(createProxy(program, _, session.records.resolve("proxy"), proxyLog))
+            .map(Runtime(session.directory, _, proxyLog))
 
   private def logLength(file: Path): Long =
     try Files.size(file)
@@ -861,7 +1178,7 @@ object RunOnHostSandbox:
     session: Session,
     assembled: Assembled,
     profile: String,
-    proxyPort: Int,
+    runtime: Runtime,
     commandArgs: Seq[String],
     workingDirectory: Option[Path],
     forwards: Vector[(String, String)],
@@ -871,6 +1188,8 @@ object RunOnHostSandbox:
     Files.writeString(profileFile, profile, UTF_8)
 
     val programCommand = prereqs.program match
+      // With the portfile live the client connects and forks nothing
+      // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.8).
       case Program.Sbt =>
         Seq(prereqs.executable.toString, "--jvm-client", "-batch",
           "-java-home", prereqs.jdkHome.toString) ++ commandArgs
@@ -893,10 +1212,14 @@ object RunOnHostSandbox:
     builder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
     builder.redirectError(ProcessBuilder.Redirect.INHERIT)
     builder.environment.clear()
+    // An sbt client finds its server's sockets under the runtime's tmp/; the other programs have
+    // no socket there, and their profiles grant it nothing.
+    val socketDir = if prereqs.program == Program.Sbt then runtime.tmp else session.tmp
     builder.environment.putAll(
       commandEnvironment(
         name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-        assembled.m2Repository, assembled.millDownloads, session.tmp, proxyPort, System.getProperty("user.name"),
+        assembled.m2Repository, assembled.millDownloads, session.tmp, socketDir, runtime.proxyPort,
+        System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -933,6 +1256,9 @@ object RunOnHostSandbox:
     m2Repository: Path,
     millDownloads: Option[Path],
     sessionTmp: Path,
+    // Where sbt's server binds its sockets and its clients find them: the runtime's `tmp/` for
+    // sbt, the command's own for the other programs.
+    socketDir: Path,
     proxyPort: Int,
     userName: String,
   ): Map[String, String] =
@@ -945,6 +1271,12 @@ object RunOnHostSandbox:
     val javaToolOptions = (Seq(
       s"-Djava.io.tmpdir=$sessionTmp",
       s"-Djava.util.prefs.userRoot=$sessionTmp",
+      // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else
+      // $XDG_RUNTIME_DIR, else java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt
+      // client's XDG_RUNTIME_DIR is the broker's tmp/, which its profile grants no write or
+      // exec, so the load fails there; this points it at the command's own tmp/, always
+      // read-write-exec. The rendezvous sockets still go under XDG_RUNTIME_DIR.
+      s"-Dsbt.ipcsocket.tmpdir=$sessionTmp",
       s"-Dsbt.global.base=$sbtGlobal",
       s"-Dsbt.ivy.home=$ivyHome",
       s"-Dmaven.repo.local=$m2Repository",
@@ -967,8 +1299,8 @@ object RunOnHostSandbox:
       "JAVA_HOME" -> prereqs.jdkHome.toString,
       "JAVA_TOOL_OPTIONS" -> javaToolOptions,
       "TMPDIR" -> sessionTmp.toString,
-      "XDG_RUNTIME_DIR" -> sessionTmp.toString,
-      "SBT_GLOBAL_SERVER_DIR" -> sessionTmp.toString,
+      "XDG_RUNTIME_DIR" -> socketDir.toString,
+      "SBT_GLOBAL_SERVER_DIR" -> socketDir.toString,
       "COURSIER_CACHE" -> prereqs.coursierV1.toString,
       "USER" -> userName,
       "LOGNAME" -> userName,
@@ -997,12 +1329,13 @@ object RunOnHostSandbox:
     )
 
   /**
-   * The cost of switching where a build runs, paid before each confined command. sbt 2 leaves `target/` outputs as
+   * The cost of switching where a build runs, paid before each sbt server starts or is reused
+   * (BrokerRuntimes.sweepTargetLinks). sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
    * symlink under a `target/` directory that does not resolve inside a granted root — the
-   * dangling included — is removed before the command; the artifacts it named still exist in the
+   * dangling included — is removed then; the artifacts it named still exist in the
    * store of the sbt that made them, which relinks on its own next run. The roots are compared
    * resolved, as the links are: a root reached through a symlink, macOS's `/var`, would
    * otherwise match nothing and the sweep would take every link.

@@ -31,6 +31,43 @@ the current 1.x release.
 The Gradle acceptance list is not a promise that every historical 7.x/8.x/9.x release works. The
 implementation reads the exact wrapper version; the three above are what is tested and documented.
 
+## Revision — step 3 scope (2026-09-11)
+
+Step 3, as built, takes a deliberate scope reduction from the sections below, decided after
+review:
+
+1. **One runtime per canonical build directory and program, per broker — all kept warm.** Not one
+   runtime per program. Visiting another build directory leaves the runtimes already made alive
+   (`RunOnHostSandbox.BrokerRuntimes.live` is keyed by program and the directory's hash). A runtime
+   ends with the launch or when its own proxy is gone — never on a cancel (a cancel follows stock
+   sbt), and never because a command came from a different directory. This supersedes section 4's
+   "one runtime per program at a time" and section 10's "one runtime per program".
+2. **A broker never signals another live broker's server.** When another live broker's session
+   owns a build directory's sbt server — its `build-<hash>` names the directory — a command for it
+   is refused, not served by ending the other's server. This supersedes section 6.4's "another
+   launch's server is ended by its record" and 11's "ended by default … two launches end each
+   other's in turn." A dead owner is not live; the scavenger collects it by its own exclusive
+   claim (section 2) before a fresh server starts, and a missing portfile alone never authorizes a
+   start while a live owner holds the directory. The user's own terminal server is still shut down
+   by protocol at the derived socket (section 6.4, unchanged).
+3. **A cancel follows stock sbt.** The broker does not retire the server on a cancel: the
+   client's disconnect cancels the running exec (`CommandExchange.removeChannel`, `force =
+   false`) and the warm server survives for the next command, as it does for a terminal user.
+   There is no cancel-retirement path, no background thread, and no pending-cancel marker. This
+   drops the repository's earlier, stronger guarantee that nothing a cancelled command started
+   survives — a deliberate change, since keeping it would deviate from stock sbt with no
+   confinement basis (the lingering work is confined).
+4. **Ending another live launch's server — takeover — is deferred** to `doc/TODO.md`,
+   "Cross-launch server takeover", separately from sharing one server between launches (section
+   11). It needs one exclusion covering identity validation through signalling across
+   cancellation, replacement, teardown and scavenging, and deterministic concurrency tests; this
+   version does not build that infrastructure.
+
+Build locks and dead-session recovery are unchanged: build locks serialize admission, startup and
+commands; the scavenger still collects dead owners through its exclusive condemn-by-rename claim.
+The Mill runtime (section 7) reaches these same functions when step 4 lands and inherits this
+model.
+
 ---
 
 # Security model: one important exception
@@ -161,8 +198,9 @@ command's session**; the processes are **the broker's proxy**, **the broker's sb
 **the broker's mill daemon**; and **a runtime** is one program's proxy plus its server or daemon,
 a word this document uses for that alone — the profile's *runtime authority* stays that phrase.
 
-One broker holds at most one sbt runtime and one mill runtime — each a proxy plus its server or
-daemon — and Maven stays one-shot with a per-command proxy as today. A runtime's records and
+One broker holds one sbt runtime and one mill runtime per build directory it visits (see the
+step-3 revision above) — each a proxy plus its server or daemon — and Maven stays one-shot with a
+per-command proxy as today. A runtime's records and
 its `build-<hash>` file carry the same hash of its canonical build directory, the hash the build
 lock of section 3 is named by, and `build-<hash>` is published by rename before the first record
 of that hash and removed after the last is retired. Another broker reading the pair for one hash
@@ -281,18 +319,20 @@ restarts on it:
   bind (7.4) — a failure closed, and a test proves no daemon ever runs in a client's group. The
   key spares the user that one failed command and its message, at the price of four small reads.
 
-A key that differs from the live runtime's retires it — the recorded group ended and its record
-deleted (section 2) — and a fresh runtime is created before the command runs. Nothing about a
-live server or daemon is mutated in place. One runtime per program at a time: a command from
-another build directory retires the current one, so alternating between a root and a nested
-build restarts at each switch, a stated cost rather than a second runtime.
+A key that differs from a live runtime's replaces that runtime's server — the recorded group
+ended and its record deleted (section 2) — under the same proxy; nothing about a live server or
+daemon is mutated in place. Per the step-3 revision above, the broker keeps one runtime per
+build directory and program, all warm at once, so visiting another build directory adds a runtime
+rather than retiring the current one.
 
-So what actually triggers a retirement is a Mill version or option file edited, or a request
-from another build directory. The program's rule file is read when a runtime is created, and an
-edit does not restart a running one: it takes effect at the next creation — after
-`sandbox-run-on-host <program> shutdown`, a cancel, a Mill idle exit or option change, a switch
-of build directory, or the next launch — as the session's own rule file takes effect at the
-next launch. Until then the proxy admits the lines it started with, so a host removed from the
+So what actually triggers a runtime's replacement is its own proxy going, or — Mill only — a
+Mill version or option file edited (a warm sbt server keeps the version and options it started
+with until `shutdown`, as in a terminal). A request from another build directory retires nothing:
+it adds a runtime, and both stay warm. The program's rule file is read when a runtime is created,
+and an edit does not restart a running one: it takes effect at the next creation — after
+`sandbox-run-on-host <program> shutdown`, a Mill idle exit or option change, or the next
+launch — as the session's own rule file takes effect at the next launch. Until then the proxy admits
+the lines it started with, so a host removed from the
 file stays reachable from that runtime, as it stays reachable from the session until the next
 launch. A distribution `cs install sbt` replaces mid-launch needs no
 restart: the old files stay in Coursier's archive cache, the warm server runs on from them, and
@@ -379,16 +419,18 @@ client connects and forks nothing (`connectOrStartServerAndConnect`).
 - The build runs in the server, so a test JVM or a `run` process is the server's child, in the
   server's group. Cancelling a command ends the client's group; the server sees the channel close
   and `CommandExchange.removeChannel` (both versions) drops that channel's queued execs and
-  cancels its running exec with `force = false`. What a command's cancel means today — nothing
-  the command started survives it — stays an invariant, and the warm server yields to it: a
-  cancel retires the server's whole group before the next command, and the next command starts
-  a server. Nothing weaker proves the invariant: this repository's own tests run inside the
-  server JVM (`fork` is off), a test that ignores interruption or a thread a task left keeps
-  running there after the cancel, and no process count and no protocol answer can show it
-  stopped. A cancel therefore costs one server restart, never a build running beside the next
-  command. The measurement behind it (probe S4): after the client's TERM the server answers the
-  next client in both versions, and a forked `run` JVM is ended by the cancel in 2.0.8 and
-  outlives it in 1.13.0.
+  cancels its running exec with `force = false`. The broker does no more — it follows stock sbt
+  (revised in step 3; the repository's earlier stronger guarantee is dropped, the user's
+  decision): the warm server survives, and the next command reuses it. Cancellation is
+  cooperative, so a test that ignores interruption or a thread a task left keeps running in the
+  server, exactly as it does for a terminal user, and the next command's exec queues behind it
+  if it never yields — the tool's own behavior, not the broker's to override. Retiring the whole
+  server on cancel would be a deviation from stock sbt with no confinement basis, since the
+  lingering work is confined and writes only the project and its own caches (`SECURITY.md`,
+  "Run on host"; `doc/run-on-host.md`, "Where the broker deviates from the stock tool"). The
+  measurement (probe S4): after the client's TERM the server answers the next client in both
+  versions, and a forked `run` JVM is ended by the cancel in 2.0.8 and outlives it in 1.13.0 —
+  the tool's own difference, left as the tool leaves it.
 - The server exits on its own after `serverIdleTimeout`, 7 days in both versions
   (`Defaults.scala`), and the broker adds no bound of its own (section 11). The broker treats
   "recorded leader alive, server gone" as "no server": it ends the old group and record
@@ -403,36 +445,29 @@ client connects and forks nothing (`connectOrStartServerAndConnect`).
 
 ### 6.4 The portfile and foreign servers
 
-- The one-server-per-build rule stays. The `livePortfileServer` check reads the build directory's
-  portfile and gains one case: a live socket that resolves inside the broker's session `tmp/` is
-  the broker's own server, not a foreign one — the same containment proof `collectServer` uses,
-  which now reads the build directories the broker's session records, one `build-<hash>` file
-  per runtime, in place of the project. Every other live socket is foreign, and the server
-  behind it is shut down before the broker starts its own, under the build lock (section 3) —
-  today's consented shutdown, now the default (7.3) — by one of two attributions, and named in
-  the transcript. The user's own server: the socket the wrapper derives from the build directory
-  as sbt derives it, refused when a command could have planted that path, today's rule
-  unchanged. Another launch's server: found and ended without reading the portfile and without
-  connecting to any socket — the broker computes the hash of the requested canonical build
-  directory, the one its build lock is named by, lists the live broker sessions under the root,
-  those whose lock is held, and in each takes `build-<hash>` and `records/server-sbt-<hash>` of
-  that hash alone (section 1), a pair one runtime published together; the directory in the file
-  must equal the requested one, or the pair is skipped. Both files are the other broker's, in a
-  directory its confined command is not granted, since the profile grants that session's `tmp/`
-  alone. Each such server is ended by its record, pid and start time proved, TERM then KILL, as
-  a daemon is (7.3). A broker that retires its runtime for one directory and starts one for
-  another publishes under another hash, so a taker-over holding the first directory's lock can
-  read only the first runtime's pair, or nothing. No socket is connected to because
-  `collectServer`'s containment proof holds only once
-  the writer is gone: a live session's `tmp/` is writable by the server it holds, and a
-  descendant could replace the checked socket or an ancestor with a link between resolution and
-  connect, sending the unconfined shutdown wherever this uid can reach. Ending by record needs
-  no such resolution, and binding the record to the build directory keeps a portfile planted in
-  one build from nominating another build's server, whose own build lock this broker does not
-  hold. A build in flight in that server is impossible for a broker's client, since this broker
-  holds the build lock, and possible for a terminal client attached to it — the residual window
-  of 7.3, the same for both programs. A live portfile socket matching neither attribution is a
-  refusal naming it.
+- The one-server-per-build-directory rule stays, and this broker signals only its own servers
+  (revised in step 3; see the revision note). Before starting a server the broker checks who
+  holds the build directory's portfile, under the build lock (section 3):
+  - **This launch's own server.** A live socket that is exactly the socket sbt derives for the
+    directory under this session's `tmp/` (`expectedServerSocket`), with neither the socket nor
+    its parent a symlink, is this broker's own server: reused, not restarted. The exact,
+    unredirected path — not merely a socket under `tmp/` — is what keeps a portfile copied from,
+    or a socket directory linked to, another warm build directory from sending this client to the
+    wrong server; the server profile grants the build write across `tmp/`, so the spelling alone
+    is not enough. The same derived socket live but proved by no record is a server this launch
+    left unaccounted, and is refused, to be ended by hand.
+  - **The user's own server**, from a terminal outside any launch: shut down by protocol at the
+    socket the broker derives (`shutdownForeignServer`), never at the one the portfile names —
+    workspace content must not choose where an unconfined exchange goes — and refused when a
+    command could have planted that derived path. The derivation is checked, not just computed.
+  - **Another launch's server**: refused, never signalled. The broker reads whether another
+    broker session — live under the root, just-crashed and not yet collected, or in `condemned/`
+    mid-teardown — holds a `server-sbt-<hash>` record for the directory (`serverOwner`,
+    `RunOnHostSession`), and if so refuses the command. It does not reach into that session's
+    records to end the group: ending another launch's server across launches is the deferred
+    takeover of `doc/TODO.md`. A just-crashed owner's record blocks admission this time and the
+    next start's scavenge collects it, so its server is never left running beside a fresh one; a
+    missing portfile never authorizes a start while such an owner exists.
 - Keep the project-scoped caches, the `target/` symlink sweep before each command, and
   `--jvm-client`.
 
@@ -446,8 +481,8 @@ sandbox-run-on-host sbt test
   same pid and start time; no second server; the client forked nothing
 
 cancel the second command mid-test, the test unforked and ignoring interruption
-  the client's group is gone; the broker retires the server's group before the next command;
-  nothing of the test runs when the next command's server starts
+  the client's group is gone; the warm server survives (stock sbt); the next command reuses it,
+  the same server, and the lingering test runs on as it would in a terminal
 
 edit sbt.version, then sandbox-run-on-host sbt compile
   the same server answers, on the old version, as it would in a terminal;
@@ -548,6 +583,12 @@ Remove `--no-daemon`. Do **not** give Mill Gradle's profile.
 The starter fails on its own; ending it early is deferred (section 11).
 
 ### 7.3 `out/mill-daemon` is Mill's, not the broker's
+
+> Superseded in part by the step-3 revision (see the revision note): a broker never signals
+> another launch's server or daemon, so the "ended by its record" and "two launches end each
+> other's in turn" claims below become "another launch's is refused." This section is rewritten
+> when Mill lands (step 4).
+
 
 The broker neither clears `out/mill-daemon` nor takes authority from it: `socketPort` is a
 candidate proved against the owned process (7.2, step 2), and nothing else in it is read. Mill's
@@ -735,28 +776,28 @@ authority; no boolean, and no generic "localhost any" case reused casually.
   request that starts the server visible to the build, and one on the next request not; Mill
   version or option-file changes retiring a runtime; a rule-file edit leaving the running
   runtime as it is, and the runtime created after the program's `shutdown` under the new rule;
-  a request from a nested build directory retiring the root's runtime and back;
+  a request from a nested build directory leaving the root's runtime warm, and each reused;
   `.git`/`.ko-agent-sandbox` denials
   holding for the long-lived server and daemon; a descendant left sleeping by a build ending with
   the launch, and one left in a group whose server or daemon was cancelled, idle-exited or shut
   down ending before the replacement starts; a cancelled unforked `sbt test` that ignores
-  interruption, and a cancelled `mill app.run`, leaving nothing running when the next command's
-  server or daemon starts (6.3, 7.5); a second request queued behind a running one seeing the
-  runtime the first left (section 3); a second launch on the same project ending the first's
-  server and running, and the first's next command ending the second's (7.3); no daemon ever in
+  interruption leaving the warm server alive, reused by the next command with its work still
+  running (stock sbt, 6.3); a cancelled `mill app.run` (7.5, step 4); a second request queued
+  behind a running one seeing the runtime the first left (section 3); a second launch on the same
+  project refused a build directory the first still owns, and admitted once the first launch
+  ends (6.4); no daemon ever in
   a client's group; a foreign daemon, of matching and of mismatched configuration, ended by
   proof with a transcript line before the broker's own starts, a foreign daemon mid-command left
   until its client disconnects and ended then, and one that outlasts the wait refused; a second
   broker taking over while the first's `app.run` runs: the run completes, the first's next
   request waits on the build lock and finds its daemon gone, and no client of either connects to
-  a daemon being ended (section 3); another launch's sbt server ended by its record with no
-  socket connected to, a portfile planted to name a live server of a different build directory
-  leaving that server untouched and the request refused, a socket in a live session's `tmp/`
-  replaced by a link never followed, and — with the injected `Processes` — a broker retiring
-  its runtime for directory X and publishing one for Y between a taker-over's read of X's
-  directory and its read of X's record, the taker-over ending nothing of Y's (6.4); and a
-  user's sbt 2 client
-  attaching to the launch's server while it lives, recorded as the documented consequence it is;
+  a daemon being ended (section 3); another launch's sbt server never signalled — its
+  `server-sbt-<hash>` record refuses the command, whether that session is live, just-crashed and
+  uncollected, or in `condemned/` mid-teardown, and the record is found across the teardown
+  rename (with the injected `betweenScan`); a portfile naming another build directory's socket,
+  or a socket directory redirected there by a link, not reused as this directory's server; and a
+  user's sbt 2 client attaching to the launch's server while it lives, recorded as the documented
+  consequence it is;
   sbt and Maven still unable to
   reach an unrelated loopback port; the Mill client unable to reach a neighboring port; and the
   listener row for the daemon profile, reported as the widening it is.
@@ -775,19 +816,21 @@ that none is mistaken for the tool's own behavior later:
   and daemon when the container is gone, and the next start scavenges what a killed broker left.
   This is the feature's requirement, not a cost: a confined process must have an owner, and a
   later launch never adopts one whose owner is gone.
-- **A cancel retires the runtime** (6.3, 7.5). Stock sbt keeps its server after a Ctrl-C and
-  cancels only the exec; stock Mill ends its daemon on a mid-command disconnect but nothing says
-  what a `run` JVM it forked does. The broker ends the whole group before the next command, for
-  the guarantee today's wrapper already gives: nothing a cancelled command started runs beside
-  the next one.
+- **A cancel follows stock sbt (dropped as a deviation in step 3).** The broker once ended the
+  whole server group on a cancel, to keep the pre-broker guarantee that nothing a cancelled
+  command started survives. That is dropped: the disconnect cancels the running exec
+  (`CommandExchange.removeChannel`, `force = false`) and the warm server survives, as it does for
+  a terminal user, so this is no longer a deviation. Retiring the server would have deviated from
+  stock sbt with no confinement basis. (Mill's daemon, step 4: stock Mill ends its daemon on a
+  mid-command disconnect; the broker leaves that to Mill too.)
 - **The wait for the portfile has a deadline** (6.1). sbt's thin client waits for a starting
   server without one. The broker fails the command after its deadline, with the server's stderr:
   the bound `doc/TODO.md` "a bound on a silent host command" asks for.
-- **One runtime per program** (section 4). Stock sbt keeps a server per build directory, and
-  they coexist; the broker keeps one and retires it when a request comes from another build
-  directory, so alternating between a root and a nested build restarts at each switch. Deferred,
-  and moved to `doc/TODO.md` when Phase 1 lands: a runtime per build directory, keyed by it,
-  each with its own records and proxy.
+- **One runtime per build directory and program, all kept warm** (section 4). Stock sbt keeps a
+  server per build directory and they coexist; the broker does the same, keyed by directory and
+  program, so alternating between a root and a nested build keeps both warm. A runtime ends with
+  the launch, when its own proxy is gone, or — following stock sbt on a cancel — never on a
+  directory switch. This is the design as built (the step-3 revision above), not a deferral.
 - **Mill runs through its JVM launcher** (7.1, 7.2). The stock bootstrap picks the native image
   for a bare pinned version; the wrapper sets `MILL_VERSION` to the launcher version, `<v>-jvm`,
   so that the launcher takes the environment's `preferIPv4Stack` and connects under the
@@ -805,11 +848,12 @@ that none is mistaken for the tool's own behavior later:
 
 Decided 2026-09-10, with the reasons each rests on:
 
-- **The sbt server has no idle bound of the broker's.** It lives until the launch ends, a cancel,
+- **The sbt server has no idle bound of the broker's.** It lives until the launch ends,
   `sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, 7 days in `Defaults.scala`
   (https://github.com/sbt/sbt/blob/v2.0.8/main/src/main/scala/sbt/Defaults.scala): a warm server
   is what the user keeps on purpose, so its heap is the price chosen. The cost stated instead:
-  two launches on the same project end each other's warm server in turn (7.3), once it is idle.
+  a second launch is refused a build directory the first launch still owns (6.4, step-3 revision),
+  until the first launch ends.
 
   Deferred, and moved to `doc/TODO.md` when Phase 1 lands, so its design is not redone: a
   broker-kept idle bound, selected by a launch option — never an environment variable, since the
@@ -842,27 +886,20 @@ Decided 2026-09-10, with the reasons each rests on:
   shows the daemon's port, saving the retry. It signals the starter's own pid alone — the daemon
   lives in the same registered group, so ending the group would end it — and it needs the exact
   process topology the gate row records first.
-- **A foreign server or daemon is ended by default, and the option is deleted** (6.4, 7.3). The
-  README already told every macOS launch to pass `--auto-shutdown-foreign-sbt-on-host`, so the
-  default is what the recommended launch did; the costs — the user's own build for that project
-  ended when the agent runs the same program, two launches on one project ending each other's
-  warm server in turn, and the user's own client attaching to the launch's confined server while
-  it lives — are documented rather than gated. With that, the window between the foreign check
-  and the starter (7.2, step 0) decides nothing about *whether* a daemon appearing in it is
-  ended, only how: a daemon of matching fingerprint is found after the starter and ended once
-  idle, as 7.3 says; one of differing fingerprint is ended by the starter itself, which is
-  stock Mill removing its `processId` before probing the lock, without regard to a build in
-  flight. That second case is part of the residual window 7.3 documents, its only difference
-  being the actor, and it needs a terminal `./mill` whose `DaemonConfig` differs from the
-  closed environment's — a `MILL_VERSION` or `DEFAULT_MILL_VERSION` override, a `JAVA_OPTS` or
-  `JDK_JAVA_OPTIONS`, or a version, JVM or repository file edited between the two starts —
-  started in the split second after the check. `src/probe/run-on-host-broker-session.sh` M7
-  stays as the measurement of what the starter itself does. Two launches on one project
-  therefore end each
-  other's warm server or daemon at each switch — never a build of a broker's in flight,
-  enforced by the build lock (section 3); for a build started from a terminal, whether attached
-  to a daemon or to a confined sbt server, ended only once observed idle and re-proved, less the
-  residual window 7.3 names — and the document says so.
+- **The `--auto-shutdown-foreign-sbt-on-host` option is deleted, and the user's own server is
+  shut down by default; another launch's is refused, not ended** (6.4, step-3 revision). The
+  README already told every macOS launch to pass the option, so shutting the *user's own*
+  terminal server down is what the recommended launch did, and it is now the default: a server
+  the user runs from a terminal, holding the build directory's portfile, is shut down by protocol
+  at the socket the broker derives. Another *launch's* server is never signalled — the command is
+  refused while that launch owns the directory (cross-launch takeover is deferred, `doc/TODO.md`).
+  The costs, documented rather than gated: the user's own terminal server for a directory is shut
+  down when the agent runs sbt there; a second launch is refused a directory the first still owns;
+  and the user's own client attaching to the launch's confined server while it lives.
+
+  Mill (step 4) reaches the same rule: another launch's daemon is refused, not ended; the
+  fingerprint/`processId` machinery of the earlier design is superseded there too, and 7.2–7.3
+  are revised when Mill lands.
 
   Deferred, and moved to `doc/TODO.md` when Phase 1 lands: two launches sharing one server or
   daemon when everything the runtime was created from is equal — JDK home, executable and
@@ -1094,10 +1131,12 @@ Each claim changes in the same change that makes it true.
   broker as the owner and the consented shutdown now the default; Phase 2 adds the Gradle matrix
   and the fatal-JDK rule.
 - `SECURITY.md` "Run on host": "One sbt server per project, owned by the current command" becomes
-  owned by the launch's broker, with the cancel semantics; the foreign shutdown is stated as the
-  default for both programs, its consent line replaced by the costs of 7.3 — the user's own
-  server or daemon ended, two launches ending each other's, and the user's own client attaching
-  to the confined server while the launch lives; the egress statement gains that a running
+  one per build directory, owned by the launch's broker and kept warm; a cancel follows stock sbt
+  (the exec is cancelled, the warm server survives); the user's own terminal server is shut down
+  by protocol at the derived socket, while another launch's is refused, never signalled; the
+  costs stated are the user's terminal server shut down when the agent runs sbt there, a second
+  launch refused a directory the first still owns, and the user's own client attaching to the
+  confined server while the launch lives; the egress statement gains that a running
   runtime's proxy admits the rule file it was created with, so a host removed from the file is
   revoked when that runtime is next created, as the session's is at the next launch;
   "no loopback listener" is qualified for Mill with the concrete widening of 7.4; "Teardown
@@ -1112,11 +1151,11 @@ Each claim changes in the same change that makes it true.
   grants no TCP listener" per program.
 - `README.md` and the launcher's help and option parsing: `--auto-shutdown-foreign-sbt-on-host`
   is deleted, a launch naming it refused with a line saying the shutdown is now the default, and
-  the README's launch advice drops it; the `--run-on-host` text says, for both programs, that a
-  server or daemon you have running for the project on the host is ended when the agent runs the
-  same program, that two launches on one project end each other's in turn, and that your own
-  sbt 2 or a matching `./mill` attaches to the launch's confined server while it lives; Phase 2
-  adds `gradle`, the JDK matrix, and the provisioning and loopback sentences.
+  the README's launch advice drops it; the `--run-on-host` text says that a terminal sbt server
+  you have running is shut down when the agent runs sbt in that directory, that a second launch is
+  refused a build directory the first still owns, and that your own sbt 2 attaches to the launch's
+  confined server while it lives; Phase 2 adds `gradle`, the JDK matrix, and the provisioning and
+  loopback sentences.
 - `doc/TODO.md`: "a bound on a silent host command" is resolved for sbt by the broker's portfile
   deadline (6.1) and is rewritten to what remains, the generic no-output bound; "Gradle under
   `--run-on-host`" is removed when Phase 2 lands; a Mill blocker is added only if 7.7 triggers.
