@@ -107,3 +107,10 @@ Do not use one-letter names, except for
 # git
 
 Do not change the git state: no `add` / `commit` / `rebase` / `push` unless explicitly asked.
+
+
+# Memory
+
+Do not write to the agent memory directory. A rule to follow belongs in these instructions or in
+the project's documents, which every session reads; a memory note is recalled by chance and fixes
+nothing. When an instruction was not followed, change the instruction so that it is.

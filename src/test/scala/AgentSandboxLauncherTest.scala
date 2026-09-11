@@ -1163,6 +1163,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains("sandbox-run-on-host sbt 'compile; test'"), runOnHostSection)
     assert(!runOnHostSection.contains("sbt compile test"), runOnHostSection)
     assert(runOnHostSection.contains("Operation not permitted"), runOnHostSection)
+    assert(runOnHostSection.replace('\n', ' ').contains("the last resort, not an alternative"), runOnHostSection)
     assert(runOnHostSection.replace('\n', ' ').contains("that suite alone runs in the container"), runOnHostSection)
     assert(runOnHostSection.contains("never re-run in the container"), runOnHostSection)
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)

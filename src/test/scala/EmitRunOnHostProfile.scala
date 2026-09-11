@@ -4,10 +4,12 @@
 // Test scope on purpose: src/probe/run-on-host-profile-gate.sh and src/probe/run-on-host-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|mvn] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>"
 //
 // The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
-// The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's.
+// The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's. The proxy form renders
+// the host proxy's own profile for the java and class path the gate runs its proxy rows with.
 
 package agentsandbox.launcher
 
@@ -19,15 +21,25 @@ object EmitRunOnHostProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill] [project]")
+      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|mvn] [project]")
+      Console.err.println("       EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>")
       sys.exit(2)
-
-    val env: String => Option[String] = name => Option(System.getenv(name))
-    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
 
     def fail(reason: Any): Nothing =
       Console.err.println(s"refused: $reason")
       sys.exit(1)
+
+    if args.lift(2).contains("proxy") then
+      if args.length != 5 then fail("the proxy form takes <out.sb> <authority-file> proxy <jdk> <classpath>")
+      val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
+      val profile = RunOnHostSandbox.proxyInputs(runtime, javaHome = args(3), classPath = args(4))
+        .flatMap(SeatbeltProfile.renderProxy).fold(fail, identity)
+      Files.writeString(Paths.get(args(0)), profile)
+      Console.err.println(s"profile: ${args(0)}")
+      sys.exit(0)
+
+    val env: String => Option[String] = name => Option(System.getenv(name))
+    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
 
     val program = args.lift(2).map(_.toLowerCase) match
       case None        => Program.Sbt

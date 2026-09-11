@@ -276,6 +276,82 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(millInputs.copy(network = Network.MillClient(70000))).isLeft)
 
   // --------------------------------------------------------------------------
+  // The host proxy's own profile
+  // --------------------------------------------------------------------------
+
+  private val proxyJdk = Paths.get("/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home")
+  private val proxyJar = Paths.get(s"$home/.cache/ko-agent-sandbox/launcher/ko-agent-sandbox.jar")
+  private def proxyInputs(
+    executables: Seq[Path] = Seq(proxyJdk),
+    reads: Seq[Path] = Seq(proxyJar),
+    runtime: RuntimeAuthority = RuntimeAuthority(
+      Seq(Paths.get("/System/Library/CoreServices/SystemVersion.plist")), Seq(Paths.get("/bin")),
+    ),
+  ) = ProxyInputs(executables, reads, runtime)
+  private def renderedProxy(in: ProxyInputs = proxyInputs()): String =
+    renderProxy(in).fold(reason => fail(s"renderProxy refused: $reason"), identity)
+
+  test("the proxy profile grants its executable, what it loads, the runtime authority as reads, and no write"):
+    val text = renderedProxy()
+    assert(text.linesIterator.contains("(deny default)"))
+    val allows = text.linesIterator.filter(_.startsWith("(allow")).filterNot(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      allows,
+      Seq(
+        RootComponent,
+        """(allow file-read-metadata file-test-existence (literal "/Library"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Library/Java"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Library/Java/JavaVirtualMachines"))""",
+        "(allow file-read-metadata file-test-existence " +
+          """(literal "/Library/Java/JavaVirtualMachines/temurin-25.jdk"))""",
+        "(allow file-read-metadata file-test-existence " +
+          """(literal "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System/Library"))""",
+        """(allow file-read-metadata file-test-existence (literal "/System/Library/CoreServices"))""",
+        """(allow file-read-metadata file-test-existence (literal "/Users"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache/ko-agent-sandbox"))""",
+        s"""(allow file-read-metadata file-test-existence (literal "$home/.cache/ko-agent-sandbox/launcher"))""",
+        """(allow file-read-metadata file-test-existence (literal "/dev"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private/var"))""",
+        """(allow file-read-metadata file-test-existence (literal "/private/var/run"))""",
+        """(allow file-read-metadata file-test-existence (literal "/var"))""",
+        "(allow sysctl-read mach-lookup)",
+        """(allow file-read* file-write-data (literal "/dev/null"))""",
+        """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))""",
+        """(allow file-read* (subpath "/System/Library/CoreServices/SystemVersion.plist"))""",
+        """(allow file-read* (subpath "/bin"))""",
+        "(allow process-exec* file-read* " +
+          """(subpath "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home"))""",
+        s"""(allow file-read* (subpath "$home/.cache/ko-agent-sandbox/launcher/ko-agent-sandbox.jar"))""",
+      ),
+    )
+
+  test("the proxy profile's network is every remote, the resolver's socket, and a listener of the localhost class"):
+    val network = renderedProxy().linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      network,
+      Seq(
+        """(allow network-outbound (remote ip "*:*"))""",
+        """(allow network-outbound (remote unix-socket (literal "/private/var/run/mDNSResponder")))""",
+        """(allow network-bind network-inbound (local ip "localhost:*"))""",
+      ),
+    )
+
+  test("the proxy profile refuses a relative path and an empty executable set"):
+    assert(renderProxy(proxyInputs(reads = Seq(Paths.get("launcher.jar")))).isLeft)
+    assert(renderProxy(proxyInputs(executables = Seq(Paths.get("/Library/../usr/bin")))).isLeft)
+    assert(renderProxy(proxyInputs(executables = Seq.empty)).isLeft)
+    // The native image: the binary alone, nothing to load beside it.
+    val native =
+      renderedProxy(proxyInputs(executables = Seq(Paths.get("/usr/local/bin/ko-agent-sandbox")), reads = Seq.empty))
+    assert(native.contains("""(allow process-exec* file-read* (subpath "/usr/local/bin/ko-agent-sandbox"))"""))
+    assert(!native.contains(home))
+
+  // --------------------------------------------------------------------------
   // The cs-installed sbt script's second half
   // --------------------------------------------------------------------------
 

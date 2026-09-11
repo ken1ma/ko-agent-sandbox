@@ -887,6 +887,8 @@ the mechanism. Its security properties and costs are:
   unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
   the file read when that proxy started: a host removed from the file stays reachable from the
   broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
+  The proxy runs under a profile of its own, granting its executable, the runtime authority as
+  reads and the network, and nothing of the user's: no project, no cache, no write anywhere.
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
 - **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from

@@ -211,11 +211,8 @@ on podman-less machines and kills the test JVM.
   case-insensitive volume (`run-on-host.md`, "The host command's filesystem rules"), with a gate
   row creating one. Until then the workspace filter is the stricter of the two guards there.
 
-- [ ] A Seatbelt profile for the proxy the launcher serves on the host (`--serve-proxy-on-host`),
-  which runs unconfined while parsing hostile bytes as the user's uid
-  (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds).
-  Designed: `plan-host-build-daemons-and-gradle.md`, "The proxy's own profile", step 7.
-- [ ] Filter `mach-lookup` in the host command profile. It is granted unfiltered, and the system
+- [ ] Filter `mach-lookup` in the host command profile, and in the proxy's, which needs it too
+  (`SeatbeltProfile.renderProxy`). It is granted unfiltered, and the system
   program directories are executable (a command's scripts need `find`, `mount` and whatever else;
   `runtime-authority.txt`); together those let a command reach any Mach service — `open` through
   LaunchServices would start an application outside the profile. Measure the services a command
@@ -403,6 +400,20 @@ art, both mounting the project at its host path for path legibility rather than 
   entry — its fix as requested only turns the crash into a message, and lifts no length), or the
   session names get a shorter random part of their own, with the collision retry
   `Files.createTempDirectory` does today.
+
+## Deferred — the per-command wrapper process under `--run-on-host`
+
+- [ ] Re-evaluate the wrapper, the `--run-command-on-host` process the broker starts for each
+  request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
+  What it buys: the broker's cancel is a SIGTERM to one process, answered by that process's
+  shutdown hook, which ends exactly the command's groups and directory; a command's death,
+  however it dies, is confined to its own process and never takes the broker and its warm
+  servers with it; and the gate drives one command's whole lifecycle as `RunOnHost` with no
+  broker, which is how the wrapper rows measure the profile. What it costs: one more JVM start
+  per command, about a third of a second in the jar form and tens of milliseconds as the native
+  image, and a second code path for the command's runtime, the wrapper's own under Maven. The
+  alternative is the same work in a broker thread with cancellation done by hand; decide with the
+  measured cost per command and what the gate would drive instead.
 
 ## Before the first release — continuous integration
 

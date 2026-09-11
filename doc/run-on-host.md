@@ -1,9 +1,41 @@
 # Run on Host — sbt, `mill` and Maven commands outside the container
 
 `--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill` and Maven
-commands to the host, where each runs under a Seatbelt profile of its own. This document is the
-reference for how host commands work and what they require; the table names the code that enforces
-each part:
+commands to the host, where each runs under a Seatbelt profile of its own.
+
+    ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
+    │                                                                                    │
+    │  ┌─ sandbox container (inside the podman machine) ────────────────────────────┐    │
+    │  │ agent → sandbox-run-on-host sbt / mill / mvn                               │    │
+    │  └────────────────────────────────────────────────────────────────────────────┘    │
+    │                       │  command       ↑  stdout, stderr, and exit status          │
+    │                       ↓                │                                           │
+    │  ┌─ host broker (one per sandbox session) ────────────────────────────────────┐    │
+    │  │ runs one command at a time; starts and stops the processes it owns         │    │
+    │  └────────────────────────────────────────────────────────────────────────────┘    │
+    │                       │                                     │                      │
+    │                       ↓                                     ↓                      │
+    │  ┌─ build processes: Seatbelt profiles ─────┐    ┌─ proxy: Seatbelt profile ────┐  │
+    │  │ sbt client → sbt server                  │    │ listens on 127.0.0.1         │  │
+    │  │ mill client → mill daemon                │    │ allows only listed hosts     │  │
+    │  │ Maven starts a JVM for each command      │    │ and their permitted ports    │  │
+    │  │ dependency downloads                     ├───→│                              │  │
+    │  │ writes project files, except             │    │ cannot read project or cache │  │
+    │  │ .git and .ko-agent-sandbox;              │    │ logs allowed/denied requests │  │
+    │  │ also writes its caches and temp files    │    │                              │  │
+    │  └──────────────────────────────────────────┘    └──────────────────────────────┘  │
+    │                                                             │                      │
+    │  One sbt server or mill daemon per build directory,         │                      │
+    │  reused across this sandbox session's commands.             │                      │
+    │  sbt/mill proxies also stay running between commands;       │                      │
+    │  each Maven command starts and stops its own proxy.         │                      │
+    │                                                           HTTPS                    │
+    └─────────────────────────────────────────────────────────────┼──────────────────────┘
+                                                                  ↓
+                                                 Maven Central + configured repositories
+
+This document is the reference for how host commands work and what they require; the table names
+the code that enforces each part:
 
 | concern | binding site |
 | --- | --- |
@@ -650,14 +682,27 @@ It ships in the launcher's own artifact: the proxy sources share the launcher's 
 `dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts
 the proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
 action. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
-only in the container's own network namespace), and its starter reads the port from the same
-ready line the container launcher gates on.
+only in the container's own network namespace), with `preferIPv4Stack` on its command line as the
+command's environment contract sets it, since the dual-stack bind is the v4-mapped one the
+`localhost` class denies ("Network"); its starter reads the port from the same ready line the
+container launcher gates on.
 
-It runs unconfined, unlike the container's hardened copy of the same codebase — the one process
-that parses hostile bytes from the command being sandboxed, holding the uid whose files the profile
-exists to deny. This is an accepted risk: a JVM parse bug is an exception, the listener is
-loopback-only, and `HostileInputTest` covers the parser; a Seatbelt profile of the proxy's own is
-low-value defense in depth, deferred in `TODO.md`.
+It runs under a profile of its own (`SeatbeltProfile.renderProxy`), the same for every proxy the
+launcher starts on the host, since one `startProxy` starts them all. The profile grants its
+executable — the native image, or the JDK and each class-path entry of the jar form — the runtime
+authority as reads, the devices, and the network: outbound to every remote, since which hosts a
+client may reach is the proxy's own decision, by name, and SBPL filters by address; the resolver's
+socket, `/private/var/run/mDNSResponder`, which `InetAddress.getAllByName` reaches, with the root
+link `/var` its client spells the path through (measured: without that one link every lookup fails);
+and a listener of the `localhost` class for its port. Nothing of the user's: no project, no cache,
+no write anywhere, and of the operation families `sysctl-read` and `mach-lookup` alone, measured
+with `src/probe/run-on-host-profile-iterate.sh ops` and the proxy under its profile with each family
+added in turn — no `process-fork`, since it forks nothing. It runs from `/`, since the JVM asks for
+its working directory at start and the profile grants no other directory's. Its log is its stderr,
+opened by its starter and inherited, which no rule governs, so what `sandbox-exec` or the JVM says
+before the proxy prints anything lands where the ready line is awaited. The proxy is the one
+launcher process that parses bytes the confined command sends, as the user's uid; `HostileInputTest`
+covers the parser, and the profile is what a parse bug meets.
 
 It runs without inspection material: no-material mode enforces the destination host and port at
 CONNECT time and tunnels opaquely, so the command needs no extra trust material and the read-only

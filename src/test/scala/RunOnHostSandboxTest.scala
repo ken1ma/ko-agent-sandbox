@@ -302,6 +302,31 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
     )
 
+  test("the proxy profile's inputs on a JVM are the JDK to run and the class path to read"):
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin")))
+    val inputs = proxyInputs(authority).fold(fail(_), identity)
+    assertEquals(inputs.executables, Seq(Path.of(System.getProperty("java.home")).toRealPath()))
+    assert(inputs.reads.nonEmpty)
+    assert(inputs.reads.forall(entry => Files.exists(entry) && entry.isAbsolute), inputs.reads.take(8).toString)
+    assertEquals(inputs.runtime, authority)
+    // A class-path entry that does not exist is skipped; a relative one is absolute against this
+    // JVM's working directory, and an empty one — a trailing separator included — is that
+    // directory, as the JVM reads them; the proxy runs from / and needs the same entries there.
+    val missing = proxyInputs(authority, classPath = "/no/such/entry.jar").fold(fail(_), identity)
+    assertEquals(missing.reads, Seq.empty)
+    val cwd = Path.of("").toRealPath()
+    val empty = proxyInputs(authority, classPath = "/no/such/entry.jar:").fold(fail(_), identity)
+    assertEquals(empty.reads, Seq(cwd))
+    assertEquals(proxyInputs(authority, classPath = "").fold(fail(_), identity).reads, Seq(cwd))
+    assertEquals(proxyInputs(authority, classPath = "build.sbt").fold(fail(_), identity).reads,
+      Seq(cwd.resolve("build.sbt")))
+    assertEquals(
+      selfClassPath("target/dist/ko-agent-sandbox.jar:"),
+      Seq(Path.of("").toAbsolutePath.resolve("target/dist/ko-agent-sandbox.jar").toString,
+        Path.of("").toAbsolutePath.toString),
+    )
+    assert(proxyInputs(authority, javaHome = "/no/such/jdk").isLeft)
+
   test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
     val root = Files.createTempDirectory("brk")

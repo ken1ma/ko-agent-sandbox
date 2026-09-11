@@ -328,14 +328,19 @@ if want mvn; then
     emit mvn || exit 1
     profiles="$profiles mvn"
 fi
-# `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
-# above: the wrapper would find it holding this project's portfile and refuse.
-sbt --jvm-client -batch shutdown >/dev/null 2>&1
 profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
-lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
 [ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
+# The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
+echo "emitting the proxy profile"
+sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/gate-proxy.sb\" \
+        src/main/resources/agentsandbox/runtime-authority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
+        >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
+# `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
+# above: the wrapper would find it holding this project's portfile and refuse.
+sbt --jvm-client -batch shutdown >/dev/null 2>&1
+lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
 # Each profile has its own command's temporary directory and run-on-host cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
 use_profile() { # program
@@ -653,6 +658,42 @@ else
     else report FAIL "fetch unlisted host via proxy" \
         "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
 fi
+
+# --- the proxy's own profile ----------------------------------------------------------------------
+#
+# The wrapper rows above ran every fetch through a proxy under this profile, so they prove the
+# confined proxy works, the resolver rule included. These rows prove the profile denies, with the
+# granted java as the probe, since the profile execs nothing else. A JVM reading `@dir` reports
+# "Failed to read" on a directory it may open and "could not open" on one it may not, so the
+# control's word separates the denial from the directory; `-Xlog` to a file is a write, whose
+# control creates the file and whose denial the JVM reports as the open it could not make.
+echo
+echo "the proxy's own profile"
+# From /, as the wrapper runs its proxy: the JVM asks for its working directory at start. Both
+# streams, since the JVM reports a log file it cannot open on stdout.
+proxy_java() {
+    (cd / && /usr/bin/sandbox-exec -f "$work/gate-proxy.sb" "$JAVA_HOME/bin/java" "$@") >"$work/row.err" 2>&1
+}
+if proxy_java -version
+then report PASS "the proxy's java starts under its profile"
+else report FAIL "the proxy's java starts under its profile" "$(first_error)"; fi
+if "$JAVA_HOME/bin/java" @"$HOME" -version >/dev/null 2>"$work/row.err" \
+    || ! grep -q 'Failed to read' "$work/row.err"
+then report FAIL "the proxy cannot read ~" "control: $(first_error)"
+elif proxy_java @"$HOME" -version
+then report FAIL "the proxy cannot read ~" "allowed"
+elif grep -q 'could not open' "$work/row.err"
+then report PASS "the proxy cannot read ~" "denied: $(first_error)"
+else report FAIL "the proxy cannot read ~" "$(first_error)"; fi
+write_probe=$work/gate-proxy-write.log
+if ! "$JAVA_HOME/bin/java" -Xlog:gc:file="$write_probe" -version >/dev/null 2>"$work/row.err" \
+    || [ ! -e "$write_probe" ]
+then report FAIL "the proxy cannot write a file" "control: $(first_error)"
+elif rm -f "$write_probe" && proxy_java -Xlog:gc:file="$write_probe" -version || [ -e "$write_probe" ]
+then report FAIL "the proxy cannot write a file" "allowed"
+elif grep -q 'Error opening log file' "$work/row.err"
+then report PASS "the proxy cannot write a file" "denied: $(first_error)"
+else report FAIL "the proxy cannot write a file" "$(first_error)"; fi
 
 # --- the command lifecycle ----------------------------------------------------------------------
 
