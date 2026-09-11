@@ -228,9 +228,10 @@ on podman-less machines and kills the test JVM.
 
 ## Deferred — a bound on a silent host command
 
-An sbt server's start is bounded by the broker's progress bound (`run-on-host.md`, "The channel
-and the command"). A command that stalls after its server is up — or a `mill` or Maven command at
-any point — is silent until the agent gives up: nothing bounds it, not the wrapper, not the
+An sbt server's and a mill daemon's start are bounded by the broker's progress bound
+(`run-on-host.md`, "The channel and the command", "`mill`"). A command that stalls after its
+server or daemon is up — or a Maven command at any point — is silent until the agent gives up:
+nothing bounds it, not the wrapper, not the
 broker, whose writers die only with their requester, and not the shim, which reads output to EOF.
 One form would, and it waits on a measurement:
 
@@ -257,6 +258,11 @@ sharing one server between two launches (the deferred design of
 `plan-host-build-daemons-and-gradle.md`, section 11): takeover ends the other launch's server and
 starts its own; sharing runs both launches' clients against one server.
 
+Ending a process another party owns is implemented for Mill, for the user's own daemon
+(`MillDaemons.endForeign`): the daemon is found in the process table, its idleness observed on its
+own TCP table, and its pid and start time proved again immediately before each signal. Another
+launch's daemon is refused, as another launch's sbt server is, and for the same reason:
+
 The reason it is deferred, not done: a broker ending another broker's server means one process
 signalling another's recorded process group, and `endRecordedGroup` validates the leader's pid and
 start time and then signals — so a peer ending the same group, and the pid being recycled between
@@ -275,6 +281,33 @@ those paths must take it around the whole validate-and-signal, and teardown taki
 `SIGTERM` is the hard part. When built, this needs deterministic concurrency tests that pause one
 retirement between the identity check and the signal while another retires and recycles the group
 (through the injected `Processes` seam, without real OS pids), covering all four paths.
+
+## Deferred — fetching mill's JVM launcher for the user
+
+A `mill` command whose pinned version the user has not provisioned is refused with the command
+to run, `MILL_VERSION=<v>-jvm ./mill version` in a host terminal (`run-on-host.md`, "`mill`").
+The sandbox does not fetch the launcher itself because of where the bootstrap keeps it:
+`~/.cache/mill/download` is the folder the user's own unconfined `./mill` runs launchers from,
+so an executable the sandbox chose there would later run outside any sandbox. The refusal is
+clear, and once per version per user it is a tolerable cost.
+
+A way to remove the step while keeping the rule that the user provisions executables and the
+sandbox fetches only artifacts: the JVM launcher is the Maven Central artifact
+`com.lihaoyi:mill-dist:<v>` (its `-assembly` jar, the file the bootstrap downloads), on the host
+every `mill` command's proxy already allows. The wrapper would resolve it through the proxy into
+the project's run-on-host cache like any other jar, and start it as
+`java -cp <jar> mill.launcher.MillLauncherMain` instead of through the bootstrap script.
+
+- Benefits: no host step for the user, for a first project and for every version bump; nothing
+  written where the user's own `./mill` looks; the file is never executed directly, since the
+  profile grants caches no process-exec and the JVM only loads them, so the pin in the project
+  selects a version, never a file the user runs.
+- Costs: the wrapper runs Mill's launcher class rather than the stock `./mill` script, so the
+  script's own resolution — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and
+  `-native` cases — is replaced by the wrapper's, which already reads the same pins; the first
+  command from a project downloads the launcher, tens of megabytes, through the proxy; and the
+  plan's decision to start the daemon with the stock executable (section 7.2) would be revised,
+  with the daemon start and the gate's Mill rows measured again.
 
 ## Deferred — Gradle under `--run-on-host`
 
@@ -313,6 +346,10 @@ Everything else a Gradle backend needs is known, so the open decision is the loo
 - [ ] Decide: a Gradle-only profile that allows loopback both ways, with the cost stated in
   `SECURITY.md`; Gradle under the proxy-only rule, with `gradle test` documented as failing with
   `EPERM`; or no Gradle.
+
+`plan-host-build-daemons-and-gradle.md`, section 19, records what sbt and Mill settled about a
+cancel, a restart the tool does itself, and the user's own daemon — each to be answered from
+Gradle's sources before a mechanism is written.
 
 ## Deferred — same-path workspace mounting under `--run-on-host`
 

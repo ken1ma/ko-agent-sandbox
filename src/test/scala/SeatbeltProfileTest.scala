@@ -243,6 +243,38 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
       network = Network.SbtClient(brokerTmp))).isLeft)
 
+  test("the mill daemon binds loopback listeners on any port, and its client reaches the one port it was proved on"):
+    val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
+      .linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      daemonRules,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-bind network-inbound (local ip "localhost:*"))""",
+      ),
+    )
+    val clientRules = render(millInputs.copy(network = Network.MillClient(50123))).fold(fail(_), identity)
+      .linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      clientRules,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-outbound (remote ip "localhost:50123"))""",
+      ),
+    )
+    // Neither grant reaches another program, and the client's port is a port.
+    assert(render(inputs().copy(network = Network.MillDaemon)).isLeft)
+    assert(render(inputs().copy(network = Network.MillClient(50123))).isLeft)
+    assert(render(mvnInputs.copy(network = Network.MillClient(50123))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(0))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(70000))).isLeft)
+
   // --------------------------------------------------------------------------
   // The cs-installed sbt script's second half
   // --------------------------------------------------------------------------
@@ -274,7 +306,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   private val millPrereqs = prereqs.copy(
     program = Program.Mill,
-    executable = Paths.get(s"$home/.cache/mill/download/1.1.8-native-mac-aarch64"),
+    executable = Paths.get(s"$home/.cache/mill/download/1.1.9"),
   )
 
   private def millInputs = inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None)

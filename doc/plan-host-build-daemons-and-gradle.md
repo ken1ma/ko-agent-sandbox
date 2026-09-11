@@ -65,8 +65,35 @@ review:
 
 Build locks and dead-session recovery are unchanged: build locks serialize admission, startup and
 commands; the scavenger still collects dead owners through its exclusive condemn-by-rename claim.
-The Mill runtime (section 7) reaches these same functions when step 4 lands and inherits this
-model.
+
+## Revision — step 4, Mill as built (2026-09-11)
+
+The Mill runtime reaches the same functions and inherits the step-3 model; where section 7 says
+otherwise, the built behavior is:
+
+1. **Another launch's daemon is refused, never signalled**, by its `daemon-mill-<hash>` record
+   (`RunOnHostSession.runtimeOwner`), as its sbt server is. The user's own daemon is ended by
+   proof once idle, as 7.2 step 0 and 7.3 say, with the idle observation on the daemon's own TCP
+   table alone (`MillDaemons.endForeign`): the sbt-server peer argument of 7.3 was for UNIX
+   sockets and is not needed here.
+2. **A Mill configuration change replaces the daemon under the same proxy**, as section 4 says,
+   the launcher assembled afresh since a changed version pin grants another. The key is the
+   selected source's text, a superset of Mill's parsed value
+   (`RunOnHostPrereqs.millDaemonConfig`).
+3. **The daemon's liveness is its own pid and start time**, not its record's spawn: the starter
+   exits by design once the daemon is up, so the record's exit file is no evidence.
+4. **A daemon whose spawn leader was killed alone is not attributed** — there is no portfile
+   analogue — and exits on Mill's idle timeout; `doc/run-on-host.md` "`mill`" states it.
+5. The gate's Mill rows (7.6, and the regression tests of 7.3) run through the channel against
+   `src/probe/mill-fixture`, whose `run` creates a temporary file, prints where, and sleeps on
+   request.
+6. **A mill client's temporary directory is the broker's `tmp/`**, not the command's own as
+   6.2 has for sbt clients (`RunOnHostSandbox.temporaryDirectories` has why).
+7. **A redirected `out/mill-daemon` is refused** before any mill command, with the residual a
+   link made after the check leaves stated in `doc/run-on-host.md` "`mill`"
+   (`MillDaemons.rendezvousIsOwn`); `MILL_OUTPUT_DIR` is never forwarded.
+8. **The daemon configuration takes the build file's header whole**, each source under its own
+   name (`RunOnHostPrereqs.millDaemonConfig` has why).
 
 ---
 
@@ -584,10 +611,10 @@ The starter fails on its own; ending it early is deferred (section 11).
 
 ### 7.3 `out/mill-daemon` is Mill's, not the broker's
 
-> Superseded in part by the step-3 revision (see the revision note): a broker never signals
-> another launch's server or daemon, so the "ended by its record" and "two launches end each
-> other's in turn" claims below become "another launch's is refused." This section is rewritten
-> when Mill lands (step 4).
+> Superseded in part by the step-3 and step-4 revisions (the revision notes above): a broker
+> never signals another launch's server or daemon, so the "ended by its record" and "two launches
+> end each other's in turn" claims below are "another launch's is refused", and the idle
+> observation is the daemon's own TCP table.
 
 
 The broker neither clears `out/mill-daemon` nor takes authority from it: `socketPort` is a
@@ -1044,6 +1071,31 @@ compatibility matching operates only inside the broker's `GRADLE_USER_HOME`; a u
 never attached to. At the broker's end: `gradle --stop` with the matching distribution, JDK and
 home may be attempted; every recorded group is ended regardless; the next launch adopts nothing.
 Killing only the main daemon is not assumed sufficient.
+
+What Phase 1 settled for sbt and Mill, to be answered for Gradle from its sources before any
+mechanism is written, so that the broker builds no guarantee the stock tool does not give:
+
+- **A cancel does what the tool does.** sbt's server survives a client's disconnect and keeps
+  the running exec cancelled cooperatively; Mill's daemon shuts itself down on a disconnect
+  mid-command, and the next command starts one. Step 3 first built a server retirement on
+  cancel, a guarantee stock sbt does not give, and removed it. Read what Gradle's daemon does
+  when its client disconnects mid-build, in its `launcher/daemon` sources, and follow it; the
+  broker retires nothing on a cancel by its own rule.
+- **A process the tool restarts on its own is restarted before the command, not left to fail.**
+  Mill's client ends a daemon whose fingerprint differs and starts one itself, which a confined
+  client cannot; the broker compares the same inputs first. Gradle's daemon compatibility
+  matching starts a new daemon in the same `GRADLE_USER_HOME` on a mismatch, inside the profile,
+  so nothing of the kind is needed unless a probe shows the start failing.
+- **A daemon of the user's own is the tool's rendezvous problem, not the broker's.** sbt's
+  portfile and Mill's `out/mill-daemon` live in the project, so the user's own server or daemon
+  holds the rendezvous the broker's needs: the user's sbt server is shut down through sbt's own
+  protocol, after its exec, and the user's Mill daemon — for which no safe protocol path exists,
+  since a confined client would connect wherever `socketPort` says — is ended by proof once idle
+  (`MillDaemons.endForeign`). Gradle's rendezvous is its daemon registry under
+  `GRADLE_USER_HOME`, and the broker's home is its own, so the user's daemons under `~/.gradle`
+  are never met: no ending, no refusal, and no window to document. Verify that with a probe
+  row rather than assume it, since a project `gradle.properties` or `GRADLE_OPTS` cannot move the
+  home once the wrapper sets it.
 
 ## 20. Gradle environment
 

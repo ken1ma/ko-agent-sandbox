@@ -89,12 +89,18 @@ object SeatbeltProfile:
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
   /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
-    * the dispatch shows which program gets which: nothing more for a server, a `mill` client
-    * and Maven; for an sbt client, the sockets under the broker's `tmp/`, where its server
-    * listens (RunOnHostSandbox.BrokerRuntimes). */
+    * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
+    * an sbt client, the sockets under the broker's `tmp/`, where its server listens; for the
+    * mill daemon, loopback listeners on any port, since it binds port 0 and no rule confines a
+    * bind to one — a grant everything the daemon forks inherits, so a build under mill can bind
+    * a loopback listener where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
+    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
+    * MillDaemons). Measured: src/probe/run-on-host-broker-session.sh L1–L4. */
   enum Network:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
+    case MillDaemon
+    case MillClient(daemonPort: Int)
 
   case class ProfileInputs(
     prereqs: CommandPrereqs,
@@ -120,8 +126,15 @@ object SeatbeltProfile:
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
     val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
     val serverTmp = inputs.network match
-      case Network.SbtClient(tmp) => Some(tmp)
-      case Network.ProxyOnly      => None
+      case Network.SbtClient(tmp)                                    => Some(tmp)
+      case Network.ProxyOnly | Network.MillDaemon | Network.MillClient(_) => None
+    val networkProgram = inputs.network match
+      case Network.ProxyOnly                          => None
+      case Network.SbtClient(_)                       => Some(Program.Sbt)
+      case Network.MillDaemon | Network.MillClient(_) => Some(Program.Mill)
+    val daemonPort = inputs.network match
+      case Network.MillClient(port) => Some(port)
+      case _                        => None
     val everyPath =
       readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ serverTmp
 
@@ -142,8 +155,10 @@ object SeatbeltProfile:
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
       case _ if program == Program.Mill && inputs.distribution.isDefined =>
         Left("a mill profile has no distribution to grant")
-      case _ if program != Program.Sbt && serverTmp.isDefined =>
-        Left(s"a ${program.name} profile has no sbt server to reach")
+      case _ if networkProgram.exists(_ != program) =>
+        Left(s"a ${program.name} profile has no ${networkProgram.get.name} server or daemon to reach")
+      case _ if daemonPort.exists(port => port < 1 || port > 65535) =>
+        Left(s"the daemon port ${daemonPort.get} is not a port")
       case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
         Left(s"a ${program.name} profile has no sbt global base to grant")
       case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
@@ -209,6 +224,16 @@ object SeatbeltProfile:
           lines += ";; The broker's sbt server: its socket under the broker's temporary directory."
           lines += s"(allow file-read-metadata file-test-existence ${subpath(tmp)})"
           lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
+        inputs.network match
+          case Network.MillDaemon =>
+            // "localhost:*", since the daemon binds port 0 and the filter names no range; the
+            // starter's own connect stays denied, which is what leaves the daemon behind.
+            lines += ";; The mill daemon: loopback listeners, any port; inherited by what the build forks."
+            lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
+          case Network.MillClient(port) =>
+            lines += ";; The broker's mill daemon, on the one port it was proved listening on."
+            lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
+          case Network.ProxyOnly | Network.SbtClient(_) => ()
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
