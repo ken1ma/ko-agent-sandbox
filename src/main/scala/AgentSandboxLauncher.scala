@@ -1901,13 +1901,14 @@ object AgentSandboxLauncher:
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
            |sbt's server and mill's daemon stay warm across invocations. To run several commands in
            |one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments
-           |as one command, and `compile test` fails to parse. Under sbt and mvn the host grants no
+           |as one command, and `compile test` fails to parse. The container's own `sbt` is the last
+           |resort, not an alternative: host and container builds compile with different JVMs
+           |against different caches over the same `target/`, so a container build costs the host a
+           |rebuild or the symlink cleanup described above. Under sbt and mvn the host grants no
            |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
            |suite alone runs in the container. Under mill a build's processes can bind listeners.
-           |Container `sbt` still works, over the same `target/` — host and container builds
-           |compile with different JVMs against different caches, so switching between them
-           |can cost a rebuild or need the symlink cleanup described above. Any other host
-           |command that fails or is refused is reported to the user, never re-run in the container.
+           |Any other host command that fails or is refused is reported to the user,
+           |never re-run in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
            |""".stripMargin
       else if hostCommandsAvailable then

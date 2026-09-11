@@ -262,9 +262,16 @@ object RunOnHostSandbox:
     else
       Seq(
         Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString,
-        "-cp", System.getProperty("java.class.path"),
+        "-cp", selfClassPath().mkString(java.io.File.pathSeparator),
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ actionAndArguments
+
+  /** This JVM's class path with every element absolute against this JVM's working directory —
+    * `java -jar target/dist/ko-agent-sandbox.jar` names it relative, and an empty element is
+    * that directory itself — since the proxy runs from `/` (startProxy), where a relative
+    * element names nothing. */
+  def selfClassPath(classPath: String = System.getProperty("java.class.path")): Seq[String] =
+    classPath.split(java.io.File.pathSeparator, -1).toSeq.map(entry => Path.of(entry).toAbsolutePath.toString)
 
   /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port>]] --
@@ -434,8 +441,8 @@ object RunOnHostSandbox:
     * where the wrapper's own settings still win over it. */
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
-  /** The bound port, from the ready line the proxy prints after `bind`; its log file is the tee
-    * of its stderr, so the line is written where this polls. */
+  /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
+    * stderr, so the line is written where this polls. */
   def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
     val Ready = raw""".*agent-egress-proxy listening on :(\d+).*""".r
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
@@ -725,10 +732,11 @@ object RunOnHostSandbox:
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
 
   /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
-  private def createProxy(
+  private def createProxy(authority: SeatbeltProfile.RuntimeAuthority)(
     program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
   ): Either[String, Int] =
-    startProxy(record, program, fileHosts, proxyLog).flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
+    startProxy(record, program, fileHosts, proxyLog, authority)
+      .flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
 
   /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
     * `-D` and `-J` arguments it takes, and the record its group is registered at. */
@@ -776,7 +784,7 @@ object RunOnHostSandbox:
     assemble: (Path, Program, Path) => Either[String, Assembled] =
       (project, program, buildDirectory) =>
         RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
-    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy,
+    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(authority),
     server: ServerStart => Either[String, Unit] = start => startSbtServer(session, authority, forwards, start),
     daemon: DaemonStart => Either[String, MillDaemons.Daemon] =
       start => MillDaemons.start(session, authority, forwards, RunOnHostSession.HostProcesses, log, start),
@@ -1047,6 +1055,7 @@ object RunOnHostSandbox:
       val proxy = s"proxy ${discard(proxyRecord(program, hash))}"
       try
         Files.deleteIfExists(proxyLog)
+        Files.deleteIfExists(proxyProfileFile(proxyLog))
         Files.deleteIfExists(session.directory.resolve(s"${serverRecordName(hash)}.sb"))
         Files.deleteIfExists(session.directory.resolve(s"${daemonRecordName(hash)}.sb"))
         val recordsOfHash =
@@ -1261,31 +1270,76 @@ object RunOnHostSandbox:
         case None =>
           val proxyLog = session.directory.resolve("proxy.log")
           readProgramRules(assembled.prereqs.project, program)
-            .flatMap(createProxy(program, _, session.records.resolve("proxy"), proxyLog))
+            .flatMap(createProxy(authority)(program, _, session.records.resolve("proxy"), proxyLog))
             .map(Runtime(session.directory, _, proxyLog))
 
   private[launcher] def logLength(file: Path): Long =
     try Files.size(file)
     catch case _: IOException => 0L
 
+  /**
+   * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): the native
+   * image alone, or the JDK and each class-path entry of the jar form — what selfInvocation
+   * runs. An entry that does not exist is skipped, as the JVM skips it; a relative or empty one
+   * is resolved as selfClassPath spells it. The JDK and class path are parameters for the gate's
+   * emitter, which renders the profile from inside sbt's JVM for the java it runs the rows with.
+   */
+  def proxyInputs(
+    authority: SeatbeltProfile.RuntimeAuthority,
+    javaHome: String = System.getProperty("java.home"),
+    classPath: String = System.getProperty("java.class.path"),
+  ): Either[String, SeatbeltProfile.ProxyInputs] =
+    if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
+      val self = ProcessHandle.current().info().command()
+      Option.when(self.isPresent)(self.get).flatMap(path => realPath(Path.of(path)))
+        .toRight("the native image cannot name itself")
+        .map(binary => SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, authority))
+    else
+      realPath(Path.of(javaHome)).toRight(s"the JDK $javaHome is not readable").map: jdk =>
+        SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), authority)
+
+  /** The proxy's profile, beside its log. */
+  private def proxyProfileFile(proxyLog: Path): Path =
+    proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + ".sb")
+
+  /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
   private def startProxy(
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
+    authority: SeatbeltProfile.RuntimeAuthority,
   ): Either[String, Process] =
-    val command = RunOnHostSession.registeredSpawn(record, selfInvocation("--serve-proxy-on-host"))
-    val builder = ProcessBuilder(command*)
-    // Closed like the command's: the proxy needs its own settings and, to leave through an upstream
-    // proxy as the container's copy does, the one selected variable. Nothing else of the
-    // launcher's environment has a reader here.
-    builder.environment.clear()
-    upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
-    builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
-    builder.environment.put("EGRESS_RULE", egressRuleText(program, fileHosts))
-    builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
-    builder.environment.put("EGRESS_LOG_FILE", proxyLog.toString)
-    builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-    builder.redirectError(ProcessBuilder.Redirect.DISCARD) // the log file is the tee
-    try Right(builder.start())
-    catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
+    proxyInputs(authority).flatMap(SeatbeltProfile.renderProxy).flatMap: profile =>
+      try
+        val profileFile = proxyProfileFile(proxyLog)
+        Files.writeString(profileFile, profile, UTF_8)
+        // The property the command's environment contract sets (commandEnvironment), on the
+        // command line since the proxy's environment is closed: a dual-stack JVM binds
+        // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover (measured: the
+        // gate's proxy rows).
+        val invocation = selfInvocation("--serve-proxy-on-host")
+        val command = RunOnHostSession.registeredSpawn(
+          record,
+          Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
+            ++ (invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
+        )
+        val builder = ProcessBuilder(command*)
+        // The JVM asks for its working directory at start (SystemProps), and the profile grants
+        // no directory of the starter's; the root it does grant.
+        builder.directory(java.io.File("/"))
+        // Closed like the command's: the proxy needs its own settings and, to leave through an
+        // upstream proxy as the container's copy does, the one selected variable. Nothing else of
+        // the launcher's environment has a reader here.
+        builder.environment.clear()
+        upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
+        builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
+        builder.environment.put("EGRESS_RULE", egressRuleText(program, fileHosts))
+        builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
+        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        // Its stderr is its log, opened here and inherited: the profile grants no write
+        // (serverStderr), and what sandbox-exec or the JVM says before the proxy prints anything
+        // lands where the ready line is awaited.
+        builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
+        Right(builder.start())
+      catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
 
   /**
    * Where a command's processes keep temporary files, and where sbt's sockets are: `(tmp,

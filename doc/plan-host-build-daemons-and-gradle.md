@@ -975,47 +975,56 @@ Decided 2026-09-10, with the reasons each rests on:
 # The proxy's own profile
 
 Independent of Gradle, ahead of it: the one launcher process that parses bytes the confined
-command sends — every CONNECT line and host name — runs unconfined today, as the user, with the
-acceptance `doc/run-on-host.md` "The command's egress proxy" states. It gets a profile of its own.
+command sends — every CONNECT line and host name — runs as the user. It gets a profile of its own.
 
-**What must hold.** The host proxy runs under a Seatbelt profile that grants its executable, its
-log and the network, and nothing of the user's files; the same profile for every proxy the
-launcher starts on the host — the broker's per build directory and program, the command's own
-under Maven, the gate's — since one `RunOnHostSandbox.startProxy` starts them all.
+**What must hold.** The host proxy runs under a Seatbelt profile that grants its executable, the
+runtime authority and the network, and nothing of the user's files; the same profile for every
+proxy the launcher starts on the host — the broker's per build directory and program, the
+command's own under Maven, the gate's — since one `RunOnHostSandbox.startProxy` starts them all.
 
 **The profile** (`SeatbeltProfile.renderProxy`, sharing `render`'s parts: the root component and
 ancestor literals, `Devices`, the measured `RuntimeAuthority`):
 
 ```text
 (deny default)
-process-exec* file-read*   the launcher's own executable — the native image, or the JDK and each
-                           class-path entry of the jar form (RunOnHostSandbox.selfInvocation)
-file-read* / process-exec* the runtime authority, as the command profile
-file-write*                the log file alone, a literal: the proxy appends to it
-                           (AgentEgressProxy.teeOutput), and the broker reads its ready line
+process-exec* file-read*   the launcher's own executable — the native image, or the JDK of the
+                           jar form (RunOnHostSandbox.proxyInputs)
+file-read*                 each class-path entry of the jar form
+file-read*                 the runtime authority, reads alone: the proxy executes nothing but
+                           itself
 network-outbound           every remote, `(remote ip "*:*")`: host filtering is the proxy's own
                            job, and SBPL cannot filter by name
 network-outbound           the resolver's socket, /private/var/run/mDNSResponder:
-                           `InetAddress.getAllByName` is how it resolves
+                           `InetAddress.getAllByName` is how it resolves — and metadata on
+                           the root link /var its client spells the path through (measured)
 network-bind, -inbound     `(local ip "localhost:*")`: the loopback address is the proxy's own
                            EGRESS_BIND, since no rule names loopback alone
 ```
 
-No project, no cache, no guard: nothing under the user's home is granted but the log. The
-environment is already the closed one `startProxy` builds. The upstream proxy variable, when
-forwarded, changes nothing: outbound is unrestricted.
+No write, no project, no cache: nothing under the user's home is granted but what the jar form
+loads; of the operation families `sysctl-read` and `mach-lookup`, measured (`iterate.sh ops` for
+the JDK, then the proxy itself, which dies of a segmentation fault in a system library without
+`mach-lookup`), and no `process-fork`. The proxy runs from `/`: the JVM asks for its working
+directory at start, and the root is the one directory the profile grants (measured: the gate's
+first run failed there). The log is the proxy's stderr, opened by the starter and inherited, which
+no rule governs — the sbt server's stderr already lands in a directory its profile does not grant
+(`RunOnHostSandbox.serverStderr`) — so what `sandbox-exec` or the JVM says before the proxy prints
+anything lands where the ready line is awaited. The environment is already the closed one
+`startProxy` builds. The upstream proxy variable, when forwarded, changes nothing: outbound is
+unrestricted.
 
-**Tests.** `SeatbeltProfileTest`: the network lines, the log as the only write, no grant under
-the home, a relative log path refused. The gate: its proxy rows already run every fetch through
-the proxy, so they prove the confined one works, the resolver rule included; added rows, under
-the emitted proxy profile, prove a read of the user's home and a write beside the log denied. A
-read the proxy needs and the command never did shows there, and
-`src/probe/run-on-host-profile-iterate.sh` finds it as for any command.
+**Tests.** `SeatbeltProfileTest`: the grants, the network lines, a relative path refused.
+The gate: its wrapper rows run every fetch through a proxy under this profile, so they prove the
+confined one works, the resolver rule included; the rows under the emitted proxy profile prove the
+JVM starts, a read of the user's home denied and a write denied — the probe is the granted java
+alone, since the profile execs nothing else. A read the proxy needs and the command never did
+shows there, and `src/probe/run-on-host-profile-iterate.sh` finds it as for any command. The gate
+runs the jar form; the native image's first launch is what measures it, a denial landing in the
+proxy's log.
 
-**Documents.** `doc/run-on-host.md` "The command's egress proxy": the acceptance paragraph
-becomes the profile's statement, with the why of unrestricted outbound; `doc/TODO.md`'s entry is
-deleted when this lands. The per-program table in `SECURITY.md` is untouched: the proxy is not a
-build process.
+**Documents.** `doc/run-on-host.md` "The command's egress proxy" states the profile, `SECURITY.md`
+"Run on host" its one sentence; `doc/TODO.md`'s entry is deleted. The per-program table in
+`SECURITY.md` is untouched: the proxy is not a build process.
 
 ---
 
