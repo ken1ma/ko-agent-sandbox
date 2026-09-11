@@ -246,6 +246,51 @@ One form would, and it waits on a measurement:
 Not a form: a bound on the time to first output. Every JVM prints its `JAVA_TOOL_OPTIONS` banner
 within a second, so every host command has written something before it can stall.
 
+## Deferred — an idle bound for the sbt server
+
+The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
+`sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
+(`run-on-host.md`, the startup-cost paragraph). A warm server is what a terminal user keeps on
+purpose, so its heap is the price chosen; Mill's daemon exits on Mill's own thirty minutes.
+
+The form, if a launch ever wants one: a broker-kept bound selected by a launch option — never an
+environment variable, since the command's environment is closed by design — with thirty minutes,
+Mill's default, as the value to start from. Idle counts from the end of the last sbt command,
+never from the server's start. The broker's serve loop blocks in the handshake reader between
+requests, so the bound needs a timer thread, the one thread retiring runtimes outside the serial
+dispatch, fenced thus: one lock covers the broker's runtime state; a request takes it, marks the
+runtime busy and cancels its pending expiry before the command receives the runtime, and re-arms
+the expiry when the command ends; each re-arming increments an idle generation kept with the
+runtime; an expiry carries the generation it was armed with and, under the lock, retires the
+runtime only if that instance is idle and its generation is still the expiry's own — so a
+cancelled callback that had left its sleep before a request re-armed the timer does nothing, and
+a timer outliving a retired runtime is a no-op on its replacement. Its tests: a request arriving
+as the timer fires, that late callback, and a stale timer after replacement, each leaving one
+consistent runtime.
+
+## Deferred — a rule-file edit taking effect at the next command
+
+A program's rule file, and the distribution `cs install sbt` execs, are read when the broker
+creates a runtime, and an edit to either leaves a running one as it is: the edit takes effect at
+the runtime's next creation (`run-on-host.md`, "The command's egress proxy"). Until then a host
+removed from the file stays reachable from that runtime's proxy, and one added is not. The form:
+the broker compares, before each command, the file's lines and the distribution's home with those
+the runtime was created from, and retires the runtime on a difference — the proxy with its server
+or daemon, whose JVM options carry the proxy's port from their start — so the edit takes effect
+at the next command, at the cost of a start. The comparison the broker makes before each `mill`
+command for Mill's own inputs (`RunOnHostPrereqs.millDaemonConfig`) is the shape.
+
+## Deferred — ending the mill starter once the daemon listens
+
+The broker starts Mill's daemon by running the build directory's `./mill version` under the
+daemon profile, which denies the launcher's own connect, so the launcher retries for ten seconds
+before it exits (`run-on-host.md`, "`mill`"); every daemon start pays that retry. Ending the
+starter as soon as `lsof` shows the daemon listening would save it. That must signal the
+starter's own pid alone — the daemon lives in the same registered group, so ending the group
+would end it — and it needs the process topology the gate's daemon rows record first: which pid
+is the launcher and which the daemon, and that the daemon survives its starter's TERM as it
+survives the starter's own exit (`destroyOnExit = false`, `MillServerLauncher.scala`).
+
 ## Deferred — cross-launch server takeover
 
 Two `ko-agent-sandbox` launches on one project share nothing: each broker keeps its own sbt
@@ -254,14 +299,14 @@ refused rather than served (`SECURITY.md` "Run on host"; `RunOnHostSandbox.Broke
 build lock already serializes the *commands* of one directory across launches, so a running
 command never overlaps; what is deferred is a launch *ending or adopting another live launch's
 warm server* so the second need not wait for the first launch to end. This is separate from
-sharing one server between two launches (the deferred design of
-`plan-host-build-daemons-and-gradle.md`, section 11): takeover ends the other launch's server and
-starts its own; sharing runs both launches' clients against one server.
+sharing one server between two launches ("two launches sharing one server or daemon", below):
+takeover ends the other launch's server and starts its own; sharing runs both launches' clients
+against one server.
 
 Ending a process another party owns is implemented for Mill, for the user's own daemon
 (`MillDaemons.endForeign`): the daemon is found in the process table, its idleness observed on its
 own TCP table, and its pid and start time proved again immediately before each signal. Another
-launch's daemon is refused, as another launch's sbt server is, and for the same reason:
+launch's daemon is refused, as another launch's sbt server is, and for the same reason.
 
 The reason it is deferred, not done: a broker ending another broker's server means one process
 signalling another's recorded process group, and `endRecordedGroup` validates the leader's pid and
@@ -281,6 +326,26 @@ those paths must take it around the whole validate-and-signal, and teardown taki
 `SIGTERM` is the hard part. When built, this needs deterministic concurrency tests that pause one
 retirement between the identity check and the signal while another retires and recycles the group
 (through the injected `Processes` seam, without real OS pids), covering all four paths.
+
+## Deferred — two launches sharing one server or daemon
+
+Two launches on one project could share one sbt server or mill daemon when everything the
+runtime was created from is equal — JDK home, executable and distribution, cache root, rule
+lines, and the forwarded name/value pairs, the one that decides it for security, since a launch
+forwarding a secret must not serve a launch that does not. The egress profile is never part of
+it: every host command's proxy gets `deny defaults`, Maven Central and the rule file. The second
+launch is refused the directory while the first lives; "cross-launch server takeover", above, is
+the other way past that refusal, ending the first launch's runtime.
+
+The design: the broker writes that set as a descriptor into its session, out of the confined
+command's reach since the profile grants `tmp/` alone; a second launch finding a server whose
+socket, or a daemon whose group, belongs to a live broker session compares descriptors and, when
+equal, attaches with that session's socket directory or daemon port and proxy port in its client
+profile, Mill's own fingerprint check agreeing by construction; when different, the refusal
+stays. Its costs, documented with it: a cancel across launches is the tool's own, since the
+server is not the canceller's to retire, so a test that ignores interruption runs on until the
+next command queues behind it; and the owning launch's end takes the shared server with it, a
+build of the other launch included, whose next command starts its own.
 
 ## Deferred — fetching mill's JVM launcher for the user
 

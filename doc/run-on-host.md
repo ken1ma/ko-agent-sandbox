@@ -25,15 +25,16 @@ build runs on memory reclaimed when it exits, at host speed.
 A host command's recurring cost is startup. For sbt and `mill` the broker keeps one server or
 daemon warm across the launch's commands from one build directory ("Where the broker deviates
 from the stock tool"), so a start is paid by the first command from a directory, after
-`sandbox-run-on-host <program> shutdown`, and after the tool's own idle exit — sbt's seven days,
-Mill's thirty minutes; an sbt server keeps the `sbt.version` and options it started with until
-`shutdown`, as in a terminal, and a cancelled sbt command leaves its server warm. A `mill` start
-is also paid after a cancel, which ends the daemon as stock Mill does, and after an edit to what
-Mill restarts the daemon on — its version pin, `mill-jvm-opts`, `mill-repositories`, or anything
-in `build.mill.yaml`, the header Mill reads them from — and costs
-the starter's connect retry, ten seconds, on top of the daemon's own start ("`mill`"). Maven runs
-once, so every invocation starts a JVM and loads the build, while the on-disk state stays warm:
-the caches, and the incremental-compile outputs under `target/`.
+`sandbox-run-on-host <program> shutdown`, and after the tool's own idle exit — sbt's seven days
+(`TODO.md`, "an idle bound for the sbt server"), Mill's thirty minutes; an sbt server keeps the
+`sbt.version` and options it started with until `shutdown`, as in a terminal, and a cancelled
+sbt command leaves its server warm. A `mill` start is also paid after a cancel, which ends the
+daemon as stock Mill does, and after an edit to what Mill restarts the daemon on — its version
+pin, `mill-jvm-opts`, `mill-repositories`, or anything in `build.mill.yaml`, the header Mill
+reads them from — and costs the starter's connect retry, ten seconds, on top of the daemon's own
+start ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens"). Maven runs once,
+so every invocation starts a JVM and loads the build, while the on-disk state stays warm: the
+caches, and the incremental-compile outputs under `target/`.
 
 Out of scope, deliberately: arbitrary build programs (`scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
@@ -213,7 +214,7 @@ granted and has no consumer — with the global base redirected, sbt boots from 
 warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0` and `~/.m2` are not granted either.
 
 The Ivy home follows `-Dsbt.ivy.home` into the run-on-host cache the same way, and `~/.ivy2` is not
-granted. sbt uses that home for three things, read from the sources of sbt 1.12.13 and 2.0.8.
+granted. sbt uses that home for three things, read from the sources of sbt 1.13.0 and 2.0.8.
 Resolving a dependency between the projects of one build goes through Ivy
 (`projectDescriptors`), and Ivy takes the lock file `<ivy home>/.sbt.ivy.lock` first.
 `<ivy home>/local` is the `local` resolver, which every resolution reads and `publishLocal`
@@ -636,7 +637,8 @@ A rule-file edit takes effect when a proxy is next created, never by restarting 
 which holds the lines it was created with: at the first command from a build directory the
 launch has not visited, after `sandbox-run-on-host <program> shutdown` followed by a proxy's own
 end, or at the next launch, as the session's own rule file takes effect at the next launch. Until
-then a host removed from the file stays reachable from that proxy, and one added is not.
+then a host removed from the file stays reachable from that proxy, and one added is not
+(`TODO.md`, "a rule-file edit taking effect at the next command").
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
 `dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts
