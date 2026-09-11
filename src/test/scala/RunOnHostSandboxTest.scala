@@ -412,10 +412,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(spawns.size, 2)
       assertEquals(serverStarts.size, 1, "a later request's arguments reach no server")
       // The server exits — `shutdown`, its idle timeout — and the spawn publishes it: the next
-      // command gets a server under the same proxy, the old group ended behind its leader.
+      // command gets a server, the old group ended behind its leader.
       val firstServer = pgidOf(serverOf(dirA))
       serverExits(dirA)
-      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
       assertEquals(endedGroups.toList, List(firstServer))
       assertEquals(serverStarts.size, 2)
       assert(!Files.exists(RunOnHostSession.exitRecord(serverOf(dirA))), "the replacement's record has no exit")
@@ -424,7 +424,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // fork its own, so the server is replaced.
       Files.delete(portfileOf(dirA))
       val secondServer = pgidOf(serverOf(dirA))
-      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
       assertEquals(endedGroups.toList, List(firstServer, secondServer))
       assertEquals(serverStarts.size, 3)
       assert(logged.exists(_.contains("no longer names its server")), logged.toString)
@@ -438,7 +438,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       alienListener.bind(UnixDomainSocketAddress.of(alien))
       try
         writePortfile(dirA, alien)
-        assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+        assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
         assertEquals(endedGroups.last, thirdServer, "the server whose portfile named an alien socket is replaced")
         assertEquals(serverStarts.size, 4)
       finally alienListener.close()
@@ -452,7 +452,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       )
       assert(!Files.exists(serverOf(dirA)), "the throwing start's record")
       serverThrows = false
-      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), current(dirA))
       assertEquals(serverStarts.size, 6)
       // The proxy exits: the whole runtime is replaced, the server ended first.
       val firstProxy = pgidOf(recordOf(dirA))
@@ -532,7 +532,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused once the link is gone")
       assertEquals(daemonStarts.size, 1)
       // The daemon gone on its own — its idle exit, `shutdown`, the cancel that ends it — with its
-      // starter's leader still alive: replaced under the same proxy, the old group ended.
+      // starter's leader still alive: replaced, the old group ended.
       val firstDaemonLeader = pgidOf(daemonOf(dirA))
       val firstDaemon = ProcessHandle.of(firstDaemonLeader).get.children().findFirst().get
       firstDaemon.destroyForcibly()

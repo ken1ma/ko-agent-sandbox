@@ -1663,7 +1663,7 @@ object AgentSandboxLauncher:
     * launch() enforces: the parser stays pure over the arguments. */
   val RunOnHostPrograms = RunOnHostPrereqs.Program.values.toVector.map(_.name)
 
-  /** Once the consent to end a foreign sbt server; the broker ends one by default now. */
+  /** Once the consent to shut down the user's own sbt server, which the broker does by default. */
   val RetiredAutoShutdownOption = "--auto-shutdown-foreign-sbt-on-host"
 
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
@@ -1774,12 +1774,12 @@ object AgentSandboxLauncher:
           else parseRunOnHost(arg.stripPrefix("--run-on-host="))
             .flatMap(programs => loop(tail, write, egress, env, Some(programs)))
 
-        // Refused by name rather than as unknown: a launch script that still names it needs the
-        // fact that the shutdown it asked for is the default now (SECURITY.md "Run on host").
+        // Refused by name rather than as unknown: a launch script naming it needs the fact that the
+        // shutdown it asks for is the default (SECURITY.md "Run on host").
         case RetiredAutoShutdownOption :: _ =>
           Left(
-            s"error: $RetiredAutoShutdownOption is no longer an option: an sbt server holding the " +
-              "project is ended by default when the agent runs sbt on the host",
+            s"error: $RetiredAutoShutdownOption is no longer an option: your own sbt server for the " +
+              "project is shut down by default when the agent runs sbt on the host",
           )
 
         case arg :: tail if arg.startsWith("--env=") =>

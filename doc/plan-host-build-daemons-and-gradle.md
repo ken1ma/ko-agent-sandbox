@@ -366,8 +366,7 @@ restart: the old files stay in Coursier's archive cache, the warm server runs on
 each new client is validated against the new path as today. The broker's environment does not
 change within a launch, so the rest of the assembly cannot differ between commands.
 
-Deferred, and moved to `doc/TODO.md` when Phase 1 lands: retiring a runtime on its own when the
-rule file or the distribution changes, so the edit takes effect at the next command.
+Deferred: `doc/TODO.md`, "a rule-file edit taking effect at the next command".
 
 ## 5. The broker's proxy
 
@@ -882,21 +881,7 @@ Decided 2026-09-10, with the reasons each rests on:
   a second launch is refused a build directory the first launch still owns (6.4, step-3 revision),
   until the first launch ends.
 
-  Deferred, and moved to `doc/TODO.md` when Phase 1 lands, so its design is not redone: a
-  broker-kept idle bound, selected by a launch option — never an environment variable, since the
-  command's environment is closed by design — with 30 minutes, Mill's own default, as the value
-  to start from. Idle counts from the end of the last sbt command, never from the server's
-  start. The broker's serve loop blocks in the handshake reader between requests, so the bound
-  needs a timer thread, the one thread retiring runtimes outside section 3's serial handling,
-  fenced thus: one lock covers the broker's runtime state; a request takes it, marks the runtime
-  busy and cancels its pending expiry before the command receives the runtime, and re-arms the
-  expiry when the command ends; each re-arming increments an idle generation kept with the
-  runtime; an expiry carries the generation it was armed with and, under the lock, retires the
-  runtime only if that instance is idle and its generation is still the expiry's own — so a
-  cancelled callback that had left its sleep before a request re-armed the timer does nothing,
-  and a timer outliving a retired runtime is a no-op on its replacement. Its tests: a request
-  arriving as the timer fires, that late callback, and a stale timer after replacement, each
-  leaving one consistent runtime.
+  Deferred: `doc/TODO.md`, "an idle bound for the sbt server".
 - **Mill's timeout is Mill's default**, 30 minutes, with `MILL_SERVER_TIMEOUT_MILLIS` absent
   from the closed environment.
 - **The Mill daemon is started by the stock executable (7.2)**, and a helper over
@@ -909,10 +894,7 @@ Decided 2026-09-10, with the reasons each rests on:
   That reliance is a gate row per Mill version, a hard one: a version whose daemon does not
   survive the denied starter fails the row, and the helper replaces the starter for it (7.7).
 
-  Deferred, and moved to `doc/TODO.md` when Phase 1 lands: ending the starter as soon as `lsof`
-  shows the daemon's port, saving the retry. It signals the starter's own pid alone — the daemon
-  lives in the same registered group, so ending the group would end it — and it needs the exact
-  process topology the gate row records first.
+  Deferred: `doc/TODO.md`, "ending the mill starter once the daemon listens".
 - **The `--auto-shutdown-foreign-sbt-on-host` option is deleted, and the user's own server is
   shut down by default; another launch's is refused, not ended** (6.4, step-3 revision). The
   README already told every macOS launch to pass the option, so shutting the *user's own*
@@ -928,21 +910,7 @@ Decided 2026-09-10, with the reasons each rests on:
   fingerprint/`processId` machinery of the earlier design is superseded there too, and 7.2–7.3
   are revised when Mill lands.
 
-  Deferred, and moved to `doc/TODO.md` when Phase 1 lands: two launches sharing one server or
-  daemon when everything the runtime was created from is equal — JDK home, executable and
-  distribution, cache root, rule lines, and the forwarded name/value pairs, the one that decides
-  it for security, since a launch forwarding a secret must not serve a launch that does not. The
-  egress profile is never part of it: every host command's proxy gets `deny defaults`, Maven
-  Central and the rule file. The design: the broker writes that set as a descriptor into its
-  session, out of the confined command's reach since the profile grants `tmp/` alone; a second
-  launch finding a server whose socket, or a daemon whose group, belongs to a live broker session
-  compares descriptors and, when equal, attaches with that session's socket directory or daemon
-  port and proxy port in its client profile, Mill's own fingerprint check agreeing by
-  construction; when different, the shutdown above. Its costs, documented with it: a cancel across
-  launches is the tool's own, since the server is not the canceller's to retire, so a test that
-  ignores interruption runs on until the next command queues behind it; and the owning launch's
-  end takes the shared server with it, a build of the other launch included, whose next command
-  starts its own.
+  Deferred: `doc/TODO.md`, "two launches sharing one server or daemon".
 
 ---
 
