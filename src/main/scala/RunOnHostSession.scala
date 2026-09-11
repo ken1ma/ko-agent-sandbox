@@ -224,13 +224,13 @@ object RunOnHostSession:
         catch case _: IOException => None
 
   /** The other live brokers' sessions under the root: published under the broker prefix and
-    * locked. A broker reads another launch's `server-sbt-<hash>` ownership record from these to
-    * decide whether to refuse (RunOnHostSandbox.BrokerRuntimes.serverOwner). */
+    * locked. A broker reads another launch's ownership records from these to decide whether to
+    * refuse (runtimeOwner). */
   def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
     allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
 
   /** Every broker session directory under the root, locked or not — a just-crashed owner's is
-    * unlocked but not yet condemned, and its server group can still be running, so serverOwner
+    * unlocked but not yet condemned, and its server group can still be running, so runtimeOwner
     * must weigh it too (its finding, admission blocked, and the next start's scavenge collects
     * it). */
   def allBrokerSessions(root: Path, except: Path): Vector[Path] =
@@ -241,20 +241,20 @@ object RunOnHostSession:
   /** The sessions under `condemned/`: an owner tearing itself down, or a scavenger, has renamed
     * its directory here and holds its lock while it ends the recorded groups. Their ownership
     * records still name the build directories they own, so a start consults them alongside the
-    * live sessions until collection deletes them (serverOwner): a server whose socket path has
+    * live sessions until collection deletes them (runtimeOwner): a server whose socket path has
     * moved with the rename must not read as free. The scavenger's own pass (run first) collects
     * any that no live owner still holds. */
   def collectingSessions(root: Path): Vector[Path] =
     listDirectory(root.resolve(CondemnedDir)).filter(Files.isDirectory(_))
 
   /**
-   * Another launch's session that holds a `server-sbt-<hash>` ownership record, or None. Any
-   * broker session under the root — live, or just-crashed and not yet collected — or a session
-   * under `condemned/` whose teardown or scavenge has not finished, owns it; the record is read,
-   * never signalled (the group is the owner's to end — RunOnHostSandbox.BrokerRuntimes and
-   * doc/TODO.md "Cross-launch server takeover"). A dead owner's record blocks admission this
-   * time and the next start's scavenge collects it, so its server is never left running beside a
-   * fresh one.
+   * Another launch's session that holds the ownership record `record` — `server-sbt-<hash>` or
+   * `daemon-mill-<hash>` — or None. Any broker session under the root — live, or just-crashed
+   * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
+   * finished, owns it; the record is read, never signalled (the group is the owner's to end —
+   * RunOnHostSandbox.BrokerRuntimes and doc/TODO.md "Cross-launch server takeover"). A dead
+   * owner's record blocks admission this time and the next start's scavenge collects it, so its
+   * server or daemon is never left running beside a fresh one.
    *
    * The live sessions are enumerated, then looked up; `condemned/` is enumerated only if that
    * lookup finds nothing (`orElse` is by-name), so its enumeration is strictly later. Teardown
@@ -266,11 +266,11 @@ object RunOnHostSession:
    * between the live enumeration and its lookup, where that rename races; the caller holding
    * this hash's build lock keeps a new owner from appearing during the check.
    */
-  def serverOwner(
-    root: Path, except: Path, hash: String, betweenScan: () => Unit = () => (),
+  def runtimeOwner(
+    root: Path, except: Path, record: String, betweenScan: () => Unit = () => (),
   ): Option[Path] =
     def owns(session: Path): Boolean =
-      Files.exists(session.resolve(RecordsDir).resolve(s"server-sbt-$hash"))
+      Files.exists(session.resolve(RecordsDir).resolve(record))
     val inRoot = allBrokerSessions(root, except)
     betweenScan()
     inRoot.find(owns).orElse(collectingSessions(root).find(owns))

@@ -33,7 +33,8 @@ object RunOnHostPrereqs:
     case PrereqSbtNotCoursier(found: Path)
     case PrereqMillBootstrapMissing
     case PrereqMillVersionUnpinned
-    case PrereqMillExecutableMissing(version: String, downloadDir: Path)
+    case PrereqMillExecutableMissing(launcherVersion: String, downloadDir: Path)
+    case PrereqMillNativeLauncher(pinned: String)
     case PrereqMillJvmNotSystem(found: Option[String])
     case PrereqMvnWrapperMissing
     case PrereqMvnWrapperNotOnlyScript
@@ -64,8 +65,13 @@ object RunOnHostPrereqs:
     case Refusal.PrereqMillVersionUnpinned =>
       "no mill version is pinned in the project: .mill-version, .config/mill-version, build.mill.yaml " +
         "or the build script's header"
-    case Refusal.PrereqMillExecutableMissing(version, downloadDir) =>
-      s"mill $version is not provisioned under $downloadDir; run `./mill --version` once in a host terminal"
+    case Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir) =>
+      s"mill's JVM launcher $launcherVersion is not provisioned under $downloadDir; run " +
+        s"`MILL_VERSION=$launcherVersion ./mill version` once in a host terminal"
+    case Refusal.PrereqMillNativeLauncher(pinned) =>
+      s"the pinned mill version $pinned names the native launcher, which cannot reach the launch's daemon: it " +
+        "takes no JAVA_TOOL_OPTIONS, so its connect is the dual-stack one the profile denies; pin " +
+        s"`${pinned.stripSuffix("-native")}` or `${pinned.stripSuffix("-native")}-jvm`"
     case Refusal.PrereqMillJvmNotSystem(found) =>
       s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
     case Refusal.PrereqMvnWrapperMissing =>
@@ -369,20 +375,19 @@ object RunOnHostPrereqs:
       case None          => Left(Refusal.PrereqMillVersionUnpinned)
 
   /**
-   * The file the bootstrap will run for a pinned version, as it derives it (the `case
-   * "$MILL_VERSION"` block of the official `mill` script): a `-native` suffix is stripped and the
-   * platform suffix applied; a `-jvm` suffix is stripped and nothing applied; otherwise the
-   * platform suffix applies to every version past 0.12, and none to 0.1–0.12, which were jars.
-   * `arch` is `uname -m`'s answer: `arm64` on Apple silicon, `x86_64` otherwise. macOS only, as
-   * the feature is.
+   * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
+   * bootstrap spells it, for a bare `<v>` and a `<v>-jvm` pin alike. The bootstrap would run the
+   * native image for a bare pin, and that image cannot be the launch's client: it takes no
+   * `JAVA_TOOL_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
+   * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
+   * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
+   * src/probe/run-on-host-broker-session.sh M2). A `<v>-native` pin asks for that one
+   * launcher by name and is refused.
    */
-  def millExecutableName(version: String, arch: String): String =
-    val native = if arch == "arm64" then "-native-mac-aarch64" else "-native-mac-amd64"
-    val jarEra = raw"0\.([1-9]|1[0-2])\..*".r
-    if version.endsWith("-native") then version.stripSuffix("-native") + native
-    else if version.endsWith("-jvm") then version.stripSuffix("-jvm")
-    else if jarEra.matches(version) then version
-    else version + native
+  def millLauncherVersion(pinned: String): Either[Refusal, String] =
+    if pinned.endsWith("-native") then Left(Refusal.PrereqMillNativeLauncher(pinned))
+    else if pinned.endsWith("-jvm") then Right(pinned)
+    else Right(pinned + "-jvm")
 
   /**
    * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
@@ -448,16 +453,51 @@ object RunOnHostPrereqs:
   private val TopLevelJvmKey = raw"""mill-jvm-version:((?:\s.*)?)""".r
   private val SystemSpelling = raw"""\s*(?:system|"system"|'system')(?:\s+#.*)?\s*""".r
 
-  /** That file, provisioned: present and executable, or a refusal naming what `./mill` would fix. */
+  /** The JVM launcher's file, provisioned: `<download folder>/<v>` for the launcher version
+    * `<v>-jvm`, as the bootstrap derives it (its `case "$MILL_VERSION"` block strips the suffix and
+    * applies no platform suffix), present and executable; or a refusal naming the host command
+    * that provisions it. */
   def millExecutable(
     downloadDir: Path,
-    version: String,
-    arch: String,
+    launcherVersion: String,
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
-    val executable = downloadDir.resolve(millExecutableName(version, arch))
+    val executable = downloadDir.resolve(launcherVersion.stripSuffix("-jvm"))
     if isExecutableFile(executable) then Right(executable)
-    else Left(Refusal.PrereqMillExecutableMissing(version, downloadDir))
+    else Left(Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir))
+
+  /**
+   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.9): the
+   * launcher's version, the resolved JVM, `mill-jvm-opts` and `mill-repositories` — the last
+   * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
+   * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
+   * file) then `build.mill` (its `//|` lines). Its other inputs, `JAVA_OPTS` and
+   * `JDK_JAVA_OPTIONS`, are absent from the closed environment. The broker compares this before
+   * each command and replaces the daemon when it differs, so that the client never meets the
+   * mismatch itself: Mill's launcher would end the daemon and start a replacement from the
+   * client's own profile, which cannot bind, and the command would fail.
+   *
+   * The sources' text, not their parsed values, and the header whole: Mill parses it as YAML,
+   * where a key has spellings no recognizer enumerates, so any header edit restarts the daemon
+   * rather than any key edit slipping past — the cheaper error, since an edit to
+   * `build.mill.yaml` changes the build anyway. Each source is named with its text, so an empty
+   * file, which Mill selects like any other, differs from an absent one, and one file's lines
+   * never read as another's. The version is read as the bootstrap reads it (millVersion); the
+   * JVM version as Mill reads it, `system` for every command the prerequisites admit.
+   */
+  def millDaemonConfig(buildDirectory: Path, readLines: Path => Option[Seq[String]]): String =
+    def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
+    def named(name: String, content: Option[Seq[String]]): Option[Seq[String]] = content.map(s"$name:" +: _)
+    val header: Seq[String] =
+      named("build.mill.yaml", lines("build.mill.yaml"))
+        .orElse(named("build.mill", lines("build.mill").map(_.takeWhile(_.startsWith("//|")))))
+        .getOrElse(Seq("no header"))
+    def selected(key: String): Seq[String] =
+      named(s".$key", lines(s".$key")).orElse(named(s".config/$key", lines(s".config/$key")))
+        .getOrElse(Seq(s"$key from the header"))
+    val version = millVersion(buildDirectory, readLines).fold(_ => "", identity)
+    (version +: (Seq("mill-jvm-version", "mill-jvm-opts", "mill-repositories").flatMap(selected) ++ header))
+      .mkString("\n")
 
   /** `DEFAULT_MILL_VERSION="1.1.8"` as the bootstrap spells it, inside its `if [ -z … ]` guard. */
   private val DefaultAssignment = raw""".*\bDEFAULT_MILL_VERSION="([^"]+)".*""".r

@@ -1155,7 +1155,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val runOnHostSection = appendedSection("live", "fuse", resolution, Vector("sbt", "mill"))
     assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
-    assert(runOnHostSection.contains("sbt's server stays warm across invocations"), runOnHostSection)
+    assert(runOnHostSection.contains("sbt's server and mill's daemon stay warm across invocations"), runOnHostSection)
     // The example of several commands is quoted: the JVM client hands its arguments to sbt as one
     // command line, so `compile test` is a parse error and `'compile; test'` is two commands
     // (measured on sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening

@@ -14,7 +14,7 @@
 # RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile and be ended by
 # the wrapper (one server per build directory). Each wrapper row scavenges, publishes a command directory, starts the
-# command's own proxy and sbt server in it — the broker's functions over the command's own session — runs
+# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session — runs
 # the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
 # profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
 # profile, which is the measurement.
@@ -250,6 +250,16 @@ broker_proxy_record() { # build-directory
 broker_server_record() { # build-directory
     cat "$command_root"/b*/records/server-sbt-"$(build_hash "$1")" 2>/dev/null
 }
+broker_daemon_record() { # build-directory
+    cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
+}
+# The mill daemon behind a broker record: the MillDaemonMain in the record's group, the starter's.
+daemon_in_group() { # record-line
+    [ -n "$1" ] || return 0
+    for pid in $(mill_daemons); do
+        [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "${1%% *}" ] && printf '%s\n' "$pid"
+    done
+}
 # The broker session holding the sbt runtime of a build directory.
 broker_session_of() { # build-directory
     ls -d "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
@@ -367,11 +377,18 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
 scratch_sbt=""; scratch_mill=""; scratch_mvn=""; sibling_repo=""; gate_rule_dir=""; pin_saved=""
+gate_opts_file=""; port_saved=""; redirect_saved=""
 marker=gate-marker.${work##*.}
 cleanup() {
     [ -n "$gate_rule_dir" ] && rm -rf "$gate_rule_dir"
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
     [ -n "$pin_saved" ] && printf '%s\n' "$pin_saved" > "$ivy_project/project/build.properties"
+    # The fixture's option file the mill rows add, and its socketPort the planted row overwrites.
+    [ -n "$gate_opts_file" ] && rm -f "$gate_opts_file"
+    [ -n "$port_saved" ] && printf '%s' "$port_saved" > "$mill_project/out/mill-daemon/socketPort"
+    if [ -n "$redirect_saved" ] && [ -d "$redirect_saved" ]; then
+        rm -f "$mill_project/out/mill-daemon"; mv "$redirect_saved" "$mill_project/out/mill-daemon"
+    fi
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     [ -n "$scratch_mvn" ] && rm -rf "$scratch_mvn"
@@ -485,15 +502,12 @@ fi
 
 if want mill; then
     use_profile mill
-    # mill's executable memoizes its resolved daemon classpath and JVM home in out/mill-daemon/cache
-    # and reuses them while the files they name exist (CoursierClient.scala). Written by a run
-    # against the user's cache, they name paths the profile denies; the memo goes, so the
-    # wrapper's COURSIER_CACHE takes effect.
-    rm -rf "$mill_project/out/mill-daemon"
-    # --no-daemon: the executable and the daemon talk over a loopback TCP socket
-    # (out/mill-daemon/socketPort), which the profile grants to nothing, since loopback is every
-    # local service. Without the daemon there is no socket — mill's --jvm-client.
-    for command in --version __.compile __.test; do
+    # Each wrapper row starts a daemon in the command's session — the stock bootstrap under the
+    # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
+    # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
+    # (RunOnHostSandbox.BrokerRuntimes, MillDaemons). A memo an unconfined run left there names
+    # paths the profile denies, which Mill's own validation of it fails on and re-resolves.
+    for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
         then report PASS "./mill $command (wrapper)" \
@@ -501,15 +515,9 @@ if want mill; then
         else report FAIL "./mill $command (wrapper)" \
             "$(grep -v 'Picked up' "$work/mill.log" | tail -1 | cut -c1-70)"; fi
     done
-    # The daemon form stays measured, as sbtn does for sbt: if it starts passing, the flag
-    # becomes a choice.
-    if ( cd "$mill_project" && sandboxed mill ./mill --version ) >"$work/mill-daemon.log" 2>&1
-    then report INFO "./mill --version (daemon)" "passes: the --no-daemon requirement can be reconsidered"
-    else
-        why=$(grep -v 'Picked up' "$work/mill-daemon.log" | tail -1 | cut -c1-50)
-        report INFO "./mill --version (daemon)" "no: $why"
-    fi
-    end_project_servers
+    if [ -z "$(mill_daemons)" ]
+    then report PASS "no mill daemon survives its command"
+    else report FAIL "no mill daemon survives its command" "$(mill_daemons | tr '\n' ' ')"; fi
 fi
 
 if want mvn; then
@@ -587,11 +595,12 @@ for p in $profiles; do
         expect_denied mvn "write the Maven distribution" ": >> '$mvn_home/bin/mvn'"
     fi
     if [ "$p" = mill ]; then
-        # The one provisioned file is executable; its neighbours in the download folder are not.
+        # The one provisioned file, the JVM launcher, is executable; its neighbours in the download
+        # folder are not. Run directly and without the daemon: this row is the grant, not the runtime.
         if ( cd "$mill_project" && sandboxed mill "$mill_executable" --no-daemon --version ) \
             >/dev/null 2>"$work/row.err"
-        then report PASS "read and execute the mill executable"
-        else report FAIL "read and execute the mill executable" "$(first_error)"; fi
+        then report PASS "read and execute the mill launcher"
+        else report FAIL "read and execute the mill launcher" "$(first_error)"; fi
         expect_denied mill "list the mill download folder" "ls '$mill_downloads'"
     fi
 
@@ -808,8 +817,9 @@ fi
 # sandbox this host. The wrapper behind it is the same one the rows above measured; what these
 # add is the channel — framing, streamed output and the command's own exit code, the
 # working-directory boundary, and teardown by descriptor lifetime — and the broker's runtime: the
-# proxy and sbt server the commands of one build directory share, what retires them, and a rule
-# edit reaching only the runtime created next (doc/plan-host-build-daemons-and-gradle.md, 6.5).
+# proxy and the sbt server or mill daemon the commands of one build directory share, what
+# retires them, and a rule edit reaching only the runtime created next
+# (doc/plan-host-build-daemons-and-gradle.md, 6.5 and 7.6).
 
 echo
 echo "the channel"
@@ -829,9 +839,26 @@ channel: a dead sandbox ends the channel, its command and the broker's runtimes
 channel: TERM to the broker ends its command before the broker exits
 channel: a killed broker's command ends with it, and its server with the next start
 channel: a planted portfile nominates nothing: refused, no shutdown spoken"
+mill_channel_rows="channel: mill compile starts the broker's daemon, and the next command reuses it
+channel: a mill build's forked JVM writes temporary files where the daemon's profile allows
+channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it
+channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched
+channel: a cancelled mill command ends its daemon, as stock Mill does; the next command starts one
+channel: a mill option-file edit replaces the daemon, and the next command runs under it
+channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts
+channel: a mill daemon of yours, matching, is ended by proof before the broker's starts
+channel: a mill daemon of yours mid-command is left until its client disconnects
+channel: a mill daemon of yours busy past the bound is refused, and left alive
+channel: a new launch adopts nothing planted in out/mill-daemon"
 skip_channel() {
     while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
 $channel_rows
+$mill_channel_rows
+EOF
+}
+skip_mill_channel() {
+    while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
+$mill_channel_rows
 EOF
 }
 # Only processes the stub podman recorded, proven by the same pid-plus-start identity the
@@ -909,7 +936,7 @@ EOF
         echo true > "$work/running"
         rm -rf "$channel_dir"
         "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
-            --serve-run-on-host "$work/podman" C "$project" sbt "$work/channel.log" "$project" \
+            --serve-run-on-host "$work/podman" C "$project" sbt,mill "$work/channel.log" "$project" \
             >/dev/null 2>&1 & channel_broker=$!
         tries=0
         while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
@@ -1117,6 +1144,219 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
             "before: ${before_edit:-none}, under the edit: ${under_edit:-none} (same server: $pin_same), \
 after shutdown: ${after_shutdown:-none}"; fi
 
+        # --- mill: the broker's daemon (doc/plan-host-build-daemons-and-gradle.md, 7.6) ---------
+        #
+        # The daemon the broker starts in its session serves every mill command of the build
+        # directory; each client runs under a profile naming that daemon's port and no other. The
+        # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
+        # cancel and busy-daemon rows.
+        if ! want mill; then skip_mill_channel "needs mill"; else
+        mill_row="channel: mill compile starts the broker's daemon, and the next command reuses it"
+        with_timeout 900 channel_shim chan-mill1.log "$mill_project" mill __.compile; mill_status=$?
+        channel_settled
+        mill_record=$(broker_daemon_record "$mill_project")
+        mill_daemon=$(daemon_in_group "$mill_record")
+        with_timeout 300 channel_shim chan-mill2.log "$mill_project" mill version
+        channel_settled
+        if [ "$mill_status" -eq 0 ] && [ -n "$mill_daemon" ] && record_alive "$mill_record" \
+            && [ "$(broker_daemon_record "$mill_project")" = "$mill_record" ] \
+            && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ] \
+            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q '1\.1\.9' "$work/chan-mill2.log"
+        then report PASS "$mill_row" "daemon $mill_daemon in group ${mill_record%% *}"
+        else report FAIL "$mill_row" "compile exit $mill_status, daemon before ${mill_daemon:-none}, after \
+$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' ')"; fi
+
+        # A forked JVM — a `run`, a test — inherits the daemon's profile but gets the command's
+        # environment (RunModule.scala, ctx.env), so the command's TMPDIR and java.io.tmpdir name
+        # the broker's tmp/, the one directory that profile grants
+        # (RunOnHostSandbox.temporaryDirectories): the fixture's main creates a temporary file and
+        # prints where.
+        tmp_row="channel: a mill build's forked JVM writes temporary files where the daemon's profile allows"
+        with_timeout 600 channel_shim chan-mill-tmp.log "$mill_project" mill run; tmp_status=$?
+        channel_settled
+        tmpfile=$(grep -m1 -o 'tmpfile=[^ ]*' "$work/chan-mill-tmp.log")
+        case "$tmpfile" in "tmpfile=$command_root/b"*"/tmp/"*) tmp_ok=yes ;; *) tmp_ok=no ;; esac
+        if [ "$tmp_status" -eq 0 ] && [ "$tmp_ok" = yes ]
+        then report PASS "$tmp_row" "$tmpfile"
+        else report FAIL "$tmp_row" "exit $tmp_status: ${tmpfile:-no file}; \
+$(grep -v 'Picked up' "$work/chan-mill-tmp.log.err" | tail -1 | cut -c1-50)"; fi
+
+        # socketPort is the build's to write and authorizes nothing: a planted port is one the
+        # client's profile does not admit, so its connect is denied and the daemon stays.
+        port_row="channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched"
+        port_file=$mill_project/out/mill-daemon/socketPort
+        port_saved=$(cat "$port_file" 2>/dev/null)
+        printf '%s' "$((port_saved + 1))" > "$port_file"
+        with_timeout 300 channel_shim chan-mill-planted-port.log "$mill_project" mill version; planted_status=$?
+        channel_settled
+        printf '%s' "$port_saved" > "$port_file"; port_saved=""
+        if [ "$planted_status" -ne 0 ] \
+            && grep -q 'Operation not permitted' "$work/chan-mill-planted-port.log" "$work/chan-mill-planted-port.log.err" \
+            && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ]
+        then report PASS "$port_row" "exit $planted_status; daemon $mill_daemon kept"
+        else report FAIL "$port_row" "exit $planted_status; daemon now \
+$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '); \
+$(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut -c1-50)"; fi
+
+        # A client disconnect mid-command: Server.scala closes every connection and the daemon
+        # shuts itself down (measured, src/probe/run-on-host-broker-session.sh M5), and the
+        # broker treats the gone daemon as none: the next command starts one.
+        cancel_row="channel: a cancelled mill command ends its daemon, as stock Mill does; the next command starts one"
+        channel_shim chan-mill-cancel.log "$mill_project" mill run sleep & shim=$!
+        tries=0
+        while ! grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        cancel_record=$(broker_daemon_record "$mill_project")
+        cancel_daemon=$(daemon_in_group "$cancel_record")
+        kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
+        channel_settled
+        tries=0
+        while [ -n "$cancel_daemon" ] && kill -0 "$cancel_daemon" 2>/dev/null && [ "$tries" -lt 120 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | head -1)
+        if [ -n "$forked" ]
+        then report INFO "forked run JVM after the cancel" "alive ($forked); killed"; kill "$forked" 2>/dev/null
+        else report INFO "forked run JVM after the cancel" "gone"; fi
+        with_timeout 300 channel_shim chan-mill-after-cancel.log "$mill_project" mill version
+        channel_settled
+        new_daemon=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+        if [ -n "$cancel_daemon" ] && ! kill -0 "$cancel_daemon" 2>/dev/null && [ -n "$new_daemon" ] \
+            && [ "$new_daemon" != "$cancel_daemon" ] && grep -q '1\.1\.9' "$work/chan-mill-after-cancel.log"
+        then report PASS "$cancel_row" "daemon $cancel_daemon gone, $new_daemon started"
+        else report FAIL "$cancel_row" "daemon before ${cancel_daemon:-none} \
+$(kill -0 "$cancel_daemon" 2>/dev/null && echo alive || echo gone), after ${new_daemon:-none}"; fi
+
+        # What Mill's launcher restarts the daemon on (RunOnHostPrereqs.millDaemonConfig) replaces
+        # the daemon before the command, and removing the file replaces it again. The file is
+        # this gate's, removed by the cleanup too.
+        opts_row="channel: a mill option-file edit replaces the daemon, and the next command runs under it"
+        opts_record=$(broker_daemon_record "$mill_project")
+        gate_opts_file=$mill_project/.mill-jvm-opts
+        printf -- '-Dko.gate.opts=1\n' > "$gate_opts_file"
+        with_timeout 600 channel_shim chan-mill-opts1.log "$mill_project" mill version; opts1_status=$?
+        channel_settled
+        edited_record=$(broker_daemon_record "$mill_project")
+        rm -f "$gate_opts_file"; gate_opts_file=""
+        with_timeout 600 channel_shim chan-mill-opts2.log "$mill_project" mill version; opts2_status=$?
+        channel_settled
+        if [ "$opts1_status" -eq 0 ] && [ "$opts2_status" -eq 0 ] && [ -n "$edited_record" ] \
+            && [ "$edited_record" != "$opts_record" ] \
+            && [ "$(broker_daemon_record "$mill_project")" != "$edited_record" ] \
+            && record_alive "$(broker_daemon_record "$mill_project")" \
+            && grep -q 'its configuration changed' "$work/channel.log"
+        then report PASS "$opts_row"
+        else report FAIL "$opts_row" "exits $opts1_status/$opts2_status; records: $opts_record -> \
+${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
+
+        # A link at out/mill-daemon would point Mill's launcher at another build directory's
+        # daemon, past the ownership and idleness checks (MillDaemons.rendezvousIsOwn): refused
+        # before any of it runs. With the broker's daemon shut down first, since the daemon reads
+        # its processId by path and would exit while the directory is aside.
+        redirect_row="channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it"
+        with_timeout 300 channel_shim chan-mill-shutdown0.log "$mill_project" mill shutdown
+        channel_settled
+        redirect_saved=$mill_project/out/mill-daemon.gate
+        mv "$mill_project/out/mill-daemon" "$redirect_saved"
+        ln -s "$scratch_mill" "$mill_project/out/mill-daemon"
+        with_timeout 300 channel_shim chan-mill-redirect.log "$mill_project" mill version; redirect_status=$?
+        channel_settled
+        rm -f "$mill_project/out/mill-daemon"
+        mv "$redirect_saved" "$mill_project/out/mill-daemon"; redirect_saved=""
+        if [ "$redirect_status" -eq 2 ] \
+            && grep -q 'redirected mill daemon directory is refused' "$work/chan-mill-redirect.log.err" \
+            && [ -z "$(mill_daemons)" ]
+        then report PASS "$redirect_row"
+        else report FAIL "$redirect_row" "exit $redirect_status, daemons: $(mill_daemons | tr '\n' ' '); \
+$(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
+
+        # A daemon of yours — from a terminal, outside any launch — is ended by proof, once idle,
+        # before the broker's starts, and the channel log says so. The broker's own is shut down
+        # first, through Mill's own command, since only a start meets a foreign daemon; then an
+        # unconfined ./mill leaves one — once with a JAVA_OPTS the closed environment lacks, so
+        # its fingerprint differs from the broker's, and once with none, matching — and the next
+        # channel command ends it and starts the broker's. The unconfined ./mill runs the native
+        # launcher, with the JDK the profile grants first on its PATH.
+        foreign_mill() { # in the fixture, unconfined: command...
+            ( cd "$mill_project" && env -u JAVA_OPTS -u JDK_JAVA_OPTIONS PATH="$JAVA_HOME/bin:$PATH" "$@" )
+        }
+        foreign_row() { # label env-args...
+            foreign_label=$1; shift
+            with_timeout 300 channel_shim chan-mill-shutdown.log "$mill_project" mill shutdown
+            channel_settled
+            foreign_mill env "$@" ./mill version >"$work/foreign.log" 2>&1
+            foreign=$(mill_daemons | head -1)
+            ended_before=$(grep -c 'ended the mill daemon' "$work/channel.log")
+            with_timeout 600 channel_shim chan-mill-foreign.log "$mill_project" mill version; foreign_status=$?
+            channel_settled
+            ours=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+            if [ -n "$foreign" ] && ! kill -0 "$foreign" 2>/dev/null && [ "$foreign_status" -eq 0 ] \
+                && [ "$(grep -c 'ended the mill daemon' "$work/channel.log")" -gt "$ended_before" ] \
+                && [ -n "$ours" ] && [ "$ours" != "$foreign" ]
+            then report PASS "$foreign_label" "foreign $foreign ended, the broker's $ours started"
+            else report FAIL "$foreign_label" "foreign ${foreign:-none} \
+$(kill -0 "${foreign:-0}" 2>/dev/null && echo alive || echo gone), exit $foreign_status, ours ${ours:-none}, \
+log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended_before)"; fi
+        }
+        foreign_row "channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts" \
+            JAVA_OPTS=-Dko.gate.foreign=1
+        foreign_row "channel: a mill daemon of yours, matching, is ended by proof before the broker's starts"
+
+        # A daemon of yours running a command — an established connection on its port — is left
+        # until its client disconnects: the channel command waits, and completes once the daemon
+        # is idle or gone (a client's disconnect mid-command ends the daemon, as above).
+        busy_row="channel: a mill daemon of yours mid-command is left until its client disconnects"
+        with_timeout 300 channel_shim chan-mill-shutdown2.log "$mill_project" mill shutdown
+        channel_settled
+        foreign_mill ./mill run sleep >"$work/foreign-run.log" 2>&1 & foreign_client=$!
+        tries=0
+        while ! grep -q 'fixture-main' "$work/foreign-run.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        foreign=$(mill_daemons | head -1)
+        channel_shim chan-mill-busy.log "$mill_project" mill version & shim=$!
+        sleep 20
+        waiting=$(kill -0 "$shim" 2>/dev/null && echo yes || echo no)
+        foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
+        kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
+        pkill -f 'fixture.Main sleep' 2>/dev/null
+        wait "$shim"; busy_status=$?
+        channel_settled
+        ours=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+        if [ -n "$foreign" ] && [ "$waiting" = yes ] && [ "$foreign_alive" = yes ] && [ "$busy_status" -eq 0 ] \
+            && ! kill -0 "$foreign" 2>/dev/null && [ -n "$ours" ] && [ "$ours" != "$foreign" ]
+        then report PASS "$busy_row" "waited 20s on foreign $foreign; then the broker's $ours"
+        else report FAIL "$busy_row" "foreign ${foreign:-none} alive while busy: $foreign_alive, command \
+waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
+
+        # One busy past the bound (MillDaemons.ForeignIdleDeadlineMillis): the command is refused
+        # naming it, and the daemon and its build are left alone.
+        bound_row="channel: a mill daemon of yours busy past the bound is refused, and left alive"
+        foreign_mill ./mill run sleep >"$work/foreign-run2.log" 2>&1 & foreign_client=$!
+        tries=0
+        while ! grep -q 'fixture-main' "$work/foreign-run2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        foreign=$(mill_daemons | head -1)
+        with_timeout 300 channel_shim chan-mill-bound.log "$mill_project" mill version; bound_status=$?
+        channel_settled
+        foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
+        kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
+        pkill -f 'fixture.Main sleep' 2>/dev/null
+        tries=0
+        while [ -n "$foreign" ] && kill -0 "$foreign" 2>/dev/null && [ "$tries" -lt 120 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        [ -n "$foreign" ] && kill "$foreign" 2>/dev/null
+        if [ -n "$foreign" ] && [ "$bound_status" -eq 2 ] && [ "$foreign_alive" = yes ] \
+            && grep -q 'has been running a command' "$work/chan-mill-bound.log.err"
+        then report PASS "$bound_row" "refused after the bound; foreign $foreign alive"
+        else report FAIL "$bound_row" "foreign ${foreign:-none} alive after: $foreign_alive, exit $bound_status: \
+$(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
+        channel_settled
+        fi
+
         with_timeout 120 channel_shim chan-refused.log /private/tmp sbt about; status=$?
         if [ "$status" -eq 2 ] && grep -q 'CHANNEL_UNAVAILABLE' "$work/chan-refused.log.err"
         then report PASS "channel: a working directory outside the project is refused"
@@ -1160,11 +1400,13 @@ after shutdown: ${after_shutdown:-none}"; fi
         while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
         broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
         # The broker's own teardown ended its server and proxy with its session.
-        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$broker_state" = gone ] \
+        if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
+            && [ "$broker_state" = gone ] \
             && [ -z "$(stray_proxies)" ] && [ -n "$broker_session" ] && [ ! -d "$broker_session" ]
         then report PASS "channel: a dead sandbox ends the channel, its command and the broker's runtimes"
         else report FAIL "channel: a dead sandbox ends the channel, its command and the broker's runtimes" \
-            "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), broker $broker_state, \
+            "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
+daemons: $(mill_daemons | tr '\n' ' '), broker $broker_state, \
 proxies: $(stray_proxies | tr '\n' ' '), session ${broker_session:-unknown}: \
 $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
         rm -rf "$channel_dir"
@@ -1198,11 +1440,12 @@ $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
             else
                 proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
             fi
-            if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ "$proxies_ended" = yes ] \
-                && ! kill -0 "$channel_broker" 2>/dev/null \
+            if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
+                && [ "$proxies_ended" = yes ] && ! kill -0 "$channel_broker" 2>/dev/null \
                 && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
             then report PASS "$1"
             else report FAIL "$1" "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
+daemons: $(mill_daemons | tr '\n' ' '), \
 broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), proxies ended: $proxies_ended, \
 logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; fi
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1217,6 +1460,7 @@ logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; 
         # the listener hears the liveness probe's connect and no byte — the shutdown protocol is
         # never spoken to it. The listener is the gate's, recording what reaches it.
         planted_row="channel: a planted portfile nominates nothing: refused, no shutdown spoken"
+        planted_mill_row="channel: a new launch adopts nothing planted in out/mill-daemon"
         cat > "$work/planted.py" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
@@ -1238,6 +1482,29 @@ PY
         while ! grep -q bound "$work/planted.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
         mkdir -p "$deny_project/project/target"
         printf '{"uri":"local://%s"}' "$planted_sock" > "$deny_project/project/target/active.json"
+        # The mill rendezvous files name a gate listener's TCP port and a gate sleep's pid: the
+        # new broker connects to nothing they name and signals nothing, and the client reaches
+        # the broker's own daemon.
+        cat > "$work/planted-tcp.py" <<'PY'
+import socket, sys
+s = socket.socket()
+s.bind(("127.0.0.1", 0)); s.listen(5)
+print("port %d" % s.getsockname()[1], flush=True)
+while True:
+    c, _ = s.accept()
+    print("connect", flush=True)
+    c.close()
+PY
+        python3 "$work/planted-tcp.py" >"$work/planted-tcp.log" 2>&1 & planted_tcp=$!
+        sleep 3600 & planted_sleep=$!
+        tries=0
+        while ! grep -q port "$work/planted-tcp.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+        if want mill; then
+            mkdir -p "$mill_project/out/mill-daemon"
+            port_saved=$(cat "$mill_project/out/mill-daemon/socketPort" 2>/dev/null)
+            sed -n 's/^port //p' "$work/planted-tcp.log" | tr -d '\n' > "$mill_project/out/mill-daemon/socketPort"
+            printf '%s' "$planted_sleep" > "$mill_project/out/mill-daemon/processId"
+        fi
         if ! start_channel_broker; then report FAIL "$planted_row" "the broker made no FIFOs"
         else
             with_timeout 300 channel_shim chan-planted.log "$deny_project" sbt about; status=$?
@@ -1247,6 +1514,18 @@ PY
             then report PASS "$planted_row" "$(grep -c bytes "$work/planted.log") connects, no bytes"
             else report FAIL "$planted_row" "exit $status: $(tail -1 "$work/chan-planted.log.err" | cut -c1-60); \
 listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
+            if ! want mill; then report SKIP "$planted_mill_row" "needs mill"
+            else
+                with_timeout 600 channel_shim chan-planted-mill.log "$mill_project" mill version; status=$?
+                channel_settled
+                port_saved=""
+                adopted=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+                if [ "$status" -eq 0 ] && [ -n "$adopted" ] && ! grep -q connect "$work/planted-tcp.log" \
+                    && kill -0 "$planted_sleep" 2>/dev/null
+                then report PASS "$planted_mill_row" "daemon $adopted; the planted port heard nothing, the pid lives"
+                else report FAIL "$planted_mill_row" "exit $status, daemon ${adopted:-none}, connects: \
+$(grep -c connect "$work/planted-tcp.log"), planted pid $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
+            fi
             kill -TERM "$channel_broker" 2>/dev/null
             tries=0
             while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
@@ -1256,7 +1535,8 @@ listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
             rm -rf "$channel_dir"
         fi
         rm -f "$deny_project/project/target/active.json"
-        kill "$planted_listener" 2>/dev/null; wait "$planted_listener" 2>/dev/null
+        kill "$planted_listener" "$planted_tcp" "$planted_sleep" 2>/dev/null
+        wait "$planted_listener" "$planted_tcp" "$planted_sleep" 2>/dev/null
     fi
 fi
 
@@ -1265,11 +1545,12 @@ leftover=""
 [ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"
 [ -n "$(ivy_servers)" ] && leftover="$leftover ivy-fixture server: $(ivy_servers | tr '\n' ' ')"
+[ -n "$(mill_daemons)" ] && leftover="$leftover mill daemon: $(mill_daemons | tr '\n' ' ')"
 [ -n "$(stray_proxies)" ] && leftover="$leftover proxy: $(stray_proxies | tr '\n' ' ')"
 [ "$(commands_now)" -gt 0 ] && leftover="$leftover command directories: $(commands_now)"
 if [ -z "$leftover" ]
-then report PASS "no proxy or sbt server survives its command"
-else report FAIL "no proxy or sbt server survives its command" "$leftover"; fi
+then report PASS "no proxy, sbt server or mill daemon survives its command"
+else report FAIL "no proxy, sbt server or mill daemon survives its command" "$leftover"; fi
 
 echo
 echo "PASS $pass  FAIL $fail  SKIP $skip"

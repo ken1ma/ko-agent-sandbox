@@ -438,9 +438,11 @@ object RunOnHostChannel:
       val exit = child.waitFor()
       currentCommand = None
       pumps.foreach(_.join())
-      // A cancelled sbt command's server is not retired here: as with stock sbt, the client's
-      // disconnect cancels the exec (CommandExchange.removeChannel, force=false) and the warm
-      // server survives for the next command.
+      // Nothing is retired here on a cancel; the broker follows each tool, and the two differ.
+      // Stock sbt's server survives a client's disconnect: the disconnect cancels the exec
+      // (CommandExchange.removeChannel, force=false) and the warm server serves the next
+      // command. Stock Mill's daemon shuts itself down on a client's disconnect mid-command
+      // (Server.scala), so the next mill command starts one (BrokerRuntimes.prepare).
       if requesterGone.get then log(s"ended with $exit for a requester already gone")
       else
         // Only after both writers have drained: the shim reads the exit code last, and an

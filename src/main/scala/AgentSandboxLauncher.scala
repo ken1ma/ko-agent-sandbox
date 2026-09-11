@@ -1899,11 +1899,12 @@ object AgentSandboxLauncher:
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
-           |sbt's server stays warm across invocations. To run several commands in one, quote them:
-           |`sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments as one
-           |command, and `compile test` fails to parse. The host grants no TCP listener, so a test
-           |that binds one fails there with `Operation not permitted`; that suite alone runs in the
-           |container. Container `sbt` still works, over the same `target/` — host and container
+           |sbt's server and mill's daemon stay warm across invocations. To run several commands in
+           |one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments
+           |as one command, and `compile test` fails to parse. Under sbt and mvn the host grants no
+           |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
+           |suite alone runs in the container. Under mill a build's processes can bind loopback
+           |listeners. Container `sbt` still works, over the same `target/` — host and container
            |builds compile with different JVMs against different caches, so switching between them
            |can cost a rebuild or need the symlink cleanup described above. Any other host
            |command that fails or is refused is reported to the user, never re-run in the container.
@@ -3005,7 +3006,9 @@ object AgentSandboxLauncher:
         System.err.println(
           s"run on host: ${chosen(runOnHost.mkString(", "))} by --run-on-host; sandbox-run-on-host " +
             "relays commands to a Seatbelt-confined wrapper on this host" +
-            (if runOnHost.contains("sbt") then "; your own sbt server for this project is ended when the agent runs sbt"
+            (if runOnHost.contains("sbt") then "; your own sbt server for this project is shut down when the agent runs sbt"
+             else "") +
+            (if runOnHost.contains("mill") then "; your own mill daemon for this project is shut down when the agent runs mill"
              else ""),
         )
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")

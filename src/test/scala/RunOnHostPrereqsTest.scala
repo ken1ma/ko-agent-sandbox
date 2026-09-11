@@ -402,31 +402,68 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         clue(bad),
       )
 
-  test("the executable name is the bootstrap's own derivation, suffix rules included"):
-    // The `case "$MILL_VERSION"` block of the official script, one row per branch.
-    assertEquals(millExecutableName("1.1.8", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millExecutableName("1.1.8", "x86_64"), "1.1.8-native-mac-amd64")
-    assertEquals(millExecutableName("1.1.8-jvm", "arm64"), "1.1.8")
-    assertEquals(millExecutableName("1.1.8-native", "arm64"), "1.1.8-native-mac-aarch64")
-    assertEquals(millExecutableName("0.11.5", "arm64"), "0.11.5")
-    assertEquals(millExecutableName("0.12.14", "arm64"), "0.12.14")
-    assertEquals(millExecutableName("0.13.0-M1", "arm64"), "0.13.0-M1-native-mac-aarch64")
-    assertEquals(millExecutableName("1.1.6-104-5bbe1e", "arm64"), "1.1.6-104-5bbe1e-native-mac-aarch64")
+  test("the launcher is the JVM one for a bare or -jvm pin; a -native pin is refused by name"):
+    assertEquals(millLauncherVersion("1.1.9"), Right("1.1.9-jvm"))
+    assertEquals(millLauncherVersion("1.1.9-jvm"), Right("1.1.9-jvm"))
+    assertEquals(millLauncherVersion("1.1.9-native"), Left(Refusal.PrereqMillNativeLauncher("1.1.9-native")))
+    val worded = wording(Refusal.PrereqMillNativeLauncher("1.1.9-native"))
+    assert(worded.contains("`1.1.9`") && worded.contains("`1.1.9-jvm`"), worded)
 
-  test("a provisioned executable is that exact file, present and executable"):
-    val executable = millDownload.resolve("1.1.8-native-mac-aarch64")
-    assertEquals(millExecutable(millDownload, "1.1.8", "arm64", _ == executable), Right(executable))
+  test("a provisioned launcher is the bootstrap's file for a -jvm pin, present and executable"):
+    val executable = millDownload.resolve("1.1.9")
+    assertEquals(millExecutable(millDownload, "1.1.9-jvm", _ == executable), Right(executable))
     // A similarly prefixed neighbour is not it.
     assertEquals(
-      millExecutable(millDownload, "1.1.8", "arm64", _ == millDownload.resolve("1.1.8-native-mac-aarch64.part")),
-      Left(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)),
+      millExecutable(millDownload, "1.1.9-jvm", _ == millDownload.resolve("1.1.9-native-mac-aarch64")),
+      Left(Refusal.PrereqMillExecutableMissing("1.1.9-jvm", millDownload)),
     )
 
-  test("an unprovisioned executable is a refusal naming the version and the folder to fix"):
-    assertEquals(
-      millExecutable(millDownload, "1.2.0", "arm64", _ => false),
-      Left(Refusal.PrereqMillExecutableMissing("1.2.0", millDownload)),
+  test("an unprovisioned launcher is a refusal naming the host command that provisions it"):
+    val refusal = millExecutable(millDownload, "1.2.0-jvm", _ => false)
+    assertEquals(refusal, Left(Refusal.PrereqMillExecutableMissing("1.2.0-jvm", millDownload)))
+    assert(wording(refusal.swap.toOption.get).contains("MILL_VERSION=1.2.0-jvm ./mill version"))
+
+  test("the daemon configuration changes with what Mill restarts on, from the source Mill selects"):
+    val pinned = Seq("mill-version: 1.1.9", "mill-jvm-version: system")
+    def yaml(extra: String*) = files("build.mill.yaml" -> (pinned ++ extra))
+    def yamlAnd(extra: (String, Seq[String])*) = files(("build.mill.yaml" -> pinned) +: extra*)
+    val baseConfig = millDaemonConfig(project, yaml("extends: ScalaModule"))
+    assertEquals(baseConfig, millDaemonConfig(project, yaml("extends: ScalaModule")), "deterministic")
+    // The header is taken whole: an edit outside the keys restarts too, the cheaper error.
+    assertNotEquals(millDaemonConfig(project, yaml("extends: JavaModule")), baseConfig)
+    // Each key, from each of its sources.
+    assertNotEquals(millDaemonConfig(project, yaml("mill-jvm-opts:", "  - -Xmx1g")), baseConfig)
+    val dotOpts = millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g")))
+    val configOpts = millDaemonConfig(project, yamlAnd(".config/mill-jvm-opts" -> Seq("-Xmx1g")))
+    assertNotEquals(dotOpts, baseConfig)
+    assertNotEquals(configOpts, baseConfig)
+    // An empty file is a source Mill selects, over the header: creating one, in either place,
+    // changes the configuration, and so does removing it.
+    val headerOpts = yaml("mill-jvm-opts: [-Xmx1g]")
+    for empty <- Seq(".mill-jvm-opts", ".config/mill-jvm-opts", ".mill-repositories", ".config/mill-repositories") do
+      val withEmpty = files(("build.mill.yaml" -> (pinned :+ "mill-jvm-opts: [-Xmx1g]")) , empty -> Seq.empty)
+      assertNotEquals(millDaemonConfig(project, withEmpty), millDaemonConfig(project, headerOpts), empty)
+    // One file's lines never read as another's.
+    assertNotEquals(
+      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g", "-Xss1m"))),
+      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g"), ".mill-repositories" -> Seq("-Xss1m"))),
     )
+    assertNotEquals(millDaemonConfig(project, yaml("mill-repositories: [https://r.example]")), baseConfig)
+    val version = files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-jvm-version: system"))
+    assertNotEquals(millDaemonConfig(project, version), baseConfig)
+    val jvm = files("build.mill.yaml" -> Seq("mill-version: 1.1.9", "mill-jvm-version: temurin:25"))
+    assertNotEquals(millDaemonConfig(project, jvm), baseConfig)
+    // A key in a spelling only a YAML parser recognizes changes it all the same.
+    assertNotEquals(
+      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
+      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx2g]")),
+    )
+    // The header of build.mill is its //| lines, and the body is not the header.
+    def header(opt: String, body: String*) =
+      val lines = Seq("//| mill-version: 1.1.9", "//| mill-jvm-opts:", s"//| - $opt", "package build")
+      files("build.mill" -> (lines ++ body))
+    assertNotEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx2g")))
+    assertEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx1g", "object x")))
 
   // --------------------------------------------------------------------------
   // The channel's working directory
@@ -702,7 +739,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     for refusal <- cases do
       assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
     // The ones a host command fixes name that command.
-    assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8", millDownload)).contains("./mill --version"))
+    assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8-jvm", millDownload))
+      .contains("MILL_VERSION=1.1.8-jvm ./mill version"))
     assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))
     val mvndWording = wording(Refusal.PrereqMvnDistributionIsMvnd(mvnUrl))
     assert(mvndWording.contains(".mvn/wrapper/maven-wrapper.properties"))

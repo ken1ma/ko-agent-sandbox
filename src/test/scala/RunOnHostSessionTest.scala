@@ -149,26 +149,29 @@ class RunOnHostSessionTest extends munit.FunSuite:
     session.close()
     session.directory
 
-  test("serverOwner finds an owner in the root or condemned, and across the rename between the two"):
+  test("runtimeOwner finds an owner in the root or condemned, and across the rename between the two"):
     val root = freshRoot()
     val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
     val owner = publish(root, Path.of("/p"), Kind.Broker).toOption.get
     val hash = "abcdef0123456789"
     Files.writeString(owner.records.resolve(s"server-sbt-$hash"), renderRecord(Record(1, "S")), UTF_8)
-    // A live owner holding the record is found; a hash no one owns is not.
-    assertEquals(serverOwner(root, mine.directory, hash), Some(owner.directory))
-    assertEquals(serverOwner(root, mine.directory, "0000000000000000"), None)
+    Files.writeString(owner.records.resolve(s"daemon-mill-$hash"), renderRecord(Record(2, "S")), UTF_8)
+    // A live owner holding the record is found; a hash no one owns is not; each program's record is its own.
+    assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash"), Some(owner.directory))
+    assertEquals(runtimeOwner(root, mine.directory, s"daemon-mill-$hash"), Some(owner.directory))
+    assertEquals(runtimeOwner(root, mine.directory, "server-sbt-0000000000000000"), None)
+    assertEquals(runtimeOwner(root, mine.directory, "daemon-mill-0000000000000000"), None)
     // A just-crashed owner — unlocked, still in the root, not yet condemned — still owns: its
     // server group can be running, so admission is blocked until the next start collects it.
     owner.close()
-    assertEquals(serverOwner(root, mine.directory, hash), Some(owner.directory), "a dead owner in the root still owns")
+    assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash"), Some(owner.directory), "a dead owner in the root still owns")
     // The owner renames into condemned/ in the instant between the root enumeration and its
     // lookup: the lookup then misses it in the root, but the later condemned enumeration finds
     // it, so admission stays blocked across the teardown rename.
     val condemned = Files.createDirectories(root.resolve(CondemnedDir))
     val moved = condemned.resolve(owner.directory.getFileName)
     var scans = 0
-    val found = serverOwner(root, mine.directory, hash, betweenScan = () =>
+    val found = runtimeOwner(root, mine.directory, s"server-sbt-$hash", betweenScan = () =>
       scans += 1
       if scans == 1 then Files.move(owner.directory, moved, StandardCopyOption.ATOMIC_MOVE))
     assertEquals(found, Some(moved), "the owner renamed away between the scans is found in condemned")

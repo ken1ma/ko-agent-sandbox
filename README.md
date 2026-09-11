@@ -212,14 +212,13 @@ above, a device code or a code pasted back, need no redirect.
                          the project (.git and .ko-agent-sandbox
                          unreachable), per-project run-on-host caches, and
                          one egress proxy. Host commands write the project even under
-                         --write=reject. With sbt, the launch keeps a warm
-                         server per build directory across its commands. An
-                         sbt server you run from a terminal is shut down,
-                         once its build is done, when the agent runs sbt in
-                         that directory; a second launch on the same project
-                         is refused a build directory the first launch still
-                         owns; and your own sbt 2 attaches to the launch's
-                         confined server while it lives.
+                         --write=reject. For sbt and mill, the launch keeps
+                         one server or daemon warm per build directory for
+                         its life. One you started yourself is shut down,
+                         once any build already running in it completes,
+                         when the agent runs the program there, and your own
+                         client attaches to the launch's confined server or
+                         daemon while it lives.
                          SECURITY.md "Run on host" has the why and the cost;
                          doc/run-on-host.md has how it works
       --env=<name>[=<value>]

@@ -33,7 +33,7 @@ object EmitRunOnHostProfile:
       case None        => Program.Sbt
       case Some(name)  => Program.values.find(_.name == name).getOrElse(fail(s"unknown program $name"))
 
-    val assembled = RunOnHostSandbox.assemble(project, program, env).fold(fail, identity)
+    val assembled = RunOnHostSandbox.assemble(project, program, env, project).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
 

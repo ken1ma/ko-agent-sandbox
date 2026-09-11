@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import RunOnHostSandbox.*
+import scala.util.chaining.*
 import RunOnHostPrereqs.Program
 
 class RunOnHostSandboxTest extends munit.FunSuite:
@@ -24,16 +25,17 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       "HOME" -> "/Users/u", "LANG" -> "en_US.UTF-8", "PATH" -> "/usr/bin:/bin",
       "TERM" -> "xterm", "TMPDIR" -> "/var/folders/xy/T", "JAVA_HOME" -> "/Users/u/jdk-link",
       "HTTPS_PROXY" -> "http://alice:s3cret@proxy.example:3128", "AWS_SECRET_ACCESS_KEY" -> "hunter2",
-      "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "TOKEN" -> "t0ken", "USER" -> "shellname",
+      "SBT_OPTS" -> "-Xmx8g", "MILL_VERSION" -> "1.0.0", "MILL_OUTPUT_DIR" -> "elsewhere", "TOKEN" -> "t0ken",
+      "USER" -> "shellname",
     )
     val environment = commandEnvironment(
       host.get,
       Vector(
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
-        "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+        "MILL_OUTPUT_DIR" -> "elsewhere", "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
       ),
       prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"), m2Repository = Path.of("/cache/m2"),
-      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
+      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millVersion = Some("1.1.9-jvm"),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
       proxyPort = 4711, userName = "u",
     )
@@ -51,6 +53,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("USER"), "u")
     assertEquals(environment("LOGNAME"), "u")
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
+    // The wrapper's launcher version, never the forwarded one.
+    assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
@@ -60,24 +64,27 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
     assert(!environment("JAVA_TOOL_OPTIONS").contains("javaagent"))
     // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
-    // programs' own overrides — the mill version ones even when forwarded.
-    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "MILL_VERSION", "TERM", "ALL_PROXY").foreach: name =>
+    // programs' own overrides — mill's version and output-directory ones even when forwarded.
+    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "TERM", "ALL_PROXY")
+      .foreach: name =>
       assert(!environment.contains(name), name)
     assert(!environment.values.exists(_.contains("s3cret")), environment.toString)
     assertEquals(
       environment.keySet,
       Set(
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
-        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
+        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER", "MILL_VERSION",
       ) ++ commandProxyVariables(4711).keySet,
     )
-    // Without a derivable download folder the variable is simply absent.
+    // Without a derivable download folder the variable is simply absent, and so is the launcher
+    // version for a program that is not mill — a forwarded one included.
     val noFolder =
       commandEnvironment(
-        host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"),
-        Path.of("/t"), 1, "u",
+        host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, None,
+        Path.of("/t"), Path.of("/t"), 1, "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
+    assert(!noFolder.contains("MILL_VERSION"))
 
   test("a prerequisite file that cannot be read is a worded refusal at the assembly, not a stack trace"):
     import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
@@ -93,14 +100,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val mvnw = project.resolve("mvnw")
     Files.write(mvnw, Array[Byte]('#', '!', 0xff.toByte, '\n'))
     Files.setPosixFilePermissions(mvnw, permissions("rwxr-xr-x"))
-    val invalid = assemble(project, Program.Mvn, env.get)
+    val invalid = assemble(project, Program.Mvn, env.get, project)
     assert(clue(invalid).left.exists(text => text.contains(mvnw.toString) && text.contains("not valid UTF-8")))
 
     Files.writeString(mvnw, "#!/bin/sh\nhash_string() {\n}\n")
     val properties = Files.createDirectories(project.resolve(".mvn/wrapper")).resolve("maven-wrapper.properties")
     Files.writeString(properties, "distributionUrl=https://example.org/apache-maven-3.9.16-bin.zip\n")
     Files.setPosixFilePermissions(properties, permissions("---------"))
-    val denied = assemble(project, Program.Mvn, env.get)
+    val denied = assemble(project, Program.Mvn, env.get, project)
     assert(
       clue(denied).left.exists(text => text.contains(properties.toString) && text.contains("permission denied")),
     )
@@ -119,13 +126,48 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
-  test("the broker's runtime travels as three options, all or none"):
+  test("the broker's runtime travels as three options, all or none, the daemon port with them"):
     val runtime = Runtime(Path.of("/b"), 4242, Path.of("/b/proxy-sbt-0.log"))
     assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
     assertEquals(runtime.tmp, Path.of("/b/tmp"))
+    val withDaemon = runtime.copy(daemonPort = Some(51000))
+    assertEquals(runtimeOf(runtimeOptions(withDaemon)), Right(Some(withDaemon)))
     assertEquals(runtimeOf(Seq("--env=TOKEN")), Right(None))
     assert(runtimeOf(Seq("--proxy-port=4242", "--proxy-log=/l")).isLeft)
     assert(runtimeOf(Seq("--runtime-session=/b", "--proxy-port=x", "--proxy-log=/l")).isLeft)
+    assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-port=x").isLeft)
+    assert(runtimeOf(Seq("--daemon-port=51000")).isLeft)
+
+  test("a mill command's temporary directory is the broker's; sbt keeps its own with the broker's sockets"):
+    val own = Path.of("/r/s1/tmp")
+    val brokers = Path.of("/r/b1/tmp")
+    assertEquals(temporaryDirectories(Program.Sbt, own, brokers), (own, brokers))
+    assertEquals(temporaryDirectories(Program.Mill, own, brokers), (brokers, brokers))
+    assertEquals(temporaryDirectories(Program.Mvn, own, brokers), (own, own))
+
+  test("a redirected out/mill-daemon, or an entry of it with a second name, is refused; a plain one admitted"):
+    val root = Files.createTempDirectory("rendezvous")
+    val build = Files.createDirectory(root.resolve("build"))
+    val other = Files.createDirectories(root.resolve("other/out/mill-daemon"))
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "no out/ at all")
+    val daemonDir = Files.createDirectories(build.resolve("out/mill-daemon"))
+    Files.writeString(daemonDir.resolve("processId"), "1")
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "a plain directory")
+    // An entry linked elsewhere, then the directory, then out/ itself.
+    Files.createSymbolicLink(daemonDir.resolve("daemonLock"), other.resolve("daemonLock"))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
+    Files.delete(daemonDir.resolve("daemonLock"))
+    Files.createLink(daemonDir.resolve("stdout"), other.resolve("stdout").pipe(Files.writeString(_, "")))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("more than one name")))
+    Files.delete(daemonDir.resolve("stdout"))
+    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()))
+    Files.move(daemonDir, root.resolve("aside"))
+    Files.createSymbolicLink(daemonDir, other)
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
+    Files.delete(daemonDir)
+    Files.move(build.resolve("out"), root.resolve("out-aside"))
+    Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
+    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
 
   test("the server's command line is the thin client's, with the request's -D and -J and nothing else of it"):
     val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
@@ -321,12 +363,27 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Right(())
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
-      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None,
+      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None, None,
     )
     val logged = scala.collection.mutable.ListBuffer[String]()
     val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    // The daemon stand-in: a registered spawn of a sleep, the sleep itself standing for the
+    // daemon — the process a reuse proves by pid and start time — on a port of the seam's choosing.
+    val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
+    var daemonFails = false
+    val daemon = (start: DaemonStart) =>
+      daemonStarts += start
+      standIn(start.record)
+      if daemonFails then Left("no daemon in the group")
+      else
+        val leader = ProcessHandle.of(RunOnHostSession.parseRecord(Files.readString(start.record, UTF_8)).get.pgid).get
+        await("the sleep started")(leader.children().findFirst().isPresent)
+        val sleeper = leader.children().findFirst().get.pid
+        val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
+        Right(MillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
+    var assemblies = 0
     val runtimes = BrokerRuntimes(session, project, logged.append(_), authority, Vector.empty)(
-      processes, (_, _) => Right(assembled), proxy, server,
+      processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
     )
     val dirA = Files.createDirectory(project.resolve("a"))
     val dirB = Files.createDirectory(project.resolve("b"))
@@ -452,12 +509,62 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       throwsAfterRegistering = false
       assert(Files.exists(serverOf(dirA)) && Files.exists(serverOf(dirB)), "the warm runtimes are untouched")
 
-      // Mill's runtime is its proxy alone; sbt and mill share the directory's build file, so it
-      // outlives the retirement of one program's runtime while the other's records name the hash.
+      // Mill's runtime is its proxy and its daemon, the client confined to the daemon's port;
+      // sbt and mill share the directory's build file, so it outlives the retirement of one
+      // program's runtime while the other's records name the hash.
       val serversBefore = serverStarts.size
-      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("compile")), current(dirA, "mill"))
+      def daemonOf(dir: Path) = session.records.resolve(s"daemon-mill-${hashOf(dir)}")
+      def millRuntime(dir: Path) =
+        Runtime(session.directory, lastPort, logOf(dir, "mill"), Some(40_000 + daemonStarts.size))
+      val millA = runtimes.prepare(Program.Mill, dirA, Seq("compile"))
+      assertEquals(millA, Right(Some(millRuntime(dirA))))
       assertEquals(serverStarts.size, serversBefore, "mill starts no server")
+      assertEquals(daemonStarts.map(_.record).toList, List(daemonOf(dirA)))
       assert(Files.exists(recordOf(dirA, "mill")) && Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)))
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused while the daemon lives")
+      assertEquals(daemonStarts.size, 1)
+      // A link redirecting the rendezvous is refused before reuse, and the warm daemon is untouched.
+      val daemonDirA = Files.createDirectories(dirA.resolve("out")).resolve("mill-daemon")
+      Files.createSymbolicLink(daemonDirA, Files.createDirectories(dirB.resolve("out/mill-daemon")))
+      val redirected = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assert(redirected.swap.exists(_.contains("redirected mill daemon directory")), redirected.toString)
+      Files.delete(daemonDirA)
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused once the link is gone")
+      assertEquals(daemonStarts.size, 1)
+      // The daemon gone on its own — its idle exit, `shutdown`, the cancel that ends it — with its
+      // starter's leader still alive: replaced under the same proxy, the old group ended.
+      val firstDaemonLeader = pgidOf(daemonOf(dirA))
+      val firstDaemon = ProcessHandle.of(firstDaemonLeader).get.children().findFirst().get
+      firstDaemon.destroyForcibly()
+      await("the daemon gone")(!firstDaemon.isAlive)
+      val millA2 = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assertEquals(millA2, Right(Some(millRuntime(dirA))), "a new daemon")
+      assertEquals(endedGroups.last, firstDaemonLeader)
+      assertEquals(daemonStarts.size, 2)
+      assert(logged.exists(_.contains("its daemon is gone")), logged.toString)
+      // A change to what Mill's launcher restarts the daemon on replaces the daemon, the old
+      // group ended and the assembly redone, before the client could meet the mismatch itself.
+      val secondDaemonLeader = pgidOf(daemonOf(dirA))
+      val assembliesBefore = assemblies
+      Files.writeString(dirA.resolve(".mill-jvm-opts"), "-Xmx1g\n", UTF_8)
+      val millA3 = runtimes.prepare(Program.Mill, dirA, Seq("test"))
+      assertEquals(millA3, Right(Some(millRuntime(dirA))))
+      assertEquals(endedGroups.last, secondDaemonLeader)
+      assertEquals(assemblies, assembliesBefore + 1, "assembled afresh")
+      assert(logged.exists(_.contains("its configuration changed")), logged.toString)
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA3, "reused under the new configuration")
+      // A daemon start that fails leaves no record, and the next command retries.
+      val thirdDaemonLeader = pgidOf(daemonOf(dirA))
+      ProcessHandle.of(thirdDaemonLeader).get.children().forEach(_.destroyForcibly())
+      await("the daemon gone")(ProcessHandle.of(thirdDaemonLeader).get.children().findFirst().isEmpty)
+      daemonFails = true
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), Left("no daemon in the group"))
+      assert(!Files.exists(daemonOf(dirA)), "the failed start's record")
+      daemonFails = false
+      assertEquals(
+        runtimes.prepare(Program.Mill, dirA, Seq("test")).map(_.flatMap(_.daemonPort)),
+        Right(Some(40_000 + daemonStarts.size)),
+      )
       // Maven's proxy is the command's own.
       assertEquals(runtimes.prepare(Program.Mvn, dirA, Seq.empty), Right(None))
       // Last, since it discards dirA's server: a redirected socket directory is not reused as
@@ -507,7 +614,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       def endGroup(pgid: Long): Unit = endedGroups += pgid
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
-      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None,
+      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None, None,
     )
     // A second directory the peer touched with Mill only: its build file names it, but there is
     // no server-sbt record, so the peer reserves no sbt server there.
@@ -519,11 +626,16 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       started += start.buildDirectory
       Right(())
     val emptyAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
+    val daemon = (start: DaemonStart) =>
+      daemonStarts += start.buildDirectory
+      Right(MillDaemons.Daemon(1, "S", 40_001))
     val runtimes = BrokerRuntimes(mine, project, _ => (), emptyAuthority, Vector.empty)(
       processes,
-      (_, _) => Right(assembled),
+      (_, _, _) => Right(assembled),
       (_, _, _, _) => Right(1), // a proxy port, no stand-in spawn
       server,
+      daemon,
     )
     try
       // The peer owns the sbt server for `dir`: refused, and its server never signalled.
@@ -535,6 +647,16 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // The peer's Mill-only directory reserves no sbt server: this launch starts sbt there.
       assertEquals(runtimes.prepare(Program.Sbt, millDir, Seq("compile")).map(_.isDefined), Right(true))
       assert(started.contains(millDir), "sbt started in the Mill-only directory")
+      // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` refuses a mill
+      // command for that directory, while its sbt-only `dir` admits one.
+      Files.writeString(peer.records.resolve(s"daemon-mill-$millHash"), "1 S\n", UTF_8)
+      val refusedMill = runtimes.prepare(Program.Mill, millDir, Seq("compile"))
+      assert(refusedMill.swap.exists(_.contains("owns the mill daemon")), refusedMill.toString)
+      assert(!daemonStarts.contains(millDir), "no daemon was started for the owned directory")
+      assertEquals(
+        runtimes.prepare(Program.Mill, dir, Seq("compile")).map(_.flatMap(_.daemonPort)), Right(Some(40_001)),
+      )
+      assert(daemonStarts.contains(dir), "mill started in the sbt-owned directory")
     finally
       peerServer.descendants().forEach(_.destroyForcibly())
       peerServer.destroyForcibly().waitFor()
