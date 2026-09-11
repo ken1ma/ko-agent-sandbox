@@ -1,7 +1,9 @@
 # TODO
 
-Remaining work that adds real security or maintainability for the actual threat model. Ideas without
-a concrete gain are recorded in design.md as standing design decisions so they stop resurfacing.
+Remaining work that adds real security or maintainability for the actual threat model, and ideas
+whose benefit is uncertain, each with the condition that decides whether to build it. An idea
+examined and found without benefit is recorded in design.md with its reason, so it is not proposed
+again.
 
 ## Credential brokering — its two plans, in order
 
@@ -22,15 +24,15 @@ a concrete gain are recorded in design.md as standing design decisions so they s
   continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
   origin never sees the client's hello. On a `tunnel` host the refusal stays: GREASE and real ECH
   are indistinguishable by design (RFC 9849, 6.2), and real ECH under a passing outer SNI is
-  domain fronting through the allowed host (`TLSHelper`, the extension constant). The price is a
-  second ECH step in SECURITY.md's handshake list and its tests.
+  domain fronting through the allowed host (`TLSHelper`, the extension constant). This adds a
+  second ECH step to SECURITY.md's handshake list and its tests.
 
 ## Deferred — inspected-relay keep-alive
 
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
   framing is parsed and enforced, so the design is a request loop per client connection with a
-  fresh origin connection per request; the price is a larger state machine at the enforcement
+  fresh origin connection per request; this needs a larger state machine at the enforcement
   point and the one-request rule's smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
@@ -70,10 +72,10 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   sees none of it.
 - [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
   the hello allowed at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
-  logged; and the sandbox then holds
-  the host's network position against services that authenticate by location — router and NAS
-  pages, dev servers, dashboards, registries, CI runners — with the cloud metadata endpoint in
-  the same class. Port 443 and the one-client network bound the attack surface, not the trust.
+  logged; and the sandbox then reaches, from the host's own address, services that authenticate by
+  location — router and NAS pages, dev servers, dashboards, registries, CI runners — with the cloud
+  metadata endpoint in the same class. Port 443 and the one-client network bound the attack surface,
+  not the trust.
 
 ## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
 
@@ -160,7 +162,7 @@ row where the probe broke — with a killed run leaving nothing outside the moun
 `--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
 
 - [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
-  folding, open-file holds — with the launcher playing `lower-probe-host.py`'s part; both probe
+  folding, open-file holds — with the launcher in place of `lower-probe-host.py`; both probe
   halves are deleted when their rows are added. Their machine record adds the upper volume's
   filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
 - [ ] The `--run-on-host`-gated row: a command through the channel, then `target/` read back from
@@ -197,7 +199,7 @@ launcher execs away on POSIX, so neither side has an obvious place to run it.
   the launcher's only scope is the whole session, so an idle open agent would keep the laptop awake,
   which is the reason the lease is scoped to a command at all.
 
-**Open questions:** whether the feature carries its weight at all, and whether a container→host
+**Open questions:** whether the feature is worth building at all, and whether a container→host
 channel — however narrow — should exist for a convenience. One constraint on any implementation:
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
@@ -213,9 +215,9 @@ on podman-less machines and kills the test JVM.
   which runs unconfined while parsing hostile bytes as the user's uid
   (`run-on-host.md` "The command's egress proxy", where the acceptance argument binds:
   loopback-only listener, a JVM parse bug as the failure mode, `HostileInputTest` over the
-  parser). The profile, if it ever earns its cost: read-only JDK and launcher jar, writes to its
-  log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is the proxy's
-  own job, and SBPL cannot filter by name — plus its loopback listener.
+  parser). The profile, if its protection ever justifies its cost: read-only JDK and launcher jar,
+  writes to its log alone, no `process-exec*`, unrestricted `network-outbound` — host filtering is
+  the proxy's own job, and SBPL cannot filter by name — plus its loopback listener.
 - [ ] Filter `mach-lookup` in the host command profile. It is granted unfiltered, and the system
   program directories are executable (a command's scripts need `find`, `mount` and whatever else;
   `runtime-authority.txt`); together those let a command reach any Mach service — `open` through
@@ -292,8 +294,8 @@ Everything else a Gradle backend needs is known, so the open decision is the loo
 Its own launch option, when it arrives. It aligns source paths and nothing else — the host command's
 JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
 does not establish compatibility between the two builds' state. That leaves readable paths in
-build output as the benefit, which did not justify the change. The host path reaches the
-container regardless: the command's streamed output names it (`SECURITY.md`, "Run on host"). Prior
+build output as the benefit, which did not justify the change. The host path is already in
+the container: the command's streamed output names it (`SECURITY.md`, "Run on host"). Prior
 art, both mounting the project at its host path for path legibility rather than shared state:
 
 - Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
@@ -303,7 +305,7 @@ art, both mounting the project at its host path for path legibility rather than 
 ## Deferred — readable session directory names under `--run-on-host`
 
 - [ ] Name the sessions `broker-<random>` and `command-<random>` instead of `b<random>` and
-  `s<random>` (`RunOnHostSession.Kind`), once the path can afford it: the session's `tmp/` hosts
+  `s<random>` (`RunOnHostSession.Kind`), once the path length allows it: the session's `tmp/` hosts
   sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength` leaves that path 53 characters,
   of which the root and Java's 20-digit temp-directory name take 51. Either sbt's boot socket
   comes to need fewer than its 50 characters past the directory (`sbt-issues.md`, the thin-client
@@ -326,9 +328,9 @@ binary identity, and the installed filter's mount self-test.
 
 ## Before the first release — the published identity
 
-- [ ] One decision, several names that must fall out of it together: the jar's artifact name and
+- [ ] One decision that must settle several names together: the jar's artifact name and
   publication coordinates; the Scala package names (`agentsandbox.*`, containing neither the
   `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` —
   OCI convention wants a reverse-DNS key, and the right prefix is this same identity, so deciding
-  the key alone would decide the identity by accident). Until then a changed key self-heals
-  through the "rebuild with --build" refusal, so the exposure is bounded.
+  the key alone would decide the identity by accident). Until then a changed key ends in
+  the "rebuild with --build" refusal, so the exposure is bounded.

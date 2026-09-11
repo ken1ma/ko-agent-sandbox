@@ -7,7 +7,7 @@ each part:
 
 | concern | binding site |
 | --- | --- |
-| the threat model, priced | `SECURITY.md` "Run on host" |
+| the security properties and their costs | `SECURITY.md` "Run on host" |
 | the option, the command, what a command may write | README Reference, `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
@@ -23,7 +23,7 @@ build runs on memory reclaimed when it exits, at host speed.
 
 A host command's recurring cost is startup: sbt's server lives for one `sandbox-run-on-host` command
 and `mill` runs `--no-daemon` — no warm daemon spans invocations (`SECURITY.md` "One sbt server
-per project" has the security argument) — so every invocation pays JVM start and build load,
+per project" has the security argument) — so every invocation starts a JVM and loads the build,
 while the on-disk state stays warm: the caches, and the incremental-compile outputs under
 `target/`. This is why the agent instructions say to batch commands into one invocation.
 
@@ -77,7 +77,7 @@ The filesystem rules define what a host command can access:
   case-insensitive volume an access through `.GIT` to an existing `.git` resolves to the lowercase
   path and is denied (`src/probe/seatbelt-semantics.sh`, E5). A `.GIT` the command creates where
   no `.git` exists keeps that spelling and is not denied, though host `git` run in that directory
-  would open it as `.git`; the workspace filter refuses the name. `TODO.md` holds the fix.
+  would open it as `.git`; the workspace filter refuses the name. `TODO.md` records the planned fix.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
   a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
   `.git/config`.
@@ -384,7 +384,7 @@ authoritative here — measurement (`src/probe/seatbelt-semantics.sh`,
 the one worth reading first. `SeatbeltProfile.scala` encodes the findings, the two that decide
 everything in its header. The rest, measured:
 
-- What the guard rests on (`src/probe/seatbelt-semantics.sh`): the accessed path is resolved —
+- What the guard depends on (`src/probe/seatbelt-semantics.sh`): the accessed path is resolved —
   a write through `link -> .git` is denied, as is the case alias described in the filesystem rules;
   rules are evaluated at access time, so a `.git` created *during* the command is covered; one regex
   spans every depth; and `file-write*` already refuses a hardlink to a denied target, so the
@@ -393,8 +393,8 @@ everything in its header. The rest, measured:
 - `/dev/tty` is the terminal, whatever stdin is: closing the child's stdin does not detach its
   controlling terminal. The profile grants `/dev/null` and the random devices only.
 - An invalid profile fails exactly like a denial: `sandbox-exec` aborts the child either way, the
-  difference only on its own stderr — a search that discards it chases missing grants that were
-  never missing.
+  difference only on its own stderr — a search that discards it looks for grants that were never
+  missing.
 - What this toolchain needs, per layer: the JDK needs `sysctl-read`, its home, and
   `/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's
@@ -409,11 +409,11 @@ exactly — and its generated profile is worth reading and worth *not* copying. 
 findings above: with nothing denied by default, path resolution cannot fail, so the root entry and
 the ancestor chain never arise. It is also why that design cannot serve here: a command under it
 reads the whole filesystem, and "everything else user-owned inaccessible" is the property this
-feature exists to provide. The difficulty of deny-by-default is the price of that row, not evidence
-of a wrong turn — worth stating because the blacklist form is the obvious simplification when the
-whitelist will not start. One setting is taken from Bazel: `(debug deny)`, which makes denials
-visible without the unified log's redaction, and which `src/probe/run-on-host-profile-iterate.sh`
-puts at the top of every profile it iterates.
+feature exists to provide. Deny-by-default makes the profile harder to construct and is what
+provides that property, so the difficulty is no reason to change the design — worth stating because
+the blacklist form is the obvious simplification when the whitelist will not start. One setting is
+taken from Bazel: `(debug deny)`, which makes denials visible without the unified log's redaction,
+and which `src/probe/run-on-host-profile-iterate.sh` puts at the top of every profile it iterates.
 
 **Runtime authority** — the loader, libc, the CA bundle and the rest a toolchain needs from the
 system — is discovered by running a real build under a deny-default profile and reading the denials,
@@ -440,10 +440,10 @@ command's session and ended with it, as every program's is under the gate's test
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
 There is no host route to it, and making one would either publish the sandbox session's full
 `--egress` ruleset — `api.anthropic.com` and forges included — to any host process, or relay
-each connection through `podman exec`, paying the VM round trip on exactly the path the command was
+each connection through `podman exec`, adding the VM round trip to exactly the path the command was
 moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
-either way; what is worth controlling is the rules behind it, and a proxy allowing one artifact
-repository is a prize barely worth stealing.
+either way; what is worth controlling is the rules behind it: an attacker who reaches a proxy
+allowing one artifact repository can reach only that repository through it.
 
 The proxy lives as long as the session holding its record: the broker's until it retires the
 proxy or ends with the launch, the command's until the wrapper cleans up that invocation — past
@@ -464,7 +464,7 @@ ready line the container launcher gates on.
 
 It runs unconfined, unlike the container's hardened copy of the same codebase — the one process
 that parses hostile bytes from the command being sandboxed, holding the uid whose files the profile
-exists to deny. Accepted, not a hole: a JVM parse bug is an exception, the listener is
+exists to deny. This is an accepted risk: a JVM parse bug is an exception, the listener is
 loopback-only, and `HostileInputTest` covers the parser; a Seatbelt profile of the proxy's own is
 low-value defense in depth, deferred in `TODO.md`.
 
@@ -518,13 +518,13 @@ state root is, so the two answer alike on one machine; a relative override is re
 would resolve against the repository being sandboxed, and a root inside the project is refused
 outright.
 
-Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" prices it. The cost
-is a cold cache on a project's first agent command, warm from the second onward.
+Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" has the security
+argument. The cost is a cold cache on a project's first agent command, warm from the second onward.
 
 Why not the launcher state root: the state root is kind-first (`tls/<id>`, `log/<id>`, …) and the
 proxy's audit log must not be stored beside the CA key. On the host the command runs as the user's
 own uid, which owns that key, so file permissions protect nothing and only the profile denies
-access; a separate root makes its job structural — no path the command is ever granted has a
+access; a separate root makes that denial structural — no path the command is ever granted has a
 sensitive ancestor or sibling. `XDG_CACHE_HOME` is also where a reconstructible cache
 belongs.
 

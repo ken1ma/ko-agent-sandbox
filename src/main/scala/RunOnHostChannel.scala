@@ -474,8 +474,8 @@ object RunOnHostChannel:
     thread.start()
     thread
 
-  /** The channel's boundary work: the program must be one the launch named, and the working directory —
-    * the one value arriving from inside the sandbox — is translated and proven inside the
+  /** The channel's boundary work: the program must be among those `--run-on-host` named, and the working
+    * directory — the one value arriving from inside the sandbox — is translated and proven inside the
     * project before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =
     if !service.programs(request.program) then

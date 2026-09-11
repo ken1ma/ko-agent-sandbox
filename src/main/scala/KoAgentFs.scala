@@ -363,8 +363,8 @@ object KoAgentFs:
   /**
    * The last-session teardown, run where the daemon runs after a sandbox
    * container exits. The session markers are the reference count: remove
-   * this run's, prune the dead ones (a crashed launcher leaks its marker;
-   * pruning self-heals it), and unmount only when none remain.
+   * this run's, prune the dead ones (a crashed launcher leaves its marker
+   * behind), and unmount only when none remain.
    *
    * Dead is container-gone, and nothing more: a session creates its container
    * before it mounts, so its marker is never there without a container podman

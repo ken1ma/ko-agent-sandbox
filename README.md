@@ -162,9 +162,10 @@ unavailable because the artifact name has not been decided.
 
 #### Sign-in
 
-The agents' own browser sign-ins do not work: the agent listens for the callback on 127.0.0.1
-inside the container, and the browser on the host redirects to the host's own 127.0.0.1, where
-nothing listens.
+Each agent's default sign-in prints a URL for a browser and waits on 127.0.0.1 for that browser to
+be redirected back. In the sandbox the agent listens inside the container and the browser runs on
+the host, so the redirect reaches the host's own 127.0.0.1, where nothing listens. The methods named
+above, a device code or a code pasted back, need no redirect.
 
 #### Sessions
 

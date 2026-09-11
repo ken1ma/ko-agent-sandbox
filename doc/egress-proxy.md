@@ -17,7 +17,7 @@ Every launch selects an `--egress=` profile; `deny-unless-allowed` is the defaul
 host has one of two treatments: a `tunnel`, opaque, nothing seen or logged past the `CONNECT`;
 or inspected — TLS terminated, each request decided against the grants of its resolved scope,
 and refused where no grant allows it ("The rule file" below; SECURITY.md, "Reading without being
-able to write", has what each grant opens and what inspection costs and buys).
+able to write", has what each grant permits, the costs of inspection and what it prevents).
 
 The proxy supplies default rules for every supported model provider: `anthropic`, `openai`,
 `google`, `aws` and `github`. These permit tunnels to model, authentication and control-plane
@@ -37,7 +37,7 @@ include inspected documentation, package-registry and forge hosts, with `read` o
 1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
    443 it leaves out receives an inspected `read`: `GET` and `HEAD`, logged, all other methods
    refused. A whole-host or `read` deny refuses such a host outright — an unlisted host holds
-   `read` and nothing else, so a `tunnel` deny takes nothing from it. Choose it for work whose
+   `read` and nothing else, so a `tunnel` deny removes no grant from it. Choose it for work whose
    hosts cannot be listed in advance, such as web browsing or dependency downloads. Public hosts
    remain readable unless a rule restricts them, and a permitted read carries its URL
    (SECURITY.md, "Exfiltration through allowed network traffic"). An `allow` line narrows one such
@@ -143,7 +143,7 @@ deny defaults
 allow model-provider anthropic
 ```
 
-A host has one treatment. `deny https://api.example/ tunnel` takes the treatment, and an `allow`
+A host has one treatment. `deny https://api.example/ tunnel` removes it, and an `allow`
 with `read`, `git-fetch` or `method=` then makes the host inspected; a `tunnel` line for a host
 the defaults inspect needs `deny defaults` and the whole ruleset after it (SECURITY.md, "Adding
 hosts, not patterns", has why).
@@ -164,9 +164,9 @@ Every ambiguity is a failed launch with the reason and the line printed:
 - a resolved host holding `tunnel` beside an inspected grant, from the file's lines or the
   defaults'; a `tunnel` line for a host the defaults inspect without `deny defaults`.
 
-Two lines disagreeing about a grant are the ordinary case, not a refusal: the later one decides,
-and a repeated line is the last word on its grants — `deny`, `allow`, `deny` takes an exception
-back; `allow`, `deny`, `allow` restores what the deny took.
+Two lines disagreeing about a grant are the ordinary case, not a refusal: the later one decides —
+`deny`, `allow`, `deny` removes the exception the `allow` made; `allow`, `deny`, `allow` restores
+the grant the `deny` removed.
 Three conditions are warned at every launch instead, under every profile, so a misspelling cannot
 fail silently: a `deny` matching nothing at its position; a redundant grant — a line granting
 nothing its enclosing scope lacks, `allow https://github.com/my-org/ git-fetch` under the
@@ -193,8 +193,8 @@ session; inside one, `sandbox-egress-check <host>` asks the running proxy. Every
 rule file as written, one line; then the launch banner — the profile and the counts, never a
 host name; then, when the file grants beyond the defaults for a host — a host the defaults lack,
 `tunnel`, `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more on
-a line of their own, `egress rules widen:`, so a file that only takes or narrows prints nothing
-extra.
+a line of their own, `egress rules widen:`, so a file that only removes grants or narrows them
+prints nothing extra.
 
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole: the
 profile line, then — under `allow-unless-denied` — one `deny` line per host or subtree the public
