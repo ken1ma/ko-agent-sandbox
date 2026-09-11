@@ -868,7 +868,8 @@ the mechanism. Its security properties and costs are:
   and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
   archive cache, the one mill executable the user provisioned, the one Maven the project's wrapper
   unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
-  is unset — a temporary directory for that command, and loopback to one egress proxy: the broker's
+  is unset — a temporary directory for that command, for an sbt command the sockets of the launch's
+  sbt server under the broker's own directory, and loopback to one egress proxy: the broker's
   for that program under sbt and `mill`, kept across the launch's commands of one build directory,
   or the command's own under Maven. The proxy allows repositories named in
   `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
@@ -891,22 +892,35 @@ the mechanism. Its security properties and costs are:
   unconfined helper reads an explicit value before the command's environment is built. The broker
   inherits the launcher's environment as the launcher's own JVM ran in it, so a name-only forward
   names a variable already there.
-- **One sbt server per project, owned by the current command.** A thin sbt client attaches to
-  whatever server the project's portfile names and then runs with *that server's* environment — its
-  cache, its confinement or lack of it — so the wrapper refuses to start while a foreign live server
-  holds the portfile, starts the command's server inside the profile, and ends it, portfile
-  included, before the wrapper exits. The cost is that no warm daemon spans commands: sbt's server
-  lives for one `sandbox-run-on-host` command, `mill` runs `--no-daemon`, and Maven runs once and
-  exits. Under `--auto-shutdown-foreign-sbt-on-host` the wrapper ends the foreign server first
-  instead of refusing. The user authorized this shutdown at launch; the wrapper records it in the
-  command's transcript. The shutdown is sent only to the socket the wrapper derives from the project
-  path using sbt's derivation, never to one the portfile names. The portfile is workspace content,
-  so trusting its spelling would let the project redirect an unconfined client exchange to any
-  socket this uid can reach. The derived path identifies the server the user authorized the wrapper
-  to stop. It is refused if a command could have planted it: resolution proceeds one link at a time,
-  and no step may resolve into the project or the per-project caches that outlive a session. An
-  environment placing sbt's server directory inside either — and a chain that passes through one on
-  its way somewhere innocent — leaves the refusal in place instead.
+- **One sbt server per build directory, owned by the launch's broker.** A thin sbt client attaches
+  to whatever server the build directory's portfile names and then runs with *that server's*
+  environment — its cache, its confinement or lack of it — so the broker starts the server itself,
+  inside the server profile with its sockets under the broker's own directory, before the first
+  sbt command of a build directory, and every command from that directory attaches to it. The
+  broker keeps one server per build directory it visits, all warm at once, and ends a server with
+  the launch or when its proxy is gone. A cancel follows stock sbt: the client's disconnect
+  cancels the running exec and the warm server survives for the next command, so an
+  interruption-ignoring test lingers in it exactly as one does in a terminal (`doc/run-on-host.md`,
+  "Where the broker deviates from the stock tool"). `mill` runs `--no-daemon` and Maven runs once
+  and exits, so no warm process spans their commands.
+
+  A broker signals only its own servers. A server of *yours* holding a build directory's portfile
+  — from your own terminal, outside any launch — is ended before the broker's starts, and the
+  transcript says so: by protocol, which the server runs after the exec it is on, at the socket
+  the broker derives from the build directory using sbt's derivation, never at one the portfile
+  names. The portfile is workspace content, so trusting its spelling would let the project
+  redirect an unconfined client exchange to any socket this uid can reach. The derived path is
+  refused if a command could have planted it: resolution proceeds one link at a time, and no step
+  may resolve into the project or the per-project caches that outlive a session; an environment
+  placing sbt's server directory inside either — and a chain that passes through one on its way
+  somewhere innocent — leaves the refusal in place. A server another *launch* still owns — its
+  broker's session names the build directory — is never signalled by this broker; the command is
+  refused instead, since ending another launch's group would need a coordination this version does
+  not implement (`doc/TODO.md`, "Cross-launch server takeover"). A dead launch's leftover server is
+  not owned by anyone live; the scavenger collects it, by its own exclusive claim, before a fresh
+  one starts. The costs: your own terminal server for a build directory is ended when the agent
+  runs sbt there; and two launches on one project cannot use the same build directory at once —
+  the second is refused while the first launch lives.
 - **The payload that matters runs later, as you.** If a command could write an executable
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
   sandbox. Preventing that write has two enforcement points — the workspace filter
@@ -932,15 +946,19 @@ the mechanism. Its security properties and costs are:
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
   the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
-  groups, its sbt server and, under Maven, its proxy, appends the command's proxy audit log and
-  sbt's server-stderr file to the channel's log on the host (`doc/run-on-host.md`, "The channel
-  and the command"), and removes the command's directory. The wrapper holds the broker's pipe the
-  same way: a broker gone, ended or killed, closes it, and the wrapper ends its command by the
-  same teardown; a broker ended by TERM exits only after that teardown, and then ends its own
-  session — its proxies' groups, their audit logs appended to the channel's log first — as it
-  does at the launch's end. If SIGKILL prevents the wrapper's or the broker's teardown, the
-  recorded groups remain, the broker's proxies among them, and the next start's scavenger ends
-  them by proof, never by guess.
+  groups and, under Maven, its proxy, appends the command's proxy audit log to the channel's log
+  on the host (`doc/run-on-host.md`, "The channel and the command"), and removes the command's
+  directory; the broker then retires its sbt server, as above. The wrapper holds the broker's
+  pipe the same way: a broker gone, ended or killed, closes it, and the wrapper ends its command
+  by the same teardown; a broker ended by TERM exits only after that teardown, and then ends its
+  own session — its servers' and proxies' groups, the servers' stderr files and the proxies'
+  audit logs appended to the channel's log first — as it does at the launch's end. No server
+  survives the launch that owns it, and a later launch adopts none whose owner is gone: a new
+  broker publishes a new session and reuses nothing. If SIGKILL prevents the wrapper's or the
+  broker's teardown, the recorded groups remain, the broker's servers and proxies among them,
+  and the next start's scavenger ends them by proof, never by guess — a server whose group
+  leader is gone, by the shutdown protocol at the socket its portfile names, sent only once that
+  socket is proven inside the dead session's directory.
 
 ## No containers inside the sandbox by default
 

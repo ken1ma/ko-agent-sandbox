@@ -184,10 +184,10 @@ object RunOnHostChannel:
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
       * which the wrapper holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
-    /** The runtime a program's command in a build directory runs against, prepared while the
-      * spawn holds the build lock: the wrapper options naming it (RunOnHostSandbox.runtimeOptions),
-      * none for a program whose wrapper creates its own. */
-    runtime: (String, Path) => Either[String, Seq[String]],
+    /** The runtime a program's command in a build directory runs against, given the request's
+      * arguments, prepared while the spawn holds the build lock: the wrapper options naming it
+      * (RunOnHostSandbox.runtimeOptions), none for a program whose wrapper creates its own. */
+    runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long the broker waits for a complete request before the handshake expires. */
@@ -415,7 +415,7 @@ object RunOnHostChannel:
           // Any failure to prepare is the refusal: an exception would leave the spawn waiting
           // for a word, the lock held.
           val prepared =
-            try service.runtime(request.program, workingDirectory)
+            try service.runtime(request.program, workingDirectory, request.arguments)
             catch case NonFatal(ex) => Left(s"preparing the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
           val word = prepared match
             case Right(arguments) if !endAsked.get =>
@@ -438,6 +438,9 @@ object RunOnHostChannel:
       val exit = child.waitFor()
       currentCommand = None
       pumps.foreach(_.join())
+      // A cancelled sbt command's server is not retired here: as with stock sbt, the client's
+      // disconnect cancels the exec (CommandExchange.removeChannel, force=false) and the warm
+      // server survives for the next command.
       if requesterGone.get then log(s"ended with $exit for a requester already gone")
       else
         // Only after both writers have drained: the shim reads the exit code last, and an
@@ -510,7 +513,6 @@ object RunOnHostChannel:
     project: Path,
     programs: Seq[String],
     logFile: Path,
-    autoShutdownForeignSbt: Boolean = false,
     // `--env` as launched: the names travel as arguments down to each command, the values through
     // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
     // argument below the launcher carries a value and an explicit one is read by no trusted
@@ -525,8 +527,7 @@ object RunOnHostChannel:
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
-            ) ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
-              ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
+            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
           ))*,
       )
       forwards.foreach: forward =>
@@ -540,15 +541,13 @@ object RunOnHostChannel:
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--auto-shutdown-foreign-sbt-on-host] [--env=<name>...] [mount]`: spawned by the launcher
-    * before it hands over to podman, detached like the reaper. The trailing mount override is the
-    * gate's, whose shim runs at the project's own path rather than /workspace. */
+    * [--env=<name>...] [mount]`: spawned by the launcher before it hands over to podman, detached
+    * like the reaper. The trailing mount override is the gate's, whose shim runs at the project's
+    * own path rather than /workspace. */
   def serveMain(args: Seq[String]): Unit =
-    def isOption(arg: String) =
-      arg == RunOnHostSandbox.AutoShutdownForeignSbtOption || arg.startsWith(RunOnHostSandbox.EnvOption)
+    def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
       case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
-        val autoShutdownForeignSbt = rest.contains(RunOnHostSandbox.AutoShutdownForeignSbtOption)
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -570,20 +569,34 @@ object RunOnHostChannel:
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         val root = RunOnHostSession.root(uid)
         // The broker's session: published for the launch's lifetime, after the scavenge every
-        // start runs, and ended at the serve loop's end or from the TERM hook.
+        // start runs, and ended at the serve loop's end or from the TERM hook. Its tmp/ is the
+        // sbt server's socket directory, so the socket path budget applies to it.
         val session =
           RunOnHostSession.ensureRoot(root, uid).flatMap { _ =>
             RunOnHostSession
               .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
             RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
-          } match
+          }.flatMap: session =>
+            RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording)
+          match
             case Right(session) => session
             case Left(reason) =>
               log(s"the broker's session: $reason")
               sys.exit(1)
-        val runtimes = RunOnHostSandbox.BrokerRuntimes(session, project, log)()
-        // The runtimes' proxies end with the session, their audit logs appended to this log
+        // The forwarded values, from this process's environment under their carrier names, as
+        // the wrapper reads them; the runtime authority the artifact bundles, as the wrapper's.
+        val runtimes = RunOnHostSandbox.BrokerRuntimes(
+          session, project, log, RunOnHostSandbox.bundledRuntimeAuthority(),
+          forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
+        )(scavenge = () =>
+          RunOnHostSession
+            .scavenge(
+              root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              ownSession = Some(session.directory),
+            )
+            .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")))
+        // The runtimes' groups end with the session, their audit logs appended to this log
         // first; under the runtimes' monitor, for the reason BrokerRuntimes gives.
         val teardown = RunOnHostSession.Teardown: _ =>
           runtimes.synchronized:
@@ -614,7 +627,6 @@ object RunOnHostChannel:
               lockFile,
               RunOnHostSandbox.selfInvocation(
                 (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
-                  ++ Option.when(autoShutdownForeignSbt)(RunOnHostSandbox.AutoShutdownForeignSbtOption)
                   ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
                   ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
               ) ++ arguments,
@@ -622,10 +634,10 @@ object RunOnHostChannel:
             ),
           os = Os.Mac,
           buildLock = RunOnHostSession.buildLockFile(root, _, _),
-          runtime = (programName, buildDirectory) =>
+          runtime = (programName, buildDirectory, arguments) =>
             RunOnHostPrereqs.Program.values.find(_.name == programName)
               .toRight(s"unknown program $programName")
-              .flatMap(runtimes.prepare(_, buildDirectory))
+              .flatMap(runtimes.prepare(_, buildDirectory, arguments))
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )

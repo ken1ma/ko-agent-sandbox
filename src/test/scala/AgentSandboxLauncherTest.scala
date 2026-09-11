@@ -1155,11 +1155,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val runOnHostSection = appendedSection("live", "fuse", resolution, Vector("sbt", "mill"))
     assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
-    assert(runOnHostSection.contains("Each sbt invocation starts and ends its own server"), runOnHostSection)
-    // The batching example is quoted: the JVM client hands its arguments to sbt as one command
-    // line, so `compile test` is a parse error and `'compile; test'` is two commands (measured on
-    // sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening test suite — is
-    // named, with the container as where it runs instead.
+    assert(runOnHostSection.contains("sbt's server stays warm across invocations"), runOnHostSection)
+    // The example of several commands is quoted: the JVM client hands its arguments to sbt as one
+    // command line, so `compile test` is a parse error and `'compile; test'` is two commands
+    // (measured on sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening
+    // test suite — is named, with the container as where it runs instead.
     assert(runOnHostSection.contains("sandbox-run-on-host sbt 'compile; test'"), runOnHostSection)
     assert(!runOnHostSection.contains("sbt compile test"), runOnHostSection)
     assert(runOnHostSection.contains("Operation not permitted"), runOnHostSection)
@@ -1266,26 +1266,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--run-on-host=sbt")).map(_.runOnHost), Right(None))
 
-  test("option parsing: --auto-shutdown-foreign-sbt-on-host needs sbt on the host, selected once"):
-    val option = RunOnHostSandbox.AutoShutdownForeignSbtOption
-    assertEquals(
-      parseCommandLine(List("--run-on-host=sbt", option, "claude")).map(_.autoShutdownForeignSbt),
-      Right(true),
-    )
-    assertEquals(
-      parseCommandLine(List("--run-on-host=sbt", "claude")).map(_.autoShutdownForeignSbt),
-      Right(false),
-    )
-    assert(parseCommandLine(List(option, "claude")).swap.exists(_.contains("--run-on-host")))
-    assert(parseCommandLine(List("--run-on-host=mill", option)).swap.exists(_.contains("name sbt")))
-    assert(
-      parseCommandLine(List("--run-on-host=sbt", option, option)).swap.exists(_.contains("twice")),
-    )
-    // After the command, it is the command's — and then no consent was typed.
-    assertEquals(
-      parseCommandLine(List("claude", option)).map(_.autoShutdownForeignSbt),
-      Right(false),
-    )
+  test("option parsing: the retired --auto-shutdown-foreign-sbt-on-host is refused by name"):
+    val option = RetiredAutoShutdownOption
+    val refused = parseCommandLine(List("--run-on-host=sbt", option, "claude"))
+    assert(refused.swap.exists(reason => reason.contains(option) && reason.contains("by default")), refused.toString)
+    // After the command, it is the command's.
+    assertEquals(parseCommandLine(List("claude", option)).map(_.command), Right(List("claude", option)))
 
   test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
     assertEquals(

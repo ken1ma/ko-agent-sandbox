@@ -88,6 +88,14 @@ object SeatbeltProfile:
     * runtime path only where testing proves the read is stable. */
   case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
 
+  /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
+    * the dispatch shows which program gets which: nothing more for a server, a `mill` client
+    * and Maven; for an sbt client, the sockets under the broker's `tmp/`, where its server
+    * listens (RunOnHostSandbox.BrokerRuntimes). */
+  enum Network:
+    case ProxyOnly
+    case SbtClient(serverTmp: Path)
+
   case class ProfileInputs(
     prereqs: CommandPrereqs,
     sessionTmp: Path,
@@ -97,6 +105,7 @@ object SeatbeltProfile:
     m2Repository: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
+    network: Network,
   )
 
   /**
@@ -110,7 +119,11 @@ object SeatbeltProfile:
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
     val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
-    val everyPath = readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes
+    val serverTmp = inputs.network match
+      case Network.SbtClient(tmp) => Some(tmp)
+      case Network.ProxyOnly      => None
+    val everyPath =
+      readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ serverTmp
 
     val program = prereqs.program
     everyPath.find(path => !isAbsoluteNormalized(path)) match
@@ -129,6 +142,8 @@ object SeatbeltProfile:
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
       case _ if program == Program.Mill && inputs.distribution.isDefined =>
         Left("a mill profile has no distribution to grant")
+      case _ if program != Program.Sbt && serverTmp.isDefined =>
+        Left(s"a ${program.name} profile has no sbt server to reach")
       case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
         Left(s"a ${program.name} profile has no sbt global base to grant")
       case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
@@ -152,7 +167,8 @@ object SeatbeltProfile:
         // the JVM cannot open /dev/urandom — SecureRandom then fails with "NativePRNG not
         // available", which names the algorithm rather than the path.
         (ancestorLiterals(
-          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths,
+          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths
+            ++ serverTmp,
         ))
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
@@ -186,6 +202,13 @@ object SeatbeltProfile:
         lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
+        // The client attaches to the server socket the broker's server bound under the broker's
+        // tmp/, `<SBT_GLOBAL_SERVER_DIR>/<hash>/sock`; the connect resolves the socket's own
+        // directory, hence the metadata grant, and nothing there is read.
+        serverTmp.foreach: tmp =>
+          lines += ";; The broker's sbt server: its socket under the broker's temporary directory."
+          lines += s"(allow file-read-metadata file-test-existence ${subpath(tmp)})"
+          lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"

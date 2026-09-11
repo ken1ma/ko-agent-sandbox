@@ -12,7 +12,7 @@ each part:
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
-| the wrapper: proxy, environment, diagnostics | `RunOnHostSandbox.scala` |
+| the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
 
@@ -21,11 +21,14 @@ machine, whose total is fixed when the machine is created and shared with every 
 — and whose resident memory, once grown to hold a build, macOS never gets back. On the host the same
 build runs on memory reclaimed when it exits, at host speed.
 
-A host command's recurring cost is startup: sbt's server lives for one `sandbox-run-on-host` command
-and `mill` runs `--no-daemon` — no warm daemon spans invocations (`SECURITY.md` "One sbt server
-per project" has the security argument) — so every invocation starts a JVM and loads the build,
-while the on-disk state stays warm: the caches, and the incremental-compile outputs under
-`target/`. This is why the agent instructions say to batch commands into one invocation.
+A host command's recurring cost is startup. For sbt the broker keeps one server warm across the
+launch's commands from one build directory ("Where the broker deviates from the stock tool"), so
+a start is paid by the first command, by the next command after a cancel, after
+`sandbox-run-on-host sbt shutdown`, after a request from another build directory, and after sbt's
+own idle exit, seven days; a server keeps the `sbt.version` and options it started with until
+`shutdown`, as in a terminal. `mill` runs `--no-daemon` and Maven runs once, so every invocation
+of those starts a JVM and loads the build, while the on-disk state stays warm: the caches, and
+the incremental-compile outputs under `target/`.
 
 Out of scope, deliberately: arbitrary build programs (`scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
@@ -92,10 +95,18 @@ The filesystem rules define what a host command can access:
 ## Network
 
 The command's only egress is its proxy (below); Seatbelt permits connections to that loopback
-endpoint and nothing else, with UNIX-domain sockets only inside the command's temporary directory.
-Loopback reaches local services, so no TCP listener or other loopback connect is granted. A test
-suite that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host and runs in
-the container.
+endpoint and nothing else, with UNIX-domain sockets only inside the command's temporary directory
+and, for an sbt client, the broker's, where its server listens. Loopback reaches local services,
+so no TCP listener or other loopback connect is granted. A test suite that binds one — the proxy's
+wire-relay tests do — gets `EPERM` on the host and runs in the container. Per program
+(`SeatbeltProfile.Network` is the typed input the dispatch shows):
+
+| process | network |
+|---|---|
+| sbt server | loopback to the proxy; UNIX sockets bound and connected under the broker's `tmp/` |
+| sbt client | the same under the command's `tmp/`, plus connects under the broker's `tmp/` |
+| `mill`, Maven | loopback to the proxy; UNIX sockets under the command's `tmp/` |
+
 Three measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`):
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
@@ -168,15 +179,21 @@ grants the distribution's *home* — the distribution's `sbt` reads `sbt-launch.
 relative to itself. The home is read from the script's text (`SeatbeltProfile.sbtDistribution`);
 running the script to ask would execute what the profile exists to contain, on the host, unconfined.
 
-sbt 2 is client/server by construction — there is no one-shot mode — so the server starts *inside*
-the profile and its state follows `-Dsbt.global.base` into the project's run-on-host cache. The base
-must persist across commands: sbt 2 leaves `target/` outputs as symlinks into its content-addressed
-store, so removing that base when the command ends would leave the build's own outputs dangling.
+sbt 2 is client/server by construction — there is no one-shot mode — so the broker starts the
+server inside the server profile, with the build directory as its working directory, the broker's
+own `tmp/` as its temporary and socket directory, the command line sbt's thin client uses when it
+starts one, given the request's `-D` and `-J` arguments (`RunOnHostSandbox.serverCommand`), and
+its stderr in a file under that `tmp/` ("The channel and the command"); each command's client then
+attaches to it. The server's state follows `-Dsbt.global.base` into the project's run-on-host
+cache. The base must persist across commands: sbt 2 leaves `target/` outputs as symlinks into its
+content-addressed store, so removing that base when the command ends would leave the build's own
+outputs dangling.
 The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a store
-the profile denies, so the wrapper sweeps `target/` symlinks that resolve outside the granted roots
-before each command. `~/.sbt/boot` is not granted and has no consumer — with the global base
-redirected, sbt boots from the run-on-host cache, warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0`
-and `~/.m2` are not granted either.
+the profile denies, so the broker sweeps `target/` symlinks that resolve outside the granted roots
+before it starts an sbt server, after any foreign server for the directory is shut down — its
+build finished — so a sweep never runs during the user's own build. `~/.sbt/boot` is not
+granted and has no consumer — with the global base redirected, sbt boots from the run-on-host cache,
+warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0` and `~/.m2` are not granted either.
 
 The Ivy home follows `-Dsbt.ivy.home` into the run-on-host cache the same way, and `~/.ivy2` is not
 granted. sbt uses that home for three things, read from the sources of sbt 1.12.13 and 2.0.8.
@@ -197,8 +214,8 @@ check that by reading `Defaults.scala` again, not by a gate run.
 The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints that it
 is starting the server and returns with no build run — a gate row keeps measuring it, and if it
 starts passing, the wrapper can reconsider requiring `--jvm-client`. The distribution's `sbt`
-resolves `java` from `PATH`, so the wrapper puts the granted JDK's `bin` first: the client starts
-the server by re-running the script, and `-java-home` reaches the client alone.
+resolves `java` from `PATH`, so the environment puts the granted JDK's `bin` first: the broker
+starts the server by running the script, and `-java-home` reaches the client alone.
 
 ### `mill`
 
@@ -268,12 +285,17 @@ controls, like `sbt 'set …'`.
 `RunOnHostSession.scala` tracks one wrapper invocation, which it calls a command session. Its
 directory is published by rename so it is never seen half-made; a lock marks the wrapper as live,
 and records identify its child processes. Cleanup moves the directory out of the active set before
-ending those processes and any orphaned sbt server its portfile identifies. The broker holds a
-session of the same kind for the launch's lifetime, and each command it dispatches holds a build
-lock — one per program and build directory, under `build-lock/` — for the command's life, so two
-launches on one project queue behind each other's commands; the waiting one says so on its
-stderr. The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket
-path must fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`).
+ending those processes and any leaderless sbt server its portfile identifies. The broker holds a
+session of the same kind for the launch's lifetime: its records name the launch's runtimes —
+`proxy-<program>-<hash>` and `server-sbt-<hash>`, the hash the build directory's — a `build-<hash>`
+file names the directory those serve, and its `tmp/` is where the sbt server binds its sockets
+and keeps its temporary files. Each command the broker dispatches holds a build lock — one per
+program and build directory, under `build-lock/` — for the command's life, and the broker's own
+work on the runtime before a command runs under it, so two launches on one project queue behind
+each other's commands; the waiting one says so on its stderr. The wrapper root is
+`/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
+socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's `tmp/` is under the
+same budget.
 
 The command's environment is the contract, not its command line: a closed set the wrapper supplies
 (`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
@@ -285,7 +307,8 @@ without a proxy. What the wrapper supplies:
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
 | `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
-| `TMPDIR`, `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | `<command directory>/tmp` |
+| `TMPDIR` | `<command directory>/tmp` |
+| `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | under sbt the broker's `tmp/`, else the command's |
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
@@ -307,7 +330,8 @@ The `java -D` properties:
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
-`<command directory>` is this invocation's directory under the wrapper root above, `<cache home>` is
+`<command directory>` is this invocation's directory under the wrapper root above — the broker's
+sbt server has the broker's `tmp/` for every row naming one — `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<run-on-host cache>` the
 project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The
 run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home and
@@ -342,17 +366,20 @@ rather than an enforcement: an agent that ignores the instruction gets a slower 
 refusal — a deliberate difference from the egress rule, where the proxy actually refuses.
 
 The transport, its framing and its teardown are `RunOnHostChannel.scala`'s header and the shim's
-own comments. One command runs at a time, serial by design rather than as a shortcut: one sbt server
-per project means a concurrent second sbt request would be *refused* where a queued one runs
-next, and `mill` contends on `out/` the same way; the per-transaction FIFOs leave a concurrent
-broker open as later work if a program ever makes it worth having. A *foreign* live server — the
-user's own, holding the project's portfile — is a refusal rather than a queue entry, unless the
-launch named `--auto-shutdown-foreign-sbt-on-host`: the wrapper then ends it first, at the
-socket it derives itself.
+own comments. One command runs at a time, serial by design rather than as a shortcut: a queued sbt
+request attaches to the server the running one leaves, `mill` contends on `out/`, and the
+runtime's selection, start and retirement never overlap a command; the per-transaction FIFOs leave
+a concurrent broker open as later work if a program ever makes it worth having. Before starting a
+server the broker checks who holds the build directory's portfile: the *user's own* server — from
+a terminal, outside any launch — is shut down by protocol at the socket the broker derives itself;
+a server *another launch* still owns — its broker's session names the directory — is a refusal,
+never signalled, since ending it across launches needs a coordination this version leaves to
+`TODO.md`; a live socket under this launch's own directory that no record proves is a refusal
+naming it.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
-one-server-per-project exclusivity is also the lock over `target/`. A second rendezvous on the
-same tree — a shadow base directory, a relocated portfile — would put two unsynchronized
+one-server-per-build-directory exclusivity is also the lock over `target/`. A second rendezvous
+on the same tree — a shadow base directory, a relocated portfile — would put two unsynchronized
 compilers in one content-addressed store, which is why container and host commands coexist on the
 source and never on the outputs. Nor can an invocation opt out: sbt's build directory is always
 its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either
@@ -362,17 +389,51 @@ attaches to the portfile's server or contends for it. `mill` needs none of this,
 The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
 changed its mind or gave up on a command that sat silent. Before removing that command's directory,
 the wrapper appends the command's logs to the channel's log, the file the launch printed as
-`host command log` (`RunOnHostSandbox.appendSessionLogs`): the tail of
-the proxy audit log, and sbt's server-stderr file when the client was still waiting for its server.
-The wrapper runs unconfined and the command wrote that directory, so the read comes after the rename
-and the ending of the command's groups, refuses a link at any component, and takes the tail by
-position rather than by the file's size. sbt's thin client starts the server with stdout to
-`/dev/null` and stderr to that file under the command's temporary directory, deletes the file once
-the server has published its portfile, and waits for the portfile with no deadline while the server
-process lives — so the file's presence in the log says the server never came up, and its content
-says why. A command that completed leaves nothing there: its output reached the agent. The
-broker's session ends the same way, at the launch's end or on TERM: its proxies' audit logs are
-appended before its directory is removed.
+`host command log` (`RunOnHostSandbox.appendSessionLogs`): the tail of the proxy audit log, under
+Maven, and of the stderr file a thin client leaves under `tmp/` when it forked a server of its
+own, the client's answer to a socket it cannot reach. The wrapper runs unconfined and the
+command wrote that directory, so the read comes after the rename and the ending of the
+command's groups, refuses a link at any component, and takes the
+tail by position rather than by the file's size. A command that completed leaves nothing there:
+its output reached the agent. The broker's session ends the same way, at the launch's end or on
+TERM: its proxies' audit logs and its servers' stderr files are appended before its directory is
+removed. The broker starts each sbt server with stdout to `/dev/null` and stderr appended to
+`server-sbt-<hash>.log` in its session directory — not under `tmp/`, which the server could
+replace with a link or a FIFO before the broker opens the file for the next server — and waits
+for the portfile with a bound on progress:
+a server that has published none while neither that file nor the proxy log grew for two minutes
+(`RunOnHostSandbox.ServerStartSilenceMillis`) is ended, and the command is refused with the
+file's tail — sbt's own client waits with no bound at all. A server that exits on its own leaves
+its stderr in the file, for the channel log to keep.
+
+## Where the broker deviates from the stock tool
+
+Everything else the broker does is what the stock tool does, or confinement the stock tool never
+had. Three things deviate, and each names why:
+
+- **Persistent processes end with the launch — confinement.** Stock sbt leaves its server running
+  when the terminal that started it closes. The broker's server runs against the launch's proxy
+  and its forwarded environment, both of which die with the launch, so the server must too; the
+  next start scavenges what a killed broker left, and a later launch adopts none whose owner is
+  gone.
+- **The wait for the portfile has a bound — operability, not confinement.** sbt's thin client
+  waits for a starting server with no deadline, which an interactive user can Ctrl-C; the agent
+  cannot, so an unbounded wait would be an unrecoverable command. The broker fails the start when
+  neither the server's stderr nor the proxy log grows and no portfile appears for two minutes
+  (`RunOnHostSandbox.ServerStartSilenceMillis`), with the stderr tail. This is the one deliberate
+  deviation not required by confinement, kept because the caller is not interactive
+  (`doc/TODO.md`, "a bound on a silent host command", tracks the remaining generic bound).
+- **A foreign server is never attached to — confinement.** Stock sbt attaches to whatever server
+  holds the portfile; a client attached to a server the broker did not start would run the build
+  under that server's environment and confinement, or none. The user's own terminal server the
+  broker shuts down by protocol at the socket it derives; a server another launch still owns it
+  refuses, never signalling another broker's process (`TODO.md`, "Cross-launch server takeover").
+
+Two behaviors that once deviated now follow stock sbt. The broker keeps one warm server per build
+directory, not one per program, so visiting another directory leaves the first warm. And a cancel
+cancels only the running exec (`CommandExchange.removeChannel`, `force = false`) and leaves the
+warm server, so an interruption-ignoring test lingers in it exactly as it would in a terminal, and
+the next command reuses the server.
 
 ## The Seatbelt profile
 

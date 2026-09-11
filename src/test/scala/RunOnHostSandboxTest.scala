@@ -34,7 +34,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       ),
       prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"), m2Repository = Path.of("/cache/m2"),
       millDownloads = Some(Path.of("/Users/u/.cache/mill/download")),
-      sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), proxyPort = 4711, userName = "u",
+      sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
+      proxyPort = 4711, userName = "u",
     )
     // Passed through as they are.
     assertEquals(environment("HOME"), "/Users/u")
@@ -43,6 +44,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Djava.io.tmpdir=/private/tmp/ko-agent-501/s"))
+    // The sockets are the runtime's: where the broker's server bound them.
+    assertEquals(environment("XDG_RUNTIME_DIR"), "/private/tmp/ko-agent-501/b/tmp")
+    assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("USER"), "u")
     assertEquals(environment("LOGNAME"), "u")
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
@@ -69,7 +74,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // Without a derivable download folder the variable is simply absent.
     val noFolder =
       commandEnvironment(
-        host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"), 1, "u",
+        host.get, Vector.empty, prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, Path.of("/t"),
+        Path.of("/t"), 1, "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
 
@@ -108,17 +114,25 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("--env names travel as options and come back as names; nothing else is an option"):
     assertEquals(
-      forwardedNames(Seq("--env=TOKEN", AutoShutdownForeignSbtOption, "--env=OTHER")),
+      forwardedNames(Seq("--env=TOKEN", ChannelLogOption + "/l", "--env=OTHER")),
       Vector("TOKEN", "OTHER"),
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
-  test("the broker's runtime travels as two options, both or neither"):
-    val runtime = Runtime(4242, Path.of("/b/proxy-sbt-0.log"))
+  test("the broker's runtime travels as three options, all or none"):
+    val runtime = Runtime(Path.of("/b"), 4242, Path.of("/b/proxy-sbt-0.log"))
     assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
+    assertEquals(runtime.tmp, Path.of("/b/tmp"))
     assertEquals(runtimeOf(Seq("--env=TOKEN")), Right(None))
-    assert(runtimeOf(Seq("--proxy-port=4242")).isLeft)
-    assert(runtimeOf(Seq("--proxy-port=x", "--proxy-log=/l")).isLeft)
+    assert(runtimeOf(Seq("--proxy-port=4242", "--proxy-log=/l")).isLeft)
+    assert(runtimeOf(Seq("--runtime-session=/b", "--proxy-port=x", "--proxy-log=/l")).isLeft)
+
+  test("the server's command line is the thin client's, with the request's -D and -J and nothing else of it"):
+    val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
+    assertEquals(
+      serverCommand(sbt, Seq("-Dprobe=1", "-J-Xmx2g", "-batch", "-mem", "512", "compile", "-v")),
+      Seq(sbt.toString, s"-Dsbt.script=$sbt", "-Dprobe=1", "-J-Xmx2g", "--detach-stdio", "--server"),
+    )
 
   // --------------------------------------------------------------------------
   // host-command/ and its parent both refuse unrecognized configuration entries
@@ -246,16 +260,21 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
     )
 
-  test("a runtime is reused while its proxy lives, replaced on its exit or another build; a failed start is discarded"):
+  test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
-    val root = Files.createTempDirectory("broker-runtimes")
+    val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     val endedGroups = scala.collection.mutable.ListBuffer[Long]()
+    // The server stand-in's listening sockets, by the group they belong to: a server's socket
+    // closes with its group.
+    val listeners = scala.collection.mutable.Map[Path, ServerSocketChannel]()
+    val socketOfGroup = scala.collection.mutable.Map[Long, Path]()
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
       def endGroup(pgid: Long): Unit =
         endedGroups += pgid
+        socketOfGroup.remove(pgid).foreach(socket => listeners.remove(socket).foreach(_.close()))
         ProcessHandle.of(pgid).ifPresent: leader =>
           leader.descendants().forEach(_.destroyForcibly())
           leader.destroyForcibly()
@@ -265,73 +284,261 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Thread.sleep(50)
         waited += 1
       assert(condition, what)
-    // Where the proxy would be: a registered spawn of a sleep, so the record, its exit file and
-    // the group are the real spawn's.
+    // Where the proxy and the server would be: registered spawns of a sleep, so the records,
+    // their exit files and the groups are real spawns'; the server stand-in also listens on a
+    // socket under the session's tmp and writes the portfile naming it, as a server does.
     val spawns = scala.collection.mutable.ListBuffer[Process]()
-    var neverReady = false
-    var throwsAfterRegistering = false
-    val create = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+    def standIn(record: Path): Unit =
       spawns += ProcessBuilder(RunOnHostSession.registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
       await(s"$record registered")(Files.exists(record))
+    var neverReady = false
+    var throwsAfterRegistering = false
+    var lastPort = 0
+    val proxy = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+      standIn(record)
       Files.writeString(proxyLog, "listening\n", UTF_8)
       if throwsAfterRegistering then throw java.io.IOException("log unreadable")
-      if neverReady then Left("never ready") else Right(Runtime(spawns.size, proxyLog))
-    val runtimes = BrokerRuntimes(session, project, _ => ())(processes, create)
+      lastPort = spawns.size
+      if neverReady then Left("never ready") else Right(lastPort)
+    val serverStarts = scala.collection.mutable.ListBuffer[ServerStart]()
+    var serverFails = false
+    var serverThrows = false
+    val server = (start: ServerStart) =>
+      serverStarts += start
+      standIn(start.record)
+      if serverThrows then throw IllegalStateException("boom")
+      if serverFails then Left("no portfile")
+      else
+        val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, start.buildDirectory)
+        Files.createDirectories(socket.getParent)
+        listeners.remove(socket).foreach(_.close())
+        Files.deleteIfExists(socket)
+        val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        listener.bind(UnixDomainSocketAddress.of(socket))
+        listeners(socket) = listener
+        socketOfGroup(RunOnHostSession.parseRecord(Files.readString(start.record, UTF_8)).get.pgid) = socket
+        writePortfile(start.buildDirectory, socket)
+        Right(())
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None,
+    )
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, logged.append(_), authority, Vector.empty)(
+      processes, (_, _) => Right(assembled), proxy, server,
+    )
     val dirA = Files.createDirectory(project.resolve("a"))
     val dirB = Files.createDirectory(project.resolve("b"))
-    def recordOf(dir: Path) = session.records.resolve(s"proxy-sbt-${RunOnHostSession.buildHash(dir)}")
-    def logOf(dir: Path) = session.directory.resolve(s"proxy-sbt-${RunOnHostSession.buildHash(dir)}.log")
+    def hashOf(dir: Path) = RunOnHostSession.buildHash(dir)
+    def recordOf(dir: Path, program: String = "sbt") = session.records.resolve(s"proxy-$program-${hashOf(dir)}")
+    def serverOf(dir: Path) = session.records.resolve(s"server-sbt-${hashOf(dir)}")
+    def buildOf(dir: Path) = RunOnHostSession.buildFile(session.directory, hashOf(dir))
+    def logOf(dir: Path, program: String = "sbt") = session.directory.resolve(s"proxy-$program-${hashOf(dir)}.log")
+    def portfileOf(dir: Path) = dir.resolve("project/target/active.json")
+    def pgidOf(record: Path) = RunOnHostSession.parseRecord(Files.readString(record, UTF_8)).get.pgid
+    // A server gone on its own: its socket closes with it, and its spawn publishes the exit.
+    def serverExits(dir: Path): Unit =
+      listeners.remove(RunOnHostSandbox.expectedServerSocket(session.tmp, dir)).foreach(_.close())
+      ProcessHandle.of(pgidOf(serverOf(dir))).get.children().forEach(_.destroyForcibly())
+      await("the exit published")(Files.exists(RunOnHostSession.exitRecord(serverOf(dir))))
+    def current(dir: Path, program: String = "sbt") =
+      Right(Some(Runtime(session.directory, lastPort, logOf(dir, program))))
     try
-      val first = runtimes.prepare(Program.Sbt, dirA)
-      assertEquals(first, Right(Some(Runtime(1, logOf(dirA)))))
-      assertEquals(runtimes.prepare(Program.Sbt, dirA), first, "reused while the proxy lives")
-      assertEquals(spawns.size, 1)
-      // The proxy exits: the spawn publishes it, and the next command gets a replacement, the
-      // old group ended behind its leader.
-      val firstGroup = RunOnHostSession.parseRecord(Files.readString(recordOf(dirA), UTF_8)).get.pgid
-      ProcessHandle.of(firstGroup).get.children().forEach(_.destroyForcibly())
+      val first = runtimes.prepare(Program.Sbt, dirA, Seq("-Dprobe=1", "compile"))
+      assertEquals(first, current(dirA))
+      assertEquals(Files.readString(buildOf(dirA), UTF_8).trim, dirA.toString, "the build file names the directory")
+      assertEquals(serverStarts.map(_.arguments).toList, List(Seq("-Dprobe=1", "compile")))
+      assertEquals(serverStarts.head.record, serverOf(dirA))
+      assert(Files.exists(portfileOf(dirA)))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("-Dprobe=2", "test")), first, "reused while all agree")
+      assertEquals(spawns.size, 2)
+      assertEquals(serverStarts.size, 1, "a later request's arguments reach no server")
+      // The server exits — `shutdown`, its idle timeout — and the spawn publishes it: the next
+      // command gets a server under the same proxy, the old group ended behind its leader.
+      val firstServer = pgidOf(serverOf(dirA))
+      serverExits(dirA)
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(endedGroups.toList, List(firstServer))
+      assertEquals(serverStarts.size, 2)
+      assert(!Files.exists(RunOnHostSession.exitRecord(serverOf(dirA))), "the replacement's record has no exit")
+      assert(logged.exists(_.contains("its server is gone")), logged.toString)
+      // The portfile no longer names the running server: a client would attach elsewhere or
+      // fork its own, so the server is replaced.
+      Files.delete(portfileOf(dirA))
+      val secondServer = pgidOf(serverOf(dirA))
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(endedGroups.toList, List(firstServer, secondServer))
+      assertEquals(serverStarts.size, 3)
+      assert(logged.exists(_.contains("no longer names its server")), logged.toString)
+      // A portfile naming a connectable socket that is not this directory's derived one does not
+      // authorize reuse: the server record still lives, but prepare replaces the server rather
+      // than send this directory's client to an alien server (a portfile copied from elsewhere).
+      val thirdServer = pgidOf(serverOf(dirA))
+      val alien = session.tmp.resolve("alien").resolve("sock")
+      Files.createDirectories(alien.getParent)
+      val alienListener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+      alienListener.bind(UnixDomainSocketAddress.of(alien))
+      try
+        writePortfile(dirA, alien)
+        assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+        assertEquals(endedGroups.last, thirdServer, "the server whose portfile named an alien socket is replaced")
+        assertEquals(serverStarts.size, 4)
+      finally alienListener.close()
+      // A replacement whose start throws after registering is discarded like a refused one,
+      // and the next command retries.
+      serverExits(dirA)
+      serverThrows = true
+      assertEquals(
+        runtimes.prepare(Program.Sbt, dirA, Seq("test")),
+        Left("starting the sbt server: IllegalStateException: boom"),
+      )
+      assert(!Files.exists(serverOf(dirA)), "the throwing start's record")
+      serverThrows = false
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("test")), first)
+      assertEquals(serverStarts.size, 6)
+      // The proxy exits: the whole runtime is replaced, the server ended first.
+      val firstProxy = pgidOf(recordOf(dirA))
+      val sixthServer = pgidOf(serverOf(dirA))
+      ProcessHandle.of(firstProxy).get.children().forEach(_.destroyForcibly())
       await("the exit published")(Files.exists(RunOnHostSession.exitRecord(recordOf(dirA))))
-      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(2, logOf(dirA)))))
-      assertEquals(endedGroups.toList, List(firstGroup))
-      assert(!Files.exists(RunOnHostSession.exitRecord(recordOf(dirA))), "the replacement's record has no exit")
+      val second = runtimes.prepare(Program.Sbt, dirA, Seq("test"))
+      assertEquals(second, current(dirA))
+      assert(second != first, "a new proxy")
+      assertEquals(endedGroups.takeRight(2).toList, List(sixthServer, firstProxy))
       // The group killed whole: no exit is published, the leader is gone, and the record proves
       // nothing to end — replaced all the same.
-      val secondLeader = ProcessHandle.of(
-        RunOnHostSession.parseRecord(Files.readString(recordOf(dirA), UTF_8)).get.pgid,
-      ).get
-      val secondChildren = secondLeader.children().toList
-      secondLeader.destroyForcibly()
-      secondChildren.forEach(_.destroyForcibly())
-      await("the leader gone")(!secondLeader.isAlive)
-      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(3, logOf(dirA)))))
-      assertEquals(endedGroups.toList, List(firstGroup), "a leader gone is skipped, never signalled")
-      // Another build directory retires it: record and log gone with the group.
-      assertEquals(runtimes.prepare(Program.Sbt, dirB), Right(Some(Runtime(4, logOf(dirB)))))
-      assertEquals(endedGroups.size, 2)
-      assert(!Files.exists(recordOf(dirA)) && !Files.exists(logOf(dirA)), "the retired runtime's files")
-      assert(Files.exists(recordOf(dirB)))
-      // A start that never reports ready leaves neither a group nor the files a retry would
-      // rename over.
+      val leader = ProcessHandle.of(pgidOf(recordOf(dirA))).get
+      val children = leader.children().toList
+      leader.destroyForcibly()
+      children.forEach(_.destroyForcibly())
+      await("the leader gone")(!leader.isAlive)
+      val before = endedGroups.size
+      val aRuntime = runtimes.prepare(Program.Sbt, dirA, Seq("test"))
+      assertEquals(aRuntime, current(dirA))
+      assertEquals(endedGroups.size, before + 1, "the server's group is ended; the proxy's leader gone is skipped")
+
+      // A second build directory leaves the first warm: each keeps its own proxy, server and
+      // build file; visiting one does not retire the other.
+      val serversAtA = serverStarts.size
+      val bRuntime = runtimes.prepare(Program.Sbt, dirB, Seq("test"))
+      assertEquals(bRuntime, current(dirB))
+      assert(bRuntime != aRuntime, "dirB has its own runtime")
+      assertEquals(serverStarts.size, serversAtA + 1, "dirB started its own server; dirA's stayed")
+      assert(Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)), "dirA stays warm")
+      assert(Files.exists(serverOf(dirB)) && Files.exists(buildOf(dirB)))
+      // Revisiting each reuses its warm runtime; no new server starts.
+      assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("x")), aRuntime, "dirA reused")
+      assertEquals(runtimes.prepare(Program.Sbt, dirB, Seq("x")), bRuntime, "dirB reused")
+      assertEquals(serverStarts.size, serversAtA + 1, "reuse starts no server")
+
+      // A fresh directory's failed starts leave no files, and touch neither warm runtime: a
+      // proxy that never reports ready, a server that does not come up, and a start that throws.
+      val dirC = Files.createDirectory(project.resolve("c"))
       neverReady = true
-      assertEquals(runtimes.prepare(Program.Sbt, dirA), Left("never ready"))
-      assertEquals(endedGroups.size, 4, "dirB's runtime retired, then the failed start's group ended")
-      assert(!Files.exists(recordOf(dirA)) && !Files.exists(logOf(dirA)), "the failed start's files")
+      assertEquals(runtimes.prepare(Program.Sbt, dirC, Seq("test")), Left("never ready"))
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(logOf(dirC)) && !Files.exists(buildOf(dirC)))
       neverReady = false
-      assertEquals(runtimes.prepare(Program.Sbt, dirA), Right(Some(Runtime(6, logOf(dirA)))))
-      // A start that throws after registering is discarded the same way.
+      serverFails = true
+      assertEquals(runtimes.prepare(Program.Sbt, dirC, Seq("test")), Left("no portfile"))
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(serverOf(dirC)) && !Files.exists(buildOf(dirC)))
+      serverFails = false
       throwsAfterRegistering = true
-      assertEquals(runtimes.prepare(Program.Sbt, dirB), Left("starting the proxy: IOException: log unreadable"))
-      assertEquals(endedGroups.size, 6, "dirA's runtime retired, then the throwing start's group ended")
-      assert(!Files.exists(recordOf(dirB)) && !Files.exists(logOf(dirB)), "the throwing start's files")
+      assertEquals(
+        runtimes.prepare(Program.Sbt, dirC, Seq("test")),
+        Left("creating the runtime: IOException: log unreadable"),
+      )
+      assert(!Files.exists(recordOf(dirC)) && !Files.exists(logOf(dirC)) && !Files.exists(buildOf(dirC)))
       throwsAfterRegistering = false
+      assert(Files.exists(serverOf(dirA)) && Files.exists(serverOf(dirB)), "the warm runtimes are untouched")
+
+      // Mill's runtime is its proxy alone; sbt and mill share the directory's build file, so it
+      // outlives the retirement of one program's runtime while the other's records name the hash.
+      val serversBefore = serverStarts.size
+      assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("compile")), current(dirA, "mill"))
+      assertEquals(serverStarts.size, serversBefore, "mill starts no server")
+      assert(Files.exists(recordOf(dirA, "mill")) && Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)))
       // Maven's proxy is the command's own.
-      assertEquals(runtimes.prepare(Program.Mvn, dirA), Right(None))
-      assertEquals(spawns.size, 7)
+      assertEquals(runtimes.prepare(Program.Mvn, dirA, Seq.empty), Right(None))
+      // Last, since it discards dirA's server: a redirected socket directory is not reused as
+      // this directory's own server. dirA's socket directory is replaced with a symlink to dirB's,
+      // leaving dirA's portfile spelling unchanged but resolving to dirB. Reuse is refused — a
+      // replacement start is attempted (and here fails by the seam) — so the client never reaches
+      // dirB's server. The socket check compares spellings; the symlink guard catches the
+      // redirection the spelling hides.
+      val aSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirA)
+      val bSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirB)
+      listeners.remove(aSock).foreach(_.close())
+      Files.deleteIfExists(aSock)
+      Files.delete(aSock.getParent)
+      Files.createSymbolicLink(aSock.getParent, bSock.getParent)
+      serverFails = true
+      assert(runtimes.prepare(Program.Sbt, dirA, Seq("test")).isLeft, "a redirected socket directory is not reused")
+      serverFails = false
+      Files.delete(aSock.getParent)
     finally
+      listeners.values.foreach(_.close())
       spawns.foreach: spawn =>
         spawn.descendants().forEach(_.destroyForcibly())
         spawn.destroyForcibly()
       session.close()
+
+  test("another live broker owning the build directory is refused, and its server is never signalled"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+    val root = Files.createTempDirectory("owned").toRealPath()
+    RunOnHostSession.ensureRoot(root, uid).getOrElse(fail("root"))
+    val project = Files.createDirectory(root.resolve("project"))
+    val mine = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val peer = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val dir = Files.createDirectory(project.resolve("shared"))
+    val hash = RunOnHostSession.buildHash(dir)
+    // The peer owns dir: its build file names it, and it holds a live server for the hash.
+    RunOnHostSession.publishBuildFile(peer.directory, hash, dir)
+    val peerServerRecord = peer.records.resolve(s"server-sbt-$hash")
+    val peerServer =
+      ProcessBuilder(RunOnHostSession.registeredSpawn(peerServerRecord, Seq("/bin/sleep", "30"))*).start()
+    var waited = 0
+    while !Files.exists(peerServerRecord) && waited < 200 do { Thread.sleep(50); waited += 1 }
+    val peerLeader = RunOnHostSession.parseRecord(Files.readString(peerServerRecord, UTF_8)).get.pgid
+    val endedGroups = scala.collection.mutable.ListBuffer[Long]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
+      def endGroup(pgid: Long): Unit = endedGroups += pgid
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None,
+    )
+    // A second directory the peer touched with Mill only: its build file names it, but there is
+    // no server-sbt record, so the peer reserves no sbt server there.
+    val millDir = Files.createDirectory(project.resolve("mill-only"))
+    val millHash = RunOnHostSession.buildHash(millDir)
+    RunOnHostSession.publishBuildFile(peer.directory, millHash, millDir)
+    val started = scala.collection.mutable.ListBuffer[Path]()
+    val server = (start: ServerStart) =>
+      started += start.buildDirectory
+      Right(())
+    val emptyAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(mine, project, _ => (), emptyAuthority, Vector.empty)(
+      processes,
+      (_, _) => Right(assembled),
+      (_, _, _, _) => Right(1), // a proxy port, no stand-in spawn
+      server,
+    )
+    try
+      // The peer owns the sbt server for `dir`: refused, and its server never signalled.
+      val refused = runtimes.prepare(Program.Sbt, dir, Seq("compile"))
+      assert(refused.swap.exists(_.contains("another launch's broker")), refused.toString)
+      assert(!endedGroups.contains(peerLeader), "the peer's server was never signalled")
+      assert(peerServer.isAlive, "the peer's server is untouched")
+      assert(!started.contains(dir), "no server was started for the owned directory")
+      // The peer's Mill-only directory reserves no sbt server: this launch starts sbt there.
+      assertEquals(runtimes.prepare(Program.Sbt, millDir, Seq("compile")).map(_.isDefined), Right(true))
+      assert(started.contains(millDir), "sbt started in the Mill-only directory")
+    finally
+      peerServer.descendants().forEach(_.destroyForcibly())
+      peerServer.destroyForcibly().waitFor()
+      mine.close(); peer.close()
 
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
@@ -355,7 +562,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(deniedHosts(log, before + 1_000_000), Vector.empty)
 
   // --------------------------------------------------------------------------
-  // The one-server-per-project refusal
+  // The live server a portfile names
   // --------------------------------------------------------------------------
 
   def projectWithPortfile(socket: Path): Path =
@@ -468,15 +675,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       UTF_8,
     )
 
-  test("autoShutdownForeignServer refuses a portfile socket that is not the derived one"):
+  test("shutdownForeignServer refuses a portfile socket that is not the derived one"):
     val project = Files.createTempDirectory("foreign")
-    val result = autoShutdownForeignServer(
-      project, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
+    val result = shutdownForeignServer(
+      project, project, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
     )
-    assert(result.swap.exists(_.contains("does not apply")), result)
+    assert(result.swap.exists(_.contains("not the one sbt derives")), result)
     assert(result.swap.exists(_.contains("run `sbt shutdown` there and retry")), result)
 
-  test("autoShutdownForeignServer refuses a derived socket the project itself could have planted"):
+  test("shutdownForeignServer refuses a derived socket the project itself could have planted"):
     // The whole defence of sending the shutdown only to the derived socket is that the project
     // cannot choose it. An environment that puts sbt's server directory inside the project takes
     // that away.
@@ -486,23 +693,23 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(derived.getParent)
     val log = collection.mutable.Buffer[String]()
     val result =
-      autoShutdownForeignServer(project, derived, env, log.append(_), userHome = Path.of("/u"))
+      shutdownForeignServer(project, project, derived, env, log.append(_), userHome = Path.of("/u"))
     assert(result.swap.exists(_.contains("reachable through what a command writes")), result)
     assertEquals(log.toList, Nil)
 
-  test("autoShutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
+  test("shutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
     val home = Files.createTempDirectory("home")
     val project = Files.createTempDirectory("foreign")
     val derived = sbtServerSocket(project, _ => None, home)
     writePortfile(project, derived)
     val log = collection.mutable.Buffer[String]()
     assertEquals(
-      autoShutdownForeignServer(project, derived, _ => None, log.append(_), userHome = home),
+      shutdownForeignServer(project, project, derived, _ => None, log.append(_), userHome = home),
       Right(()),
     )
-    assert(log.exists(_.contains("shutting down the foreign sbt server")), log)
+    assert(log.exists(_.contains("shutting down the sbt server")), log)
 
-  test("autoShutdownForeignServer refuses when the server never answers the shutdown"):
+  test("shutdownForeignServer refuses when the server never answers the shutdown"):
     // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val project = Files.createTempDirectory("f")
@@ -511,13 +718,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     listener.bind(UnixDomainSocketAddress.of(derived))
     try
-      val result = autoShutdownForeignServer(
-        project, derived, env, _ => (), shutdownDeadlineMillis = 300,
+      val result = shutdownForeignServer(
+        project, project, derived, env, _ => (), shutdownDeadlineMillis = 300,
       )
       assert(result.swap.exists(_.contains("went unanswered")), result)
     finally listener.close()
 
-  test("autoShutdownForeignServer refuses when the portfile outlives an answered shutdown"):
+  test("shutdownForeignServer refuses when the portfile outlives an answered shutdown"):
     // SBT_GLOBAL_SERVER_DIR, not the home fallback: a bound socket path must fit sun_path's 104.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val project = Files.createTempDirectory("f")
@@ -544,8 +751,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     server.start()
     try
-      val result = autoShutdownForeignServer(
-        project, derived, env, _ => (),
+      val result = shutdownForeignServer(
+        project, project, derived, env, _ => (),
         shutdownDeadlineMillis = 2_000, releaseDeadlineMillis = 300,
       )
       assert(result.swap.exists(_.contains("still holds the portfile")), result)
@@ -665,10 +872,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectory(broker.resolve(RunOnHostSession.TmpDir))
     Files.writeString(broker.resolve("proxy-sbt-0a.log"), "sbt audit\n", UTF_8)
     Files.writeString(broker.resolve("proxy-mill-0b.log"), "mill audit\n", UTF_8)
+    Files.writeString(broker.resolve("server-sbt-0a.log"), "server said\n", UTF_8)
     Files.writeString(broker.resolve("project"), "/p\n", UTF_8)
     Files.writeString(channelLog, "", UTF_8)
     appendSessionLogs(channelLog, broker, "the broker's session b1 ended")
     val brokers = Files.readString(channelLog, UTF_8)
     assert(brokers.contains("the broker's session b1 ended; its logs follow"), brokers)
     assert(brokers.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), brokers)
+    assert(brokers.contains("==> server-sbt-0a.log\nserver said\n"), brokers)
     assert(!brokers.contains("==> project"), brokers)

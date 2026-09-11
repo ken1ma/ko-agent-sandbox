@@ -38,7 +38,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
-  ) = ProfileInputs(prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime)
+  ) = ProfileInputs(
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime, Network.ProxyOnly,
+  )
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
@@ -60,6 +62,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
       "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
       "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
       "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
+      "server tmp" -> (path => inputs().copy(network = Network.SbtClient(path))),
     )
     for
       (name, withPath) <- fields
@@ -213,6 +216,32 @@ class SeatbeltProfileTest extends munit.FunSuite:
           """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
       ),
     )
+
+  test("an sbt client reaches the sockets under the broker's tmp, and nothing else there"):
+    val brokerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
+    val text = rendered(inputs().copy(network = Network.SbtClient(brokerTmp)))
+    val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
+    assertEquals(
+      network,
+      Seq(
+        """(allow network-outbound (remote ip "localhost:51234"))""",
+        """(allow network-bind network-inbound network-outbound """ +
+          """(local unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")) """ +
+          """(remote unix-socket (subpath "/private/tmp/ko-agent-command/abc/tmp")))""",
+        """(allow network-outbound (remote unix-socket (subpath "/private/tmp/ko-agent-command/bxyz/tmp")))""",
+      ),
+    )
+    // The socket's directory resolves; the broker's directory is an ancestor like any other.
+    assert(text.contains(
+      """(allow file-read-metadata file-test-existence (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))""",
+    ))
+    assert(text.contains(
+      """(allow file-read-metadata file-test-existence (literal "/private/tmp/ko-agent-command/bxyz"))""",
+    ))
+    assert(!text.contains("""(allow file-read* (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))"""))
+    // Only an sbt client has a server to reach.
+    assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
+      network = Network.SbtClient(brokerTmp))).isLeft)
 
   // --------------------------------------------------------------------------
   // The cs-installed sbt script's second half
