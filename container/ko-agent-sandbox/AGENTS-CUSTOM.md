@@ -82,8 +82,8 @@ stories. Evidence is stated as a measurement of the present. A completed TODO ro
 recorded at their canonical sites is deleted.
 
 Replies follow the earns-its-place rule: lead with the result, include only detail that changes what
-the reader does next, and do not narrate your process unless necessary. When the user makes a
-proposal, the first sentence of the final reply says whether and how far you agree.
+the reader does next, and do not narrate your process unless necessary. When the user states a
+position — a proposal, objection or decision — the first sentence says how far you agree.
 
 Do not assume the writer is a native English speaker. Report unnatural English, but do not play the
 schoolteacher.

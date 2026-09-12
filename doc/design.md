@@ -15,7 +15,7 @@ The words the documents share, each defined where it binds and listed here once:
   session leaves through (`egress-proxy.md`); under `--run-on-host`, a host proxy beside it per
   program and build directory, kept across the launch's commands, or per command under Maven, with
   rules of its own: `deny defaults`, the program's Maven Central host, and the file
-  `.ko-agent-sandbox/host-command/<program>/egress/rule` (`run-on-host.md`, "The command's egress
+  `.ko-agent-sandbox/run-on-host/<program>/egress/rule` (`run-on-host.md`, "The command's egress
   proxy").
   - **rule, ruleset, profile** — a rule is a line of the project's `.ko-agent-sandbox/egress/rule`;
     the ruleset is what a launch enforces, the defaults, the profile and the file resolved together

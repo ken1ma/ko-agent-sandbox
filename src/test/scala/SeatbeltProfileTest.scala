@@ -26,13 +26,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val prereqs = CommandPrereqs(
     project = project,
     jdkHome = jdkHome,
-    coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/coursier/v1"),
+    coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/coursier/v1"),
     program = Program.Sbt,
     executable = executable,
   )
 
-  private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/sbt-global")
-  private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/ivy-home")
+  private val sbtGlobal = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/sbt-global")
+  private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/ivy-home")
 
   private def inputs(
     runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
@@ -393,7 +393,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   private val gradleHome =
     Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1")
-  private val gradleUserHome = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/gradle-user-home")
+  private val gradleUserHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/gradle-user-home")
   private val gradlePrereqs = prereqs.copy(program = Program.Gradle, executable = gradleHome.resolve("bin/gradle"))
   private def gradleInputs = millInputs.copy(
     prereqs = gradlePrereqs, distribution = Some(gradleHome), gradleUserHome = Some(gradleUserHome),
@@ -426,7 +426,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(mvnInputs.copy(gradleUserHome = Some(gradleUserHome))).isLeft)
 
   private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
-  private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/m2/repository")
+  private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/m2/repository")
   private val mvnPrereqs = prereqs.copy(program = Program.Mvn, executable = mvnHome.resolve("bin/mvn"))
   private def mvnInputs = millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
 

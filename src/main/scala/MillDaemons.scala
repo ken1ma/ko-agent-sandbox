@@ -2,8 +2,15 @@
 // the daemon profile — whose denied connect leaves the daemon behind in the starter's group —
 // identified there by its command line, proved by pid and start time, and granted the one
 // port `lsof` shows it listening on, which `out/mill-daemon/socketPort` may name but
-// never authorizes. Before the broker's starts, a daemon of the user's own for the build
-// directory is ended by proof once idle, as the user's sbt server is shut down by protocol.
+// never authorizes. The stock bootstrap, not a helper over `ServerLauncher(openSocket = false)`:
+// the launcher writes the daemon's fingerprint (`DaemonConfig`) with the code every client
+// compares it with, where a helper would reproduce `MillLauncherMain.main0`'s preamble against
+// `mill.launcher` internals pinned to one version, and a fingerprint that differs is the mismatch
+// on which the next client ends the daemon. The cost is the denied connect's ten-second retry
+// (TODO.md, "ending the mill starter once the daemon listens"); the helper would return for a Mill
+// version whose daemon does not survive the starter's exit. Before the broker's starts, a daemon
+// of the user's own for the build directory is ended by proof once idle, as the user's sbt server
+// is shut down by protocol.
 // macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
 // `start` as a seam and the profile gate measures it.
 
@@ -30,7 +37,7 @@ object MillDaemons:
 
   /** Where the starter's stdout and stderr go: its "Mill launcher failed" trace after the denied
     * connect is the noise of a start that worked, and the finding of one that did not. In the
-    * session directory, beside the sbt servers' files, for the same reason (serverStderr). */
+    * session directory, beside the sbt servers' logs, for the same reason (serverLog). */
   def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"daemon-mill-$hash.log")
 
   /** How long a foreign daemon may stay busy before the start is refused: the bound the user's
@@ -94,6 +101,7 @@ object MillDaemons:
       profileFile <-
         try Right(Files.writeString(session.directory.resolve(s"daemon-mill-${start.hash}.sb"), profile, UTF_8))
         catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
+      _ = discardForeignMemo(start.buildDirectory, prereqs.coursierV1, confined(profileFile)).foreach(log)
       daemon <- attempt(retriesLeft = 1, profileFile)
     yield daemon
 
@@ -209,6 +217,51 @@ object MillDaemons:
       if process.waitFor() != 0 || errors.nonEmpty || states.isEmpty then None
       else Some(!states.contains("ESTABLISHED"))
     catch case _: IOException => None
+
+  /** The launcher's classpath memo (`CoursierClient.cached`): JSON, the key then the paths. */
+  private def memoFile(buildDirectory: Path): Path =
+    buildDirectory.resolve("out").resolve("mill-daemon").resolve("cache").resolve("mill-daemon-classpath")
+
+  private val MemoPath = """"(/(?:[^"\\]|\\.)*)"""".r
+
+  /** A file read and a file deletion under the profile: what a build could do to the file, and no
+    * more, so a link planted under `out/` after rendezvousIsOwn — by the bootstrap script, or by
+    * build code in a daemon of yours the start waited on — sends neither past the build's own
+    * writable roots. The read is the file's text when the file is one, else None. */
+  case class Confined(read: Path => Option[String], delete: Path => Boolean)
+
+  private def confined(profileFile: Path): Confined =
+    def run(command: String*): Option[String] =
+      try
+        val process = ProcessBuilder(("/usr/bin/sandbox-exec" +: "-f" +: profileFile.toString +: command)*)
+          .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val output = String(process.getInputStream.readAllBytes(), UTF_8)
+        Option.when(process.waitFor() == 0)(output)
+      catch case _: IOException => None
+    Confined(
+      read = file => run("/bin/cat", "--", file.toString),
+      delete = file => run("/bin/rm", "-f", "--", file.toString).isDefined,
+    )
+
+  /**
+   * Delete the memo when it names a path outside the cache the profile grants, so the launcher
+   * resolves afresh into that cache. Mill keeps a memo while every path it names exists
+   * (`CoursierClient.resolveMillDaemon`, `os.exists`), and Seatbelt answers an existence test
+   * for a path it denies reading — measured: `Files.exists` true, the open `EPERM` — so a memo
+   * from an unconfined run, or from this directory served as another project's build directory,
+   * would start a daemon on jars its JVM cannot open, which dies before it listens. Read and
+   * deleted through `confined`, and only as a regular file. What was done, for the log.
+   */
+  def discardForeignMemo(buildDirectory: Path, coursierV1: Path, confined: Confined): Option[String] =
+    val memo = memoFile(buildDirectory)
+    val named = buildDirectory.relativize(memo)
+    if !Files.isRegularFile(memo, LinkOption.NOFOLLOW_LINKS) then None
+    else
+      confined.read(memo).flatMap: text =>
+        val paths = MemoPath.findAllMatchIn(text).map(_.group(1)).toVector
+        paths.find(path => !Path.of(path).startsWith(coursierV1)).map: foreign =>
+          if confined.delete(memo) then s"discarded $named: it names $foreign, outside $coursierV1"
+          else s"could not discard $named, which names $foreign, outside $coursierV1"
 
   /**
    * The command's rendezvous directory is its own build directory's: `out`, `out/mill-daemon`

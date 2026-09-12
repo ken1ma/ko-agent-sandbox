@@ -95,6 +95,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
     assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
 
+  test("the run-on-host lines name the programs, and under --write=reject a red line says a host command writes"):
+    val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
+    assertEquals(live.size, 1)
+    assert(live.head.startsWith("run on host: sbt, mill by --run-on-host; "), live.head)
+    assert(live.head.contains("your own sbt server") && live.head.contains("your own mill daemon"), live.head)
+    val reject = runOnHostLines(Seq("gradle"), "reject", color = false)
+    assertEquals(reject.size, 2)
+    assert(!reject.head.contains("your own"), reject.head)
+    assertEquals(
+      reject(1),
+      "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
+        " project as its program does",
+    )
+    assert(runOnHostLines(Seq("gradle"), "reject", color = true)(1).startsWith("\u001b[31m"))
+
   test("the memory figure's scale is the action's: the session floor at a launch, the build gate before a build"):
     import HostCommands.Headroom
     assertEquals(launchMemoryHeadroom(MinimumMemoryLimit), Headroom.Ample)
@@ -1156,7 +1171,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
     assert(
-      runOnHostSection.contains("sbt's server and the mill and gradle daemons stay warm across invocations"),
+      runOnHostSection.contains("The daemons of sbt, mill and gradle stay warm across invocations"),
       runOnHostSection,
     )
     // The example of several commands is quoted: the JVM client hands its arguments to sbt as one

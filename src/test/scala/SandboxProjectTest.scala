@@ -491,13 +491,13 @@ class SandboxProjectTest extends munit.FunSuite:
 
     // The other entries are allowed by name, and a symlink of one refused like egress.
     Files.createDirectory(dir.resolve("agent"))
-    Files.createDirectory(dir.resolve("host-command"))
+    Files.createDirectory(dir.resolve("run-on-host"))
     assertEquals(boundaryDirError(dir), None)
-    Files.delete(dir.resolve("host-command"))
-    Files.createSymbolicLink(dir.resolve("host-command"), dir.resolve("egress"))
+    Files.delete(dir.resolve("run-on-host"))
+    Files.createSymbolicLink(dir.resolve("run-on-host"), dir.resolve("egress"))
     val linkedTenant = boundaryDirError(dir)
-    assert(linkedTenant.exists(_.contains("host-command")), linkedTenant.toString)
-    Files.delete(dir.resolve("host-command"))
+    assert(linkedTenant.exists(_.contains("run-on-host")), linkedTenant.toString)
+    Files.delete(dir.resolve("run-on-host"))
     Files.delete(dir.resolve("agent"))
     Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
     val linked = boundaryDirError(dir)

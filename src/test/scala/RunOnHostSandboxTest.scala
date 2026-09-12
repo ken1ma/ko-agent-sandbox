@@ -129,7 +129,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(assembled.distribution, Some(gradleHome.toRealPath()))
     assertEquals(assembled.gradleUserHomeGranted, Some(assembled.gradleUserHome))
     assert(Files.isDirectory(assembled.gradleUserHome), "created for the program that reads it")
-    assert(assembled.gradleUserHome.startsWith(root.toRealPath().resolve(".cache/ko-agent-sandbox/cache")))
+    assert(assembled.gradleUserHome.startsWith(root.toRealPath().resolve(".cache/ko-agent-sandbox/run-on-host")))
     assertEquals(assembled.m2RepositoryGranted, None)
     assertEquals(assembled.sbtCachesGranted, Seq.empty)
 
@@ -217,71 +217,115 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
     assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
 
-  test("the server's command line is the thin client's, with the request's -D and -J and nothing else of it"):
-    val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
-    assertEquals(
-      serverCommand(sbt, Seq("-Dprobe=1", "-J-Xmx2g", "-batch", "-mem", "512", "compile", "-v")),
-      Seq(sbt.toString, s"-Dsbt.script=$sbt", "-Dprobe=1", "-J-Xmx2g", "--detach-stdio", "--server"),
+  test("a classpath memo naming a path outside the granted cache is deleted; one inside, a link or none is left"):
+    val build = Files.createTempDirectory("build")
+    val cache = Files.createTempDirectory("cache").toRealPath()
+    val memo = build.resolve("out/mill-daemon/cache/mill-daemon-classpath")
+    Files.createDirectories(memo.getParent)
+    def written(paths: String*): Unit =
+      Files.writeString(memo, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
+    // The profile is the gate's to measure; here the read and the delete are the plain ones.
+    val direct = MillDaemons.Confined(
+      read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
+      delete = file => Files.deleteIfExists(file),
     )
+    written(s"$cache/https/repo1.maven.org/a.jar", s"$cache/https/repo1.maven.org/b.jar")
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assert(Files.exists(memo))
+    written(s"$cache/https/repo1.maven.org/a.jar", "/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar")
+    val said = MillDaemons.discardForeignMemo(build, cache, direct)
+    assert(said.exists(_.contains("/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar, outside")), said)
+    assert(!Files.exists(memo))
+    // A memo that is a link is not the build's own file: rendezvousIsOwn refuses the command first,
+    // and this deletes nothing through it.
+    Files.createSymbolicLink(memo, build.resolve("elsewhere"))
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assert(Files.isSymbolicLink(memo))
+    Files.delete(memo)
+    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+
+  test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
+    val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
+    def server(arguments: String*): Seq[String] =
+      val line = serverCommand(sbt, arguments)
+      assertEquals(line.take(2), Seq(sbt.toString, s"-Dsbt.script=$sbt"))
+      assertEquals(line.takeRight(2), Seq("--detach-stdio", "--server"))
+      line.drop(2).dropRight(2)
+    // -D and a value flag reach the server; -J is the client JVM's, -batch and -v the client's
+    // own, and a command with what follows it goes over the socket.
+    assertEquals(
+      server("-Dprobe=1", "-J-Xmx2g", "-batch", "-mem", "512", "compile", "-v"), Seq("-Dprobe=1", "-mem", "512"),
+    )
+    // The empty-build flags are launcher flags even after the command, as the client has them.
+    assertEquals(server("new", "scala/scala3", "--allow-empty"), Seq("--allow-empty"))
+    assertEquals(server("--sbt-create", "compile"), Seq("--sbt-create"))
+    // The `=` form of a value flag splits as the client splits it; the client's own `=` flags stay.
+    assertEquals(server("-sbt-version=2.0.8", "--color=never", "-Dx=y"), Seq("-sbt-version", "2.0.8", "-Dx=y"))
+    // A flag naming a program to run never reaches the server, whatever its form.
+    assertEquals(
+      server("-java-home", "/x", "--sbt-jar=/y.jar", "--sbt-script", "/z", "-Dsbt.script=/w", "-v"), Seq.empty,
+    )
+    // A flag the client does not know is forwarded as the client forwards it.
+    assertEquals(server("-sbt-launch-repo", "https://r", "-x"), Seq("-sbt-launch-repo"))
 
   // --------------------------------------------------------------------------
-  // host-command/ and its parent both refuse unrecognized configuration entries
+  // run-on-host/ and its parent both refuse unrecognized configuration entries
   // --------------------------------------------------------------------------
 
   def projectWith(paths: String*): Path =
-    val project = Files.createTempDirectory("host-command")
+    val project = Files.createTempDirectory("run-on-host")
     paths.foreach: path =>
       val full = project.resolve(path)
       Files.createDirectories(full.getParent)
       Files.writeString(full, "")
     project
 
-  test("an absent host-command, or a complete one, is no stray"):
+  test("an absent run-on-host, or a complete one, is no stray"):
     assertEquals(hostCommandStray(Files.createTempDirectory("empty")), None)
     val project = projectWith(
-      ".ko-agent-sandbox/host-command/sbt/egress/rule",
-      ".ko-agent-sandbox/host-command/mill/egress/rule",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
+      ".ko-agent-sandbox/run-on-host/mill/egress/rule",
     )
     assertEquals(hostCommandStray(project), None)
 
   test("a stray name at any level refuses, naming itself; metadata does not"):
     for
       stray <- Seq(
-        ".ko-agent-sandbox/host-command/ant/egress/rule",
-        ".ko-agent-sandbox/host-command/sbt/egres/rule",
-        ".ko-agent-sandbox/host-command/sbt/egress/rules",
+        ".ko-agent-sandbox/run-on-host/ant/egress/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egres/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egress/rules",
       )
     do
       val refused = hostCommandStray(projectWith(stray))
       assert(refused.isDefined, stray)
       assert(refused.exists(_.contains("update the launcher")), refused.toString)
     val metadata = projectWith(
-      ".ko-agent-sandbox/host-command/.DS_Store",
-      ".ko-agent-sandbox/host-command/sbt/egress/rule",
+      ".ko-agent-sandbox/run-on-host/.DS_Store",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
     )
     assertEquals(hostCommandStray(metadata), None)
     // The retired grammar's file is named as such, with the pointer.
-    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/host-command/sbt/egress/allowed"))
+    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/allowed"))
     assert(retired.exists(r => r.contains("retired grammar") && r.contains("egress/rule")), retired.toString)
 
   test("a symlinked component refuses by name"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
-    val dir = project.resolve(".ko-agent-sandbox/host-command/mill")
-    Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/host-command/sbt"))
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val dir = project.resolve(".ko-agent-sandbox/run-on-host/mill")
+    Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/run-on-host/sbt"))
     val refused = hostCommandStray(project)
     assert(refused.exists(_.contains("symlink")), refused.toString)
 
   test("a file where a directory belongs refuses instead of reading as absent config"):
-    val project = Files.createTempDirectory("host-command")
-    val dir = project.resolve(".ko-agent-sandbox/host-command")
+    val project = Files.createTempDirectory("run-on-host")
+    val dir = project.resolve(".ko-agent-sandbox/run-on-host")
     Files.createDirectories(dir)
     Files.writeString(dir.resolve("sbt"), "")
     val refused = hostCommandStray(project)
     assert(refused.exists(r => r.contains("sbt") && r.contains("not a directory")), refused.toString)
 
   test("a non-regular file where rule belongs refuses instead of being read"):
-    val project = Files.createTempDirectory("host-command")
-    val egress = project.resolve(".ko-agent-sandbox/host-command/sbt/egress")
+    val project = Files.createTempDirectory("run-on-host")
+    val egress = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
     Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
     val refused = hostCommandStray(project)
     assert(
@@ -290,9 +334,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
 
   test("readProgramRules reads the program's file, refuses its strays, and defaults to nothing"):
-    val project = projectWith(".ko-agent-sandbox/host-command/sbt/egress/rule")
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
       "allow https://repo.example.org/ read\n",
       UTF_8,
     )
@@ -300,7 +344,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
 
     Files.writeString(
-      project.resolve(".ko-agent-sandbox/host-command/sbt/egress/rule"),
+      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
       "allow model-provider openai\n",
       UTF_8,
     )

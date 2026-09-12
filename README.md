@@ -207,18 +207,18 @@ above, a device code or a code pasted back, need no redirect.
                          macOS only: sbt / mill / gradle / mvn can be run on the host. This gains
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
-                         command, which runs those programs OUTSIDE
+                         command in the sandbox, which runs those programs outside
                          the container, confined by a Seatbelt profile to
                          the project (.git and .ko-agent-sandbox
                          unreachable), per-project run-on-host caches, and
-                         one egress proxy. Host commands write the project even under
+                         one egress proxy. Host commands write the project directory even under
                          --write=reject. For sbt and mill, the launch keeps
-                         one server or daemon warm per build directory for
-                         its life; one you started yourself is shut down,
+                         one daemon warm per build directory for its life;
+                         one you started yourself is shut down,
                          once any build already running in it completes,
-                         when the agent runs the program there, and your own
-                         client attaches to the launch's confined server or
-                         daemon while it lives. Under gradle the launch keeps
+                         when the agent runs that program there, and your own
+                         new clients attach to the launch's confined daemon
+                         while it lives. Under gradle the launch keeps
                          the daemons its builds start, in a registry of its
                          own, so yours and the launch's never meet.
                          SECURITY.md "Run on host" has the why and the cost;
@@ -266,9 +266,11 @@ above, a device code or a code pasted back, need no redirect.
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
       --stats            report the machine's memory and storage headroom,
-                         live sessions, and per-project disk use across
-                         the launcher's state and run-on-host cache roots and
-                         the agents' volumes, each project named by its
+                         live sessions, the directories run-on-host has served
+                         and the programs whose runtime it keeps in each, and per-project disk
+                         use across the launcher's state and run-on-host cache
+                         roots and the agents' volumes, dated by the newest
+                         write under those roots, each project named by its
                          directory — by its id, which --reset takes, where
                          the directory is gone — and any cache worth a
                          --reset-run-on-host flagged; read-only — a stopped

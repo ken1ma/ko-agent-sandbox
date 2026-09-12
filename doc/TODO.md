@@ -324,7 +324,7 @@ command's reach since the profile grants `tmp/` alone; a second launch finding a
 socket, or a daemon whose group, belongs to a live broker session compares descriptors and, when
 equal, attaches with that session's socket directory or daemon port and proxy port in its client
 profile, Mill's own fingerprint check agreeing by construction; when different, the refusal
-stays. Its costs, documented with it: a cancel across launches is the tool's own, since the
+stays. Its costs, documented with it: a cancel across launches is the program's own, since the
 server is not the canceller's to retire, so a test that ignores interruption runs on until the
 next command queues behind it; and the owning launch's end takes the shared server with it, a
 build of the other launch included, whose next command starts its own.
@@ -333,7 +333,7 @@ build of the other launch included, whose next command starts its own.
 
 A `mill` command whose pinned version, or a `gradle` command whose distribution, the user has
 not provisioned is refused with the command to run in a host terminal (`run-on-host.md`,
-"`mill`", "Gradle"). The sandbox does not fetch either itself because of where the stock tool
+"`mill`", "Gradle"). The sandbox does not fetch either itself because of where the stock program
 keeps it: `~/.cache/mill/download` and `~/.gradle/wrapper/dists` are the folders the user's own
 unconfined `./mill` and `./gradlew` run from, so an executable the sandbox chose there would
 later run outside any sandbox. The refusal is clear, and once per version per user it is a
@@ -341,7 +341,7 @@ tolerable cost.
 
 A way to remove the step while keeping the rule that the user provisions executables and the
 sandbox fetches only artifacts: the wrapper fetches the file through the proxy into the
-project's run-on-host cache like any other jar, and starts the tool's launcher class with
+project's run-on-host cache like any other jar, and starts the program's launcher class with
 `java -cp` instead of through the stock script.
 
 - Benefits: no host step for the user, for a first project and for every version bump; nothing
@@ -358,8 +358,8 @@ The JVM launcher is the Maven Central artifact `com.lihaoyi:mill-dist:<v>` (its 
 jar, the file the bootstrap downloads), on the host every `mill` command's proxy already allows;
 the start is `java -cp <jar> mill.launcher.MillLauncherMain`. The script's resolution the
 wrapper replaces — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and `-native`
-cases — it already reads; and the plan's decision to start the daemon with the stock executable
-(section 7.2) would be revised, with the daemon start and the gate's Mill rows measured again.
+cases — it already reads; and starting the daemon with the stock bootstrap (`MillDaemons.scala`
+has why) would be revised, with the daemon start and the gate's Mill rows measured again.
 
 ### gradle
 
@@ -393,6 +393,10 @@ art, both mounting the project at its host path for path legibility rather than 
   entry — its fix as requested only turns the crash into a message, and lifts no length), or the
   session names get a shorter random part of their own, with the collision retry
   `Files.createTempDirectory` does today.
+- [ ] Name the root after the launcher and the feature,
+  `/private/tmp/ko-agent-sandbox-run-on-host-<uid>` in place of `/private/tmp/ko-agent-<uid>`
+  (`RunOnHostSession.root`), under the same budget: a second host feature keeping state under
+  `/private/tmp` would otherwise land in a root that names neither.
 
 ## Deferred — the per-command wrapper process under `--run-on-host`
 
