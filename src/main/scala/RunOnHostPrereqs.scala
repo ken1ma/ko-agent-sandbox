@@ -10,16 +10,20 @@
 
 package agentsandbox.launcher
 
-import java.io.IOException
+import java.io.{IOException, StringReader}
+import java.math.BigInteger
+import java.net.{URI, URISyntaxException}
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{InvalidPathException, Path, Paths}
-import java.util.Locale
+import java.security.MessageDigest
+import java.util.{Locale, Properties}
 
 import HostCommands.Os
 
 object RunOnHostPrereqs:
 
   enum Program:
-    case Sbt, Mill, Mvn
+    case Sbt, Mill, Gradle, Mvn
 
     /** What a launch, a request, the rule file and the shim call it: the executable's name. */
     def name: String = toString.toLowerCase(Locale.ROOT)
@@ -36,6 +40,9 @@ object RunOnHostPrereqs:
     case PrereqMillExecutableMissing(launcherVersion: String, downloadDir: Path)
     case PrereqMillNativeLauncher(pinned: String)
     case PrereqMillJvmNotSystem(found: Option[String])
+    case PrereqGradleWrapperMissing
+    case PrereqGradleWrapperUnreadable(reason: String)
+    case PrereqGradleDistributionMissing(distributionUrl: String, directory: Path)
     case PrereqMvnWrapperMissing
     case PrereqMvnWrapperNotOnlyScript
     case PrereqMvnWrapperUnreadable(reason: String)
@@ -74,6 +81,11 @@ object RunOnHostPrereqs:
         s"`${pinned.stripSuffix("-native")}` or `${pinned.stripSuffix("-native")}-jvm`"
     case Refusal.PrereqMillJvmNotSystem(found) =>
       s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
+    case Refusal.PrereqGradleWrapperMissing =>
+      "the project has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
+    case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
+    case Refusal.PrereqGradleDistributionMissing(url, directory) =>
+      s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once in a host terminal"
     case Refusal.PrereqMvnWrapperMissing =>
       "the project has no executable `mvnw` wrapper script; a global mvn is not used"
     case Refusal.PrereqMvnWrapperNotOnlyScript =>
@@ -138,9 +150,9 @@ object RunOnHostPrereqs:
    * This project's run-on-host caches, under one directory so `--reset-run-on-host` for a project is a
    * single removal and a further cache kind can join without moving anything.
    *
-   * Coursier's, sbt's global base and Ivy home, and Maven's local repository. mill's executable
-   * is provisioned by the user rather than fetched here, so it has no writable home
-   * (RunOnHostPrereqs.millExecutable).
+   * Coursier's, sbt's global base and Ivy home, Gradle's user home and Maven's local repository.
+   * mill's executable is provisioned by the user rather than fetched here, so it has no writable
+   * home (RunOnHostPrereqs.millExecutable).
    */
   def runOnHostCacheDir(cacheRoot: Path, projectId: String): Path =
     cacheRoot.resolve("cache").resolve(projectId)
@@ -166,6 +178,13 @@ object RunOnHostPrereqs:
    */
   def ivyHomeOf(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("ivy-home")
+
+  /** The confined command's `GRADLE_USER_HOME`, otherwise `~/.gradle`, a path the profile denies.
+    * Gradle keeps its caches here; the daemon registry is the launch's own
+    * (RunOnHostSandbox.gradleCommand), and the wrapper's distribution store is the user's own
+    * (gradleUserHome), granted one distribution read-only. */
+  def gradleUserHomeOf(cacheRoot: Path, projectId: String): Path =
+    runOnHostCacheDir(cacheRoot, projectId).resolve("gradle-user-home")
 
   /** The confined command's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
     * denies. Maven stores every artifact and plugin it resolves here. */
@@ -516,6 +535,103 @@ object RunOnHostPrereqs:
   private def plausibleVersion(value: String): Boolean =
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
+  /**
+   * The wrapper's distribution as Gradle's wrapper takes it (9.7.1: `WrapperExecutor`,
+   * `WrapperDistributionUrlConverter`, `GradleWrapperMain`). The properties are loaded as
+   * `java.util.Properties` loads them, so `https\://` and `https://` are one URL; `distributionUrl`
+   * is required; a URL without a scheme is a file relative to the properties file's directory.
+   * `distributionBase` and `distributionPath` must be the wrapper's defaults, `GRADLE_USER_HOME`
+   * and `wrapper/dists`: `PROJECT` as the base puts the distribution under the project, where the
+   * command writes, and the executable the profile grants is the user's to provision
+   * (run-on-host.md "Program prerequisites"). `systemProp.gradle.user.home` in the project's
+   * `gradle.properties` moves the wrapper's home the same way and is refused too. A value is
+   * quoted in a refusal only once it is printable ASCII: never a control character.
+   */
+  def gradleDistributionUrl(
+    propertiesText: String,
+    propertiesDir: Path,
+    projectPropertiesText: Option[String],
+  ): Either[Refusal, URI] =
+    def unreadable(reason: String) = Left(Refusal.PrereqGradleWrapperUnreadable(reason))
+    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
+    def load(name: String, text: String): Either[Refusal, Properties] =
+      val properties = Properties()
+      try
+        properties.load(StringReader(text))
+        Right(properties)
+      catch case ex: IllegalArgumentException => unreadable(s"$name is malformed: ${ex.getMessage}")
+    def setting(properties: Properties, key: String, default: String): Either[Refusal, String] =
+      val value = Option(properties.getProperty(key)).getOrElse(default)
+      if printable(value) then Right(value) else unreadable(s"$key contains a character outside printable ASCII")
+    def defaultOnly(properties: Properties, key: String, default: String): Either[Refusal, Unit] =
+      setting(properties, key, default).flatMap: value =>
+        if value == default then Right(())
+        else unreadable(s"$key is '$value'; the wrapper's default, $default, alone is served")
+    for
+      properties <- load("gradle/wrapper/gradle-wrapper.properties", propertiesText)
+      project <- load("gradle.properties", projectPropertiesText.getOrElse(""))
+      _ <- defaultOnly(properties, "distributionBase", "GRADLE_USER_HOME")
+      _ <- defaultOnly(properties, "distributionPath", "wrapper/dists")
+      _ <-
+        if project.getProperty("systemProp.gradle.user.home") == null then Right(())
+        else unreadable("gradle.properties sets systemProp.gradle.user.home, which moves the wrapper's distributions")
+      raw <- Option(properties.getProperty("distributionUrl"))
+        .toRight(Refusal.PrereqGradleWrapperUnreadable(
+          "no distributionUrl in gradle/wrapper/gradle-wrapper.properties",
+        ))
+      url <-
+        if printable(raw) then Right(raw)
+        else unreadable("distributionUrl contains a character outside printable ASCII")
+      parsed <-
+        try Right(URI(url))
+        catch case ex: URISyntaxException => unreadable(s"distributionUrl '$url' is not a URI: ${ex.getReason}")
+      uri =
+        if parsed.getScheme == null then java.io.File(propertiesDir.toFile, parsed.getSchemeSpecificPart).toURI
+        else parsed
+      _ <-
+        if uri.isOpaque || uri.getPath == null || uri.getPath.drop(uri.getPath.lastIndexOf('/') + 1).isEmpty
+        then unreadable(s"distributionUrl '$url' names no file")
+        else Right(())
+    yield uri
+
+  /** The wrapper's home as `GradleUserHomeLookup` takes it: `GRADLE_USER_HOME`, else `~/.gradle`.
+    * A `-Dgradle.user.home` in the launching shell's `GRADLE_OPTS` or `JAVA_OPTS` is not read, as
+    * `MAVEN_USER_HOME` alone is for Maven; the refusal then names the directory derived here. */
+  def gradleUserHome(env: String => Option[String]): Option[Path] =
+    def fromEnv(name: String) = env(name).filter(_.nonEmpty).flatMap(parsePath).map(_.normalize())
+    fromEnv("GRADLE_USER_HOME").orElse(fromEnv("HOME").map(_.resolve(".gradle")))
+
+  /**
+   * The distribution's directory as `PathAssembler` computes it under `<user home>/wrapper/dists`:
+   * the URL's file name without its extension, then the MD5 of the URL — stripped of its user
+   * information, `Download.safeUri` — as a base-36 number. Gradle's home is the one directory inside.
+   */
+  def gradleDistributionDir(userHome: Path, distribution: URI): Path =
+    val path = distribution.getPath
+    val fileName = path.drop(path.lastIndexOf('/') + 1)
+    val name = fileName.lastIndexOf('.') match
+      case -1    => fileName
+      case index => fileName.take(index)
+    val safe = URI(
+      distribution.getScheme, null, distribution.getHost, distribution.getPort, distribution.getPath,
+      distribution.getQuery, distribution.getFragment,
+    )
+    val digest = MessageDigest.getInstance("MD5").digest(safe.toASCIIString.getBytes(UTF_8))
+    userHome.resolve("wrapper").resolve("dists").resolve(name).resolve(BigInteger(1, digest).toString(36))
+
+  /** Gradle's home inside that directory, provisioned: the one directory there, as
+    * `Install.verifyDistributionRoot` requires, with `bin/gradle` present and executable; or a
+    * refusal naming what `./gradlew` would fix. */
+  def gradleDistributionHome(
+    distributionDir: Path,
+    distribution: URI,
+    directories: Path => Seq[Path],
+    isExecutableFile: Path => Boolean,
+  ): Either[Refusal, Path] =
+    directories(distributionDir) match
+      case Seq(home) if isExecutableFile(home.resolve("bin").resolve("gradle")) => Right(home)
+      case _ => Left(Refusal.PrereqGradleDistributionMissing(distribution.toString, distributionDir))
+
   /** Maven's wrapper, the project's own `mvnw`, under the rule mill's bootstrap follows
     * (run-on-host.md "Maven"); a `mvn` from PATH is not a fallback. */
   def validateMvnWrapper(project: Path, isExecutableFile: Path => Boolean): Either[Refusal, Path] =
@@ -631,12 +747,12 @@ object RunOnHostPrereqs:
 
   /**
    * The program's default artifact repository, the one host every command's proxy allows on its own.
-   * Both are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
-   * Maven's super POM names `repo.maven.apache.org`.
+   * All are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
+   * Gradle's `mavenCentral()` and Maven's super POM name `repo.maven.apache.org`.
    */
   def centralHost(program: Program): String = program match
-    case Program.Sbt | Program.Mill => "repo1.maven.org"
-    case Program.Mvn                => "repo.maven.apache.org"
+    case Program.Sbt | Program.Mill   => "repo1.maven.org"
+    case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
   def programRulePath(project: Path, program: Program): Path =
     project.resolve(".ko-agent-sandbox").resolve("host-command").resolve(program.name).resolve("egress").resolve("rule")

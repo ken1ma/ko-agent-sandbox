@@ -836,7 +836,8 @@ Clipboard access is off by default because the host clipboard may contain sensit
 
 ## Run on host
 
-`--run-on-host=<programs>` (`sbt`, `mill`, `mvn`) is off by default and available only on macOS. It
+`--run-on-host=<programs>` (`sbt`, `mill`, `gradle`, `mvn`) is off by default and available only on
+macOS. It
 allows agent-chosen code to execute on the host under a Seatbelt profile. The profile provides the
 confinement for these commands; they execute outside the container. `doc/run-on-host.md` describes
 the mechanism. Its security properties and costs are:
@@ -866,23 +867,28 @@ the mechanism. Its security properties and costs are:
   resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records — its own
   per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
   and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
-  archive cache, the one mill launcher the user provisioned, the one Maven the project's wrapper
-  unpacked under `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME`
-  is unset — a temporary directory for that command, the broker's own under `mill`, where the
-  daemon's forked JVMs write, for an sbt command the sockets of the launch's sbt server under the
-  broker's own directory, for a `mill` command the one port of the launch's mill daemon,
-  and the port of one egress proxy: the broker's for that program under sbt
-  and `mill`, kept across the launch's commands of one build directory, or the command's own under
-  Maven. The mill daemon itself, alone among the host processes, may bind listeners on any port —
-  Mill binds port 0, and no rule confines a bind to one port — and every process the daemon forks
-  inherits that grant: a test under `mill` can bind a TCP or UDP listener where one under sbt or
+  archive cache, the one mill launcher the user provisioned, the one Gradle the project's wrapper
+  unpacked under `$GRADLE_USER_HOME/wrapper/dists`, or `~/.gradle/wrapper/dists` when
+  `GRADLE_USER_HOME` is unset, the one Maven the project's wrapper unpacked under
+  `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
+  temporary directory for that
+  command, the broker's own under `mill` and `gradle`, where the daemons' forked JVMs write, for
+  an sbt command the sockets of the launch's sbt server under the broker's own directory, for a
+  `mill` command the one port of the launch's mill daemon, and the port of one egress proxy: the
+  broker's for that program under sbt, `mill` and `gradle`, kept across the launch's commands of
+  one build directory, or the command's own under Maven. The mill daemon and every Gradle
+  process, alone among the host processes, may bind listeners on any port — Mill and Gradle bind
+  port 0, and no rule confines a bind to one port — and every process they fork inherits that
+  grant: a test under `mill` or `gradle` can bind a TCP or UDP listener where one under sbt or
   Maven gets `EPERM`, and at any address of this host, not loopback alone: SBPL's `localhost`
   class admits a bind to the wildcard or to the LAN address, and a socket so bound answers at the
   LAN address (measured from this host, `src/probe/run-on-host-broker-session.sh` G1, G9, G10;
   the filter admits by the local address, so a LAN peer's connection is the same case). The cost
-  is Mill's alone, and the table at the end of this section states it beside the other programs':
-  the client's own profile reaches the daemon's one port and the proxy, and the daemon's outbound
-  is the proxy's port alone. The proxy allows repositories named in
+  is Mill's and Gradle's, and the table at the end of this section states it beside the other
+  programs': the mill client's own profile reaches the daemon's one port and the proxy, and the
+  daemon's outbound is the proxy's port alone; a Gradle process reaches, beyond the proxy, any
+  port of this host, since its daemon, workers and file-lock socket connect to each other's
+  ports of the kernel's choosing. The proxy allows repositories named in
   `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
   unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
   the file read when that proxy started: a host removed from the file stays reachable from the
@@ -925,7 +931,13 @@ the mechanism. Its security properties and costs are:
   next command, so an interruption-ignoring test lingers in it exactly as one does in a
   terminal; a `mill` client's disconnect mid-command makes the daemon shut itself down, and the
   next command starts one (`doc/run-on-host.md`, "Where the broker deviates from the stock
-  tool"). Maven runs once and exits, so no warm process spans its commands.
+  tool"). Gradle's daemon is Gradle's own: the client starts it under the profile and matches it
+  in a daemon registry of the launch's own, under the broker's `tmp/` — not in the per-project
+  user home, where one launch's `gradle --stop` would end another launch's builds, and never
+  yours under `~/.gradle` — and the broker does not record it, so it outlives the launch
+  until Gradle's idle timeout, three hours, confined and holding nothing of the launch
+  (`doc/plan-host-build-daemons-and-gradle.md`, Phase 2, step 9). Maven runs once and exits,
+  so no warm process spans its commands.
 
   A broker signals only its own servers and daemons. A server of *yours* holding a build directory's
   portfile — from your own terminal, outside any launch — is ended before the broker's starts, and
@@ -958,9 +970,11 @@ the mechanism. Its security properties and costs are:
   under "The host's git executing what the sandbox wrote", above.
 - **Cache poisoning stops at the project.** The command writes its own per-project caches, never
   yours: the Coursier cache, sbt's global base — its boot directory and content-addressed
-  store — sbt's Ivy home, which `publishLocal` writes, and Maven's local repository, which holds
-  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent commands
-  of the same project, which are themselves sandboxed, and no other project and no unsandboxed
+  store — sbt's Ivy home, which `publishLocal` writes, Gradle's user home, which holds every
+  plugin and dependency a Gradle build resolves, and Maven's local repository, which holds
+  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent
+  commands of the same project, which are themselves sandboxed, and no other project and no
+  unsandboxed
   command — and `--reset` discards them all with the project's other state; `--reset-run-on-host`
   discards those caches alone. The separation is by root, one directory holding them
   (`doc/run-on-host.md`, "The run-on-host cache"), because Seatbelt has no mount namespace to
@@ -983,7 +997,8 @@ the mechanism. Its security properties and costs are:
   by the same teardown; a broker ended by TERM exits only after that teardown, and then ends its
   own session — its servers', daemons' and proxies' groups, the servers' stderr files, the
   daemon starters' output and the proxies' audit logs appended to the channel's log first — as
-  it does at the launch's end. No server or daemon survives the launch that owns it, and a later
+  it does at the launch's end. No server or daemon the broker started survives the launch that
+  owns it — a Gradle daemon, which the client starts, is the exception above — and a later
   launch adopts none whose owner is gone: a new broker publishes a new session and reuses
   nothing. If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups
   remain, the broker's servers, daemons and proxies among them, and the next start's scavenger
@@ -999,16 +1014,16 @@ the reach you accept by naming the program in `--run-on-host`:
 |---|---|---|---|
 | sbt, Maven | nothing: a bind gets `EPERM` | the proxy's port | a service sharing that port |
 | `mill` | any port, any address | the proxy's and the daemon's ports | a build serving the LAN |
-| `gradle` (planned) | as `mill` | any port of this host | and every service on this host |
+| `gradle` | as `mill` | any port of this host | and every service on this host |
 
 "Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
 alone (the boundary bullet above; `doc/run-on-host.md` "Network"). sbt's UNIX sockets under the
 launch's directories are not network; the `mill` daemon's port is reached by its clients alone. A
 port grant is a port at every address of this host too: the proxy listens on the loopback address,
 so the grant reaches, beside it, only a service listening on that port at another address.
-Gradle is planned (`doc/plan-host-build-daemons-and-gradle.md`, Phase 2): its daemon, workers and
-file-lock socket bind ports of the kernel's choosing and connect to each other's, so it needs both
-grants.
+Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
+each other's, so it needs both grants (`doc/plan-host-build-daemons-and-gradle.md`, "Security
+model"); the daemon the client starts is not ended with the launch (the runtime bullet above).
 
 ## No containers inside the sandbox by default
 

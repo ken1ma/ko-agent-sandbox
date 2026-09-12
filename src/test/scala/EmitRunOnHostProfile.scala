@@ -4,7 +4,7 @@
 // Test scope on purpose: src/probe/run-on-host-profile-gate.sh and src/probe/run-on-host-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|mvn] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [<program>] [project]"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>"
 //
 // The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
@@ -21,7 +21,7 @@ object EmitRunOnHostProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|mvn] [project]")
+      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|gradle|mvn] [project]")
       Console.err.println("       EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>")
       sys.exit(2)
 
@@ -55,10 +55,13 @@ object EmitRunOnHostProfile:
       distribution = assembled.distribution,
       sbtGlobal = assembled.sbtGlobalGranted,
       ivyHome = assembled.ivyHomeGranted,
+      gradleUserHome = assembled.gradleUserHomeGranted,
       m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
       runtime = runtime,
-      network = SeatbeltProfile.Network.ProxyOnly,
+      network = program match
+        case Program.Gradle => SeatbeltProfile.Network.Gradle
+        case _              => SeatbeltProfile.Network.ProxyOnly,
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
@@ -74,6 +77,7 @@ object EmitRunOnHostProfile:
     Console.err.println(s"executable: ${assembled.prereqs.executable}")
     Console.err.println(s"sbt global base: ${assembled.sbtGlobal}")
     Console.err.println(s"ivy home: ${assembled.ivyHome}")
+    Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The gate re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
     // wrapper driven through `sbt Test/runMain` would find its own server holding the project's

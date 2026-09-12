@@ -112,30 +112,37 @@ Re-read before step 6 against Gradle's current releases and sources (9.7.1, mast
    recorded group leaves it alive. Its pid is its group id, and its workers and test executors are
    forked into that group, so the `daemon-gradle-<hash>` record takes each daemon's
    `<pid> <start time>` once observed after every command, a cancelled one included — the
-   process whose working directory is the home's `daemon/<version>` and whose command names
-   `GradleDaemon` — and the launch's end signals the group behind that proof, daemon and
+   process whose working directory is `<version>` under the launch's own daemon registry base,
+   `org.gradle.daemon.registry.base` under the broker's `tmp/` (`RunOnHostSandbox.gradleCommand`),
+   and whose command names `GradleDaemon` — and the launch's end signals the group behind that
+   proof, daemon and
    descendants at once, as every recorded group. A daemon no observation reached — one started
    under a broker that died during the command — is confined, holds nothing, and exits on
    Gradle's idle timeout, three hours, once idle: the acceptance `SECURITY.md` "Run on host"
    makes for a Mill daemon whose leader is gone, stated there for Gradle too. One hung in its
    build never becomes idle (`getIdleMillis` is zero outside the idle state), so the residual is
    the daemon both unrecorded and hung. No `gradle --stop`.
-3. **Reuse and cancel are Gradle's.** Gradle matches a compatible daemon under the broker's own
-   home and starts another on a mismatch, inside the profile; the broker keeps no reuse key
+3. **Reuse and cancel are Gradle's.** Gradle matches a compatible daemon in the launch's own
+   registry and starts another on a mismatch, inside the profile; the broker keeps no reuse key
    beyond the proxy. On a client disconnect the daemon cancels the build and, still busy after
    its ten-second grace, stops itself (`WatchForDisconnection`, `DaemonStateCoordinator`); the
    next command attaches or starts one. Gate rows assert both; no mechanism.
 4. **No warning.** `--run-on-host=gradle` is the opt-in, and the help and `SECURITY.md`'s
    per-program table carry the cost; section 13's warning and its test are dropped.
 5. **The prerequisite is the provisioned distribution, nothing parsed.** The distribution
-   directory Gradle's wrapper would use for the project's `distributionUrl` exists under the
-   broker's `GRADLE_USER_HOME` with `bin/gradle`, granted read and exec as Mill's launcher is, or
-   the command is refused naming the provisioning command; the URL is not a boundary, since the
-   user provisions it unconfined, so section 15's official-URL rule and version check are dropped
+   directory Gradle's wrapper derives for the project's `distributionUrl` under the wrapper's own
+   home — `$GRADLE_USER_HOME/wrapper/dists`, else `~/.gradle/wrapper/dists`, as Maven's is under
+   `~/.m2/wrapper/dists` — holds `bin/gradle`, granted read and exec as Maven's distribution is,
+   or the command is refused naming `./gradlew --version`. Not under the broker's own
+   `GRADLE_USER_HOME`, which the build writes: a distribution there would be writable by the
+   build under the home's grant, and removed with `--reset-run-on-host`. `distributionBase`,
+   `distributionPath` and a `systemProp.gradle.user.home` in the project's `gradle.properties`
+   move the wrapper's store to a place the project chooses, and are refused. The URL is not a
+   boundary, since the user provisions it unconfined, so section 15's official-URL rule and
+   version check are dropped
    — Gradle says when a version cannot run on the JDK, and `doc/run-on-host.md` records 9.7.1
    as the release measured. Section 18's three properties stay as three `-D`s on the command
    line, so a toolchain the profile would deny anyway fails naming the toolchain, not `EPERM`.
-   `doc/TODO.md`'s "Gradle under `--run-on-host`" entry points here, and is removed with step 10.
 6. The UDP lock communicator (`DefaultFileLockCommunicator`) and the port-0 TCP listeners are in
    current master, so section 12's probes went first. Measured (G1–G10): SBPL's `localhost`
    class is this host's addresses, the wildcard bind included, and no spelling names loopback
@@ -828,7 +835,7 @@ enum Network:
   case MillClient(port: Int)        // + outbound to one port
 ```
 
-Phase 2 adds `GradleLoopback`. A reviewer sees from the dispatch which program gets which
+Phase 2 adds `Gradle`. A reviewer sees from the dispatch which program gets which
 authority; no boolean, and no generic "localhost any" case reused casually.
 
 ---
@@ -1063,7 +1070,8 @@ things a Gradle build can do that an sbt build cannot — serve a LAN peer while
 build already can, and talk to every service listening on this host. Its row is there, marked
 planned until the program lands.
 
-In code, `Network.GradleLoopback` joins the enum of section 8.
+In code, `Network.Gradle` joins the enum of section 8: SBPL names no loopback alone, so the
+case is not named after one.
 
 ## 13. Warn when Gradle's profile is actually used
 
@@ -1291,8 +1299,9 @@ Each claim changes in the same change that makes it true.
   the README's launch advice drops it; the `--run-on-host` text says that a terminal sbt server
   you have running is shut down when the agent runs sbt in that directory, that a second launch is
   refused a build directory the first still owns, and that your own sbt 2 attaches to the launch's
-  confined server while it lives; Phase 2 adds `gradle` and the provisioning sentence, the cost
-  being `SECURITY.md`'s table row.
+  confined server while it lives; Phase 2 adds `gradle`, no provisioning sentence — the refusal
+  names `./gradlew --version`, as mill's names its command — the cost being `SECURITY.md`'s
+  table row.
 - `doc/TODO.md`: "a bound on a silent host command" is resolved for sbt by the broker's portfile
   deadline (6.1) and is rewritten to what remains, the generic no-output bound; "Gradle under
   `--run-on-host`" is removed when Phase 2 lands; a Mill blocker is added only if 7.7 triggers.
@@ -1327,7 +1336,7 @@ Small patches, each with an independently testable invariant, in dependency orde
 Revised by "Revision — Phase 2 scope":
 
 6. The SBPL rows for Gradle, G1–G10, measured: `localhost` is this host's addresses, so
-   `Network.GradleLoopback` encodes Mill's daemon grant plus outbound to any port of this host,
+   `Network.Gradle` encodes Mill's daemon grant plus outbound to any port of this host,
    and lands with step 8's `Program.Gradle`.
 7. The proxy's own profile ("The proxy's own profile"): `SeatbeltProfile.renderProxy`,
    `startProxy` under `sandbox-exec`, the tests and the document paragraph.
@@ -1339,7 +1348,8 @@ Revised by "Revision — Phase 2 scope":
    reuse and cancel left to Gradle. Gate rows: persistence, teardown of workers and test
    executors, an unrelated service of this host reachable, other hosts denied as destinations,
    proxy egress works, the user's own `~/.gradle` daemons untouched, a toolchain the project asks
-   for failing by name.
+   for failing by name, the native libraries Gradle unpacks under its user home loading under
+   the home's read-write grant.
 10. Phase 2 documentation: README and help, `SECURITY.md`'s table row and teardown sentence,
     `doc/run-on-host.md`'s Gradle section with 9.7.1 as the release measured, the TODO entry
     removed.

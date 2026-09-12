@@ -5,6 +5,7 @@
 
 package agentsandbox.launcher
 
+import java.net.URI
 import java.nio.file.{Files, Path, Paths}
 
 import RunOnHostPrereqs.*
@@ -636,11 +637,89 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         m2RepositoryOf(cacheRoot, "proj-abc123").getParent)
     do assertEquals(cache.getParent, coursierV1Of(cacheRoot, "proj-abc123").getParent.getParent)
 
-  test("the central host is the program's own: Coursier's for sbt and mill, the super POM's for mvn"):
+  test("the central host is the program's own: Coursier's for sbt and mill, the alias for gradle and mvn"):
     assertEquals(centralHost(Program.Sbt), "repo1.maven.org")
     assertEquals(centralHost(Program.Mill), "repo1.maven.org")
+    assertEquals(centralHost(Program.Gradle), "repo.maven.apache.org")
     assertEquals(centralHost(Program.Mvn), "repo.maven.apache.org")
     assertEquals(egressRuleText(Program.Mvn, Vector.empty), "deny defaults\nallow https://repo.maven.apache.org/ read")
+
+  // --------------------------------------------------------------------------
+  // Gradle
+  // --------------------------------------------------------------------------
+
+  private val gradleUrl = "https://services.gradle.org/distributions/gradle-9.7.1-bin.zip"
+  private val wrapperDir = project.resolve("gradle/wrapper")
+
+  test("the distribution URL is read as the wrapper reads it: Properties escapes, defaults, relative files"):
+    def read(text: String, projectProperties: Option[String] = None) =
+      gradleDistributionUrl(text, wrapperDir, projectProperties)
+    assertEquals(read(s"distributionUrl=$gradleUrl\n"), Right(URI(gradleUrl)))
+    assertEquals(read("distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\n" +
+      "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n"), Right(URI(gradleUrl)))
+    // A `!` comment line, a key with spaces around `=`, a value continued over a line: Properties' grammar.
+    assertEquals(
+      read("! wrapper\ndistributionUrl = https://services.gradle.org/\\\n    distributions/gradle-9.7.1-bin.zip\n"),
+      Right(URI(gradleUrl)),
+    )
+    // No scheme: a file relative to the properties file's directory, spelled as File.toURI spells it.
+    assertEquals(
+      read("distributionUrl=../../dist/gradle-9.7.1-bin.zip"),
+      Right(java.io.File(wrapperDir.toFile, "../../dist/gradle-9.7.1-bin.zip").toURI),
+    )
+    assertEquals(read("distributionSha256Sum=abc\n"),
+      Left(Refusal.PrereqGradleWrapperUnreadable("no distributionUrl in gradle/wrapper/gradle-wrapper.properties")))
+    assert(read(s"distributionUrl=$gradleUrl\ndistributionBase=PROJECT\n").swap.exists(wording(_).contains("PROJECT")))
+    assert(read(s"distributionUrl=$gradleUrl\ndistributionPath=dists\n").swap.exists(wording(_).contains("dists")))
+    assert(read(s"distributionUrl=$gradleUrl\n", Some("systemProp.gradle.user.home=/elsewhere\n")).swap
+      .exists(wording(_).contains("systemProp.gradle.user.home")))
+    assertEquals(read(s"distributionUrl=$gradleUrl\n", Some("org.gradle.jvmargs=-Xmx1g\n")), Right(URI(gradleUrl)))
+    assert(read("distributionUrl=mailto:x@example.org\n").swap.exists(wording(_).contains("names no file")))
+    assert(read("distributionUrl=https://example.org/\n").swap.exists(wording(_).contains("names no file")))
+    assert(read("distributionUrl=https://example.org/a b.zip\n").swap.exists(wording(_).contains("not a URI")))
+    // A control character never reaches the terminal through a refusal, whatever branch quotes the value.
+    for
+      text <- Seq(
+        "distributionUrl=https://x.example/\u001b[31ma.zip\n",
+        s"distributionUrl=$gradleUrl\ndistributionBase=\u001b[31mX\n",
+      )
+    do
+      val refused = read(text)
+      assert(refused.swap.exists(refusal => !wording(refusal).contains("\u001b")), refused.toString)
+    assert(read("distributionUrl=\\u12\n").swap.exists(wording(_).contains("malformed")))
+
+  test("the Gradle user home is GRADLE_USER_HOME, else ~/.gradle, as the wrapper takes it"):
+    assertEquals(gradleUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.gradle")))
+    assertEquals(
+      gradleUserHome(env("HOME" -> home, "GRADLE_USER_HOME" -> "/opt/gradle")),
+      Some(Paths.get("/opt/gradle")),
+    )
+
+  test("the distribution directory is the wrapper's: the name without its extension, then the URL's MD5 in base 36"):
+    val userHome = Paths.get(s"$home/.gradle")
+    val dists = userHome.resolve("wrapper/dists")
+    val bin = dists.resolve("gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    assertEquals(gradleDistributionDir(userHome, URI(gradleUrl)), bin)
+    // The hash is over the URL without its user information (Download.safeUri), so a credential
+    // in the URL changes nothing.
+    val withCredential = URI("https://user:pw@services.gradle.org/distributions/gradle-9.7.1-bin.zip")
+    assertEquals(gradleDistributionDir(userHome, withCredential), bin)
+    val all = URI("https://services.gradle.org/distributions/gradle-9.7.1-all.zip")
+    assertEquals(gradleDistributionDir(userHome, all), dists.resolve("gradle-9.7.1-all/62v79ucs7za836kmh1huc3s8x"))
+
+  test("the home is the one directory inside, provisioned; else a refusal naming what ./gradlew would fix"):
+    val dir = Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    val gradleHome = dir.resolve("gradle-9.7.1")
+    val executable = gradleHome.resolve("bin/gradle")
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome), _ == executable), Right(gradleHome))
+    val missing = Refusal.PrereqGradleDistributionMissing(gradleUrl, dir)
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq.empty, _ == executable), Left(missing))
+    assertEquals(gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome), _ => false), Left(missing))
+    assertEquals(
+      gradleDistributionHome(dir, URI(gradleUrl), _ => Seq(gradleHome, dir.resolve("other")), _ == executable),
+      Left(missing),
+    )
+    assert(wording(missing).contains("./gradlew --version"))
 
   // --------------------------------------------------------------------------
   // Maven
@@ -728,6 +807,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqJvmNotCoursier("/usr/bin/java"), Refusal.PrereqSbtNotCoursier(Paths.get("/usr/local/bin/sbt")),
       Refusal.PrereqMillBootstrapMissing, Refusal.PrereqMillVersionUnpinned,
       Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmNotSystem(None),
+      Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
+      Refusal.PrereqGradleDistributionMissing(gradleUrl, project),
       Refusal.PrereqMvnWrapperMissing, Refusal.PrereqMvnWrapperNotOnlyScript,
       Refusal.PrereqMvnDistributionIsMvnd(mvnUrl),
       Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),

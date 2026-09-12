@@ -108,9 +108,9 @@ unavailable because the artifact name has not been decided.
    in the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to anything other than its
    own provider; for `opencode` that is all the default providers.
-1. macOS only: insert `--run-on-host=sbt,mill,mvn` when the agent will run builds or tests: a
-   build inside the podman machine takes memory that all containers there share, and holds it
-   until the session ends.
+1. macOS only: insert `--run-on-host=sbt,mill,gradle,mvn` when the agent will run builds or
+   tests: a build inside the podman machine takes memory that all containers there share, and
+   holds it until the session ends.
 
 ### Running `<command>`
 
@@ -204,7 +204,7 @@ above, a device code or a code pasted back, need no redirect.
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
       --run-on-host=<programs>
-                         macOS only: sbt / mill / mvn can be run on the host. This gains
+                         macOS only: sbt / mill / gradle / mvn can be run on the host. This gains
                          nothing on Linux, and cannot be securely
                          implemented on Windows. Adds the sandbox-run-on-host
                          command, which runs those programs OUTSIDE
