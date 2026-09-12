@@ -543,7 +543,7 @@ object AgentEgressProxy:
             auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
           )
 
-          relayInspected(clientTls, originTls, host, head)
+          relayInspected(clientTls, originTls, head)
         finally closeQuietly(originTls)
 
       catch
@@ -556,10 +556,7 @@ object AgentEgressProxy:
 
         case ex: TruncatedResponse =>
           System.err.println(auditLine("error", host, method, target, s"relay: ${ex.getMessage}"))
-          // The head already reached the client, so there is no 502 to send; the abortive close
-          // (linger 0: RST, no clean TLS end) is what keeps the truncated body from reading as the whole.
-          try client.setSoLinger(true, 0)
-          catch case _: SocketException => ()
+          abortiveClose(client)
 
         case ex: BadRequest =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
@@ -576,18 +573,14 @@ object AgentEgressProxy:
     finally closeQuietly(clientTls)
 
   /*
-   * Up to and including the response head, an IOException is still reportable as a 502 and left
-   * to the caller — which is why the head is parsed here before a byte of it reaches the client:
-   * its framing is what tells a completed body from a truncated one. Once the head is forwarded
-   * there is no status to send; a body failure is logged here, except a framing violation, which
-   * escapes as TruncatedResponse for the caller's abortive close.
+   * Parse the final response's framing before forwarding its head, while an invalid head can
+   * still be reported as a 502. Body relay failures require TruncatedResponse's abortive close.
    */
   // Socket rather than SSLSocket: nothing here is TLS-specific — the sockets arrive already
   // inside the tunnel — and plain sockets are what lets the relay be tested on loopback pairs.
   def relayInspected(
     clientTls: Socket,
     originTls: Socket,
-    host: String,
     head: HttpRequestHead,
   ): Unit =
     val toOrigin = originTls.getOutputStream
@@ -621,18 +614,14 @@ object AgentEgressProxy:
       else response
 
     val response = finalResponseHead()
-    val framing = response.bodyFraming(head.method) // before the head is forwarded: still 502able
+    val framing = response.bodyFraming(head.method)
 
     toClient.write(response.toClientBytes)
     try
       forwardResponseBody(fromOrigin, toClient, framing)
       toClient.flush()
-      drainClient(clientTls)
-    catch
-      case ex: IOException =>
-        System.err.println(
-          auditLine("error", host, head.method, head.target, s"relay: ${ex.getMessage}"),
-        )
+    catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
+    drainClient(clientTls)
 
   val DrainTimeoutMillis = 2_000
 

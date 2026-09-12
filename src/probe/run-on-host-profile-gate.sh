@@ -129,10 +129,10 @@ emit() { # program
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # `env -i`, because the wrapper's environment is a closed set (RunOnHostSandbox.commandEnvironment;
 # run-on-host.md, "The command's lifetime and environment", has the table). A row passing on a variable
-# or a PATH entry production withholds would measure nothing. The proxy settings are the one omission: these rows
-# run without a proxy, the network rows measuring the denial itself. exec, because with_timeout
-# backgrounds this function and kills $!: without it that pid is a subshell and the timeout kill
-# would orphan the command instead of ending it.
+# or a PATH entry production withholds would invalidate the measurement. These rows run without a
+# proxy, with one temporary directory for clients and servers; network rows measure denial itself.
+# exec, because with_timeout backgrounds this function and kills $!: without it that pid is a
+# subshell and the timeout kill would orphan the command instead of ending it.
 command_env() { # agent-v1 command...
     cache=$1; shift
     account=$(id -un)
@@ -142,8 +142,8 @@ command_env() { # agent-v1 command...
         TMPDIR="$SESSION_TMP" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
         COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
         MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" GRADLE_USER_HOME="$gradle_user_home" \
-        JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
--Dsbt.global.base=$sbt_global -Dsbt.ivy.home=$ivy_home -Dmaven.repo.local=$m2_repository \
+        JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=\"$SESSION_TMP\" -Djava.util.prefs.userRoot=\"$SESSION_TMP\" \
+-Dsbt.global.base=\"$sbt_global\" -Dsbt.ivy.home=\"$ivy_home\" -Dmaven.repo.local=\"$m2_repository\" \
 -Daether.connector.http.useSystemProperties=true -Djava.net.preferIPv4Stack=true" \
         "$@"
 }
@@ -235,7 +235,7 @@ mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-d
 gradle_daemons() {
     for pid in $(pgrep -f -- 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null); do
         ps -wwE -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
-            | grep -qF -- "=-Djava.io.tmpdir=$command_root/" && printf '%s\n' "$pid"
+            | grep -qF -- "=-Djava.io.tmpdir=\"$command_root/" && printf '%s\n' "$pid"
     done
 }
 gate_gradle_daemons() {

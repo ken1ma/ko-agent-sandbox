@@ -47,7 +47,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Djava.io.tmpdir=/private/tmp/ko-agent-501/s"))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Djava.io.tmpdir=\"/private/tmp/ko-agent-501/s\""))
     // The sockets are the runtime's: where the broker's server bound them.
     assertEquals(environment("XDG_RUNTIME_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
@@ -58,9 +58,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=/cache/m2"))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
+    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
     // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
@@ -88,6 +88,17 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
     assert(!noFolder.contains("MILL_VERSION"))
+
+  test("a JVM property preserves spaces and embedded double quotes in its path value"):
+    assertEquals(jvmProperty("java.io.tmpdir", "/Users/a b/tmp"), "-Djava.io.tmpdir=\"/Users/a b/tmp\"")
+    val jvm = Path.of(sys.props("java.home"), "bin", "java").toString
+    val builder = ProcessBuilder(jvm, "-XshowSettings:properties", "-version")
+    builder.environment().put("JAVA_TOOL_OPTIONS", jvmProperty("java.io.tmpdir", "/Users/a b/c\"d"))
+    val process = builder.start()
+    process.getOutputStream.close()
+    val err = String(process.getErrorStream.readAllBytes(), UTF_8)
+    assertEquals(process.waitFor(), 0, err)
+    assert(err.contains("java.io.tmpdir = /Users/a b/c\"d"), err)
 
   test("a gradle command's registry is the launch's own, and its toolchain inventory the granted JDK"):
     val prereqs = RunOnHostPrereqs.CommandPrereqs(

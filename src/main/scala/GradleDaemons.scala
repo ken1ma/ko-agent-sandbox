@@ -45,12 +45,12 @@ object GradleDaemons:
 
   /** Whether a process's command line and initial environment, as `ps -wwE -o command=` prints
     * them on one line, carry the launch's temporary directory as the JVM option the command
-    * environment sets (RunOnHostSandbox.commandEnvironment): the whole token, first in
-    * `JAVA_TOOL_OPTIONS` and so prefixed by the variable's name, so a directory whose name
-    * extends this one is another launch's. */
+    * environment sets (RunOnHostSandbox.commandEnvironment): first in `JAVA_TOOL_OPTIONS` and so
+    * prefixed by the variable's name, and ended by the option's own closing quote, so a directory
+    * whose name extends this one is another launch's. */
   def carriesTmp(commandAndEnvironment: String, tmp: Path): Boolean =
-    val option = s"-Djava.io.tmpdir=$tmp"
-    commandAndEnvironment.split(' ').exists(token => token == option || token.endsWith(s"=$option"))
+    val option = RunOnHostSandbox.jvmProperty("java.io.tmpdir", tmp.toString)
+    s" $commandAndEnvironment ".contains(s" JAVA_TOOL_OPTIONS=$option ")
 
   /**
    * The daemons on the host started with the launch's environment, with their start times; the

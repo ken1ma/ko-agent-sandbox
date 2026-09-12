@@ -1267,7 +1267,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[IOException]:
-      relayInspected(client, origin, "docs.python.org", head)
+      relayInspected(client, origin, head)
     client.close()
     served.join()
     assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
@@ -1374,7 +1374,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, origin, "docs.python.org", head)
+    relayInspected(client, origin, head)
     client.close()
     served.join()
 
@@ -1394,8 +1394,67 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[TruncatedResponse]:
-      relayInspected(client, origin, "docs.python.org", head)
+      relayInspected(client, origin, head)
     served.join()
+
+  test("relayInspected reports origin resets in length-delimited and close-delimited bodies as TruncatedResponse"):
+    // A reset or a timeout is an IOException in every framing, not the EOF the framed relays
+    // detect; and for a close-delimited body EOF is completion, so the exception is the one
+    // signal of truncation there.
+    def resetAfter(headAndPartialBody: String): Unit =
+      val (client, clientPeer) = socketPair()
+      val (origin, originPeer) = socketPair()
+      val served = Thread.startVirtualThread: () =>
+        try
+          readHttpHeader(originPeer.getInputStream, 64 * 1024)
+          originPeer.getOutputStream.write(ascii(headAndPartialBody))
+          abortiveClose(originPeer)
+        catch case _: Exception => ()
+      clientPeer.shutdownOutput()
+      val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+      intercept[TruncatedResponse]:
+        relayInspected(client, origin, head)
+      served.join()
+      closeQuietly(client)
+      closeQuietly(clientPeer)
+    resetAfter("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf")
+    resetAfter("HTTP/1.1 200 OK\r\n\r\nhalf")
+
+  test("an abortive close makes a TLS client reject an incomplete close-delimited response"):
+    val (ca, caKey) = X509HelperTest.testCa(java.time.Instant.now(), days = 825)
+    val directory = java.nio.file.Files.createTempDirectory("abort-ca")
+    val (certificateFile, keyFile) = X509HelperTest.writePem(directory, "ca", ca, caKey)
+    val inspection = TlsInspection.issuing(certificateFile, keyFile)
+    val clientContext = javax.net.ssl.SSLContext.getInstance("TLS")
+    clientContext.init(null, X509HelperTest.trusting(ca).getTrustManagers, null)
+
+    def served(close: (java.net.Socket, java.net.Socket) => Unit): Either[IOException, String] =
+      val (clientRaw, proxyRaw) = socketPair()
+      val serving = Thread.startVirtualThread: () =>
+        try
+          val hello = TlsClientHello.read(proxyRaw.getInputStream, MaxClientHelloBytes)
+          val tls = inspection.accept(proxyRaw, hello.wireBytes, "docs.example")
+          tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\n\r\nhalf"))
+          tls.getOutputStream.flush()
+          close(proxyRaw, tls)
+        catch case _: Exception => ()
+      val tls = clientContext.getSocketFactory
+        .createSocket(clientRaw, "docs.example", 443, true)
+        .asInstanceOf[javax.net.ssl.SSLSocket]
+      try Right(String(tls.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1))
+      catch case ex: IOException => Left(ex)
+      finally
+        serving.join()
+        closeQuietly(tls)
+
+    // As a complete response ends: the TLS layer, then the socket.
+    assertEquals(
+      served((raw, tls) => { closeQuietly(tls); closeQuietly(raw) }),
+      Right("HTTP/1.1 200 OK\r\n\r\nhalf"),
+    )
+    // As runInspectedConnection ends a truncated one: the socket abortively, the TLS layer after.
+    val aborted = served((raw, tls) => { abortiveClose(raw); closeQuietly(tls) })
+    assert(aborted.isLeft, aborted)
 
   test("relayInspected answers Expect: 100-continue before the origin says anything"):
     val (client, clientPeer) = socketPair()
@@ -1419,7 +1478,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "Content-Length: 4\r\n\r\n",
       ),
     )
-    relayInspected(client, origin, "github.com", head)
+    relayInspected(client, origin, head)
     client.close()
     served.join()
 
@@ -1440,7 +1499,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, origin, "docs.python.org", head)
+    relayInspected(client, origin, head)
     client.close()
     served.join()
 
@@ -1480,7 +1539,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val (origin, originPeer) = socketPair()
       val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, origin, "docs.python.org", head)
+      relayInspected(client, origin, head)
       client.close()
       served.join()
       assertEquals(received.get.linesIterator.next(), requestLine, request)
@@ -1496,7 +1555,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val (origin, originPeer) = socketPair()
       val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, origin, "docs.python.org", head)
+      relayInspected(client, origin, head)
       client.close()
       served.join()
       assert(received.get.linesIterator.contains(forwarded), s"$sent: ${received.get}")

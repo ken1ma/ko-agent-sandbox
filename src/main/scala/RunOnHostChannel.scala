@@ -32,7 +32,9 @@ object RunOnHostChannel:
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running command is ended with SIGTERM, the
    * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
-   * never completes, expires on a deadline with no command started. The data FIFOs
+   * never completes, expires on a deadline with no command started. The shim bounds startup
+   * through opening both output streams, then separately the exit-status read, and exits 70 on
+   * either timeout. Waiting for the lock and draining command output have no deadline. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
    *

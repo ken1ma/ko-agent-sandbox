@@ -489,10 +489,9 @@ object HTTPHelper:
         throw IllegalStateException("request bodies cannot be close-delimited")
 
   /**
-   * The response-body relay, framing enforced: an origin EOF inside a declared length or an
-   * unterminated chunk sequence is TruncatedResponse — the caller must end the connection so the
-   * truncated body cannot read as the whole — never a quiet end. UntilClose is the one framing where EOF
-   * is the terminator.
+   * Premature EOF and invalid chunk framing require TruncatedResponse's abortive close.
+   * Other I/O failures reach relayInspected, which handles them across all framings; UntilClose
+   * accepts EOF as completion, so it depends on that caller to preserve timeouts and resets.
    */
   def forwardResponseBody(
     in: InputStream,
