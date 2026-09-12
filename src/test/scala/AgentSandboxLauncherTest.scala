@@ -1165,13 +1165,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains("Operation not permitted"), runOnHostSection)
     assert(runOnHostSection.replace('\n', ' ').contains("the last resort, not an alternative"), runOnHostSection)
     assert(runOnHostSection.replace('\n', ' ').contains("that suite alone runs in the container"), runOnHostSection)
+    assert(
+      runOnHostSection.replace('\n', ' ').contains("Under mill and gradle a build's processes can bind"),
+      runOnHostSection,
+    )
     assert(runOnHostSection.contains("never re-run in the container"), runOnHostSection)
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)
     val discoverable =
       appendedSection("live", "fuse", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
-    assert(discoverable.contains("--run-on-host=sbt,mill,mvn"), discoverable)
+    assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host command can write the project (the --run-on-host composition):
@@ -1254,7 +1258,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Some(Vector("sbt", "mill"))),
     )
     assertEquals(parseCommandLine(List("claude")).map(_.runOnHost), Right(None))
-    assert(parseCommandLine(List("--run-on-host=gradle")).swap.exists(_.contains("sbt, mill, mvn")))
+    assertEquals(
+      parseCommandLine(List("--run-on-host=gradle", "claude")).map(_.runOnHost),
+      Right(Some(Vector("gradle"))),
+    )
+    assert(parseCommandLine(List("--run-on-host=ant")).swap.exists(_.contains("sbt, mill, gradle, mvn")))
     assert(parseCommandLine(List("--run-on-host=")).isLeft)
     assert(parseCommandLine(List("--run-on-host=sbt,sbt")).swap.exists(_.contains("twice")))
     assert(

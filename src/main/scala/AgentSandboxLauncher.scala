@@ -1906,7 +1906,8 @@ object AgentSandboxLauncher:
            |against different caches over the same `target/`, so a container build costs the host a
            |rebuild or the symlink cleanup described above. Under sbt and mvn the host grants no
            |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
-           |suite alone runs in the container. Under mill a build's processes can bind listeners.
+           |suite alone runs in the container. Under mill and gradle a build's processes can bind
+           |listeners.
            |Any other host command that fails or is refused is reported to the user,
            |never re-run in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
@@ -1915,11 +1916,11 @@ object AgentSandboxLauncher:
         s"""
            |## Run on host
            |
-           |`sandbox-run-on-host` is absent from this session. If sbt, `mill` or Maven builds here
-           |are slow, or the machine is short on memory, tell the user: relaunching with
-           |`--run-on-host=sbt,mill,mvn` runs them on the host — memory reclaimed on exit rather than
-           |left with the podman machine, at host speed, and without the symlink cleanup that
-           |switching between container and host commands needs, as described above.
+           |`sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
+           |builds here are slow, or the machine is short on memory, tell the user: relaunching with
+           |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host — memory reclaimed on exit
+           |rather than left with the podman machine, at host speed, and without the symlink cleanup
+           |that switching between container and host commands needs, as described above.
            |""".stripMargin
       else ""
     // `allow-unless-denied` inverts the default's reading of the lines: what is listed is the

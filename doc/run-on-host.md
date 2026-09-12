@@ -1,12 +1,12 @@
-# Run on Host — sbt, `mill` and Maven commands outside the container
+# Run on Host — sbt, `mill`, Gradle and Maven commands outside the container
 
-`--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill` and Maven
-commands to the host, where each runs under a Seatbelt profile of its own.
+`--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill`, Gradle
+and Maven commands to the host, where each runs under a Seatbelt profile of its own.
 
     ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
     │                                                                                    │
     │  ┌─ sandbox container (inside the podman machine) ────────────────────────────┐    │
-    │  │ agent → sandbox-run-on-host sbt / mill / mvn                               │    │
+    │  │ agent → sandbox-run-on-host sbt / mill / gradle / mvn                      │    │
     │  └────────────────────────────────────────────────────────────────────────────┘    │
     │                       │  command       ↑  stdout, stderr, and exit status          │
     │                       ↓                │                                           │
@@ -17,7 +17,7 @@ commands to the host, where each runs under a Seatbelt profile of its own.
     │                       ↓                                     ↓                      │
     │  ┌─ build processes: Seatbelt profiles ─────┐    ┌─ proxy: Seatbelt profile ────┐  │
     │  │ sbt client → sbt server                  │    │ listens on 127.0.0.1         │  │
-    │  │ mill client → mill daemon                │    │ allows only listed hosts     │  │
+    │  │ mill or gradle client → its daemon       │    │ allows only listed hosts     │  │
     │  │ Maven starts a JVM for each command      │    │ and their permitted ports    │  │
     │  │ dependency downloads                     ├───→│                              │  │
     │  │ writes project files, except             │    │ cannot read project or cache │  │
@@ -25,10 +25,11 @@ commands to the host, where each runs under a Seatbelt profile of its own.
     │  │ also writes its caches and temp files    │    │                              │  │
     │  └──────────────────────────────────────────┘    └──────────────────────────────┘  │
     │                                                             │                      │
-    │  One sbt server or mill daemon per build directory,         │                      │
-    │  reused across this sandbox session's commands.             │                      │
-    │  sbt/mill proxies also stay running between commands;       │                      │
-    │  each Maven command starts and stops its own proxy.         │                      │
+    │  One sbt server or mill daemon per build directory, and     │                      │
+    │  Gradle's own daemons, reused across this session's         │                      │
+    │  commands. sbt/mill/gradle proxies also stay running        │                      │
+    │  between commands; each Maven command starts and stops      │                      │
+    │  its own proxy.                                             │                      │
     │                                                           HTTPS                    │
     └─────────────────────────────────────────────────────────────┼──────────────────────┘
                                                                   ↓
@@ -64,9 +65,11 @@ sbt command leaves its server warm. A `mill` start is also paid after a cancel, 
 daemon as stock Mill does, and after an edit to what Mill restarts the daemon on — its version
 pin, `mill-jvm-opts`, `mill-repositories`, or anything in `build.mill.yaml`, the header Mill
 reads them from — and costs the starter's connect retry, ten seconds, on top of the daemon's own
-start ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens"). Maven runs once,
-so every invocation starts a JVM and loads the build, while the on-disk state stays warm: the
-caches, and the incremental-compile outputs under `target/`.
+start ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens"). Gradle's daemon
+is Gradle's own ("Gradle"): a start is paid by the first command and after Gradle's idle exit,
+three hours, and a client attaches to a compatible daemon in the launch's own registry.
+Maven runs once, so every invocation starts a JVM and loads the build, while the on-disk state
+stays warm: the caches, and the incremental-compile outputs under `target/`.
 
 Out of scope, deliberately: arbitrary build programs (`scalafmt` and ad-hoc `scala` stay
 in the container); arbitrary globally installed JVMs — Homebrew, SDKMAN and asdf JVMs included;
@@ -74,9 +77,8 @@ direct Internet access from the command; any automatic expansion of permissions 
 fails, and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`, user git
 credentials, SSH credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell`
 and `sbtn`'s interactive modes; mounting the container's workspace at its host path (`TODO.md`,
-"same-path mounting"); Gradle, whose processes talk to each other over ports of the kernel's
-choosing (`TODO.md`, "Gradle"). The container keeps its toolchain: host commands are the fast
-path, not a replacement, and a session without `--run-on-host` builds in the container as before.
+"same-path mounting"). The container keeps its toolchain: host commands are the fast path, not a
+replacement, and a session without `--run-on-host` builds in the container as before.
 
 ## Why only macOS
 
@@ -136,12 +138,12 @@ The command's only egress is its proxy (below); Seatbelt permits connections to 
 — at every address of this host, the proxy listening on the loopback one — and nothing else,
 with UNIX-domain sockets only inside the command's temporary directory and, for an sbt client,
 the broker's, where its server listens. A port grant reaches this host's other services the same
-way, so no other port is granted, and no listener but the mill daemon's: a test suite
-that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host under sbt and Maven
-and runs in the container, while under `mill` it runs on the host, since the daemon's listener
-grant covers every port at every address of this host and everything the daemon forks inherits
-it (`SECURITY.md` "Run on host" states that cost). Per program (`SeatbeltProfile.Network` is the
-typed input the dispatch shows):
+way, so no other port is granted, and no listener but the mill daemon's and Gradle's: a test
+suite that binds one — the proxy's wire-relay tests do — gets `EPERM` on the host under sbt and
+Maven and runs in the container, while under `mill` and `gradle` it runs on the host, since the
+daemon's listener grant covers every port at every address of this host and everything the
+daemon forks inherits it (`SECURITY.md` "Run on host" states that cost). Per program
+(`SeatbeltProfile.Network` is the typed input the dispatch shows):
 
 | process | network |
 |---|---|
@@ -149,6 +151,7 @@ typed input the dispatch shows):
 | sbt client | the same under the command's `tmp/`, plus connects under the broker's `tmp/` |
 | `mill` daemon | the proxy's port; listeners, any port, any address of this host (below) |
 | `mill` client | the proxy's port, and the daemon's one port |
+| `gradle`, client and daemon | the proxy's port; listeners and connects on any port of this host |
 | Maven | the proxy's port; UNIX sockets under the command's `tmp/` |
 
 Six measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
@@ -179,8 +182,11 @@ bypass via direct sockets, and the gate's bypass rows measure it.
 
 Every command's proxy allows one host on its own: the program's Maven Central
 (`RunOnHostPrereqs.centralHost`). For sbt and `mill`, which resolve through Coursier, that is
-`repo1.maven.org`; for Maven, whose super POM names the alias, it is `repo.maven.apache.org`.
-Each program resolves against its own host and never against the other's. `repo.scala-sbt.org` is
+`repo1.maven.org`; for Gradle, whose `mavenCentral()` names the alias, and Maven, whose super POM
+does, it is `repo.maven.apache.org`. Each program resolves against its own host and never against
+the other's. A Gradle build that applies a plugin by id resolves it from `plugins.gradle.org`,
+which redirects artifact downloads to `plugins-artifacts.gradle.org`; a rule file naming the
+plugin portal names both. `repo.scala-sbt.org` is
 deliberately absent: it hosts the Ivy-style plugin repository and is not
 part of sbt's bootstrap — an uncached sbt version named in `project/build.properties` resolves from
 Maven Central. A command that needs more adds it explicitly ("Configuration", below); nothing is
@@ -202,12 +208,12 @@ proxy's earlier denials are not this command's. It never adds the host itself.
 
 ## Program prerequisites
 
-The rule that explains all three programs: **the user provisions the executable; the sandbox fetches
+The rule that explains all four programs: **the user provisions the executable; the sandbox fetches
 only artifacts.** sbt's comes from `cs install sbt`, and everything else it needs is a jar the JDK
 reads, fetched into the writable run-on-host cache through the proxy. `mill`'s executable *is* the
 fetched artifact — so it is provisioned, not fetched, and a version bump
 is an explicit host update rather than an automatic update performed by the build definition.
-Maven's is the distribution the project's wrapper unpacked on the host.
+Gradle's and Maven's are the distributions the projects' wrappers unpacked on the host.
 `RunOnHostPrereqs.scala` validates all of the below before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
@@ -375,6 +381,55 @@ own again. A daemon whose registered leader was killed on its own — the spawn,
 no group the scavenger can prove and nothing a portfile attributes; it exits on Mill's idle
 timeout.
 
+### Gradle
+
+The project's own wrapper properties, `<PROJECT>/gradle/wrapper/gradle-wrapper.properties`; a
+`gradle` installed globally is not used. Run `./gradlew --version` once in a host terminal, and
+again whenever `distributionUrl` changes: that run downloads Gradle into
+`~/.gradle/wrapper/dists`, and the command is granted that one Gradle read-only — not the whole
+`dists` directory, which holds every Gradle the user ever ran a wrapper for. If the wrapper has
+not downloaded it yet, the command is refused, and the refusal says what to run.
+
+The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
+would download. The wrapper computes the directory exactly as Gradle's wrapper does
+(`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.7.1's `PathAssembler`): `distributionUrl`
+read as `java.util.Properties` reads the file, a value without a scheme resolved as a file
+against the properties file's directory, the URL's file name without its extension, then the
+URL's MD5 as a base-36 number, under `$GRADLE_USER_HOME/wrapper/dists`, or
+`~/.gradle/wrapper/dists` when `GRADLE_USER_HOME` is unset in the launcher's environment; the
+home is the one directory inside. `distributionBase` and `distributionPath` must be the
+wrapper's defaults, and the project's `gradle.properties` must not set
+`systemProp.gradle.user.home`: each moves the distribution to a place the project chooses, and
+the executable is the user's to provision.
+
+The command's own `GRADLE_USER_HOME` is under the run-on-host cache ("The run-on-host cache"), so
+Gradle's caches are the project's own. The daemon registry is the launch's own, not the home's:
+`org.gradle.daemon.registry.base` on the command line names a directory under the broker's
+`tmp/`, which every Gradle process of the launch is granted and which ends with the launch
+(`RunOnHostSandbox.gradleCommand`). `gradle --stop` stops every daemon in a registry, whatever
+its JVM (`DaemonStopClient`), so a registry under the per-project home would let one launch's
+`--stop` end another launch's builds on the project. Attaching is the launch's own either way:
+the client's `java.io.tmpdir`, the broker's `tmp/`, is among the immutable properties Gradle's
+daemon compatibility compares (`InitialPropertiesConverter`, `DaemonCompatibilitySpec`), so a
+daemon started under another launch is never compatible. Your own daemons under `~/.gradle` are
+in neither registry.
+
+The daemon is Gradle's: the first command's client starts it under the command's profile, and
+later commands attach to it through Gradle's own matching, inside the profile; a client
+disconnected mid-build cancels the build, and a daemon still busy ten seconds later stops itself
+(`DaemonStateCoordinator`, `WatchForDisconnection`). The broker does not record the daemon, so
+it outlives the launch until Gradle's idle timeout, three hours, confined and holding nothing
+of the launch (`plan-host-build-daemons-and-gradle.md`, Phase 2, step 9); its registry directory
+goes with the broker's `tmp/`, so no later launch finds it.
+
+Three properties on the command line close the toolchain inventory to the launch's JDK —
+`org.gradle.java.installations.auto-detect=false`, `auto-download=false` and `paths=<JDK>` —
+where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
+naming it rather than meeting a denial. Gradle 9.7.1 is the release the plan names; older lines
+are out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a
+JDK it cannot run on. The gate has no Gradle rows, so nothing of this is measured under the
+profile (`plan-host-build-daemons-and-gradle.md`, Phase 2, step 9).
+
 ### Maven
 
 The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally is not used. Run
@@ -440,9 +495,10 @@ without a proxy. What the wrapper supplies:
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
 | `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
-| `TMPDIR` | `<command directory>/tmp`; under `mill` the broker's `tmp/` |
+| `TMPDIR` | `<command directory>/tmp`; under `mill` and `gradle` the broker's `tmp/` |
 | `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | the broker's `tmp/`, or the command's under Maven |
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
+| `GRADLE_USER_HOME` | `<run-on-host cache>/gradle-user-home` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
@@ -465,14 +521,15 @@ The `java -D` properties:
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
 `<command directory>` is this invocation's directory under the wrapper root above — the broker's
-sbt server, and every `mill` process, have the broker's `tmp/` for every row naming one — `<cache
-home>` is
+sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every row naming
+one — `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<run-on-host cache>` the
 project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The
-run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home and
-Maven's local repository are set for every command; a command of another program reads none of them,
-and the wrapper neither creates nor grants them for it. The mill download folder, the one holding
-the granted executable, is set for the other programs the same way, and they ignore it.
+run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home,
+Gradle's user home and Maven's local repository are set for every command; a command of another
+program reads none of them, and the wrapper neither creates nor grants them for it. The mill
+download folder, the one holding the granted executable, is set for the other programs the same
+way, and they ignore it. Gradle's toolchain properties are its command line's ("Gradle").
 
 Why the rows are what they are. The host's `TMPDIR` names a directory the command is not granted,
 so the command's replaces it for forked shell programs, as `java.io.tmpdir` does for JVMs. Under
@@ -482,7 +539,8 @@ daemon's profile, which grants the broker's `tmp/` and not the command's, yet ge
 environment (`RunModule.scala`, `ctx.env`); and with one directory the starter's environment and
 every client's are one map, so an option file Mill interpolates from the environment
 (`MillProcessLauncher.loadMillConfig`) yields the same value in both, and a client never meets a
-fingerprint mismatch of the wrapper's own making. `HOME` is
+fingerprint mismatch of the wrapper's own making; under `gradle` for the first reason, the daemon
+serving later commands with the profile and environment it was started with. `HOME` is
 passed because the programs' scripts derive paths from it, and nothing under it is granted. `--env`
 is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
 pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
@@ -649,10 +707,11 @@ testing justifies.
 
 ## The command's egress proxy
 
-The proxy is a process from the same codebase as the container's. Under sbt and `mill` it is the
-broker's: started in the broker's session when the first command of that program arrives from a
-build directory — the request's working directory, whose `project/target/active.json` or `out/`
-the build owns — with the program's rule file as read then, and kept for the commands that
+The proxy is a process from the same codebase as the container's. Under sbt, `mill` and `gradle`
+it is the broker's: started in the broker's session when the first command of that program
+arrives from a build directory — the request's working directory, whose
+`project/target/active.json` or `out/` the build owns — with the program's rule file as read
+then, and kept for the commands that
 follow from that directory; a request from another build directory gets a proxy of its own, and
 both stay. A proxy that is gone is replaced, with its server or daemon, before the next command.
 Maven's is the command's, started by the wrapper in the command's session and ended with it, as
@@ -747,7 +806,8 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 
 Agent-invoked commands get their own run-on-host cache root, per project:
 `${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`. It holds Coursier's
-`v1`, sbt's global base and Ivy home, and Maven's local repository under one directory, so
+`v1`, sbt's global base and Ivy home, Gradle's user home and Maven's local repository under one
+directory, so
 `--reset-run-on-host` is a single removal, `--reset` takes it with the project's other state, and
 a further cache kind can join without moving anything. It is discovered exactly as the launcher's
 state root is, so the two answer alike on one machine; a relative override is refused because it
@@ -766,8 +826,9 @@ belongs.
 
 The command reaches its Coursier cache through one variable: the wrapper sets `COURSIER_CACHE` to
 the `v1` directory, which the sbt script, sbt's own resolution and Coursier all honour. sbt's own
-two caches and Maven's local repository travel as the `java -D` properties above, which sbt's
-launcher and Maven's CLI read.
+two caches travel as the `java -D` properties above, which sbt's launcher reads, Gradle's user
+home as `GRADLE_USER_HOME`, and Maven's local repository as the `java -D` property Maven's CLI
+reads.
 
 ## Sources
 
@@ -786,6 +847,15 @@ launcher and Maven's CLI read.
   https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   https://www.scala-sbt.org/1.x/docs/sbt-server.html
+- Gradle 9.7.1's wrapper — the distribution directory, the properties it reads, the user home:
+  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java,
+  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java,
+  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java,
+  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+- Gradle toolchains — auto-detection, auto-provisioning and `installations.paths`:
+  https://docs.gradle.org/current/userguide/toolchains.html
+- Gradle's configuration precedence — a `-D` over every `gradle.properties`:
+  https://docs.gradle.org/current/userguide/build_environment.html
 - Maven Wrapper — the wrapper types and `MAVEN_USER_HOME`: https://maven.apache.org/wrapper/
 - Surefire fork communication — process pipes by default, TCP by configuration:
   https://maven.apache.org/surefire/maven-surefire-plugin/examples/process-communication.html

@@ -26,14 +26,17 @@ object RunOnHostSandbox:
   case class Assembled(
     prereqs: CommandPrereqs,
     /** The unpacked distribution the executable runs from: sbt's in the Coursier archive cache,
-      * Maven's under the wrapper's `dists`; mill's executable is one file and has none. */
+      * Gradle's and Maven's under their wrappers' `dists`; mill's executable is one file and has
+      * none. */
     distribution: Option[Path],
-    /** The per-project sbt global base and Ivy home, and Maven's local repository: created and
-      * granted for the program that reads each (`sbtCachesGranted`, `m2RepositoryGranted`), and for
-      * the other programs paths nothing reads, named all the same so the environment has the same
-      * variable names for every program — as `millDownloads` is for sbt. */
+    /** The per-project sbt global base and Ivy home, Gradle's user home and Maven's local
+      * repository: created and granted for the program that reads each (`sbtCachesGranted`,
+      * `gradleUserHomeGranted`, `m2RepositoryGranted`), and for the other programs paths nothing
+      * reads, named all the same so the environment has the same variable names for every program
+      * — as `millDownloads` is for sbt. */
     sbtGlobal: Path,
     ivyHome: Path,
+    gradleUserHome: Path,
     m2Repository: Path,
     /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
       * command is granted, and what its build script is pointed at (commandEnvironment). */
@@ -44,6 +47,7 @@ object RunOnHostSandbox:
   ):
     def sbtGlobalGranted: Option[Path] = Option.when(prereqs.program == Program.Sbt)(sbtGlobal)
     def ivyHomeGranted: Option[Path] = Option.when(prereqs.program == Program.Sbt)(ivyHome)
+    def gradleUserHomeGranted: Option[Path] = Option.when(prereqs.program == Program.Gradle)(gradleUserHome)
     def m2RepositoryGranted: Option[Path] = Option.when(prereqs.program == Program.Mvn)(m2Repository)
     /** The persistent caches an sbt command writes besides Coursier's. */
     def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
@@ -74,6 +78,19 @@ object RunOnHostSandbox:
     reading(path)(Option.when(Files.exists(path))(Files.readString(path, UTF_8)))
 
   private def readBytes(path: Path): Array[Byte] = reading(path)(Files.readAllBytes(path))
+
+  /** Absent is None. ISO-8859-1, as `java.util.Properties` reads a stream. */
+  private def readLatin1(path: Path): Option[String] =
+    reading(path)(Option.when(Files.exists(path))(String(Files.readAllBytes(path), ISO_8859_1)))
+
+  /** The directories directly inside `path`; none when it is absent. */
+  private def directories(path: Path): Seq[Path] =
+    reading(path):
+      if !Files.isDirectory(path) then Seq.empty
+      else
+        val stream = Files.list(path)
+        try stream.filter(Files.isDirectory(_)).toArray(Array.ofDim[Path](_)).toSeq
+        finally stream.close()
 
   /** Steps 1–5: everything the profile derives authority from, decided before anything runs.
     * `buildDirectory` is where the command runs, the project or a directory beneath it: mill's
@@ -123,6 +140,19 @@ object RunOnHostSandbox:
             provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
             real <- realPath(provisioned).toRight(s"$provisioned vanished")
           yield (real, None, Some(launcher))
+        case Program.Gradle =>
+          val properties = project.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
+          for
+            text <- context("gradle wrapper")(readLatin1(properties).toRight(Refusal.PrereqGradleWrapperMissing))
+            url <- context("gradle wrapper")(
+              gradleDistributionUrl(text, properties.getParent, readLatin1(project.resolve("gradle.properties"))),
+            )
+            userHome <- gradleUserHome(env).toRight("no Gradle user home")
+            home <- context("gradle distribution")(
+              gradleDistributionHome(gradleDistributionDir(userHome, url), url, directories, isExecutableFile),
+            )
+            real <- realPath(home).toRight(s"$home vanished")
+          yield (real.resolve("bin").resolve("gradle"), Some(real), None)
         case Program.Mvn =>
           for
             wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
@@ -150,6 +180,7 @@ object RunOnHostSandbox:
         if program == owner then Files.createDirectories(dir).toRealPath() else dir
       sbtGlobal = programCache(Program.Sbt, sbtGlobalOf(cacheRoot, projectId))
       ivyHome = programCache(Program.Sbt, ivyHomeOf(cacheRoot, projectId))
+      gradleUserHome = programCache(Program.Gradle, gradleUserHomeOf(cacheRoot, projectId))
       m2Repository = programCache(Program.Mvn, m2RepositoryOf(cacheRoot, projectId))
     yield Assembled(
       CommandPrereqs(
@@ -162,6 +193,7 @@ object RunOnHostSandbox:
       distribution,
       sbtGlobal,
       ivyHome,
+      gradleUserHome,
       m2Repository,
       millDownloadDir(env),
       millLauncher,
@@ -762,9 +794,12 @@ object RunOnHostSandbox:
    * another launcher. On a cancel the broker follows each tool: a cancelled sbt command's server
    * is not retired, since stock sbt's disconnect cancels the exec and leaves the server, and a
    * cancelled mill command's daemon shuts itself down, as stock Mill's does on a disconnect
-   * mid-command, so the next mill command starts one. Maven is never here: it runs once and
-   * exits, its proxy with the command. The gate's entry holds one of these over the command's
-   * own session for its one command, so the one lifecycle has two callers and no second owner.
+   * mid-command, so the next mill command starts one. Gradle's runtime is its proxy alone: the
+   * client starts and matches the daemon under the broker's own user home, inside the profile,
+   * and the daemon is not recorded (plan-host-build-daemons-and-gradle.md, step 9). Maven is
+   * never here: it runs once and exits, its proxy with the command. The gate's entry holds one of
+   * these over the command's own session for its one command, so the one lifecycle has two
+   * callers and no second owner.
    *
    * A broker signals only its own servers and daemons (SECURITY.md "Run on host"): when another
    * launch owns the build directory's, this broker refuses rather than end it. `scavenge` runs
@@ -846,6 +881,11 @@ object RunOnHostSandbox:
             val why = if serverLives then "the portfile no longer names its server" else "its server is gone"
             log(s"retired ${serverRecord(hash).getFileName}, $why: ${discard(serverRecord(hash))}")
             startServer(current, arguments).map(_ => Some(current.runtime))
+        case Some(current) if lives(proxyRecord(program, hash)) && program == Program.Gradle =>
+          // The runtime is the proxy: Gradle's client matches a daemon under the broker's own
+          // user home or starts one, inside the profile (plan-host-build-daemons-and-gradle.md,
+          // "Revision — Phase 2 scope").
+          Right(Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) =>
           // The client is confined to the daemon's port: reuse only the daemon proved at its
           // start, alive with its start time, under the configuration it was started from.
@@ -891,9 +931,9 @@ object RunOnHostSandbox:
             port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
             made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog))
             current <- program match
-              case Program.Sbt  => startServer(made, arguments).map(_ => made)
-              case Program.Mill => daemonConfig(buildDirectory).flatMap(startDaemon(made, _))
-              case Program.Mvn  => Right(made)
+              case Program.Sbt                  => startServer(made, arguments).map(_ => made)
+              case Program.Mill                 => daemonConfig(buildDirectory).flatMap(startDaemon(made, _))
+              case Program.Gradle | Program.Mvn => Right(made)
           yield current
         catch case NonFatal(ex) => Left(s"creating the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
       started match
@@ -1049,9 +1089,9 @@ object RunOnHostSandbox:
       * of the groups. */
     private def discardRuntime(program: Program, hash: String, proxyLog: Path): String =
       val attached = program match
-        case Program.Sbt  => Some(s"server ${discard(serverRecord(hash))}")
-        case Program.Mill => Some(s"daemon ${discard(daemonRecord(hash))}")
-        case Program.Mvn  => None
+        case Program.Sbt                  => Some(s"server ${discard(serverRecord(hash))}")
+        case Program.Mill                 => Some(s"daemon ${discard(daemonRecord(hash))}")
+        case Program.Gradle | Program.Mvn => None
       val proxy = s"proxy ${discard(proxyRecord(program, hash))}"
       try
         Files.deleteIfExists(proxyLog)
@@ -1132,6 +1172,7 @@ object RunOnHostSandbox:
           distribution = assembled.distribution,
           sbtGlobal = assembled.sbtGlobalGranted,
           ivyHome = assembled.ivyHomeGranted,
+          gradleUserHome = assembled.gradleUserHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = start.runtime.proxyPort,
           runtime = authority,
@@ -1157,8 +1198,8 @@ object RunOnHostSandbox:
           builder.environment.putAll(
             commandEnvironment(
               name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-              assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, session.tmp, session.tmp,
-              start.runtime.proxyPort, System.getProperty("user.name"),
+              assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
+              session.tmp, session.tmp, start.runtime.proxyPort, System.getProperty("user.name"),
             ).asJava,
           )
           Right(builder.start())
@@ -1228,7 +1269,8 @@ object RunOnHostSandbox:
         case Program.Mill =>
           runtime.daemonPort.map(SeatbeltProfile.Network.MillClient(_))
             .toRight("the mill runtime names no daemon port")
-        case Program.Mvn => Right(SeatbeltProfile.Network.ProxyOnly)
+        case Program.Gradle => Right(SeatbeltProfile.Network.Gradle)
+        case Program.Mvn    => Right(SeatbeltProfile.Network.ProxyOnly)
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
           prereqs = assembled.prereqs,
@@ -1236,6 +1278,7 @@ object RunOnHostSandbox:
           distribution = assembled.distribution,
           sbtGlobal = assembled.sbtGlobalGranted,
           ivyHome = assembled.ivyHomeGranted,
+          gradleUserHome = assembled.gradleUserHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = runtime.proxyPort,
           runtime = authority,
@@ -1350,13 +1393,17 @@ object RunOnHostSandbox:
    * command's own `tmp/` would be denied there; and with one directory the starter's environment
    * and every client's are one map, so an option file Mill interpolates from the environment
    * (`MillProcessLauncher.loadMillConfig`) yields the same value in both, and a client never meets
-   * a fingerprint mismatch of the wrapper's own making. Under Maven the command's own.
+   * a fingerprint mismatch of the wrapper's own making. Under Gradle the broker's too, for the
+   * first reason: the daemon the first command's client starts serves the commands that follow
+   * with the profile and environment it was started with, so what it writes must be a directory
+   * every later command's profile grants and no command's end removes. Under Maven the command's
+   * own.
    */
   def temporaryDirectories(program: Program, sessionTmp: Path, runtimeTmp: Path): (Path, Path) =
     program match
-      case Program.Sbt  => (sessionTmp, runtimeTmp)
-      case Program.Mill => (runtimeTmp, runtimeTmp)
-      case Program.Mvn  => (sessionTmp, sessionTmp)
+      case Program.Sbt                   => (sessionTmp, runtimeTmp)
+      case Program.Mill | Program.Gradle => (runtimeTmp, runtimeTmp)
+      case Program.Mvn                   => (sessionTmp, sessionTmp)
 
   private def runCommand(
     session: Session,
@@ -1384,6 +1431,7 @@ object RunOnHostSandbox:
       // MILL_VERSION names; the launcher attaches to the daemon on the one port the profile admits.
       case Program.Mill =>
         buildDirectory.resolve("mill").toString +: commandArgs
+      case Program.Gradle => gradleCommand(prereqs, tmp) ++ commandArgs
       // The distribution's own `mvn`, not the project's `mvnw` (run-on-host.md "Maven");
       // --batch-mode as sbt's -batch.
       case Program.Mvn =>
@@ -1404,8 +1452,8 @@ object RunOnHostSandbox:
     builder.environment.putAll(
       commandEnvironment(
         name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-        assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, socketDir,
-        runtime.proxyPort, System.getProperty("user.name"),
+        assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
+        tmp, socketDir, runtime.proxyPort, System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -1413,6 +1461,27 @@ object RunOnHostSandbox:
     // (RunOnHostSession), so the answer is the exit file, never the spawn's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
+
+  /**
+   * The distribution's own `gradle`, not the project's `gradlew` (run-on-host.md "Gradle"), with
+   * its settings on the command line, where a `-D` outranks every gradle.properties. The daemon
+   * registry is the launch's own, under the broker's `tmp/`, which every Gradle process of the
+   * launch is granted and which ends with the launch: `gradle --stop` stops every daemon in the
+   * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-project user
+   * home would let one launch's `--stop` end another launch's builds on the project. Attaching
+   * is already the launch's own: the client's `java.io.tmpdir`, the broker's `tmp/`, is among the
+   * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
+   * `DaemonCompatibilitySpec`). The toolchain inventory is closed to the JDK the profile grants,
+   * so a project asking for another toolchain fails naming it, not by a denial.
+   */
+  def gradleCommand(prereqs: CommandPrereqs, tmp: Path): Seq[String] =
+    Seq(
+      prereqs.executable.toString,
+      s"-Dorg.gradle.daemon.registry.base=${tmp.resolve("gradle-daemon")}",
+      "-Dorg.gradle.java.installations.auto-detect=false",
+      "-Dorg.gradle.java.installations.auto-download=false",
+      s"-Dorg.gradle.java.installations.paths=${prereqs.jdkHome}",
+    )
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
@@ -1442,6 +1511,7 @@ object RunOnHostSandbox:
     prereqs: CommandPrereqs,
     sbtGlobal: Path,
     ivyHome: Path,
+    gradleUserHome: Path,
     m2Repository: Path,
     millDownloads: Option[Path],
     // The launcher version a mill command's bootstrap runs, `<v>-jvm`; None for the other programs.
@@ -1493,6 +1563,7 @@ object RunOnHostSandbox:
       "XDG_RUNTIME_DIR" -> socketDir.toString,
       "SBT_GLOBAL_SERVER_DIR" -> socketDir.toString,
       "COURSIER_CACHE" -> prereqs.coursierV1.toString,
+      "GRADLE_USER_HOME" -> gradleUserHome.toString,
       "USER" -> userName,
       "LOGNAME" -> userName,
     ) ++

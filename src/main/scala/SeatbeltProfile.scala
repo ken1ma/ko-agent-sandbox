@@ -96,12 +96,16 @@ object SeatbeltProfile:
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
     * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
-    * MillDaemons). Measured: src/probe/run-on-host-broker-session.sh L1–L4, G1, G9, G10. */
+    * MillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
+    * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
+    * client starts the daemon itself, so one profile serves both. Measured:
+    * src/probe/run-on-host-broker-session.sh L1–L4, G1, G7–G10. */
   enum Network:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
     case MillDaemon
     case MillClient(daemonPort: Int)
+    case Gradle
 
   case class ProfileInputs(
     prereqs: CommandPrereqs,
@@ -109,6 +113,7 @@ object SeatbeltProfile:
     distribution: Option[Path],
     sbtGlobal: Option[Path],
     ivyHome: Option[Path],
+    gradleUserHome: Option[Path],
     m2Repository: Option[Path],
     proxyPort: Int,
     runtime: RuntimeAuthority,
@@ -125,14 +130,16 @@ object SeatbeltProfile:
     // Tests write and run stubs in the project and the command's temporary directory. Children
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
-    val readWrite = Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.m2Repository
+    val readWrite =
+      Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.gradleUserHome ++ inputs.m2Repository
     val serverTmp = inputs.network match
-      case Network.SbtClient(tmp)                                    => Some(tmp)
-      case Network.ProxyOnly | Network.MillDaemon | Network.MillClient(_) => None
+      case Network.SbtClient(tmp) => Some(tmp)
+      case _                      => None
     val networkProgram = inputs.network match
       case Network.ProxyOnly                          => None
       case Network.SbtClient(_)                       => Some(Program.Sbt)
       case Network.MillDaemon | Network.MillClient(_) => Some(Program.Mill)
+      case Network.Gradle                             => Some(Program.Gradle)
     val daemonPort = inputs.network match
       case Network.MillClient(port) => Some(port)
       case _                        => None
@@ -146,6 +153,10 @@ object SeatbeltProfile:
           "an sbt profile needs the distribution the sbt script execs; without it the command cannot find" +
             " sbt-launch.jar",
         )
+      case _ if program == Program.Gradle && inputs.distribution.isEmpty =>
+        Left("a gradle profile needs the distribution its gradle runs from; without it the command cannot find lib/")
+      case _ if program == Program.Gradle && inputs.gradleUserHome.isEmpty =>
+        Left("a gradle profile needs the user home it grants; without it every cache is a denial")
       case _ if program == Program.Mvn && inputs.distribution.isEmpty =>
         Left("an mvn profile needs the distribution its mvn runs from; without it the command cannot find lib/")
       case _ if program == Program.Sbt && inputs.sbtGlobal.isEmpty =>
@@ -164,6 +175,8 @@ object SeatbeltProfile:
         Left(s"a ${program.name} profile has no sbt global base to grant")
       case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
         Left(s"a ${program.name} profile has no Ivy home to grant")
+      case _ if program != Program.Gradle && inputs.gradleUserHome.isDefined =>
+        Left(s"a ${program.name} profile has no Gradle user home to grant")
       case _ if program != Program.Mvn && inputs.m2Repository.isDefined =>
         Left(s"a ${program.name} profile has no Maven local repository to grant")
       case Some(bad) => Left(invalidPathReason(bad))
@@ -235,6 +248,13 @@ object SeatbeltProfile:
           case Network.MillClient(port) =>
             lines += ";; The broker's mill daemon, on the one port it was proved listening on."
             lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
+          case Network.Gradle =>
+            // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each
+            // other's, TCP and UDP; the client starts the daemon, so the grant is one profile's.
+            lines += ";; Gradle: listeners, any port, any address of this host, and outbound to any port of this" +
+              " host; inherited by what the build forks."
+            lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
+            lines += """(allow network-outbound (remote ip "localhost:*"))"""
           case Network.ProxyOnly | Network.SbtClient(_) => ()
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"

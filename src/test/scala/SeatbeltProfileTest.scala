@@ -39,7 +39,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
   ) = ProfileInputs(
-    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, port, runtime, Network.ProxyOnly,
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, runtime, Network.ProxyOnly,
   )
 
   private def rendered(in: ProfileInputs = inputs()): String =
@@ -59,6 +59,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
       "distribution" -> (path => inputs().copy(distribution = Some(path))),
       "sbt global base" -> (path => inputs().copy(sbtGlobal = Some(path))),
       "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
+      "Gradle user home" -> (path => gradleInputs.copy(gradleUserHome = Some(path))),
       "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
       "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
       "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
@@ -167,7 +168,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("/tmp/")))
 
   test("every program permits direct execution from writable project and temporary paths, but not caches"):
-    for profile <- Seq(inputs(), millInputs, mvnInputs) do
+    for profile <- Seq(inputs(), millInputs, gradleInputs, mvnInputs) do
       val writable = rendered(profile).linesIterator
         .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
         .toVector
@@ -175,7 +176,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
       assertEquals(executable.size, 2, profile.prereqs.program.name)
       assert(executable.exists(_.contains(s"(subpath \"$project\")")))
       assert(executable.exists(_.contains(s"(subpath \"${profile.sessionTmp}\")")))
-      val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.m2Repository
+      val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.gradleUserHome ++
+        profile.m2Repository
       for cache <- caches do
         val grants = writable.filter(_.contains(s"(subpath \"$cache\")"))
         assert(grants.nonEmpty, cache.toString)
@@ -388,6 +390,40 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def millInputs = inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None)
 
   private def millText: String = render(millInputs).fold(reason => fail(reason), identity)
+
+  private val gradleHome =
+    Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1")
+  private val gradleUserHome = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/gradle-user-home")
+  private val gradlePrereqs = prereqs.copy(program = Program.Gradle, executable = gradleHome.resolve("bin/gradle"))
+  private def gradleInputs = millInputs.copy(
+    prereqs = gradlePrereqs, distribution = Some(gradleHome), gradleUserHome = Some(gradleUserHome),
+    network = Network.Gradle,
+  )
+
+  test("gradle grants its distribution to run and its user home to write, and no other program's cache"):
+    val text = render(gradleInputs).fold(reason => fail(reason), identity)
+    assert(clue(text).contains(s"""(allow process-exec* file-read* (subpath "$gradleHome"))"""))
+    assert(text.contains(s"""(allow file-read* file-write* (subpath "$gradleUserHome"))"""))
+    assert(!text.contains(s"""process-exec* (subpath "$gradleUserHome")"""))
+    assert(!text.contains("sbt-global") && !text.contains("ivy-home") && !text.contains("m2/repository"))
+
+  test("gradle's network is the mill daemon's grant plus outbound to any port of this host"):
+    val text = render(gradleInputs).fold(reason => fail(reason), identity)
+    assert(clue(text).contains("""(allow network-bind network-inbound (local ip "localhost:*"))"""))
+    assert(text.contains("""(allow network-outbound (remote ip "localhost:*"))"""))
+    assert(text.contains("""(allow network-outbound (remote ip "localhost:51234"))"""))
+    // Under any other program the wide outbound rule is absent, and Gradle's network names no other program.
+    for other <- Seq(inputs(), millInputs, mvnInputs) do
+      assert(!rendered(other).contains("""(remote ip "localhost:*")"""), other.prereqs.program.name)
+    assert(render(mvnInputs.copy(network = Network.Gradle)).isLeft)
+    assert(render(gradleInputs.copy(network = Network.ProxyOnly)).isRight)
+
+  test("the program and the Gradle user home agree: gradle needs it and its distribution, the others have none"):
+    assert(render(gradleInputs.copy(gradleUserHome = None)).isLeft)
+    assert(render(gradleInputs.copy(distribution = None)).isLeft)
+    assert(render(gradleInputs.copy(m2Repository = Some(m2Repository))).isLeft)
+    assert(render(inputs().copy(gradleUserHome = Some(gradleUserHome))).isLeft)
+    assert(render(mvnInputs.copy(gradleUserHome = Some(gradleUserHome))).isLeft)
 
   private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
   private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/cache/abc123/m2/repository")

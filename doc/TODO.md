@@ -341,41 +341,46 @@ server is not the canceller's to retire, so a test that ignores interruption run
 next command queues behind it; and the owning launch's end takes the shared server with it, a
 build of the other launch included, whose next command starts its own.
 
-## Deferred — fetching mill's JVM launcher for the user
+## Deferred — fetching mill's launcher and Gradle's distribution for the user
 
-A `mill` command whose pinned version the user has not provisioned is refused with the command
-to run, `MILL_VERSION=<v>-jvm ./mill version` in a host terminal (`run-on-host.md`, "`mill`").
-The sandbox does not fetch the launcher itself because of where the bootstrap keeps it:
-`~/.cache/mill/download` is the folder the user's own unconfined `./mill` runs launchers from,
-so an executable the sandbox chose there would later run outside any sandbox. The refusal is
-clear, and once per version per user it is a tolerable cost.
+A `mill` command whose pinned version, or a `gradle` command whose distribution, the user has
+not provisioned is refused with the command to run in a host terminal (`run-on-host.md`,
+"`mill`", "Gradle"). The sandbox does not fetch either itself because of where the stock tool
+keeps it: `~/.cache/mill/download` and `~/.gradle/wrapper/dists` are the folders the user's own
+unconfined `./mill` and `./gradlew` run from, so an executable the sandbox chose there would
+later run outside any sandbox. The refusal is clear, and once per version per user it is a
+tolerable cost.
 
 A way to remove the step while keeping the rule that the user provisions executables and the
-sandbox fetches only artifacts: the JVM launcher is the Maven Central artifact
-`com.lihaoyi:mill-dist:<v>` (its `-assembly` jar, the file the bootstrap downloads), on the host
-every `mill` command's proxy already allows. The wrapper would resolve it through the proxy into
-the project's run-on-host cache like any other jar, and start it as
-`java -cp <jar> mill.launcher.MillLauncherMain` instead of through the bootstrap script.
+sandbox fetches only artifacts: the wrapper fetches the file through the proxy into the
+project's run-on-host cache like any other jar, and starts the tool's launcher class with
+`java -cp` instead of through the stock script.
 
 - Benefits: no host step for the user, for a first project and for every version bump; nothing
-  written where the user's own `./mill` looks; the file is never executed directly, since the
+  written where the user's own script looks; the file is never executed directly, since the
   profile grants caches no process-exec and the JVM only loads them, so the pin in the project
   selects a version, never a file the user runs.
-- Costs: the wrapper runs Mill's launcher class rather than the stock `./mill` script, so the
-  script's own resolution — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and
-  `-native` cases — is replaced by the wrapper's, which already reads the same pins; the first
-  command from a project downloads the launcher, tens of megabytes, through the proxy; and the
-  plan's decision to start the daemon with the stock executable (section 7.2) would be revised,
-  with the daemon start and the gate's Mill rows measured again.
+- Costs: the wrapper runs the launcher class rather than the stock script, so the script's own
+  resolution and JVM options are the wrapper's to reproduce; and the first command from a
+  project downloads the file, tens of megabytes, through the proxy.
 
-## Deferred — Gradle under `--run-on-host`
+### mill
 
-Gradle does not fit the host command profile: its daemon, workers and file-lock socket bind TCP
-and UDP ports of the kernel's choosing and connect to each other's, and the profile grants no
-listener and no connect but the proxy's port (`run-on-host.md`, "Network"). Designed and decided:
-`plan-host-build-daemons-and-gradle.md`, Phase 2 and "Revision — Phase 2 scope" — Gradle runs
-under Mill's daemon grant plus outbound to any port of this host, the cost stated in
-`SECURITY.md`'s per-program table. Removed when Phase 2 lands.
+The JVM launcher is the Maven Central artifact `com.lihaoyi:mill-dist:<v>` (its `-assembly`
+jar, the file the bootstrap downloads), on the host every `mill` command's proxy already allows;
+the start is `java -cp <jar> mill.launcher.MillLauncherMain`. The script's resolution the
+wrapper replaces — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and `-native`
+cases — it already reads; and the plan's decision to start the daemon with the stock executable
+(section 7.2) would be revised, with the daemon start and the gate's Mill rows measured again.
+
+### gradle
+
+The distribution is the zip the project's `distributionUrl` names, at `services.gradle.org` or
+a mirror, not a Maven Central artifact, so the fetch is of a project-chosen URL and needs that
+host in the proxy's rules for the fetch, and the archive would be verified against
+`distributionSha256Sum` when the project pins one. The wrapper would unpack it under the
+confinement and start `java -cp lib/gradle-launcher-*.jar org.gradle.launcher.GradleMain`, as
+`BootstrapMainStarter` does, in place of `bin/gradle`.
 
 ## Deferred — same-path workspace mounting under `--run-on-host`
 

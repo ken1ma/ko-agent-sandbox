@@ -83,6 +83,7 @@ object MillDaemons:
           distribution = assembled.distribution,
           sbtGlobal = assembled.sbtGlobalGranted,
           ivyHome = assembled.ivyHomeGranted,
+          gradleUserHome = assembled.gradleUserHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = start.runtime.proxyPort,
           runtime = authority,
@@ -119,8 +120,8 @@ object MillDaemons:
       builder.environment.putAll(
         RunOnHostSandbox.commandEnvironment(
           name => Option(System.getenv(name)), forwards, assembled.prereqs, assembled.sbtGlobal, assembled.ivyHome,
-          assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, session.tmp, session.tmp,
-          start.runtime.proxyPort, System.getProperty("user.name"),
+          assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
+          session.tmp, session.tmp, start.runtime.proxyPort, System.getProperty("user.name"),
         ).asJava,
       )
       Right(builder.start())

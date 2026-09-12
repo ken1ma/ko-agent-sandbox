@@ -83,7 +83,7 @@ recorded at their canonical sites is deleted.
 
 Replies follow the earns-its-place rule: lead with the result, include only detail that changes what
 the reader does next, and do not narrate your process unless necessary. When the user makes a
-proposal, lead with whether and how far you agree, and only then do the work.
+proposal, the first sentence of the final reply says whether and how far you agree.
 
 Do not assume the writer is a native English speaker. Report unnatural English, but do not play the
 schoolteacher.

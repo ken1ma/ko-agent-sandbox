@@ -34,7 +34,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
         "MILL_OUTPUT_DIR" -> "elsewhere", "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
       ),
-      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"), m2Repository = Path.of("/cache/m2"),
+      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
+      gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
       millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millVersion = Some("1.1.9-jvm"),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
       proxyPort = 4711, userName = "u",
@@ -56,6 +57,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // The wrapper's launcher version, never the forwarded one.
     assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
+    assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=/cache/sbt"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=/cache/ivy"))
     assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=/cache/m2"))
@@ -73,18 +75,63 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       environment.keySet,
       Set(
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
-        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER", "MILL_VERSION",
+        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
+        "MILL_VERSION",
       ) ++ commandProxyVariables(4711).keySet,
     )
     // Without a derivable download folder the variable is simply absent, and so is the launcher
     // version for a program that is not mill — a forwarded one included.
     val noFolder =
       commandEnvironment(
-        host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/m"), None, None,
-        Path.of("/t"), Path.of("/t"), 1, "u",
+        host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/g"),
+        Path.of("/m"), None, None, Path.of("/t"), Path.of("/t"), 1, "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
     assert(!noFolder.contains("MILL_VERSION"))
+
+  test("a gradle command's registry is the launch's own, and its toolchain inventory the granted JDK"):
+    val prereqs = RunOnHostPrereqs.CommandPrereqs(
+      Path.of("/p"), Path.of("/jdk"), Path.of("/v1"), Program.Gradle, Path.of("/dists/gradle-9.7.1/bin/gradle"),
+    )
+    assertEquals(
+      gradleCommand(prereqs, Path.of("/private/tmp/ko-agent-501/b/tmp")),
+      Seq(
+        "/dists/gradle-9.7.1/bin/gradle",
+        "-Dorg.gradle.daemon.registry.base=/private/tmp/ko-agent-501/b/tmp/gradle-daemon",
+        "-Dorg.gradle.java.installations.auto-detect=false",
+        "-Dorg.gradle.java.installations.auto-download=false",
+        "-Dorg.gradle.java.installations.paths=/jdk",
+      ),
+    )
+
+  test("a gradle assembly grants the wrapper's one distribution and the project's own Gradle user home"):
+    import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
+    val root = Files.createTempDirectory("gradle")
+    val cache = Files.createDirectories(root.resolve("coursier"))
+    val jdk = Files.createDirectories(cache.resolve("arc/jdk.tar.gz/jdk"))
+    Files.createDirectories(jdk.resolve("bin"))
+    Files.setPosixFilePermissions(Files.createFile(jdk.resolve("bin/java")), permissions("rwxr-xr-x"))
+    val project = Files.createDirectories(root.resolve("project"))
+    val env = Map("HOME" -> root.toString, "COURSIER_CACHE" -> cache.toString, "JAVA_HOME" -> jdk.toString)
+    val absent = assemble(project, Program.Gradle, env.get, project)
+    assert(clue(absent).left.exists(_.contains("no gradle/wrapper/gradle-wrapper.properties")))
+    val properties = Files.createDirectories(project.resolve("gradle/wrapper")).resolve("gradle-wrapper.properties")
+    Files.writeString(properties, "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n")
+    val unprovisioned = assemble(project, Program.Gradle, env.get, project)
+    val distributionDir = root.resolve(".gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
+    assert(clue(unprovisioned).left.exists(text => text.contains(distributionDir.toString)))
+    assert(unprovisioned.left.exists(_.contains("./gradlew")))
+    val gradleHome = Files.createDirectories(distributionDir.resolve("gradle-9.7.1"))
+    Files.createDirectories(gradleHome.resolve("bin"))
+    Files.setPosixFilePermissions(Files.createFile(gradleHome.resolve("bin/gradle")), permissions("rwxr-xr-x"))
+    val assembled = assemble(project, Program.Gradle, env.get, project).fold(fail(_), identity)
+    assertEquals(assembled.prereqs.executable, gradleHome.toRealPath().resolve("bin/gradle"))
+    assertEquals(assembled.distribution, Some(gradleHome.toRealPath()))
+    assertEquals(assembled.gradleUserHomeGranted, Some(assembled.gradleUserHome))
+    assert(Files.isDirectory(assembled.gradleUserHome), "created for the program that reads it")
+    assert(assembled.gradleUserHome.startsWith(root.toRealPath().resolve(".cache/ko-agent-sandbox/cache")))
+    assertEquals(assembled.m2RepositoryGranted, None)
+    assertEquals(assembled.sbtCachesGranted, Seq.empty)
 
   test("a prerequisite file that cannot be read is a worded refusal at the assembly, not a stack trace"):
     import java.nio.file.attribute.PosixFilePermissions.fromString as permissions
@@ -143,6 +190,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val brokers = Path.of("/r/b1/tmp")
     assertEquals(temporaryDirectories(Program.Sbt, own, brokers), (own, brokers))
     assertEquals(temporaryDirectories(Program.Mill, own, brokers), (brokers, brokers))
+    assertEquals(temporaryDirectories(Program.Gradle, own, brokers), (brokers, brokers))
     assertEquals(temporaryDirectories(Program.Mvn, own, brokers), (own, own))
 
   test("a redirected out/mill-daemon, or an entry of it with a second name, is refused; a plain one admitted"):
@@ -199,7 +247,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("a stray name at any level refuses, naming itself; metadata does not"):
     for
       stray <- Seq(
-        ".ko-agent-sandbox/host-command/gradle/egress/rule",
+        ".ko-agent-sandbox/host-command/ant/egress/rule",
         ".ko-agent-sandbox/host-command/sbt/egres/rule",
         ".ko-agent-sandbox/host-command/sbt/egress/rules",
       )
@@ -388,7 +436,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Right(())
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
-      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None, None,
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
     )
     val logged = scala.collection.mutable.ListBuffer[String]()
     val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
@@ -590,6 +638,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         runtimes.prepare(Program.Mill, dirA, Seq("test")).map(_.flatMap(_.daemonPort)),
         Right(Some(40_000 + daemonStarts.size)),
       )
+      // Gradle's runtime is its proxy: no server, no daemon start, reused while the proxy lives.
+      val daemonsBefore = daemonStarts.size
+      val gradleA = runtimes.prepare(Program.Gradle, dirA, Seq("build"))
+      assertEquals(gradleA.map(_.map(_.daemonPort)), Right(Some(None)))
+      assertEquals(gradleA.map(_.map(_.proxyLog)), Right(Some(logOf(dirA, "gradle"))))
+      assertEquals(runtimes.prepare(Program.Gradle, dirA, Seq("test")), gradleA, "reused while the proxy lives")
+      assertEquals(serverStarts.size, serversBefore, "gradle starts no server")
+      assertEquals(daemonStarts.size, daemonsBefore, "gradle starts no daemon")
       // Maven's proxy is the command's own.
       assertEquals(runtimes.prepare(Program.Mvn, dirA, Seq.empty), Right(None))
       // Last, since it discards dirA's server: a redirected socket directory is not reused as
@@ -639,7 +695,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       def endGroup(pgid: Long): Unit = endedGroups += pgid
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
-      None, Path.of("/g"), Path.of("/i"), Path.of("/m"), None, None,
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
     )
     // A second directory the peer touched with Mill only: its build file names it, but there is
     // no server-sbt record, so the peer reserves no sbt server there.
