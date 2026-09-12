@@ -316,3 +316,15 @@ object TransportHelper:
   def closeQuietly(socket: Socket): Unit =
     try socket.close()
     catch case _: IOException => ()
+
+  /**
+   * The close that must not read as a completed response: no close_notify, and a RST in place of
+   * the FIN (linger 0), which the peer's stack reports as a reset rather than the EOF a
+   * close-delimited body, or a TLS client lenient about a missing close_notify, would take for
+   * the end. Closing the TLS layer over the socket afterwards sends nothing.
+   */
+  def abortiveClose(socket: Socket): Unit =
+    try
+      socket.setSoLinger(true, 0)
+      socket.close()
+    catch case _: IOException => ()

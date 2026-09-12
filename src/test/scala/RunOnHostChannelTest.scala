@@ -31,18 +31,23 @@ class RunOnHostChannelTest extends munit.FunSuite:
     * pointed here instead — the broker by its transport, the shim by the line rewritten below. */
   private val FifoDir = Files.createTempDirectory("channel-fifos")
 
-  /** The image's shim with its directory line rewritten and nothing else. A spelling this no
-    * longer finds fails the suite rather than testing a script the image does not ship. Made on
-    * first use, so a platform whose tests all skip never sets POSIX permissions — not at cleanup
-    * either, which is why the copy is tracked rather than the value forced. */
+  /** The seconds the shim copy waits on the broker, in place of the image's: what a dead broker
+    * costs each of the tests below. */
+  private val ShimBound = 5
+
+  /** The image's shim with its directory and bound lines rewritten and nothing else. A spelling
+    * this no longer finds fails the suite rather than testing a script the image does not ship.
+    * Made on first use, so a platform whose tests all skip never sets POSIX permissions — not at
+    * cleanup either, which is why the copy is tracked rather than the value forced. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
     val source = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
     val text = Files.readString(source)
-    val line = s"dir=${RunOnHostChannel.SandboxDir}"
-    require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
+    val rewritten = Map(s"dir=${RunOnHostChannel.SandboxDir}" -> s"dir=$FifoDir", "bound=30" -> s"bound=$ShimBound")
+    rewritten.keys.foreach: line =>
+      require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
     val copy = Files.createTempFile("sandbox-run-on-host", "")
-    Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
+    Files.writeString(copy, rewritten.foldLeft(text)((text, entry) => text.replace(entry._1, entry._2)))
     Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
     shimCopy = Some(copy)
     copy
@@ -474,6 +479,94 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(slow.waitFor(), 0)
       assertEquals(Files.size(host.resolve("slow.out")), payload.toLong)
       assertEquals(Files.readString(host.resolve("slow.code")), "5")
+
+  test("a broker gone before the streams open leaves no shim hanging"):
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
+    deleteRecursively(FifoDir)
+    Files.createDirectories(FifoDir)
+    val project = Files.createTempDirectory("channel-gone")
+    def unanswered(standIn: Option[String]): Unit =
+      ProcessBuilder("sh", "-c", s"rm -f $FifoDir/req; mkfifo -m 600 $FifoDir/req").start().waitFor()
+      val broker = standIn.map(script => ProcessBuilder("sh", "-c", script).start())
+      val (exit, _, err) = shimCall(project, "sbt", "test")
+      assertEquals(exit, 70, err)
+      assert(err.contains("did not answer"), err)
+      // The stand-in ends with the shim: its ctl closed, so nothing of the transaction is held.
+      broker.foreach: process =>
+        assert(process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
+      val left = Files.list(FifoDir).iterator.asScala.map(_.getFileName.toString).toSet
+      assertEquals(left, Set("req", "lock"))
+    // A req nobody reads: the broker died, its FIFO staying on the container's tmpfs.
+    unanswered(None)
+    // A broker that took the handshake and the request, then died before opening the streams.
+    unanswered(Some(s"id=$$(head -n 1 $FifoDir/req); cat $FifoDir/ctl.$$id > /dev/null"))
+
+  for (ending, expectedExit) <- Vector(
+    "HUP" -> 129,
+    "INT" -> 130,
+    "TERM" -> 143,
+    "PIPE" -> 141,
+    "open failure" -> 2,
+    "broken request pipe" -> 141,
+  ) do
+    test(s"$ending during startup retires the watchdog before cleanup"):
+      assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
+      deleteRecursively(FifoDir)
+      Files.createDirectories(FifoDir)
+      assertEquals(ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor(), 0)
+      val argument = if ending == "broken request pipe" then "x" * (100 * 1024) else "test"
+      val shim = ProcessBuilder(Shim.toString, "sbt", argument)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+      val descendants = scala.collection.mutable.ArrayBuffer.empty[ProcessHandle]
+      var handshake: Option[Process] = None
+      try
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while descendants.isEmpty && System.nanoTime() < deadline do
+          val children = shim.toHandle.descendants()
+          try descendants ++= children.iterator.asScala.filter(_.info().command().orElse("").endsWith("/sleep"))
+          finally children.close()
+          if descendants.isEmpty then Thread.sleep(10)
+        assert(descendants.nonEmpty, s"$ending: the watchdog never started")
+        // Keep the watchdog's handle too, so a failing regression test can clean up its timer.
+        descendants.head.parent().ifPresent(parent => { descendants += parent; () })
+        if ending == "open failure" then
+          val ctl = FifoDir.resolve(s"ctl.${shim.pid()}")
+          Files.delete(ctl)
+          // Opening the directory fails, but cleanup can unlink this symlink successfully.
+          Files.createSymbolicLink(ctl, FifoDir)
+          handshake = Some(ProcessBuilder("head", "-n", "1", FifoDir.resolve("req").toString).start())
+        else if ending == "broken request pipe" then
+          // More than a FIFO buffer: closing the reader interrupts a real request write.
+          handshake = Some(ProcessBuilder("sh", "-c",
+            s"read -r transaction < $FifoDir/req; exec 6< $FifoDir/ctl.$$transaction; exec 6<&-",
+          ).start())
+        else
+          assertEquals(ProcessBuilder("kill", s"-$ending", shim.pid().toString).start().waitFor(), 0)
+        handshake.foreach: process =>
+          assert(process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), "handshake did not finish")
+        assert(shim.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), s"$ending: shim did not exit promptly")
+        assertEquals(shim.exitValue(), expectedExit, ending)
+        Thread.sleep((ShimBound + 1) * 1000L)
+        val entries = Files.list(FifoDir)
+        try assertEquals(entries.iterator.asScala.map(_.getFileName.toString).toSet, Set("req", "lock"), ending)
+        finally entries.close()
+      finally
+        handshake.foreach(_.destroyForcibly())
+        descendants.reverseIterator.foreach(_.destroyForcibly())
+        shim.destroyForcibly()
+        shim.waitFor()
+
+  test("opening the streams disarms the startup deadline for a longer running command"):
+    channel((_, _, _) => Seq("sh", "-c", s"sleep ${ShimBound + 1}; echo completed; exit 7")):
+      (project, _, _) =>
+        val (exit, out, _) = shimCall(project, "sbt", "test")
+        assertEquals(exit, 7)
+        assertEquals(out, "completed\n")
+        val entries = Files.list(FifoDir)
+        try assertEquals(entries.iterator.asScala.map(_.getFileName.toString).toSet, Set("req", "lock"))
+        finally entries.close()
 
   test("without a broker the shim fails at once, naming the launch option"):
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")

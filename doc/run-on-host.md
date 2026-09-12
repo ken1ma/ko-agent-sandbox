@@ -537,8 +537,9 @@ same budget.
 
 The command's environment is the contract, not its command line: a closed set the wrapper supplies
 (`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
-why. The gate's `command_env` supplies the same set, minus the proxy settings, since its rows run
-without a proxy. What the wrapper supplies:
+why. The gate follows this closed environment contract; `command_env` documents its deviations
+for rows without a proxy and with one temporary directory for clients and servers.
+What the wrapper supplies:
 
 | Environment Variable | Value |
 |---|---|
@@ -562,6 +563,7 @@ The `java -D` properties:
 | Java Property | Value |
 |---|---|
 | `java.io.tmpdir`, `java.util.prefs.userRoot` | `$TMPDIR` |
+| `sbt.ipcsocket.tmpdir` | `$TMPDIR`, for the client's native library extraction |
 | `https.proxyHost`, `http.proxyHost` | `127.0.0.1` |
 | `https.proxyPort`, `http.proxyPort` | `<port>` |
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
@@ -569,6 +571,8 @@ The `java -D` properties:
 | `sbt.ivy.home` | `<run-on-host cache>/ivy-home` |
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
+
+Path values use `RunOnHostSandbox.jvmProperty`'s HotSpot quoting syntax.
 
 `<command directory>` is this invocation's directory under the wrapper root above — the broker's
 sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every row naming

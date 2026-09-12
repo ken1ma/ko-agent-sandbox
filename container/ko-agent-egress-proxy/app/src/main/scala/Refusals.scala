@@ -10,9 +10,9 @@ case class BadRequest(message: String) extends RuntimeException(message)
   * audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
-/** An origin EOF where response framing promised more. Distinct from IOException because the
-  * response head has already been forwarded by then: no 502 can follow, and the handler must end
-  * the client connection abortively so the truncated body cannot read as a completed response. */
+/** A response-body framing or I/O failure after forwarding the response head. Unlike IOException,
+  * it requires an abortive client close: sending a 502 would append it to the response body, and
+  * a clean TLS shutdown would make a close-delimited body appear complete. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A refusal the ruleset made, told to the refused party as a 403 body of two lines

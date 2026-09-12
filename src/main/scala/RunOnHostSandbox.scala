@@ -1574,6 +1574,16 @@ object RunOnHostSandbox:
       .nextOption()
 
   /**
+   * HotSpot splits JAVA_TOOL_OPTIONS on whitespace; an unquoted path with a space can produce
+   * an extra option that prevents JVM startup.
+   * HotSpot's JAVA_TOOL_OPTIONS parser (`Arguments::parse_options_buffer`) joins adjacent quoted
+   * runs and drops their delimiters. Unlike a shell, it does not interpret backslash escapes;
+   * a literal double quote therefore needs a single-quoted run between double-quoted runs.
+   */
+  def jvmProperty(name: String, value: String): String =
+    "-D" + name + "=\"" + value.replace("\"", "\"'\"'\"") + "\""
+
+  /**
    * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
    * the wrapper's own settings, which win. doc/run-on-host.md, "The command's lifetime and environment",
    * has the table of what is in it; SECURITY.md, "Run on host", has why it is closed.
@@ -1599,21 +1609,20 @@ object RunOnHostSandbox:
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
     // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
-    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would confine
-    // the program's own JVMs alone. The cost is the "Picked up JAVA_TOOL_OPTIONS" line every JVM
-    // started this way prints, which HotSpot has no flag to quiet; the shim drops it from the relay.
+    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would reach
+    // only the program's own JVMs. The shim handles the resulting startup banner.
     val javaToolOptions = (Seq(
-      s"-Djava.io.tmpdir=$sessionTmp",
-      s"-Djava.util.prefs.userRoot=$sessionTmp",
+      jvmProperty("java.io.tmpdir", sessionTmp.toString),
+      jvmProperty("java.util.prefs.userRoot", sessionTmp.toString),
       // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else
       // $XDG_RUNTIME_DIR, else java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt
       // client's XDG_RUNTIME_DIR is the broker's tmp/, which its profile grants no write or
       // exec, so the load fails there; this points it at the command's own tmp/, always
       // read-write-exec. The rendezvous sockets still go under XDG_RUNTIME_DIR.
-      s"-Dsbt.ipcsocket.tmpdir=$sessionTmp",
-      s"-Dsbt.global.base=$sbtGlobal",
-      s"-Dsbt.ivy.home=$ivyHome",
-      s"-Dmaven.repo.local=$m2Repository",
+      jvmProperty("sbt.ipcsocket.tmpdir", sessionTmp.toString),
+      jvmProperty("sbt.global.base", sbtGlobal.toString),
+      jvmProperty("sbt.ivy.home", ivyHome.toString),
+      jvmProperty("maven.repo.local", m2Repository.toString),
       // Maven's resolver ignores the JVM proxy properties unless told (run-on-host.md "Maven").
       "-Daether.connector.http.useSystemProperties=true",
       "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",

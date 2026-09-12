@@ -510,11 +510,12 @@ following kinds of events:
     error github.com GET /big.tar relay: 8192-byte response truncated: body ended 100 bytes early
     error github.com - client closed before sending a request
 
-The truncation event records a response ending before its declared `Content-Length` or chunked
-termination. The proxy aborts the client connection without a clean TLS shutdown so the client can
-detect the incomplete download. A client closing without sending a request is not a refusal; pooled
-clients routinely discard unused connections. It is logged as `error`. A partial request header is
-instead classified as malformed input and logged as `deny`.
+The `relay:` error records response-body framing and I/O failures after the response head was
+forwarded, including timeouts and resets in close-delimited bodies. The proxy aborts the client
+connection without a clean TLS shutdown so the client can detect the incomplete download.
+A client closing without sending a request is not a refusal; pooled clients routinely discard
+unused connections. It is logged as `error`. A partial request header is instead classified as
+malformed input and logged as `deny`.
 
 A refused request's `403` body is the agent's copy of `<why>`, with the next step under it
 (`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
