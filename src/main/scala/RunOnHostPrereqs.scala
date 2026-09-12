@@ -155,7 +155,7 @@ object RunOnHostPrereqs:
    * home (RunOnHostPrereqs.millExecutable).
    */
   def runOnHostCacheDir(cacheRoot: Path, projectId: String): Path =
-    cacheRoot.resolve("cache").resolve(projectId)
+    cacheRoot.resolve("run-on-host").resolve(projectId)
 
   def coursierV1Of(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
@@ -755,7 +755,7 @@ object RunOnHostPrereqs:
     case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
   def programRulePath(project: Path, program: Program): Path =
-    project.resolve(".ko-agent-sandbox").resolve("host-command").resolve(program.name).resolve("egress").resolve("rule")
+    project.resolve(".ko-agent-sandbox").resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
 
   /** The one line form the program's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
   val ProgramRuleForm = "allow https://<host>/ read"

@@ -1823,6 +1823,27 @@ object AgentSandboxLauncher:
   // Main
   // -------------------------------------------------------------------------
 
+  /** The launch's `run on host:` lines: the programs chosen and what running them on the host costs
+    * the user; under `--write=reject` a second line, red as a boundary weaker than the option
+    * says, since a host command writes the project as its program does while the session's own
+    * writes are refused (SECURITY.md "Run on host"). */
+  def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
+    val programs = s"run on host: ${chosen(runOnHost.mkString(", "), color)} by --run-on-host; " +
+      "sandbox-run-on-host relays commands to a Seatbelt-confined wrapper on this host" +
+      (if runOnHost.contains("sbt") then "; your own sbt server for this project is shut down when the agent runs sbt"
+       else "") +
+      (if runOnHost.contains("mill")
+       then "; your own mill daemon for this project is shut down when the agent runs mill"
+       else "")
+    val reject = Option.when(writeMode == "reject")(
+      weakened(
+        "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
+          " project as its program does",
+        color,
+      ),
+    )
+    Vector(programs) ++ reject
+
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
     val stream = getClass.getResourceAsStream("/agentsandbox/usage.txt")
@@ -1899,7 +1920,7 @@ object AgentSandboxLauncher:
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
-           |sbt's server and the mill and gradle daemons stay warm across invocations. To run several
+           |The daemons of sbt, mill and gradle stay warm across invocations. To run several
            |commands in one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
            |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
            |resort, not an alternative: host and container builds compile with different JVMs
@@ -2654,7 +2675,7 @@ object AgentSandboxLauncher:
       // The channel broker's log family, same retention — pruned by whole-run liveness, because the
       // broker lives with the sandbox container rather than the proxy.
       liveRuns.foreach: live =>
-        logsToPrune(retainedLogs(logDir, "channel-").map(_.getFileName.toString), RetainedProxyLogs, live)
+        logsToPrune(retainedLogs(logDir, "run-on-host-").map(_.getFileName.toString), RetainedProxyLogs, live)
           .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
       // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
@@ -3005,14 +3026,7 @@ object AgentSandboxLauncher:
     val runOnHostArgs =
       if runOnHost.isEmpty then Vector.empty
       else
-        System.err.println(
-          s"run on host: ${chosen(runOnHost.mkString(", "))} by --run-on-host; sandbox-run-on-host " +
-            "relays commands to a Seatbelt-confined wrapper on this host" +
-            (if runOnHost.contains("sbt") then "; your own sbt server for this project is shut down when the agent runs sbt"
-             else "") +
-            (if runOnHost.contains("mill") then "; your own mill daemon for this project is shut down when the agent runs mill"
-             else ""),
-        )
+        runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
     // -----------------------------------------------------------------------
@@ -3173,7 +3187,7 @@ object AgentSandboxLauncher:
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
-      val channelLogFile = logDir.resolve(s"channel-$logStamp-$runSuffix.log")
+      val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
           forwards = parsed.env,

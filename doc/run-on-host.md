@@ -55,10 +55,10 @@ machine, whose total is fixed when the machine is created and shared with every 
 — and whose resident memory, once grown to hold a build, macOS never gets back. On the host the same
 build runs on memory reclaimed when it exits, at host speed.
 
-A host command's recurring cost is startup. For sbt and `mill` the broker keeps one server or
-daemon warm across the launch's commands from one build directory ("Where the broker deviates
-from the stock tool"), so a start is paid by the first command from a directory, after
-`sandbox-run-on-host <program> shutdown`, and after the tool's own idle exit — sbt's seven days
+A host command's recurring cost is startup. For sbt and `mill` the launch keeps one server or
+daemon warm across its commands from one build directory ("Where a host command
+deviates from the stock program"), so a start is paid by the first command from a directory, after
+`sandbox-run-on-host <program> shutdown`, and after the program's own idle exit — sbt's seven days
 (`TODO.md`, "an idle bound for the sbt server"), Mill's thirty minutes; an sbt server keeps the
 `sbt.version` and options it started with until `shutdown`, as in a terminal, and a cancelled
 sbt command leaves its server warm. A `mill` start is also paid after a cancel, which ends the
@@ -154,7 +154,12 @@ daemon forks inherits it (`SECURITY.md` "Run on host" states that cost). Per pro
 | `gradle`, client and daemon | the proxy's port; listeners and connects on any port of this host |
 | Maven | the proxy's port; UNIX sockets under the command's `tmp/` |
 
-Six measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
+Gradle's row is both grants, where `mill`'s client has one port: its daemon, its workers and its
+file-lock socket (`DefaultFileLockCommunicator`, UDP) each bind port 0 and connect to each
+other's, no supported Gradle setting fixes any of them, and confining them would mean patching
+Gradle or instrumenting its JVMs, which this launcher does not take on.
+
+Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
 `src/probe/run-on-host-broker-session.sh`); none is chosen from documentation:
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
@@ -176,6 +181,11 @@ Six measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
   the native image's connect is
   dual-stack, for the reason above, and stays denied with the property on its command line (M2).
   That is why the wrapper runs the JVM launcher ("`mill`").
+- The sbt client's `(remote unix-socket (subpath <broker tmp>))` must reach the boot socket and
+  the server socket exactly: a client whose connect is denied does not fail but deletes the
+  portfile and forks a server under its own profile
+  (`NetworkClient.connectOrStartServerAndConnect`), which dies at its boot-socket bind, and the
+  client takes that exit for a server still booting and waits without bound (S6).
 
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
 bypass via direct sockets, and the gate's bypass rows measure it.
@@ -244,18 +254,26 @@ running the script to ask would execute what the profile exists to contain, on t
 sbt 2 is client/server by construction — there is no one-shot mode — so the broker starts the
 server inside the server profile, with the build directory as its working directory, the broker's
 own `tmp/` as its temporary and socket directory, the command line sbt's thin client uses when it
-starts one, given the request's `-D` and `-J` arguments (`RunOnHostSandbox.serverCommand`), and
-its stderr in a file under that `tmp/` ("The channel and the command"); each command's client then
-attaches to it. The server's state follows `-Dsbt.global.base` into the project's run-on-host
-cache. The base must persist across commands: sbt 2 leaves `target/` outputs as symlinks into its
-content-addressed store, so removing that base when the command ends would leave the build's own
-outputs dangling.
+starts one, given the request's launcher flags as that client forwards them, less those naming a
+program ("Where a host command deviates from the stock program" lists both), and its output in a
+file in the broker's session directory ("The channel and the command"); each command's client
+then attaches to it. The broker rather than the client, which forks a server itself when the
+portfile names none: a server so forked inherits three things a server outliving the command must
+not — the client's profile, whose temporary-directory grant names a directory removed with the
+command; its environment, whose `java.io.tmpdir` and `XDG_RUNTIME_DIR` name that directory; and
+its process group, which a cancel ends. The server's state follows `-Dsbt.global.base` into the
+project's run-on-host cache. The base must persist across commands: sbt 2 leaves `target/`
+outputs as symlinks into its content-addressed store, so removing that base when the command ends
+would leave the build's own outputs dangling.
 The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a store
 the profile denies, so the broker sweeps `target/` symlinks that resolve outside the granted roots
 before it starts an sbt server, after any foreign server for the directory is shut down — its
 build finished — so a sweep never runs during the user's own build. `~/.sbt/boot` is not
 granted and has no consumer — with the global base redirected, sbt boots from the run-on-host cache,
-warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0` and `~/.m2` are not granted either.
+warm across sessions. `~/.sbt/1.0`, `~/.sbt/2.0` and `~/.m2` are not granted either. sbt 2 also
+registers each server under that base's `cache/proc` and, when a client disconnects, asks the
+servers registered there to exit if idle (`CommandExchange.notifyOtherServers`), so the redirect
+keeps your servers and the launch's out of each other's registry.
 
 The Ivy home follows `-Dsbt.ivy.home` into the run-on-host cache the same way, and `~/.ivy2` is not
 granted. sbt uses that home for three things, read from the sources of sbt 1.13.0 and 2.0.8.
@@ -347,9 +365,12 @@ would fail. A daemon gone on its own — Mill's idle exit, thirty minutes after 
 `sandbox-run-on-host mill shutdown`, or a client's disconnect mid-command, on which the daemon
 shuts itself down (measured, M5), where an sbt server survives the same disconnect — is replaced
 the same way before the next command; its starter's spawn stays as the group's provable leader
-and is ended with the group first. `out/mill-daemon` is Mill's: the broker neither clears nor
-writes it, and reads only the port candidate. A command is refused while `out`,
-`out/mill-daemon` or an entry directly in it is a symlink or a file with a second name
+and is ended with the group first. Mill's idle exit counts from the last client's disconnect,
+and a daemon no client has connected to yet never expires (`Server.ConnectionTracker`): a
+starter's daemon whose first command never comes lives until the launch ends. `out/mill-daemon`
+is Mill's: the broker neither clears nor writes it, beyond the classpath memo below, and reads
+only the port candidate and that memo. A command is refused while `out`, `out/mill-daemon` or an
+entry directly in it is a symlink or a file with a second name
 (`MillDaemons.rendezvousIsOwn`), because the launcher acts on that directory as it finds it — it
 removes a `processId` whose fingerprint differs, ending the daemon it names — and a link would
 point it at another build directory's daemon, past the ownership and idleness checks, which this
@@ -361,9 +382,15 @@ writes only where the command may write, so the daemon it can end that way is on
 the broker's `tmp/` — that is, this launch's for another build directory, another launch's on
 this project, or yours; and the one-port rule keeps the client from attaching to it.
 `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are never forwarded, since every check looks under
-`out/`. Mill's classpath memo there validates the paths it
-names before use, and a memo from an unconfined run, naming paths the profile denies, fails that
-validation and is re-resolved through the proxy.
+`out/`. Mill's classpath memo there, `out/mill-daemon/cache/mill-daemon-classpath`, is deleted
+before a start when it names a path outside the cache the profile grants
+(`MillDaemons.discardForeignMemo`, the read and the delete under the daemon profile, so a link
+planted under `out/` after the rendezvous check sends neither past what the build could write):
+Mill keeps a memo while every path it names exists, and
+Seatbelt answers an existence test for a path it denies reading — measured, `Files.exists` true
+and the open denied — so a memo from an unconfined run, or from this directory served as another
+project's build directory, would start a daemon on jars it cannot open, and the daemon dies before
+it listens. Deleted, the memo is resolved afresh through the proxy into the granted cache.
 
 A daemon of yours for the build directory — from a terminal, outside any launch — is ended
 before the broker's starts, as your sbt server is shut down, and the channel log says so: found in
@@ -441,11 +468,12 @@ finds it.
 Three properties on the command line close the toolchain inventory to the launch's JDK —
 `org.gradle.java.installations.auto-detect=false`, `auto-download=false` and `paths=<JDK>` —
 where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
-naming it rather than meeting a denial. Gradle 9.7.1 is the release the plan names; older lines
-are out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a
-JDK it cannot run on. The gate's Gradle rows (`src/probe/run-on-host-profile-gate.sh`) measure
-the distribution's grant, the build through the proxy, the daemon's reuse and record, the
-records following a cancel, the launch's end taking the daemon and the JVM its build forked —
+naming it rather than meeting a denial. Gradle 9.7.1 is the release measured, the one
+`src/probe/gradle-fixture` pins; older lines are out, since 8.14 does not run on the JDK 25 the
+launcher requires, and Gradle itself refuses a JDK it cannot run on. The gate's Gradle rows
+(`src/probe/run-on-host-profile-gate.sh`) measure the distribution's grant, the build through the
+proxy, the daemon's reuse and record, the records following a cancel, the launch's end taking the
+daemon and the JVM its build forked —
 on TERM during the first build, the daemon still cancelling — a daemon of yours in a registry of
 your own left alone, the toolchain refusal, the native libraries mapped from the user home, and
 the unrelated service of this host reached under `gradle` alone.
@@ -496,8 +524,9 @@ ending those processes and any leaderless sbt server its portfile identifies. Th
 session of the same kind for the launch's lifetime: its records name the launch's runtimes —
 `proxy-<program>-<hash>`, `server-sbt-<hash>` and `daemon-mill-<hash>`, the hash the build
 directory's, and `daemon-gradle-<pid>` for each Gradle daemon of the launch's one registry — a
-`build-<hash>` file names the directory those of a hash serve, and its `tmp/` is where the sbt
-server binds its sockets and where the servers and daemons keep their temporary files.
+`build-<hash>` file names the directory those of a hash serve, a `run` file names the launch's
+sandbox container, by which `--stats` joins the broker to its session, and its `tmp/` is where the
+sbt server binds its sockets and where the servers and daemons keep their temporary files.
 Each command the broker dispatches holds a build lock — one per program and build directory,
 under `build-lock/` — for the command's life, and the broker's own
 work on the runtime before a command runs under it, so two launches on one project queue behind
@@ -545,7 +574,7 @@ The `java -D` properties:
 sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every row naming
 one — `<cache home>` is
 `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment, and `<run-on-host cache>` the
-project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/cache/<projectId>` ("The
+project's own run-on-host cache root, `<cache home>/ko-agent-sandbox/run-on-host/<projectId>` ("The
 run-on-host cache" below). One environment serves every program. sbt's global base and Ivy home,
 Gradle's user home and Maven's local repository are set for every command; a command of another
 program reads none of them, and the wrapper neither creates nor grants them for it. The mill
@@ -621,34 +650,30 @@ command wrote that directory, so the read comes after the rename and the ending 
 command's groups, refuses a link at any component, and takes the
 tail by position rather than by the file's size. A command that completed leaves nothing there:
 its output reached the agent. The broker's session ends the same way, at the launch's end or on
-TERM: its proxies' audit logs and its servers' stderr files are appended before its directory is
-removed. The broker starts each sbt server with stdout to `/dev/null` and stderr appended to
+TERM: its proxies' audit logs and its servers' logs are appended before its directory is
+removed. The broker starts each sbt server with stdout and stderr appended to
 `server-sbt-<hash>.log` in its session directory — not under `tmp/`, which the server could
 replace with a link or a FIFO before the broker opens the file for the next server — and waits
 for the portfile with a bound on progress:
 a server that has published none while neither that file nor the proxy log grew for two minutes
 (`RunOnHostSandbox.ServerStartSilenceMillis`) is ended, and the command is refused with the
 file's tail — sbt's own client waits with no bound at all. A server that exits on its own leaves
-its stderr in the file, for the channel log to keep.
+its output in the file, for the channel log to keep: sbt started where no build is asks on stdout
+whether to create one, and answers itself from the detached stdin.
 
-## Where the broker deviates from the stock tool
+## Where a host command deviates from the stock program
 
-Everything else the broker does is what the stock tool does, or confinement the stock tool never
-had. These deviate, and each names why:
+In everything else a host command behaves as the stock program run from a terminal. These
+deviate, each with its why: confinement, the launch's ownership of what it starts, or operability,
+where the caller is not interactive.
 
-- **Persistent processes end with the launch — confinement.** Stock sbt, Mill and Gradle leave
+### Under every program
+
+- **Persistent processes end with the launch — ownership.** Stock sbt, Mill and Gradle leave
   their server or daemon running when the terminal that started it closes, Gradle's for three
   idle hours. The broker's run against the launch's proxy and its forwarded environment, both of
   which die with the launch, so the server and the daemons must too; the next start scavenges
   what a killed broker left, and a later launch adopts none whose owner is gone.
-- **The wait for the portfile has a bound — operability, not confinement.** sbt's thin client
-  waits for a starting server with no deadline, which an interactive user can Ctrl-C; the agent
-  cannot, so an unbounded wait would be an unrecoverable command. The broker fails the start when
-  neither the server's stderr nor the proxy log grows and no portfile appears for two minutes
-  (`RunOnHostSandbox.ServerStartSilenceMillis`), with the stderr tail; a mill starter that
-  neither ends nor writes for as long, the proxy log still, fails the same way. A deliberate
-  deviation not required by confinement, kept because the caller is not interactive
-  (`doc/TODO.md`, "a bound on a silent host command", tracks the remaining generic bound).
 - **A foreign server or daemon is never attached to — confinement.** Stock sbt attaches to
   whatever server holds the portfile, and stock Mill to whatever daemon holds `out/mill-daemon`
   unless its fingerprint differs; a client attached to one the broker did not start would run
@@ -656,19 +681,101 @@ had. These deviate, and each names why:
   server the broker shuts down by protocol at the socket it derives, and the user's own daemon it
   ends by proof once idle ("`mill`"); a server or daemon another launch still owns it refuses,
   never signalling another broker's process (`TODO.md`, "Cross-launch server takeover").
-- **Mill runs through its JVM launcher — confinement.** The stock bootstrap runs the native image
-  for a bare pin; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that the client takes the
-  environment's `preferIPv4Stack` and connects under the one-port rule, which the image cannot
-  ("`mill`"). The user provisions that launcher, and a `-native` pin is refused with the reason.
-- **A Mill configuration edit replaces the daemon before the command — operability.** Stock
-  Mill's client ends a daemon whose fingerprint differs and starts a replacement itself; from a
-  confined client that replacement cannot bind, so the command would fail once. The broker reads
-  the same inputs before each command and replaces the daemon first
-  (`RunOnHostPrereqs.millDaemonConfig`).
+- **The environment is a closed set — confinement.** The command sees the wrapper's set and not
+  the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
+  under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
+  this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
+  "Run on host").
+- **The wait for a start has a bound — operability.** sbt's thin client waits for a starting
+  server with no deadline, which an interactive user can Ctrl-C; the agent cannot, so an
+  unbounded wait would be an unrecoverable command. The broker fails the start when neither the
+  server's log nor the proxy log grows and no portfile appears for two minutes
+  (`RunOnHostSandbox.ServerStartSilenceMillis`), with the log's tail; a mill starter that
+  neither ends nor writes for as long, the proxy log still, fails the same way
+  (`doc/TODO.md`, "a bound on a silent host command", tracks the remaining generic bound).
 
-Two behaviors are the stock tool's, though they could be read as the broker's. It keeps one warm
+### Under sbt
+
+- **The server is the broker's, not the client's — ownership.** The broker starts it, in its own
+  directory for sockets and temporary files, and each command's client attaches; a server the
+  client forked would inherit the command's profile, environment and group ("sbt").
+- **The server receives the request's launcher flags as the thin client forwards them, less
+  those naming a program — confinement.** `-D` properties, the value flags and `--allow-empty`
+  reach it; `-J` does not, since the runner applies it to the client's own JVM, as the client
+  itself forwards nothing of `-J`. Dropped beyond the client: `-java-home`, `-sbt-jar`,
+  `--sbt-script`, `--sbt-launch-jar` and `-Dsbt.script=`, each naming the JVM, the launcher jar
+  or the runner script, which the profile's grants decide (`RunOnHostSandbox.serverCommand`).
+- **`new` and `init` run through a server — the client model.** Stock sbt runs those two in the
+  sbt process itself, in place, since a template is written where no build is, and every other
+  command through its client; the broker has one path, a client to the server it starts, so
+  `sandbox-run-on-host sbt new` in an empty directory meets the runner's refusal of a directory
+  with no build, and `--allow-empty` starts the server there as the stock client's flag would.
+  Whether `new` then writes its template through that server the gate does not measure.
+- **The JVM client, never `sbtn` — operability.** sbt 2 runs its native client by default, which
+  under the profile prints that it is starting the server and returns with no build run; the
+  wrapper passes `--jvm-client`, and a gate row keeps measuring `sbtn` ("sbt").
+- **`target/` links into a denied store are swept before a server starts — confinement.** A tree
+  the user's unconfined sbt built links into a store the profile denies ("sbt").
+- **The global base and the Ivy home are the project's own — confinement.** Redirected into the
+  run-on-host cache, where stock uses `~/.sbt` and `~/.ivy2` ("sbt", "The run-on-host cache").
+
+### Under `mill`
+
+- **The daemon is started by the broker's `./mill version`, not by the first client —
+  ownership.** The starter's denied connect leaves the daemon in the broker's group and costs
+  ten seconds of retry ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens").
+- **The JVM launcher, never the native image — confinement.** The stock bootstrap runs the
+  native image for a bare pin; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that the client
+  takes the environment's `preferIPv4Stack` and connects under the one-port rule, which the
+  image cannot ("`mill`"). The user provisions that launcher, and a `-native` pin is refused
+  with the reason.
+- **A configuration edit replaces the daemon before the command — operability.** Stock Mill's
+  client ends a daemon whose fingerprint differs and starts a replacement itself; from a
+  confined client that replacement cannot bind, so the command would fail once. The broker
+  reads the same inputs before each command and replaces the daemon first
+  (`RunOnHostPrereqs.millDaemonConfig`).
+- **`mill-jvm-version: system` is required — confinement.** Stock Mill provisions a JVM through
+  Coursier's index into a writable, executable place, which the JVM rule refuses ("`mill`").
+- **A request's `MILL_VERSION`, `DEFAULT_MILL_VERSION`, `MILL_OUTPUT_DIR` and
+  `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The wrapper's `MILL_VERSION` names the
+  granted launcher, and the daemon's rendezvous is looked for under `out/` ("The command's
+  lifetime and environment").
+- **A redirected `out/mill-daemon` is refused — confinement.** Mill's launcher would act on
+  another build directory's daemon through it ("`mill`").
+- **A classpath memo naming what the profile denies is deleted before a start — confinement.**
+  Stock Mill keeps it, since the paths exist; under the profile the daemon could not open them
+  ("`mill`").
+- **Clients use the broker's temporary directory, not their own — confinement.** A JVM the
+  daemon forks inherits the daemon's profile and gets the client's environment ("The command's
+  lifetime and environment").
+
+### Under Gradle
+
+- **The daemon registry is the launch's, under the broker's `tmp/` — confinement.** Stock keeps
+  it in the user home, where one launch's `gradle --stop` would end another launch's builds
+  ("Gradle").
+- **The distribution's `bin/gradle` runs, never `gradlew` — confinement.** The wrapper script
+  downloads; a `distributionBase`, `distributionPath` or `systemProp.gradle.user.home` moving
+  the distribution to a place the project chooses is refused ("Gradle").
+- **The toolchain inventory is the launch's JDK alone — confinement.** Auto-detection and
+  auto-provisioning are off on the command line, so a project asking for another toolchain
+  fails naming it ("Gradle").
+- **The user home is the project's own — confinement.** Under the run-on-host cache, where stock
+  uses `~/.gradle` ("The run-on-host cache").
+
+### Under Maven
+
+- **The distribution's `bin/mvn` runs, never `mvnw` — confinement.** The wrapper script
+  downloads ("Maven").
+- **The local repository is the project's own, and the resolver is told to honor the proxy —
+  confinement.** `maven.repo.local` under the run-on-host cache, where stock uses
+  `~/.m2/repository`, and `aether.connector.http.useSystemProperties`, without which Maven's
+  resolver ignores the proxy the profile leaves as the one route out ("The command's lifetime
+  and environment").
+
+Two behaviors are the stock program's, though they could be read as the broker's. It keeps one warm
 server or daemon per build directory, not one per program, so visiting another directory leaves
-the first warm. And a cancel does what the tool does, and the tools differ: an sbt client's
+the first warm. And a cancel does what the program does, and the programs differ: an sbt client's
 disconnect cancels only the running exec (`CommandExchange.removeChannel`, `force = false`) and
 leaves the warm server, so an interruption-ignoring test lingers in it exactly as it would in a
 terminal and the next command reuses the server; a Mill client's disconnect mid-command makes the
@@ -803,7 +910,7 @@ A command that resolves beyond Maven Central names its repositories in a project
 directory that already holds reviewed boundary configuration:
 
 ```text
-.ko-agent-sandbox/host-command/<program>/egress/rule
+.ko-agent-sandbox/run-on-host/<program>/egress/rule
 ```
 
 One file per program, so a repository that uses more than one grants each only what it
@@ -817,7 +924,7 @@ inspection. The wrapper hands the proxy `deny defaults`, Maven Central, then the
 
 The file inherits the directory's properties: the workspace filter freezes it at any depth, the
 launcher reads it on the host, and it is reviewed in a pull request like any other file.
-`host-command/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a stray
+`run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a stray
 entry fails the launch instead of being ignored (`SandboxProject.boundaryDirError`,
 `RunOnHostSandbox.hostCommandStray`).
 
@@ -829,8 +936,8 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 
 ## The run-on-host cache
 
-Agent-invoked commands get their own run-on-host cache root, per project:
-`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/cache/<projectId>/`. It holds Coursier's
+Host commands get their own cache root, per project:
+`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<projectId>/`. It holds Coursier's
 `v1`, sbt's global base and Ivy home, Gradle's user home and Maven's local repository under one
 directory, so
 `--reset-run-on-host` is a single removal, `--reset` takes it with the project's other state, and
@@ -857,31 +964,54 @@ reads.
 
 ## Sources
 
-- Coursier managed JVMs and platform JVM-cache locations: https://get-coursier.io/docs/cli-java
+- Coursier managed JVMs and platform JVM-cache locations:
+  - https://get-coursier.io/docs/cli-java
 - Coursier artifact cache and platform `v1` locations:
-  https://get-coursier.io/upcoming/features-cache/
+  - https://get-coursier.io/upcoming/features-cache/
 - Coursier installation/application directory behavior:
-  https://get-coursier.io/docs/cli-installation
-- `mill` project-local bootstrap scripts: https://mill-build.org/mill/cli/installation-ide.html
+  - https://get-coursier.io/docs/cli-installation
+- `mill` project-local bootstrap scripts:
+  - https://mill-build.org/mill/cli/installation-ide.html
 - Mill 1.1.9's daemon and launcher — the port-0 bind, `socketPort` and `processId`, the shutdown
   on a client's disconnect mid-command, the idle timeout, the fingerprint the launcher restarts on
   and its ten-second connect retry:
-  https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/server/src/mill/server/Server.scala,
-  https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/client/src/mill/client/ServerLauncher.scala,
-  https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillProcessLauncher.scala,
-  https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/server/src/mill/server/Server.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/client/src/mill/client/ServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
-  https://www.scala-sbt.org/1.x/docs/sbt-server.html
+  - https://www.scala-sbt.org/1.x/docs/sbt-server.html
+- sbt 1.13.0 and 2.0.8 — the thin client's server fork and its denied-connect retry, the
+  disconnect cancelling the channel's exec, the `proc` registry and `notifyOtherServers`, the
+  server's idle timeout, the boot socket's path (the same paths at v1.13.0):
+  - https://github.com/sbt/sbt/blob/v2.0.8/main-command/src/main/scala/sbt/internal/client/NetworkClient.scala
+  - https://github.com/sbt/sbt/blob/v2.0.8/main/src/main/scala/sbt/internal/CommandExchange.scala
+  - https://github.com/sbt/sbt/blob/v2.0.8/main/src/main/scala/sbt/Defaults.scala
+  - https://github.com/sbt/sbt/blob/v2.0.8/main-command/src/main/java/sbt/internal/BootServerSocket.java
 - Gradle 9.7.1's wrapper — the distribution directory, the properties it reads, the user home:
-  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java,
-  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java,
-  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java,
-  https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+- Gradle 9.7.1's daemon — its detach at start, the client's fork with its own environment and
+  the registry option, the compatibility check on the client's immutable properties, the cancel
+  on a client's disconnect, `--stop`, and the file lock's UDP socket:
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
+  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
 - Gradle toolchains — auto-detection, auto-provisioning and `installations.paths`:
-  https://docs.gradle.org/current/userguide/toolchains.html
+  - https://docs.gradle.org/current/userguide/toolchains.html
 - Gradle's configuration precedence — a `-D` over every `gradle.properties`:
-  https://docs.gradle.org/current/userguide/build_environment.html
-- Maven Wrapper — the wrapper types and `MAVEN_USER_HOME`: https://maven.apache.org/wrapper/
+  - https://docs.gradle.org/current/userguide/build_environment.html
+- Maven Wrapper — the wrapper types and `MAVEN_USER_HOME`:
+  - https://maven.apache.org/wrapper/
 - Surefire fork communication — process pipes by default, TCP by configuration:
-  https://maven.apache.org/surefire/maven-surefire-plugin/examples/process-communication.html
-- Maven Resolver configuration — `useSystemProperties`: https://maven.apache.org/resolver/configuration.html
+  - https://maven.apache.org/surefire/maven-surefire-plugin/examples/process-communication.html
+- Maven Resolver configuration — `useSystemProperties`:
+  - https://maven.apache.org/resolver/configuration.html

@@ -670,6 +670,11 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(out.readLine(), "--")
     assertEquals(out.readLine(), "-x")
     assertEquals(run.waitFor(), 0)
+    // An argument holding a newline, the escape byte or a NUL arrives whole: the word is one line.
+    val (odd, oddOut) = spawn("/bin/sh", "-c", "printf '%s|' \"$@\" | od -An -c | tr -s ' \\n' ' '", "sh")
+    answer(odd, runWord(Seq("a\nb", "\u0001x", "c")))
+    assertEquals(oddOut.readLine().trim, "a \\n b | 001 x | c |")
+    assertEquals(odd.waitFor(), 0)
     // The pipe stays the exec'd command's stdin, its EOF still the broker gone.
     val (held, _) = spawn("/bin/sh", "-c", "cat")
     answer(held, runWord(Seq.empty))
@@ -679,9 +684,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
     held.getOutputStream.close()
     assertEquals(held.waitFor(), 0)
+    // A refusal of several lines — a server's output quoted — reaches stderr whole.
     val (refused, _) = spawn("/bin/sh", "-c", "exit 0")
-    answer(refused, refusedWord("refused: no runtime"))
-    assertEquals(String(refused.getErrorStream.readAllBytes(), UTF_8), "refused: no runtime\n")
+    answer(refused, refusedWord("refused: no runtime; its output:\n[error] line one\n[error] line two\n"))
+    assertEquals(
+      String(refused.getErrorStream.readAllBytes(), UTF_8),
+      "refused: no runtime; its output:\n[error] line one\n[error] line two\n\n",
+    )
     assertEquals(refused.waitFor(), 2)
     val (orphan, _) = spawn("/bin/sh", "-c", "exit 0")
     orphan.getOutputStream.close()

@@ -29,6 +29,8 @@ object RunOnHostSession:
   val TmpDir = "tmp"
   val RecordsDir = "records"
   val ProjectFile = "project"
+  /** The broker's: the launch's sandbox container, by which `--stats` joins the broker to its session. */
+  val RunFile = "run"
   val StagingDir = "staging"
   val CondemnedDir = "condemned"
   val RootLockFile = "root-lock"
@@ -152,10 +154,21 @@ object RunOnHostSession:
 
   private val Nul = 0.toChar.toString
 
-  /** The broker's word to a locked spawn: one line of NUL-separated fields, the verdict first. */
-  def runWord(arguments: Seq[String]): String = ("run" +: arguments).mkString(Nul) + "\n"
+  /** The broker's word to a locked spawn: one line of NUL-separated fields, the verdict first,
+    * each field escaped so that a refusal of several lines — a server's output quoted — and an
+    * argument holding a newline or a NUL arrive whole. */
+  def runWord(arguments: Seq[String]): String = ("run" +: arguments.map(escapeField)).mkString(Nul) + "\n"
 
-  def refusedWord(message: String): String = s"refused$Nul$message\n"
+  def refusedWord(message: String): String = s"refused$Nul${escapeField(message)}\n"
+
+  private val Escape = 1.toChar
+
+  private def escapeField(field: String): String =
+    field.flatMap:
+      case Escape => s"${Escape}e"
+      case '\n'   => s"${Escape}n"
+      case '\u0000' => s"${Escape}0"
+      case other  => other.toString
 
   val LockScript: String =
     """use Fcntl qw(:flock F_SETFD);
@@ -182,6 +195,7 @@ object RunOnHostSession:
       |    exit 71 unless defined $word;
       |    chomp $word;
       |    my ($verdict, @fields) = split /\0/, $word, -1;
+      |    s/\x01([en0])/$1 eq 'n' ? "\n" : $1 eq '0' ? "\0" : "\x01"/ge for @fields;
       |    if ($verdict ne 'run') { print STDERR "$fields[0]\n"; exit 2; }
       |    my $at = 0;
       |    $at++ while $at < @command && $command[$at] ne '--';

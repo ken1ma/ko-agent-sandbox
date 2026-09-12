@@ -77,7 +77,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the project's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/cache/abc123/coursier/v1"))
+    assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/run-on-host/abc123/coursier/v1"))
     // One removal reaches all of them: what --reset-run-on-host relies on.
     assert(coursierV1Of(root, "abc123").startsWith(runOnHostCacheDir(root, "abc123")))
 
@@ -623,15 +623,15 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
       sbtGlobalOf(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/sbt-global"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/sbt-global"),
     )
     assertEquals(
       ivyHomeOf(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/ivy-home"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/ivy-home"),
     )
     assertEquals(
       m2RepositoryOf(cacheRoot, "proj-abc123"),
-      Paths.get("/Users/u/.cache/ko-agent-sandbox/cache/proj-abc123/m2/repository"),
+      Paths.get("/Users/u/.cache/ko-agent-sandbox/run-on-host/proj-abc123/m2/repository"),
     )
     for cache <- Seq(sbtGlobalOf(cacheRoot, "proj-abc123"), ivyHomeOf(cacheRoot, "proj-abc123"),
         m2RepositoryOf(cacheRoot, "proj-abc123").getParent)
@@ -835,11 +835,11 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val project = Paths.get("/Users/u/proj")
     assertEquals(
       programRulePath(project, Program.Sbt),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/sbt/egress/rule"),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/sbt/egress/rule"),
     )
     assertEquals(
       programRulePath(project, Program.Mill),
-      Paths.get("/Users/u/proj/.ko-agent-sandbox/host-command/mill/egress/rule"),
+      Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/mill/egress/rule"),
     )
 
   // --------------------------------------------------------------------------

@@ -524,7 +524,7 @@ object SandboxProject:
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
    * config, the same rule each entry applies inside itself. The files inside egress/ and agent/ are
    * vetted where they are read (EgressRules.readRuleFiles, readAgentInstructions), and
-   * host-command/ where the host command wrapper reads it (RunOnHostPrereqs.programRuleHosts). An
+   * run-on-host/ where the host command wrapper reads it (RunOnHostPrereqs.programRuleHosts). An
    * absent directory is empty configuration, never a directory to materialize.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =
@@ -565,7 +565,7 @@ object SandboxProject:
     if !Files.exists(boundaryDir) then Files.createDirectory(boundaryDir)
     s"--volume=$boundaryDir:/workspace/.ko-agent-sandbox:ro"
 
-  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "host-command")
+  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "run-on-host")
 
   /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
   val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"

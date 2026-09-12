@@ -889,7 +889,7 @@ the mechanism. Its security properties and costs are:
   daemon's outbound is the proxy's port alone; a Gradle process reaches, beyond the proxy, any
   port of this host, since its daemon, workers and file-lock socket connect to each other's
   ports of the kernel's choosing. The proxy allows repositories named in
-  `.ko-agent-sandbox/host-command/<program>/egress/rule` (`allow https://<host>/ read` lines only;
+  `.ko-agent-sandbox/run-on-host/<program>/egress/rule` (`allow https://<host>/ read` lines only;
   unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
   the file read when that proxy started: a host removed from the file stays reachable from the
   broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
@@ -927,11 +927,11 @@ the mechanism. Its security properties and costs are:
   broker keeps one
   per build directory it visits, all warm at
   once, and ends them with the launch or when their proxy is gone. A cancel follows the stock
-  tool: an sbt client's disconnect cancels the running exec and the warm server survives for the
+  program: an sbt client's disconnect cancels the running exec and the warm server survives for the
   next command, so an interruption-ignoring test lingers in it exactly as one does in a
   terminal; a `mill` client's disconnect mid-command makes the daemon shut itself down, and the
-  next command starts one (`doc/run-on-host.md`, "Where the broker deviates from the stock
-  tool"). Gradle's daemon is Gradle's own: the client starts it under the profile and matches it
+  next command starts one (`doc/run-on-host.md`, "Where a host command deviates from the stock
+  program"). Gradle's daemon is Gradle's own: the client starts it under the profile and matches it
   in a daemon registry of the launch's own, under the broker's `tmp/` — not in the per-project
   user home, where one launch's `gradle --stop` would end another launch's builds, and never
   yours under `~/.gradle` — and the broker records it after each command by pid and start time,
@@ -987,8 +987,9 @@ the mechanism. Its security properties and costs are:
   absolute path on the host.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A host
   command can write `target/` and any other path allowed by the profile's project grant. Selecting
-  both options authorizes those writes despite the container's read-only mount. A session that must
-  leave the project untouched must not enable `--run-on-host`.
+  both options authorizes those writes despite the container's read-only mount, and the launch
+  says so in a red line. A session that must leave the project untouched must not enable
+  `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness; an
   interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
@@ -998,7 +999,7 @@ the mechanism. Its security properties and costs are:
   directory; the broker's server or daemon stays, as above. The wrapper holds the broker's
   pipe the same way: a broker gone, ended or killed, closes it, and the wrapper ends its command
   by the same teardown; a broker ended by TERM exits only after that teardown, and then ends its
-  own session — its servers', daemons' and proxies' groups, the servers' stderr files, the
+  own session — its servers', daemons' and proxies' groups, the servers' logs, the
   daemon starters' output and the proxies' audit logs appended to the channel's log first — as
   it does at the launch's end. No server or daemon the broker recorded survives the launch that
   owns it — a Gradle daemon its client started and the broker then recorded included; one it never
@@ -1026,8 +1027,7 @@ launch's directories are not network; the `mill` daemon's port is reached by its
 port grant is a port at every address of this host too: the proxy listens on the loopback address,
 so the grant reaches, beside it, only a service listening on that port at another address.
 Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
-each other's, so it needs both grants (`doc/plan-host-build-daemons-and-gradle.md`, "Security
-model").
+each other's, so it needs both grants (`doc/run-on-host.md`, "Network").
 
 ## No containers inside the sandbox by default
 

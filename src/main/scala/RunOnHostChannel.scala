@@ -42,7 +42,7 @@ object RunOnHostChannel:
    * writer scribbling on `req` or a transaction's FIFOs is the agent breaking its own channel —
    * the broker drops what it cannot frame, and the authority it enforces is unaffected.
    */
-  val SandboxDir = "/tmp/ko-agent-sandbox/host-command"
+  val SandboxDir = "/tmp/ko-agent-sandbox/run-on-host"
 
   /** What the project is mounted at inside the container: the spelling requests arrive in. */
   val WorkspaceMount = "/workspace"
@@ -444,7 +444,7 @@ object RunOnHostChannel:
       pumps.foreach(_.join())
       try service.ended(request.program)
       catch case NonFatal(ex) => log(s"after the command: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      // Nothing is retired here on a cancel; the broker follows each tool, and the two differ.
+      // Nothing is retired here on a cancel; the broker follows each program, and the two differ.
       // Stock sbt's server survives a client's disconnect: the disconnect cancels the exec
       // (CommandExchange.removeChannel, force=false) and the warm server serves the next
       // command. Stock Mill's daemon shuts itself down on a client's disconnect mid-command
@@ -592,6 +592,8 @@ object RunOnHostChannel:
             case Left(reason) =>
               log(s"the broker's session: $reason")
               sys.exit(1)
+        try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
+        catch case ex: IOException => log(s"the broker's run file: ${ex.getMessage}")
         // The forwarded values, from this process's environment under their carrier names, as
         // the wrapper reads them; the runtime authority the artifact bundles, as the wrapper's.
         val runtimes = RunOnHostSandbox.BrokerRuntimes(

@@ -455,7 +455,7 @@ cleanup() {
     if [ -n "${channel_broker:-}" ]; then
         kill "$channel_broker" 2>/dev/null
         kill_channel_execs
-        rm -rf /tmp/ko-agent-sandbox/host-command
+        rm -rf /tmp/ko-agent-sandbox/run-on-host
     fi
     end_project_servers
 }
@@ -496,7 +496,10 @@ done
 
 echo
 echo "positive rows"
-if /usr/bin/sandbox-exec -f "$work/gate-$first.sb" "$JAVA_HOME/bin/java" -version >"$work/java.log" 2>&1
+# From the profile's own project: the JVM reads its working directory at start, and the first
+# profile grants its program's project, the fixture's under mill, gradle or mvn.
+if ( cd "$(project_of "$first")" && /usr/bin/sandbox-exec -f "$work/gate-$first.sb" "$JAVA_HOME/bin/java" -version ) \
+    >"$work/java.log" 2>&1
 then report PASS "java -version" "$(grep -m1 version "$work/java.log")"
 else report FAIL "java -version" "$(tail -1 "$work/java.log")"; fi
 
@@ -563,8 +566,8 @@ if want mill; then
     # Each wrapper row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
-    # (RunOnHostSandbox.BrokerRuntimes, MillDaemons). A memo an unconfined run left there names
-    # paths the profile denies, which Mill's own validation of it fails on and re-resolves.
+    # (RunOnHostSandbox.BrokerRuntimes, MillDaemons), beyond the classpath memo a start deletes
+    # when it names paths the profile denies (MillDaemons.discardForeignMemo).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
@@ -965,11 +968,11 @@ fi
 # add is the channel — framing, streamed output and the command's own exit code, the
 # working-directory boundary, and teardown by descriptor lifetime — and the broker's runtime: the
 # proxy and the sbt server or mill daemon the commands of one build directory share, and what
-# retires them (doc/plan-host-build-daemons-and-gradle.md, 6.5 and 7.6).
+# retires them (doc/run-on-host.md, "sbt" and "mill").
 
 echo
 echo "the channel"
-channel_dir=/tmp/ko-agent-sandbox/host-command
+channel_dir=/tmp/ko-agent-sandbox/run-on-host
 channel_rows="channel: sbt test returns the command's own exit code
 channel: the broker's sbt server serves the commands of one build directory
 channel: the broker's proxy serves the commands of one build directory
@@ -1257,10 +1260,14 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         else report FAIL "channel: an edited sbt.version takes effect after shutdown" \
             "before: ${before_edit:-none}, after shutdown: ${after_shutdown:-none}"; fi
 
-        # --- mill: the broker's daemon (doc/plan-host-build-daemons-and-gradle.md, 7.6) ---------
+        # --- mill: the broker's daemon (doc/run-on-host.md, "mill") ------------------------------
         #
         # The daemon the broker starts in its session serves every mill command of the build
         # directory; each client runs under a profile naming that daemon's port and no other. The
+        # first row also meets the memo the wrapper rows left, naming the fixture project's cache,
+        # which this broker's profile — the fixture as this repository's build directory — denies:
+        # the start deletes it (MillDaemons.discardForeignMemo), or the daemon dies unable to
+        # open its jars. The
         # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
         # cancel and busy-daemon rows.
         if ! want mill; then skip_mill_channel "needs mill"; else
@@ -1440,8 +1447,12 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
 waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
 
         # One busy past the bound (MillDaemons.ForeignIdleDeadlineMillis): the command is refused
-        # naming it, and the daemon and its build are left alone.
+        # naming it, and the daemon and its build are left alone. The broker's daemon is shut down
+        # first: a ./mill of yours with matching settings attaches to a live daemon of the launch's,
+        # and the row needs a daemon of its own to be busy.
         bound_row="channel: a mill daemon of yours busy past the bound is refused, and left alive"
+        with_timeout 300 channel_shim chan-mill-shutdown3.log "$mill_project" mill shutdown
+        channel_settled
         foreign_mill ./mill run sleep >"$work/foreign-run2.log" 2>&1 & foreign_client=$!
         tries=0
         while ! grep -q 'fixture-main' "$work/foreign-run2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
@@ -1466,7 +1477,7 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
         channel_settled
         fi
 
-        # --- gradle: the launch's daemons (doc/plan-host-build-daemons-and-gradle.md, step 9) ----
+        # --- gradle: the launch's daemons (doc/run-on-host.md, "Gradle") -------------------------
         #
         # Gradle's own client starts the daemon in the launch's registry under the broker's tmp/,
         # and later clients match it there; the broker records each daemon after every command

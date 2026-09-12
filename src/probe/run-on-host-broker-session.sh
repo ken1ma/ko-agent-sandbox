@@ -1,14 +1,16 @@
 #!/bin/sh
-# What the broker's session assumes — doc/plan-host-build-daemons-and-gradle.md, Phase 1 and its
-# "Must verify" list — measured before the broker encodes any of it. Three groups of rows:
+# What the broker's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill"), measured
+# before the broker encodes any of it; a changed rule or command line calls for a rerun. Four
+# groups of rows:
 #
 #   L1-L4  SBPL: a loopback listener on port 0 under (local ip "localhost:*"), its control, and an
 #          exact-port outbound rule that reaches its port and not the neighbor's
-#   G1-G12 SBPL for Gradle (plan section 12) and for the reach of "localhost": a UDP socket and a
-#          TCP listener bound to the wildcard address on port 0, reached at the loopback address,
-#          and what happens at this host's LAN address, inbound and outbound, TCP and UDP, under the
-#          Gradle candidate and under the mill daemon's rule; the wildcard bind's control; an
-#          exact-port rule at the LAN address; a remote destination under the candidate
+#   G1-G12 SBPL for Gradle (SECURITY.md "Run on host", the per-program table) and for the reach
+#          of "localhost": a UDP socket and a TCP listener bound to the wildcard address on port
+#          0, reached at the loopback address, and what happens at this host's LAN address,
+#          inbound and outbound, TCP and UDP, under the Gradle candidate and under the mill
+#          daemon's rule; the wildcard bind's control; an exact-port rule at the LAN address; a
+#          remote destination under the candidate
 #   S1-S6  sbt 1.13.0 and 2.0.8, one scratch project each: a server started by the owner's command
 #          line publishes its portfile before a deadline; a client with its own tmp attaches and
 #          forks nothing; the client's unix-socket rule; a TERMed client cancels its exec, and what
@@ -671,7 +673,8 @@ SCALA
     servers() { with_cwd '^\([^ ]*/\)\{0,1\}java .*-Dsbt\.script=' "$proj"; }
     no_servers() { [ -z "$(servers)" ]; }
     # srv is the owner's directory and the socket budget, tmp the process's own; `-Dsbt.global.base`
-    # puts the sbt 2 proc registry where the plan says it goes. The server's file, and a client's.
+    # puts the sbt 2 proc registry under it (CommandExchange.notifyOtherServers). The server's file,
+    # and a client's.
     sbt_opts() { echo "-Djava.util.prefs.userRoot=$1 -Dsbt.global.base=$global -Dsbt.ivy.home=$ivy"; }
     write_env "$d/env-srv" "$srv" "$srv" "$(sbt_opts "$srv")" "SBT_GLOBAL_SERVER_DIR=$srv"
     write_env "$d/env-cmd" "$cmd" "$srv" "$(sbt_opts "$cmd")" "SBT_GLOBAL_SERVER_DIR=$srv"
@@ -686,7 +689,7 @@ SCALA
     echo
     echo "S: sbt $version"
     # S1: the owner's command line — NetworkClient.serverCommand's, which the client passes
-    # -Dsbt.script to and not -batch — in a group of its own, stdio as the plan says.
+    # -Dsbt.script to and not -batch — in a group of its own, stdio as the broker gives its server.
     probe_env=$d/env-srv
     group_start "$d/server" "$proj" "$sbt_script" "-Dsbt.script=$sbt_script" --detach-stdio --server \
         >"$d/server-out.log" 2>"$d/server-err.log"
@@ -745,7 +748,9 @@ SCALA
     forked() { pgrep -f -- "$proj/target" 2>/dev/null | head -1; }
     if until_true 300 has_line probe-main "$d/client-run.log" && [ -n "$(forked)" ]; then
         forked_pid=$(forked)
-        # The idle detector for a confined sbt server (plan 7.3), on the server JVM and never its
+        # The idle detector for a confined sbt server — a measurement no broker path reads, since
+        # the user's server is shut down by protocol after its exec and another launch's is refused
+        # (doc/run-on-host.md, "The channel and the command") — on the server JVM and never its
         # group leader, and with no baseline, as a broker taking over has none: the clients of the
         # server's path-named sockets, as `peers` finds them. Measured first on the already-busy
         # server, then after the client is gone, then with an unrelated UNIX connection the server
@@ -1061,7 +1066,8 @@ $(failed "$mp/starter" "$mp/starter.log")"
         group_start "$mp/m5" "$mp" /usr/bin/sandbox-exec -f "$mp/client.sb" $mill_client app.run >"$mp/m5.log" 2>&1
         run_leader=$leader
         if until_true 180 has_line probe-main "$mp/m5.log"; then
-            # The idle observation the broker's foreign-daemon rule rests on (plan 7.3): a running
+            # The idle observation the broker's foreign-daemon rule rests on (MillDaemons.endForeign):
+            # a running
             # command is an established connection on the daemon's port, and none once it ends.
             busy=$(lsof -a -p "$daemon" -iTCP -sTCP:ESTABLISHED -nP 2>/dev/null | grep -c ":$port")
             if [ "$busy" -gt 0 ]
@@ -1110,7 +1116,8 @@ $(failed "$mp/starter" "$mp/starter.log")"
 
     # M7: a foreign daemon whose fingerprint differs (a JAVA_OPTS the closed environment lacks),
     # kept alive in its own group, then the starter: ServerLauncher removes the foreign processId
-    # on the mismatch before it probes the lock — the window the plan's 7.2 step 0 leaves open.
+    # on the mismatch before it probes the lock — the window MillDaemons.start closes by ending that
+    # daemon and running the starter once more.
     probe_env=""
     group_start "$mp/foreign" "$mp" env JAVA_OPTS=-Dprobe.foreign=1 ./mill version >"$mp/m7-foreign.log" 2>&1
     foreign_leader=$leader

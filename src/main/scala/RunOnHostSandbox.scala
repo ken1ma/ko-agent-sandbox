@@ -204,7 +204,7 @@ object RunOnHostSandbox:
     )
 
   /**
-   * host-command/ accepts only recognized configuration entries, as does its parent directory
+   * run-on-host/ accepts only recognized configuration entries, as does its parent directory
    * (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each, rule
    * inside that — a stray name, the retired grammar's file among them, a symlinked component, or a
    * component of the wrong type refuses the command, never remains as ignored config. The type rule
@@ -212,7 +212,7 @@ object RunOnHostSandbox:
    * and a FIFO where the file belongs would block the read forever.
    */
   def hostCommandStray(project: Path): Option[String] =
-    val dir = project.resolve(".ko-agent-sandbox").resolve("host-command")
+    val dir = project.resolve(".ko-agent-sandbox").resolve("run-on-host")
     val programs = Program.values.toVector.map(_.name)
     def strays(path: Path, allowed: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
@@ -409,7 +409,7 @@ object RunOnHostSandbox:
   val SessionLogTailBytes = 64 << 10
 
   /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
-    * `proxy.log`, the broker's one per runtime — the sbt servers' stderr files (serverStderr),
+    * `proxy.log`, the broker's one per runtime — the sbt servers' logs (serverLog),
     * the mill starters' output (MillDaemons.starterLog), and the stderr file a thin client
     * leaves under `tmp/` when it forked a server of its own.
     * run-on-host.md "The channel and the command" has why every signal keeps them and what a
@@ -791,11 +791,11 @@ object RunOnHostSandbox:
    * directory leaves the runtimes already made alive (`live` is keyed by program and the build
    * directory's hash), so alternating between a root and a nested build keeps both warm. A
    * runtime is replaced whole only when its own proxy is gone. A server or daemon gone on its
-   * own — `shutdown`, the tool's idle exit — is replaced under the same proxy, the records and
+   * own — `shutdown`, the program's idle exit — is replaced under the same proxy, the records and
    * build file deleted only when the last runtime of the hash is retired; so is a mill daemon
    * whose configuration changed, the one Mill's launcher restarts it on
    * (RunOnHostPrereqs.millDaemonConfig), assembled afresh since a changed version pin grants
-   * another launcher. On a cancel the broker follows each tool: a cancelled sbt command's server
+   * another launcher. On a cancel the broker follows each program: a cancelled sbt command's server
    * is not retired, since stock sbt's disconnect cancels the exec and leaves the server, and a
    * cancelled mill command's daemon shuts itself down, as stock Mill's does on a disconnect
    * mid-command, so the next mill command starts one. Gradle's runtime is its proxy: the client
@@ -1133,15 +1133,66 @@ object RunOnHostSandbox:
   def serverRecordName(hash: String): String = s"server-sbt-$hash"
   def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
 
-  /** The server command line as sbt's thin client issues it when it starts a server
-    * (NetworkClient.serverCommand, v1.13.0 and v2.0.8), less the client's `-batch` and
-    * `-java-home` — the script takes `java` from PATH, where the environment puts the granted
-    * JDK first — plus the request's `-D` and `-J` arguments, which the script applies to the JVM
-    * it starts; `.sbtopts` and `.jvmopts` it reads from the build directory as it always does. */
+  // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.8): a value
+  // flag takes the next argument or an `=` value; a no-value flag and an `=`-prefixed one are
+  // the client's own and reach no server; the empty-build flags are launcher flags even after
+  // the first command.
+  private val LauncherValueFlags = Set(
+    "-mem", "--mem", "-jvm-debug", "--jvm-debug", "-sbt-jar", "--sbt-jar", "-sbt-cache", "--sbt-cache",
+    "-sbt-version", "--sbt-version", "-java-home", "--java-home", "-ivy", "--ivy", "-sbt-boot", "--sbt-boot",
+    "-sbt-dir", "--sbt-dir",
+  )
+  private val LauncherNoValueFlags = Set(
+    "-client", "--client", "--server", "--jvm-client", "-h", "-help", "--help", "-v", "-verbose", "--verbose",
+    "-V", "-version", "--version", "--numeric-version", "--script-version", "-d", "-debug", "--debug",
+    "-debug-inc", "--debug-inc", "-batch", "--batch", "--no-hide-jdk-warnings", "-no-colors", "--no-colors",
+    "-timings", "--timings", "-traces", "--traces", "-no-share", "--no-share", "-no-global", "--no-global",
+    "shutdownall", "-bsp", "--bsp", "bsp", "-no-server", "--no-server",
+  )
+  private val LauncherEqPrefixes =
+    Seq("--supershell=", "-supershell=", "--color=", "-color=", "--autostart=", "-autostart=")
+  private val EmptyBuildFlags = Set("-allow-empty", "--allow-empty", "-sbt-create", "--sbt-create")
+
+  /** Flags naming a program to run — the JVM, the launcher jar, the runner script — which the
+    * profile's grants decide and no request may: the JDK is the launcher's, the script the
+    * validated one, and `sbt.script` is what a server forks later. */
+  private val ProgramFlags = Set("-java-home", "--java-home", "-sbt-jar", "--sbt-jar")
+
+  /**
+   * The server command line as sbt's thin client issues it when it starts a server
+   * (NetworkClient.serverCommand, v1.13.0 and v2.0.8): the request's launcher flags as the client
+   * classifies them — its `-D` properties, its value flags with their values, the empty-build
+   * flags wherever they stand, and any other flag the client does not keep for itself — before
+   * `--detach-stdio --server`. As the client, it drops `-J`, which the runner applies to the JVM
+   * it starts, the client's; the no-value and `=`-form flags of the client's own; and the
+   * commands, which the client sends over the socket. Beyond the client it drops the program
+   * flags (ProgramFlags). `.sbtopts` and `.jvmopts` the script reads from the build directory as
+   * it always does.
+   */
   def serverCommand(executable: Path, arguments: Seq[String]): Seq[String] =
-    Seq(executable.toString, s"-Dsbt.script=$executable")
-      ++ arguments.filter(argument => argument.startsWith("-D") || argument.startsWith("-J"))
-      ++ Seq("--detach-stdio", "--server")
+    val forwarded = Vector.newBuilder[String]
+    var commands = false
+    var index = 0
+    while index < arguments.length do
+      val argument = arguments(index)
+      val flag = argument.takeWhile(_ != '=')
+      if commands then
+        if EmptyBuildFlags(argument) then forwarded += argument
+      else if argument.startsWith("--sbt-script=") || argument.startsWith("--sbt-launch-jar=") then ()
+      else if (argument == "--sbt-script" || argument == "--sbt-launch-jar") && index + 1 < arguments.length then
+        index += 1
+      else if LauncherValueFlags(argument) then
+        if index + 1 < arguments.length then
+          if !ProgramFlags(argument) then forwarded ++= Seq(argument, arguments(index + 1))
+          index += 1
+      else if LauncherValueFlags(flag) && argument.length > flag.length + 1 then
+        if !ProgramFlags(flag) then forwarded ++= Seq(flag, argument.drop(flag.length + 1))
+      else if LauncherNoValueFlags(argument) || LauncherEqPrefixes.exists(argument.startsWith) then ()
+      else if argument.startsWith("-J") || argument.startsWith("-Dsbt.script=") then ()
+      else if !argument.startsWith("-") then commands = true
+      else forwarded += argument
+      index += 1
+    Seq(executable.toString, s"-Dsbt.script=$executable") ++ forwarded.result() ++ Seq("--detach-stdio", "--server")
 
   /** The socket sbt derives for a build directory's server under this session's `tmp/`: the
     * server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
@@ -1153,20 +1204,20 @@ object RunOnHostSandbox:
       name => Option.when(name == "SBT_GLOBAL_SERVER_DIR")(sessionTmp.toString)
     sbtServerSocket(buildDirectory, serverDir, Path.of("/"))
 
-  /** Where a server's stderr goes: in the session directory, which the profile grants no process
+  /** Where a server's output goes, stdout and stderr: in the session directory, which the profile grants no process
     * — a file under `tmp/` the server could replace with a link or a FIFO before the broker
     * opens it for the next server — and where appendSessionLogs keeps it with the session's
     * other logs; appended to across the servers of one build directory. */
-  def serverStderr(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
+  def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
 
-  /** How long a starting server may make no progress — neither its stderr file nor the proxy
+  /** How long a starting server may make no progress — neither its log nor the proxy
     * log growing, and no portfile — before the start fails. Progress rather than time, because
     * a first start resolves sbt's own dependencies through the proxy; sbt's own client waits
     * with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
   val ServerStartSilenceMillis = 120_000L
 
-  /** The server as the plan of 6.1: a registered spawn under the server profile, the build
-    * directory its working directory, stdin and stdout `/dev/null`, stderr to serverStderr, and
+  /** The server (run-on-host.md "sbt"): a registered spawn under the server profile, the build
+    * directory its working directory, stdin `/dev/null`, stdout and stderr to serverLog, and
     * the closed environment with the broker's `tmp/` as its temporary and socket directory. Up
     * when the build directory's portfile names a connectable socket under that `tmp/`. */
   private def startSbtServer(
@@ -1177,7 +1228,7 @@ object RunOnHostSandbox:
   ): Either[String, Unit] =
     val assembled = start.assembled
     val prereqs = assembled.prereqs
-    val stderr = serverStderr(session, start.hash)
+    val output = serverLog(session, start.hash)
     for
       profile <- SeatbeltProfile.render(
         SeatbeltProfile.ProfileInputs(
@@ -1206,8 +1257,10 @@ object RunOnHostSandbox:
           )
           builder.directory(start.buildDirectory.toFile)
           builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
-          builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-          builder.redirectError(ProcessBuilder.Redirect.appendTo(stderr.toFile))
+          // Both streams: sbt asks on stdout whether to create a build where it finds none, and a
+          // refused start names what it said.
+          builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
+          builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
           builder.environment.clear()
           builder.environment.putAll(
             commandEnvironment(
@@ -1218,13 +1271,13 @@ object RunOnHostSandbox:
           )
           Right(builder.start())
         catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
-      _ <- awaitServer(session, start, spawn, stderr)
+      _ <- awaitServer(session, start, spawn, output)
     yield ()
 
-  private def awaitServer(session: Session, start: ServerStart, spawn: Process, stderr: Path): Either[String, Unit] =
+  private def awaitServer(session: Session, start: ServerStart, spawn: Process, output: Path): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
-    def said = s"its stderr:\n${sessionLogTail(stderr, 4096).getOrElse("(nothing was written)\n")}"
-    def sizes = (logLength(stderr), logLength(start.runtime.proxyLog))
+    def said = s"its output:\n${sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
+    def sizes = (logLength(output), logLength(start.runtime.proxyLog))
     var last = sizes
     var since = System.nanoTime
     var result: Option[Either[String, Unit]] = None
@@ -1253,7 +1306,7 @@ object RunOnHostSandbox:
               since = System.nanoTime
             else if System.nanoTime - since > ServerStartSilenceMillis * 1_000_000 then
               result = Some(Left(
-                s"the sbt server published no portfile, and neither its stderr nor the proxy log grew, for " +
+                s"the sbt server published no portfile, and neither its output nor the proxy log grew, for " +
                   s"${ServerStartSilenceMillis / 1000}s; $said",
               ))
             else Thread.sleep(100)
@@ -1397,7 +1450,7 @@ object RunOnHostSandbox:
         builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
         builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
         // Its stderr is its log, opened here and inherited: the profile grants no write
-        // (serverStderr), and what sandbox-exec or the JVM says before the proxy prints anything
+        // (serverLog), and what sandbox-exec or the JVM says before the proxy prints anything
         // lands where the ready line is awaited.
         builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
         Right(builder.start())
@@ -1668,5 +1721,5 @@ object RunOnHostSandbox:
     if hosts.nonEmpty then
       log((("Command requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the host command sandbox. If the command should reach it, add an" +
-          s" `$ProgramRuleForm` line to .ko-agent-sandbox/host-command/${program.name}/egress/rule."))
+          s" `$ProgramRuleForm` line to .ko-agent-sandbox/run-on-host/${program.name}/egress/rule."))
         .mkString("\n"))

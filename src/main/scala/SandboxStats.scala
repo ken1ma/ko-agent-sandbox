@@ -7,7 +7,9 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.file.{FileVisitResult, Files, Path, Paths, SimpleFileVisitor}
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.{BasicFileAttributes, FileTime}
+import java.time.{Instant, ZoneId}
+import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.{
@@ -15,6 +17,7 @@ import AgentSandboxLauncher.{
   projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom, tlsStateRoot,
 }
 import HostCommands.*
+import RunOnHostPrereqs.Program
 
 object SandboxStats:
 
@@ -71,8 +74,8 @@ object SandboxStats:
 
   /** `0 live sessions`, `1 project`, `3 projects`: the line over each table, and the whole
     * section when there is nothing to tabulate. */
-  def counted(count: Int, noun: String): String =
-    if count == 1 then s"1 $noun" else s"$count ${noun}s"
+  def counted(count: Int, noun: String, plural: String = ""): String =
+    if count == 1 then s"1 $noun" else s"$count ${if plural.isEmpty then noun + "s" else plural}"
 
   // -------------------------------------------------------------------------
   // Live sessions
@@ -112,11 +115,11 @@ object SandboxStats:
         case _ => None
 
   /**
-   * Sessions by their combined memory, largest first, and within a session the sandbox before
-   * its proxy: the one the reader acts on, whatever an idle sandbox happens to use. A project
-   * is named as the project table names it: by its recorded directory, or by its id where none
-   * is recorded. Under a line counting the sessions, not the rows: a session is two containers.
-   * The memory column aligns on its slash, so used and limit each read down as a column.
+   * One row per session, largest combined memory first: the sandbox's memory, its proxy's, and
+   * the cpu the two use together, the session's cost to the machine. A project is named as the
+   * project table names it: by its recorded directory, or by its id where none is recorded.
+   * Each memory column aligns on its slash, so used and limit each read down as a column; a
+   * session missing one of its containers shows a dash there.
    */
   def liveTable(containers: Vector[LiveContainer], directories: Map[String, String]): String =
     if containers.isEmpty then counted(0, "live session") + "\n"
@@ -127,20 +130,69 @@ object SandboxStats:
       .groupBy(container => (container.projectId, container.run))
       .toVector
       .sortBy((session, group) => (-group.map(_.memoryBytes).sum, session))
-    val ordered = sessions.flatMap((_, group) => group.sortBy(container => container.role != "sandbox"))
-    val pairs = ordered.map(container => humanPair(container.memoryBytes, container.limitBytes))
-    val usedWidth = pairs.map(_._1.length).max
-    val rows = ordered.zip(pairs).map:
-      case (container, (used, limit)) =>
+    def memoryColumn(role: String): Vector[String] =
+      val pairs = sessions.map: (_, group) =>
+        group.find(_.role == role).map(container => humanPair(container.memoryBytes, container.limitBytes))
+      val usedWidth = pairs.flatten.map(_._1.length).maxOption.getOrElse(0)
+      pairs.map(_.fold("-")((used, limit) => s"${used.reverse.padTo(usedWidth, ' ').reverse} / $limit"))
+    val sandbox = memoryColumn("sandbox")
+    val proxy = memoryColumn("proxy")
+    val rows = sessions.zipWithIndex.map:
+      case (((projectId, run), group), index) =>
         Vector(
-          container.run,
-          container.role,
-          s"${used.reverse.padTo(usedWidth, ' ').reverse} / $limit",
-          f"${container.cpuPercent}%.1f%%",
-          directories.getOrElse(container.projectId, container.projectId),
+          run,
+          sandbox(index),
+          proxy(index),
+          f"${group.map(_.cpuPercent).sum}%.1f%%",
+          directories.getOrElse(projectId, projectId),
         )
     counted(sessions.size, "live session") + "\n" +
-      table(Vector("run", "role", "memory", "cpu", "project"), rows, rightAligned = Set(3))
+      table(Vector("run", "sandbox", "proxy", "cpu", "project"), rows, rightAligned = Set(3))
+
+  // -------------------------------------------------------------------------
+  // Run-on-host brokers
+  // -------------------------------------------------------------------------
+
+  /** One live broker: its launch's run suffix, its project, and for each build directory it has
+    * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
+    * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
+    * (RunOnHostSandbox.BrokerRuntimes), so a runtime is not a process up this instant. */
+  final case class Broker(run: String, project: String, warm: Vector[(String, Vector[String])])
+
+  /**
+   * The live brokers under the session root (`RunOnHostSession.root`): each a locked broker
+   * session, its `run` file naming the launch's sandbox container, its build files the
+   * directories served, and its proxy records the programs kept warm there — the proxy is the
+   * runtime's constant part, a server or daemon gone on its own being replaced under it
+   * (RunOnHostSandbox.BrokerRuntimes). A broker without a run file, one from a launch that
+   * predates it, has a run the report cannot name. macOS only, like the brokers.
+   */
+  def brokers(root: Path): Vector[Broker] =
+    // `except` names the caller's own session; the report has none, and the root is no child of itself.
+    RunOnHostSession.liveBrokerSessions(root, except = root).map: session =>
+      def file(name: String): Option[String] = readIfPresent(session.resolve(name)).map(_.trim).filter(_.nonEmpty)
+      val run = file(RunOnHostSession.RunFile).flatMap(runContainerParts).map(_._3).getOrElse("?")
+      val project = file(RunOnHostSession.ProjectFile).getOrElse("-")
+      val programsByHash = childNames(session.resolve(RunOnHostSession.RecordsDir))
+        .flatMap: name =>
+          Program.values.iterator
+            .find(program => name.startsWith(s"proxy-${program.name}-"))
+            .map(program => name.stripPrefix(s"proxy-${program.name}-") -> program)
+        .groupMap(_._1)(_._2)
+      val warm = RunOnHostSession.buildDirectories(session).map: (hash, directory) =>
+        directory.toString -> programsByHash.getOrElse(hash, Vector.empty).sortBy(_.ordinal).map(_.name)
+      Broker(run, project, warm.sortBy(_._1))
+    .sortBy(broker => (broker.run, broker.project))
+
+  /** One row per directory a broker has served, by run, `runtime` the programs whose runtime
+    * the broker keeps there. A broker that has served none yet has no row: its session is in the
+    * live table, and a broker is one per session. */
+  def brokerTable(brokers: Vector[Broker]): String =
+    val rows = brokers.flatMap: broker =>
+      broker.warm.map: (directory, programs) =>
+        Vector(broker.run, if programs.isEmpty then "none" else programs.mkString(", "), directory)
+    counted(rows.size, "run-on-host directory", "run-on-host directories") + "\n" +
+      (if rows.isEmpty then "" else table(Vector("run", "runtime", "directory"), rows, rightAligned = Set.empty))
 
   // -------------------------------------------------------------------------
   // Volumes and storage
@@ -210,12 +262,15 @@ object SandboxStats:
    * None when podman was not there to size it. `directory` is the recorded one where it still
    * exists; None for a project last launched before the record existed, or whose directory is gone.
    */
+  /** `lastWrite` is the newest modification under the project's state and cache trees — the
+    * volume is in podman's store, out of the walk — and None where neither tree exists. */
   final case class ProjectUsage(
     id: String,
     directory: Option[String],
     stateBytes: Long,
     cacheBytes: Long,
     volumeBytes: Option[Long],
+    lastWrite: Option[Instant],
   ):
     def totalBytes: Long = stateBytes + cacheBytes + volumeBytes.getOrElse(0L)
 
@@ -235,7 +290,8 @@ object SandboxStats:
   private def stateDirs(os: Os): Vector[Path] =
     Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
 
-  private def cacheDir(os: Os): Option[Path] = RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("cache"))
+  private def cacheDir(os: Os): Option[Path] =
+    RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("run-on-host"))
 
   private val VolumePrefix = "ko-agent-sandbox-persistent-"
 
@@ -249,14 +305,17 @@ object SandboxStats:
     val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(VolumePrefix))
     (roots.flatMap(childNames) ++ volumeIds).filter(SandboxProject.isProjectId).distinct.sorted.toVector
 
+  private val WriteFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
   /**
    * Largest first, each project named by its directory — where `--reset-run-on-host` runs — and
-   * by its id, which `--reset <id>` takes, where none is recorded or the recorded one is gone. The
-   * flag threshold is 1% of the cache filesystem's free space, so the report says which project
-   * to `--reset-run-on-host` rather than leaving a column of numbers to compare by eye; it reads
+   * by its id, which `--reset <id>` takes, where none is recorded or the recorded one is gone,
+   * dated by its newest write in the reader's zone, to the minute. The flag threshold is 1% of
+   * the cache filesystem's free space, so the report says which project to
+   * `--reset-run-on-host` rather than leaving a column of numbers to compare by eye; it reads
    * only cache usage because `--reset-run-on-host` removes only that cache.
    */
-  def projectTable(usages: Vector[ProjectUsage], cacheFreeBytes: Long): String =
+  def projectTable(usages: Vector[ProjectUsage], cacheFreeBytes: Long, zone: ZoneId = ZoneId.systemDefault): String =
     if usages.isEmpty then counted(0, "project") + "\n"
     else
       val rows = usages.sortBy(usage => (-usage.totalBytes, usage.id)).map: usage =>
@@ -269,10 +328,13 @@ object SandboxStats:
           humanBytes(usage.stateBytes),
           humanBytes(usage.cacheBytes),
           usage.volumeBytes.fold("-")(humanBytes),
+          usage.lastWrite.fold("-")(write => WriteFormat.format(write.atZone(zone))),
           usage.directory.getOrElse(usage.id) + flag,
         )
       counted(usages.size, "project") + "\n" +
-        table(Vector("total", "state", "cache", "volume", "project"), rows, rightAligned = Set(0, 1, 2, 3))
+        table(
+          Vector("total", "state", "cache", "volume", "last write", "project"), rows, rightAligned = Set(0, 1, 2, 3),
+        )
 
   /** Columns padded to their widest cell, the header included; rows indented two spaces. */
   private def table(header: Vector[String], rows: Vector[Vector[String]], rightAligned: Set[Int]): String =
@@ -312,6 +374,9 @@ object SandboxStats:
         val answer = run(podman, "stats", "--no-stream", "--format", StatsFormat)
         if !answer.ok then System.out.print(s"live sessions: podman stats failed: ${firstLine(answer.err)}\n")
         else System.out.print(liveTable(liveContainers(answer.text.linesIterator.toVector), directories))
+    if os == Os.Mac then
+      val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
+      System.out.print(brokerTable(brokers(RunOnHostSession.root(uid))))
 
     val volumes: Option[Map[String, Long]] = service.toOption.flatMap: podman =>
       val answer = run(podman, "system", "df", "-v")
@@ -343,12 +408,15 @@ object SandboxStats:
 
     val ids = projectIdsUnder(stateDirs ++ cacheDir, volumes.toVector.flatMap(_.keys))
     val usages = ids.map: id =>
+      val state = stateDirs.map(dir => treeUsage(dir.resolve(id)))
+      val cache = cacheDir.map(dir => treeUsage(dir.resolve(id)))
       ProjectUsage(
         id,
         directories.get(id),
-        stateDirs.map(dir => directoryBytes(dir.resolve(id))).sum,
-        cacheDir.map(dir => directoryBytes(dir.resolve(id))).getOrElse(0L),
+        state.map(_.bytes).sum,
+        cache.map(_.bytes).getOrElse(0L),
         volumes.map(_.getOrElse(VolumePrefix + id, 0L)),
+        (state ++ cache).flatMap(_.newestWrite).maxOption,
       )
     val cacheFreeBytes = cacheDir.flatMap(hostRoot).map(_.freeBytes).getOrElse(0L)
     System.out.print(projectTable(usages, cacheFreeBytes))
@@ -378,21 +446,33 @@ object SandboxStats:
       Some(HostRoot(path, store.toString, store.getUsableSpace, store.getTotalSpace)).filter(_.totalBytes > 0)
     catch case _: IOException => None
 
+  /** A tree's regular-file bytes and its newest modification, of a file or of a directory
+    * whose entries changed; None for a tree that does not exist. */
+  final case class TreeUsage(bytes: Long, newestWrite: Option[Instant])
+
   /** Continues past races and permission holes: sizing must not fail on a tree a session is
     * changing. */
-  def directoryBytes(root: Path): Long =
-    if !Files.exists(root) then 0L
+  def treeUsage(root: Path): TreeUsage =
+    if !Files.exists(root) then TreeUsage(0L, None)
     else
       var total = 0L
+      var newest: Option[FileTime] = None
+      def noteWrite(attrs: BasicFileAttributes): Unit =
+        val time = attrs.lastModifiedTime
+        if newest.forall(_.compareTo(time) < 0) then newest = Some(time)
       Files.walkFileTree(
         root,
         new SimpleFileVisitor[Path]:
+          override def preVisitDirectory(dir: Path, attrs: BasicFileAttributes) =
+            noteWrite(attrs)
+            FileVisitResult.CONTINUE
           override def visitFile(file: Path, attrs: BasicFileAttributes) =
             if attrs.isRegularFile then total += attrs.size()
+            noteWrite(attrs)
             FileVisitResult.CONTINUE
           override def visitFileFailed(file: Path, exc: IOException) = FileVisitResult.CONTINUE,
       )
-      total
+      TreeUsage(total, newest.map(_.toInstant))
 
   private def childNames(dir: Path): Vector[String] =
     if !Files.isDirectory(dir) then Vector.empty
