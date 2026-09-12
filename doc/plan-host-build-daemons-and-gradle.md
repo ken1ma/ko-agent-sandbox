@@ -110,18 +110,24 @@ Re-read before step 6 against Gradle's current releases and sources (9.7.1, mast
    itself at start (`DaemonMain` calls `ProcessEnvironment.maybeDetachProcess`, `setsid` on
    POSIX), so it leaves the command's group and session on its own, and ending the command's
    recorded group leaves it alive. Its pid is its group id, and its workers and test executors are
-   forked into that group, so the `daemon-gradle-<hash>` record takes each daemon's
-   `<pid> <start time>` once observed after every command, a cancelled one included — the
-   process whose working directory is `<version>` under the launch's own daemon registry base,
-   `org.gradle.daemon.registry.base` under the broker's `tmp/` (`RunOnHostSandbox.gradleCommand`),
-   and whose command names `GradleDaemon` — and the launch's end signals the group behind that
-   proof, daemon and
-   descendants at once, as every recorded group. A daemon no observation reached — one started
-   under a broker that died during the command — is confined, holds nothing, and exits on
-   Gradle's idle timeout, three hours, once idle: the acceptance `SECURITY.md` "Run on host"
-   makes for a Mill daemon whose leader is gone, stated there for Gradle too. One hung in its
-   build never becomes idle (`getIdleMillis` is zero outside the idle state), so the residual is
-   the daemon both unrecorded and hung. No `gradle --stop`.
+   forked into that group, so a `daemon-gradle-<pid>` record per daemon takes its
+   `<pid> <start time>` once observed after every command, a cancelled one included, and at the
+   launch's end — the process whose command names `GradleDaemon` and whose initial environment
+   carries the launch's `tmp/` as `java.io.tmpdir`, the client's own environment the daemon is
+   started with; not a path under the registry, its working directory or its open log, since the
+   build writes across `tmp/` and can rename a file a daemon of yours holds open into the registry
+   under any name (`GradleDaemons.scala`). `ps` reads that environment from the daemon's own
+   memory, so build code can hide its daemon from its launch, a residual beside the one below —
+   and the launch's end signals the group behind that proof, daemon
+   and descendants at once, as every recorded group. One record per daemon, not one per build
+   directory: the registry is the launch's, serving every build directory, and a record names
+   one group; the record of a daemon gone is forgotten at the next observation. A daemon no
+   observation reached — one started under a broker that died during the command — is
+   confined, holds nothing, and exits on Gradle's idle timeout, three hours, once idle: the
+   acceptance `SECURITY.md` "Run on host" makes for a Mill daemon whose leader is gone, stated
+   there for Gradle too. One hung in its build never becomes idle (`getIdleMillis` is zero
+   outside the idle state), so the residual is the daemon both unrecorded and hung. No
+   `gradle --stop`.
 3. **Reuse and cancel are Gradle's.** Gradle matches a compatible daemon in the launch's own
    registry and starts another on a mismatch, inside the profile; the broker keeps no reuse key
    beyond the proxy. On a client disconnect the daemon cancels the build and, still busy after
@@ -426,7 +432,9 @@ restart: the old files stay in Coursier's archive cache, the warm server runs on
 each new client is validated against the new path as today. The broker's environment does not
 change within a launch, so the rest of the assembly cannot differ between commands.
 
-Deferred: `doc/TODO.md`, "a rule-file edit taking effect at the next command".
+Declined, not deferred: a broker retiring a running proxy on an edit, so the edit takes effect at
+the next command. What a launch may reach is decided at launch, and a relaunch applies an edit to
+both proxies alike (`run-on-host.md`, "The command's egress proxy").
 
 ## 5. The broker's proxy
 

@@ -1899,9 +1899,9 @@ object AgentSandboxLauncher:
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
-           |sbt's server and mill's daemon stay warm across invocations. To run several commands in
-           |one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate arguments
-           |as one command, and `compile test` fails to parse. The container's own `sbt` is the last
+           |sbt's server and the mill and gradle daemons stay warm across invocations. To run several
+           |commands in one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
+           |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
            |resort, not an alternative: host and container builds compile with different JVMs
            |against different caches over the same `target/`, so a container build costs the host a
            |rebuild or the symlink cleanup described above. Under sbt and mvn the host grants no

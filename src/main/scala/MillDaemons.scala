@@ -17,6 +17,7 @@ import scala.jdk.CollectionConverters.*
 
 import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
 import RunOnHostSession.{Processes, Session}
+import RunOnHostSession.HostProcesses.lines
 
 object MillDaemons:
 
@@ -312,11 +313,3 @@ object MillDaemons:
       Files.deleteIfExists(record)
       Files.deleteIfExists(RunOnHostSession.exitRecord(record))
     catch case _: IOException => ()
-
-  private def lines(command: String*): Vector[String] =
-    try
-      val process = ProcessBuilder(command*).redirectError(ProcessBuilder.Redirect.DISCARD).start()
-      val output = String(process.getInputStream.readAllBytes(), UTF_8)
-      process.waitFor()
-      output.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
-    catch case _: IOException => Vector.empty

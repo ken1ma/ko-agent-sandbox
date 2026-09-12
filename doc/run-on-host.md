@@ -383,12 +383,14 @@ timeout.
 
 ### Gradle
 
-The project's own wrapper properties, `<PROJECT>/gradle/wrapper/gradle-wrapper.properties`; a
-`gradle` installed globally is not used. Run `./gradlew --version` once in a host terminal, and
-again whenever `distributionUrl` changes: that run downloads Gradle into
-`~/.gradle/wrapper/dists`, and the command is granted that one Gradle read-only — not the whole
-`dists` directory, which holds every Gradle the user ever ran a wrapper for. If the wrapper has
-not downloaded it yet, the command is refused, and the refusal says what to run.
+The build directory's own wrapper properties, `gradle/wrapper/gradle-wrapper.properties` there,
+as `./gradlew` run there would read them — a nested build directory with a wrapper of its own is
+another build, as under `mill`; a `gradle` installed globally is not used. Run
+`./gradlew --version` once in a host terminal, and again whenever `distributionUrl` changes: that
+run downloads Gradle into `~/.gradle/wrapper/dists`, and the command is granted that one Gradle
+read-only — not the whole `dists` directory, which holds every Gradle the user ever ran a wrapper
+for. If the wrapper has not downloaded it yet, the command is refused, and the refusal says what
+to run.
 
 The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
 would download. The wrapper computes the directory exactly as Gradle's wrapper does
@@ -398,7 +400,7 @@ against the properties file's directory, the URL's file name without its extensi
 URL's MD5 as a base-36 number, under `$GRADLE_USER_HOME/wrapper/dists`, or
 `~/.gradle/wrapper/dists` when `GRADLE_USER_HOME` is unset in the launcher's environment; the
 home is the one directory inside. `distributionBase` and `distributionPath` must be the
-wrapper's defaults, and the project's `gradle.properties` must not set
+wrapper's defaults, and the build directory's `gradle.properties` must not set
 `systemProp.gradle.user.home`: each moves the distribution to a place the project chooses, and
 the executable is the user's to provision.
 
@@ -417,18 +419,36 @@ in neither registry.
 The daemon is Gradle's: the first command's client starts it under the command's profile, and
 later commands attach to it through Gradle's own matching, inside the profile; a client
 disconnected mid-build cancels the build, and a daemon still busy ten seconds later stops itself
-(`DaemonStateCoordinator`, `WatchForDisconnection`). The broker does not record the daemon, so
-it outlives the launch until Gradle's idle timeout, three hours, confined and holding nothing
-of the launch (`plan-host-build-daemons-and-gradle.md`, Phase 2, step 9); its registry directory
-goes with the broker's `tmp/`, so no later launch finds it.
+(`DaemonStateCoordinator`, `WatchForDisconnection`). The daemon detaches itself into a group of
+its own (`DaemonMain`, `setsid`), where its workers and test executors are forked, so ending the
+client's group leaves it alive; the broker ends it by proof (`GradleDaemons.scala`). After each
+command, and once more at the launch's end, the broker records every daemon started with the
+launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting the record
+of one gone; the launch's end signals the group behind each record as it does every recorded
+group. The proof is the daemon's initial environment, which the client starts it with
+(`DefaultProcessForkOptions`), read with `ps -E`: its `JAVA_TOOL_OPTIONS` names the broker's
+`tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
+No path proves it: the build writes across `tmp/` and the project, and a file a daemon of yours
+holds open, renamed into the registry under any name — the daemon log's included — is reported
+by the kernel at that name. `ps -E` reads the strings from the daemon's own memory
+(`sysctl_procargsx`), so build code in the daemon can rewrite them and hide the daemon from its
+own launch, and nothing else. A daemon no observation reached — one started under a broker that
+died during the command, or one so hidden — is confined and holds nothing of the launch, and
+exits on Gradle's idle timeout, three hours, once idle; one hung in its build never becomes idle,
+and nothing bounds it. Its registry directory goes with the broker's `tmp/`, so no later launch
+finds it.
 
 Three properties on the command line close the toolchain inventory to the launch's JDK —
 `org.gradle.java.installations.auto-detect=false`, `auto-download=false` and `paths=<JDK>` —
 where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
 naming it rather than meeting a denial. Gradle 9.7.1 is the release the plan names; older lines
 are out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a
-JDK it cannot run on. The gate has no Gradle rows, so nothing of this is measured under the
-profile (`plan-host-build-daemons-and-gradle.md`, Phase 2, step 9).
+JDK it cannot run on. The gate's Gradle rows (`src/probe/run-on-host-profile-gate.sh`) measure
+the distribution's grant, the build through the proxy, the daemon's reuse and record, the
+records following a cancel, the launch's end taking the daemon and the JVM its build forked —
+on TERM during the first build, the daemon still cancelling — a daemon of yours in a registry of
+your own left alone, the toolchain refusal, the native libraries mapped from the user home, and
+the unrelated service of this host reached under `gradle` alone.
 
 ### Maven
 
@@ -475,8 +495,9 @@ and records identify its child processes. Cleanup moves the directory out of the
 ending those processes and any leaderless sbt server its portfile identifies. The broker holds a
 session of the same kind for the launch's lifetime: its records name the launch's runtimes —
 `proxy-<program>-<hash>`, `server-sbt-<hash>` and `daemon-mill-<hash>`, the hash the build
-directory's — a `build-<hash>` file names the directory those serve, and its `tmp/` is where the
-sbt server binds its sockets and where the server and the daemon keep their temporary files.
+directory's, and `daemon-gradle-<pid>` for each Gradle daemon of the launch's one registry — a
+`build-<hash>` file names the directory those of a hash serve, and its `tmp/` is where the sbt
+server binds its sockets and where the servers and daemons keep their temporary files.
 Each command the broker dispatches holds a build lock — one per program and build directory,
 under `build-lock/` — for the command's life, and the broker's own
 work on the runtime before a command runs under it, so two launches on one project queue behind
@@ -615,11 +636,11 @@ its stderr in the file, for the channel log to keep.
 Everything else the broker does is what the stock tool does, or confinement the stock tool never
 had. These deviate, and each names why:
 
-- **Persistent processes end with the launch — confinement.** Stock sbt and Mill leave their
-  server or daemon running when the terminal that started it closes. The broker's run against
-  the launch's proxy and its forwarded environment, both of which die with the launch, so the
-  server and the daemon must too; the next start scavenges what a killed broker left, and a later
-  launch adopts none whose owner is gone.
+- **Persistent processes end with the launch — confinement.** Stock sbt, Mill and Gradle leave
+  their server or daemon running when the terminal that started it closes, Gradle's for three
+  idle hours. The broker's run against the launch's proxy and its forwarded environment, both of
+  which die with the launch, so the server and the daemons must too; the next start scavenges
+  what a killed broker left, and a later launch adopts none whose owner is gone.
 - **The wait for the portfile has a bound — operability, not confinement.** sbt's thin client
   waits for a starting server with no deadline, which an interactive user can Ctrl-C; the agent
   cannot, so an unbounded wait would be an unrecoverable command. The broker fails the start when
@@ -647,12 +668,14 @@ had. These deviate, and each names why:
 
 Two behaviors are the stock tool's, though they could be read as the broker's. It keeps one warm
 server or daemon per build directory, not one per program, so visiting another directory leaves
-the first warm. And a cancel does what the tool does, and the two tools differ: an sbt client's
+the first warm. And a cancel does what the tool does, and the tools differ: an sbt client's
 disconnect cancels only the running exec (`CommandExchange.removeChannel`, `force = false`) and
 leaves the warm server, so an interruption-ignoring test lingers in it exactly as it would in a
 terminal and the next command reuses the server; a Mill client's disconnect mid-command makes the
-daemon shut itself down (`Server.scala`), so the next `mill` command starts one. The broker
-retires neither and revives neither on its own.
+daemon shut itself down (`Server.scala`), so the next `mill` command starts one; a Gradle
+client's disconnect cancels the build, and the daemon stops itself only if still busy ten
+seconds later (`DaemonStateCoordinator`), so the next `gradle` command attaches or starts one.
+The broker retires none and revives none on its own.
 
 ## The Seatbelt profile
 
@@ -734,8 +757,10 @@ A rule-file edit takes effect when a proxy is next created, never by restarting 
 which holds the lines it was created with: at the first command from a build directory the
 launch has not visited, after `sandbox-run-on-host <program> shutdown` followed by a proxy's own
 end, or at the next launch, as the session's own rule file takes effect at the next launch. Until
-then a host removed from the file stays reachable from that proxy, and one added is not
-(`TODO.md`, "a rule-file edit taking effect at the next command").
+then a host removed from the file stays reachable from that proxy, and one added is not; to apply
+an edit, relaunch, as for the session's rule file. A broker retiring a running proxy on an edit is
+declined: what a launch may reach is decided at launch (`design.md`, "Design principles to
+preserve"), and a relaunch is the one step that applies an edit to both proxies alike.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
 `dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts

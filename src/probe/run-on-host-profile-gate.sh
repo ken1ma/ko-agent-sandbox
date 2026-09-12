@@ -6,7 +6,7 @@
 # what the contract claims — and, in the channel rows, whether the channel carries a command and
 # tears down with its requester.
 #
-#   sh src/probe/run-on-host-profile-gate.sh [sbt|mill|mvn|all] [quick]
+#   sh src/probe/run-on-host-profile-gate.sh [sbt|mill|gradle|mvn|all] [quick]
 #
 # The program selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
@@ -19,9 +19,10 @@
 # profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
 # profile, which is the measurement.
 #
-# The sbt rows build this repository. The mill rows build src/probe/mill-fixture and the mvn rows
-# src/probe/mvn-fixture, one-module projects that exist for them: this repository is sbt-built,
-# and a mill or Maven build of it would be a second build definition rather than a measurement.
+# The sbt rows build this repository. The mill rows build src/probe/mill-fixture, the gradle rows
+# src/probe/gradle-fixture and the mvn rows src/probe/mvn-fixture, one-module projects that exist
+# for them: this repository is sbt-built, and a mill, Gradle or Maven build of it would be a second
+# build definition rather than a measurement.
 # src/probe/deny-fixture exists for the unlisted-host row: its resolution must reach a host the
 # proxy refuses. src/probe/ivy-fixture exists for the inter-project row: resolving a dependsOn
 # edge enters Ivy, whose lock file lives in the Ivy home, and this repository has no such edge.
@@ -33,11 +34,11 @@
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 program=${1:-all}
-case "$program" in sbt|mill|mvn|all) ;; *) echo "usage: $0 [sbt|mill|mvn|all] [quick]" >&2; exit 2 ;; esac
+case "$program" in sbt|mill|gradle|mvn|all) ;; *) echo "usage: $0 [sbt|mill|gradle|mvn|all] [quick]" >&2; exit 2 ;; esac
 case "${2:-full}" in
     full) quick=0 ;;
     quick) quick=1 ;;
-    *) echo "usage: $0 [sbt|mill|mvn|all] [quick]" >&2; exit 2 ;;
+    *) echo "usage: $0 [sbt|mill|gradle|mvn|all] [quick]" >&2; exit 2 ;;
 esac
 want() { [ "$program" = all ] || [ "$program" = "$1" ]; }
 
@@ -70,10 +71,12 @@ report() { # status label detail
 
 # The project each profile is for.
 mill_project=$project/src/probe/mill-fixture
+gradle_project=$project/src/probe/gradle-fixture
 mvn_project=$project/src/probe/mvn-fixture
 project_of() {
     case "$1" in
         mill) printf '%s\n' "$mill_project" ;;
+        gradle) printf '%s\n' "$gradle_project" ;;
         mvn) printf '%s\n' "$mvn_project" ;;
         *) printf '%s\n' "$project" ;;
     esac
@@ -88,6 +91,8 @@ then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
 else machine "JAVA_HOME does not name a JDK"; fi
 machine "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
 machine "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+machine "gradle $(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin.zip$|\1|p' \
+    "$gradle_project/gradle/wrapper/gradle-wrapper.properties")"
 mvn_version=$(sed -n 's|^distributionUrl=.*/apache-maven-\(.*\)-bin.zip$|\1|p' \
     "$mvn_project/.mvn/wrapper/maven-wrapper.properties")
 machine "maven $mvn_version"
@@ -136,7 +141,7 @@ command_env() { # agent-v1 command...
         HOME="$HOME" ${LANG:+"LANG=$LANG"} ${LC_ALL:+"LC_ALL=$LC_ALL"} \
         TMPDIR="$SESSION_TMP" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
         COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
-        MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" \
+        MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" GRADLE_USER_HOME="$gradle_user_home" \
         JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP \
 -Dsbt.global.base=$sbt_global -Dsbt.ivy.home=$ivy_home -Dmaven.repo.local=$m2_repository \
 -Daether.connector.http.useSystemProperties=true -Djava.net.preferIPv4Stack=true" \
@@ -223,6 +228,23 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
+# A launch's gradle daemons carry the launch's tmp/ as java.io.tmpdir in their initial
+# environment, the client's own (GradleDaemons): those of every session under the root here,
+# this gate's own included. The "yours" row's daemon, unconfined in a registry under $work, is
+# found by its log open there (DaemonMain).
+gradle_daemons() {
+    for pid in $(pgrep -f -- 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null); do
+        ps -wwE -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' \
+            | grep -qF -- "=-Djava.io.tmpdir=$command_root/" && printf '%s\n' "$pid"
+    done
+}
+gate_gradle_daemons() {
+    for pid in $(pgrep -f -- 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null); do
+        lsof -a -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' \
+            | awk -v d="$work/your-registry/" 'index($0, d) == 1 { found = 1 } END { exit !found }' \
+            && printf '%s\n' "$pid"
+    done
+}
 # This run's proxies: a command's, and under the channel rows the broker's. A timed-out or killed
 # wrapper's, and a killed broker's, is ended by the next start's scavenge, but the gate must not
 # leave one when it exits before running a start. Only this run's: its wrappers run on the run's
@@ -252,6 +274,10 @@ broker_server_record() { # build-directory
 }
 broker_daemon_record() { # build-directory
     cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
+}
+# The broker's gradle daemon records, `<pid> <start>` each, one per daemon of the launch's registry.
+broker_gradle_records() {
+    cat "$command_root"/b*/records/daemon-gradle-* 2>/dev/null
 }
 # The mill daemon behind a broker record: the MillDaemonMain in the record's group, the starter's.
 daemon_in_group() { # record-line
@@ -293,6 +319,12 @@ if want mill && [ -n "$existing" ]; then
     echo "or kill it" >&2
     exit 1
 fi
+existing=$(gradle_daemons | tr '\n' ' ')
+if want gradle && [ -n "$existing" ]; then
+    echo "a gradle daemon of a launch is running under $command_root (pid $existing): end that launch," >&2
+    echo "or kill it" >&2
+    exit 1
+fi
 # Every server or daemon this run starts — `emit`'s included — is ended at exit, whether or not
 # `shutdown` could reach it: a server whose client hung is one `shutdown` cannot find. mill's
 # daemon holds out/mill-daemon/daemonLock and a port that a mill executable under the profile
@@ -302,6 +334,9 @@ end_project_servers() {
     for pid in $(deny_servers); do kill "$pid" 2>/dev/null && echo "ended deny-fixture server $pid"; done
     for pid in $(ivy_servers); do kill "$pid" 2>/dev/null && echo "ended ivy-fixture server $pid"; done
     for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended mill daemon $pid"; done
+    for pid in $(gradle_daemons) $(gate_gradle_daemons); do
+        kill "$pid" 2>/dev/null && echo "ended gradle daemon $pid"
+    done
     for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray command proxy $pid"; done
 }
 trap end_project_servers EXIT
@@ -322,6 +357,11 @@ if want mill; then
     echo "emitting the mill profile, for $mill_project"
     emit mill || exit 1
     profiles="$profiles mill"
+fi
+if want gradle; then
+    echo "emitting the gradle profile, for $gradle_project"
+    emit gradle || exit 1
+    profiles="$profiles gradle"
 fi
 if want mvn; then
     echo "emitting the mvn profile, for $mvn_project"
@@ -348,12 +388,14 @@ use_profile() { # program
     cache_v1=$(sed -n 's/^run-on-host cache: //p' "$work/emit-$1.log")
     sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
     ivy_home=$(sed -n 's/^ivy home: //p' "$work/emit-$1.log")
+    gradle_user_home=$(sed -n 's/^gradle user home: //p' "$work/emit-$1.log")
     m2_repository=$(sed -n 's/^m2 repository: //p' "$work/emit-$1.log")
     cache_root=${cache_v1%/cache/*}
     safe_path "SESSION_TMP" "$SESSION_TMP"
     safe_path "the run-on-host cache" "$cache_v1"
     safe_path "the sbt global base" "$sbt_global"
     safe_path "the Ivy home" "$ivy_home"
+    safe_path "the Gradle user home" "$gradle_user_home"
     safe_path "the Maven local repository" "$m2_repository"
 }
 for p in $profiles; do
@@ -372,6 +414,8 @@ safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Co
 safe_path "the sbt executable path" "$sbt_executable"
 safe_path "the mill download folder" "$mill_downloads"
 mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
+# The distribution ./gradlew unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.gradleDistributionDir).
+gradle_home=$(sed -n 's|^executable: \(.*\)/bin/gradle$|\1|p' "$work/emit-gradle.log" 2>/dev/null)
 # The distribution ./mvnw unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.mvnDistributionDir).
 mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/dev/null)
 
@@ -381,8 +425,8 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""; scratch_mvn=""; sibling_repo=""; pin_saved=""
-gate_opts_file=""; port_saved=""; redirect_saved=""
+scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""
+gate_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
 marker=gate-marker.${work##*.}
 cleanup() {
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
@@ -395,11 +439,17 @@ cleanup() {
     fi
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
+    [ -n "$scratch_gradle" ] && rm -rf "$scratch_gradle"
     [ -n "$scratch_mvn" ] && rm -rf "$scratch_mvn"
     [ -n "$sibling_repo" ] && rm -rf "$sibling_repo"
-    for p in $profiles; do use_profile "$p"; rm -f "$cache_v1/$marker" "$SESSION_TMP/$marker" 2>/dev/null; done
+    for p in $profiles; do
+        use_profile "$p"
+        rm -f "$cache_v1/$marker" "$SESSION_TMP/$marker" "$gradle_user_home/$marker" 2>/dev/null
+    done
     rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" \
-        "$HOME/.m2/repository/$marker" 2>/dev/null
+        "$HOME/.gradle/$marker" "$HOME/.m2/repository/$marker" 2>/dev/null
+    # The unrelated-service row's listener is this gate's.
+    [ -n "$unrelated_listener" ] && kill "$unrelated_listener" 2>/dev/null
     # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
     # session's live inside its container.
     if [ -n "${channel_broker:-}" ]; then
@@ -413,6 +463,7 @@ trap cleanup EXIT
 scratch_of() {
     case "$1" in
         mill) printf '%s\n' "$scratch_mill" ;;
+        gradle) printf '%s\n' "$scratch_gradle" ;;
         mvn) printf '%s\n' "$scratch_mvn" ;;
         *) printf '%s\n' "$scratch_sbt" ;;
     esac
@@ -423,7 +474,10 @@ mkdir "$sibling_repo/.git"
 printf 'fixture\n' > "$sibling_repo/.git/config"
 for p in $profiles; do
     scratch=$(mktemp -d "$(project_of "$p")/gate-scratch.XXXXXX") || exit 1
-    case "$p" in mill) scratch_mill=$scratch ;; mvn) scratch_mvn=$scratch ;; *) scratch_sbt=$scratch ;; esac
+    case "$p" in
+        mill) scratch_mill=$scratch ;; gradle) scratch_gradle=$scratch ;; mvn) scratch_mvn=$scratch ;;
+        *) scratch_sbt=$scratch ;;
+    esac
     mkdir -p "$scratch/sub/nested/.git/hooks" "$scratch/.ko-agent-sandbox/egress"
     printf 'fixture\n' > "$scratch/sub/nested/.git/config"
     printf 'fixture\n' > "$scratch/.ko-agent-sandbox/egress/rule"
@@ -524,6 +578,23 @@ if want mill; then
     else report FAIL "no mill daemon survives its command" "$(mill_daemons | tr '\n' ' ')"; fi
 fi
 
+if want gradle; then
+    use_profile gradle
+    # Each wrapper row's client starts a daemon in the registry under the command's session,
+    # resolving through the proxy into the run-on-host cache's Gradle user home; the wrapper
+    # records the daemon after the command and ends it with the session (GradleDaemons).
+    for task in help build; do
+        [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (wrapper)" "quick mode"; continue; }
+        if wrapper gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
+        then report PASS "gradle $task (wrapper)" "$(grep -m1 'BUILD SUCCESSFUL' "$work/gradle.log" | cut -c1-40)"
+        else report FAIL "gradle $task (wrapper)" \
+            "$(grep -m1 'FAILURE\|^refused\|Exception' "$work/gradle.log" | cut -c1-70)"; fi
+    done
+    if [ -z "$(gradle_daemons)" ]
+    then report PASS "no gradle daemon survives its command"
+    else report FAIL "no gradle daemon survives its command" "$(gradle_daemons | tr '\n' ' ')"; fi
+fi
+
 if want mvn; then
     use_profile mvn
     # One-shot, no daemon: each row is one Maven JVM under the profile, resolving plugins and the
@@ -538,6 +609,22 @@ if want mvn; then
 fi
 
 # --- negative rows, under every selected profile -----------------------------------------------
+
+# The unrelated service the network rows connect to, bound before the rows to a port of the
+# kernel's choosing on the loopback address.
+cat > "$work/unrelated.py" <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0)); s.listen(5)
+print("port %d" % s.getsockname()[1], flush=True)
+while True:
+    c, _ = s.accept()
+    c.close()
+PY
+python3 "$work/unrelated.py" >"$work/unrelated.log" 2>&1 & unrelated_listener=$!
+tries=0
+while ! grep -q port "$work/unrelated.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+unrelated_port=$(sed -n 's/^port //p' "$work/unrelated.log")
 
 for p in $profiles; do
     use_profile "$p"
@@ -575,6 +662,8 @@ for p in $profiles; do
     expect_denied "$p" "write ~/.sbt/boot" ": > '$HOME/.sbt/boot/$marker'"
     present_or_skip "write ~/.ivy2" "$HOME/.ivy2" \
         && expect_denied "$p" "write ~/.ivy2" ": > '$HOME/.ivy2/$marker'"
+    present_or_skip "write ~/.gradle" "$HOME/.gradle" \
+        && expect_denied "$p" "write ~/.gradle" ": > '$HOME/.gradle/$marker'"
     present_or_skip "write ~/.m2/repository" "$HOME/.m2/repository" \
         && expect_denied "$p" "write ~/.m2/repository" ": > '$HOME/.m2/repository/$marker'"
     expect_denied "$p" "write the Coursier-installed sbt script" ": >> '$sbt_executable'"
@@ -598,6 +687,15 @@ for p in $profiles; do
         expect_denied mvn "list the wrapper's dists folder" "ls '${mvn_home%/*/*}'"
         expect_denied mvn "write the Maven distribution" ": >> '$mvn_home/bin/mvn'"
     fi
+    if [ "$p" = gradle ]; then
+        # The one provisioned distribution runs; its neighbours under wrapper/dists are unreadable.
+        if ( cd "$gradle_project" && sandboxed gradle "$gradle_home/bin/gradle" --version ) \
+            >/dev/null 2>"$work/row.err"
+        then report PASS "read and execute the Gradle distribution"
+        else report FAIL "read and execute the Gradle distribution" "$(first_error)"; fi
+        expect_denied gradle "list the wrapper's dists folder" "ls '${gradle_home%/*/*}'"
+        expect_denied gradle "write the Gradle distribution" ": >> '$gradle_home/bin/gradle'"
+    fi
     if [ "$p" = mill ]; then
         # The one provisioned file, the JVM launcher, is executable; its neighbours in the download
         # folder are not. Run directly and without the daemon: this row is the grant, not the runtime.
@@ -613,6 +711,7 @@ for p in $profiles; do
     expect_allowed "$p" "write run-on-host cache coursier/v1/..." ": > '$cache_v1/$marker'"
     expect_allowed "$p" "write PROJECT/..." ": > '$scratch/ok'"
     expect_allowed "$p" "write command's temporary directory" ": > '$SESSION_TMP/$marker'"
+    [ "$p" = gradle ] && expect_allowed gradle "write the Gradle user home" ": > '$gradle_user_home/$marker'"
     # The guard is scoped to the project: a build's tests may make throwaway repositories in the
     # command's temporary directory, and this project's own do.
     expect_allowed "$p" "create .git in the command's temporary directory" \
@@ -629,6 +728,14 @@ for p in $profiles; do
     expect_denied "$p" "HTTPS around the proxy (curl, direct)" \
         "/usr/bin/curl --max-time 5 -sS https://repo1.maven.org/maven2/"
     expect_denied "$p" "DNS resolution (direct socket)" "/usr/bin/nslookup -timeout=3 example.com"
+    # An unrelated service of this host: what a Gradle process may reach — its daemon, workers
+    # and file-lock socket connect to each other's ports of the kernel's choosing — and no other
+    # program's process may (SECURITY.md "Run on host", the table). The listener is the gate's.
+    unrelated_row="connect to an unrelated service of this host"
+    if [ -z "$unrelated_port" ]; then report SKIP "$unrelated_row" "the gate's listener did not bind"
+    elif [ "$p" = gradle ]
+    then expect_allowed "$p" "$unrelated_row" "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/$unrelated_port'"
+    else expect_denied "$p" "$unrelated_row" "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/$unrelated_port'"; fi
 done
 # --- the command's proxy ----------------------------------------------------------------------------
 
@@ -876,7 +983,8 @@ channel: a dead shim ends the running command
 channel: a dead sandbox ends the channel, its command and the broker's runtimes
 channel: TERM to the broker ends its command before the broker exits
 channel: a killed broker's command ends with it, and its server with the next start
-channel: a planted portfile nominates nothing: refused, no shutdown spoken"
+channel: a planted portfile nominates nothing: refused, no shutdown spoken
+channel: the broker's end takes the gradle daemon, and the JVM its build forked"
 mill_channel_rows="channel: mill compile starts the broker's daemon, and the next command reuses it
 channel: a mill build's forked JVM writes temporary files where the daemon's profile allows
 channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it
@@ -888,15 +996,26 @@ channel: a mill daemon of yours, matching, is ended by proof before the broker's
 channel: a mill daemon of yours mid-command is left until its client disconnects
 channel: a mill daemon of yours busy past the bound is refused, and left alive
 channel: a new launch adopts nothing planted in out/mill-daemon"
+gradle_channel_rows="channel: gradle build starts a daemon in the launch's registry, and the next command reuses it
+channel: the daemon maps Gradle's native libraries from the user home's read-write grant
+channel: a toolchain the project asks for, not the launch's JDK, fails by name
+channel: a gradle daemon of yours, in a registry of your own, is neither attached to nor ended
+channel: after a cancelled gradle command, the next command runs, the records following the daemons"
 skip_channel() {
     while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
 $channel_rows
 $mill_channel_rows
+$gradle_channel_rows
 EOF
 }
 skip_mill_channel() {
     while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
 $mill_channel_rows
+EOF
+}
+skip_gradle_channel() {
+    while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
+$gradle_channel_rows
 EOF
 }
 # Only processes the stub podman recorded, proven by the same pid-plus-start identity the
@@ -947,8 +1066,8 @@ server_in_group() { # record-line
 }
 if [ "$quick" = 1 ]; then
     skip_channel "quick mode"
-elif ! want sbt; then
-    skip_channel "needs sbt"
+elif [ "$program" = mvn ]; then
+    skip_channel "needs sbt, mill or gradle"
 else
     # macOS has neither flock(1) nor timeout(1): the shim's serialization is stubbed out — the
     # rows are serial — and its exit-read bound runs unbounded, which only a broker dying
@@ -974,7 +1093,7 @@ EOF
         echo true > "$work/running"
         rm -rf "$channel_dir"
         "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
-            --serve-run-on-host "$work/podman" C "$project" sbt,mill "$work/channel.log" "$project" \
+            --serve-run-on-host "$work/podman" C "$project" sbt,mill,gradle "$work/channel.log" "$project" \
             >/dev/null 2>&1 & channel_broker=$!
         tries=0
         while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
@@ -1347,6 +1466,114 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
         channel_settled
         fi
 
+        # --- gradle: the launch's daemons (doc/plan-host-build-daemons-and-gradle.md, step 9) ----
+        #
+        # Gradle's own client starts the daemon in the launch's registry under the broker's tmp/,
+        # and later clients match it there; the broker records each daemon after every command
+        # and ends the records' groups with its session (GradleDaemons). The fixture's `run`
+        # prints the TMPDIR the forked JVM sees and, with `sleep`, stays up for the cancel and
+        # teardown rows.
+        if ! want gradle; then skip_gradle_channel "needs gradle"; else
+        gradle_row="channel: gradle build starts a daemon in the launch's registry, and the next command reuses it"
+        with_timeout 900 channel_shim chan-gradle1.log "$gradle_project" gradle build; gradle_status=$?
+        channel_settled
+        gradle_record=$(broker_gradle_records)
+        gradle_daemon=$(gradle_daemons | head -1)
+        with_timeout 300 channel_shim chan-gradle2.log "$gradle_project" gradle help; gradle2_status=$?
+        channel_settled
+        if [ "$gradle_status" -eq 0 ] && [ "$gradle2_status" -eq 0 ] && [ -n "$gradle_daemon" ] \
+            && [ "${gradle_record%% *}" = "$gradle_daemon" ] && record_alive "$gradle_record" \
+            && [ "$(broker_gradle_records)" = "$gradle_record" ] \
+            && [ "$(gradle_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q 'BUILD SUCCESSFUL' "$work/chan-gradle1.log"
+        then report PASS "$gradle_row" "daemon $gradle_daemon"
+        else report FAIL "$gradle_row" "exits $gradle_status/$gradle2_status, daemon ${gradle_daemon:-none}, records: \
+$(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; fi
+
+        # Gradle unpacks its native libraries under the user home and loads them from there: the
+        # daemon has one mapped, from the directory the profile grants read-write.
+        native_row="channel: the daemon maps Gradle's native libraries from the user home's read-write grant"
+        # The launch's user home is the broker's project's, under its run-on-host cache
+        # (RunOnHostPrereqs.gradleUserHomeOf); its name is the launcher's own.
+        native=$(lsof -p "${gradle_daemon:-0}" 2>/dev/null | grep -F "/gradle-user-home/native/" | head -1 \
+            | awk '{print $NF}')
+        if [ -n "$native" ]
+        then report PASS "$native_row" "${native##*/}"
+        else report FAIL "$native_row" \
+            "nothing under a gradle-user-home/native/ mapped in daemon ${gradle_daemon:-none}"; fi
+
+        # The toolchain inventory is the launch's JDK alone, auto-detection and auto-download off
+        # (RunOnHostSandbox.gradleCommand): a project asking for another feature version fails
+        # naming it, before any denial could.
+        toolchain_row="channel: a toolchain the project asks for, not the launch's JDK, fails by name"
+        granted=$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 \
+            | sed -n 's/^ *java.specification.version = //p')
+        other=$([ "$granted" = 21 ] && echo 17 || echo 21)
+        with_timeout 600 channel_shim chan-gradle-toolchain.log "$gradle_project" gradle compileJava \
+            "-PgateToolchain=$other"; toolchain_status=$?
+        channel_settled
+        toolchain_logs="$work/chan-gradle-toolchain.log $work/chan-gradle-toolchain.log.err"
+        toolchain_said=$(grep -m1 -hi 'toolchain' $toolchain_logs)
+        if [ "$toolchain_status" -ne 0 ] && [ -n "$toolchain_said" ] \
+            && ! grep -q 'Operation not permitted' $toolchain_logs
+        then report PASS "$toolchain_row" "$(printf '%s' "$toolchain_said" | cut -c1-60)"
+        else report FAIL "$toolchain_row" \
+            "exit $toolchain_status: $(tail -1 "$work/chan-gradle-toolchain.log.err" | cut -c1-60)"; fi
+
+        # A daemon of yours: one in a registry the launch does not name, so the launch's
+        # commands neither attach to it nor end it. Started and stopped unconfined by the
+        # fixture's own gradlew, with the JDK the profile grants first on its PATH, in a registry
+        # of this gate's under $work — not your home's, where `--stop` would stop every daemon of
+        # yours of that version (DaemonStopClient), unrelated builds' included.
+        foreign_gradle() { # in the fixture, unconfined: command...
+            ( cd "$gradle_project" \
+                && env -u JAVA_OPTS -u JDK_JAVA_OPTIONS -u GRADLE_OPTS PATH="$JAVA_HOME/bin:$PATH" \
+                    "$@" "-Dorg.gradle.daemon.registry.base=$work/your-registry" )
+        }
+        own_row="channel: a gradle daemon of yours, in a registry of your own, is neither attached to nor ended"
+        foreign_gradle ./gradlew help >"$work/foreign-gradle.log" 2>&1
+        foreign=$(gate_gradle_daemons | head -1)
+        with_timeout 300 channel_shim chan-gradle-own.log "$gradle_project" gradle help; own_status=$?
+        channel_settled
+        foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
+        ours=$(gradle_daemons | tr '\n' ' ')
+        foreign_gradle ./gradlew --stop >/dev/null 2>&1
+        if [ -n "$foreign" ] && [ "$foreign_alive" = yes ] && [ "$own_status" -eq 0 ] \
+            && [ -n "$ours" ] && ! broker_gradle_records | grep -q "^$foreign "
+        then report PASS "$own_row" "yours $foreign untouched; the launch's $ours"
+        else report FAIL "$own_row" "yours ${foreign:-none} alive after: $foreign_alive, exit $own_status, \
+the launch's: ${ours:-none}; $(tail -1 "$work/foreign-gradle.log" | cut -c1-50)"; fi
+
+        # A client disconnect mid-build: Gradle cancels the build and, still busy after its
+        # ten-second grace, stops the daemon (DaemonStateCoordinator, WatchForDisconnection); the
+        # next command attaches or starts one, and the records follow — a stopped daemon's
+        # forgotten, a fresh one's written.
+        cancel_row="channel: after a cancelled gradle command, the next command runs, the records following the daemons"
+        channel_shim chan-gradle-cancel.log "$gradle_project" gradle run --args=sleep & shim=$!
+        tries=0
+        while ! grep -q 'fixture-main' "$work/chan-gradle-cancel.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        cancel_daemon=$(gradle_daemons | head -1)
+        kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
+        channel_settled
+        tries=0
+        while pgrep -f 'fixture.Main sleep' >/dev/null 2>&1 && [ "$tries" -lt 120 ]; do
+            tries=$((tries + 1)); sleep 0.5
+        done
+        forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | head -1)
+        if [ -n "$forked" ]
+        then report INFO "forked run JVM after the cancel" "alive ($forked); killed"; kill "$forked" 2>/dev/null
+        else report INFO "forked run JVM after the cancel" "gone"; fi
+        with_timeout 300 channel_shim chan-gradle-after-cancel.log "$gradle_project" gradle help; after_status=$?
+        channel_settled
+        if [ -n "$cancel_daemon" ] && [ "$after_status" -eq 0 ] \
+            && [ "$(gradle_daemons | wc -l | tr -d ' ')" -eq 1 ] \
+            && [ "$(broker_gradle_records | wc -l | tr -d ' ')" -eq 1 ] && record_alive "$(broker_gradle_records)"
+        then report PASS "$cancel_row" "daemon before $cancel_daemon, after $(gradle_daemons)"
+        else report FAIL "$cancel_row" "daemon before ${cancel_daemon:-none}, exit $after_status, daemons after: \
+$(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')"; fi
+        fi
+
         with_timeout 120 channel_shim chan-refused.log /private/tmp sbt about; status=$?
         if [ "$status" -eq 2 ] && grep -q 'CHANNEL_UNAVAILABLE' "$work/chan-refused.log.err"
         then report PASS "channel: a working directory outside the project is refused"
@@ -1377,10 +1604,23 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
             "warm server: ${server_before:-none} $(record_alive "$server_before" && echo alive || echo gone)"; fi
 
         # The sandbox dies: every exec dies with it, the shim included; the broker ends the command
-        # and, with the container gone, itself: its session, server and proxy with it.
-        channel_shim chan-dead.log "$project" sbt compile & shim=$!
-        tries=0
-        while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        # and, with the container gone, itself: its session, server and proxy with it. With gradle
+        # the command is a `run` whose forked JVM sleeps in the daemon's group, the group the
+        # broker's end signals behind the daemon's record.
+        gradle_end_row="channel: the broker's end takes the gradle daemon, and the JVM its build forked"
+        gradle_run_daemon=""
+        if want gradle; then
+            channel_shim chan-dead.log "$gradle_project" gradle run --args=sleep & shim=$!
+            tries=0
+            while ! grep -q 'fixture-main' "$work/chan-dead.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+                tries=$((tries + 1)); sleep 0.5
+            done
+            gradle_run_daemon=$(gradle_daemons | head -1)
+        else
+            channel_shim chan-dead.log "$project" sbt compile & shim=$!
+            tries=0
+            while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+        fi
         broker_session=$(broker_session_of "$project")
         echo false > "$work/running"
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1399,6 +1639,15 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
 daemons: $(mill_daemons | tr '\n' ' '), broker $broker_state, \
 proxies: $(stray_proxies | tr '\n' ' '), session ${broker_session:-unknown}: \
 $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
+        if ! want gradle; then report SKIP "$gradle_end_row" "needs gradle"
+        else
+            forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | tr '\n' ' ')
+            if [ -n "$gradle_run_daemon" ] && [ -z "$(gradle_daemons)" ] && [ -z "$forked" ]
+            then report PASS "$gradle_end_row" "daemon $gradle_run_daemon and its fork gone"
+            else report FAIL "$gradle_end_row" "daemon ${gradle_run_daemon:-none} \
+$(kill -0 "${gradle_run_daemon:-0}" 2>/dev/null && echo alive || echo gone), daemons: $(gradle_daemons | tr '\n' ' '), \
+forked: ${forked:-none}"; pkill -f 'fixture.Main sleep' 2>/dev/null; fi
+        fi
         rm -rf "$channel_dir"
 
         # The broker's own end mid-command. TERM: its hook ends the wrapper and waits for the
@@ -1411,9 +1660,25 @@ $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
         broker_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")
             if ! start_channel_broker; then report FAIL "$1" "the broker made no FIFOs"; return; fi
-            channel_shim "chan-broker-$2.log" "$project" sbt compile & shim=$!
-            tries=0
-            while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+            # With gradle, TERM arrives during the launch's first gradle build, its daemon
+            # unobserved and still cancelling when the teardown looks, so the teardown must find
+            # it then. On KILL nothing observes, so the daemon is one a completed command
+            # recorded, for the next start's scavenge to end by that record.
+            if want gradle && [ "$2" = TERM ]; then
+                channel_shim "chan-broker-$2.log" "$gradle_project" gradle run --args=sleep & shim=$!
+                tries=0
+                while ! grep -q 'fixture-main' "$work/chan-broker-$2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+                    tries=$((tries + 1)); sleep 0.5
+                done
+            else
+                if want gradle; then
+                    with_timeout 600 channel_shim "chan-broker-$2-gradle.log" "$gradle_project" gradle help
+                    channel_settled
+                fi
+                channel_shim "chan-broker-$2.log" "$project" sbt compile & shim=$!
+                tries=0
+                while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
+            fi
             kill "-$2" "$channel_broker" 2>/dev/null
             tries=0
             while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
@@ -1431,11 +1696,12 @@ $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
                 proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
             fi
             if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
+                && [ -z "$(gradle_daemons)" ] && ! pgrep -f 'fixture.Main sleep' >/dev/null 2>&1 \
                 && [ "$proxies_ended" = yes ] && ! kill -0 "$channel_broker" 2>/dev/null \
                 && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
             then report PASS "$1"
             else report FAIL "$1" "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
-daemons: $(mill_daemons | tr '\n' ' '), \
+daemons: $(mill_daemons | tr '\n' ' ') $(gradle_daemons | tr '\n' ' '), \
 broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), proxies ended: $proxies_ended, \
 logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; fi
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1536,11 +1802,12 @@ leftover=""
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"
 [ -n "$(ivy_servers)" ] && leftover="$leftover ivy-fixture server: $(ivy_servers | tr '\n' ' ')"
 [ -n "$(mill_daemons)" ] && leftover="$leftover mill daemon: $(mill_daemons | tr '\n' ' ')"
+[ -n "$(gradle_daemons)" ] && leftover="$leftover gradle daemon: $(gradle_daemons | tr '\n' ' ')"
 [ -n "$(stray_proxies)" ] && leftover="$leftover proxy: $(stray_proxies | tr '\n' ' ')"
 [ "$(commands_now)" -gt 0 ] && leftover="$leftover command directories: $(commands_now)"
 if [ -z "$leftover" ]
-then report PASS "no proxy, sbt server or mill daemon survives its command"
-else report FAIL "no proxy, sbt server or mill daemon survives its command" "$leftover"; fi
+then report PASS "no proxy, sbt server, mill daemon or gradle daemon survives its command"
+else report FAIL "no proxy, sbt server, mill daemon or gradle daemon survives its command" "$leftover"; fi
 
 echo
 echo "PASS $pass  FAIL $fail  SKIP $skip"

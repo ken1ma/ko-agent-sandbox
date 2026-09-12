@@ -262,18 +262,6 @@ a timer outliving a retired runtime is a no-op on its replacement. Its tests: a 
 as the timer fires, that late callback, and a stale timer after replacement, each leaving one
 consistent runtime.
 
-## Deferred — a rule-file edit taking effect at the next command
-
-A program's rule file, and the distribution `cs install sbt` execs, are read when the broker
-creates a runtime, and an edit to either leaves a running one as it is: the edit takes effect at
-the runtime's next creation (`run-on-host.md`, "The command's egress proxy"). Until then a host
-removed from the file stays reachable from that runtime's proxy, and one added is not. The form:
-the broker compares, before each command, the file's lines and the distribution's home with those
-the runtime was created from, and retires the runtime on a difference — the proxy with its server
-or daemon, whose JVM options carry the proxy's port from their start — so the edit takes effect
-at the next command, at the cost of a start. The comparison the broker makes before each `mill`
-command for Mill's own inputs (`RunOnHostPrereqs.millDaemonConfig`) is the shape.
-
 ## Deferred — ending the mill starter once the daemon listens
 
 The broker starts Mill's daemon by running the build directory's `./mill version` under the
