@@ -82,7 +82,7 @@ object RunOnHostPrereqs:
     case Refusal.PrereqMillJvmNotSystem(found) =>
       s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
     case Refusal.PrereqGradleWrapperMissing =>
-      "the project has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
+      "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
     case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
     case Refusal.PrereqGradleDistributionMissing(url, directory) =>
       s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once in a host terminal"

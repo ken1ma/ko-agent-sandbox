@@ -149,6 +149,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     wrapperCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]] = (_, _, _) => Right(Seq.empty),
+    ended: String => Unit = _ => (),
   )(check: (Path, Path, () => String) => Unit): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
@@ -184,6 +185,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
           wrapperCommand = (program, directory, _, arguments) =>
             RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),
           runtime = runtime,
+          ended = ended,
         ),
         line => log.synchronized { log.append(line).append('\n'); () },
       ),
@@ -216,13 +218,18 @@ class RunOnHostChannelTest extends munit.FunSuite:
     (process.waitFor(), String(out, UTF_8), String(err, UTF_8))
 
   test("a command streams both channels back and returns its own exit code"):
-    channel((program, cwd, args) =>
-      Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
+    val endedPrograms = java.util.concurrent.CopyOnWriteArrayList[String]()
+    channel(
+      (program, cwd, args) =>
+        Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
+      ended = endedPrograms.add(_),
     ): (project, _, brokerLog) =>
       val (exit, out, err) = shimCall(project, "sbt", "test", "-v")
       assertEquals(exit, 7)
       assertEquals(out, s"ran sbt test -v in $project\n")
       assertEquals(err, "complaint\n")
+      // The service hears of the command's end with its program, once the spawn is gone.
+      assertEquals(endedPrograms.asScala.toList, List("sbt"))
       // The shim leaves as soon as it has its exit code, and the log records that as the
       // answer's end, never as a requester lost mid-command. The exit line lands after the
       // shim's own return, by the exit writer's end, so it is awaited.
@@ -476,4 +483,4 @@ class RunOnHostChannelTest extends munit.FunSuite:
     assertEquals(exit, 1)
     assert(err.contains("--run-on-host"), err)
     // An unknown program is a usage error before the channel is consulted.
-    assertEquals(shimCall(project, "gradle", "build")._1, 64)
+    assertEquals(shimCall(project, "ant", "build")._1, 64)

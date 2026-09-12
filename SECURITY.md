@@ -867,8 +867,8 @@ the mechanism. Its security properties and costs are:
   resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records — its own
   per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
   and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
-  archive cache, the one mill launcher the user provisioned, the one Gradle the project's wrapper
-  unpacked under `$GRADLE_USER_HOME/wrapper/dists`, or `~/.gradle/wrapper/dists` when
+  archive cache, the one mill launcher the user provisioned, the one Gradle the build directory's
+  wrapper unpacked under `$GRADLE_USER_HOME/wrapper/dists`, or `~/.gradle/wrapper/dists` when
   `GRADLE_USER_HOME` is unset, the one Maven the project's wrapper unpacked under
   `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
   temporary directory for that
@@ -934,10 +934,13 @@ the mechanism. Its security properties and costs are:
   tool"). Gradle's daemon is Gradle's own: the client starts it under the profile and matches it
   in a daemon registry of the launch's own, under the broker's `tmp/` — not in the per-project
   user home, where one launch's `gradle --stop` would end another launch's builds, and never
-  yours under `~/.gradle` — and the broker does not record it, so it outlives the launch
-  until Gradle's idle timeout, three hours, confined and holding nothing of the launch
-  (`doc/plan-host-build-daemons-and-gradle.md`, Phase 2, step 9). Maven runs once and exits,
-  so no warm process spans its commands.
+  yours under `~/.gradle` — and the broker records it after each command by pid and start time,
+  the launch's `java.io.tmpdir` in its initial environment the proof, and ends its group, workers
+  and test executors in it, with the launch. A daemon started under a broker that died during the
+  command is unrecorded, and so is one whose build code rewrote that environment in the daemon's
+  own memory, which `ps` reads it from: confined and holding nothing of the launch, it exits on
+  Gradle's idle timeout, three hours, once idle, and one hung in its build has no bound. Maven
+  runs once and exits, so no warm process spans its commands.
 
   A broker signals only its own servers and daemons. A server of *yours* holding a build directory's
   portfile — from your own terminal, outside any launch — is ended before the broker's starts, and
@@ -997,12 +1000,13 @@ the mechanism. Its security properties and costs are:
   by the same teardown; a broker ended by TERM exits only after that teardown, and then ends its
   own session — its servers', daemons' and proxies' groups, the servers' stderr files, the
   daemon starters' output and the proxies' audit logs appended to the channel's log first — as
-  it does at the launch's end. No server or daemon the broker started survives the launch that
-  owns it — a Gradle daemon, which the client starts, is the exception above — and a later
-  launch adopts none whose owner is gone: a new broker publishes a new session and reuses
-  nothing. If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups
-  remain, the broker's servers, daemons and proxies among them, and the next start's scavenger
-  ends them by proof, never by guess — a server whose group leader is gone, by the shutdown
+  it does at the launch's end. No server or daemon the broker recorded survives the launch that
+  owns it — a Gradle daemon its client started and the broker then recorded included; one it never
+  recorded is the residual above — and a later launch adopts none whose owner is gone: a new
+  broker publishes a new session and reuses nothing. If SIGKILL prevents the wrapper's or the
+  broker's teardown, the recorded groups remain, the broker's servers, daemons and proxies among
+  them, and the next start's scavenger ends them by proof, never by guess — a server whose group
+  leader is gone, by the shutdown
   protocol at the socket its portfile names, sent only once that socket is proven inside the dead
   session's directory; a daemon whose group leader is gone is nothing a file attributes, and
   exits on Mill's own idle timeout.
@@ -1023,7 +1027,7 @@ port grant is a port at every address of this host too: the proxy listens on the
 so the grant reaches, beside it, only a service listening on that port at another address.
 Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
 each other's, so it needs both grants (`doc/plan-host-build-daemons-and-gradle.md`, "Security
-model"); the daemon the client starts is not ended with the launch (the runtime bullet above).
+model").
 
 ## No containers inside the sandbox by default
 

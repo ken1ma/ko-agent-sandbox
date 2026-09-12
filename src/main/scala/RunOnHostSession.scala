@@ -614,9 +614,11 @@ object RunOnHostSession:
         signal("KILL")
         (1 to 50).exists(_ => if members.isEmpty then true else { Thread.sleep(100); false })
 
-    private def lines(command: String*): Vector[String] =
+    /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
+    private[launcher] def lines(command: String*): Vector[String] =
       try
-        val process = java.lang.ProcessBuilder(command*).start()
+        val process =
+          java.lang.ProcessBuilder(command*).redirectError(java.lang.ProcessBuilder.Redirect.DISCARD).start()
         val output = String(process.getInputStream.readAllBytes(), UTF_8)
         process.waitFor()
         output.linesIterator.map(_.trim).filter(_.nonEmpty).toVector

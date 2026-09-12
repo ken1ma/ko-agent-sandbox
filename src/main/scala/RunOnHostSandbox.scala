@@ -140,12 +140,16 @@ object RunOnHostSandbox:
             provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
             real <- realPath(provisioned).toRight(s"$provisioned vanished")
           yield (real, None, Some(launcher))
+        // The build directory's wrapper, as `./gradlew` there would run: a nested build directory
+        // with a wrapper of its own is another build, as under mill.
         case Program.Gradle =>
-          val properties = project.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
+          val properties = buildDirectory.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
           for
             text <- context("gradle wrapper")(readLatin1(properties).toRight(Refusal.PrereqGradleWrapperMissing))
             url <- context("gradle wrapper")(
-              gradleDistributionUrl(text, properties.getParent, readLatin1(project.resolve("gradle.properties"))),
+              gradleDistributionUrl(
+                text, properties.getParent, readLatin1(buildDirectory.resolve("gradle.properties")),
+              ),
             )
             userHome <- gradleUserHome(env).toRight("no Gradle user home")
             home <- context("gradle distribution")(
@@ -794,12 +798,12 @@ object RunOnHostSandbox:
    * another launcher. On a cancel the broker follows each tool: a cancelled sbt command's server
    * is not retired, since stock sbt's disconnect cancels the exec and leaves the server, and a
    * cancelled mill command's daemon shuts itself down, as stock Mill's does on a disconnect
-   * mid-command, so the next mill command starts one. Gradle's runtime is its proxy alone: the
-   * client starts and matches the daemon under the broker's own user home, inside the profile,
-   * and the daemon is not recorded (plan-host-build-daemons-and-gradle.md, step 9). Maven is
-   * never here: it runs once and exits, its proxy with the command. The gate's entry holds one of
-   * these over the command's own session for its one command, so the one lifecycle has two
-   * callers and no second owner.
+   * mid-command, so the next mill command starts one. Gradle's runtime is its proxy: the client
+   * starts and matches the daemon in the launch's own registry, inside the profile, and the
+   * broker records the registry's daemons after each command and ends them with its session
+   * (GradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
+   * The gate's entry holds one of these over the command's own session for its one command, so
+   * the one lifecycle has two callers and no second owner.
    *
    * A broker signals only its own servers and daemons (SECURITY.md "Run on host"): when another
    * launch owns the build directory's, this broker refuses rather than end it. `scavenge` runs
@@ -824,6 +828,8 @@ object RunOnHostSandbox:
     daemon: DaemonStart => Either[String, MillDaemons.Daemon] =
       start => MillDaemons.start(session, authority, forwards, RunOnHostSession.HostProcesses, log, start),
     scavenge: () => Unit = () => (),
+    // The daemons holding the launch's registry under the given tmp/ (GradleDaemons.daemons).
+    gradleDaemons: Path => Vector[(Long, String)] = GradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
   ):
     /** A runtime and, for mill, its daemon with the configuration it was started from. */
     private case class Live(
@@ -860,6 +866,15 @@ object RunOnHostSandbox:
           val rendezvous = if program == Program.Mill then MillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
           rendezvous.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
 
+    /** After a dispatched command ended, however it ended, and before the session's end: the
+      * launch's Gradle daemons recorded, so the session's end takes them (GradleDaemons.record).
+      * The registry is the launch's, one for every build directory, so the program alone says
+      * whether there is anything to observe. */
+    def commandEnded(program: Program): Unit =
+      synchronized:
+        if program == Program.Gradle then
+          GradleDaemons.record(session.records, gradleDaemons(session.tmp), processes).foreach(log)
+
     /** prepare, past the mill rendezvous check: the runtime reused, its server or daemon
       * replaced, or the runtime created. */
     private def prepared(
@@ -882,9 +897,8 @@ object RunOnHostSandbox:
             log(s"retired ${serverRecord(hash).getFileName}, $why: ${discard(serverRecord(hash))}")
             startServer(current, arguments).map(_ => Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) && program == Program.Gradle =>
-          // The runtime is the proxy: Gradle's client matches a daemon under the broker's own
-          // user home or starts one, inside the profile (plan-host-build-daemons-and-gradle.md,
-          // "Revision — Phase 2 scope").
+          // The runtime is the proxy: Gradle's client matches a daemon in the launch's registry
+          // or starts one, inside the profile, and commandEnded records it.
           Right(Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) =>
           // The client is confined to the daemon's port: reuse only the daemon proved at its
@@ -1287,6 +1301,11 @@ object RunOnHostSandbox:
       )
       exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir)
     yield
+      // Under the broker the daemons are the broker's to record (BrokerRuntimes.commandEnded).
+      if program == Program.Gradle && brokerRuntime.isEmpty then
+        val processes = RunOnHostSession.HostProcesses
+        val found = GradleDaemons.daemons(runtime.tmp, processes)
+        GradleDaemons.record(session.records, found, processes).foreach(log)
       reportDenied(runtime.proxyLog, reportFrom, program, log)
       exit
 
@@ -1471,13 +1490,14 @@ object RunOnHostSandbox:
    * home would let one launch's `--stop` end another launch's builds on the project. Attaching
    * is already the launch's own: the client's `java.io.tmpdir`, the broker's `tmp/`, is among the
    * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
-   * `DaemonCompatibilitySpec`). The toolchain inventory is closed to the JDK the profile grants,
-   * so a project asking for another toolchain fails naming it, not by a denial.
+   * `DaemonCompatibilitySpec`). The daemons the registry holds are recorded after each command
+   * and ended with the launch (GradleDaemons). The toolchain inventory is closed to the JDK the
+   * profile grants, so a project asking for another toolchain fails naming it, not by a denial.
    */
   def gradleCommand(prereqs: CommandPrereqs, tmp: Path): Seq[String] =
     Seq(
       prereqs.executable.toString,
-      s"-Dorg.gradle.daemon.registry.base=${tmp.resolve("gradle-daemon")}",
+      s"-Dorg.gradle.daemon.registry.base=${GradleDaemons.registryBase(tmp)}",
       "-Dorg.gradle.java.installations.auto-detect=false",
       "-Dorg.gradle.java.installations.auto-download=false",
       s"-Dorg.gradle.java.installations.paths=${prereqs.jdkHome}",

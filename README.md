@@ -108,9 +108,9 @@ unavailable because the artifact name has not been decided.
    in the directory.
 1. Insert `--egress=deny-unless-model` when the agent must not talk to anything other than its
    own provider; for `opencode` that is all the default providers.
-1. macOS only: insert `--run-on-host=sbt,mill,gradle,mvn` when the agent will run builds or
-   tests: a build inside the podman machine takes memory that all containers there share, and
-   holds it until the session ends.
+1. macOS only: insert `--run-on-host=<programs>`, where `<programs>` are those the agent will
+   run among `sbt`, `mill`, `gradle` and `mvn`, comma-separated: a build inside the podman
+   machine takes memory that all containers there share, and holds it until the session ends.
 
 ### Running `<command>`
 
@@ -214,11 +214,13 @@ above, a device code or a code pasted back, need no redirect.
                          one egress proxy. Host commands write the project even under
                          --write=reject. For sbt and mill, the launch keeps
                          one server or daemon warm per build directory for
-                         its life. One you started yourself is shut down,
+                         its life; one you started yourself is shut down,
                          once any build already running in it completes,
                          when the agent runs the program there, and your own
                          client attaches to the launch's confined server or
-                         daemon while it lives.
+                         daemon while it lives. Under gradle the launch keeps
+                         the daemons its builds start, in a registry of its
+                         own, so yours and the launch's never meet.
                          SECURITY.md "Run on host" has the why and the cost;
                          doc/run-on-host.md has how it works
       --env=<name>[=<value>]

@@ -743,6 +743,35 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       peerServer.destroyForcibly().waitFor()
       mine.close(); peer.close()
 
+  test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = Option.when(pid == 4242)("S")
+      def endGroup(pgid: Long): Unit = ()
+    val observed = scala.collection.mutable.ListBuffer[Path]()
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val runtimes = BrokerRuntimes(
+      session, project, logged.append(_), SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty), Vector.empty,
+    )(
+      processes = processes,
+      gradleDaemons = base =>
+        observed += base
+        Vector(4242L -> "S"),
+    )
+    try
+      val record = session.records.resolve(GradleDaemons.recordName(4242))
+      runtimes.commandEnded(Program.Sbt)
+      runtimes.commandEnded(Program.Mvn)
+      assert(observed.isEmpty, "only a gradle command has daemons to observe")
+      runtimes.commandEnded(Program.Gradle)
+      // The registry observed is the launch's, under this session's tmp; the record proves the pid.
+      assertEquals(observed.toList, List(session.tmp))
+      assertEquals(Files.readString(record, UTF_8), "4242 S\n")
+      assertEquals(logged.toList, List("recorded the gradle daemon 4242"))
+    finally session.close()
+
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
     Files.writeString(

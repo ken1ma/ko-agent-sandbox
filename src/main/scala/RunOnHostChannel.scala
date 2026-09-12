@@ -188,6 +188,10 @@ object RunOnHostChannel:
       * arguments, prepared while the spawn holds the build lock: the wrapper options naming it
       * (RunOnHostSandbox.runtimeOptions), none for a program whose wrapper creates its own. */
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
+    /** After a dispatched spawn ended — its command run, refused, or ended with its requester —
+      * with the request's program: what the runtime records once the command is over
+      * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
+    ended: String => Unit = _ => (),
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
     mount: String = WorkspaceMount,
     /** How long the broker waits for a complete request before the handshake expires. */
@@ -438,6 +442,8 @@ object RunOnHostChannel:
       val exit = child.waitFor()
       currentCommand = None
       pumps.foreach(_.join())
+      try service.ended(request.program)
+      catch case NonFatal(ex) => log(s"after the command: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
       // Nothing is retired here on a cancel; the broker follows each tool, and the two differ.
       // Stock sbt's server survives a client's disconnect: the disconnect cancels the exec
       // (CommandExchange.removeChannel, force=false) and the warm server serves the next
@@ -602,6 +608,9 @@ object RunOnHostChannel:
         // first; under the runtimes' monitor, for the reason BrokerRuntimes gives.
         val teardown = RunOnHostSession.Teardown: _ =>
           runtimes.synchronized:
+            // A daemon a command still running at the broker's end started is observed here,
+            // after endCurrentCommand and before the records are read.
+            runtimes.commandEnded(RunOnHostPrereqs.Program.Gradle)
             RunOnHostSession
               .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
                 beforeRemoval = condemned =>
@@ -641,6 +650,8 @@ object RunOnHostChannel:
               .toRight(s"unknown program $programName")
               .flatMap(runtimes.prepare(_, buildDirectory, arguments))
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
+          ended = programName =>
+            RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
           mount = trailing.headOption.getOrElse(WorkspaceMount),
         )
         log(s"serving $programsCsv for $project in $container")
