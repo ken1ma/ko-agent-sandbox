@@ -211,13 +211,15 @@ Missing prerequisites and denied accesses fail clearly, nothing expands authorit
 falls back: a host command that cannot run is reported to the user, never re-run in the
 container — the same rule the egress refusal follows.
 
-Every refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one case per
-category, so the wrapper and the channel word the same refusal for their own readers without the
-tests matching on either wording. A denial while the command runs falls under no refusal category: a
-filesystem denial reaches the command's own stderr as the OS error, and a network denial is the
-proxy's audit line, which the wrapper reads and reports per host after the command ("Command
-requested network access to: …") — from the log's length at the command's start, so a shared
-proxy's earlier denials are not this command's. It never adds the host itself.
+Every prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one case
+per category, so the wrapper and the channel word the same refusal for their own readers without the
+tests matching on either wording; a runtime the broker cannot prepare — a proxy, server or daemon
+that fails to start, the launcher's executable gone — is refused with its reason as text from the
+code that met it (`BrokerRuntimes.prepare`). A denial while the command runs falls under no refusal
+category: a filesystem denial reaches the command's own stderr as the OS error, and a network denial
+is the proxy's audit line, which the wrapper reads and reports per host after the command ("Command
+requested network access to: …") — from the log's length at the command's start, so a shared proxy's
+earlier denials are not this command's. It never adds the host itself.
 
 ## Program prerequisites
 
@@ -895,13 +897,20 @@ declined: what a launch may reach is decided at launch (`design.md`, "Design pri
 preserve"), and a relaunch is the one step that applies an edit to both proxies alike.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts
-the proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
-action. It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe
-only in the container's own network namespace), with `preferIPv4Stack` on its command line as the
-command's environment contract sets it, since the dual-stack bind is the v4-mapped one the
-`localhost` class denies ("Network"); its starter reads the port from the same ready line the
-container launcher gates on.
+`dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts the
+proxy by re-invoking its own executable — `java -jar` or the native binary — under a private action.
+That executable must still exist at its launch path, as spelled at launch — the link, when launched
+through a symlink — in either form: each is one file built under `target/dist`, which `sbt clean` or
+`git clean` removes while a session runs, so the broker checks it before every command's wrapper is
+exec'd and before every proxy start, and refuses with the path and the remedies — rebuild at that
+path, or relaunch — rather than letting the JVM fail at its main class after the ready wait
+(`RunOnHostSandbox.selfPresent`). A rebuild at the same path is no removal, nor is a link's
+retargeting: the running processes keep their inode, and the next re-invocation runs the new file.
+It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe only in
+the container's own network namespace), with `preferIPv4Stack` on its command line as the command's
+environment contract sets it, since the dual-stack bind is the v4-mapped one the `localhost` class
+denies ("Network"); its starter reads the port from the same ready line the container launcher gates
+on.
 
 It runs under a profile of its own (`SeatbeltProfile.renderProxy`), the same for every proxy the
 launcher starts on the host, since one `startProxy` starts them all. The profile grants its

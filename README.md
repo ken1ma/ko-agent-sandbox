@@ -240,7 +240,7 @@ explains why.
     belongs to the action:
 
       --build            build the container images and install the workspace filter,
-                         always pulling remote updates
+                         always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
                          image, without cache
 
@@ -278,8 +278,7 @@ explains why.
                          with --reset. Read-only; does not start a stopped podman machine
 
       --self-test [<filter>]
-                         run the workspace filter's own suites, always
-                         pulling remote updates; <filter> selects one
+                         run the workspace filter's own suites; <filter> selects one
                          case or family. Without a filter, also check the host share;
                          its scratch directory in the project is removed on success
                          and retained on failure. Removes replaced self-test images
@@ -301,9 +300,12 @@ explains why.
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps /workspace shared live and
                                           writable while protecting Git configuration,
                                           hooks, other protected Git entries and
-                                          .ko-agent-sandbox at any depth; "none" weakens this
-                                          to read-only bind mounts at the workspace root
-                                          (SECURITY.md).
+                                          .ko-agent-sandbox at any depth; "none" replaces
+                                          the filter with read-only bind mounts at the
+                                          workspace root only: .git/config and .git/hooks
+                                          (the whole .git when it is a pointer file or
+                                          absent) and .ko-agent-sandbox; the rest stays
+                                          writable (SECURITY.md).
                                           Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking

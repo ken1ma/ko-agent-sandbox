@@ -583,6 +583,43 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Path.of("").toAbsolutePath.toString),
     )
     assert(proxyInputs(authority, javaHome = "/no/such/jdk").isLeft)
+    // The launch entry is found by resolved path and kept as spelled (launchEntry has why):
+    // launched through a symlink, the entry is the link; its removal is the refusal, naming
+    // the link though its target stays, and a retargeted link is its new target.
+    val dir = Files.createTempDirectory("self")
+    val real = Files.writeString(dir.resolve("real.jar"), "")
+    val other = Files.writeString(dir.resolve("other.jar"), "")
+    val link = Files.createSymbolicLink(dir.resolve("link.jar"), real)
+    val classPath = s"${dir.resolve("unused.jar")}${java.io.File.pathSeparator}$link"
+    val entry = launchEntry(classPath, Some(real))
+    assertEquals(entry, Some(link))
+    assertEquals(selfPresent(entry), Right(Some(real.toRealPath())))
+    Files.delete(link)
+    val refused = proxyInputs(authority, self = entry)
+    assert(refused.swap.exists(_.contains(link.toString)), refused.toString)
+    Files.createSymbolicLink(link, other)
+    assertEquals(selfPresent(entry), Right(Some(other.toRealPath())))
+    // Code off the class path — this process's own under sbt — has no entry, and nothing to refuse.
+    assertEquals(launchEntry(classPath, Some(dir.resolve("elsewhere.jar"))), None)
+    assertEquals(selfPresent(None), Right(None))
+
+  test("a command is refused before its wrapper runs when the launcher's executable is gone, Maven's included"):
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    var proxies = 0
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+      RunOnHostSession.HostProcesses,
+      (_, _, _) => fail("assembled without an executable"),
+      (_, _, _, _) => { proxies += 1; Right(1) },
+      _ => fail("a server started without an executable"),
+      _ => fail("a daemon started without an executable"),
+      executable = () => Left("gone"),
+    )
+    for program <- Program.values do
+      assertEquals(runtimes.prepare(program, project, Seq.empty), Left("gone"), clue = program)
+    assertEquals(proxies, 0)
 
   test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")

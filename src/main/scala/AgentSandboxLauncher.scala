@@ -768,8 +768,8 @@ object AgentSandboxLauncher:
   /**
    * `--self-test`'s image: the crate's suites compiled against the pinned toolchain, on top of the
    * sandbox image. Built on demand rather than by --build, so a user who only wants to run agents
-   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and remote
-   * Rust image are unchanged (`fuse/ko-agent-fs/doc/testing.md`).
+   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and the
+   * Rust image --build pulled are unchanged (`fuse/ko-agent-fs/doc/testing.md`).
    *
    * `-f` with `.` as the context, not the directory: the crate this compiles is beside the
    * Containerfile in the unpacked bundle, not under it.
@@ -1025,10 +1025,12 @@ object AgentSandboxLauncher:
       fail(s"error: could not create the network $network\n${created.err}")
 
   /**
-   * `--self-test`: pull remote build inputs, build the self-test images, then run the crate's
-   * suites in a container with no host bind mounts (`fuse/ko-agent-fs/doc/testing.md`). Unchanged
-   * inputs reuse the build cache. A successful run without a case filter also measures the host
-   * share through SelfTestShare, which owns its scratch directory and cleanup.
+   * `--self-test`: build the self-test images, then run the crate's suites in a container with no
+   * host bind mounts (`fuse/ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
+   * No pull: its only remote source is the Rust image --build pulls to compile the filter that
+   * ships (the test "self-test builds refresh no remote source of their own" holds that), and
+   * verifying against that same image is the point. A successful run without a case filter also
+   * measures the host share through SelfTestShare, which owns its scratch directory and cleanup.
    *
    * The sandbox image is a precondition rather than an artifact to build here: verifying is not the
    * command that decides which agent image a user runs.
@@ -1053,7 +1055,6 @@ object AgentSandboxLauncher:
 
     withImageBuildLock(os): journal =>
       val context = unpackBuildContext()
-      val readContainerfile = buildContextReader(context)
       val existingTags = existingImageTags(podman)
       val sandboxImageId = requiredImageId(existingTags, "ko-agent-sandbox:latest", "self-test did not start")
       val fsSourceId = koAgentFsSourceId(context)
@@ -1069,15 +1070,13 @@ object AgentSandboxLauncher:
         fsSourceId,
         bundleId,
       )
-      val remoteImages =
-        remoteImagesForBuildCommands(commands, readContainerfile, managedImageTags(ImgTagVersion).toSet)
       val images = buildOutputImages(commands)
       val candidates = prepareImageCleanupJournal(
         journal,
         imageIdsForTags(existingTags, images),
         Vector.empty,
       )
-      runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
+      runBuilds(context, commands)
       verifyBuiltBundleLabels(SelfTestImageTags.map(_ -> bundleId))
       val remaining = removeSupersededImages(
         podman,
