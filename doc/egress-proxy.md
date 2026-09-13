@@ -86,7 +86,8 @@ What a line grants is its words, and nothing is implied:
   path, without granting general `GET` or `HEAD` access. These methods can also retrieve data,
   such as a GraphQL query sent by `POST`. `POST` at a repository also grants `git push`'s ref
   discovery, which uses `GET`.
-- `tunnel` — the opaque treatment. It stands alone on its line, and its URL ends at `/`.
+- `tunnel` — permits traffic without request inspection. It stands alone on its line, and its
+  URL ends at `/`.
 
 The selected profile determines the starting rules and which project lines apply. Those lines
 apply in file order: an `allow` adds its grants under its path; a `deny` removes the named grants
@@ -217,7 +218,7 @@ as input, and it is not promised to re-parse to itself. Those lines are what the
 names — one stable log line per run, comparable across runs — what the leaf certificate's names
 are read from, and what `KO_AGENT_SANDBOX_EGRESS_RULESET` holds, so two files resolving to one
 ruleset print one digest and the same lines, and the same file under two profiles never does.
-Metadata follows outside the digest: a summary of inspected and opaque hosts, denial patterns and
+Metadata follows outside the digest: a summary of inspected and tunnel hosts, denial patterns and
 widening lines, then the widening line.
 `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
 a `deny` line's pattern, and under the finite profiles the hosts the file's lines denied.

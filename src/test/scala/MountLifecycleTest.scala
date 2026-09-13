@@ -75,7 +75,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val a = launch(project.resolve("a.log"))
       val aLog = Files.readString(project.resolve("a.log"))
       assert(
-        aLog.contains("workspace filter: mounted") && !aLog.contains("reusing the mount"),
+        aLog.contains("ko-agent-fs filter: mounted") && !aLog.contains("joined the existing mount"),
         s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
       polling.withMaxRetries(30).eventually(assertEquals(markers(), a, "markers after A"))
@@ -86,7 +86,7 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(
         Files
           .readString(project.resolve("b.log"))
-          .contains("reusing the mount shared by sessions in the same project directory"),
+          .contains("ko-agent-fs filter: joined the existing mount for this project directory"),
         s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
@@ -141,7 +141,7 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(
         Files
           .readString(project.resolve("c.log"))
-          .contains("reusing the mount shared by sessions in the same project directory"),
+          .contains("ko-agent-fs filter: joined the existing mount for this project directory"),
         "the surviving mount was not reusable",
       )
 

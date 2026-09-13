@@ -97,9 +97,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("the run-on-host lines name the programs, and under --write=reject a red line says a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
-    assertEquals(live.size, 1)
-    assert(live.head.startsWith("run on host: sbt, mill by --run-on-host; "), live.head)
-    assert(live.head.contains("your own sbt server") && live.head.contains("your own mill daemon"), live.head)
+    assertEquals(live, Vector(
+      "sandbox-run-on-host: sbt, mill on host",
+      "your own sbt server or mill daemon in the build directory is stopped when the agent runs that program",
+    ))
+    for
+      selected <- Seq(Seq("sbt"), Seq("mill"), Seq("sbt", "gradle"), Seq("mill", "mvn"), Seq("gradle", "mvn"))
+      writeMode <- Seq("live", "reject")
+    do
+      val lines = runOnHostLines(selected, writeMode, color = false)
+      assertEquals(lines.head, s"sandbox-run-on-host: ${selected.mkString(", ")} on host")
+      val shutdown = lines.find(_.startsWith("your own"))
+      assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
+      assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
+      assertEquals(lines.exists(_.contains("--write=reject")), writeMode == "reject")
+    assert(runOnHostLines(Seq("sbt"), "live", color = true).head.contains("\u001b[38;5;207msbt\u001b[0m"))
     val reject = runOnHostLines(Seq("gradle"), "reject", color = false)
     assertEquals(reject.size, 2)
     assert(!reject.head.contains("your own"), reject.head)
@@ -1155,7 +1167,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // Neither project-file metadata nor its hostnames belong in the instructions.
     val widened = appendedSection(
       "live", "fuse",
-      emptyResolution + "\nruleset summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
+      emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
     )
     assert(!widened.contains("widening lines") && !widened.contains("ruleset summary"), widened)

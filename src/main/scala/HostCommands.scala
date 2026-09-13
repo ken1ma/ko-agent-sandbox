@@ -50,6 +50,53 @@ object HostCommands:
   def env(name: String): Option[String] =
     Option(System.getenv(name)).filter(_.nonEmpty)
 
+  def pathLine(
+    label: String,
+    path: Path,
+    os: Os = currentOs,
+    environment: String => Option[String] = env,
+    separator: String = ": ",
+  ): String =
+    val shell = if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
+    s"$label$shell$separator${displayPath(path, os, environment)}"
+
+  def displayPath(
+    path: Path,
+    os: Os = currentOs,
+    environment: String => Option[String] = env,
+  ): String =
+    // PowerShell file commands expand ~, but cmd.exe does not, so Windows paths stay absolute.
+    // Quoting cannot suppress cmd's %NAME% expansion or delayed !NAME! expansion. Paths needing
+    // those literals, or PowerShell's $ and backtick literals, carry a PowerShell label at the call site.
+    if os == Os.Windows then
+      val text = path.toString
+      if needsPowerShellLiteral(text) then powerShellPathArgument(text)
+      else if WindowsBarePath.matches(text) then text
+      else s"\"$text\""
+    else
+      val home = environment("HOME").filter(_.nonEmpty).flatMap: value =>
+        try Some(Paths.get(value))
+        catch case _: java.nio.file.InvalidPathException => None
+      home.filter(directory => directory.isAbsolute && path.startsWith(directory)).map: directory =>
+        val relative = directory.relativize(path).toString
+        // Quoting ~ would suppress home expansion when the path is pasted into a shell.
+        if relative.isEmpty then "~" else s"~/${posixPathArgument(relative)}"
+      .getOrElse(posixPathArgument(path.toString))
+
+  private def posixPathArgument(path: String): String =
+    if BareWord.matches(path) then path else "'" + path.replace("'", "'\\''") + "'"
+
+  private val WindowsBarePath = """[A-Za-z0-9_:\\./-]+""".r
+
+  private def needsPowerShellLiteral(path: String): Boolean =
+    path.exists("$`%!\"\u201c\u201d\u201e".contains(_))
+
+  private def powerShellPathArgument(path: String): String =
+    // PowerShell treats curly apostrophes as single-quote delimiters too.
+    val escaped = path.flatMap: char =>
+      if "'\u2018\u2019\u201a\u201b".contains(char) then s"$char$char" else char.toString
+    s"'$escaped'"
+
   // -------------------------------------------------------------------------
   // Emphasis
   // -------------------------------------------------------------------------
@@ -150,9 +197,8 @@ object HostCommands:
   /**
    * A command echoed before it runs, as `set -x` prints it: `+ ` and then the words, each shown
    * unambiguously on the one line — so a multi-line script argument prints as the one quoted
-   * word it is, not as lines that look like commands of their own. The marker is what tells a
-   * command from the output that follows it; the launcher's own lines have a `label:` instead,
-   * and a subprocess's have neither.
+   * word it is, not as lines that look like commands of their own. The marker distinguishes
+   * echoed commands from launcher diagnostics and subprocess output.
    *
    * The resolved podman is shown by its bare name, since the `using:` line said the path once
    * when it was resolved — and only then: an unannounced path stays spelled out.
@@ -291,7 +337,15 @@ object HostCommands:
    * invocations are the launcher's decision too. Lazy, so `--help` needs no
    * podman at all.
    */
-  lazy val podman: String =
+  lazy val podman: String = podmanResolution._1
+
+  def podmanRuns: Boolean = podmanResolution._2.exists(_.ok)
+
+  /** The client build recorded by --self-test, from the same probe as the startup announcement. */
+  def podmanVersion(): String =
+    podmanResolution._2.filter(_.ok).map(_.text.trim).getOrElse("podman version unknown")
+
+  private lazy val podmanResolution: (String, Option[Run]) =
     val found = findOnPath("podman", env("PATH").getOrElse(""), currentOs)
       .map(_.toString)
       .getOrElse(
@@ -305,10 +359,20 @@ object HostCommands:
           127,
         ),
       )
+    val version =
+      try Some(run(found, "--version"))
+      catch case _: IOException => None
     // Said once, here, so every echoed command can then say just `podman` (echoCommand).
-    System.err.println(s"using: $found")
+    System.err.println(podmanUsingLine(found, version))
     announcedPodman = Some(found)
-    found
+    (found, version)
+
+  def podmanUsingLine(path: String, result: Option[Run]): String =
+    val version = result.filter(_.ok).map(_.text.trim).collect:
+      case PodmanVersion(value) => s" (v$value)"
+    s"using: $path${version.getOrElse("")}"
+
+  private val PodmanVersion = "podman version ([0-9][A-Za-z0-9.+-]*)".r
 
   @volatile private var announcedPodman: Option[String] = None
 

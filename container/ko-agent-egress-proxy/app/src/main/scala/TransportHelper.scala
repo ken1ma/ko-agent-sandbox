@@ -202,7 +202,7 @@ object TransportHelper:
    * One CONNECT to the upstream proxy per origin address, naming the vetted numeric address —
    * never the hostname, which would let the upstream proxy resolve it to an address the
    * private-range check never saw. The tunnel socket then carries the same TLS the direct socket
-   * would: the client's own hello on an opaque host, the inspected connection with the origin's
+   * would: the client's own hello without inspection, the inspected connection with the origin's
    * name as SNI otherwise.
    */
   class UpstreamProxy(val endpoint: UpstreamEndpoint, val proxyAddresses: Vector[InetAddress]) extends OriginTransport:

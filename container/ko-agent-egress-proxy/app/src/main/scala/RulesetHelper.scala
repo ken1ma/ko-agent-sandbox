@@ -721,7 +721,7 @@ object RulesetHelper:
     * first of them (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
-      s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} opaque hosts; " +
+      s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
         s"${resolved.denialPatterns.size} denial patterns; ${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
