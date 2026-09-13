@@ -7,7 +7,8 @@ import java.nio.file.{Files, Paths}
 import java.nio.file.attribute.{FileTime, PosixFilePermissions}
 import java.time.Instant
 
-import HostCommands.{deleteRecursively, Os}
+import HostCommands.Os
+import FileHelper.deleteRecursively
 import KoAgentFs.*
 
 class KoAgentFsTest extends munit.FunSuite:

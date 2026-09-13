@@ -15,6 +15,7 @@ import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
+import FileHelper.*
 
 class SessionBoundaryTest extends munit.FunSuite:
 

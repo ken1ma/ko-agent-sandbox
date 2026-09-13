@@ -12,6 +12,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
+import FileHelper.*
 
 object EgressRules:
 

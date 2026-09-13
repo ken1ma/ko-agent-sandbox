@@ -6,7 +6,7 @@ import java.lang.management.ManagementFactory
 import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
 
-import HostCommands.{deleteRecursively, directoryEntries}
+import FileHelper.{deleteRecursively, directoryEntries}
 
 class DirectoryStreamsTest extends munit.FunSuite:
 

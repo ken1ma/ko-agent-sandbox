@@ -18,7 +18,8 @@ import scala.util.control.NonFatal
 
 import RunOnHostPrereqs.*
 import RunOnHostSession.{ServerAnswer, Session}
-import HostCommands.{directoryEntries, Os}
+import HostCommands.Os
+import FileHelper.directoryEntries
 import SandboxProject.{isMetadataEntry, projectIdOf}
 
 object RunOnHostSandbox:
@@ -172,7 +173,7 @@ object RunOnHostSandbox:
       (executable, distribution, millLauncher) = executableAndDistribution
       configuredRoot <- context("cache root")(cacheRootOf(os, env))
       cacheRoot <- context("cache root")(
-        cacheRootOutsideProject(configuredRoot, project, os, HostCommands.canonicalizedFuturePath),
+        cacheRootOutsideProject(configuredRoot, project, os, FileHelper.canonicalizedFuturePath),
       )
       projectId = projectIdOf(project, os)
       v1 = coursierV1Of(cacheRoot, projectId)

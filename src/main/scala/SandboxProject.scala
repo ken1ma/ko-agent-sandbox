@@ -15,6 +15,7 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 import HostCommands.*
+import FileHelper.*
 
 object SandboxProject:
 
@@ -502,7 +503,7 @@ object SandboxProject:
   /**
    * The launcher-owned empty bind sources gitGuardVolumes mounts read-only. Kept
    * outside the project and re-emptied at every launch *in place*: never
-   * delete-and-recreate, for the reason in HostCommands.writeWithMode, and
+   * delete-and-recreate, for the reason in FileHelper.writeWithMode, and
    * not rename-and-replace either — a concurrent session's running bind
    * keeps this very inode, and its emptiness with it.
    */
