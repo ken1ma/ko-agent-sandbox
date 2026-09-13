@@ -1,10 +1,9 @@
 #!/bin/sh
-# What the wrapper's orphan recovery and proxy hosting assume, measured before the wrapper encodes
-# them. Five measurements:
+# Five measurements of the assumptions behind the wrapper's orphan recovery and proxy hosting:
 #
-#   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org through a
-#       replacement rules (deny defaults plus one read line), refuses everything else, and binds where the
-#       codebase says — wildcard :3128, the fact the wrapper's bind option exists to change
+#   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org under
+#       replacement rules (deny defaults plus one read line), and refuses unlisted hosts;
+#       it listens on wildcard :3128 unless the wrapper supplies a bind address
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
 #   M4  the tokenless initialize + sbt/exec shutdown handshake, sent to the socket's pathname
@@ -14,8 +13,9 @@
 #       It runs after M2 in the script, because M4 ends the server and takes the portfile with it
 #
 # Run it on macOS, from this repository's root, when sbt or the proxy changes. It builds the
-# proxy dist if absent, boots one sbt 2.0.7 server in a scratch project under /private/tmp, and
-# ends what it started; on a FAIL it keeps the scratch tree and names it.
+# proxy dist if absent or older than AgentEgressProxy.scala, starts one sbt server using the pin
+# below in a scratch project under /private/tmp, and ends what it started. When a reported check
+# fails, it keeps the scratch tree and names it.
 
 set -u
 
@@ -100,10 +100,10 @@ allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
     fi
 fi
 
-# --- one sbt 2.0.7 server in a scratch project, its state under probe-owned directories --------
+# --- one sbt server in a scratch project, its state under probe-owned directories -------------
 
 mkdir -p "$work/proj/project" "$work/srv"
-echo "sbt.version=2.0.7" > "$work/proj/project/build.properties"
+echo "sbt.version=2.0.8" > "$work/proj/project/build.properties"
 : > "$work/proj/build.sbt"
 
 echo "booting a scratch sbt server (can take a minute)"

@@ -916,7 +916,7 @@ package build
 import mill.*, scalalib.*
 
 object app extends ScalaModule {
-  def scalaVersion = "3.8.4"
+  def scalaVersion = "3.9.0"
 }
 
 def probeEnv() = Task.Command {
