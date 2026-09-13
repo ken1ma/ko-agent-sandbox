@@ -7,7 +7,6 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption}
 
 import scala.collection.mutable.ListBuffer
-import scala.jdk.CollectionConverters.*
 
 import RunOnHostSession.*
 
@@ -769,7 +768,4 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   private def listNames(path: Path): Vector[String] =
     if !Files.isDirectory(path) then Vector.empty
-    else
-      val stream = Files.list(path)
-      try stream.iterator.asScala.map(_.getFileName.toString).toVector.sorted
-      finally stream.close()
+    else HostCommands.directoryEntries(path).map(_.getFileName.toString).sorted

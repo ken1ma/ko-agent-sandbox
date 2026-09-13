@@ -102,7 +102,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
   private def run(seed: Path, home: Path): (Int, String) = finish(start(seed, home))
 
   private def entries(volume: Path): Set[String] =
-    Files.list(volume).iterator.asScala.map(_.getFileName.toString).toSet
+    HostCommands.directoryEntries(volume).map(_.getFileName.toString).toSet
 
   private def setUserAttribute(path: Path, name: String): Unit =
     val attributes = Files.getFileAttributeView(path, classOf[UserDefinedFileAttributeView])

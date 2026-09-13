@@ -17,6 +17,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 import HostCommands.Os
 import RunOnHostChannel.*
@@ -142,7 +143,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   private def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Files.walk(path).iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
+      Using.resource(Files.walk(path)): entries =>
+        entries.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
 
   /**
    * The broker served like production — same exec argument pattern, `podman` a script running the
@@ -518,7 +520,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       // The stand-in ends with the shim: its ctl closed, so nothing of the transaction is held.
       broker.foreach: process =>
         assert(process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
-      val left = Files.list(FifoDir).iterator.asScala.map(_.getFileName.toString).toSet
+      val left = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
       assertEquals(left, Set("req", "lock"))
     // A req nobody reads: the broker died, its FIFO staying on the container's tmpfs.
     unanswered(None)
@@ -573,9 +575,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
         assert(shim.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), s"$ending: shim did not exit promptly")
         assertEquals(shim.exitValue(), expectedExit, ending)
         Thread.sleep((ShimBound + 1) * 1000L)
-        val entries = Files.list(FifoDir)
-        try assertEquals(entries.iterator.asScala.map(_.getFileName.toString).toSet, Set("req", "lock"), ending)
-        finally entries.close()
+        val entries = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        assertEquals(entries, Set("req", "lock"), ending)
       finally
         handshake.foreach(_.destroyForcibly())
         descendants.reverseIterator.foreach(_.destroyForcibly())
@@ -588,9 +589,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
         val (exit, out, _) = shimCall(project, "sbt", "test")
         assertEquals(exit, 7)
         assertEquals(out, "completed\n")
-        val entries = Files.list(FifoDir)
-        try assertEquals(entries.iterator.asScala.map(_.getFileName.toString).toSet, Set("req", "lock"))
-        finally entries.close()
+        val entries = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        assertEquals(entries, Set("req", "lock"))
 
   test("without a broker the shim fails at once, naming the launch option"):
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")

@@ -226,7 +226,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(!push.ok)
       assert(push.err.contains(s"remote: ${RefusalAdvice.gitPush}"), push.err)
     finally
-      Files.walk(repo).sorted(java.util.Comparator.reverseOrder[Path]).forEach(path => Files.delete(path))
+      deleteRecursively(repo)
 
     val refused = run("sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
@@ -383,7 +383,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     // removed mid-session leaves the name in place but unresolvable, which a walk reports as an
     // opaque UncheckedIOException. Naming it is the same diagnosis the boundary-directory test above
     // gives, and refusing to skip it is what keeps this assertion about every file that is there.
-    val entries = Files.list(Paths.get("/etc/ko-agent-sandbox")).iterator().asScala.toVector
+    val entries = directoryEntries(Paths.get("/etc/ko-agent-sandbox"))
     val unresolvable = entries.filterNot(Files.exists(_))
     assertEquals(
       unresolvable, Vector.empty[Path],

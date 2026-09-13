@@ -18,7 +18,7 @@ import scala.util.control.NonFatal
 
 import RunOnHostPrereqs.*
 import RunOnHostSession.{ServerAnswer, Session}
-import HostCommands.Os
+import HostCommands.{directoryEntries, Os}
 import SandboxProject.{isMetadataEntry, projectIdOf}
 
 object RunOnHostSandbox:
@@ -87,10 +87,7 @@ object RunOnHostSandbox:
   private def directories(path: Path): Seq[Path] =
     reading(path):
       if !Files.isDirectory(path) then Seq.empty
-      else
-        val stream = Files.list(path)
-        try stream.filter(Files.isDirectory(_)).toArray(Array.ofDim[Path](_)).toSeq
-        finally stream.close()
+      else directoryEntries(path).filter(Files.isDirectory(_))
 
   /** Steps 1–5: everything the profile derives authority from, decided before anything runs.
     * `buildDirectory` is where the command runs, the project or a directory beneath it: mill's
@@ -217,11 +214,7 @@ object RunOnHostSandbox:
     def strays(path: Path, allowed: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
       else
-        val stream = Files.list(path)
-        val entries =
-          try stream.iterator().asScala.toVector
-          finally stream.close()
-        entries.map(_.getFileName.toString).filterNot(isMetadataEntry).filterNot(allowed).sorted
+        directoryEntries(path).map(_.getFileName.toString).filterNot(isMetadataEntry).filterNot(allowed).sorted
           .map(name => s"$path/$name")
 
     if !Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) then None
@@ -422,12 +415,11 @@ object RunOnHostSandbox:
     block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
     val proxyLogs =
       try
-        Files.list(condemned).iterator().asScala
-          .filter(file => file.getFileName.toString.matches("(proxy|server|daemon).*\\.log")).toVector.sorted
+        directoryEntries(condemned)
+          .filter(file => file.getFileName.toString.matches("(proxy|server|daemon).*\\.log")).sorted
       catch case _: IOException => Vector.empty
-    // The command's write grant is the tmp subpath, which covers the tmp entry itself: it can
-    // replace the directory with a link, which the rename preserves: listed only as a directory
-    // by its own attributes.
+    // The command's write grant includes tmp itself, so the command can replace it with a symlink
+    // that survives the session directory's rename.
     val tmp = condemned.resolve(RunOnHostSession.TmpDir)
     val clientForkedStderr =
       if !Files.isDirectory(tmp, LinkOption.NOFOLLOW_LINKS) then
@@ -435,8 +427,8 @@ object RunOnHostSandbox:
         Vector.empty
       else
         try
-          Files.list(tmp).iterator().asScala
-            .filter(_.getFileName.toString.startsWith("sbt-server-err")).toVector.sorted
+          directoryEntries(tmp)
+            .filter(_.getFileName.toString.startsWith("sbt-server-err")).sorted
         catch case _: IOException => Vector.empty
     (proxyLogs ++ clientForkedStderr).foreach: file =>
       sessionLogTail(file).foreach: tail =>
@@ -1700,12 +1692,9 @@ object RunOnHostSandbox:
     val roots = granted.flatMap(root => try Some(root.toRealPath()) catch case _: IOException => None)
     val removed = Vector.newBuilder[Path]
     def walk(dir: Path, inTarget: Boolean): Unit =
-      val stream =
-        try Files.list(dir)
-        catch case _: IOException => return
       val entries =
-        try stream.iterator().asScala.toVector
-        finally stream.close()
+        try directoryEntries(dir)
+        catch case _: IOException => return
       entries.foreach: entry =>
         val name = entry.getFileName.toString
         if Files.isSymbolicLink(entry) then

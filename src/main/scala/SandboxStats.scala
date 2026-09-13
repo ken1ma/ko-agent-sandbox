@@ -10,7 +10,6 @@ import java.nio.file.{FileVisitResult, Files, Path, Paths, SimpleFileVisitor}
 import java.nio.file.attribute.{BasicFileAttributes, FileTime}
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
-import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.{
   logStateRoot, machineMemoryAvailable, machineMemoryLine, memoryTotal, persistentVolumes, rulesetStateRoot,
@@ -476,7 +475,4 @@ object SandboxStats:
 
   private def childNames(dir: Path): Vector[String] =
     if !Files.isDirectory(dir) then Vector.empty
-    else
-      val stream = Files.list(dir)
-      try stream.iterator().asScala.map(_.getFileName.toString).toVector
-      finally stream.close()
+    else directoryEntries(dir).map(_.getFileName.toString)

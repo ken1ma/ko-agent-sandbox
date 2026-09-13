@@ -2674,7 +2674,7 @@ object AgentSandboxLauncher:
       // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
       // take the rest.
       liveRuns.foreach: live =>
-        val entries = Files.list(tlsDir).iterator().asScala.map(_.getFileName.toString).toVector
+        val entries = directoryEntries(tlsDir).map(_.getFileName.toString)
         tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
 
       writePrivate(hostLogFile, "")
