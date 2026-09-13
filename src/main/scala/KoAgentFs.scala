@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
 import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 import HostCommands.*
 
@@ -40,13 +41,11 @@ object KoAgentFs:
    */
   def contextSourceId(context: Path, dir: String): String =
     val root = context.resolve(dir)
-    val entries = Files
-      .walk(root)
-      .iterator()
-      .asScala
-      .filter(Files.isRegularFile(_))
-      .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
-      .toVector
+    val entries = Using.resource(Files.walk(root)): files =>
+      files.iterator().asScala
+        .filter(Files.isRegularFile(_))
+        .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
+        .toVector
     bundleSourceId(entries)
 
   /**

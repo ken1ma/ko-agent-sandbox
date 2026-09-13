@@ -967,10 +967,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("every internal multi-stage build has one named compile-cache target"):
     val containerRoot = Paths.get("container")
-    val listed = Files.list(containerRoot)
-    val containerfiles =
-      try listed.iterator().asScala.map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)).toVector
-      finally listed.close()
+    val containerfiles = HostCommands.directoryEntries(containerRoot)
+      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
     val allContainerfiles = containerfiles :+ Paths.get("fuse/ko-agent-fs/Containerfile")
     val multiStage = allContainerfiles.filter: path =>
       Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
@@ -1105,17 +1103,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(listed, gitHosts)
 
   test("every egress rule example is a complete rule file the production parser accepts, without a warning"):
-    def entries(directory: java.nio.file.Path) =
-      val stream = Files.list(directory)
-      try stream.iterator.asScala.toVector
-      finally stream.close()
-
     val root = Paths.get("doc/egress-rule-example")
-    val examples = entries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
+    val examples = HostCommands.directoryEntries(root).filter(Files.isDirectory(_)).sortBy(_.getFileName.toString)
     assert(examples.nonEmpty, "no egress rule examples found")
 
     examples.foreach: directory =>
-      val files = entries(directory)
+      val files = HostCommands.directoryEntries(directory)
       assertEquals(files.map(_.getFileName.toString), Vector("rule"), directory.toString)
       val resolved = resolveRuleset(Some("deny-unless-allowed"), None, Some(Files.readString(files.head)))
       assertEquals(resolved.warnings, Vector.empty, directory.toString)
@@ -1383,8 +1376,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The refusal is a prefix, so a variable the launcher passes to say what is enforced must
     // start with it: the interpolated `--env=$Constant=` forms are those, and EgressRules's
     // `$variable` names the proxy container's rule files, which no forward reaches.
-    val sources = Files.list(Paths.get("src/main/scala")).iterator.asScala
-      .filter(_.toString.endsWith(".scala")).map(Files.readString).toVector
+    val sources = HostCommands.directoryEntries(Paths.get("src/main/scala"))
+      .filter(_.toString.endsWith(".scala")).map(Files.readString)
     val interpolated = sources.flatMap("\"--env=\\$([A-Za-z]+)".r.findAllMatchIn(_).map(_.group(1))).toSet
     // `name` is upstreamProxyArgs's HTTPS_PROXY pass-through to the proxy container: a name with
     // no value, which no sandbox receives.

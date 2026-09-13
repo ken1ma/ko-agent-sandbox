@@ -1,6 +1,7 @@
 package agentsandbox.egress
 
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 import java.io.{ByteArrayInputStream, IOException}
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets
@@ -431,10 +432,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
     )
     assertEquals(builtinGitHosts, Set("github.com", "codeberg.org", "gitlab.com"))
-    // The provider list names exactly the defaults' model-provider files: a jar cannot list a
-    // resource directory, so the names are a constant, held to the files both ways.
+    // Resource lookup cannot enumerate this directory inside a jar, so ModelProviders is declared
+    // separately. Check for both missing provider files and files the provider list would leave unread.
     val dir = java.nio.file.Paths.get("src/main/resources/defaults/model-provider")
-    val files = java.nio.file.Files.list(dir).iterator.asScala.map(_.getFileName.toString).toSet
+    val files = Using.resource(java.nio.file.Files.list(dir)): entries =>
+      entries.iterator.asScala.map(_.getFileName.toString).toSet
     assertEquals(files, ModelProviders.toSet)
 
   test("deny-all resolves empty, and empty is a valid ruleset, not a broken one"):
@@ -2436,8 +2438,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("every refusal names its next step: one line, control-free, naming no host the ruleset does not allow"):
     val sourceDir = java.nio.file.Paths.get("src", "main", "scala")
-    val sites =
-      java.nio.file.Files.list(sourceDir).iterator.asScala
+    val sites = Using.resource(java.nio.file.Files.list(sourceDir)): entries =>
+      entries.iterator.asScala
         .map(path => java.nio.file.Files.readString(path))
         .map(_.split(java.util.regex.Pattern.quote("throw Refusal("), -1).length - 1)
         .sum

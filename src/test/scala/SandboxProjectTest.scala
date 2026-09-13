@@ -454,12 +454,12 @@ class SandboxProjectTest extends munit.FunSuite:
 
     val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
     assert(gitGuardVolumes(linkedGit, emptyFixture.file, emptyFixture.dir).isLeft)
-    assert(Files.list(target).count() == 0, "wrote through the .git link")
+    assert(HostCommands.directoryEntries(target).isEmpty, "wrote through the .git link")
 
     val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
     assert(boundaryDirError(linkedBoundary).isDefined)
-    assert(Files.list(target).count() == 0, "wrote through the boundary link")
+    assert(HostCommands.directoryEntries(target).isEmpty, "wrote through the boundary link")
 
   test("an absent boundary directory is empty configuration, never a directory to materialize"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")

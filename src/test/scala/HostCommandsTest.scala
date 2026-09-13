@@ -8,7 +8,6 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
 import java.nio.file.attribute.PosixFilePermissions
-import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 import KoAgentFs.*
@@ -79,7 +78,7 @@ class HostCommandsTest extends munit.FunSuite:
     val printedLabel = """System\.err\.println\(\s*s?"(warning|error):""".r
     val offenders =
       for
-        file <- Files.list(Paths.get("src", "main", "scala")).toList.asScala.toVector
+        file <- directoryEntries(Paths.get("src", "main", "scala"))
         if file.getFileName.toString != "HostCommands.scala"
         hit <- printedLabel.findFirstIn(Files.readString(file))
       yield s"${file.getFileName}: $hit"
@@ -265,7 +264,7 @@ class HostCommandsTest extends munit.FunSuite:
     // A write's temporary file never outlives the write: a failed rename leaves the temporary file in
     // the bind source's directory, a file no launch mounts.
     assertEquals(
-      Files.list(dir).iterator().asScala.map(_.getFileName.toString).toVector.sorted,
+      directoryEntries(dir).map(_.getFileName.toString).sorted,
       Vector("bundle.crt", "ca.key", "leaf.key"),
     )
 

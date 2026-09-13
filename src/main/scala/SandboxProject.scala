@@ -510,7 +510,7 @@ object SandboxProject:
     val root = launcherStateRoot.resolve("empty")
     val dir = root.resolve("dir")
     Files.createDirectories(dir)
-    Files.list(dir).iterator().asScala.foreach(deleteRecursively)
+    directoryEntries(dir).foreach(deleteRecursively)
     val file = root.resolve("file")
     Files.write(file, Array.emptyByteArray)
     (file, dir)
@@ -589,12 +589,8 @@ object SandboxProject:
            |agent is a directory holding $AgentInstructionsFile; move the file there.""".stripMargin
       )
     else
-      val entries = Files
-        .list(agentDir)
-        .iterator()
-        .asScala
+      val entries = directoryEntries(agentDir)
         .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
-        .toVector
         .sortBy(_.getFileName.toString)
 
       val refusal = entries
@@ -609,21 +605,15 @@ object SandboxProject:
       refusal.toLeft(readIfPresent(file))
 
   /**
-   * Whether an entry of the closed boundary namespace is exempt from its unknown-name refusal:
-   * dot-named editor and OS metadata (.DS_Store, .gitkeep). No configuration will ever be named
-   * that way, so the typo protection loses nothing. One predicate for .ko-agent-sandbox and for
-   * egress/ inside it (EgressRules.readRuleFiles), so browsing the tree on macOS cannot
-   * fail the next launch at either level.
+   * Dot-named entries are reserved for editor and OS metadata (.DS_Store, .gitkeep), never
+   * configuration. The boundary directory and its configuration subdirectories ignore them so
+   * editor or OS metadata cannot make a launch fail the unknown-name check.
    */
   def isMetadataEntry(name: String): Boolean = name.startsWith(".")
 
   private def strayBoundaryEntries(boundaryDir: Path): Vector[String] =
-    Files
-      .list(boundaryDir)
-      .iterator()
-      .asScala
+    directoryEntries(boundaryDir)
       .map(_.getFileName.toString)
       .filterNot(isMetadataEntry)
       .filterNot(BoundaryDirEntries)
-      .toVector
       .sorted

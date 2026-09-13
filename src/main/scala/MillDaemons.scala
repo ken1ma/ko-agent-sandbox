@@ -278,10 +278,7 @@ object MillDaemons:
     val entries =
       if !Files.isDirectory(daemonDir, LinkOption.NOFOLLOW_LINKS) then Vector.empty
       else
-        try
-          val stream = Files.list(daemonDir)
-          try stream.iterator.asScala.toVector
-          finally stream.close()
+        try HostCommands.directoryEntries(daemonDir)
         catch case _: IOException => Vector.empty
     def refused(path: Path, what: String) =
       Left(

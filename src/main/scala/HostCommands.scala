@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 object HostCommands:
 
@@ -502,14 +503,14 @@ object HostCommands:
           false
     if !moved then moveReplacing(temp, path, attempts - 1)
 
+  def directoryEntries(path: Path): Vector[Path] =
+    Using.resource(Files.list(path)): entries =>
+      entries.iterator().asScala.toVector
+
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Files
-        .walk(path)
-        .sorted(java.util.Comparator.reverseOrder())
-        .iterator()
-        .asScala
-        .foreach(Files.delete)
+      Using.resource(Files.walk(path)): entries =>
+        entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(Files.delete)
 
   /**
    * A variable governing the boundary — or whether its reader sees it — takes exactly one of a

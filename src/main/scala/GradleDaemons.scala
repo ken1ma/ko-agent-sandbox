@@ -24,8 +24,6 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption}
 
-import scala.jdk.CollectionConverters.*
-
 import RunOnHostSession.{HostProcesses, Processes, Record}
 
 object GradleDaemons:
@@ -76,9 +74,7 @@ object GradleDaemons:
   def record(records: Path, found: Vector[(Long, String)], processes: Processes): Vector[String] =
     val existing =
       try
-        val stream = Files.list(records)
-        try stream.iterator.asScala.toVector.filter(_.getFileName.toString.startsWith(RecordPrefix))
-        finally stream.close()
+        HostCommands.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
       catch case _: IOException => Vector.empty
     val (proved, stale) = existing.partition: file =>
       parsed(file).exists(record => processes.startOf(record.pgid).contains(record.leaderStart))

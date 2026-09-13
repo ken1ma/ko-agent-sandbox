@@ -9,6 +9,7 @@ import java.nio.file.{Files, Path, Paths}
 import java.nio.file.attribute.PosixFilePermissions
 
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 class ClipboardBrokerTest extends munit.FunSuite:
 
@@ -127,7 +128,8 @@ class ClipboardBrokerTest extends munit.FunSuite:
 
   private def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Files.walk(path).iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
+      Using.resource(Files.walk(path)): entries =>
+        entries.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
 
   test("paste serves the image under every name Claude Code asks by, and drops a set"):
     exchange("paste"): (sandboxBin, host) =>
