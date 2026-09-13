@@ -32,6 +32,7 @@
 # removes. A denied row prints the denial on stderr; a wrongly permitted one leaves a marker the
 # cleanup removes, and the row reports FAIL.
 set -u
+. "$(dirname "$0")/run-on-host-gate-setup.sh"
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 program=${1:-all}
 case "$program" in sbt|mill|gradle|mvn|all) ;; *) echo "usage: $0 [sbt|mill|gradle|mvn|all] [quick]" >&2; exit 2 ;; esac
@@ -62,6 +63,9 @@ safe_path "TMPDIR" "${TMPDIR:-}"
 # exit leaves nothing there.
 mkdir -p "$project/target/gate" && work=$(mktemp -d "$project/target/gate/run.XXXXXX") || exit 1
 pass=0; fail=0; skip=0
+# Only this run's sleeping fixtures may be collected after a cancellation.
+fixture_tag=$(printf 'gate-%s' "${work##*/}" | tr '.' '-')
+fixture_sleep="fixture[.]Main sleep $fixture_tag([[:space:]]|$)"
 
 report() { # status label detail
     # INFO is a measurement with no expected answer, so it counts toward nothing.
@@ -119,7 +123,7 @@ emit() { # program
 
 # --- the environment contract (RunOnHostSandbox) ------------------------------------------------
 #
-# The JVM settings travel in JAVA_TOOL_OPTIONS, which the server sbt's client forks inherits; the
+# The JVM settings travel in _JAVA_OPTIONS, which the server sbt's client forks inherits; the
 # same -D flags on the command line reach the client alone. XDG_RUNTIME_DIR and
 # SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the command's temporary directory (RunOnHostPrereqs.
 # SessionTmpMaxLength says why its length matters).
@@ -142,7 +146,7 @@ command_env() { # agent-v1 command...
         TMPDIR="$SESSION_TMP" XDG_RUNTIME_DIR="$SESSION_TMP" SBT_GLOBAL_SERVER_DIR="$SESSION_TMP" \
         COURSIER_CACHE="$cache" USER="$account" LOGNAME="$account" \
         MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads" GRADLE_USER_HOME="$gradle_user_home" \
-        JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=\"$SESSION_TMP\" -Djava.util.prefs.userRoot=\"$SESSION_TMP\" \
+        _JAVA_OPTIONS="-Djava.io.tmpdir=\"$SESSION_TMP\" -Djava.util.prefs.userRoot=\"$SESSION_TMP\" \
 -Dsbt.global.base=\"$sbt_global\" -Dsbt.ivy.home=\"$ivy_home\" -Dmaven.repo.local=\"$m2_repository\" \
 -Daether.connector.http.useSystemProperties=true -Djava.net.preferIPv4Stack=true" \
         "$@"
@@ -163,7 +167,8 @@ sandboxed() { # program command...
 }
 run_sbt() { # client command...: the executable the wrapper runs; the profile PATH holds no sbt
     client=$1; shift
-    sandboxed sbt "$sbt_executable" $client -batch -java-home "$JAVA_HOME" "$@"
+    sandboxed sbt "$sbt_executable" "-Dsbt.global.base=$sbt_global" \
+        $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
 # A command through the wrapper: RunOnHost scavenges, publishes a command directory, starts the command's
@@ -304,6 +309,9 @@ record_alive() { # record-line
     ra_pgid=${1%% *}; ra_start=$(printf '%s' "${1#* }" | sed 's/^ *//;s/ *$//')
     [ "$(ps -o lstart= -p "$ra_pgid" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$ra_start" ]
 }
+# The emitter always uses this checkout, even when only another program's rows are selected.
+gate_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
+
 # One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
 # deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
@@ -330,14 +338,10 @@ fi
 # daemon holds out/mill-daemon/daemonLock and a port that a mill executable under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
-    for pid in $(project_servers); do kill "$pid" 2>/dev/null && echo "ended sbt server $pid"; done
-    for pid in $(deny_servers); do kill "$pid" 2>/dev/null && echo "ended deny-fixture server $pid"; done
-    for pid in $(ivy_servers); do kill "$pid" 2>/dev/null && echo "ended ivy-fixture server $pid"; done
-    for pid in $(mill_daemons); do kill "$pid" 2>/dev/null && echo "ended mill daemon $pid"; done
-    for pid in $(gradle_daemons) $(gate_gradle_daemons); do
-        kill "$pid" 2>/dev/null && echo "ended gradle daemon $pid"
+    for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) \
+        $(gradle_daemons) $(gate_gradle_daemons) $(stray_proxies); do
+        gate_end_unclaimed_process "$command_root" "$pid" && echo "ended gate process $pid"
     done
-    for pid in $(stray_proxies); do kill "$pid" 2>/dev/null && echo "ended stray command proxy $pid"; done
 }
 trap end_project_servers EXIT
 # Through `exit`, so Ctrl-C still runs the EXIT trap: an untrapped INT ends the shell without
@@ -380,6 +384,7 @@ sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/gate
 # `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
+gate_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
 lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
 # Each profile has its own command's temporary directory and run-on-host cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
@@ -505,12 +510,16 @@ else report FAIL "java -version" "$(tail -1 "$work/java.log")"; fi
 
 if want sbt; then
     use_profile sbt
+    sbt_ready=1
     for command in compile test; do
         [ "$command" = test ] && [ "$quick" = 1 ] && { report SKIP "sbt test" "quick mode"; continue; }
         if wrapper sbt "$project" "$command" >"$work/$command.log" 2>&1
         then report PASS "sbt $command (wrapper)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
-        else report FAIL "sbt $command (wrapper)" \
-            "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70)"; fi
+        else
+            sbt_ready=0
+            report FAIL "sbt $command (wrapper)" \
+                "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70); $work/$command.log"
+        fi
     done
     # A build with an inter-project edge: Ivy must take its lock file in the redirected home, or
     # the build dies canonicalizing ~/.ivy2 (RunOnHostPrereqs.ivyHomeOf).
@@ -530,35 +539,44 @@ if want sbt; then
         then report PASS "$label" "$(grep -m1 'version:' "$work/version.log" | cut -c1-40)"
         else report FAIL "$label" "$(grep -v '^$' "$work/version.log" | tail -1 | cut -c1-70)"; fi
     done
-    if run_sbt --jvm-client 'eval System.getProperty("java.home")' >"$work/jvm.log" 2>&1; then
-        if grep -qF "$JAVA_HOME" "$work/jvm.log"
-        then report PASS "server runs the granted JDK"
-        else report FAIL "server runs the granted JDK" "$(grep -m1 'ans:' "$work/jvm.log" | cut -c1-70)"; fi
-    else report FAIL "server runs the granted JDK" "$(tail -1 "$work/jvm.log" | cut -c1-70)"; fi
-    # Processes the command itself starts must retain containment, access restrictions included. The server
-    # is already the client's forked JVM, so each eval measures a child of a child; run once,
-    # under the sbt profile — inheritance across fork and exec is the kernel's behavior, not the
-    # profile's, and the per-profile rows below cover both profiles' own grants.
-    fork_row() { # label eval-expression
-        if run_sbt --jvm-client "$2" >"$work/fork.log" 2>&1 && grep -q 'forked-exit=' "$work/fork.log"; then
-            if grep -q 'forked-exit=0' "$work/fork.log"
-            then report FAIL "$1" "the forked process succeeded"
-            else report PASS "$1" "$(grep -m1 -o 'forked-exit=[0-9]*' "$work/fork.log")"; fi
-        else report FAIL "$1" "$(tail -1 "$work/fork.log" | cut -c1-60)"; fi
-    }
-    fork_row "a process forked by the command cannot read ~" \
-        'eval { val code = scala.sys.process.Process(Seq("/bin/ls", sys.env("HOME"))).!; "forked-exit=" + code }'
-    fork_row "a process forked by the command cannot write PROJECT/.git" \
-        'eval { val code = scala.sys.process.Process(
-            Seq("/usr/bin/touch", "'"$project"'/.git/'"$marker"'")).!; "forked-exit=" + code }'
-    run_sbt --jvm-client shutdown >/dev/null 2>&1
-
-    # --jvm-client is required because sbtn returns with nothing built; this row keeps asking whether
-    # that changes. A build's success is the measure — sbtn's --version passes and proves nothing.
-    if run_sbt "" compile >"$work/sbtn.log" 2>&1 && grep -q '^\[success\]' "$work/sbtn.log"
-    then report INFO "sbtn compile" "passes: the --jvm-client requirement can be reconsidered"
-    else report INFO "sbtn compile" "no build: $(grep -v '^$' "$work/sbtn.log" | tail -1 | cut -c1-50)"; fi
-    run_sbt --jvm-client shutdown >/dev/null 2>&1
+    # The wrapper sweeps host-cache links before warming the granted cache. If it failed, these
+    # direct clients cannot establish that prerequisite themselves; the wrapper row holds the failure.
+    if [ "$sbt_ready" -eq 1 ]; then
+        if run_sbt --jvm-client 'eval System.getProperty("java.home")' >"$work/jvm.log" 2>&1; then
+            if grep -qF "$JAVA_HOME" "$work/jvm.log"
+            then report PASS "server runs the granted JDK"
+            else report FAIL "server runs the granted JDK" "$(grep -m1 'ans:' "$work/jvm.log" | cut -c1-70)"; fi
+        else report FAIL "server runs the granted JDK" "$(tail -1 "$work/jvm.log" | cut -c1-70)"; fi
+        # Processes the command itself starts must retain containment, access restrictions included. The server
+        # is already the client's forked JVM, so each eval measures a child of a child; run once,
+        # under the sbt profile — inheritance across fork and exec is the kernel's behavior, not the
+        # profile's, and the per-profile rows below cover each selected profile's grants.
+        fork_row() { # label eval-expression
+            if run_sbt --jvm-client "$2" >"$work/fork.log" 2>&1 && grep -q 'forked-exit=' "$work/fork.log"; then
+                if grep -q 'forked-exit=0' "$work/fork.log"
+                then report FAIL "$1" "the forked process succeeded"
+                else report PASS "$1" "$(grep -m1 -o 'forked-exit=[0-9]*' "$work/fork.log")"; fi
+            else report FAIL "$1" "$(tail -1 "$work/fork.log" | cut -c1-60)"; fi
+        }
+        fork_row "a process forked by the command cannot read ~" \
+            'eval { val code = scala.sys.process.Process(Seq("/bin/ls", sys.env("HOME"))).!; "forked-exit=" + code }'
+        fork_row "a process forked by the command cannot write PROJECT/.git" \
+            'eval { val code = scala.sys.process.Process(
+                Seq("/usr/bin/touch", "'"$project"'/.git/'"$marker"'")).!; "forked-exit=" + code }'
+        run_sbt --jvm-client shutdown >/dev/null 2>&1
+        # --jvm-client is required because sbtn returns with nothing built; this row keeps asking whether
+        # that changes. A build's success is the measure — sbtn's --version passes and proves nothing.
+        if run_sbt "" compile >"$work/sbtn.log" 2>&1 && grep -q '^\[success\]' "$work/sbtn.log"
+        then report INFO "sbtn compile" "passes: the --jvm-client requirement can be reconsidered"
+        else report INFO "sbtn compile" "no build: $(grep -v '^$' "$work/sbtn.log" | tail -1 | cut -c1-50)"; fi
+        run_sbt --jvm-client shutdown >/dev/null 2>&1
+    else
+        for row in "server runs the granted JDK" \
+            "a process forked by the command cannot read ~" \
+            "a process forked by the command cannot write PROJECT/.git" "sbtn compile"; do
+            report SKIP "$row" "sbt wrapper setup failed; see $work/compile.log and $work/test.log"
+        done
+    fi
 fi
 
 if want mill; then
@@ -644,7 +662,7 @@ for p in $profiles; do
     expect_denied "$p" "read the user's other Coursier arc entries" "ls '$user_arc'"
     # The profile's ancestor chain is file-read-metadata: a listing would reveal sibling names.
     expect_denied "$p" "list an ancestor of a granted path" "ls '$HOME/Library/Caches'"
-    expect_denied "$p" "read PROJECT/.git" "cat '$project/.git/HEAD'"   # the repository's, under both
+    expect_denied "$p" "read PROJECT/.git" "cat '$project/.git/HEAD'"   # the launcher repository's
     expect_denied "$p" "read a nested .git" "cat '$scratch/sub/nested/.git/config'"
     expect_denied "$p" "read via PROJECT/link -> PROJECT/.git" "cat '$scratch/link/config'"
     # The trailing slash on each ls'd symlink forces resolution into the target: ls on a link
@@ -1164,19 +1182,18 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
         # The wrapper hands sbt all of its arguments as one command, so the `set` and the task
         # invocation ride one string joined by `;`; the task body is a single expression — the
         # marker written inside the sleep's argument — so no inner `;` or newline meets sbt's
-        # command splitter.
+        # command splitter. Def.uncached makes the marker and sleep run on every invocation:
+        # sbt 2 otherwise reuses the Unit result without running either side effect.
         cancel_marker=$project/target/gate-cancel-started
         rm -f "$cancel_marker"
-        gate_task='set TaskKey[Unit]("koGateSleep") := java.lang.Thread.sleep('
+        gate_task='set TaskKey[Unit]("koGateSleep") := Def.uncached(java.lang.Thread.sleep('
         gate_task="${gate_task}if (java.nio.file.Files.writeString("
         gate_task="${gate_task}java.nio.file.Paths.get(\"$cancel_marker\"), \"started\")"
-        gate_task="${gate_task}.toString.nonEmpty) 20000L else 20000L)"
+        gate_task="${gate_task}.toString.nonEmpty) 20000L else 20000L))"
         channel_shim chan-cancel.log "$project" sbt "$gate_task; koGateSleep" & shim=$!
-        tries=0
-        while [ ! -f "$cancel_marker" ] && [ "$tries" -lt 1200 ]; do tries=$((tries + 1)); sleep 0.5; done
-        if [ ! -f "$cancel_marker" ]; then
+        if ! gate_wait_started "$shim" 1200 test -f "$cancel_marker"; then
             report FAIL "channel: a cancelled command's warm server survives, and the next command reuses it" \
-                "the cancellable task never started: $(tail -1 "$work/chan-cancel.log.err" 2>/dev/null | cut -c1-60)"
+                "no running task to cancel; see $work/chan-cancel.log{,.err}"
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         else
         # The marker proves the task runs on a server: record it now, whether the task reused a
@@ -1319,11 +1336,10 @@ $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut 
         # disconnect — stock Mill shuts it down (Server.scala; measured,
         # src/probe/run-on-host-broker-session.sh M5), which the wait below lets finish.
         cancel_row="channel: after a cancelled mill command, the next command runs"
-        channel_shim chan-mill-cancel.log "$mill_project" mill run sleep & shim=$!
-        tries=0
-        while ! grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
-            tries=$((tries + 1)); sleep 0.5
-        done
+        channel_shim chan-mill-cancel.log "$mill_project" mill run sleep "$fixture_tag" & shim=$!
+        cancel_ready=no
+        gate_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null \
+            && cancel_ready=yes
         cancel_record=$(broker_daemon_record "$mill_project")
         cancel_daemon=$(daemon_in_group "$cancel_record")
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1332,16 +1348,18 @@ $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut 
         while [ -n "$cancel_daemon" ] && kill -0 "$cancel_daemon" 2>/dev/null && [ "$tries" -lt 120 ]; do
             tries=$((tries + 1)); sleep 0.5
         done
-        forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | head -1)
+        forked=$(pgrep -f "$fixture_sleep" 2>/dev/null | head -1)
         if [ -n "$forked" ]
         then report INFO "forked run JVM after the cancel" "alive ($forked); killed"; kill "$forked" 2>/dev/null
         else report INFO "forked run JVM after the cancel" "gone"; fi
         with_timeout 300 channel_shim chan-mill-after-cancel.log "$mill_project" mill version
         channel_settled
         new_daemon=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
-        if [ -n "$cancel_daemon" ] && [ -n "$new_daemon" ] && grep -q '1\.1\.9' "$work/chan-mill-after-cancel.log"
+        if [ "$cancel_ready" = yes ] && [ -n "$cancel_daemon" ] && [ -n "$new_daemon" ] \
+            && grep -q '1\.1\.9' "$work/chan-mill-after-cancel.log"
         then report PASS "$cancel_row" "daemon before $cancel_daemon, after $new_daemon"
-        else report FAIL "$cancel_row" "daemon before ${cancel_daemon:-none} \
+        else report FAIL "$cancel_row" "ready to cancel: $cancel_ready; see $work/chan-mill-cancel.log{,.err}; \
+daemon before ${cancel_daemon:-none} \
 $(kill -0 "$cancel_daemon" 2>/dev/null && echo alive || echo gone), after ${new_daemon:-none}"; fi
 
         # What Mill's launcher restarts the daemon on (RunOnHostPrereqs.millDaemonConfig) replaces
@@ -1425,7 +1443,7 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         busy_row="channel: a mill daemon of yours mid-command is left until its client disconnects"
         with_timeout 300 channel_shim chan-mill-shutdown2.log "$mill_project" mill shutdown
         channel_settled
-        foreign_mill ./mill run sleep >"$work/foreign-run.log" 2>&1 & foreign_client=$!
+        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run.log" 2>&1 & foreign_client=$!
         tries=0
         while ! grep -q 'fixture-main' "$work/foreign-run.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
             tries=$((tries + 1)); sleep 0.5
@@ -1436,7 +1454,7 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         waiting=$(kill -0 "$shim" 2>/dev/null && echo yes || echo no)
         foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
         kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
-        pkill -f 'fixture.Main sleep' 2>/dev/null
+        pkill -f "$fixture_sleep" 2>/dev/null
         wait "$shim"; busy_status=$?
         channel_settled
         ours=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
@@ -1453,7 +1471,7 @@ waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
         bound_row="channel: a mill daemon of yours busy past the bound is refused, and left alive"
         with_timeout 300 channel_shim chan-mill-shutdown3.log "$mill_project" mill shutdown
         channel_settled
-        foreign_mill ./mill run sleep >"$work/foreign-run2.log" 2>&1 & foreign_client=$!
+        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run2.log" 2>&1 & foreign_client=$!
         tries=0
         while ! grep -q 'fixture-main' "$work/foreign-run2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
             tries=$((tries + 1)); sleep 0.5
@@ -1463,7 +1481,7 @@ waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
         channel_settled
         foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
         kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
-        pkill -f 'fixture.Main sleep' 2>/dev/null
+        pkill -f "$fixture_sleep" 2>/dev/null
         tries=0
         while [ -n "$foreign" ] && kill -0 "$foreign" 2>/dev/null && [ "$tries" -lt 120 ]; do
             tries=$((tries + 1)); sleep 0.5
@@ -1559,29 +1577,29 @@ the launch's: ${ours:-none}; $(tail -1 "$work/foreign-gradle.log" | cut -c1-50)"
         # next command attaches or starts one, and the records follow — a stopped daemon's
         # forgotten, a fresh one's written.
         cancel_row="channel: after a cancelled gradle command, the next command runs, the records following the daemons"
-        channel_shim chan-gradle-cancel.log "$gradle_project" gradle run --args=sleep & shim=$!
-        tries=0
-        while ! grep -q 'fixture-main' "$work/chan-gradle-cancel.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
-            tries=$((tries + 1)); sleep 0.5
-        done
+        channel_shim chan-gradle-cancel.log "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
+        cancel_ready=no
+        gate_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-gradle-cancel.log" 2>/dev/null \
+            && cancel_ready=yes
         cancel_daemon=$(gradle_daemons | head -1)
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
         tries=0
-        while pgrep -f 'fixture.Main sleep' >/dev/null 2>&1 && [ "$tries" -lt 120 ]; do
+        while pgrep -f "$fixture_sleep" >/dev/null 2>&1 && [ "$tries" -lt 120 ]; do
             tries=$((tries + 1)); sleep 0.5
         done
-        forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | head -1)
+        forked=$(pgrep -f "$fixture_sleep" 2>/dev/null | head -1)
         if [ -n "$forked" ]
         then report INFO "forked run JVM after the cancel" "alive ($forked); killed"; kill "$forked" 2>/dev/null
         else report INFO "forked run JVM after the cancel" "gone"; fi
         with_timeout 300 channel_shim chan-gradle-after-cancel.log "$gradle_project" gradle help; after_status=$?
         channel_settled
-        if [ -n "$cancel_daemon" ] && [ "$after_status" -eq 0 ] \
+        if [ "$cancel_ready" = yes ] && [ -n "$cancel_daemon" ] && [ "$after_status" -eq 0 ] \
             && [ "$(gradle_daemons | wc -l | tr -d ' ')" -eq 1 ] \
             && [ "$(broker_gradle_records | wc -l | tr -d ' ')" -eq 1 ] && record_alive "$(broker_gradle_records)"
         then report PASS "$cancel_row" "daemon before $cancel_daemon, after $(gradle_daemons)"
-        else report FAIL "$cancel_row" "daemon before ${cancel_daemon:-none}, exit $after_status, daemons after: \
+        else report FAIL "$cancel_row" "ready to cancel: $cancel_ready; see $work/chan-gradle-cancel.log{,.err}; \
+daemon before ${cancel_daemon:-none}, exit $after_status, daemons after: \
 $(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')"; fi
         fi
 
@@ -1621,7 +1639,7 @@ $(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')
         gradle_end_row="channel: the broker's end takes the gradle daemon, and the JVM its build forked"
         gradle_run_daemon=""
         if want gradle; then
-            channel_shim chan-dead.log "$gradle_project" gradle run --args=sleep & shim=$!
+            channel_shim chan-dead.log "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
             tries=0
             while ! grep -q 'fixture-main' "$work/chan-dead.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
                 tries=$((tries + 1)); sleep 0.5
@@ -1652,12 +1670,12 @@ proxies: $(stray_proxies | tr '\n' ' '), session ${broker_session:-unknown}: \
 $([ -d "$broker_session" ] && echo kept || echo gone)"; fi
         if ! want gradle; then report SKIP "$gradle_end_row" "needs gradle"
         else
-            forked=$(pgrep -f 'fixture.Main sleep' 2>/dev/null | tr '\n' ' ')
+            forked=$(pgrep -f "$fixture_sleep" 2>/dev/null | tr '\n' ' ')
             if [ -n "$gradle_run_daemon" ] && [ -z "$(gradle_daemons)" ] && [ -z "$forked" ]
             then report PASS "$gradle_end_row" "daemon $gradle_run_daemon and its fork gone"
             else report FAIL "$gradle_end_row" "daemon ${gradle_run_daemon:-none} \
 $(kill -0 "${gradle_run_daemon:-0}" 2>/dev/null && echo alive || echo gone), daemons: $(gradle_daemons | tr '\n' ' '), \
-forked: ${forked:-none}"; pkill -f 'fixture.Main sleep' 2>/dev/null; fi
+forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
         fi
         rm -rf "$channel_dir"
 
@@ -1676,7 +1694,7 @@ forked: ${forked:-none}"; pkill -f 'fixture.Main sleep' 2>/dev/null; fi
             # it then. On KILL nothing observes, so the daemon is one a completed command
             # recorded, for the next start's scavenge to end by that record.
             if want gradle && [ "$2" = TERM ]; then
-                channel_shim "chan-broker-$2.log" "$gradle_project" gradle run --args=sleep & shim=$!
+                channel_shim "chan-broker-$2.log" "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
                 tries=0
                 while ! grep -q 'fixture-main' "$work/chan-broker-$2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
                     tries=$((tries + 1)); sleep 0.5
@@ -1707,7 +1725,7 @@ forked: ${forked:-none}"; pkill -f 'fixture.Main sleep' 2>/dev/null; fi
                 proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
             fi
             if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
-                && [ -z "$(gradle_daemons)" ] && ! pgrep -f 'fixture.Main sleep' >/dev/null 2>&1 \
+                && [ -z "$(gradle_daemons)" ] && ! pgrep -f "$fixture_sleep" >/dev/null 2>&1 \
                 && [ "$proxies_ended" = yes ] && ! kill -0 "$channel_broker" 2>/dev/null \
                 && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
             then report PASS "$1"

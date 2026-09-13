@@ -65,7 +65,7 @@ class GradleDaemonsTest extends munit.FunSuite:
   test("a daemon is the launch's by the tmpdir option in its initial environment, the whole token"):
     val tmp = Path.of("/private/tmp/ko agent-501/bAb12/tmp")
     val line = "java -Xmx512m org.gradle.launcher.daemon.bootstrap.GradleDaemon 9.7.1 HOME=/Users/me " +
-      s"JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=\"$tmp\" -Djava.util.prefs.userRoot=\"$tmp\" GRADLE_USER_HOME=/g"
+      s"_JAVA_OPTIONS=-Djava.io.tmpdir=\"$tmp\" -Djava.util.prefs.userRoot=\"$tmp\" GRADLE_USER_HOME=/g"
     assert(GradleDaemons.carriesTmp(line, tmp))
     // Another launch's tmp, or a directory whose name extends this one, is not this launch's.
     assert(!GradleDaemons.carriesTmp(line, Path.of("/private/tmp/ko agent-501/bAb13/tmp")))

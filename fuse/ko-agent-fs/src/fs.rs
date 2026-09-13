@@ -2,7 +2,7 @@
 //! backing tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
-//! on a denial, with a structured `DENY` log line.
+//! on a denial, with structured `DENY` log lines capped by `log_deny`.
 //!
 //! Resolution: `doc/architecture.md`, "Inode model". The deny surface, xattrs included: the note above
 //! `impl Filesystem`.

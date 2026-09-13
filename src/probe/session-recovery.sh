@@ -24,7 +24,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 2
 fi
 if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
-    echo "This looks like a sandbox session. Run the probe in a host terminal instead." >&2
+    echo "This looks like a sandbox session. Run the probe on the host instead." >&2
     exit 2
 fi
 if [ ! -f container/ko-agent-egress-proxy/app/build.sbt ]; then

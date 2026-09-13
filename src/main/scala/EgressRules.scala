@@ -50,9 +50,8 @@ object EgressRules:
     * from the first of them on is metadata (RulesetHelper.metadataLines). */
   val MetadataPrefixes: Vector[String] = Vector("ruleset summary:", "widening lines (")
 
-  /** The dry run's text up to its first metadata line — the ruleset alone — for the consumers that
-    * hold nothing else: the agent's "What this session may do" section and
-    * `KO_AGENT_SANDBOX_EGRESS_RULESET`. */
+  /** Exclude metadata about the project file from the resolved rules exported in
+    * `KO_AGENT_SANDBOX_EGRESS_RULESET` and used to select the inspection certificate's hosts. */
   def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 

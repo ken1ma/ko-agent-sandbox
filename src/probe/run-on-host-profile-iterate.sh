@@ -26,6 +26,8 @@
 # there only if it is a stable runtime read and not a path into user data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
+. "$(dirname "$0")/run-on-host-gate-setup.sh"
+gate_require_idle "/private/tmp/ko-agent-$(id -u)" "$(pwd -P)" || exit 1
 
 mode=${1:-checks}
 command=${2:-"about"}
@@ -50,7 +52,7 @@ emit() {
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # command's temporary directory with everything else.
 # The environment is the command's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
-# run-on-host cache, JAVA_TOOL_OPTIONS reaches the server the client forks where -D flags do not, and
+# run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the command's temporary directory.
 run_command() {
     . "$work/command.env"
@@ -58,9 +60,10 @@ run_command() {
     PATH="$JAVA_HOME/bin:$PATH" \
     COURSIER_CACHE=$(sed -n 's/^run-on-host cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
-    JAVA_TOOL_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global -Dsbt.ivy.home=$SESSION_TMP/ivy-home" \
+    _JAVA_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global -Dsbt.ivy.home=$SESSION_TMP/ivy-home" \
     /usr/bin/sandbox-exec -f "$work/command.sb" \
-        sbt --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
+        sbt "-Dsbt.global.base=$SESSION_TMP/sbt-global" \
+        --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
 }
 
 # A profile sandbox-exec cannot compile fails exactly as a missing grant does: the child dies

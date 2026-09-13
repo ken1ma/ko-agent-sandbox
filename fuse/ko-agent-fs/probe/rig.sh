@@ -1,20 +1,6 @@
 #!/bin/sh
-# The privileged dev rig. Everything in `tests/mounted_*.rs`, and the two `#[ignore]`d cases in
-# `tests/binary.rs`, mounts a real filter over a throwaway backing tree — which needs `/dev/fuse`
-# and `CAP_SYS_ADMIN`, deliberately absent from a `ko-agent-sandbox` session (`SECURITY.md`, "No
-# containers inside the sandbox by default"). So they run here instead: on the host, in a
-# privileged container, against the toolchain that ships.
-#
-#     probe/rig.sh                        # the whole ignored suite, mount probe first
-#     probe/rig.sh a_handle_held          # one filter, for a single test or a family
-#     GLIBC=1 probe/rig.sh                # against glibc instead of the shipping musl triple
-#
-# The unprivileged half needs none of this and runs anywhere, this sandbox included:
-# `cargo test --locked --target "$(uname -m)-unknown-linux-musl"`. `doc/testing.md` has the split
-# and what each suite covers.
-#
-# Exit status is cargo's, so a control run — patch the source, expect a failure, restore — reads
-# the way it should from a shell.
+# Run the mounted tests against source edits in a privileged container. Usage, prerequisites and
+# the unprivileged alternative: doc/testing.md. The flags below explain the required privileges.
 set -eu
 
 crate=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -52,7 +38,7 @@ echo user_allow_other >> /etc/fuse.conf
 # The shipping triple, because the difference is not cosmetic: the static-musl link constraint
 # src/fs.rs records at its rename is invisible to a glibc build, and only this triple makes
 # tests/binary.rs spawn the artifact as it ships. GLIBC=1 answers one question — whether a
-# failure is libc-specific — and is not a faster alternative.
+# failure is libc-specific (doc/testing.md).
 if [ "$RIG_GLIBC" = 1 ]; then
     target=""
 else

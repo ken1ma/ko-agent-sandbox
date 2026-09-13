@@ -1,9 +1,9 @@
 # Security model
 
-The README's opening diagram shows the boundary analyzed here. The other documents explain its
-components. The launcher source in `src/main/scala/` defines the mounts and flags that implement the
-boundary: `AgentSandboxLauncher.scala` coordinates the lifecycle, and the adjacent files implement
-its individual mechanisms.
+The [README's opening diagram](README.md) shows the boundary analyzed here. The other documents
+explain its components. The launcher source in `src/main/scala/` defines the mounts
+and flags that implement the boundary: `AgentSandboxLauncher.scala` coordinates the lifecycle,
+and the adjacent files implement its individual mechanisms.
 
 Unless stated otherwise, the guarantees describe default launch options. Project rules and opt-in
 features can change the available authority (what the session is allowed to do); their limits and
@@ -112,8 +112,8 @@ are:
   yourself;
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
-- the **project tree** is never written by the launcher, except for the empty directories that the
-  read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode. This mode
+- during **session setup**, the project tree is unchanged except for the empty directories that
+  the read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode. This mode
   creates an empty `.ko-agent-sandbox` when absent because the read-only bind mount needs a target
   ("A project loosening its own confinement", above). In a project with no repository, it also
   creates an empty `.git`: the launcher binds its own empty directory read-only over that name so
@@ -121,6 +121,8 @@ are:
   that mount target in the project. The filter denies creation of either name and needs no mount
   target; `--write=reject` makes the entire tree read-only. Those modes therefore require no
   project-directory creation;
+- **`--self-test` without a case filter** writes to its own scratch directory in the project
+  ([testing.md](fuse/ko-agent-fs/doc/testing.md));
 - the **project tree's SELinux labels**: on an enforcing host, the unfiltered bind mount of
   `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the project
   directory recursively. Each affected launch reports this host-metadata change in its `workspace:`
@@ -435,7 +437,7 @@ the same address. These checks follow the `200`, so a failure closes the connect
 `200`, malformed or non-CONNECT requests receive `400`; policy refusals receive `403` with the
 reason and suggested next step; DNS or connection failures receive `502`. Clients often hide
 failed-CONNECT response bodies, so the sandbox image provides `sandbox-egress-check <host>` to read
-them (README, `--egress-check`).
+them ([README.md](README.md#reference), `--egress-check`).
 
 With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through an upstream proxy"),
 step 6 connects through the upstream proxy with a `CONNECT` naming the validated numeric address.
@@ -904,10 +906,13 @@ the mechanism. Its security properties and costs are:
   variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is refused on both paths. Inheriting the
   full host environment would expose unrelated secrets, including an upstream proxy credential in
   the launcher's `HTTPS_PROXY`, to agent-chosen code. The wrapper's settings take precedence, so a
-  forwarded `HTTPS_PROXY` cannot redirect the command past its proxy, and a forwarded
-  `JAVA_TOOL_OPTIONS` cannot add to its JVM options; `MILL_VERSION` is the wrapper's own, naming the
-  launcher the profile authorizes, whatever was forwarded. Below the launcher, whose arguments are
-  what the user typed, forwarded names travel to the broker and each command as arguments. Values
+  forwarded `HTTPS_PROXY` cannot redirect the command past its proxy. The wrapper supplies its JVM
+  properties through HotSpot's `_JAVA_OPTIONS`, replacing any forwarded value of that variable.
+  These properties take precedence over `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and command-line
+  properties.
+  `MILL_VERSION` names the launcher the profile authorizes, whatever was forwarded. Below the
+  launcher, whose arguments are what the user typed, forwarded names travel to the broker and
+  each command as arguments. Values
   travel through their environments under carrier names (`RunOnHostSandbox.carrierName`), so no
   unconfined helper reads an explicit value before the command's environment is built. The broker
   inherits the launcher's environment as the launcher's own JVM ran in it, so a name-only forward
@@ -1023,10 +1028,11 @@ the reach you accept by naming the program in `--run-on-host`:
 | `gradle` | as `mill` | any port of this host | and every service on this host |
 
 "Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
-alone (the boundary bullet above; `doc/run-on-host.md` "Network"). sbt's UNIX sockets under the
-launch's directories are not network; the `mill` daemon's port is reached by its clients alone. A
-port grant is a port at every address of this host too: the proxy listens on the loopback address,
-so the grant reaches, beside it, only a service listening on that port at another address.
+alone (the boundary bullet above; `doc/run-on-host.md` "Network"). The table covers IP sockets;
+UNIX sockets under the launch’s directories have separate path grants. The `mill` daemon’s port
+is reached by its clients alone. A port grant is a port at every address of this host too: the
+proxy listens on the loopback address, so the grant reaches, beside it, only a service listening
+on that port at another address.
 Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
 each other's, so it needs both grants (`doc/run-on-host.md`, "Network").
 

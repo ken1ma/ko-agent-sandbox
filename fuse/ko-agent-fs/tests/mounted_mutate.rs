@@ -115,7 +115,7 @@ fn repository(backing: &Path) {
     fs::write(backing.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
     fs::write(backing.join(".git/config"), b"[core]\n\tbare = false\n").unwrap();
     // The submodule's own `HEAD`, which is what makes `.git/modules/sub` a gitdir rather than a
-    // directory named like one — and what the filter asks the tree in order to tell them apart
+    // directory named like one — and what the filter asks the tree to tell them apart
     // (`fs.rs`, `is_gitdir_root`). Without it this fixture asserts nothing about a submodule.
     fs::write(
         backing.join(".git/modules/sub/HEAD"),

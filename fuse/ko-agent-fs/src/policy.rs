@@ -93,7 +93,7 @@ const IGNORABLE: &[&[u8]] = &[
 /// Whether `name` (a raw basename, no slashes) must be refused as a new `.git` entry.
 ///
 /// The rule as executed: strip trailing `.` and space, drop [`IGNORABLE`], fold U+0130/U+0131 to
-/// `i`, ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` simply fails to match
+/// `i`, ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to match
 /// and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
 pub fn is_dotgit_name(name: &[u8]) -> bool {
     folds_to(name, b".git")

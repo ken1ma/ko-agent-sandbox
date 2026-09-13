@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 import RunOnHostSandbox.*
+import scala.jdk.CollectionConverters.*
 import scala.util.chaining.*
 import RunOnHostPrereqs.Program
 
@@ -32,7 +33,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       host.get,
       Vector(
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
-        "MILL_OUTPUT_DIR" -> "elsewhere", "JAVA_TOOL_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+        "MILL_OUTPUT_DIR" -> "elsewhere", "_JAVA_OPTIONS" -> "-javaagent:/tmp/agent.jar",
+        "JAVA_TOOL_OPTIONS" -> "-Duser.option=value",
       ),
       prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
       gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
@@ -47,7 +49,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Djava.io.tmpdir=\"/private/tmp/ko-agent-501/s\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Djava.io.tmpdir=\"/private/tmp/ko-agent-501/s\""))
     // The sockets are the runtime's: where the broker's server bound them.
     assertEquals(environment("XDG_RUNTIME_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
@@ -58,28 +60,30 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
-    assert(environment("JAVA_TOOL_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
+    assert(environment("_JAVA_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
     // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
-    assert(!environment("JAVA_TOOL_OPTIONS").contains("javaagent"))
+    assert(!environment("_JAVA_OPTIONS").contains("javaagent"))
+    assertEquals(environment("JAVA_TOOL_OPTIONS"), "-Duser.option=value")
     // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
     // programs' own overrides — mill's version and output-directory ones even when forwarded.
-    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "TERM", "ALL_PROXY")
+    Vector("AWS_SECRET_ACCESS_KEY", "SBT_OPTS", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR",
+      "TERM", "ALL_PROXY")
       .foreach: name =>
       assert(!environment.contains(name), name)
     assert(!environment.values.exists(_.contains("s3cret")), environment.toString)
     assertEquals(
       environment.keySet,
       Set(
-        "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
+        "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
         "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
         "MILL_VERSION",
       ) ++ commandProxyVariables(4711).keySet,
     )
-    // Without a derivable download folder the variable is simply absent, and so is the launcher
+    // Without a derivable download folder the variable is absent, and so is the launcher
     // version for a program that is not mill — a forwarded one included.
     val noFolder =
       commandEnvironment(
@@ -89,16 +93,85 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
     assert(!noFolder.contains("MILL_VERSION"))
 
-  test("a JVM property preserves spaces and embedded double quotes in its path value"):
-    assertEquals(jvmProperty("java.io.tmpdir", "/Users/a b/tmp"), "-Djava.io.tmpdir=\"/Users/a b/tmp\"")
-    val jvm = Path.of(sys.props("java.home"), "bin", "java").toString
-    val builder = ProcessBuilder(jvm, "-XshowSettings:properties", "-version")
-    builder.environment().put("JAVA_TOOL_OPTIONS", jvmProperty("java.io.tmpdir", "/Users/a b/c\"d"))
-    val process = builder.start()
-    process.getOutputStream.close()
-    val err = String(process.getErrorStream.readAllBytes(), UTF_8)
-    assertEquals(process.waitFor(), 0, err)
-    assert(err.contains("java.io.tmpdir = /Users/a b/c\"d"), err)
+    val optIn = Vector(
+      "TERM" -> "xterm", "SBT_OPTS" -> "-Xmx2g", "JAVA_OPTS" -> "-Xmx2g",
+      "JAVA_TOOL_OPTIONS" -> "-Dbuild.option=value", "JDK_JAVA_OPTIONS" -> "-Dbuild.option=value",
+      "ALL_PROXY" -> "http://example:3128",
+      "FTP_PROXY" -> "http://example:3128", "SBT_CREDENTIALS" -> "/credentials",
+    )
+    for program <- Program.values do
+      def withForwards(forwards: Vector[(String, String)]): Map[String, String] =
+        commandEnvironment(
+          optIn.toMap.get, forwards, prereqs.copy(program = program),
+          Path.of("/s"), Path.of("/i"), Path.of("/g"), Path.of("/m"), None, None,
+          Path.of("/t"), Path.of("/t"), 1, "u",
+        )
+      val inherited = withForwards(Vector.empty)
+      val explicit = withForwards(optIn)
+      optIn.foreach: (name, value) =>
+        assert(!inherited.contains(name), s"$program: $name must require forwarding")
+        assertEquals(explicit(name), value, clue = program)
+
+  test("each program's JVM paths survive sbt's parsing and inheritance by forked JVMs"):
+    val jdk = Path.of(sys.props("java.home"))
+    val jvm = jdk.resolve("bin/java").toString
+    val settings = Seq("-XshowSettings:properties", "-version")
+    val classpath = Seq(ForkJvmSettings.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]])
+      .map(kind => Path.of(kind.getProtectionDomain.getCodeSource.getLocation.toURI).toString)
+      .distinct.mkString(java.io.File.pathSeparator)
+    // sbt 2.0.8's runner copies these variables into argv without interpreting their quotes.
+    // Its getPreloaded lookup scans argv before splitting _JAVA_OPTIONS the same way.
+    val sbtRunner = """java_tool_options=($JAVA_TOOL_OPTIONS)
+                      |jdk_java_options=($JDK_JAVA_OPTIONS)
+                      |read -a java_options <<< "$_JAVA_OPTIONS"
+                      |for option in "$@" "${java_options[@]}"; do
+                      |  case "$option" in
+                      |    -Dsbt.global.base=*) echo "preloaded = ${option#*=}/preloaded" >&2; break ;;
+                      |  esac
+                      |done
+                      |exec "$JAVA_HOME/bin/java" "$@" "${java_tool_options[@]}" "${jdk_java_options[@]}" \
+                      |  -XshowSettings:properties -version
+                      |""".stripMargin
+    for
+      program <- Program.values
+      path <- Seq("/plain", "/with spaces", "/both'\"quotes", "/back\\slash and * ? [glob]")
+    do
+      val root = Path.of(path)
+      val prereqs = RunOnHostPrereqs.CommandPrereqs(root, jdk, root, program, Path.of("/unused/sbt"))
+      val environment = commandEnvironment(
+        _ => None,
+        Vector(
+          "JAVA_TOOL_OPTIONS" -> "-Djava.io.tmpdir=/tool-option -Dforward.tool=value",
+          "JDK_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/jdk-option -Dforward.jdk=value",
+          "_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/forward",
+        ),
+        prereqs, root.resolve("sbt"), root.resolve("ivy"), root.resolve("gradle"),
+        root.resolve("m2"), None, None, root.resolve("tmp"), root.resolve("sockets"), 4711, "u",
+      )
+      val expected = Map(
+        "java.io.tmpdir" -> root.resolve("tmp"), "java.util.prefs.userRoot" -> root.resolve("tmp"),
+        "sbt.ipcsocket.tmpdir" -> root.resolve("tmp"), "sbt.global.base" -> root.resolve("sbt"),
+        "sbt.ivy.home" -> root.resolve("ivy"), "maven.repo.local" -> root.resolve("m2"),
+      )
+      val launcher =
+        if program == Program.Sbt then
+          Seq("/bin/bash", "-c", sbtRunner, "sbt") ++ sbtCommand(prereqs.executable, root.resolve("sbt")).tail
+        else Seq(jvm) ++ settings
+      // A build supplies its own argv to a forked JVM; only the environment carries these settings.
+      for command <- Seq(launcher, Seq(jvm, "-cp", classpath, "agentsandbox.launcher.ForkJvmSettings")) do
+        val builder = ProcessBuilder(command*)
+        builder.environment().clear()
+        builder.environment().putAll(environment.asJava)
+        val process = builder.start()
+        process.getOutputStream.close()
+        val err = String(process.getErrorStream.readAllBytes(), UTF_8)
+        assertEquals(process.waitFor(), 0, s"$program, $path: $err")
+        expected.foreach: (name, value) =>
+          assert(err.linesIterator.exists(_.trim == s"$name = $value"), s"$program, $name: $err")
+        for name <- Seq("forward.tool", "forward.jdk") do
+          assert(err.linesIterator.exists(_.trim == s"$name = value"), s"$program, $name: $err")
+        if program == Program.Sbt && command == launcher then
+          assert(err.linesIterator.contains(s"preloaded = ${root.resolve("sbt/preloaded")}"), err)
 
   test("a gradle command's registry is the launch's own, and its toolchain inventory the granted JDK"):
     val prereqs = RunOnHostPrereqs.CommandPrereqs(
@@ -257,11 +330,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
     val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
+    val global = Path.of("/Users/a b/c\"d/sbt")
     def server(arguments: String*): Seq[String] =
-      val line = serverCommand(sbt, arguments)
-      assertEquals(line.take(2), Seq(sbt.toString, s"-Dsbt.script=$sbt"))
+      val line = serverCommand(sbt, global, arguments)
+      assertEquals(line.take(3), sbtCommand(sbt, global) :+ s"-Dsbt.script=$sbt")
       assertEquals(line.takeRight(2), Seq("--detach-stdio", "--server"))
-      line.drop(2).dropRight(2)
+      line.drop(3).dropRight(2)
     // -D and a value flag reach the server; -J is the client JVM's, -batch and -v the client's
     // own, and a command with what follows it goes over the socket.
     assertEquals(
@@ -1168,3 +1242,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(brokers.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), brokers)
     assert(brokers.contains("==> server-sbt-0a.log\nserver said\n"), brokers)
     assert(!brokers.contains("==> project"), brokers)
+object ForkJvmSettings:
+  def main(args: Array[String]): Unit =
+    val command = ProcessBuilder(
+      Path.of(sys.props("java.home"), "bin/java").toString,
+      "-Djava.io.tmpdir=/build-option", "-XshowSettings:properties", "-version",
+    )
+    sys.exit(command.inheritIO().start().waitFor())

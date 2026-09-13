@@ -572,9 +572,9 @@ object SandboxProject:
 
   /**
    * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
-   * Read on the host, so the same forms egress/ refuses (EgressRules.readRuleFiles) are
-   * refused here for the same reasons: agent as a file, a stray name, a symlink, a non-regular
-   * file, an empty file. Not normalized — it is text, mounted as written.
+   * Read on the host; refuse a stray name, a symlink or a non-regular file rather than silently
+   * ignoring configuration or following a project-controlled link. An empty file removes the
+   * image's working conventions. Not normalized — it is text, mounted as written.
    */
   def readAgentInstructions(agentDir: Path): Either[String, Option[String]] =
     def symlinkRefusal(path: Path): String =
@@ -606,11 +606,6 @@ object SandboxProject:
           case entry if !Files.isRegularFile(entry) =>
             s"error: $entry is not a regular file\nagent/$AgentInstructionsFile is a text file; " +
               "anything else would leave it silently unread."
-        .orElse:
-          Option.when(readIfPresent(file).exists(_.isBlank))(
-            s"error: $file is empty\nDelete the file; the image's own instructions then apply."
-          )
-
       refusal.toLeft(readIfPresent(file))
 
   /**

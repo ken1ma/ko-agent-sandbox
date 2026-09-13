@@ -21,7 +21,7 @@
 #          and to the neighbor; the command's environment reaching the build; a TERMed client
 #          mid-command; MILL_SERVER_TIMEOUT_MILLIS; a foreign daemon whose fingerprint differs
 #
-# Run it on macOS, from this repository's root, in a host terminal, with the cs-installed sbt on
+# Run it on macOS, from this repository's root, with the cs-installed sbt on
 # PATH and JAVA_HOME (or `cs java-home`) naming a JDK. It downloads what the two sbt versions and
 # Mill need, unconfined, into the user's own caches — the provisioning the wrapper requires of the
 # user — and confines only the rows. About ten minutes on a warm cache. On any FAIL the scratch
@@ -45,7 +45,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 2
 fi
 if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
-    echo "This looks like a sandbox session. Run the probe in a host terminal instead." >&2
+    echo "This looks like a sandbox session. Run the probe on the host instead." >&2
     exit 2
 fi
 if [ ! -f src/probe/mill-fixture/mill ]; then
@@ -258,12 +258,12 @@ profile() { # file rule...: an allow-default profile that denies network* and al
       for rule in "$@"; do echo "$rule"; done; } > "$out"
 }
 # The wrapper's closed environment, minus the proxy, as a file for the group leader.
-write_env() { # file tmp runtime-dir extra-java-tool-options [NAME=VALUE...]
+write_env() { # file tmp runtime-dir extra-java-options [NAME=VALUE...]
     out=$1; tmp=$2; runtime=$3; extra=$4; shift 4
     { printf 'PATH=%s\nJAVA_HOME=%s\nHOME=%s\nUSER=%s\nLOGNAME=%s\n' \
           "$system_path" "$JAVA_HOME" "$HOME" "$account" "$account"
       printf 'TMPDIR=%s\nXDG_RUNTIME_DIR=%s\n' "$tmp" "$runtime"
-      printf 'JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=%s -Djava.net.preferIPv4Stack=true %s\n' "$tmp" "$extra"
+      printf '_JAVA_OPTIONS=-Djava.io.tmpdir=%s -Djava.net.preferIPv4Stack=true %s\n' "$tmp" "$extra"
       for pair in "$@"; do printf '%s\n' "$pair"; done; } > "$out"
 }
 first_line() { grep -v '^$' "$1" 2>/dev/null | grep -v 'Picked up' | head -1 | cut -c1-70; }
@@ -1010,7 +1010,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
         profile "$mp/client.sb" "(allow network-outbound (remote ip \"localhost:$port\"))"
         profile "$mp/neighbor.sb" "(allow network-outbound (remote ip \"localhost:$((port + 1))\"))"
         # M2: a client confined to the daemon's port. The native launcher is a GraalVM image: it
-        # takes no JAVA_TOOL_OPTIONS, so the environment's preferIPv4Stack never reaches it and its
+        # takes no _JAVA_OPTIONS, so the environment's preferIPv4Stack never reaches it and its
         # connect is dual-stack, v4-mapped, which the "localhost" class denies (run-on-host.md
         # "Network"). Three candidates, in order; the first that runs is the client of the rows
         # after: the native launcher as is, the property on its command line for the image's

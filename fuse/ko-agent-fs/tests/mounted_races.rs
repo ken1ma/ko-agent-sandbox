@@ -114,7 +114,7 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
     while Instant::now() < deadline {
         match fs::write(mount.at(".git/hooks/pre-commit"), b"evil") {
             Ok(()) => panic!("SECURITY: a hook write succeeded during a concurrent rename"),
-            // The policy refusing is the answer that matters; the other two are the gitdir simply
+            // The policy refusing is the answer that matters; the other two are the gitdir
             // not being there at that instant, which is the correct answer to a name that moved.
             Err(err) if err.raw_os_error() == Some(libc::EPERM) => frozen += 1,
             Err(err) if err.kind() == ErrorKind::NotFound => {}

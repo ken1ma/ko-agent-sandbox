@@ -510,7 +510,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val refused = boundaryDirError(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
-  test("agent/ holds one file, with the forms egress/ refuses refused for the same reasons"):
+  test("agent/ accepts empty overrides and refuses stray names, symlinks and non-regular files"):
     val parent = Files.createTempDirectory("agent-forms")
     assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
 
@@ -530,10 +530,12 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(dir.resolve("AGENT-CUSTOM.md"), "x")
     assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
     Files.delete(dir.resolve("AGENT-CUSTOM.md"))
-    Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "\n")
-    assert(readAgentInstructions(dir).swap.exists(_.contains("is empty")))
+    Vector("", "\n", " \t\r\n").foreach: text =>
+      Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), text)
+      assertEquals(readAgentInstructions(dir), Right(Some(text)))
 
     Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
+    assertEquals(readAgentInstructions(dir), Right(None))
     Files.createDirectory(dir.resolve("AGENTS-CUSTOM.md"))
     assert(readAgentInstructions(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("AGENTS-CUSTOM.md"))

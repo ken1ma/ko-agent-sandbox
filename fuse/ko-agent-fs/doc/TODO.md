@@ -247,7 +247,7 @@ decides.
 - [ ] Docs: `architecture.md` "Coherency" states the guarantee with the option in it — file
       attributes and data always fresh, directory names and attributes ≤ T, default 0;
       `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
-      README's reference block documents the flag.
+      the launcher’s `README.md` reference block documents the flag.
 
 
 ## P2 — Diagnostics
@@ -265,9 +265,9 @@ launch gate. The gap:
 The filter is the default on every platform ahead of that verification (`SECURITY.md`, "Not
 defended"), which leaves:
 
-- [ ] `SECURITY.md` has a **Not defended** entry for the filter on the platforms where it is
-  unverified — verified on macOS and Windows, reasoned on Linux. When Linux has its row that entry
-  has nothing left to say and goes; the claim it qualifies is already listed under **Defended**.
+- [ ] After Linux verification, remove the unverified-platform qualification from `SECURITY.md`.
+  Retain the mount-time guard's scope and snapshot limits, and move the explanation of build trust
+  beside the verified guarantee. Platform evidence does not resolve those separate limits.
 - [ ] The guard's scope gap (`SECURITY.md`, "Not defended"): decide whether to extend the
   checks to the repositories and bare layouts a pre-mount walk finds, or to keep recording it.
 
@@ -292,7 +292,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 
 - **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
   rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
-  therefore reads to programs as a filesystem that simply has no extended attributes, and that is an
+  therefore reads to programs as a filesystem that has no extended attributes, and that is an
   answer every xattr-aware program already knows how to take. The cost is cosmetic: `cp -a` drops
   them silently (`verification-log.md`, "Extended attributes", has the run and why).
   Implementing xattrs is a compatibility feature to schedule, not a regression to repair; the new

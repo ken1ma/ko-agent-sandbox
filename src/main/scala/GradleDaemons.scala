@@ -5,7 +5,7 @@
 // more at the launch's end, by pid and start time, as `records/daemon-gradle-<pid>`, and the
 // launch's end signals the group behind each record as it does every recorded group. What proves
 // a daemon the launch's is its initial environment: the client starts it with its own
-// (`DefaultProcessForkOptions.getInheritableEnvironment`), whose `JAVA_TOOL_OPTIONS` names the
+// (`DefaultProcessForkOptions.getInheritableEnvironment`), whose `_JAVA_OPTIONS` names the
 // broker's `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was
 // started with. No path proves it: the build writes across `tmp/` and the project, and a file a
 // daemon of yours holds open, renamed into the registry under any name, is reported by the kernel
@@ -45,12 +45,12 @@ object GradleDaemons:
 
   /** Whether a process's command line and initial environment, as `ps -wwE -o command=` prints
     * them on one line, carry the launch's temporary directory as the JVM option the command
-    * environment sets (RunOnHostSandbox.commandEnvironment): first in `JAVA_TOOL_OPTIONS` and so
+    * environment sets (RunOnHostSandbox.commandEnvironment): first in `_JAVA_OPTIONS` and so
     * prefixed by the variable's name, and ended by the option's own closing quote, so a directory
     * whose name extends this one is another launch's. */
   def carriesTmp(commandAndEnvironment: String, tmp: Path): Boolean =
     val option = RunOnHostSandbox.jvmProperty("java.io.tmpdir", tmp.toString)
-    s" $commandAndEnvironment ".contains(s" JAVA_TOOL_OPTIONS=$option ")
+    s" $commandAndEnvironment ".contains(s" _JAVA_OPTIONS=$option ")
 
   /**
    * The daemons on the host started with the launch's environment, with their start times; the

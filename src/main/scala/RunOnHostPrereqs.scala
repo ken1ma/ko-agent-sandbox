@@ -74,10 +74,10 @@ object RunOnHostPrereqs:
         "or the build script's header"
     case Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir) =>
       s"mill's JVM launcher $launcherVersion is not provisioned under $downloadDir; run " +
-        s"`MILL_VERSION=$launcherVersion ./mill version` once in a host terminal"
+        s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqMillNativeLauncher(pinned) =>
       s"the pinned mill version $pinned names the native launcher, which cannot reach the launch's daemon: it " +
-        "takes no JAVA_TOOL_OPTIONS, so its connect is the dual-stack one the profile denies; pin " +
+        "takes no _JAVA_OPTIONS, so its connect is the dual-stack one the profile denies; pin " +
         s"`${pinned.stripSuffix("-native")}` or `${pinned.stripSuffix("-native")}-jvm`"
     case Refusal.PrereqMillJvmNotSystem(found) =>
       s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
@@ -85,17 +85,17 @@ object RunOnHostPrereqs:
       "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
     case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
     case Refusal.PrereqGradleDistributionMissing(url, directory) =>
-      s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once in a host terminal"
+      s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once on the host"
     case Refusal.PrereqMvnWrapperMissing =>
       "the project has no executable `mvnw` wrapper script; a global mvn is not used"
     case Refusal.PrereqMvnWrapperNotOnlyScript =>
-      "the mvnw wrapper is not the only-script type; run `./mvnw wrapper:wrapper -Dtype=only-script` in a host terminal"
+      "the mvnw wrapper is not the only-script type; run `./mvnw wrapper:wrapper -Dtype=only-script` on the host"
     case Refusal.PrereqMvnWrapperUnreadable(reason) => reason
     case Refusal.PrereqMvnDistributionIsMvnd(url) =>
       s"distributionUrl in .mvn/wrapper/maven-wrapper.properties names mvnd, a daemon: '$url'; " +
         "point it at an apache-maven-…-bin.zip URL"
     case Refusal.PrereqMvnDistributionMissing(url, home) =>
-      s"Maven from $url is not unpacked at $home; run `./mvnw --version` once in a host terminal"
+      s"Maven from $url is not unpacked at $home; run `./mvnw --version` once on the host"
     case Refusal.PrerequisiteFileUnreadable(path, reason) => s"$path cannot be read: $reason"
     case Refusal.CacheRootUnusable(reason)            => s"cache root: $reason"
     case Refusal.CacheRootInsideProject(root, project) =>
@@ -397,7 +397,7 @@ object RunOnHostPrereqs:
    * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
    * bootstrap spells it, for a bare `<v>` and a `<v>-jvm` pin alike. The bootstrap would run the
    * native image for a bare pin, and that image cannot be the launch's client: it takes no
-   * `JAVA_TOOL_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
+   * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
    * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
    * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
    * src/probe/run-on-host-broker-session.sh M2). A `<v>-native` pin asks for that one
@@ -491,7 +491,7 @@ object RunOnHostPrereqs:
    * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
    * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
    * file) then `build.mill` (its `//|` lines). Its other inputs, `JAVA_OPTS` and
-   * `JDK_JAVA_OPTIONS`, are absent from the closed environment. The broker compares this before
+   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The broker compares this before
    * each command and replaces the daemon when it differs, so that the client never meets the
    * mismatch itself: Mill's launcher would end the daemon and start a replacement from the
    * client's own profile, which cannot bind, and the command would fail.

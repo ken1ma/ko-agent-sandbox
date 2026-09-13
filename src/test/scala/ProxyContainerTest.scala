@@ -31,10 +31,8 @@ class ProxyContainerTest extends munit.FunSuite:
       session = Some(live)
       val proxy = live.proxy
 
-      // The effective set, not the `--cap-drop` flag: podman expands `ALL` into the concrete list
-      // it dropped, so asserting the flag's spelling would be asserting how the request was phrased
-      // rather than what the container ended up with — the distinction doc/TODO.md's "test the
-      // resulting boundary, not merely the code that asks podman to create it" is about.
+      // Podman expands `--cap-drop=ALL` into a concrete list. EffectiveCaps reports what the
+      // process can use, including any capability added back by another flag.
       assertEquals(inspect(proxy, "{{.EffectiveCaps}}"), "[]", "effective capabilities")
       assert(
         inspect(proxy, "{{.HostConfig.SecurityOpt}}").contains("no-new-privileges"),

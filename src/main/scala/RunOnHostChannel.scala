@@ -477,8 +477,15 @@ object RunOnHostChannel:
         if !process.waitFor(10, TimeUnit.SECONDS) then end(process)
 
   private def pump(from: InputStream, to: OutputStream): Thread =
+    // The JVM buffers writes to podman exec's stdin; short build output must reach the agent before EOF.
     val thread = Thread(() =>
-      try { from.transferTo(to); () }
+      try
+        val buffer = new Array[Byte](8192)
+        var count = from.read(buffer)
+        while count != -1 do
+          to.write(buffer, 0, count)
+          to.flush()
+          count = from.read(buffer)
       catch case _: IOException => ()
       finally
         try to.close()
