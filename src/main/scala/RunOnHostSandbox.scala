@@ -900,7 +900,7 @@ object RunOnHostSandbox:
           // or under a changed configuration, a fresh one starts under the same proxy, from a
           // fresh assembly: a changed version pin grants another launcher, and the assembly
           // is what grants it. The exit file of its starter is no liveness, since the starter
-          // exits by design once the daemon is up.
+          // is ended, or exits, by design once the daemon is up.
           daemonConfig(buildDirectory).flatMap: config =>
             val same = config == current.daemonConfig
             if same && current.daemon.exists(daemonLives) then Right(Some(current.runtime))

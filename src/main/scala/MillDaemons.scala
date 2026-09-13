@@ -6,11 +6,12 @@
 // the launcher writes the daemon's fingerprint (`DaemonConfig`) with the code every client
 // compares it with, where a helper would reproduce `MillLauncherMain.main0`'s preamble against
 // `mill.launcher` internals pinned to one version, and a fingerprint that differs is the mismatch
-// on which the next client ends the daemon. The cost is the denied connect's ten-second retry
-// (TODO.md, "ending the mill starter once the daemon listens"); the helper would return for a Mill
-// version whose daemon does not survive the starter's exit. Before the broker's starts, a daemon
-// of the user's own for the build directory is ended by proof once idle, as the user's sbt server
-// is shut down by protocol.
+// on which the next client ends the daemon. The connect is denied because the daemon inherits the
+// starter's profile (SeatbeltProfile.Network.MillDaemon has why no outbound is granted); the
+// starter is ended once its daemon is proved listening, so the denied connect's ten-second retry
+// is not paid. The helper would return for a Mill version whose daemon does not survive the
+// starter's end. Before the broker's starts, a daemon of the user's own for the build directory
+// is ended by proof once idle, as the user's sbt server is shut down by protocol.
 // macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
 // `start` as a seam and the profile gate measures it.
 
@@ -23,7 +24,7 @@ import java.nio.file.{Files, LinkOption, Path}
 import scala.jdk.CollectionConverters.*
 
 import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
-import RunOnHostSession.{Processes, Session}
+import RunOnHostSession.{Processes, Record, Session}
 import RunOnHostSession.HostProcesses.lines
 
 object MillDaemons:
@@ -35,24 +36,28 @@ object MillDaemons:
   /** The daemon's main class, on its command line and nowhere on the launcher's. */
   val DaemonMain = "mill.daemon.MillDaemonMain"
 
-  /** Where the starter's stdout and stderr go: its "Mill launcher failed" trace after the denied
-    * connect is the noise of a start that worked, and the finding of one that did not. In the
-    * session directory, beside the sbt servers' logs, for the same reason (serverLog). */
+  /** Where the starter's stdout and stderr go: a "Mill launcher failed" trace there marks a
+    * starter the broker did not end — its daemon never listened, or the launcher reached its own
+    * retry bound first — and is the finding when the start failed. In the session directory,
+    * beside the sbt servers' logs, for the same reason (serverLog). */
   def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"daemon-mill-$hash.log")
 
   /** How long a foreign daemon may stay busy before the start is refused: the bound the user's
     * sbt server gets for its shutdown (shutdownForeignServer), for the same reason. */
   val ForeignIdleDeadlineMillis = 120_000L
 
-  /** The starter's connect retry (`MillServerLauncher.serverInitWaitMillis`, 10 s): the daemon
-    * is up and listening within it, and `socketPort` written, so a port not verifiable within
-    * this bound after the starter's exit is a daemon that is not listening. */
+  /** The bound on proving the port after the starter's exit: the launcher's connect retry
+    * (`MillServerLauncher.serverInitWaitMillis`, 10 s), within which a daemon listens and
+    * `socketPort` is written, so a port not verifiable this long after is a daemon that is not
+    * listening. It matters for a starter that exited on its own; one the broker ended was ended
+    * behind that very proof. */
   val PortDeadlineMillis = 10_000L
 
   /**
    * The daemon of `start`'s runtime: no foreign daemon holds the build directory — the user's
-   * own is ended here — then the starter runs, registered at `start.record`, and the daemon it
-   * left in that group is proved and its port verified. A daemon that appeared between the
+   * own is ended here — then the starter runs, registered at `start.record`, is ended once the
+   * daemon it spawned is proved listening (awaitStarter), and the daemon it left in that group
+   * is proved and its port verified. A daemon that appeared between the
    * foreign check and the starter's lock is attached to by the starter, whose group then holds
    * no daemon: it is ended like the first and the starter runs once more. A start that fails
    * leaves no group behind its record (the caller discards it).
@@ -73,8 +78,8 @@ object MillDaemons:
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
         spawn <- spawnStarter(session, forwards, start, profileFile, output)
-        _ <- awaitStarter(spawn, start, output)
-        daemon <- memberDaemon(start.record, processes) match
+        _ <- awaitStarter(spawn, start, output, processes, log)
+        daemon <- memberDaemon(start.record) match
           case Some((pid, daemonStart)) =>
             verifiedPort(start.buildDirectory, pid).map(port => Daemon(pid, daemonStart, port))
           case None if retriesLeft > 0 && foreignDaemons(start.buildDirectory, processes).nonEmpty =>
@@ -136,15 +141,25 @@ object MillDaemons:
       Right(builder.start())
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 
-  /** The starter's end, whatever its status: the denied connect exits it nonzero by design. A
-    * starter making no progress — neither its output nor the proxy log growing — for the bound
-    * sbt's server start gets is a failed start; a first start resolves Mill's own daemon
-    * classpath through the proxy, so the bound is on progress, not time. */
-  private def awaitStarter(spawn: Process, start: DaemonStart, output: Path): Either[String, Unit] =
+  /**
+   * The starter's end, in the exit file the leader writes: ended by the broker once its daemon is
+   * proved listening on the port `socketPort` names (endStarter), or, without that proof, exited
+   * on its own, nonzero, at the end of the launcher's denied-connect retry. The TERM is sent once:
+   * a launcher it does not end reaches that retry bound anyway. The group is looked at every half
+   * second until then, `lsof` only once a daemon row exists. A starter making no progress —
+   * neither its output nor the proxy log growing — for the bound sbt's server start gets is a
+   * failed start; a first start resolves Mill's own daemon classpath through the proxy, so the
+   * bound is on progress, not time.
+   */
+  private def awaitStarter(
+    spawn: Process, start: DaemonStart, output: Path, processes: Processes, log: String => Unit,
+  ): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
     def sizes = (RunOnHostSandbox.logLength(output), RunOnHostSandbox.logLength(start.runtime.proxyLog))
     var last = sizes
     var since = System.nanoTime
+    var starterEnded = false
+    var polls = 0
     var result: Option[Either[String, Unit]] = None
     while result.isEmpty do
       val spawnEnded = !spawn.isAlive
@@ -161,39 +176,123 @@ object MillDaemons:
             s"the mill starter neither ended nor wrote anything, and the proxy log did not grow, for " +
               s"${ServerStartSilenceMillis / 1000}s",
           ))
-        else Thread.sleep(100)
+        else
+          if !starterEnded && polls % 5 == 0 then starterEnded = endStarter(start, processes, log)
+          polls += 1
+          Thread.sleep(100)
     result.get
 
+  /**
+   * TERM to the launcher, alone, once the daemon it spawned is proved listening on the candidate
+   * port; whether it was sent. The launcher is the daemon's parent in the group (starterOf), its
+   * start time taken from the same `ps` listing — a second `ps` would leave a window between the
+   * two for the pid to be recycled in — and proved again immediately before the signal. Never
+   * the group: the daemon is a member, and the leader is its proof. The daemon, spawned with
+   * `destroyOnExit = false` (MillProcessLauncher.scala), survives its launcher's TERM as it
+   * survives the launcher's exit (measured, run-on-host-broker-session.sh M8). The observations
+   * are parameters so that the tests can interleave them.
+   */
+  private def endStarter(start: DaemonStart, processes: Processes, log: String => Unit): Boolean =
+    endStarter(start.record, start.buildDirectory, processes, log, groupMembers, listeningCandidate)
+
+  def endStarter(
+    record: Path,
+    buildDirectory: Path,
+    processes: Processes,
+    log: String => Unit,
+    members: Record => Vector[Member],
+    listening: (Path, Long) => Option[Int],
+  ): Boolean =
+    val proved =
+      for
+        leader <- recordedLeader(record)
+        (daemon, launcher) <- starterOf(members(leader), leader.pgid)
+        port <- listening(buildDirectory, daemon.pid)
+      yield (daemon, launcher, port)
+    proved.exists: (daemon, launcher, port) =>
+      signal(launcher.pid, launcher.start, "TERM", processes) && {
+        log(s"TERM to the mill starter (pid ${launcher.pid}): its daemon (pid ${daemon.pid}) listens on port $port")
+        true
+      }
+
+  /** A row of the group's `ps` listing: the pid, its parent's pid, the start time as
+    * `ps -o lstart=` spells it, and the command line. */
+  case class Member(pid: Long, ppid: Long, start: String, command: String)
+
+  private val MemberLine = raw"\s*(\d+)\s+(\d+)\s+(.*)".r
+
+  /**
+   * `ps -ww -o pid=,ppid=,lstart=,command=` lines as members. The start time is not parsed as a
+   * date, whose spelling is `ps`'s own: it is split off at the width of the leader's, which the
+   * record spells, and only from a listing whose leader row carries that very start — the proof
+   * that the width applies; any other listing is empty. A line that is no row is skipped.
+   */
+  def parseMembers(lines: Vector[String], leader: Record): Vector[Member] =
+    val rows = lines.collect { case MemberLine(pid, ppid, rest) => (pid.toLong, ppid.toLong, rest) }
+    val width = leader.leaderStart.length
+    val leaderRow = rows.exists((pid, _, rest) => pid == leader.pgid && rest.startsWith(leader.leaderStart + " "))
+    if !leaderRow then Vector.empty
+    else
+      rows.collect:
+        case (pid, ppid, rest) if rest.length > width && rest(width) == ' ' =>
+          Member(pid, ppid, rest.take(width), rest.drop(width + 1))
+
+  private def groupMembers(leader: Record): Vector[Member] =
+    parseMembers(lines("ps", "-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
+
+  private def recordedLeader(record: Path): Option[Record] =
+    try RunOnHostSession.parseRecord(Files.readString(record, UTF_8))
+    catch case _: IOException => None
+
+  /**
+   * The daemon and the launcher that spawned it, from the group's listing: the member whose
+   * command line names DaemonMain, and its parent — a member of the same group other than the
+   * leader, whose own command line does not name DaemonMain. None for any other topology, so
+   * nothing is signalled then: a daemon the launcher attached to instead of spawning has its
+   * parent outside the group, and a `java` that does not exec would put two rows naming
+   * DaemonMain in the group, the daemon's parent among them.
+   */
+  def starterOf(members: Vector[Member], leaderPgid: Long): Option[(Member, Member)] =
+    for
+      daemon <- members.find(_.command.contains(DaemonMain))
+      launcher <- members.find(_.pid == daemon.ppid)
+      if launcher.pid != leaderPgid && !launcher.command.contains(DaemonMain)
+    yield (daemon, launcher)
+
   /** The daemon in the record's group: the member whose command line names DaemonMain, with the
-    * start time that proves it from now on. */
-  private def memberDaemon(record: Path, processes: Processes): Option[(Long, String)] =
-    val parsed =
-      try RunOnHostSession.parseRecord(Files.readString(record, UTF_8))
-      catch case _: IOException => None
-    parsed.flatMap: leader =>
-      lines("ps", "-ww", "-o", "pid=,command=", "-g", leader.pgid.toString)
-        .collectFirst { case Member(pid, command) if command.contains(DaemonMain) => pid.toLong }
-        .flatMap(pid => processes.startOf(pid).map(pid -> _))
+    * start time that proves it from now on, from the same listing. */
+  private def memberDaemon(record: Path): Option[(Long, String)] =
+    recordedLeader(record).flatMap: leader =>
+      groupMembers(leader).find(_.command.contains(DaemonMain)).map(member => member.pid -> member.start)
 
-  private val Member = raw"\s*(\d+)\s+(.*)".r
+  private def portFile(buildDirectory: Path): Path =
+    buildDirectory.resolve("out").resolve("mill-daemon").resolve("socketPort")
 
-  /** The port a client is confined to: `out/mill-daemon/socketPort`'s candidate — an integer in
-    * port range, nothing more — verified as a port the proved daemon listens on. The
-    * file is the build's to write, so a candidate the daemon does not listen on is a refusal,
-    * and so is no candidate at all: the client reads the same file and would fail anyway. */
-  private def verifiedPort(buildDirectory: Path, pid: Long): Either[String, Int] =
-    val file = buildDirectory.resolve("out").resolve("mill-daemon").resolve("socketPort")
-    def candidate = (try Some(Files.readString(file, UTF_8).trim) catch case _: IOException => None)
+  /** `out/mill-daemon/socketPort`'s candidate: an integer in port range, nothing more. */
+  private def portCandidate(buildDirectory: Path): Option[Int] =
+    (try Some(Files.readString(portFile(buildDirectory), UTF_8).trim) catch case _: IOException => None)
       .flatMap(_.toIntOption).filter(port => port >= 1 && port <= 65535)
+
+  /** The candidate, once the pid listens on it: the predicate a client's one-port grant rests on,
+    * and the one behind the starter's end. Not any listening port: the daemon listens before it
+    * writes the file, and a killed daemon leaves a stale one. */
+  private def listeningCandidate(buildDirectory: Path, pid: Long): Option[Int] =
+    portCandidate(buildDirectory).filter(listeningPorts(pid).contains)
+
+  /** The port a client is confined to, proved within the bound. The file is the build's to
+    * write, so a candidate the daemon does not listen on is a refusal, and so is no candidate at
+    * all: the client reads the same file and would fail anyway. */
+  private def verifiedPort(buildDirectory: Path, pid: Long): Either[String, Int] =
     val deadline = System.nanoTime + PortDeadlineMillis * 1_000_000
     var found: Option[Int] = None
-    var listening = Vector.empty[Int]
     while found.isEmpty && System.nanoTime < deadline do
-      listening = listeningPorts(pid)
-      found = candidate.filter(listening.contains)
+      found = listeningCandidate(buildDirectory, pid)
       if found.isEmpty then Thread.sleep(200)
-    val ports = if listening.isEmpty then "no port" else listening.mkString(", ")
-    found.toRight(s"the daemon (pid $pid) listens on $ports, and $file names ${candidate.getOrElse("no port")}")
+    found.toRight:
+      val listening = listeningPorts(pid)
+      val ports = if listening.isEmpty then "no port" else listening.mkString(", ")
+      s"the daemon (pid $pid) listens on $ports, and ${portFile(buildDirectory)} names " +
+        portCandidate(buildDirectory).getOrElse("no port")
 
   /** The TCP ports `lsof` shows the pid listening on. */
   private def listeningPorts(pid: Long): Vector[Int] =
@@ -347,13 +446,18 @@ object MillDaemons:
   /** TERM, then KILL after a grace, each behind the start-time proof; waits for the pid to go. */
   private def end(pid: Long, start: String, processes: Processes): Unit =
     def alive = processes.startOf(pid).contains(start)
-    def signal(name: String): Unit =
-      if alive then ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()
-    signal("TERM")
+    signal(pid, start, "TERM", processes)
     val settled = (1 to 100).exists(_ => if !alive then true else { Thread.sleep(100); false })
     if !settled then
-      signal("KILL")
+      signal(pid, start, "KILL", processes)
       (1 to 50).exists(_ => if !alive then true else { Thread.sleep(100); false })
+
+  /** One signal to the pid, sent only while the pid bears the start time observed: the proof
+    * immediately before the signal, against a pid recycled since. Whether it was sent. */
+  private def signal(pid: Long, start: String, name: String, processes: Processes): Boolean =
+    val proved = processes.startOf(pid).contains(start)
+    if proved then processes.signal(pid, name)
+    proved
 
   /** A starter's group ended behind its leader, and its record and exit file removed, before the
     * same record name is spawned again: the failed starter's spawn is that group's live leader. */

@@ -140,6 +140,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val ended = ListBuffer[Long]()
     def startOf(pid: Long): Option[String] = alive.get(pid)
     def endGroup(pgid: Long): Unit = ended += pgid
+    def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
 
   def processes(alive: (Long, String)*): FakeProcesses = FakeProcesses(alive.toMap)
 

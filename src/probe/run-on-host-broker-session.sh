@@ -16,10 +16,11 @@
 #          forks nothing; the client's unix-socket rule; a TERMed client cancels its exec, and what
 #          the forked JVM does; where sbt 2 writes its proc entry; the wrong-directory control,
 #          then a protocol shutdown at the socket recorded before it
-#   M1-M7  Mill 1.1.9, one scratch project: the stock ./mill under the daemon profile leaves a
+#   M1-M8  Mill 1.1.9, one scratch project: the stock ./mill under the daemon profile leaves a
 #          daemon behind its denied connect; the port from lsof; a client confined to that port,
 #          and to the neighbor; the command's environment reaching the build; a TERMed client
-#          mid-command; MILL_SERVER_TIMEOUT_MILLIS; a foreign daemon whose fingerprint differs
+#          mid-command; MILL_SERVER_TIMEOUT_MILLIS; a foreign daemon whose fingerprint differs;
+#          the starter's group topology, and the starter TERMed once its daemon listens
 #
 # Run it on macOS, from this repository's root, with the cs-installed sbt on
 # PATH and JAVA_HOME (or `cs java-home`) naming a JDK. It downloads what the two sbt versions and
@@ -1137,6 +1138,62 @@ $(failed "$mp/starter" "$mp/starter.log")"
     fi
     end_group "$foreign_leader"
     end_daemons
+
+    # M8: the broker's early end of a starter (MillDaemons.endStarter): once the daemon in the
+    # starter's group listens on the port socketPort names, TERM to the launcher alone — the
+    # daemon's parent, a member of the group other than the leader — and the daemon stays,
+    # listening, and serves a client. The group's rows before and after are the topology: which
+    # pid is the launcher, and whether a shell sits between the leader and it.
+    probe_env=$mp/env
+    # shellcheck disable=SC2086
+    group_start "$mp/m8-starter" "$mp" /usr/bin/sandbox-exec -f "$mp/daemon.sb" ${mill_client:-./mill} version \
+        >"$mp/m8-starter.log" 2>&1
+    m8_leader=$leader
+    m8_daemon=""; m8_port=""
+    m8_listening() {
+        m8_daemon=$(ps -eo pid=,pgid=,command= \
+            | awk -v g="$m8_leader" '$2 == g && /MillDaemonMain/ { print $1 }' | head -1)
+        [ -n "$m8_daemon" ] || return 1
+        m8_port=$(cat "$mp/out/mill-daemon/socketPort" 2>/dev/null)
+        [ -n "$m8_port" ] && listen_ports "$m8_daemon" | grep -qx "$m8_port"
+    }
+    m8_settled() { exited "$mp/m8-starter" || m8_listening; }
+    until_true 120 m8_settled
+    if exited "$mp/m8-starter" || ! m8_listening; then
+        report FAIL "M8 the daemon listens on socketPort's port before its starter exits" \
+            "daemon ${m8_daemon:-none}, port ${m8_port:-none}; $(failed "$mp/m8-starter" "$mp/m8-starter.log")"
+    else
+        report INFO "M8 the starter's group while the daemon listens" "pid ppid pgid command; leader $m8_leader"
+        ps -o pid=,ppid=,pgid=,command= -g "$m8_leader" | cut -c1-110 | show_table
+        m8_launcher=$(ps -o ppid= -p "$m8_daemon" | tr -d ' ')
+        if [ "$m8_launcher" = "$m8_leader" ] \
+            || [ "$(ps -o pgid= -p "${m8_launcher:-0}" 2>/dev/null | tr -d ' ')" != "$m8_leader" ]; then
+            report FAIL "M8 the daemon's parent is a member of the group other than the leader" \
+                "parent ${m8_launcher:-none}, leader $m8_leader; nothing signalled"
+        else
+            kill -TERM "$m8_launcher"
+            if until_true 5 exited "$mp/m8-starter" && [ "$(status_of "$mp/m8-starter")" = 143 ] \
+                && ! gone "$m8_daemon" && listen_ports "$m8_daemon" | grep -qx "$m8_port"
+            then report PASS "M8 the starter ends on TERM behind its listening daemon" \
+                "launcher $m8_launcher exit 143; daemon $m8_daemon listens on $m8_port"
+            else report FAIL "M8 the starter ends on TERM behind its listening daemon" \
+                "starter status $(status_of "$mp/m8-starter"); daemon $m8_daemon \
+$(gone "$m8_daemon" && echo gone || echo alive), listening on: $(listen_ports "$m8_daemon" | tr '\n' ' ')"; fi
+            report INFO "M8 the starter's group after the TERM" "pid ppid command; leader $m8_leader"
+            ps -o pid=,ppid=,command= -g "$m8_leader" | cut -c1-110 | show_table
+            profile "$mp/client8.sb" "(allow network-outbound (remote ip \"localhost:$m8_port\"))"
+            # shellcheck disable=SC2086
+            if run_client "$mp/m8-client" "$mp/m8-client.log" \
+                /usr/bin/sandbox-exec -f "$mp/client8.sb" ${mill_client:-./mill} version && ! gone "$m8_daemon"
+            then report PASS "M8 the daemon serves a client after its launcher's TERM" \
+                "$(tail -1 "$mp/m8-client.log" | cut -c1-40)"
+            else report FAIL "M8 the daemon serves a client after its launcher's TERM" \
+                "$(failed "$mp/m8-client" "$mp/m8-client.log"); \
+daemon $(gone "$m8_daemon" && echo gone || echo alive)"; fi
+        fi
+    fi
+    end_daemons
+    end_group "$m8_leader"
 fi
 
 finish
