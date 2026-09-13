@@ -18,7 +18,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     │  ┌─ build processes: Seatbelt profiles ─────┐    ┌─ proxy: Seatbelt profile ────┐  │
     │  │ sbt client → sbt server                  │    │ listens on 127.0.0.1         │  │
     │  │ mill or gradle client → its daemon       │    │ allows only listed hosts     │  │
-    │  │ Maven starts a JVM for each command      │    │ and their permitted ports    │  │
+    │  │ Maven starts a JVM for each command      │    │ on port 443                  │  │
     │  │ dependency downloads                     ├───→│                              │  │
     │  │ writes project files, except             │    │ cannot read project or cache │  │
     │  │ .git and .ko-agent-sandbox;              │    │ logs allowed/denied requests │  │
@@ -41,7 +41,7 @@ the code that enforces each part:
 | concern | binding site |
 | --- | --- |
 | the security properties and their costs | `SECURITY.md` "Run on host" |
-| the option, the command, what a command may write | README Reference, `--run-on-host` |
+| option syntax and write access | [README.md](../README.md#reference), `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
@@ -49,6 +49,9 @@ the code that enforces each part:
 | the broker's mill daemon: its start, its port, a daemon of yours | `MillDaemons.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
+
+The full gate (`all`) reports **224 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-13).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it
@@ -78,7 +81,7 @@ fails, and any fallback to the container; implicit access to `~/.m2`, `~/.ivy2`,
 credentials, SSH credentials or unrelated home-directory state; stdin — `sbt console`, `sbt shell`
 and `sbtn`'s interactive modes; mounting the container's workspace at its host path (`TODO.md`,
 "same-path mounting"). The container keeps its toolchain: host commands are the fast path, not a
-replacement, and a session without `--run-on-host` builds in the container as before.
+replacement, and a session without `--run-on-host` builds in the container.
 
 ## Why only macOS
 
@@ -224,7 +227,7 @@ reads, fetched into the writable run-on-host cache through the proxy. `mill`'s e
 fetched artifact — so it is provisioned, not fetched, and a version bump
 is an explicit host update rather than an automatic update performed by the build definition.
 Gradle's and Maven's are the distributions the projects' wrappers unpacked on the host.
-`RunOnHostPrereqs.scala` validates all of the below before a command starts; a violation is a
+`RunOnHostPrereqs.scala` validates these prerequisites before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 ### The JVM
@@ -302,7 +305,7 @@ starts the server by running the script, and `-java-home` reaches the client alo
 A project-local bootstrap script, the build directory's own `mill`; no globally installed `mill`.
 The bootstrap is run with `MILL_VERSION` naming the JVM launcher of the pinned version, `<v>-jvm`
 (`RunOnHostPrereqs.millLauncherVersion`), and that launcher must already be provisioned —
-`MILL_VERSION=<v>-jvm ./mill version` once, in a host terminal, whenever the pinned version
+`MILL_VERSION=<v>-jvm ./mill version` once, on the host, whenever the pinned version
 changes — because `mill` 1.x fetches its launchers as executables, and fetching one would put an
 executable the sandbox chose into a directory the user's own `./mill` runs from, outside any
 sandbox. What is granted is that one file, `<download folder>/<v>`, never the download folder
@@ -310,7 +313,7 @@ around it, which holds every launcher the user ever ran. A version the user neve
 JVM launcher for is a refusal naming the command to run.
 
 The launcher is the JVM one, not the native image the bootstrap runs for a bare pin, because the
-image takes no `JAVA_TOOL_OPTIONS`: the environment's `preferIPv4Stack` never reaches it, its
+image takes no `_JAVA_OPTIONS`: the environment's `preferIPv4Stack` never reaches it, its
 connect to the daemon is the dual-stack one the "localhost" class denies ("Network"), and the
 property on its command line changes nothing (measured, `src/probe/run-on-host-broker-session.sh`
 M2). A `<v>-native` pin asks for that image by name and is refused with the reason.
@@ -413,7 +416,7 @@ timeout.
 The build directory's own wrapper properties, `gradle/wrapper/gradle-wrapper.properties` there,
 as `./gradlew` run there would read them — a nested build directory with a wrapper of its own is
 another build, as under `mill`; a `gradle` installed globally is not used. Run
-`./gradlew --version` once in a host terminal, and again whenever `distributionUrl` changes: that
+`./gradlew --version` once on the host, and again whenever `distributionUrl` changes: that
 run downloads Gradle into `~/.gradle/wrapper/dists`, and the command is granted that one Gradle
 read-only — not the whole `dists` directory, which holds every Gradle the user ever ran a wrapper
 for. If the wrapper has not downloaded it yet, the command is refused, and the refusal says what
@@ -453,7 +456,7 @@ command, and once more at the launch's end, the broker records every daemon star
 launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting the record
 of one gone; the launch's end signals the group behind each record as it does every recorded
 group. The proof is the daemon's initial environment, which the client starts it with
-(`DefaultProcessForkOptions`), read with `ps -E`: its `JAVA_TOOL_OPTIONS` names the broker's
+(`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the broker's
 `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
 No path proves it: the build writes across `tmp/` and the project, and a file a daemon of yours
 holds open, renamed into the registry under any name — the daemon log's included — is reported
@@ -481,7 +484,7 @@ the unrelated service of this host reached under `gradle` alone.
 ### Maven
 
 The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally is not used. Run
-`./mvnw --version` once in a host terminal, and again whenever `distributionUrl` in
+`./mvnw --version` once on the host, and again whenever `distributionUrl` in
 `.mvn/wrapper/maven-wrapper.properties` changes: that run downloads Maven into
 `~/.m2/wrapper/dists`, and the command is granted that one Maven read-only — not the whole `dists`
 directory, which holds every Maven the user ever ran a wrapper for. If the wrapper has not
@@ -544,7 +547,7 @@ What the wrapper supplies:
 | Environment Variable | Value |
 |---|---|
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
-| `JAVA_TOOL_OPTIONS` | the `java -D` properties below, the one form a forked JVM inherits |
+| `_JAVA_OPTIONS` | the `java -D` properties below, inherited by forked JVMs |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
 | `TMPDIR` | `<command directory>/tmp`; under `mill` and `gradle` the broker's `tmp/` |
 | `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | the broker's `tmp/`, or the command's under Maven |
@@ -572,7 +575,13 @@ The `java -D` properties:
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
 | `aether.connector.http.useSystemProperties` | `true`, else Maven's resolver ignores the proxy |
 
-Path values use `RunOnHostSandbox.jvmProperty`'s HotSpot quoting syntax.
+HotSpot reads `_JAVA_OPTIONS` directly, though OpenJDK calls it an undocumented feature. Path values
+use `RunOnHostSandbox.jvmProperty`'s HotSpot quoting syntax. This variable reaches HotSpot without
+the sbt script copying quoted values into argv;
+[sbt-issues.md](sbt-issues.md#quoted-jvm-options-are-copied-into-arguments)
+has the reproducer. HotSpot applies these properties after command-line options. Both sbt clients
+and servers also receive `sbt.global.base` as one argument for the script's preloaded-cache lookup
+(`RunOnHostSandbox.sbtCommand`).
 
 `<command directory>` is this invocation's directory under the wrapper root above — the broker's
 sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every row naming
@@ -597,17 +606,17 @@ fingerprint mismatch of the wrapper's own making; under `gradle` for the first r
 serving later commands with the profile and environment it was started with. `HOME` is
 passed because the programs' scripts derive paths from it, and nothing under it is granted. `--env`
 is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it replaces a
-pass-through, and a name the wrapper sets keeps the wrapper's value: a forwarded
-`JAVA_TOOL_OPTIONS` or `HTTPS_PROXY` does not replace the command's own. `MILL_VERSION` and
-`DEFAULT_MILL_VERSION` are never the forwarded values, because the wrapper granted the launcher of
-the version the build directory pins, and `MILL_VERSION` names that launcher; `MILL_OUTPUT_DIR`
+pass-through, but cannot replace any setting supplied by the wrapper. `_JAVA_OPTIONS` and
+`HTTPS_PROXY` keep the wrapper's values. `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the
+forwarded values, because the wrapper granted the launcher of the version the build directory pins,
+and `MILL_VERSION` names that launcher; `MILL_OUTPUT_DIR`
 and `MILL_BSP_OUTPUT_DIR` are not either, because the daemon's rendezvous is looked for under
-`out/` ("`mill`"). Among what is not
-supplied: `TERM`, `SBT_OPTS`, `JAVA_OPTS`, the other `COURSIER_*` variables, `SBT_CREDENTIALS`,
-`ALL_PROXY`, `FTP_PROXY`, the launcher's own
-`HTTPS_PROXY`, and whatever secret the launching shell exported. A command's own processes see this
-set plus what the programs' shell scripts create on the way — `PWD`, `SHLVL`, `_`; a variable does
-not come back merely because the launching shell exported it.
+`out/` ("`mill`"). Without explicit forwarding, `TERM`, `SBT_OPTS`, `JAVA_OPTS`,
+`JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, the other `COURSIER_*` variables, `SBT_CREDENTIALS`,
+`ALL_PROXY`, `FTP_PROXY` and exported secrets are absent. The launcher's own `HTTPS_PROXY` is
+replaced as above. A command's own processes see this set plus what the programs' shell scripts
+create on the way — `PWD`, `SHLVL`, `_`;
+a variable does not come back merely because the launching shell exported it.
 
 ## The channel and the command
 
@@ -910,8 +919,7 @@ loopback helper on the host is reachable from here, unlike from the container.
 
 ## Configuration
 
-A command that resolves beyond Maven Central names its repositories in a project file, in the
-directory that already holds reviewed boundary configuration:
+To allow artifact downloads beyond Maven Central, add repository hosts to this project file:
 
 ```text
 .ko-agent-sandbox/run-on-host/<program>/egress/rule

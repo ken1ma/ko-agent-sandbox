@@ -98,11 +98,11 @@ stop_watchdog
 # ctl or lock descriptor would stall the cancel, or the next command, until the broker ends them.
 cat <&3 3<&- 4<&- 8>&- 9>&- &
 # HotSpot prints this banner with no option to suppress it, so the relay filters it out.
-# RunOnHostSandbox.commandEnvironment explains why the commands need JAVA_TOOL_OPTIONS.
+# RunOnHostSandbox.commandEnvironment explains why the commands need _JAVA_OPTIONS.
 # -a: one NUL byte on stderr would otherwise make grep call the stream binary and print none of it.
 # --line-buffered: grep block-buffers to a pipe, holding the command's stderr back by a bufferful.
 # Unterminated stderr waits for a newline or EOF, even with --line-buffered.
-grep -a --line-buffered -v '^Picked up JAVA_TOOL_OPTIONS: ' <&4 3<&- 4<&- 8>&- 9>&- >&2 &
+grep -a --line-buffered -v '^Picked up _JAVA_OPTIONS: ' <&4 3<&- 4<&- 8>&- 9>&- >&2 &
 exec 3<&- 4<&-
 wait
 # Bounded because with a live broker the exit code follows the drained output within

@@ -26,9 +26,9 @@ The words the documents share, each defined where it binds and listed here once:
     (`egress-proxy.md`, "The rule file").
   - **listed host, unlisted host** — a host some rule names, and one none does; under
     `allow-unless-denied` an unlisted host holds an inspected `read` and nothing else.
-  - **tunnel, inspected** — an allowed host's two treatments: an opaque `CONNECT`, nothing seen past
-    it, or TLS terminated and each request decided against its grants (SECURITY.md, "Reading without
-    being able to write").
+  - **tunnel, inspected** — an allowed host’s two treatments: application traffic left opaque after
+    the TLS identity check, or TLS terminated and each request decided against its grants
+    (SECURITY.md, "Reading without being able to write").
 - **boundary directory** — `.ko-agent-sandbox`, read on the host before launch and unwritable in
   every write mode (SECURITY.md, "Why the rules are per project, in the project, and read-only").
 - **workspace filter** — `ko-agent-fs`, the FUSE mount the project is shared through, which refuses
@@ -43,7 +43,7 @@ The words the documents share, each defined where it binds and listed here once:
   project, what this session may do.
 - **launcher** — the program run on the host, the jar or the native image built from it, which
   builds the images, creates a run's objects and keeps its state under the host's state directory
-  (README, "Reference").
+  ([README.md](../README.md#reference)).
 - **reaper** — the detached shell the launcher spawns before it execs podman, which waits for the
   sandbox container to stop and then removes the proxy container and the networks the run created; a
   launch that stays resident, on Windows or after a failed spawn, removes them itself
@@ -148,6 +148,12 @@ step (`RefusalAdvice` in the proxy), and the user adds the `allow` line to
 - https://github.com/openai/codex/issues/22387 — no DNS inside the sandbox surprised users
 - https://github.com/google-gemini/gemini-cli/issues/23875 — network off by default read as
   "sandbox unusable"
+
+### Sign-in
+
+A browser callback to 127.0.0.1 reaches the host, while the agent listens inside the container.
+The supported device-code and pasted-code sign-ins need no callback listener exposed to the
+host. [README.md](../README.md#running-command) gives each agent’s sign-in steps.
 
 ### The agent-instruction override replaces only the conventions
 
@@ -285,11 +291,11 @@ proxy"), and each of these stays out of it for a reason of its own:
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
 header, answering the ruleset in force from the live proxy. Rejected, because every consumer
 already gets that answer from the proxy's own `--print-ruleset` dry run — `--egress-effective`,
-the launch banner, `KO_AGENT_SANDBOX_EGRESS_RULESET`, and the appended agent instructions — and
-the launcher cannot use a live query anyway: the rules must be validated and the leaf issued before
-the proxy container exists, since the leaf is a mount fixed at `podman create`. What the endpoint
+the launch banner and `KO_AGENT_SANDBOX_EGRESS_RULESET` — and the launcher cannot use a live query
+anyway: the rules must be validated and the leaf issued before the proxy container exists, since
+the leaf is a mount fixed at `podman create`. What the endpoint
 would add is a second parsed request format at the enforcement point, against its
-CONNECT-only-one-request rule, for information already delivered. `Max-Forwards` itself creates
+CONNECT-only, one-request rule, for information already delivered. `Max-Forwards` itself creates
 no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE, and this one never does —
 non-CONNECT is refused at the proxy layer, both methods are refused inside inspected tunnels, and
 an opaque tunnel is not an HTTP hop at all.

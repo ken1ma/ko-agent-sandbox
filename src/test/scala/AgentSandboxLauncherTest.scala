@@ -332,6 +332,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       ),
     )
 
+  test("--help covers the management actions, write modes, egress profiles and host programs"):
+    val documentedActions = "(?m)^  (--[a-z-]+)(?:[ =]|$)".r
+      .findAllMatchIn(UsageText).map(_.group(1)).toSet
+    assertEquals(
+      documentedActions,
+      ManagementActions ++ Set("--egress-check", "--write", "--egress", "--run-on-host", "--env"),
+    )
+    assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
+    assert(UsageText.contains(RunOnHostPrograms.mkString(" / ")), UsageText)
+
   test("the proxy address is read for the right network only"):
     val output =
       "ko-agent-egress-app-abc123-1a2b3c4d 10.89.0.2\n" +
@@ -1131,8 +1142,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
-    // The section holds the ruleset alone: the dry run's metadata, which describes the ruleset's
-    // size and the project's file, stays with the terminal (EgressRules.rulesetLinesOf).
+    // Neither project-file metadata nor its hostnames belong in the instructions.
     val widened = appendedSection(
       "live", "fuse",
       emptyResolution + "\nruleset summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 1 widening lines\n" +
@@ -1145,11 +1155,45 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(baseInstructions.contains("no line grants at its path"), baseInstructions)
 
+  test("agent instructions retain the profile and consult the full ruleset without embedding it"):
+    import agentsandbox.egress.RulesetHelper.{AllProviders, metadataLines, rulesetLines}
+
+    val projectRules =
+      "allow https://artifact.example/releases/ read git-fetch method=POST\n" +
+        "allow https://model.example/ tunnel\n" +
+        "deny https://**.blocked.example/"
+    for
+      profile <- EgressProfiles
+      provider <- Vector(None, Some("openai"), Some(AllProviders))
+      project <- Vector(None, Some(projectRules))
+    do
+      val resolved = resolveRuleset(Some(profile), provider, project)
+      val lines = rulesetLines(resolved)
+      val output = (lines ++ metadataLines(resolved)).mkString("\n")
+      assertEquals(EgressRules.rulesetLinesOf(output), lines.mkString("\n"))
+      for
+        mode <- WriteModes
+        guard <- Vector("fuse", "none")
+        programs <- Vector(Vector.empty[String], RunOnHostPrograms)
+      do
+        val section = appendedSection(mode, guard, output, programs)
+        assert(section.contains(lines.head), section)
+        assert(section.contains("consult `$KO_AGENT_SANDBOX_EGRESS_RULESET`"), section)
+        assertEquals(section, appendedSection(mode, guard, lines.head, programs))
+        assert(!section.linesIterator.exists(_.trim.matches("(?:allow|deny) https://.*")), section)
+        assert(!section.contains("ruleset summary:") && !section.contains("widening lines"), section)
+        assert(!section.contains("lines below") && !section.contains("allowed below"), section)
+
   test("the appended section directs the agent by write mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all"
     val readOnly = appendedSection("reject", "fuse", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
+    Vector(Vector.empty[String], RunOnHostPrograms).foreach: programs =>
+      val section = appendedSection("reject", "fuse", resolution, programs)
+      assert(section.contains("temporary work"), section)
+      assert(section.contains("return results in the conversation"), section)
+      assert(section.contains("--write=live"), section)
     val filtered = appendedSection("live", "fuse", resolution)
     assert(filtered.contains("ko-agent-fs"), filtered)
     assert(filtered.contains("at any depth"), filtered)
@@ -1209,9 +1253,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(publicDefault.contains("reachable for reading"), publicDefault)
     assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
-    assert(!publicDefault.contains("Anything not allowed below is refused"), publicDefault)
+    assert(!publicDefault.contains("Anything not allowed by the ruleset is refused"), publicDefault)
     assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
-    assert(filtered.contains("Anything not allowed below is refused"), filtered)
+    assert(filtered.contains("Anything not allowed by the ruleset is refused"), filtered)
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
     // A session without git: the agent hears it before its first command, in the words naming
     // what the container lacks (SandboxProject.noGitInstruction).
@@ -1237,6 +1281,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(writeMode = "reject"),
       stamp(guard = "none"),
       stamp(ruleset = "ruleset-b"),
+      stamp(instructions = Some("")),
+      stamp(instructions = Some("\n")),
       stamp(instructions = Some("project instructions")),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),

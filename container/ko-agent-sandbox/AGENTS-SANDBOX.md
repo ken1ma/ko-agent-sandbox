@@ -1,35 +1,35 @@
 # Sandbox environment
 
-You are running inside a container that is the security boundary.
+This container is the security boundary.
 
 ## Unprivileged user, read-only root filesystem
 
-You are `nonroot` with `no-new-privileges` set and every Linux capability dropped.
-`root` cannot be obtained.
-`apt-get install`, `systemctl` fail.
-`/home/nonroot`, `/tmp` and `/var/tmp` are writable; whether `/workspace` is, is this session's
-write mode — the appended "What this session may do" section says which.
+You are `nonroot` with `no-new-privileges` set. Linux capabilities are dropped except for
+`SYS_CHROOT` when `$KO_AGENT_SANDBOX_NESTING` is `same-uid`.
+You cannot become `root`; `apt-get install` and `systemctl` fail.
+`/home/nonroot`, `/tmp` and `/var/tmp` are writable. The appended "What this session may do"
+section gives `/workspace`'s write mode.
 
 `/workspace` is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
-`~/persistent-volume` — where `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`,
-`~/.local/share/kiro-cli` and opencode's `~/.config/opencode`, `~/.local/share/opencode` and
-`~/.local/state/opencode` point — survives, and holds agent state, not project output.
+`~/persistent-volume` survives and holds agent state, not project output. These paths point into
+it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`, `~/.local/share/kiro-cli` and
+opencode's `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`.
 
-The host clipboard is reachable only when `KO_AGENT_SANDBOX_CLIPBOARD` is set: `paste` serves an
-image the user copied (Ctrl-V in claude, or `xclip -selection clipboard -t image/png -o`), and
-`bidirectional` also accepts text on `wl-copy`'s stdin. Unset, a paste reports no image; tell the
-user to save the image under the project and pass its path instead.
+When `$KO_AGENT_SANDBOX_CLIPBOARD` is `paste`, read a copied image with Ctrl-V in claude or
+`xclip -selection clipboard -t image/png -o`; `bidirectional` also accepts text on `wl-copy`'s
+stdin. Without clipboard access, paste reports no image; tell the user to save it under the
+project and pass its path instead.
 
-With the default `ko-agent-fs` workspace guard, a new symlink in `/workspace` needs a relative
-target staying inside it; anything else, an absolute `/workspace/...` included, fails. A program
-that caches outside the workspace, such as `sbt`, falls back to copying instead of linking. The
-appended section says when the project uses a direct bind mount without this filter instead.
+With the default `ko-agent-fs` guard, new symlinks in `/workspace` must have relative targets
+staying inside it; even absolute `/workspace/...` targets fail. Programs caching outside it, such
+as `sbt`, fall back to copying. The appended section identifies unfiltered direct bind mounts.
 
-Symlinks created on the host keep their targets. Absolute targets can be missing in the container.
-sbt on the host leaves `target/` class files as links into its cache; a compile then fails.
-Dead links can occur in any `target` tree, the meta-build's `project/target` and each subproject's
-included. This removes just those, leaving `.git` and `.ko-agent-sandbox` untouched:
+### Host-cache links
+
+Host-created symlinks keep their targets, which may be absent here. Host sbt leaves `target/`
+class files linked into its cache. If compilation fails on those links, remove dangling links from
+every `target` tree, including the meta-build and subprojects:
 
 ```sh
 find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
@@ -44,54 +44,52 @@ Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Pytho
 `patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
-`sqlite3` CLI — for that last one use `python3 -c "import sqlite3; ..."`.
+`sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
 
 
 ## git
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.
 
-With the default `ko-agent-fs` guard, these filesystem operations fail by policy. Report them; do
-not work around them.
+The default `ko-agent-fs` guard refuses these operations. Report refusals; do not work around them.
 
 - Writing `config`, `hooks/` or rebase state in any repository under `/workspace`.
-- `git init` and `git clone` under `/workspace`. Clone under `~` instead — the bare forms
-  (`--bare`, `--mirror`) are not blocked, but belong under `~` all the same.
+- `git init` and `git clone` under `/workspace`. Clone under `~`; the unblocked bare forms
+  (`--bare`, `--mirror`) belong there too.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
   clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `~`.
 - `git worktree add` under `/workspace`.
-- `git submodule update --init` on a submodule not yet checked out; being public does not help.
-  A submodule the host already initialized is a checked-out directory and works normally.
+- `git submodule update --init` on a submodule not yet checked out, even a public one.
+  Host-initialized submodules work normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
 
-Without the `ko-agent-fs` filter, the appended section names the workspace-root paths protected by
-read-only mounts. Do not bypass these restrictions through writable Git configuration, hooks or
-other Git entries in nested repositories, symlinks with absolute targets, or symlinks whose targets
-can resolve outside the project on the host. Make those changes on the host.
+Without the filter, the appended section names the workspace-root paths mounted read-only. Do not
+bypass restrictions through writable Git configuration, hooks or other Git entries in nested
+repositories, symlinks with absolute targets, or symlinks that can resolve outside the project on
+the host. Make those changes on the host.
 
-Leave `git push` to the user on the host. The default egress rules refuse it. `git commit` fails
-until an identity is set.
+Leave `git push` to the user on the host. The default egress rules refuse it.
 
-`git config --global`, `git -c` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` do work. Do not use them to
-invent a name and email — ask the user, and leave the work as uncommitted changes meanwhile.
+`git config --global`, `git -c` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` work. If an identity is
+missing, ask the user; never invent one. Leave changes uncommitted meanwhile.
 
-If a task needs a private remote, or any other credential, report the operation to the user. Do
-not ask for a credential to be mounted or copied in, and do not look for another route.
+If a task needs a private remote or any credential, report the operation to the user. Do not ask
+to mount or copy credentials in, or look for another route.
 
 Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large checkout or build there can
 take the whole podman machine down with it.
 
-When every command turns slow, read `/proc/pressure/memory` — it is the machine's, not this
-container's; `some avg60` above 10 means the machine is short on memory — and
-`/sys/fs/cgroup/memory.events`, where a non-zero `oom_kill` means this container reached its memory
-limit. Either way run fewer things in parallel, and tell the user which of the two it was.
+When every command turns slow, check `/proc/pressure/memory`: `some avg60` above 10 means the
+machine, not this container, is short on memory. In `/sys/fs/cgroup/memory.events`, non-zero
+`oom_kill` means this container reached its memory limit. For either condition, run fewer things
+in parallel and report which occurred.
 
-An LFS-tracked file checks out as its pointer stub, and installing `git-lfs` will not change
-that. Read the content one file at a time from
+LFS files check out as pointer stubs; installing `git-lfs` does not help. Read content one file at
+a time from
 `https://media.githubusercontent.com/media/<owner>/<repo>/<ref>/<path>`.
 
 
-## Installing a program that is genuinely missing
+## Installing a missing program
 
 Everything installs into `~`, and is gone next session.
 
@@ -107,31 +105,30 @@ Last resort, when only a Debian package will do:
 
 ```sh
 sandbox-apt-get update
-sandbox-apt-get install shellcheck   # `shellcheck` is then on PATH
+sandbox-apt-get install shellcheck   # shellcheck is then on PATH
 ```
 
 It unpacks rather than installs, so a package expecting users, services or setuid bits will not
 work.
 
-Tell the user what you installed and why. If the same program is needed session after session, say
-so — only they can add it to the image.
+Tell the user what you installed and why. Report recurring needs; only they can add programs to
+the image.
 
 
 ## Network
 
-The only network access outside the sandbox is through `HTTPS_PROXY`. The appended "What this
-session may do" section lists the reachable hosts, permitted operations and whether requests are
-inspected; `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
+The only network access outside the sandbox is through `$HTTPS_PROXY`.
+The appended section gives the egress profile and how to consult its rules.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run
 `sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
-For a TLS error on an allowed host, check the trust store (next paragraph). The proxy also closes
-connections from clients that omit SNI, send Encrypted ClientHello — including a browser's GREASE —
-or support only HTTP/2. Plain `curl` and `git` do not have those protocol incompatibilities.
+For TLS errors on allowed hosts, check the trust store (below). Connections without SNI or with
+Encrypted ClientHello, including browser GREASE, are closed. Inspected hosts require HTTP/1.1;
+HTTP/2-only clients fail. Plain `curl` and `git` have none of these incompatibilities.
 
-External DNS lookups fail by design. Proxied requests use the proxy's DNS, so a failed lookup inside
-the sandbox does not explain a failed proxied fetch.
+External DNS lookups fail by design; proxied requests use the proxy's DNS. A failed local lookup
+does not explain a failed proxied fetch.
 Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -connect host:443
 -servername host -proxy egress-proxy:3128`.
 
@@ -145,10 +142,10 @@ their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
 
 ## Containers in here: only if this session opted in
 
-At `KO_AGENT_SANDBOX_NESTING=none` — the default — there is no container runtime and installing
-one fails. Do not fight it. Run the service itself: PostgreSQL rootless via `initdb`/`pg_ctl`, a
-JVM S3 mock such as Adobe S3Mock via `java -jar`. Bind to 127.0.0.1 and point the tests there. If
-a task cannot proceed without a real runtime, say so to the user and stop.
+At `KO_AGENT_SANDBOX_NESTING=none` (default), no container runtime is available or installable.
+Do not fight it. Run services directly: PostgreSQL rootless via `initdb`/`pg_ctl`, a JVM S3 mock
+such as Adobe S3Mock via `java -jar`. Bind to 127.0.0.1 and point the tests there. If a task needs
+a real runtime, tell the user and stop.
 
 At `same-uid` a runtime runs, within four limits:
 
@@ -172,5 +169,4 @@ export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 podman run --rm docker.io/library/alpine:latest echo hello
 ```
 
-Its "Using rootless single mapping into the namespace" warning is this mode working, not a
-problem to fix.
+Its "Using rootless single mapping into the namespace" warning is expected; do not try to fix it.

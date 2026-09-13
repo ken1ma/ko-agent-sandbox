@@ -14,10 +14,11 @@ lines and named by a digest. Two files of different rules may resolve to one rul
 ## Choosing an egress profile
 
 Every launch selects an `--egress=` profile; `deny-unless-allowed` is the default. An allowed
-host has one of two treatments: a `tunnel`, opaque, nothing seen or logged past the `CONNECT`;
-or inspected — TLS terminated, each request decided against the grants of its resolved scope,
+host has one of two treatments: a `tunnel`, whose application traffic stays opaque after the TLS
+identity check; or inspected — TLS terminated, each request decided against its resolved scope,
 and refused where no grant allows it ("The rule file" below; SECURITY.md, "Reading without being
 able to write", has what each grant permits, the costs of inspection and what it prevents).
+Handshake failures are logged for both treatments; SECURITY.md defines the checks and audit events.
 
 The proxy supplies default rules for every supported model provider: `anthropic`, `openai`,
 `google`, `aws` and `github`. These permit tunnels to model, authentication and control-plane
@@ -175,25 +176,26 @@ boundary it opens remains; and a line every grant of which a later line takes ba
 restating a defaults line at its path is silent: that is how a file stays valid as the image
 adopts its hosts.
 
-1. An absent directory or rule file contributes no rules; the profile still starts from what it
-   starts from. `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may create an empty `.ko-agent-sandbox`
+1. Without a rule file, the selected profile applies without project overrides.
+   `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may create an empty `.ko-agent-sandbox`
    directory in the project (SECURITY.md, "Silent changes to what you own"). An empty
    ruleset is valid and reported as such — `deny-all` resolves empty by design, as does
    `deny-unless-model` under `bash`.
 1. Editing the file takes effect on the next launch; a running session keeps its original ruleset.
 1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the rules are per
    project, in the project, and read-only").
-1. The directory is meant to be committed, and read before an unfamiliar project is launched
-   (SECURITY.md, "A repository that ships wide egress rules").
+1. Commit the directory with the project. Review its rules before launching an unfamiliar
+   project (SECURITY.md, "A repository that ships wide egress rules").
 
 ## The printed ruleset
 
-`--egress-effective` and `--egress-check=<host>` (README, Reference) answer without starting a
-session; inside one, `sandbox-egress-check <host>` asks the running proxy. Every start prints the
-rule file as written, one line; then the launch banner — the profile and the counts, never a
-host name; then, when the file grants beyond the defaults for a host — a host the defaults lack,
-`tunnel`, `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more on
-a line of their own, `egress rules widen:`, so a file that only removes grants or narrows them
+`--egress-effective` and `--egress-check=<host>`
+([README.md](../README.md#reference)) answer without
+starting a session; inside one, `sandbox-egress-check <host>` asks the running proxy. Every start
+prints the rule file as written, one line; then the launch banner — the profile and the counts,
+never a host name; then, when the file grants beyond the defaults for a host — a host the defaults
+lack, `tunnel`, `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more
+on a line of their own, `egress rules widen:`, so a file that only removes grants or narrows them
 prints nothing extra.
 
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole: the
@@ -213,13 +215,16 @@ Each `allow` and `deny` line uses the rule grammar so a reader learns one; but t
 serialization of the ruleset, not a rule file: it has no `deny defaults` header, nothing reads it
 as input, and it is not promised to re-parse to itself. Those lines are what the proxy's digest
 names — one stable log line per run, comparable across runs — what the leaf certificate's names
-are read from, and what the agent's "What this session may do" section and
-`KO_AGENT_SANDBOX_EGRESS_RULESET` give, so two files resolving to one ruleset print one digest and
-the same lines, and the same file under two profiles never does. After them, outside the digest,
-the metadata: one summary line — the counts of inspected and opaque hosts, denial patterns and
-widening lines — and the widening line.
+are read from, and what `KO_AGENT_SANDBOX_EGRESS_RULESET` holds, so two files resolving to one
+ruleset print one digest and the same lines, and the same file under two profiles never does.
+Metadata follows outside the digest: a summary of inspected and opaque hosts, denial patterns and
+widening lines, then the widening line.
 `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its grants,
 a `deny` line's pattern, and under the finite profiles the hosts the file's lines denied.
+
+The agent instructions include the profile and direct agents to consult
+`KO_AGENT_SANDBOX_EGRESS_RULESET` when they need a destination's grants or restrictions. Keeping
+the full ruleset there avoids including the host list in every prompt.
 
 ## Audit what has been allowed or denied
 

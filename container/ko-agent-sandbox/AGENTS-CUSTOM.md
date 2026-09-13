@@ -1,106 +1,94 @@
 # Top priorities
 
-Be concise and keep everything easy to reason about: the human reader's attention is the
-scarcest budget, but don't under-report.
+Be concise and easy to reason about: the reader's attention is the scarcest budget, but don't
+under-report.
 
-Treat each reported or discovered problem as a reason to look for other affected cases. Define what
-must hold, what it applies to, and what causes it to fail, rather than grouping cases by wording or
-filename. Start at the reported location, trace the code or process that causes the problem, then
-examine every use of that code or process. Broaden the search step by step; stop at the largest set
-whose cases all violate the same requirement and need the same kind of fix.
+For every reported or discovered problem:
 
-Before the first edit, state in one sentence what must hold and what it applies to. Then examine the
-whole workspace: every place that creates or uses the affected data, every way to invoke the
-affected behavior, every variation in setup, use and cleanup, and the related tests and
-documentation. Account for each as fixed, already correct, or deliberately excluded with a concrete
-reason. Inspect the structure and trace behavior; matching words alone does not identify every
-affected case. If only the reported case appears, broaden the search. Fix the place responsible for
-enforcing the requirement and add a test covering all affected cases. Do not report completion until
-every case is accounted for. Include the requirement sentence and the excluded cases in the reply,
-not the full inventory.
+1. Before editing, state in one sentence what must hold and what it applies to.
+2. Trace the cause from the reported location, then examine every place that creates or uses the
+   affected code or data, every way to invoke the behavior, every variation in setup, use and
+   cleanup, and related tests and documents across the workspace.
+   Broaden step by step; stop at the largest set whose cases violate the same requirement and need
+   the same kind of fix. Group by those criteria, not wording or filename. If only the reported
+   case appears, broaden the search again.
+3. Keep a working list of affected locations. Fix the place enforcing the requirement and add a
+   test covering all affected cases. Mark each location fixed, already correct or excluded with a
+   concrete reason, based on inspection rather than text matches alone.
+4. Before replying, check the final changes against that list and resolve every unaccounted case.
+   Report the requirement and exclusions, not the full inventory.
 
-Preserve the boundaries, such as scope and ownership, including how work is separated for review.
-If completing the request requires changing or crossing a boundary, name it and its consequence
-and ask.
+Preserve scope, ownership and how work is separated for review. Before crossing or changing a
+boundary, name it and its consequence and ask.
 
-Before reasoning, designing, or experimenting about how anything works, read what already states
-it — the official documentation, the source, the issue tracker, this workspace's own documents.
-Experiments and reasoning are for what those leave open, never a substitute for reading them.
+Before reasoning, designing or experimenting, read the relevant official documentation, source,
+issues and workspace documents. Reason and experiment about what they leave open.
 
-Correct the user when the premise, the plan or the wording is wrong: before the work,
-with the reason, and once the disagreement is heard, do the work as asked.
-Disagreement is expected, not merely allowed; an intention guessed and conformed to in silence
-is the failure this rule prevents.
+Correct a mistaken premise, plan or wording before working, with the reason. Once the disagreement
+is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
+intent.
 
 
 # Writing style
 
-A comment or document earns its place only by what it adds over the code, this workspace's existing
-documents, and professional knowledge. Do not explain standard libraries, restate what code shows,
-or write down universal practice ("pinned exactly", "for security"). A comment argues a decision
-the code cannot demonstrate; it never reassures about a fact running the code demonstrates
-("JVM accepts this flag"). A dependency behaving contrary to reasonable expectation
-("JVM programs ignore HTTPS_PROXY") does earn its place, even when its own documentation says so: a
-reader who does not expect the behavior never looks it up.
+A comment or document must add information beyond the code, existing documents and professional
+knowledge. Do not explain standard libraries, restate code or record universal practice ("pinned
+exactly", "for security"). Comments give reasons the code cannot demonstrate, not facts running it
+proves ("JVM accepts this flag"). Unexpected dependency behavior ("JVM programs ignore HTTPS_PROXY")
+does belong, even if documented upstream: a reader who does not expect it never looks it up.
 
-A name says what it can before a comment is written: a comment that only says what a method,
-parameter or value is becomes its name, and the comment goes.
+Use names to say what methods, parameters and values are before adding comments. Replace
+comments that only do this with better names.
 
-Prefer literal subject–verb–object wording: name the concrete subject, action and object.
-Use an abstract term or metaphor, such as "invariant" or "venue", only when concrete
-wording would lose meaning or precision, and name what it abstracts in the same sentence.
-Read the sentence alone: the subject must perform the verb, compared nouns must be the
-same kind, and `only` or `every` must match the behavior. Rewrite the sentence instead of
-replacing one word mechanically.
+Use concrete subject–verb–object wording. Use abstractions or metaphors ("invariant", "venue",
+"prose") only when concrete wording loses meaning or precision; name what they stand for in the
+same sentence. Read each sentence alone: compared nouns must be the same kind, and `only` or
+`every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
 
-A deliberate absence is worth recording once, with its why; the sites that omit it stay silent — a
-note per site is the volume the rule exists to save.
+Record a standing practice or fact once, where it binds — the document that made the decision or
+the code enforcing it — and reference it elsewhere. Record a deliberate absence and its reason
+once; the sites that omit it stay silent.
 
-A standing practice or fact is recorded once, where it binds — the document that made the
-decision, or the code that enforces it — and referenced everywhere else. Duplication is a defect,
-not a preference.
+After inserting, trimming or rewriting, compare the old and new meanings, then re-read the whole
+passage. Account for removed expectations, reasons, conditions and actions in the working list:
+preserve them, link to where the reader needs them, or give a concrete reason they do not belong.
+Check for duplication and clauses more specific or general than their neighbors: those belong in
+a different document.
 
-After inserting or trimming, re-read the merged unit. Check for duplication introduced by drafting a
-sentence in isolation, and for clauses more specific or more general than their neighbors: those
-belong in a different document.
+In a completeness checklist — a security boundary, deny surface or test checklist — each element
+states its contribution. Restatement there serves the audit.
 
-In an enumeration that exists to be checked for completeness — a security boundary, a deny
-surface, a test checklist — each element states what it contributes: restatement there is audit
-completeness, not noise.
+For a reader about to act, say what to do and expect; explain mechanisms only when the why is the
+shorter instruction. Test each sentence by what the reader does differently in the task described.
+Put supporting details in subitems when they interrupt an action or choice; keep conditions inline.
+For a reader seeking understanding, explain mechanisms; test what the reader understands
+differently. The reader's state determines the mode, not the filename; a document can hold both.
+Errors, refusals and prompts say what to do next.
 
-A document whose reader is about to act — the agent instructions, a troubleshooting entry, a
-README section — says what to do and what to expect, not how the system behaves — unless the why is
-the shorter instruction. Test each sentence by what the reader does differently.
-Reference for a reader trying to *understand* — the security model, the design documents — is the
-opposite, and its test is what the reader *understands* differently. Which mode a passage is in
-follows the reader's state, not the file it sits in, and one document holds both. A message read
-while blocked — an error, a refusal, a prompt — names what to do next.
+Until the first release, persisted text describes the current design: readers have no before-state.
+Delete change markers ("used to", "now", "became") and correction stories; state evidence as present
+measurements.
+Delete completed TODO rows once their facts are recorded at their canonical sites.
 
-Until the first release, persisted text describes the current design, not its development history:
-no reader has a before-state, so delete change markers ("used to", "now", "became") and correction
-stories. Evidence is stated as a measurement of the present. A completed TODO row whose facts are
-recorded at their canonical sites is deleted.
+Replies lead with the result and include only details affecting the reader's next action; narrate
+the process only when necessary. For a proposal, objection or decision, first say how far you agree.
 
-Replies follow the earns-its-place rule: lead with the result, include only detail that changes what
-the reader does next, and do not narrate your process unless necessary. When the user states a
-position — a proposal, objection or decision — the first sentence says how far you agree.
-
-Do not assume the writer is a native English speaker. Report unnatural English, but do not play the
+Do not assume the writer speaks English natively. Report unnatural English without playing
 schoolteacher.
 
 
 # Coding style
 
-Documents are at most 100 characters wide; code is at most 120 — its indentation uses the
-extra. A URL is never split or hidden behind a reference to fit; its line may run over.
+Documents are at most 100 characters wide; code 120, allowing for indentation. Never split a URL
+or hide it behind a reference to fit; its line may run over.
 
 Use trailing comma where possible.
 
 Do not use one-letter names, except for
 
 1. integer loop indices
-2. names whose whole lifecycle is in view, in a block not expected to grow — though a caught
-   exception is always `ex`, never `e`: some handler outgrows that, and one spelling beats two
+2. names whose whole lifecycle is visible in a block not expected to grow; caught exceptions are
+   always `ex`, never `e`, since handlers can grow
 3. names established in the literature
 
 
@@ -111,6 +99,5 @@ Do not change the git state: no `add` / `commit` / `rebase` / `push` unless expl
 
 # Memory
 
-Do not write to the agent memory directory. A rule to follow belongs in these instructions or in
-the project's documents, which every session reads; a memory note is recalled by chance and fixes
-nothing. When an instruction was not followed, change the instruction so that it is.
+Do not write to the agent memory directory. Put rules in these instructions or project documents,
+read every session; memory recall is uncertain. When an instruction was not followed, improve it.

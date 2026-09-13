@@ -246,12 +246,36 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(logged.contains("exit 7"), logged)
       assert(!logged.contains("requester is gone"), logged)
 
-  test("the banner the injected JAVA_TOOL_OPTIONS causes is dropped, and nothing else is"):
-    val banner = "Picked up JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/x"
+  test("small stdout and stderr writes arrive before the command can finish"):
+    channel((_, cwd, _) =>
+      Seq("sh", "-c", s"printf ready; printf 'waiting\\n' >&2; while [ ! -f '$cwd/release' ]; do sleep 0.1; done"),
+    ): (project, host, _) =>
+      val out = host.resolve("stdout")
+      val err = host.resolve("stderr")
+      val process = ProcessBuilder(Shim.toString, "sbt")
+        .directory(project.toFile)
+        .redirectOutput(out.toFile)
+        .redirectError(err.toFile)
+        .start()
+      process.getOutputStream.close()
+      try
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+        while process.isAlive && System.nanoTime() < deadline &&
+            (Files.readString(out) != "ready" || Files.readString(err) != "waiting\n") do
+          Thread.sleep(20)
+        assert(process.isAlive, "the command must still be waiting for release")
+        assertEquals(Files.readString(out), "ready")
+        assertEquals(Files.readString(err), "waiting\n")
+      finally
+        Files.writeString(project.resolve("release"), "")
+        if !process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) then process.destroyForcibly()
+
+  test("the banner the injected _JAVA_OPTIONS causes is dropped, and nothing else is"):
+    val banner = "Picked up _JAVA_OPTIONS: -Djava.io.tmpdir=/x"
     channel((_, _, _) =>
       Seq(
         "sh", "-c",
-        s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up _JAVA_OPTIONS: -Dx=1' >&2; " +
+        s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up JAVA_TOOL_OPTIONS: -Dx=1' >&2; " +
           s"echo '[warn] $banner' >&2; echo '$banner'",
       ),
     ): (project, _, _) =>
@@ -260,7 +284,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
       // host environment's to explain, a line that merely quotes the banner is the command's, and
       // stdout is not the stream the announcement is written to.
-      assertEquals(err, s"complaint\nPicked up _JAVA_OPTIONS: -Dx=1\n[warn] $banner\n")
+      assertEquals(err, s"complaint\nPicked up JAVA_TOOL_OPTIONS: -Dx=1\n[warn] $banner\n")
       assertEquals(out, s"$banner\n")
 
   test("a refused request answers on stderr with exit 2, and the channel keeps serving"):

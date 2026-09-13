@@ -58,7 +58,7 @@ class HostCommandsTest extends munit.FunSuite:
     ).map(location).distinct.mkString(java.io.File.pathSeparator)
     val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
     // Native access as the jar's manifest grants it, for the isatty behind colorStderr. What the
-    // JVM prints before the first refusal line is its own: JAVA_TOOL_OPTIONS echoed back.
+    // JVM prints before the first refusal line is its own: _JAVA_OPTIONS echoed back.
     val staged = run(
       jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, "agentsandbox.launcher.FailDuringShutdown",
     )
@@ -89,7 +89,7 @@ class HostCommandsTest extends munit.FunSuite:
     // Concurrent launches of one project under different session options write the ruleset
     // cache without a lock. With the stamp in a file of its own, one launch's content could end up
     // under the other's stamp and stay there; with it inside each file, the pairing a caller
-    // requires simply does not match and the cache re-derives.
+    // requires does not match and the cache re-derives.
     val dir = Files.createTempDirectory("stamped")
     val hosts = dir.resolve("resolved.hosts")
     val warnings = dir.resolve("resolved.warnings")

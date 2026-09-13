@@ -24,19 +24,19 @@ object RulesetHelper:
    * know them (SECURITY.md, "Adding hosts, not patterns"). The restrictive ordering therefore puts a
    * host-wide deny before the narrower allow, which fails closed.
    *
-   * Every allowed host is a GET-based exfiltration channel: a permitted GET carries its URL, and a
-   * URL is a message. A host's treatment is one of two — `tunnel`, an opaque tunnel with nothing
-   * seen or logged past the CONNECT, or inspected: TLS terminated, each request decided against
-   * the resolved scope of its longest literal match (authorizeInspectedRequest).
+   * An allowed request can carry sandbox data: even a permitted GET carries its URL. A host's
+   * treatment is either `tunnel`, whose application traffic stays opaque after the TLS identity
+   * check, or inspected: TLS terminated, each request decided against the resolved scope of its
+   * longest literal match (authorizeInspectedRequest). SECURITY.md defines the handshake checks
+   * and the audit events for both treatments.
    *
    * Which lines count is the selected profile's answer (resolveRuleset): the defaults — every
    * provider's default rules plus the inspected catalog — modified by the project's file. Whichever
    * ruleset is in force is printed at startup and every denial is logged, which is how you find out
    * what an agent actually wanted.
    *
-   * Inspection is off unless the launcher supplies a certificate and key: a leaf naming exactly
-   * the resolved inspected hosts, or under allow-unless-denied the run CA every leaf is issued from
-   * (AgentEgressProxy.loadInspection; SECURITY.md, "Who holds the CA key").
+   * The launcher supplies the inspection material. Standalone-image requirements and refusals
+   * are defined by AgentEgressProxy.loadInspection (SECURITY.md, "Who holds the CA key").
    */
 
   /** The grant words: what a line says after its URL. A method is its own word in the set,
@@ -696,8 +696,8 @@ object RulesetHelper:
   /**
    * The ruleset, one line each, in the rule grammar so a reader learns one grammar — the
    * deterministic serialization of Ruleset, which the digest names, --print-ruleset prints
-   * and serve() logs identically, the launcher reads the leaf's names off and the agent's
-   * "What this session may do" section holds. It is a serialization, not a rule file: no
+   * and serve() logs identically, the launcher reads the leaf's names off and exports in
+   * KO_AGENT_SANDBOX_EGRESS_RULESET. It is a serialization, not a rule file: no
    * `deny defaults` header, no promise to re-parse to itself, and nothing reads it as input. First
    * the profile line — the grammar
    * alone cannot say "any public host" or "only this provider's default rules" — then, under

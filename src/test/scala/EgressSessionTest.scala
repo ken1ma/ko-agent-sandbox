@@ -76,7 +76,7 @@ class EgressSessionTest extends munit.FunSuite:
     val line = (audit.text + "\n" + audit.err).linesIterator.filter(_.contains(host)).mkString("\n")
     assert(
       markers.exists(line.contains),
-      s"$host failed at the origin, but not over its certificate — the origin may simply be down:\n$line",
+      s"$host failed at the origin, but not over its certificate — the origin may be down:\n$line",
     )
 
   private def withSession(rule: Option[String])(body: Session => Unit): Unit =

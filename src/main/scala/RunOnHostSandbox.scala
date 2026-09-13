@@ -1169,7 +1169,7 @@ object RunOnHostSandbox:
    * flags (ProgramFlags). `.sbtopts` and `.jvmopts` the script reads from the build directory as
    * it always does.
    */
-  def serverCommand(executable: Path, arguments: Seq[String]): Seq[String] =
+  def serverCommand(executable: Path, sbtGlobal: Path, arguments: Seq[String]): Seq[String] =
     val forwarded = Vector.newBuilder[String]
     var commands = false
     var index = 0
@@ -1192,7 +1192,8 @@ object RunOnHostSandbox:
       else if !argument.startsWith("-") then commands = true
       else forwarded += argument
       index += 1
-    Seq(executable.toString, s"-Dsbt.script=$executable") ++ forwarded.result() ++ Seq("--detach-stdio", "--server")
+    sbtCommand(executable, sbtGlobal) ++ Seq(s"-Dsbt.script=$executable") ++
+      forwarded.result() ++ Seq("--detach-stdio", "--server")
 
   /** The socket sbt derives for a build directory's server under this session's `tmp/`: the
     * server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
@@ -1252,7 +1253,7 @@ object RunOnHostSandbox:
             RunOnHostSession.registeredSpawn(
               start.record,
               Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
-                ++ serverCommand(prereqs.executable, start.arguments),
+                ++ serverCommand(prereqs.executable, assembled.sbtGlobal, start.arguments),
             )*,
           )
           builder.directory(start.buildDirectory.toFile)
@@ -1497,8 +1498,8 @@ object RunOnHostSandbox:
       // With the portfile live the client connects and forks nothing
       // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.8).
       case Program.Sbt =>
-        Seq(prereqs.executable.toString, "--jvm-client", "-batch",
-          "-java-home", prereqs.jdkHome.toString) ++ commandArgs
+        sbtCommand(prereqs.executable, assembled.sbtGlobal) ++
+          Seq("--jvm-client", "-batch", "-java-home", prereqs.jdkHome.toString) ++ commandArgs
       // The build directory's own bootstrap, which runs the JVM launcher the environment's
       // MILL_VERSION names; the launcher attaches to the daemon on the one port the profile admits.
       case Program.Mill =>
@@ -1573,10 +1574,15 @@ object RunOnHostSandbox:
       .flatMap(name => read(name).filter(_.nonEmpty).map(name -> _))
       .nextOption()
 
+  // sbt's getPreloaded also splits JVM environment options without unquoting them. Its first
+  // lookup is argv: give it the global base as one argument, before any user options.
+  def sbtCommand(executable: Path, sbtGlobal: Path): Seq[String] =
+    Seq(executable.toString, s"-Dsbt.global.base=$sbtGlobal")
+
   /**
-   * HotSpot splits JAVA_TOOL_OPTIONS on whitespace; an unquoted path with a space can produce
+   * HotSpot splits _JAVA_OPTIONS on whitespace; an unquoted path with a space can produce
    * an extra option that prevents JVM startup.
-   * HotSpot's JAVA_TOOL_OPTIONS parser (`Arguments::parse_options_buffer`) joins adjacent quoted
+   * HotSpot's _JAVA_OPTIONS parser (`Arguments::parse_options_buffer`) joins adjacent quoted
    * runs and drops their delimiters. Unlike a shell, it does not interpret backslash escapes;
    * a literal double quote therefore needs a single-quoted run between double-quoted runs.
    */
@@ -1610,8 +1616,11 @@ object RunOnHostSandbox:
     // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
     // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would reach
-    // only the program's own JVMs. The shim handles the resulting startup banner.
-    val javaToolOptions = (Seq(
+    // only the program's own JVMs. sbt 2.0.8 also copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS
+    // into argv without unquoting them; _JAVA_OPTIONS reaches HotSpot unchanged. HotSpot applies
+    // it after argv, so the wrapper's properties also win over command-line properties.
+    // The shim handles the resulting startup banner.
+    val javaOptions = (Seq(
       jvmProperty("java.io.tmpdir", sessionTmp.toString),
       jvmProperty("java.util.prefs.userRoot", sessionTmp.toString),
       // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else
@@ -1640,7 +1649,7 @@ object RunOnHostSandbox:
       // serves would break on the shell's.
       "PATH" -> s"${prereqs.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
       "JAVA_HOME" -> prereqs.jdkHome.toString,
-      "JAVA_TOOL_OPTIONS" -> javaToolOptions,
+      "_JAVA_OPTIONS" -> javaOptions,
       "TMPDIR" -> sessionTmp.toString,
       "XDG_RUNTIME_DIR" -> socketDir.toString,
       "SBT_GLOBAL_SERVER_DIR" -> socketDir.toString,
@@ -1664,7 +1673,7 @@ object RunOnHostSandbox:
    * The proxy variables the command's environment gets, both spellings, as the sandbox container
    * gets its own: the command's proxy for the programs that read the environment rather than the JVM
    * properties, loopback exempt so a test server on it is reached directly. The rest of the
-   * family — ALL_PROXY, FTP_PROXY — is simply absent, as the launcher's own HTTPS_PROXY is: that
+   * family — ALL_PROXY, FTP_PROXY — requires explicit forwarding. The launcher's own HTTPS_PROXY is absent: that
    * one names an upstream proxy the confinement refuses, with a credential the command has no
    * business reading.
    */

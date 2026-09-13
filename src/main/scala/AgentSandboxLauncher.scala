@@ -1023,10 +1023,10 @@ object AgentSandboxLauncher:
       fail(s"error: could not create the network $network\n${created.err}")
 
   /**
-   * `--self-test`: build the self-test image if it is not already current, then run the crate's
-   * suites in it (`fuse/ko-agent-fs/doc/testing.md`). Two runs against the same remote Rust image
-   * give the same verdict and leave the same state — the image build is a cache hit, the container
-   * is `--rm`, and nothing is bound in.
+   * `--self-test`: pull remote build inputs, build the self-test images, then run the crate's
+   * suites in a container with no host bind mounts (`fuse/ko-agent-fs/doc/testing.md`). Unchanged
+   * inputs reuse the build cache. A successful run without a case filter also measures the host
+   * share through SelfTestShare, which owns its scratch directory and cleanup.
    *
    * The sandbox image is a precondition rather than an artifact to build here: verifying is not the
    * command that decides which agent image a user runs.
@@ -1267,7 +1267,7 @@ object AgentSandboxLauncher:
           case None        => Right(rest.toVector)
 
   /**
-   * `--reset` (README has what it removes). Every other project's state and the built images are
+   * `--reset` (README.md has what it removes). Every other project's state and the built images are
    * left alone. The roots are checked against the current directory whichever projects are named,
    * as `--reset-all` checks them: the deletions happen under them either way. Every id is reset
    * before any failure is reported, so one project's failed step does not leave the next untouched.
@@ -1877,21 +1877,19 @@ object AgentSandboxLauncher:
     // the agent hears it before its first command.
     noGit: Option[String] = None,
   ): String =
-    // The ruleset alone: the dry run's widening line describes the project's file, not what is
-    // enforced, and the same lines go to KO_AGENT_SANDBOX_EGRESS_RULESET (rulesetLinesOf).
-    val indented = rulesetLinesOf(resolved).linesIterator.map("    " + _).mkString("\n")
+    val profileLine = resolved.linesIterator.next()
     val workspace = (writeMode, workspaceGuard) match
       // The plain reject instruction would be false under --run-on-host: a host command writes the
       // project (SECURITY.md "Run on host", the --write=reject composition).
       case ("reject", _) if runOnHost.nonEmpty =>
         """`/workspace` is read-only to this session's own writes; only commands through
           |`sandbox-run-on-host` write the project, on the host. For anything a command does not
-          |write, put results under `~` or `/tmp` and tell the user, who relaunches with
-          |`--write=live` for a writable session.""".stripMargin
+          |write, use `~` or `/tmp` for temporary work and return results in the conversation.
+          |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
       case ("reject", _) =>
-        """`/workspace` is read-only this session. Do not attempt writes there; put results under
-          |`~` or `/tmp` and tell the user, who relaunches with `--write=live` for a writable
-          |session.""".stripMargin
+        """`/workspace` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
+          |for temporary work and return results in the conversation. Tell the user to relaunch
+          |with `--write=live` when project files must be written.""".stripMargin
       case ("live", "fuse") =>
         """`/workspace` is writable and shared live with the host project directory through the
           |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
@@ -1918,7 +1916,7 @@ object AgentSandboxLauncher:
            |## Run on host
            |
            |Run $names for this project as $commands: they run on the
-           |host, sandboxed to the project, per-project run-on-host caches and one artifact repository,
+           |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
            |The daemons of sbt, mill and gradle stay warm across invocations. To run several
            |commands in one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
@@ -1951,10 +1949,10 @@ object AgentSandboxLauncher:
     val allowed =
       if publicDefault then
         """Every public host on port 443 is reachable for reading — GET and HEAD, inspected and
-          |logged — except as the lines below say: a host listed with grants is limited to those
+          |logged — except as the ruleset says: a host listed with grants is limited to those
           |grants, a host listed with `tunnel` is an opaque tunnel, and a host under a `deny` line
           |is refused.""".stripMargin
-      else "Anything not allowed below is refused."
+      else "Anything not allowed by the ruleset is refused."
     val refused =
       if publicDefault then
         """A refused host is one the user denied on purpose: name it to the user rather than
@@ -1973,8 +1971,9 @@ object AgentSandboxLauncher:
        |$runOnHostSection
        |## Egress
        |
-       |Resolved at launch by the proxy itself, so it is what is enforced rather than a copy
-       |that can drift. `KO_AGENT_SANDBOX_EGRESS_RULESET` holds the same lines.
+       |$profileLine
+       |
+       |For a destination's grants and restrictions, consult `$$KO_AGENT_SANDBOX_EGRESS_RULESET`.
        |$allowed A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
        |serves `clone` and `pull`; `method=` names the
@@ -1983,8 +1982,6 @@ object AgentSandboxLauncher:
        |paths with that prefix; other rule paths match exactly. A request matching no rule is
        |refused. For rules below `/`, request paths are also refused if they contain
        |percent-encoding, a dot segment, a backslash or an empty segment.
-       |
-       |$indented
        |
        |$refused
        |""".stripMargin
@@ -2616,15 +2613,11 @@ object AgentSandboxLauncher:
     val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
 
-    // The egress ruleset, appended to the agent instructions the image ships, so an agent starts the
-    // session knowing what it can reach instead of learning it from a refused request. Same
-    // technique as the CA bundle below — read the image's own file, add this project's part, mount
-    // the result back over it — and the image points the installed agents' instruction files at
-    // this path by symlink, so a single mount reaches all of them. A project shipping its own
-    // AGENTS-CUSTOM.md takes the image's AGENTS-SANDBOX.md alone and supplies the middle part
-    // itself. Cached on (image Id, write mode, workspace guard, ruleset, project
-    // instructions); the
-    // multi-line inputs are hashed into the stamp.
+    // Session-specific instructions point to the ruleset environment variable rather than embed
+    // the host list in every prompt. Read the image's file, append the session's instructions, and
+    // mount the result over it. All installed agents' instruction files link to this path, so one
+    // mount reaches all of them. A project's AGENTS-CUSTOM.md replaces the image's conventions;
+    // AGENTS-SANDBOX.md still comes from the image. agentDocumentStamp keys the cached assembly.
     val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = rulesetCacheDir.resolve("agents.md")
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
@@ -2982,13 +2975,10 @@ object AgentSandboxLauncher:
       "--env=NO_PROXY=localhost,127.0.0.1",
       "--env=no_proxy=localhost,127.0.0.1",
 
-      // The ruleset, handed to the agent rather than left to be discovered by failing requests. The
-      // value is the proxy's own --print-ruleset answer, its ruleset lines as printed and nothing
-      // derived from them, so there is no second derivation of the list to drift; the metadata
-      // after them — the widening line, about the project's file — stays with the terminal
-      // (rulesetLinesOf), as the appended section does. It grants nothing: an agent can already
-      // enumerate the ruleset by probing, slowly and noisily, and reading a refusal as breakage is
-      // the usual outcome of not knowing.
+      // Keep the proxy's resolved rules available on demand. Metadata about the project file
+      // stays with the terminal; the agent needs the grants actually in force (rulesetLinesOf).
+      // Revealing the rules grants no access: an agent could discover them by probing, slowly
+      // and noisily, and mistake refusals for a broken environment in the meantime.
       s"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(rulesetText)}",
 
       // The entrypoint holds its machine-health warning on screen under the same setting as

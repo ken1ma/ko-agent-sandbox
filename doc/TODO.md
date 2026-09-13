@@ -71,11 +71,11 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
   sees none of it.
 - [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
-  the hello allowed at step 10 is opaque at step 11 — so nothing past the CONNECT is seen or
-  logged; and the sandbox then reaches, from the host's own address, services that authenticate by
-  location — router and NAS pages, dev servers, dashboards, registries, CI runners — with the cloud
-  metadata endpoint in the same class. Port 443 and the one-client network bound the attack surface,
-  not the trust.
+  the hello allowed at step 10 leads to opaque application traffic at step 11 — so request
+  methods, targets and bodies are neither inspected nor logged; and the sandbox then reaches,
+  from the host’s own address, services that authenticate by location — router and NAS pages, dev
+  servers, dashboards, registries, CI runners — with the cloud metadata endpoint in the same class.
+  Port 443 and the one-client network bound the attack surface, not the trust.
 
 ## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
 
@@ -237,8 +237,7 @@ One form would, and it waits on a measurement:
   a one-off failure: the rerun hits the same silence, and the project cannot build on the host
   until the constant changes. Five minutes is the smallest value defensible without measurement.
 
-Not a form: a bound on the time to first output. Every JVM prints its `JAVA_TOOL_OPTIONS` banner
-within a second, so every host command has written something before it can stall.
+A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_OPTIONS` banner.
 
 ## Deferred — an idle bound for the sbt server
 
@@ -275,11 +274,12 @@ survives the starter's own exit (`destroyOnExit = false`, `MillServerLauncher.sc
 
 ## Deferred — cross-launch server takeover
 
-Two `ko-agent-sandbox` launches on one project share nothing: each broker keeps its own sbt
-servers, and one launch's command for a build directory another launch's broker still owns is
-refused rather than served (`SECURITY.md` "Run on host"; `RunOnHostSandbox.BrokerRuntimes`). The
-build lock already serializes the *commands* of one directory across launches, so a running
-command never overlaps; what is deferred is a launch *ending or adopting another live launch's
+Two `ko-agent-sandbox` launches on one project share files and caches, but each broker keeps
+its own sbt servers. One launch’s command for a build directory another launch’s broker still
+owns is refused rather than served (`SECURITY.md` "Run on host";
+`RunOnHostSandbox.BrokerRuntimes`). The build lock already serializes the *commands* of one
+directory across launches, so a running command never overlaps; what is deferred is a launch
+*ending or adopting another live launch's
 warm server* so the second need not wait for the first launch to end. This is separate from
 sharing one server between two launches ("two launches sharing one server or daemon", below):
 takeover ends the other launch's server and starts its own; sharing runs both launches' clients
@@ -332,7 +332,7 @@ build of the other launch included, whose next command starts its own.
 ## Deferred — fetching mill's launcher and Gradle's distribution for the user
 
 A `mill` command whose pinned version, or a `gradle` command whose distribution, the user has
-not provisioned is refused with the command to run in a host terminal (`run-on-host.md`,
+not provisioned is refused with the command to run on the host (`run-on-host.md`,
 "`mill`", "Gradle"). The sandbox does not fetch either itself because of where the stock program
 keeps it: `~/.cache/mill/download` and `~/.gradle/wrapper/dists` are the folders the user's own
 unconfined `./mill` and `./gradlew` run from, so an executable the sandbox chose there would
@@ -414,7 +414,8 @@ art, both mounting the project at its host path for path legibility rather than 
 
 ## Before the first release — continuous integration
 
-There is no CI. The README's developer commands run the launcher, proxy and filter suites;
+There is no CI. [README.md](../README.md#development) gives the launcher, proxy and filter
+test commands.
 `--self-test` runs the filter suites on demand. A user's `--build` instead performs the gates whose
 answers belong to that artifact and machine: `cargo deny check licenses bans sources`, compilation,
 binary identity, and the installed filter's mount self-test.

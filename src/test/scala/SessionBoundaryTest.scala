@@ -1,5 +1,4 @@
-// The boundary as a session sees it — the half of doc/TODO.md's black-box rows whose evidence is
-// inside the container rather than on the host.
+// The boundary as a session sees it. ProxyContainerTest checks the proxy's runtime separately.
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is

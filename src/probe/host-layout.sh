@@ -9,14 +9,14 @@
 
 set -u
 
-# Run this on macOS, in a host terminal. Inside a sandbox session every answer below would
+# Run this on macOS. Inside a sandbox session every answer below would
 # describe the container instead, and would read as a host missing its whole toolchain.
 if [ "$(uname -s)" != "Darwin" ]; then
     echo "This probe reports a macOS host's layout; this is $(uname -s). Run it on macOS." >&2
     exit 2
 fi
 if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]; then
-    echo "This looks like a sandbox session. Run the probe in a host terminal instead." >&2
+    echo "This looks like a sandbox session. Run the probe on the host instead." >&2
     exit 2
 fi
 
@@ -31,7 +31,7 @@ say "sandbox-exec"     "$([ -x /usr/bin/sandbox-exec ] && echo /usr/bin/sandbox-
 echo
 echo "=== environment overrides ==="
 for v in XDG_CACHE_HOME XDG_STATE_HOME COURSIER_CACHE COURSIER_JVM_CACHE COURSIER_BIN_DIR \
-         MILL_FINAL_DOWNLOAD_FOLDER MILL_USER_CACHE_DIR JAVA_HOME SBT_OPTS JAVA_TOOL_OPTIONS; do
+         MILL_FINAL_DOWNLOAD_FOLDER MILL_USER_CACHE_DIR JAVA_HOME SBT_OPTS JAVA_TOOL_OPTIONS _JAVA_OPTIONS; do
     eval "value=\${$v:-}"
     if [ -n "$value" ]; then say "$v" "$value"; else say "$v" "(unset)"; fi
 done
