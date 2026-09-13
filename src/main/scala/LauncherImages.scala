@@ -6,7 +6,8 @@ package agentsandbox.launcher
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
-import HostCommands.{echoCommand, fail, readIfPresent, run, writePrivate}
+import HostCommands.{echoCommand, fail, run}
+import FileHelper.{readIfPresent, writePrivate}
 import KoAgentFs.bundleSourceId
 
 object LauncherImages:

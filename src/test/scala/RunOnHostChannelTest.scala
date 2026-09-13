@@ -520,7 +520,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       // The stand-in ends with the shim: its ctl closed, so nothing of the transaction is held.
       broker.foreach: process =>
         assert(process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
-      val left = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+      val left = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
       assertEquals(left, Set("req", "lock"))
     // A req nobody reads: the broker died, its FIFO staying on the container's tmpfs.
     unanswered(None)
@@ -575,7 +575,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
         assert(shim.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), s"$ending: shim did not exit promptly")
         assertEquals(shim.exitValue(), expectedExit, ending)
         Thread.sleep((ShimBound + 1) * 1000L)
-        val entries = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        val entries = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
         assertEquals(entries, Set("req", "lock"), ending)
       finally
         handshake.foreach(_.destroyForcibly())
@@ -589,7 +589,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
         val (exit, out, _) = shimCall(project, "sbt", "test")
         assertEquals(exit, 7)
         assertEquals(out, "completed\n")
-        val entries = HostCommands.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+        val entries = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
         assertEquals(entries, Set("req", "lock"))
 
   test("without a broker the shim fails at once, naming the launch option"):

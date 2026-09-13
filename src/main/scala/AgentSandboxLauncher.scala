@@ -3,7 +3,8 @@
 // One launcher for Linux, macOS, WSL and native Windows. This file records the decisions, the flags and the sequence
 // of steps; the threat model is SECURITY.md. Its neighbours, each the whole of one concern:
 //
-//   HostCommands.scala          running a host executable, and the platform tag — the bottom layer
+//   HostCommands.scala          host executable resolution and execution, platform selection, diagnostics
+//   FileHelper.scala            state-file reads, replacement writes, locks, path resolution, directory scans
 //   LauncherImages.scala        the images this launcher owns: names, identity, inventory, cleanup
 //   ContainerfileSources.scala  the remote images the bundled Containerfiles name, for the refresh
 //   SandboxLifecycle.scala      the handover to podman, and both paths that remove a run's proxy
@@ -85,6 +86,7 @@ import ContainerfileSources.*
 import JdkTrust.*
 import EgressRules.*
 import HostCommands.*
+import FileHelper.*
 import KoAgentFs.*
 import LauncherImages.*
 import SandboxProject.*
@@ -2428,7 +2430,7 @@ object AgentSandboxLauncher:
     // hashed into its one line because they are multi-part. It is the first line of each cached
     // file rather than a file of its own, and a hit needs both to hold it: concurrent launches of
     // one project under different session options write here without a lock, and a stamp
-    // beside the content can end up describing the other launch's (HostCommands.stampedEntry).
+    // beside the content can end up describing the other launch's (FileHelper.stampedEntry).
     val rulesetStamp =
       s"$proxyImageId $egressProfile ${provider.getOrElse("none")} " +
         sha256Hex(ruleFiles.map((name, text) => s"$name: $text").mkString("\n"))
@@ -2438,7 +2440,7 @@ object AgentSandboxLauncher:
     // stampedEntry gives back exactly what was cached, trailing newline and all removed, so a hit
     // and a miss are one string. This one is hashed into the agent instructions' stamp: two
     // spellings of the same ruleset would make every launch after a re-resolve rewrite the shared
-    // agents.md for nothing (HostCommands, writeWithMode).
+    // agents.md for nothing (FileHelper.writeWithMode).
     val cachedRuleset =
       (stampedEntry(resolvedHostsFile, rulesetStamp).filter(_.nonEmpty),
         stampedEntry(resolvedWarningsFile, rulesetStamp))
@@ -2709,7 +2711,7 @@ object AgentSandboxLauncher:
           val ca = createCa(projectSlug)
           // The leaf this CA no longer signs is retired by emptying it, not by deleting it: the
           // names stay stable for the copies below and for anything still reading them
-          // (HostCommands, writeWithMode). Empty fails every expiry test below, so the leaf is
+          // (FileHelper.writeWithMode). Empty fails every expiry test below, so the leaf is
           // reissued in this same launch — and it is emptied before the CA is written, so a
           // launch that dies here leaves a leaf that the next one reissues rather than one
           // silently signed by the old CA.

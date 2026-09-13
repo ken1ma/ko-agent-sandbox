@@ -701,7 +701,7 @@ object RunOnHostSession:
 
   private def listDirectory(path: Path): Vector[Path] =
     if !Files.isDirectory(path) then Vector.empty
-    else HostCommands.directoryEntries(path)
+    else FileHelper.directoryEntries(path)
 
   /** Deletion for a session directory: every child but the lock, then — only if nothing else
     * survived — the lock and the directory. The lock pathname outlives every other child so that

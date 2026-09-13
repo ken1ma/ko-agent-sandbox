@@ -14,6 +14,7 @@ package agentsandbox.launcher
 import java.nio.file.Files
 
 import HostCommands.*
+import FileHelper.*
 import WithPodman.*
 
 class ResetRecordTest extends munit.FunSuite:

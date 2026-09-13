@@ -15,6 +15,7 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 import HostCommands.*
+import FileHelper.*
 
 object KoAgentFs:
 

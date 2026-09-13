@@ -278,7 +278,7 @@ class SandboxStatsTest extends munit.FunSuite:
     // A stray file under the root is not a record: its name is no id --reset would take.
     Files.writeString(root.resolve(".DS_Store"), project.toString)
     assertEquals(projectDirectories(root), Map("app-0123456789ab" -> project.toString))
-    if HostCommands.posixPermissions(root) then
+    if FileHelper.posixPermissions(root) then
       assertEquals(Files.getPosixFilePermissions(root.resolve("app-0123456789ab")).size, 2)
     assertEquals(projectDirectories(root.resolve("absent")), Map.empty)
 

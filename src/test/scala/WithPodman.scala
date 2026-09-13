@@ -16,6 +16,7 @@ import scala.util.Using
 import munit.EventuallyOptions
 
 import HostCommands.*
+import FileHelper.*
 
 object WithPodman extends munit.Assertions:
 

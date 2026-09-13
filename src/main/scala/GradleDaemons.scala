@@ -74,7 +74,7 @@ object GradleDaemons:
   def record(records: Path, found: Vector[(Long, String)], processes: Processes): Vector[String] =
     val existing =
       try
-        HostCommands.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
+        FileHelper.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
       catch case _: IOException => Vector.empty
     val (proved, stale) = existing.partition: file =>
       parsed(file).exists(record => processes.startOf(record.pgid).contains(record.leaderStart))

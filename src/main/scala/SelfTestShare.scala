@@ -16,6 +16,7 @@ import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
 
 import HostCommands.*
+import FileHelper.*
 import KoAgentFs.*
 
 object SelfTestShare:

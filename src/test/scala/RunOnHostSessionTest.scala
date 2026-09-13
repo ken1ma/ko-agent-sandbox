@@ -768,4 +768,4 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   private def listNames(path: Path): Vector[String] =
     if !Files.isDirectory(path) then Vector.empty
-    else HostCommands.directoryEntries(path).map(_.getFileName.toString).sorted
+    else FileHelper.directoryEntries(path).map(_.getFileName.toString).sorted

@@ -16,6 +16,7 @@ import AgentSandboxLauncher.{
   projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom, tlsStateRoot,
 }
 import HostCommands.*
+import FileHelper.*
 import RunOnHostPrereqs.Program
 
 object SandboxStats:

@@ -278,7 +278,7 @@ object MillDaemons:
     val entries =
       if !Files.isDirectory(daemonDir, LinkOption.NOFOLLOW_LINKS) then Vector.empty
       else
-        try HostCommands.directoryEntries(daemonDir)
+        try FileHelper.directoryEntries(daemonDir)
         catch case _: IOException => Vector.empty
     def refused(path: Path, what: String) =
       Left(
