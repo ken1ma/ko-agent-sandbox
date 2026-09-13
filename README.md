@@ -192,6 +192,12 @@ explains why.
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
        limits: `distroless` and `alpine` images work.
     1. Stock `postgres` and `nginx` need multiple uids and fail.
+1. If podman slows down, check the launcher's memory warnings or use `--stats` to show
+   available memory.
+    1. macOS: the podman machine's memory limit defaults to 2 GiB.
+    1. Windows with WSL 2: podman shares the WSL VM's memory limit, which defaults to 50% of
+       Windows RAM.
+
 
 
 ### Reference
