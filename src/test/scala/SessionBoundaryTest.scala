@@ -2,8 +2,8 @@
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
-// the gate because the launcher sets it for every session and nothing else does — a host checkout
-// that happens to have a /workspace directory is not a session.
+// the gate because the launcher sets it for every session and nothing else does. The project is
+// the working directory: the launcher starts the session there, at the project's own path.
 //
 // The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
 // the proxy meets those clients in practice, and a JDK client would be testing a different one.
@@ -19,8 +19,9 @@ import FileHelper.*
 
 class SessionBoundaryTest extends munit.FunSuite:
 
-  private val insideSession =
-    Files.isDirectory(Paths.get("/workspace")) && env("KO_AGENT_SANDBOX_EGRESS_RULESET").isDefined
+  private val insideSession = env("KO_AGENT_SANDBOX_EGRESS_RULESET").isDefined
+
+  private val workspace = Paths.get("").toAbsolutePath
 
   private def inSession(): Unit =
     assume(insideSession, "not inside a sandbox session")
@@ -208,7 +209,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("a refusal says what to do next, in the words curl, git and the check print"):
     inSession()
     // RefusalAdvice's rows as the programs show them: curl prints a 403's body
-    // as it is, git prints a text/plain body as `remote:` lines, and sandbox-egress-check is the
+    // as it is, git prints a text/plain body as `remote:` lines, and ko-sandbox-egress-check is the
     // only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
     def body(args: String*): String = curl(args*).text
@@ -229,7 +230,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     finally
       deleteRecursively(repo)
 
-    val refused = run("sandbox-egress-check", "unlisted.invalid")
+    val refused = run("ko-sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
     assert(refused.text.contains("403"), refused.text)
     assert(
@@ -238,7 +239,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       ),
       refused.text,
     )
-    val allowed = run("sandbox-egress-check", "api.github.com")
+    val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
 
@@ -246,7 +247,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // Driven as a program rather than asserted against the mounted file, because what matters is
     // that the default ProxySelector acts on it — and that it does so without setting a system
-    // property (sandbox-jdk-use-proxy has why).
+    // property (ko-sandbox-jdk-use-proxy has why).
     val probe = Files.createTempDirectory("jvm-proxy-probe")
     try
       val source = probe.resolve("Probe.java")
@@ -288,7 +289,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a git host serves an anonymous clone"):
     inSession()
-    // Under /tmp, never /workspace: cloning into the workspace is refused by the filter itself,
+    // Under /tmp, never the project: cloning into the workspace is refused by the filter itself,
     // which would make this a test of the wrong boundary.
     val into = Files.createTempDirectory("clone-probe")
     try
@@ -301,12 +302,12 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the workspace is filtered, writable, and its boundary directory is not"):
     inSession()
-    val filtered = run("stat", "-f", "-c", "%T", "/workspace").text == "fuse"
+    val filtered = run("stat", "-f", "-c", "%T", workspace.toString).text == "fuse"
 
-    val work = Files.createTempDirectory(Paths.get("/workspace"), ".boundary-test-")
+    val work = Files.createTempDirectory(workspace, ".boundary-test-")
     try
       Files.writeString(work.resolve("ordinary"), "x")
-      assert(Files.exists(work.resolve("ordinary")), "/workspace is not writable")
+      assert(Files.exists(work.resolve("ordinary")), s"$workspace is not writable")
 
       if filtered then
         val deep = Files.createDirectories(work.resolve("deep/nested"))
@@ -314,7 +315,7 @@ class SessionBoundaryTest extends munit.FunSuite:
           deniedByFilter(s"creating .git under ${at.getFileName}"):
             Files.createDirectory(at.resolve(".git"))
 
-        val config = Paths.get("/workspace/.git/config")
+        val config = workspace.resolve(".git/config")
         if Files.exists(config) then
           // Appending nothing rather than truncating: the question is whether a write is
           // permitted, and asking it must not perform one on the user's own repository.
@@ -326,10 +327,10 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
     // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
-    // included; guard=none's read-only mount-back answers EROFS. Either way the write must
+    // included; --write=reject's read-only tree answers EROFS. Either way the write must
     // fail — a session able to create or edit the directory writes the rules governing the
     // *next* session (SECURITY.md).
-    val boundaryDir = Paths.get("/workspace/.ko-agent-sandbox")
+    val boundaryDir = workspace.resolve(".ko-agent-sandbox")
     val probe =
       if Files.isDirectory(boundaryDir) then boundaryDir.resolve("probe")
       else boundaryDir
@@ -342,14 +343,6 @@ class SessionBoundaryTest extends munit.FunSuite:
       s"the boundary write was refused with '${refused.getMessage}', not by a boundary mechanism",
     )
 
-    // guard=none's mount, where present, must be read-only; under the filter there is no
-    // mount to check — the filesystem itself enforces the rule.
-    mountOptions(boundaryDir.toString).foreach: options =>
-      assert(
-        options.split(",").contains("ro"),
-        s"the boundary mount is not read-only: $options",
-      )
-
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()
     // Existence proves nothing — the session's home is its own writable volume, and any program it
@@ -359,8 +352,10 @@ class SessionBoundaryTest extends munit.FunSuite:
            "/var/run/docker.sock", "/run/podman/podman.sock")
       .foreach(path => assert(!mountPoints.contains(path), s"$path is mounted into the session"))
 
+    // The project at its own path, and the guard mounts beneath it.
+    val project = java.util.regex.Pattern.quote(workspace.toString)
     val expected =
-      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|workspace|home/nonroot)($$|/)".r.unanchored
+      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|home/nonroot)($$|/)|^$project($$|/)".r.unanchored
     // `/etc/ssl/certs` covers two mounts, not one: the PEM bundle, and the merged JDK trust store —
     // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which ends up
     // here, because Temurin's Debian packaging symlinks that path to

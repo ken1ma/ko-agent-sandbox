@@ -61,8 +61,8 @@ object SandboxLifecycle:
   // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's ruleset and
   // certificate are its own; nothing worth keeping dies with any of it (the audit log is a host file).
   //
-  // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never toward
-  // a removed proxy under a live sandbox:
+  // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never
+  // toward a removed proxy under a live sandbox:
   //
   //   - a reaper that dies after a successful spawn removes nothing;
   //   - a launcher SIGKILLed mid-start leaves a running proxy with no reaper,
@@ -162,7 +162,7 @@ object SandboxLifecycle:
    * clipboard command delays nothing; killed after the wait, so it never
    * outlives the container it serves. ClipboardBroker has the protocol it
    * speaks and the Windows twin; the sandbox side is the image's
-   * ko-agent-clipboard shim.
+   * ko-sandbox-clipboard shim.
    */
   val ReaperScript: String =
     withScriptPath(

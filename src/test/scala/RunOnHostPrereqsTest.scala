@@ -119,6 +119,25 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val inside = Paths.get("/System/Volumes/Data" + project.toString + "/.cache/ko-agent-sandbox")
     assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
 
+  test("a cache path overlapping the state root is refused, unless under the state root's own tree"):
+    val state = Paths.get(s"$home/.local/state/ko-agent-sandbox")
+    val tree = runOnHostCachesOf(Paths.get(s"$home/.cache/ko-agent-sandbox"))
+    assertEquals(cachePathClearOfStateRoot(tree, state, Os.Mac), Right(tree))
+    assertEquals(cachePathClearOfStateRoot(tree.resolve("a-0123456789ab"), state, Os.Mac).isRight, true)
+    // Holding the state root: XDG_STATE_HOME under the tree, or a symlinked tree resolving above it.
+    val holding = state.getParent.getParent
+    assertEquals(
+      cachePathClearOfStateRoot(holding, state, Os.Mac), Left(Refusal.CachePathOverlapsStateRoot(holding, state)),
+    )
+    assert(cachePathClearOfStateRoot(Paths.get("/System/Volumes/Data" + holding.toString), state, Os.Mac).isLeft)
+    // Under a state subtree: every project's caches would go with that project's --reset.
+    assert(cachePathClearOfStateRoot(runOnHostCachesOf(state.resolve("tls/a-0123456789ab")), state, Os.Mac).isLeft)
+    assert(cachePathClearOfStateRoot(state.resolve("image-build/x"), state, Os.Mac).isLeft)
+    // The shared-root layout, %LOCALAPPDATA%\ko-agent-sandbox for both: the tree beside the subtrees.
+    assertEquals(cachePathClearOfStateRoot(runOnHostCachesOf(state), state, Os.Windows).isRight, true)
+    val sharedProject = runOnHostCachesOf(state).resolve("b-0123456789ab")
+    assertEquals(cachePathClearOfStateRoot(sharedProject, state, Os.Mac), Right(sharedProject))
+
   // --------------------------------------------------------------------------
   // JDK
   // --------------------------------------------------------------------------
@@ -470,21 +489,23 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // The channel's working directory
   // --------------------------------------------------------------------------
 
+  // The project is mounted at its own path, so the mount is the project's spelling; the value
+  // still arrives from inside the container and is validated as such.
   private def cwd(requested: String, canonical: Path => Option[Path] = path => Some(path.normalize())) =
-    workingDirectory(requested, "/workspace", project, canonical, Os.Mac)
+    workingDirectory(requested, project.toString, project, canonical, Os.Mac)
 
   test("the mount root translates to the project root"):
-    assertEquals(cwd("/workspace"), Right(project))
+    assertEquals(cwd(project.toString), Right(project))
 
   test("a subdirectory translates beneath the project"):
-    assertEquals(cwd("/workspace/modules/a"), Right(project.resolve("modules/a")))
+    assertEquals(cwd(s"$project/modules/a"), Right(project.resolve("modules/a")))
 
   test("climbing out of the mount is refused, not clamped"):
-    for requested <- Seq("/workspace/../..", "/workspace/../../etc", "/workspace/a/../../..") do
+    for requested <- Seq(s"$project/../..", s"$project/../../etc", s"$project/a/../../..") do
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a path outside the mount is refused"):
-    for requested <- Seq("/etc", "/Users/kenichi", "/workspacex", "workspace/a", "") do
+    for requested <- Seq("/etc", "/Users/kenichi", s"${project}x", project.getFileName.toString + "/a", "") do
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a symlink inside the project that leaves it is refused"):
@@ -492,16 +513,16 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val escaping = project.resolve("link")
     val canonical: Path => Option[Path] =
       path => if path == escaping then Some(Paths.get("/etc")) else Some(path.normalize())
-    assert(cwd("/workspace/link", canonical).isLeft)
+    assert(cwd(s"$project/link", canonical).isLeft)
 
   test("a canonical case-different sibling is outside the project; a lexical one still folds"):
     // Canonical spellings are the volume's own: on a case-sensitive volume `Ko-Agent-Sandbox` is
     // another directory. The lexical check before canonicalization keeps folding, since a request
     // on a folding volume may arrive in either case.
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/sub")
-    assert(cwd("/workspace/sub", _ => Some(sibling)).isLeft)
+    assert(cwd(s"$project/sub", _ => Some(sibling)).isLeft)
     // Lexically a case-different spelling of the project itself, which the real filesystem folds.
-    val folded = cwd("/workspace/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
+    val folded = cwd(s"$project/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
     assertEquals(folded, Right(project.resolve("sub")))
 
   test("a canonical case-different sibling of the project is a safe cache root"):
@@ -509,7 +530,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(cacheRootOutsideProject(sibling, project, Os.Mac, Right(_)), Right(sibling))
 
   test("a working directory that does not exist is refused"):
-    assert(cwd("/workspace/gone", _ => None).isLeft)
+    assert(cwd(s"$project/gone", _ => None).isLeft)
 
   test("a refusal names what was requested, so the diagnostic can quote it"):
     assertEquals(cwd("/etc/passwd"), Left(Refusal.WorkingDirectoryOutsideProject("/etc/passwd")))
@@ -814,6 +835,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),
       Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
       Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
+      Refusal.CachePathOverlapsStateRoot(project, project),
       Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
       Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
     )

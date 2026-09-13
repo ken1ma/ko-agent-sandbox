@@ -96,6 +96,16 @@ class FileHelperTest extends munit.FunSuite:
       Vector("bundle.crt", "ca.key", "leaf.key"),
     )
 
+  test("a tree holding a read-only file is deleted"):
+    // FileHelper.deleteEntry has the Windows refusal. POSIX asks the directory alone, so there
+    // this tree is deleted with or without the retry.
+    val tree = Files.createTempDirectory("delete-read-only")
+    val run = Files.createDirectories(tree.resolve("run-0"))
+    val file = Files.writeString(run.resolve("cacerts"), "x")
+    assert(file.toFile.setReadOnly())
+    deleteRecursively(tree)
+    assert(!Files.exists(tree))
+
   test("a mount source's name survives every rewrite"):
     val dir = Files.createTempDirectory("replace-write").toRealPath()
     val mounted = dir.resolve("agents.md")

@@ -11,7 +11,8 @@
 // a child that ends itself. The spawn stays after the command ends, publishing its exit status
 // beside the record, so the group stays provable through teardown. The scavenger condemns a
 // directory (rename out of the scanned root) before it reads records, ends what they name, and
-// only then deletes.
+// only then deletes. Every ending of a runtime's recorded group, by whichever process, runs
+// under that group's retirement lock (retirementLockFile).
 
 package agentsandbox.launcher
 
@@ -35,6 +36,7 @@ object RunOnHostSession:
   val CondemnedDir = "condemned"
   val RootLockFile = "root-lock"
   val BuildLockDir = "build-lock"
+  val RetireLockDir = "retire-lock"
   val BuildFilePrefix = "build-"
 
   /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
@@ -58,11 +60,17 @@ object RunOnHostSession:
   /** What the scavenger observes and does about processes. Injected: the tests exercise the
     * decision protocol, and a real implementation runs only on macOS. */
   trait Processes:
-    /** `ps -o lstart= -p pid`, None when no such process exists. */
+    /** `ps -o lstart= -p pid`, None when no such process exists. An observation that could not
+      * be made throws IOException — never None, which the callers read as absence. */
     def startOf(pid: Long): Option[String]
 
-    /** End the whole group, TERM then KILL after a grace, and wait for it to empty. */
-    def endGroup(pgid: Long): Unit
+    /** End the whole group, TERM then KILL after a grace: whether `ps` then listed no member. A
+      * listing that could not be made proves nothing, and neither does a signal sent — a member
+      * can exit before the signal arrives, so the listing decides. */
+    def endGroup(pgid: Long): Boolean
+
+    /** Whether `ps` lists no member of the group; IOException when it could not say. */
+    def groupEmpty(pgid: Long): Boolean
 
     /** `kill -<name> <pid>`, one process; the caller proves the pid by its start time first. */
     def signal(pid: Long, name: String): Unit
@@ -70,13 +78,25 @@ object RunOnHostSession:
   /** How one collected session ended up, for the wrapper's report. */
   enum Collected:
     case GroupEnded(pgid: Long)
+    /** A member still listed — after the KILL, or with the leader gone — or no listing to be
+      * had: its record is kept, and the next collection retries. */
+    case GroupAlive(pgid: Long, reason: String)
     case GroupSkipped(pgid: Long, reason: String)
     case ServerShutDown(socket: Path)
     case ServerSkipped(reason: String)
     /** Alive but not answering: its condemned directory is kept, and the next start retries. */
     case ServerUnanswered(socket: Path, reason: String)
+    /** Another process held the record's retirement lock past the bound, or the lock could not
+      * be opened: nothing was read or signalled, the record is kept, and the next collection
+      * retries. */
+    case RetirementBusy(record: String, reason: String)
 
-  /** What a shutdown sent to a socket established (SbtServerShutdown is the real sender). */
+    /** Whether this outcome keeps the directory, records and all, for the next collection. */
+    def keeps: Boolean = this match
+      case GroupAlive(_, _) | ServerUnanswered(_, _) | RetirementBusy(_, _) => true
+      case _                                                                => false
+
+  /** What a shutdown sent to a socket established (RunOnHostSbtServerShutdown is the real sender). */
   enum ServerAnswer:
     case ShutDown
     /** The connect itself failed before reaching a server, so there is no server to stop. */
@@ -94,12 +114,14 @@ object RunOnHostSession:
   /**
    * `/private/tmp` is shared and sticky, so the root is trusted the way an XDG runtime directory
    * is — this user's, mode 0700, no symlink — and refused otherwise. Created when absent; created
-   * 0700 so there is no window at the default mode.
+   * 0700 so there is no window at the default mode. Created first and found to exist second,
+   * rather than looked for first: two launches making the root at once both find it absent, and
+   * the one whose creation loses goes on to the checks, which are what make the root trusted.
    */
   def ensureRoot(root: Path, uid: Int): Either[String, Path] =
     try
-      if !Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS) then
-        Files.createDirectory(root, ownerOnly)
+      try Files.createDirectory(root, ownerOnly)
+      catch case _: java.nio.file.FileAlreadyExistsException => ()
       if Files.isSymbolicLink(root) then Left(s"$root is a symlink; refusing a redirected root")
       else if !Files.isDirectory(root) then Left(s"$root is not a directory")
       else
@@ -208,6 +230,90 @@ object RunOnHostSession:
       |fcntl($fh, F_SETFD, 0) or exit 71;
       |exec { $command[0] } @command or exit 71;""".stripMargin
 
+  /**
+   * The retirement lock of one build directory and program, `retire-lock/<program>-<hash>`: what
+   * every process ending a runtime's recorded group — the broker replacing or retiring its own
+   * (RunOnHostSandbox.BrokerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
+   * and another launch taking the runtime over (RunOnHostSandbox.BrokerRuntimes.takeOver) —
+   * holds across the leader's proof and the group's signal,
+   * and across nothing else. Two processes running that proof-then-signal on one group would
+   * correlate the pid recycling window: the first's kill frees the pids at the moment the
+   * second's already proved kill is on its way. Not the build lock, which a command holds for its
+   * whole life: a teardown would wait on another launch's build before ending its own server.
+   * The record is read only under the lock, so a holder acts on what the previous holder left.
+   *
+   * The order is one-way and the retirement lock is always last: preparation holds the build
+   * lock, then the runtimes' monitor; teardown the monitor and the session's own lock; scavenging
+   * the condemned entry's lock. Nothing takes a build lock, a session lock or the monitor while
+   * holding one, and no process holds two at once, so no wait can cycle. Death releases the lock
+   * and not the group, so the next holder validates as every holder does. A lock not free within
+   * RetirementDeadlineMillis is Collected.RetirementBusy, which keeps the record for the next
+   * collection. The lock files are
+   * never deleted, as the build locks are not (buildLockFile has why), and the directory is
+   * skipped by the scavenge's root scan, which would otherwise read it as a dead session.
+   *
+   * Within one process, one thread at a time opens, locks, releases and closes a lock file's
+   * channel (retirementPermits): OpenJDK's lock is a POSIX fcntl lock, which the kernel drops for
+   * the whole process when any descriptor to the file is closed (scavenge has the same caveat for
+   * the session lock), so a waiter's channel closed on its timeout, or a holder's channel still
+   * open when the next thread has locked a fresh one, would end another thread's exclusion
+   * against other processes. Two threads do contend: the gate's entry prepares its runtime on the
+   * main thread and tears the session down from the shutdown hook (RunOnHostSandbox.ownRuntime),
+   * and the broker's monitor covers neither the wrapper nor the tests.
+   *
+   * Only the records that name a runtime another launch could end map to a lock
+   * (retirementLockName): a command session's own records and the Gradle daemons' are ended by
+   * their session's owner or, once it is dead, by the collector holding that session's lock,
+   * which excludes every other ender already.
+   */
+  def retirementLockFile(root: Path, name: String): Path =
+    Files.createDirectories(root.resolve(RetireLockDir), ownerOnly).resolve(name)
+
+  /** `<program>-<hash>` for a runtime's record — `proxy-<program>-<hash>`, `server-sbt-<hash>`,
+    * `daemon-mill-<hash>`, a `.pending` one included — and None for every other record. */
+  def retirementLockName(recordName: String): Option[String] =
+    recordName.stripSuffix(".pending") match
+      case RuntimeRecordName(program, hash) => Some(s"$program-$hash")
+      case _                               => None
+
+  private val RuntimeRecordName = raw"(?:proxy|server|daemon)-([a-z]+)-([0-9a-f]{16})".r
+
+  /** Past the fifteen seconds a holder's TERM, grace and KILL take at most (HostProcesses.endGroup). */
+  val RetirementDeadlineMillis = 20_000L
+
+  /** This process's one permit per lock file, held from the channel's open to its close. A
+    * thread taking a lock it already holds waits for the permit until the deadline and gets
+    * RetirementBusy, never a second descriptor. */
+  private val retirementPermits = java.util.concurrent.ConcurrentHashMap[Path, java.util.concurrent.Semaphore]()
+
+  /**
+   * `body` under the record's retirement lock, taken within `deadlineMillis`; None when it was
+   * not. A record whose name maps to no lock runs `body` at once. The permit first, then the
+   * channel: no other thread of this process touches the file while this one holds it.
+   */
+  private def underRetirementLock[A](root: Path, record: Path, deadlineMillis: Long)(body: => A): Option[A] =
+    retirementLockName(record.getFileName.toString) match
+      case None => Some(body)
+      case Some(name) =>
+        val file = retirementLockFile(root, name).toAbsolutePath.normalize
+        val permit = retirementPermits.computeIfAbsent(file, _ => java.util.concurrent.Semaphore(1))
+        val deadline = System.nanoTime + deadlineMillis * 1_000_000
+        if !permit.tryAcquire(deadlineMillis, java.util.concurrent.TimeUnit.MILLISECONDS) then None
+        else
+          try
+            val channel = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+            try
+              var lock = channel.tryLock()
+              while lock == null && System.nanoTime < deadline do
+                Thread.sleep(50)
+                lock = channel.tryLock()
+              if lock == null then None
+              else
+                try Some(body)
+                finally lock.release()
+            finally channel.close()
+          finally permit.release()
+
   /** What names one build directory's lock and records: its canonical spelling's SHA-256, 16
     * hex digits. */
   def buildHash(buildDirectory: Path): String =
@@ -242,15 +348,15 @@ object RunOnHostSession:
         catch case _: IOException => None
 
   /** The other live brokers' sessions under the root: published under the broker prefix and
-    * locked. A broker reads another launch's ownership records from these to decide whether to
-    * refuse (runtimeOwner). */
+    * locked. A broker attaches to another launch's runtime only from one of these
+    * (RunOnHostSandbox.BrokerRuntimes.attached). */
   def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
     allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
 
   /** Every broker session directory under the root, locked or not — a just-crashed owner's is
     * unlocked but not yet condemned, and its server group can still be running, so runtimeOwner
-    * must weigh it too (its finding, admission blocked, and the next start's scavenge collects
-    * it). */
+    * must weigh it too (its finding is taken over, never attached to, and the next start's
+    * scavenge collects it). */
   def allBrokerSessions(root: Path, except: Path): Vector[Path] =
     listDirectory(root).filter: entry =>
       entry != except && entry.getFileName.toString.startsWith(Kind.Broker.prefix)
@@ -269,10 +375,11 @@ object RunOnHostSession:
    * Another launch's session that holds the ownership record `record` — `server-sbt-<hash>` or
    * `daemon-mill-<hash>` — or None. Any broker session under the root — live, or just-crashed
    * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
-   * finished, owns it; the record is read, never signalled (the group is the owner's to end —
-   * RunOnHostSandbox.BrokerRuntimes and doc/TODO.md "Cross-launch server takeover"). A dead
-   * owner's record blocks admission this time and the next start's scavenge collects it, so its
-   * server or daemon is never left running beside a fresh one.
+   * finished, owns it; the record is read here, and its group ended only by its owner, or by
+   * the launch taking the runtime over, under the retirement lock
+   * (RunOnHostSandbox.BrokerRuntimes.takeOver). A dead owner's runtime is taken over this time
+   * and the next start's scavenge collects its session, so its server or daemon is never left
+   * running beside a fresh one.
    *
    * The live sessions are enumerated, then looked up; `condemned/` is enumerated only if that
    * lookup finds nothing (`orElse` is by-name), so its enumeration is strictly later. Teardown
@@ -283,15 +390,36 @@ object RunOnHostSession:
    * ended before the record was deleted. `betweenScan` is the tests' seam for the instant
    * between the live enumeration and its lookup, where that rename races; the caller holding
    * this hash's build lock keeps a new owner from appearing during the check.
+   *
+   * A record whose group is dead (groupIsDead) owns nothing: its owner has not yet deleted a
+   * record another process's retirement, or the group's own end, left behind, and it would
+   * otherwise block admission until it did. A record whose group lives, or whose leader is gone
+   * while a member is listed, owns as the record says.
    */
   def runtimeOwner(
-    root: Path, except: Path, record: String, betweenScan: () => Unit = () => (),
+    root: Path, except: Path, record: String, processes: Processes, betweenScan: () => Unit = () => (),
   ): Option[Path] =
     def owns(session: Path): Boolean =
-      Files.exists(session.resolve(RecordsDir).resolve(record))
+      val file = session.resolve(RecordsDir).resolve(record)
+      Files.exists(file) && !groupIsDead(file, processes)
     val inRoot = allBrokerSessions(root, except)
     betweenScan()
     inRoot.find(owns).orElse(collectingSessions(root).find(owns))
+
+  /** Whether the record's group is proved gone: the leader gone and no member listed, or the
+    * leader's pid recycled — which proves the group empty at some instant, its number a
+    * stranger's since (endRecordedGroup). A record that does not parse, and an observation ps
+    * could not make, prove nothing: false. */
+  def groupIsDead(record: Path, processes: Processes): Boolean =
+    val parsed =
+      try parseRecord(Files.readString(record, UTF_8))
+      catch case _: IOException => None
+    parsed.exists: known =>
+      try
+        processes.startOf(known.pgid) match
+          case Some(start) => start != known.leaderStart
+          case None        => processes.groupEmpty(known.pgid)
+      catch case _: IOException => false
 
   /** Whether the spawn a record names still runs its command: the leader alive with the recorded
     * start time, and no exit published beside the record. Neither alone answers: the leader
@@ -373,10 +501,12 @@ object RunOnHostSession:
    * directory once its groups are ended, the wrapper's moment to read the session's logs
    * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
    * and removing in place, with no shutdown sent to any socket and no logs read: at the original
-   * pathname a process the command started could still redirect a read.
+   * pathname a process the command started could still redirect a read. A group alive after that
+   * keeps the directory where it is, its lock released: the next scavenge condemns it and retries.
    */
   def endSession(root: Path, session: Session, processes: Processes,
-    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => (),
+    retirementDeadlineMillis: Long = RetirementDeadlineMillis): Vector[Collected] =
     val condemned =
       try
         val condemnedRoot = Files.createDirectories(root.resolve(CondemnedDir), ownerOnly)
@@ -386,12 +516,12 @@ object RunOnHostSession:
       catch case _: IOException => None
     condemned match
       case Some(entry) =>
-        val actions = collect(root, entry, processes, shutdown, beforeRemoval)
+        val actions = collect(root, entry, processes, shutdown, beforeRemoval, retirementDeadlineMillis)
         session.close()
         actions
       case None =>
-        val ended = endRecordedGroups(session.records, processes)
-        remove(session)
+        val ended = endRecordedGroups(root, session.records, processes, retirementDeadlineMillis)
+        if ended.exists(_.keeps) then session.close() else remove(session)
         ended
 
   // ---------------------------------------------------------------------------
@@ -404,7 +534,8 @@ object RunOnHostSession:
    * collected, then staging litter is cleared under the root lock. A condemned entry is collected
    * only under its own lock — the same lock its session held — so two starts, or a start and the
    * wrapper's own step 11, never signal or delete the same entry concurrently. The build locks
-   * are skipped by name: a directory without a `lock` file reads as a dead session here.
+   * and the retirement locks are skipped by name: a directory without a `lock` file reads as a
+   * dead session here.
    *
    * `ownSession` is the caller's own live session, which it must pass when it scavenges after
    * publishing — the broker between commands (RunOnHostSandbox.BrokerRuntimes). That session is
@@ -417,15 +548,18 @@ object RunOnHostSession:
    */
   def scavenge(
     root: Path, processes: Processes, shutdown: Path => ServerAnswer, ownSession: Option[Path] = None,
+    retirementDeadlineMillis: Long = RetirementDeadlineMillis,
   ): Vector[(Path, Vector[Collected])] =
     val results = Vector.newBuilder[(Path, Vector[Collected])]
     val condemnedRoot = root.resolve(CondemnedDir)
-    val skipNames = Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir)
+    val skipNames = Set(StagingDir, CondemnedDir, RootLockFile, BuildLockDir, RetireLockDir)
 
     def collectLocked(entry: Path): Unit =
       lockForCollection(entry) match
         case Claim.Taken(lock) =>
-          try results += entry -> collect(root, entry, processes, shutdown)
+          try
+            results += entry ->
+              collect(root, entry, processes, shutdown, retirementDeadlineMillis = retirementDeadlineMillis)
           finally lock.close()
         case Claim.Held    => ()
         case Claim.HalfDeleted => deleteTree(entry)
@@ -455,40 +589,69 @@ object RunOnHostSession:
 
   /**
    * End what one condemned directory's records name, then delete it — unless a server was asked
-   * and did not answer: then the directory, records and socket stay for the next start to retry,
-   * because deleting them would strand a live server nothing can reach. A group is signalled only
+   * and did not answer, or a group is still listed after its KILL: then the directory, records and
+   * socket stay for the next start to retry, because deleting them would strand a live server
+   * nothing can reach, or a group nothing else names. A group is signalled only
    * while its recorded leader is alive with the recorded start time: a dead or mismatched leader
    * frees the pgid for strangers, so those groups are skipped and only the portfile-attributed
    * server is ended, by asking it.
    */
   def collect(root: Path, condemned: Path, processes: Processes,
-    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
-    val actions = endRecordedGroups(condemned.resolve(RecordsDir), processes) ++
+    shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => (),
+    retirementDeadlineMillis: Long = RetirementDeadlineMillis): Vector[Collected] =
+    val actions = endRecordedGroups(root, condemned.resolve(RecordsDir), processes, retirementDeadlineMillis) ++
       collectServers(root, condemned, shutdown)
     // Whatever the reader does, the deletion follows it.
     try beforeRemoval(condemned)
     finally
-      if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
+      if !actions.exists(_.keeps) then deleteSessionTree(condemned)
     actions
 
   /** End every group the records name and prove — the scavenger's core. */
-  def endRecordedGroups(recordsDir: Path, processes: Processes): Vector[Collected] =
-    listDirectory(recordsDir).flatMap(endRecordedGroup(_, processes))
+  def endRecordedGroups(
+    root: Path, recordsDir: Path, processes: Processes, retirementDeadlineMillis: Long = RetirementDeadlineMillis,
+  ): Vector[Collected] =
+    listDirectory(recordsDir).flatMap(endRecordedGroup(root, _, processes, retirementDeadlineMillis))
 
-  /** End the group one record names, if it proves one; None for a file that is no record. */
-  def endRecordedGroup(file: Path, processes: Processes): Option[Collected] =
+  /** End the group one record names, if it proves one; None for a file that is no record. Under
+    * the record's retirement lock (retirementLockFile), the record read only once it is held.
+    * The record outlives anything but a proven end or a proven absence: a group with a member
+    * listed — after its KILL, or behind a leader that is gone, when the members may still be the
+    * record's, since a pgid is not reused while its group has one — or an observation that
+    * failed, is GroupAlive, which every deleter of records keeps. A recycled leader proves the
+    * group empty at some point, and what its pgid lists now is another group's. The listed
+    * members are never ended by their own pid and start time: a group empty at any unobserved
+    * instant frees its number, a stranger's group can hold it, that leader can exit leaving
+    * children, and a start-time recheck binds the signal to the process observed, never to the
+    * record; a leaderless group with members is reached by its owner's teardown, or the
+    * scavenger, asking the server by protocol at the socket proved inside the condemned session
+    * (collectServers), and blocks admission until then. */
+  def endRecordedGroup(
+    root: Path, file: Path, processes: Processes, retirementDeadlineMillis: Long = RetirementDeadlineMillis,
+  ): Option[Collected] =
+    def busy(reason: String) = Some(Collected.RetirementBusy(file.getFileName.toString, reason))
+    try
+      underRetirementLock(root, file, retirementDeadlineMillis)(endProvedGroup(file, processes))
+        .getOrElse(busy(s"the retirement lock was not free within ${retirementDeadlineMillis / 1000}s"))
+    catch case ex: IOException => busy(s"the retirement lock: ${ex.getMessage}")
+
+  private def endProvedGroup(file: Path, processes: Processes): Option[Collected] =
     val parsed =
       try parseRecord(Files.readString(file, UTF_8))
       catch case _: IOException => None
     parsed.map: record =>
-      processes.startOf(record.pgid) match
-        case Some(start) if start == record.leaderStart =>
-          processes.endGroup(record.pgid)
-          Collected.GroupEnded(record.pgid)
-        case Some(_) =>
-          Collected.GroupSkipped(record.pgid, "pid recycled: start time differs")
-        case None =>
-          Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
+      try
+        processes.startOf(record.pgid) match
+          case Some(start) if start == record.leaderStart =>
+            if processes.endGroup(record.pgid) then Collected.GroupEnded(record.pgid)
+            else Collected.GroupAlive(record.pgid, "a member is listed after the KILL")
+          case Some(_) =>
+            Collected.GroupSkipped(record.pgid, "pid recycled: start time differs")
+          case None if processes.groupEmpty(record.pgid) =>
+            Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
+          case None =>
+            Collected.GroupAlive(record.pgid, "leader gone, a member still listed")
+      catch case ex: IOException => Collected.GroupAlive(record.pgid, s"ps could not answer: ${ex.getMessage}")
 
   /**
    * The portfile attribution, for each build directory the session's build files name — the
@@ -626,21 +789,45 @@ object RunOnHostSession:
       else Thread.sleep(20)
     result.get
 
-  /** The observations on the real host: `ps` spellings that exist on macOS, where alone this
-    * runs. TERM first and KILL after a grace — the server flushes its portfile away on TERM. */
+  /**
+   * The observations on the real host: `ps` spellings that exist on macOS, where alone this
+   * runs. TERM first and KILL after a grace — the server flushes its portfile away on TERM.
+   *
+   * A listing proves itself by listing this process, selected alongside what is asked (ps ORs
+   * its selection criteria): nothing else tells an answer from a failure, since Apple's ps exits
+   * 0 with nothing printed when its process-table sysctl fails, and 1 both for nothing selected
+   * and for a failed allocation. A listing without this process is no observation.
+   */
   object HostProcesses extends Processes:
-    def startOf(pid: Long): Option[String] =
-      lines("ps", "-o", "lstart=", "-p", pid.toString).headOption.map(_.trim).filter(_.nonEmpty)
+    private def self: Long = ProcessHandle.current.pid
 
-    def endGroup(pgid: Long): Unit =
-      def members: Vector[String] = lines("ps", "-o", "pid=", "-g", pgid.toString)
+    def startOf(pid: Long): Option[String] =
+      startFrom(lines("ps", "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
+
+    def endGroup(pgid: Long): Boolean =
       def signal(name: String): Unit =
         java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", s"-$pgid").start().waitFor()
       signal("TERM")
-      val settled = (1 to 100).exists { _ => if members.isEmpty then true else { Thread.sleep(100); false } }
-      if !settled then
+      val settled = (1 to 100).exists { _ => groupEmpty(pgid) || { Thread.sleep(100); false } }
+      settled || {
         signal("KILL")
-        (1 to 50).exists(_ => if members.isEmpty then true else { Thread.sleep(100); false })
+        (1 to 50).exists(_ => groupEmpty(pgid) || { Thread.sleep(100); false })
+      }
+
+    def groupEmpty(pgid: Long): Boolean =
+      groupEmptyFrom(lines("ps", "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
+
+    /** `pid lstart` rows: the pid's start, None when the pid is not listed; IOException when
+      * `self` is not either, which is a listing that did not happen. */
+    private[launcher] def startFrom(rows: Vector[String], self: Long, pid: Long): Option[String] =
+      val parsed = rows.map(_.split("\\s+", 2)).collect { case Array(listed, rest) => listed -> rest.trim }
+      if !parsed.exists(_(0) == self.toString) then throw IOException(s"ps did not list $self alongside $pid")
+      parsed.collectFirst { case (listed, start) if listed == pid.toString && start.nonEmpty => start }
+
+    /** `pid` rows: whether none but `self` is listed; IOException when `self` is not. */
+    private[launcher] def groupEmptyFrom(rows: Vector[String], self: Long): Boolean =
+      if !rows.contains(self.toString) then throw IOException(s"ps did not list $self alongside the group")
+      rows.forall(_ == self.toString)
 
     def signal(pid: Long, name: String): Unit =
       java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()

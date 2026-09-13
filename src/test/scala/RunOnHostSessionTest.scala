@@ -2,7 +2,7 @@ package agentsandbox.launcher
 
 import java.net.{StandardProtocolFamily, UnixDomainSocketAddress}
 import java.nio.ByteBuffer
-import java.nio.channels.ServerSocketChannel
+import java.nio.channels.{FileChannel, ServerSocketChannel}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, StandardCopyOption}
 
@@ -16,6 +16,21 @@ object RunOnHostSessionTest:
     * suites as a confined command, whose tests spawning one skip. */
   val underRunOnHostProfile: Boolean =
     sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
+
+  /**
+   * A session root for a test that binds the sbt server's socket under a session's `tmp/`. That
+   * socket is up to 52 characters past the root, `/b<up to 20 digits>/tmp/<20 hex digits>/sock`,
+   * and macOS allows a socket path 103: a root under its `java.io.tmpdir`,
+   * `/var/folders/<2>/<30>/T`, is too long, and the wrapper's own root is
+   * `/private/tmp/ko-agent-<uid>` for the same reason (RunOnHostPrereqs.SessionTmpMaxLength). The
+   * test deletes the root it got.
+   */
+  def socketSessionRoot(prefix: String): Path =
+    try Files.createTempDirectory(Path.of("/tmp").toRealPath(), prefix)
+    catch
+      case ex: java.nio.file.FileSystemException =>
+        munit.Assertions.assume(false, s"needs a directory under /tmp, short enough for the server's socket: $ex")
+        throw ex
 
 class RunOnHostSessionTest extends munit.FunSuite:
 
@@ -40,7 +55,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     try Files.getAttribute(probe, "unix:uid").asInstanceOf[Integer].intValue
     finally Files.delete(probe)
 
-  test("ensureRoot creates an absent root owner-only"):
+  test("ensureRoot creates an absent root owner-only, and takes one another launch just made"):
     val parent = Files.createTempDirectory("command-session")
     val root = parent.resolve("ko-agent-0")
     assertEquals(ensureRoot(root, uid), Right(root))
@@ -48,6 +63,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(root)),
       "rwx------",
     )
+    assertEquals(ensureRoot(root, uid), Right(root), "found by the launch whose creation lost")
 
   test("ensureRoot refuses a symlinked, shared, or foreign root"):
     val parent = Files.createTempDirectory("command-session")
@@ -121,16 +137,21 @@ class RunOnHostSessionTest extends munit.FunSuite:
     remove(broker)
     remove(command)
 
-  test("a build lock file is neither a session nor scavenged"):
+  test("a build lock file, and a retirement lock file, is neither a session nor scavenged"):
     val root = freshRoot()
     val build = Path.of("/Users/u/proj/sub")
     val file = buildLockFile(root, "sbt", build).toOption.get
     assertEquals(file, root.resolve(BuildLockDir).resolve(s"sbt-${buildHash(build)}"))
     assertEquals(buildHash(build).length, 16)
     Files.createFile(file)
+    val retirement = retirementLockFile(root, s"sbt-${buildHash(build)}")
+    assertEquals(retirement, root.resolve(RetireLockDir).resolve(s"sbt-${buildHash(build)}"))
+    Files.createFile(retirement)
     assertEquals(scavenge(root, processes(), _ => ServerAnswer.ShutDown), Vector.empty)
     assert(Files.isRegularFile(file), "the lock file outlives every scavenge")
+    assert(Files.isRegularFile(retirement), "so does the retirement lock file")
     assert(!Files.exists(root.resolve(CondemnedDir).resolve(BuildLockDir)))
+    assert(!Files.exists(root.resolve(CondemnedDir).resolve(RetireLockDir)))
 
   // --------------------------------------------------------------------------
   // Scavenging the dead
@@ -139,7 +160,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
   class FakeProcesses(alive: Map[Long, String]) extends Processes:
     val ended = ListBuffer[Long]()
     def startOf(pid: Long): Option[String] = alive.get(pid)
-    def endGroup(pgid: Long): Unit = ended += pgid
+    def endGroup(pgid: Long): Boolean = { ended += pgid; true }
+    def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
     def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
 
   def processes(alive: (Long, String)*): FakeProcesses = FakeProcesses(alive.toMap)
@@ -156,26 +178,55 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val hash = "abcdef0123456789"
     Files.writeString(owner.records.resolve(s"server-sbt-$hash"), renderRecord(Record(1, "S")), UTF_8)
     Files.writeString(owner.records.resolve(s"daemon-mill-$hash"), renderRecord(Record(2, "S")), UTF_8)
+    val live = processes(1L -> "S", 2L -> "S")
     // A live owner holding the record is found; a hash no one owns is not; each program's record is its own.
-    assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash"), Some(owner.directory))
-    assertEquals(runtimeOwner(root, mine.directory, s"daemon-mill-$hash"), Some(owner.directory))
-    assertEquals(runtimeOwner(root, mine.directory, "server-sbt-0000000000000000"), None)
-    assertEquals(runtimeOwner(root, mine.directory, "daemon-mill-0000000000000000"), None)
+    assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash", live), Some(owner.directory))
+    assertEquals(runtimeOwner(root, mine.directory, s"daemon-mill-$hash", live), Some(owner.directory))
+    assertEquals(runtimeOwner(root, mine.directory, "server-sbt-0000000000000000", live), None)
+    assertEquals(runtimeOwner(root, mine.directory, "daemon-mill-0000000000000000", live), None)
     // A just-crashed owner — unlocked, still in the root, not yet condemned — still owns: its
     // server group can be running, so admission is blocked until the next start collects it.
     owner.close()
-    assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash"), Some(owner.directory), "a dead owner in the root still owns")
+    assertEquals(
+      runtimeOwner(root, mine.directory, s"server-sbt-$hash", live), Some(owner.directory),
+      "a dead owner in the root still owns",
+    )
     // The owner renames into condemned/ in the instant between the root enumeration and its
     // lookup: the lookup then misses it in the root, but the later condemned enumeration finds
     // it, so admission stays blocked across the teardown rename.
     val condemned = Files.createDirectories(root.resolve(CondemnedDir))
     val moved = condemned.resolve(owner.directory.getFileName)
     var scans = 0
-    val found = runtimeOwner(root, mine.directory, s"server-sbt-$hash", betweenScan = () =>
+    val found = runtimeOwner(root, mine.directory, s"server-sbt-$hash", live, betweenScan = () =>
       scans += 1
       if scans == 1 then Files.move(owner.directory, moved, StandardCopyOption.ATOMIC_MOVE))
     assertEquals(found, Some(moved), "the owner renamed away between the scans is found in condemned")
     remove(mine)
+
+  test("a record whose group is dead owns nothing; a live or leaderless one owns"):
+    val root = freshRoot()
+    val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val owner = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    val record = "server-sbt-abcdef0123456789"
+    Files.writeString(owner.records.resolve(record), renderRecord(Record(7, "START-A")), UTF_8)
+    // Leader gone and no member listed: the group ended — by another process's retirement, or
+    // on its own — and the owner has not yet deleted the record, which must not block admission.
+    assertEquals(runtimeOwner(root, mine.directory, record, processes()), None, "a dead group owns nothing")
+    // The leader's pid recycled: the group was empty at some instant, and what the number lists
+    // now is a stranger's, so the record owns nothing either.
+    assertEquals(runtimeOwner(root, mine.directory, record, processes(7L -> "RECYCLED")), None)
+    // Leader gone, a member still listed: the members may be the record's, so it owns as before.
+    class Orphaned extends FakeProcesses(Map.empty):
+      override def groupEmpty(pgid: Long): Boolean = false
+    assertEquals(runtimeOwner(root, mine.directory, record, Orphaned()), Some(owner.directory))
+    // An observation ps could not make proves nothing: the record owns.
+    class Unobservable extends FakeProcesses(Map.empty):
+      override def startOf(pid: Long): Option[String] = throw java.io.IOException("ps could not list")
+    assertEquals(runtimeOwner(root, mine.directory, record, Unobservable()), Some(owner.directory))
+    // A record that does not parse owns: its existence is the claim, and nothing disproves it.
+    Files.writeString(owner.records.resolve(record), "", UTF_8)
+    assertEquals(runtimeOwner(root, mine.directory, record, processes()), Some(owner.directory))
+    remove(mine); remove(owner)
 
   test("a build file is published by rename, read back by hash, and skipped while pending"):
     val root = freshRoot()
@@ -250,6 +301,108 @@ class RunOnHostSessionTest extends munit.FunSuite:
       results.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g },
       Vector(7L),
     )
+
+  test("a group listed after its KILL keeps its directory, until a collection ends it"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+
+    class Survivors(alive: Map[Long, String]) extends FakeProcesses(alive):
+      override def endGroup(pgid: Long): Boolean = { ended += pgid; false }
+    val survivors = Survivors(Map(7L -> "START-A"))
+    val first = scavenge(root, survivors, _ => ServerAnswer.ShutDown)
+    assertEquals(survivors.ended.toList, List(7L))
+    assertEquals(
+      first.flatMap(_(1)).collect { case Collected.GroupAlive(g, _) => g },
+      Vector(7L),
+    )
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+    // Its leader still proven, the next collection signals again; this time the group empties.
+    val fakes = processes(7L -> "START-A")
+    val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(7L))
+    assertEquals(second.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    assert(!Files.exists(condemned))
+
+  test("an observation ps could not make keeps the record, as a live group does"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+
+    class Unobservable extends FakeProcesses(Map.empty):
+      override def startOf(pid: Long): Option[String] = throw java.io.IOException("ps could not list")
+    val results = scavenge(root, Unobservable(), _ => ServerAnswer.ShutDown)
+    assertEquals(
+      results.flatMap(_(1)).collect { case Collected.GroupAlive(g, reason) => (g, reason) },
+      Vector(7L -> "ps could not answer: ps could not list"),
+    )
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+  test("a member listed behind a leader that is gone keeps the record, unsignalled, until none is"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+
+    // The KILL took the leader and left a member: the pgid is no longer provable, so nothing is
+    // signalled, and the member may still be the record's, so nothing is deleted.
+    class Orphaned extends FakeProcesses(Map.empty):
+      override def groupEmpty(pgid: Long): Boolean = false
+    val orphaned = Orphaned()
+    val first = scavenge(root, orphaned, _ => ServerAnswer.ShutDown)
+    assertEquals(orphaned.ended.toList, Nil)
+    assertEquals(
+      first.flatMap(_(1)).collect { case Collected.GroupAlive(g, reason) => (g, reason) },
+      Vector(7L -> "leader gone, a member still listed"),
+    )
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+    val fakes = processes()
+    val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(second.flatMap(_(1)).collect { case Collected.GroupSkipped(g, _) => g }, Vector(7L))
+    assert(!Files.exists(condemned))
+
+  test("a ps listing proves itself by this process; without it nothing is observed"):
+    import HostProcesses.{groupEmptyFrom, startFrom}
+    val start = "Mon Sep 14 10:00:00 2026"
+    assertEquals(startFrom(Vector(s"41 $start", "40 Sun Sep 13 09:00:00 2026"), 40, 41), Some(start))
+    assertEquals(startFrom(Vector("40 Sun Sep 13 09:00:00 2026"), 40, 41), None, "not listed: no such process")
+    // What Apple's ps prints when its process-table sysctl fails, and when nothing is selected.
+    intercept[java.io.IOException](startFrom(Vector.empty, 40, 41))
+    intercept[java.io.IOException](startFrom(Vector(s"41 $start"), 40, 41))
+    assertEquals(groupEmptyFrom(Vector("40"), 40), true)
+    assertEquals(groupEmptyFrom(Vector("40", "77", "78"), 40), false)
+    intercept[java.io.IOException](groupEmptyFrom(Vector.empty, 40))
+    intercept[java.io.IOException](groupEmptyFrom(Vector("77"), 40))
+
+  test("a session whose condemnation fails keeps its directory in place while a group lives"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    // A file where the condemned directory would be: the rename fails, and the fallback ends the
+    // recorded groups in place.
+    Files.writeString(root.resolve(CondemnedDir), "", UTF_8)
+
+    class Survivors(alive: Map[Long, String]) extends FakeProcesses(alive):
+      override def endGroup(pgid: Long): Boolean = { ended += pgid; false }
+    val survivors = Survivors(Map(7L -> "START-A"))
+    val kept = endSession(root, session, survivors, _ => ServerAnswer.ShutDown)
+    assertEquals(kept.collect { case Collected.GroupAlive(g, _) => g }, Vector(7L))
+    assert(Files.exists(session.records.resolve("client")), "the record is kept where it was")
+
+    // The lock released, the next scavenge condemns the directory and retries.
+    Files.delete(root.resolve(CondemnedDir))
+    val fakes = processes(7L -> "START-A")
+    val results = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(7L))
+    assertEquals(results.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    assert(!Files.exists(session.directory))
 
   test("a recycled or vanished leader is never signalled"):
     val root = freshRoot()
@@ -531,6 +684,341 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(!Files.exists(kept), "a gone server releases the directory")
 
   // --------------------------------------------------------------------------
+  // The retirement lock
+  // --------------------------------------------------------------------------
+
+  test("a runtime's records map to one retirement lock per program and build directory; others to none"):
+    val hash = "0123456789abcdef"
+    assertEquals(retirementLockName(s"proxy-sbt-$hash"), Some(s"sbt-$hash"))
+    assertEquals(retirementLockName(s"server-sbt-$hash"), Some(s"sbt-$hash"))
+    assertEquals(retirementLockName(s"proxy-mill-$hash"), Some(s"mill-$hash"))
+    assertEquals(retirementLockName(s"daemon-mill-$hash"), Some(s"mill-$hash"))
+    assertEquals(retirementLockName(s"proxy-gradle-$hash"), Some(s"gradle-$hash"))
+    assertEquals(retirementLockName(s"proxy-mvn-$hash"), Some(s"mvn-$hash"))
+    assertEquals(retirementLockName(s"server-sbt-$hash.pending"), Some(s"sbt-$hash"), "a kill's leftover")
+    // The Gradle daemons and a command session's own records are ended under their session's
+    // lock alone, which no other process holds while it lives.
+    assertEquals(retirementLockName(RunOnHostGradleDaemons.recordName(4242)), None)
+    assertEquals(retirementLockName("client"), None)
+    assertEquals(retirementLockName("proxy"), None)
+
+  /** The process table two enders share: an ended group leaves it, as a real kill's does. */
+  class Groups(initial: Map[Long, String]):
+    @volatile var alive: Map[Long, String] = initial
+    val ended = ListBuffer[Long]()
+
+  /** A view of the table; with `pause`, the end waits between the leader's proof and the signal
+    * — `reached` counted down, `proceed` awaited — so a second ender can be started in between. */
+  class SharedProcesses(
+    groups: Groups,
+    pause: Option[(java.util.concurrent.CountDownLatch, java.util.concurrent.CountDownLatch)] = None,
+  ) extends Processes:
+    def startOf(pid: Long): Option[String] = groups.alive.get(pid)
+    def endGroup(pgid: Long): Boolean =
+      pause.foreach: (reached, proceed) =>
+        reached.countDown()
+        proceed.await()
+      groups.synchronized:
+        groups.ended += pgid
+        groups.alive -= pgid
+      true
+    def groupEmpty(pgid: Long): Boolean = !groups.alive.contains(pgid)
+    def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+
+  def latches() = (java.util.concurrent.CountDownLatch(1), java.util.concurrent.CountDownLatch(1))
+
+  def started[A](body: => A): java.util.concurrent.Future[A] =
+    val task = java.util.concurrent.FutureTask[A](() => body)
+    val thread = Thread(task)
+    thread.setDaemon(true)
+    thread.start()
+    task
+
+  /** A broker session's collection also reports its servers; the group outcomes alone. */
+  def groupsOf(actions: Vector[Collected]): Vector[Collected] =
+    actions.filterNot(_.isInstanceOf[Collected.ServerSkipped])
+
+  def doneWithin(future: java.util.concurrent.Future[?], millis: Long): Boolean =
+    try
+      future.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
+      true
+    catch case _: java.util.concurrent.TimeoutException => false
+
+  /** Whether this JVM holds the lock: a second channel's tryLock overlaps it. A probe, as
+    * lockIsFree is; the fcntl release its close causes is invisible within one process. */
+  def heldByThisJvm(lockFile: Path): Boolean =
+    val channel = FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE)
+    try
+      val lock = channel.tryLock()
+      if lock == null then false
+      else
+        lock.release()
+        false
+    catch case _: java.nio.channels.OverlappingFileLockException => true
+    finally channel.close()
+
+  val Hash = "abcdef0123456789"
+  def serverRecordName = s"server-sbt-$Hash"
+
+  def proxyRecordName = s"proxy-sbt-$Hash"
+
+  /** Another holder of the sbt retirement lock of Hash, paused between its proof and its signal
+    * on `record` — a `proxy-sbt-<Hash>` record, which shares the lock with the server's — until
+    * the returned latch is released; the pgid it ends. */
+  def holdingRetirementLock(
+    root: Path, record: Path, groups: Groups,
+  ): (java.util.concurrent.Future[Option[Collected]], java.util.concurrent.CountDownLatch) =
+    val (reached, proceed) = latches()
+    val holding = started(endRecordedGroup(root, record, SharedProcesses(groups, Some((reached, proceed)))))
+    reached.await()
+    (holding, proceed)
+
+  /** What another launch's takeover does under the lock (RunOnHostSandbox.BrokerRuntimes.takeOver):
+    * the owner's recorded group ended, the record read only once the lock is held. */
+  def taker(root: Path, record: Path, groups: Groups): Option[Collected] =
+    endRecordedGroup(root, record, SharedProcesses(groups))
+
+  /** What a waiter finds once the holder that ended the group released: the record deleted with
+    * its session, or — the lock is released before the deletion — the record of a group proved
+    * gone, skipped. Never a signal: that is the holder's, counted by the caller. */
+  def foundEnded(outcome: Option[Collected], pgid: Long): Unit =
+    outcome match
+      case None | Some(Collected.GroupSkipped(`pgid`, _)) => ()
+      case other => fail(s"the waiter found $other")
+
+  test("teardown against a taker: the taker waits for the lock, and the group is signalled once"):
+    val root = freshRoot()
+    val owner = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    Files.writeString(owner.records.resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
+    val groups = Groups(Map(7L -> "START-A"))
+    val (reached, proceed) = latches()
+    val teardown =
+      started(endSession(root, owner, SharedProcesses(groups, Some((reached, proceed))), _ => ServerAnswer.ShutDown))
+    reached.await()
+    // The teardown has proved the leader and holds the lock: the taker, on the condemned record,
+    // waits rather than prove and signal the same group.
+    val condemned = root.resolve(CondemnedDir).resolve(owner.directory.getFileName)
+    val taking = started(taker(root, condemned.resolve(RecordsDir).resolve(serverRecordName), groups))
+    assert(!doneWithin(taking, 300), "the taker waits on the lock")
+    proceed.countDown()
+    assertEquals(teardown.get.collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    foundEnded(taking.get, 7L)
+    assertEquals(groups.ended.toList, List(7L), "one signal")
+    assert(!Files.exists(condemned) && !Files.exists(owner.directory))
+
+  test("scavenge against a taker, either first: the group is signalled once, one consistent outcome"):
+    // The scavenger first: the taker waits, then finds the record gone with the session.
+    val root = freshRoot()
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
+    val groups = Groups(Map(7L -> "START-A"))
+    val (reached, proceed) = latches()
+    val scavenging =
+      started(scavenge(root, SharedProcesses(groups, Some((reached, proceed))), _ => ServerAnswer.ShutDown))
+    reached.await()
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    val taking = started(taker(root, condemned.resolve(RecordsDir).resolve(serverRecordName), groups))
+    assert(!doneWithin(taking, 300), "the taker waits on the lock")
+    proceed.countDown()
+    assertEquals(scavenging.get.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    foundEnded(taking.get, 7L)
+    assertEquals(groups.ended.toList, List(7L))
+    assert(!Files.exists(condemned))
+
+    // The taker first: the scavenger waits, then finds the leader gone and the group empty —
+    // skipped, never signalled twice — and deletes the session.
+    val second = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    val record = second.resolve(RecordsDir).resolve(serverRecordName)
+    Files.writeString(record, renderRecord(Record(8, "START-B")), UTF_8)
+    val later = Groups(Map(8L -> "START-B"))
+    val (takerReached, takerProceed) = latches()
+    val takingFirst =
+      started(endRecordedGroup(root, record, SharedProcesses(later, Some((takerReached, takerProceed)))))
+    takerReached.await()
+    val scavengingLater = started(scavenge(root, SharedProcesses(later), _ => ServerAnswer.ShutDown))
+    assert(!doneWithin(scavengingLater, 300), "the scavenger waits on the lock the taker holds")
+    takerProceed.countDown()
+    assertEquals(takingFirst.get, Some(Collected.GroupEnded(8L)))
+    assertEquals(
+      scavengingLater.get.flatMap(_(1)).collect { case Collected.GroupSkipped(g, _) => g }, Vector(8L),
+    )
+    assertEquals(later.ended.toList, List(8L))
+    assert(!Files.exists(root.resolve(CondemnedDir).resolve(second.getFileName)))
+
+  test("a retirement interrupted before its TERM is resumed by a successor that ends the group"):
+    // The holder died holding the lock and having signalled nothing: the lock is released with
+    // it, the group is not, and the successor proves the leader as any holder does.
+    val root = freshRoot()
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    val record = dead.resolve(RecordsDir).resolve(serverRecordName)
+    Files.writeString(record, renderRecord(Record(7, "START-A")), UTF_8)
+    val died = FileChannel.open(
+      retirementLockFile(root, s"sbt-$Hash"),
+      java.nio.file.StandardOpenOption.CREATE,
+      java.nio.file.StandardOpenOption.WRITE,
+    )
+    died.tryLock()
+    died.close()
+    val fakes = processes(7L -> "START-A")
+    val resumed = scavenge(root, fakes, _ => ServerAnswer.ShutDown).flatMap(_(1))
+    assertEquals(groupsOf(resumed), Vector(Collected.GroupEnded(7L)))
+    assertEquals(fakes.ended.toList, List(7L))
+
+  test("interrupted between TERM and KILL, the successor retains a blocked group or deletes an ended one"):
+    val root = freshRoot()
+    val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    // The TERM took the leader and left a member: the successor signals nothing — the number is
+    // no longer provable — keeps the record, and the record still blocks admission. Whether the
+    // member ends is the member's; the test requires no termination.
+    val blocked = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    val blockedRecord = blocked.resolve(RecordsDir).resolve(serverRecordName)
+    Files.writeString(blockedRecord, renderRecord(Record(7, "START-A")), UTF_8)
+    // Group 7 keeps a member; every other number lists none.
+    class Orphaned extends FakeProcesses(Map.empty):
+      override def groupEmpty(pgid: Long): Boolean = pgid != 7
+    val orphaned = Orphaned()
+    val kept = scavenge(root, orphaned, _ => ServerAnswer.ShutDown).flatMap(_(1))
+    assertEquals(
+      kept.collect { case Collected.GroupAlive(g, reason) => (g, reason) },
+      Vector(7L -> "leader gone, a member still listed"),
+    )
+    assertEquals(orphaned.ended.toList, Nil)
+    val condemned = root.resolve(CondemnedDir).resolve(blocked.getFileName)
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve(serverRecordName)), "the record is kept")
+    assertEquals(runtimeOwner(root, mine.directory, serverRecordName, orphaned), Some(condemned), "admission blocked")
+    // The TERM ended the whole group: the successor finds it empty, deletes the record with the
+    // session, and the record blocks nothing.
+    val ended = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    Files.writeString(ended.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(8, "START-B")), UTF_8)
+    assertEquals(runtimeOwner(root, mine.directory, serverRecordName, orphaned), Some(condemned), "the blocked owns")
+    val skipped = scavenge(root, orphaned, _ => ServerAnswer.ShutDown)
+    assertEquals(
+      skipped.find(_(0) == root.resolve(CondemnedDir).resolve(ended.getFileName)).map(pair => groupsOf(pair(1))),
+      Some(Vector(Collected.GroupSkipped(8L, "leader gone: pgid no longer provable"))),
+    )
+    assertEquals(orphaned.ended.toList, Nil)
+    assert(!Files.exists(root.resolve(CondemnedDir).resolve(ended.getFileName)))
+    remove(mine)
+
+  test("a retirement lock held past the bound keeps the session, its records and its directory"):
+    // A crashed owner's proxy and server records share one lock; a taker holds it on the proxy's
+    // while the scavenger, bounded, gives up on both.
+    val root = freshRoot()
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
+    Files.writeString(dead.resolve(RecordsDir).resolve(proxyRecordName), renderRecord(Record(9, "START-Z")), UTF_8)
+    val groups = Groups(Map(7L -> "START-A", 9L -> "START-Z"))
+    val (holding, proceed) = holdingRetirementLock(root, dead.resolve(RecordsDir).resolve(proxyRecordName), groups)
+    val scavenger = SharedProcesses(groups)
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    val bounded = scavenge(root, scavenger, _ => ServerAnswer.ShutDown, retirementDeadlineMillis = 200)
+    val busy = groupsOf(bounded.flatMap(_(1)))
+    assertEquals(
+      busy.collect { case Collected.RetirementBusy(name, _) => name }.sorted, Vector(proxyRecordName, serverRecordName),
+    )
+    assert(busy.forall(_.keeps), clue = busy)
+    assertEquals(groups.ended.toList, Nil, "nothing was read or signalled")
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve(serverRecordName)), "the records are kept")
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve(proxyRecordName)))
+    assert(Files.exists(condemned.resolve(LockFile)), "the directory is kept, collectable")
+    proceed.countDown()
+    assertEquals(holding.get, Some(Collected.GroupEnded(9L)))
+    val freed = groupsOf(scavenge(root, scavenger, _ => ServerAnswer.ShutDown).flatMap(_(1)))
+    assertEquals(
+      freed.toSet, Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: pgid no longer provable")),
+    )
+    assertEquals(groups.ended.toList, List(9L, 7L))
+    assert(!Files.exists(condemned))
+
+  /** What another process finds at the lock file — `held` or `taken` (RunOnHostLockProbe): the one
+    * observation of this JVM's fcntl lock, which its own FileChannel cannot make. */
+  def probedByAnotherProcess(lockFile: Path): String =
+    val launcher = Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString
+    val process = java.lang.ProcessBuilder(
+      launcher, "-cp", EmitRunOnHostProfile.classpathForRelaunch, "agentsandbox.launcher.RunOnHostLockProbe",
+      lockFile.toString,
+    ).redirectError(java.lang.ProcessBuilder.Redirect.DISCARD).start()
+    val said = String(process.getInputStream.readAllBytes(), UTF_8).trim
+    assertEquals(process.waitFor(), 0, s"the probe exited with $said")
+    said
+
+  test("two threads of one process: the waiter's timeout leaves the holder's lock and signal intact"):
+    // The gate's entry prepares on its main thread and tears down from the shutdown hook, in one
+    // JVM; the waiter must open no second descriptor to the lock file, whose close would drop the
+    // holder's fcntl lock for the whole process — which only another process can observe.
+    val root = freshRoot()
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    val record = dead.resolve(RecordsDir).resolve(serverRecordName)
+    Files.writeString(record, renderRecord(Record(7, "START-A")), UTF_8)
+    val groups = Groups(Map(7L -> "START-A"))
+    val (reached, proceed) = latches()
+    val holding = started(endRecordedGroup(root, record, SharedProcesses(groups, Some((reached, proceed)))))
+    reached.await()
+    val lockFile = retirementLockFile(root, s"sbt-$Hash")
+    assertEquals(probedByAnotherProcess(lockFile), "held", "the holder's lock, before any waiter")
+    val waited = endRecordedGroup(root, record, SharedProcesses(groups), retirementDeadlineMillis = 200)
+    assertEquals(waited.map(_.getClass.getSimpleName), Some("RetirementBusy"), clue = waited)
+    assert(waited.exists(_.keeps))
+    assertEquals(groups.ended.toList, Nil, "the waiter signalled nothing")
+    assertEquals(probedByAnotherProcess(lockFile), "held", "the holder's lock survives the waiter's timeout")
+    proceed.countDown()
+    assertEquals(holding.get, Some(Collected.GroupEnded(7L)), "the holder's end is unaffected")
+    assertEquals(probedByAnotherProcess(lockFile), "taken", "released with the holder")
+    assertEquals(
+      endRecordedGroup(root, record, SharedProcesses(groups)),
+      Some(Collected.GroupSkipped(7L, "leader gone: pgid no longer provable")),
+    )
+    assertEquals(groups.ended.toList, List(7L))
+
+  test("the retirement lock is taken last: after the condemned entry's lock, and after the session's own"):
+    val root = freshRoot()
+    // Scavenging: the entry is condemned and its lock held before the retirement lock is waited
+    // for, so no other collector can take the entry meanwhile. The holder is a taker on the dead
+    // session's proxy record, which shares the lock.
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
+    Files.writeString(dead.resolve(RecordsDir).resolve(proxyRecordName), renderRecord(Record(9, "START-Z")), UTF_8)
+    val groups = Groups(Map(7L -> "START-A", 8L -> "START-B", 9L -> "START-Z"))
+    val (holding, proceed) = holdingRetirementLock(root, dead.resolve(RecordsDir).resolve(proxyRecordName), groups)
+    val fakes = SharedProcesses(groups)
+    val scavenging = started(scavenge(root, fakes, _ => ServerAnswer.ShutDown))
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    var waited = 0
+    while !Files.exists(condemned.resolve(LockFile)) && waited < 200 do { Thread.sleep(20); waited += 1 }
+    assert(!doneWithin(scavenging, 300), "the scavenger waits on the retirement lock")
+    assert(heldByThisJvm(condemned.resolve(LockFile)), "holding the condemned entry's lock")
+    // Teardown: the session is condemned and its own lock still held while the retirement lock
+    // is waited for; the lock is released only after the collection.
+    val owner = publish(root, Path.of("/p"), Kind.Broker).toOption.get
+    Files.writeString(owner.records.resolve(serverRecordName), renderRecord(Record(8, "START-B")), UTF_8)
+    val teardown = started(endSession(root, owner, fakes, _ => ServerAnswer.ShutDown))
+    val ownerCondemned = root.resolve(CondemnedDir).resolve(owner.directory.getFileName)
+    waited = 0
+    while !Files.exists(ownerCondemned.resolve(LockFile)) && waited < 200 do { Thread.sleep(20); waited += 1 }
+    assert(!doneWithin(teardown, 300), "the teardown waits on the retirement lock")
+    assert(heldByThisJvm(ownerCondemned.resolve(LockFile)), "holding the session's own lock")
+    proceed.countDown()
+    assertEquals(holding.get, Some(Collected.GroupEnded(9L)))
+    assertEquals(
+      groupsOf(scavenging.get.flatMap(_(1))).toSet,
+      Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: pgid no longer provable")),
+    )
+    assertEquals(groupsOf(teardown.get), Vector(Collected.GroupEnded(8L)))
+    assertEquals(groups.ended.toList.sorted, List(7L, 8L, 9L))
+    assert(!Files.exists(condemned) && !Files.exists(ownerCondemned))
+
+  test("a Gradle daemon's record is ended under its session's lock alone; no retirement lock is made for it"):
+    val root = freshRoot()
+    val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
+    val record = dead.resolve(RecordsDir).resolve(RunOnHostGradleDaemons.recordName(4242))
+    Files.writeString(record, renderRecord(Record(4242, "S")), UTF_8)
+    val fakes = processes(4242L -> "S")
+    val collected = scavenge(root, fakes, _ => ServerAnswer.ShutDown).flatMap(_(1))
+    assertEquals(groupsOf(collected), Vector(Collected.GroupEnded(4242L)))
+    assertEquals(fakes.ended.toList, List(4242L))
+    assertEquals(listNames(root.resolve(RetireLockDir)), Vector.empty)
+
+  // --------------------------------------------------------------------------
   // The registered spawn, against real processes
   // --------------------------------------------------------------------------
 
@@ -585,15 +1073,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
       java.lang.ProcessBuilder(registeredSpawn(gone, Seq("/bin/sleep", "30"))*).start()
     assertEquals(process.waitFor(), 71)
 
-  test("the build lock admits one retirer at a time: a retirement's validate-and-signal never overlaps another"):
-    // A cancelled command's server is retired under the directory's build lock (RunOnHostChannel);
-    // a peer's takeover ends the same recorded group under the same lock (noForeignServer). The
-    // lock is what keeps the two from interleaving endRecordedGroup's identity check and its
-    // signal, so the pid cannot be recycled between them. Two under-broker holders of one lock:
-    // the second reports the lock only once the first has released, so their critical sections —
-    // where the retirement runs — never overlap.
+  test("the build lock admits one command at a time: the second reports it only once the first released"):
+    // The broker's work on the runtime before a command — observed, retired or created — runs
+    // under the command's build lock (lockedSpawn), so two launches' commands on one build
+    // directory never overlap. Two under-broker holders of one lock: the second reports the lock
+    // only once the first has released.
     notUnderRunOnHostProfile()
-    val lockFile = Files.createTempDirectory("retire-lock").resolve("sbt-x")
+    val lockFile = Files.createTempDirectory("build-lock").resolve("sbt-x")
     def helper(): (Process, java.io.BufferedReader) =
       val process = java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/true"), underBroker = true)*).start()
       (process, java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8)))
@@ -717,7 +1203,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       channel.close(),
     )
     thread.start()
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 10_000)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 10_000)
     thread.join(10_000)
     assertEquals(result, ServerAnswer.ShutDown)
     assert(received(0).contains("\"method\": \"initialize\""), clue = received)
@@ -731,12 +1217,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     server.bind(UnixDomainSocketAddress.of(socket))
     val thread = Thread(() => { val c = server.accept(); Thread.sleep(3_000); c.close() })
     thread.start()
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     thread.join(10_000)
 
   test("an absent socket is Unreachable: there is no server to stop"):
-    val result = SbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
 
   test("a socket file whose listener is gone is Unreachable: the connect is refused"):
@@ -744,7 +1230,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     server.bind(UnixDomainSocketAddress.of(socket))
     server.close() // the file stays; nothing listens
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
 
   test("a connect failure that is no refusal stays retryable: a live server may hide behind it"):
@@ -755,13 +1241,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
     server.bind(UnixDomainSocketAddress.of(socket))
     try
       Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("---------"))
-      val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+      val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
       assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     finally
       Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
       server.close()
 
-  private def frame(json: String): Array[Byte] = SbtServerShutdown.frame(json)
+  private def frame(json: String): Array[Byte] = RunOnHostSbtServerShutdown.frame(json)
 
   private def shortSocketPath(): Path =
     // sun_path is short on Linux too; keep the whole path well under it.

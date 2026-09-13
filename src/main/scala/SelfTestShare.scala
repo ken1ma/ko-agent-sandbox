@@ -50,6 +50,10 @@ object SelfTestShare:
   private val Held = "HELD"
   private val Abort = "abort: "
 
+  /** Where the probe container has the scratch project. A fixed path of the probe's own, not the
+    * scratch's host path a session would use: the probe is not a session, and no agent sees it. */
+  val ProbeMount = "/mnt/share-probe"
+
   /**
    * The probe container, run as a session's would be where it matters: keep-id maps the image uid
    * onto the daemon user, which is what makes the allow_other mount writable through the bind,
@@ -61,16 +65,16 @@ object SelfTestShare:
       podman, "run", "--rm", "-i", "--name", container, "--network=none", "--entrypoint=",
       s"--userns=keep-id:uid=${AgentSandboxLauncher.ContainerUid},gid=${AgentSandboxLauncher.ContainerGid}",
       s"--user=${AgentSandboxLauncher.ContainerUid}:${AgentSandboxLauncher.ContainerGid}",
-      s"--volume=$mountpoint:/workspace:rw",
+      s"--volume=$mountpoint:$ProbeMount:rw",
       "ko-agent-sandbox:latest", "python3", "-",
     )
 
-  /** The stack check both programs open with — `.git` refused at *any* depth is the property that
-    * separates the filter from the launcher's read-only bind mounts, and probing in a fresh
-    * subdirectory is what makes it answer in a tree that already has a `.git`. */
+  /** The stack check both programs open with — `.git` refused at *any* depth is a property a bind
+    * mount does not have, and probing in a fresh subdirectory is what makes it answer in a tree
+    * that already has a `.git`. */
   private val ProbePrelude: String =
     s"""import mmap, os, shutil, sys, tempfile, time
-       |os.chdir("/workspace")
+       |os.chdir("$ProbeMount")
        |probe = tempfile.mkdtemp(prefix=".stack-", dir=".")
        |try:
        |    os.mkdir(os.path.join(probe, ".git"))
@@ -222,7 +226,7 @@ object SelfTestShare:
       Files.write(scratch.resolve("case-probe"), Array.emptyByteArray)
       val lowerCase = if Files.exists(scratch.resolve("CASE-PROBE")) then "folding" else "sensitive"
       Files.delete(scratch.resolve("case-probe"))
-      val backing = koAgentFsBackingPath(os, scratch).fold(fail(_), identity)
+      val backing = SandboxProject.mountPathOf(os, scratch).fold(fail(_), identity)
       val machineView = os match
         case Os.Linux => s"kernel ${run("uname", "-r").text.trim}, share local"
         case _ =>
@@ -231,7 +235,7 @@ object SelfTestShare:
             s", provider ${if provider.ok then provider.text.trim else "unknown"}"
       System.err.println(s"share: lower $lowerType case-$lowerCase; machine: $machineView")
 
-      val mountpoint = ensureKoAgentFsMounted(podman, os, mountId, scratch, container)
+      val mountpoint = ensureKoAgentFsMounted(podman, os, mountId, backing, container)
       try
         val command = probeRunCommand(podman, mountpoint, container)
         echoCommand(command)

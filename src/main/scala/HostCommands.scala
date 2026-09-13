@@ -50,37 +50,93 @@ object HostCommands:
   def env(name: String): Option[String] =
     Option(System.getenv(name)).filter(_.nonEmpty)
 
+  def pathLine(
+    label: String,
+    path: Path,
+    os: Os = currentOs,
+    environment: String => Option[String] = env,
+    separator: String = ": ",
+  ): String =
+    val shell = if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
+    s"$label$shell$separator${displayPath(path, os, environment)}"
+
+  def displayPath(
+    path: Path,
+    os: Os = currentOs,
+    environment: String => Option[String] = env,
+  ): String =
+    // PowerShell file commands expand ~, but cmd.exe does not, so Windows paths stay absolute.
+    // Quoting cannot suppress cmd's %NAME% expansion or delayed !NAME! expansion. Paths needing
+    // those literals, or PowerShell's $ and backtick literals, carry a PowerShell label at the call site.
+    if os == Os.Windows then
+      val text = path.toString
+      if needsPowerShellLiteral(text) then powerShellPathArgument(text)
+      else if WindowsBarePath.matches(text) then text
+      else s"\"$text\""
+    else
+      val home = environment("HOME").filter(_.nonEmpty).flatMap: value =>
+        try Some(Paths.get(value))
+        catch case _: java.nio.file.InvalidPathException => None
+      home.filter(directory => directory.isAbsolute && path.startsWith(directory)).map: directory =>
+        val relative = directory.relativize(path).toString
+        // Quoting ~ would suppress home expansion when the path is pasted into a shell.
+        if relative.isEmpty then "~" else s"~/${posixPathArgument(relative)}"
+      .getOrElse(posixPathArgument(path.toString))
+
+  private def posixPathArgument(path: String): String =
+    if BareWord.matches(path) then path else "'" + path.replace("'", "'\\''") + "'"
+
+  private val WindowsBarePath = """[A-Za-z0-9_:\\./-]+""".r
+
+  private def needsPowerShellLiteral(path: String): Boolean =
+    path.exists("$`%!\"\u201c\u201d\u201e".contains(_))
+
+  private def powerShellPathArgument(path: String): String =
+    // PowerShell treats curly apostrophes as single-quote delimiters too.
+    val escaped = path.flatMap: char =>
+      if "'\u2018\u2019\u201a\u201b".contains(char) then s"$char$char" else char.toString
+    s"'$escaped'"
+
   // -------------------------------------------------------------------------
   // Emphasis
   // -------------------------------------------------------------------------
 
   /**
-   * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
-   * `deny-unless-allowed` — so the banner, `--egress-effective` and the rule file read and grep
-   * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
-   * severity label, a boundary weaker than the default, or the mode the workspace or egress line
-   * states, and colour is what marks those; sbt and mill tint their `[warn]` label and leave the
-   * message alone, and this follows them. The hues rank by consequence, not by convention: a warning and
-   * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
-   * apart; red is a boundary weaker than the default, in force for the session; what the user
-   * chose — a mode, the programs run on host — takes a hue of its own, purple, so it is never read as
-   * a severity. A headroom figure is outside the ranking: it is a measurement, and green, orange
-   * and red are its scale (Headroom).
+   * Case is not emphasis: a value is printed as it is configured — `live`, `deny-unless-allowed` —
+   * so the banner, `--egress-effective` and the rule file read and grep
+   * alike, and the reader is not shouted at for the mode they selected. Colour is the emphasis, and
+   * each hue has one meaning:
+   *
+   *   - red: what the user did not ask for. On the `error:` label, the launch stopped (stopped);
+   *     on a whole line, a file of the project directory widens a boundary (weakenedByProject) —
+   *     a file that arrives with the repository, written by whoever can write there.
+   *   - orange: the launch goes on, and there is something to know. On the `warning:` label
+   *     (caution); on a whole line, an option or environment variable of this launch weakens a
+   *     boundary (weakenedByUser) — the user's own, so a reminder and not an alarm.
+   *   - purple: what the user chose where it weakens nothing — the workspace mode, the egress
+   *     profile, an upstream proxy (chosen) — a hue of its own so it is never read as a severity.
+   *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
+   *     (Headroom).
+   *
+   * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message; a
+   * weakened boundary is tinted as a whole line and holds no tinted word, since a word's reset
+   * would end the line's colour. So no line has two colours.
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the workspace and egress lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
-  def caution(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
+  def caution(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
-  /** A boundary weaker than the default, in force: the raw workspace bind, the permissive egress
-    * profile, a rule file granting beyond the defaults. The whole line, so no line ever has
-    * two colours. */
-  def weakened(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
+  def stopped(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
 
-  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`,
-    * `sbt, mill`. Purple, and orange above, are not among the theme's sixteen — its magenta is as
-    * often pink, its yellow as often olive — so both are the 256-colour cube's. */
+  def weakenedByUser(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
+
+  def weakenedByProject(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
+
+  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
+    * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
+    * yellow as often olive — so both are the 256-colour cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
   /** The scale of a headroom figure: green while what the action is about fits, orange where it is
@@ -89,8 +145,8 @@ object HostCommands:
     * words hold where the escape does not. */
   enum Headroom(val code: String):
     case Ample extends Headroom("32")
-    case Warned extends Headroom("38;5;208")
-    case Short extends Headroom("31")
+    case Warned extends Headroom(Orange)
+    case Short extends Headroom(Red)
 
   def gauged(text: String, headroom: Headroom, color: Boolean = colorStderr): String =
     tinted(headroom.code, text, color)
@@ -100,7 +156,7 @@ object HostCommands:
   def emphasized(text: String, color: Boolean = colorStderr): String =
     text.linesIterator
       .map: line =>
-        if line.startsWith(ErrorLabel) then caution(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
+        if line.startsWith(ErrorLabel) then stopped(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
         else if line.startsWith(WarningLabel) then caution(WarningLabel, color) + line.stripPrefix(WarningLabel)
         else line
       .mkString("\n")
@@ -116,28 +172,32 @@ object HostCommands:
   private val WarningLabel = "warning:"
   private val ErrorLabel = "error:"
   private val Esc = 27.toChar
+  private final val Red = "31"
+  private final val Orange = "38;5;208"
 
   private def tinted(code: String, text: String, color: Boolean): String =
     if color then s"$Esc[${code}m$text$Esc[0m" else text
 
   /**
    * `isatty(2)` and not `System.console()`, which answers for stdin: stderr is where these lines
-   * go, and the stream a reader redirects to keep them. Windows stays plain — `fail` has why its
-   * console text is ASCII, and a console without virtual-terminal processing prints the escape
-   * itself.
+   * go, and the stream a reader redirects to keep them.
    */
-  lazy val colorStderr: Boolean =
-    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
+  lazy val colorStderr: Boolean = colorAllowed(env("NO_COLOR"), env("TERM")) && rendersEscapes(2)
 
   /** For the `--stats` report, the one output the launcher writes to stdout: the stream a reader
     * pipes as readily as watches, so it is asked for itself. */
-  lazy val colorStdout: Boolean =
-    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
+  lazy val colorStdout: Boolean = colorAllowed(env("NO_COLOR"), env("TERM")) && rendersEscapes(1)
 
   /** `NO_COLOR` and `TERM=dumb` are what a program is expected to honour; the launcher adds no
     * variable of its own. */
-  def colorAllowed(os: Os, noColor: Option[String], term: Option[String]): Boolean =
-    os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
+  def colorAllowed(noColor: Option[String], term: Option[String]): Boolean =
+    noColor.isEmpty && !term.contains("dumb")
+
+  /** A Windows console prints an escape as text unless it is asked to interpret it, so there the
+    * question includes the asking. */
+  private def rendersEscapes(fd: Int): Boolean =
+    if currentOs == Os.Windows then FFMHelper.kernel32.enableVirtualTerminalProcessing(fd)
+    else FFMHelper.libc.isatty(fd)
 
   // -------------------------------------------------------------------------
   // Subprocesses
@@ -150,9 +210,8 @@ object HostCommands:
   /**
    * A command echoed before it runs, as `set -x` prints it: `+ ` and then the words, each shown
    * unambiguously on the one line — so a multi-line script argument prints as the one quoted
-   * word it is, not as lines that look like commands of their own. The marker is what tells a
-   * command from the output that follows it; the launcher's own lines have a `label:` instead,
-   * and a subprocess's have neither.
+   * word it is, not as lines that look like commands of their own. The marker distinguishes
+   * echoed commands from launcher diagnostics and subprocess output.
    *
    * The resolved podman is shown by its bare name, since the `using:` line said the path once
    * when it was resolved — and only then: an unannounced path stays spelled out.
@@ -178,12 +237,57 @@ object HostCommands:
     if BareWord.matches(word) then word
     else "'" + word.replace("\\", "\\\\").flatMap(visible).replace("'", "'\\''") + "'"
 
+  /** Text a project file supplied, safe on a terminal: a control character is shown, never sent. */
+  def printable(text: String): String = text.flatMap(visible)
+
   private def visible(char: Char): String =
     char match
       case '\n' => "\\n"
       case '\t' => "\\t"
       case other if other.isControl => f"\\x${other.toInt}%02x"
       case other => other.toString
+
+  /**
+   * `sh -c <script> sh <arguments>` for a script the launcher passes to podman, as words holding
+   * no double quote and no newline, which a Windows launcher cannot pass
+   * (LauncherImages.BundleLabelTemplate has why; KoAgentFs.koAgentFsScriptCommand crosses the
+   * machine's ssh the same way). The script crosses base64-encoded and is evaluated in the
+   * receiving shell itself, never piped to a second one, so its stdin stays the caller's. An
+   * empty IFS and `set -f` keep the unquoted expansion one word, newlines included, and the
+   * script's own first line restores both. Every platform uses it, so macOS and Linux runs
+   * detect a broken wrapper before Windows does.
+   */
+  def quoteFreeSh(script: String, arguments: String*): Vector[String] =
+    val encoded = java.util.Base64.getEncoder
+      .encodeToString(s"unset IFS; set +f\n$script".getBytes(StandardCharsets.UTF_8))
+    val wrapper = "IFS=; set -f; script=$(printf %s $1 | base64 -d); shift; eval $script"
+    Vector("sh", "-c", wrapper, "sh", encoded) ++ arguments
+
+  /** How many containers read one bind-mounted file, which decides its SELinux relabel option. */
+  enum FileBindReaders:
+    case OneContainer, SeveralContainers
+
+  /**
+   * The `--volume` argument for a file under the launcher's state root. On an SELinux-enforcing
+   * host a container reads a bind-mounted file only once it is relabeled: podman mounts an
+   * unlabeled one without complaint, and the container's own read fails with EACCES. `Z` gives
+   * the file the one container's private MCS categories, which keep a key from every other
+   * container that runs under SELinux separation — not from one with `label=disable`. `z` gives
+   * it none, for a file a second container mounts, whose `Z` would take it from the first. Never
+   * for the project tree: SECURITY.md ("the project tree's SELinux labels").
+   */
+  def fileBind(
+    source: Path,
+    containerPath: String,
+    access: String,
+    selinuxEnforcing: Boolean,
+    readers: FileBindReaders = FileBindReaders.OneContainer,
+  ): String =
+    val relabel =
+      if !selinuxEnforcing then ""
+      else if readers == FileBindReaders.OneContainer then ",Z"
+      else ",z"
+    s"--volume=$source:$containerPath:$access$relabel"
 
   def run(command: String*): Run =
     val process = ProcessBuilder(command*).start()
@@ -291,7 +395,15 @@ object HostCommands:
    * invocations are the launcher's decision too. Lazy, so `--help` needs no
    * podman at all.
    */
-  lazy val podman: String =
+  lazy val podman: String = podmanResolution._1
+
+  def podmanRuns: Boolean = podmanResolution._2.exists(_.ok)
+
+  /** The client build recorded by --self-test, from the same probe as the startup announcement. */
+  def podmanVersion(): String =
+    podmanResolution._2.filter(_.ok).map(_.text.trim).getOrElse("podman version unknown")
+
+  private lazy val podmanResolution: (String, Option[Run]) =
     val found = findOnPath("podman", env("PATH").getOrElse(""), currentOs)
       .map(_.toString)
       .getOrElse(
@@ -305,10 +417,20 @@ object HostCommands:
           127,
         ),
       )
+    val version =
+      try Some(run(found, "--version"))
+      catch case _: IOException => None
     // Said once, here, so every echoed command can then say just `podman` (echoCommand).
-    System.err.println(s"using: $found")
+    System.err.println(podmanUsingLine(found, version))
     announcedPodman = Some(found)
-    found
+    (found, version)
+
+  def podmanUsingLine(path: String, result: Option[Run]): String =
+    val version = result.filter(_.ok).map(_.text.trim).collect:
+      case PodmanVersion(value) => s" (v$value)"
+    s"using: $path${version.getOrElse("")}"
+
+  private val PodmanVersion = "podman version ([0-9][A-Za-z0-9.+-]*)".r
 
   @volatile private var announcedPodman: Option[String] = None
 

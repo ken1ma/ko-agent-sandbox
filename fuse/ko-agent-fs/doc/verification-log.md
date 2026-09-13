@@ -43,12 +43,75 @@ podman machine → the host's `C:` NTFS volume served at `/mnt/c`: every denied 
 exactly `EPERM`, every allowed name was created, and the host-side `dir .git` and git discovery
 found nothing afterwards.
 
-- The 8.3 row answered on a live table: short-name generation is active on the volume — creating
-  `GIT~1` through the mount met `EEXIST`, an existing allowed name having already generated it as
-  its short name — and host git still discovered no repository, which is the aliasing question
-  confirmed rather than assumed.
+- The 8.3 row met `EEXIST`: short-name generation is active on the volume, and an existing
+  allowed name had already been given `GIT~1` as its short name, so nothing was created and the
+  row answers nothing about what a created `GIT~1` would become ("Verified: NTFS 8.3 short
+  names", below, does). Host git discovered no repository afterwards.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
   collapsed them — and neither resolves anywhere near `.git` on either backing.
+
+### Measured: two letters APFS resolves to `.ko-agent-sandbox`'s (macOS 26.4.1; 2026-09-19)
+
+On the case-insensitive project volume, beside an existing `.ko-agent-sandbox`, the spellings
+`.<U+212A>o-agent-sandbox` (KELVIN SIGN) and `.ko-agent-<U+017F>andbox` (LONG S) resolve to it
+(`src/probe/seatbelt-semantics.sh` E11, the launcher's probe). Through a filtered session whose
+filter folds neither letter, `mkdir` of each spelling succeeds and `.ko-agent-sandbox` then
+resolves to the new directory, while `.KO-AGENT-SANDBOX` meets `EPERM`.
+
+### Verified: the `.ko-agent-sandbox` rows, APFS case-insensitive (macOS 26.4.1; 2026-09-19)
+
+`probe/apfs-name-rule-probe.py` through the production stack — filtered session → FUSE filter →
+virtiofs → APFS — in a subdirectory of a project, the rule holding at any depth:
+
+- All 21 denied spellings failed with exactly `EPERM`: the 14 `.git` rows, and
+  `.ko-agent-sandbox` itself, its two ASCII case variants, the KELVIN SIGN and LONG S spellings,
+  the soft-hyphen form and the trailing dot.
+- All seven allowed names were created, `.ko-agent-sandbox-notes` among them, and afterwards the
+  host's `ls .git` and `ls .ko-agent-sandbox` found nothing there and git discovered only the
+  enclosing project's repository.
+- The mounted suite's rows for both letters pass (`--self-test`, `probe/rig.sh`).
+
+### Verified: the `.ko-agent-sandbox` rows, NTFS (Windows Server 2025, 10.0.26100.32522; 2026-09-19)
+
+The same probe through the Windows production stack — filtered session → FUSE filter in the WSL2
+podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0:
+
+- All 21 denied spellings failed with exactly `EPERM`, and all seven allowed names were created.
+- Afterwards the host's `dir /a .git` and `dir /a .ko-agent-sandbox` found nothing, and
+  `git rev-parse --git-dir` found no repository.
+- NTFS kept the NFC and NFD spellings of `.gít` as two files, as in the `.git` run above.
+- Whether NTFS resolves the KELVIN SIGN or LONG S spelling to the name is not measured: the filter
+  refuses both, so neither reached the volume.
+
+### Verified: NTFS 8.3 short names (Windows Server 2025, podman 6.1.0; 2026-09-19)
+
+On a `C:` volume with 8.3 name generation on (`fsutil 8dot3name query C:`), a scratch project
+whose `.git` (`git init`) and `.ko-agent-sandbox/egress/rule` the host created shows, in
+`cmd /c dir /x /a`, the short names `GIT~1` and `KO-AGE~1`.
+
+The WSL drive mount resolves a short name to the entry and gives it the long name's identity: in
+the podman machine, `stat -c '%d:%i'` at `/mnt/c/<project>` prints one pair for `.git` and
+`GIT~1` (`69:5910974511087336`), one for `.ko-agent-sandbox` and `KO-AGE~1`, and one for
+`.git/config` and `GIT~1/config`. 1000 `stat` processes over `.git` and `.ko-agent-sandbox` took
+6.7 s where both exist and 2.6 s in a directory with neither.
+
+Inside a filtered session over that project (`security-research.md`, "Windows 8.3 short names",
+has the check):
+
+- `echo x >> GIT~1/config`, `echo x >> KO-AGE~1/egress/rule` and
+  `echo y > KO-AGE~1/egress/planted` each fail with `Operation not permitted`;
+- `mv GIT~1 moved` and `mv KO-AGE~1 moved2` fail with `Operation not permitted`;
+- `ls GIT~1` succeeds: reads through the short name work, as they do through `.git`;
+- `echo one > scratch-file; echo two >> scratch-file; cat scratch-file` prints both lines: a
+  create through the backing `O_EXCL` (`fs.rs`, `create`) and a reopen of the file it made. The
+  run holds no host create between a lookup and the backing open, so it does not reach the
+  `ESTALE` retry; `tests/mounted_races.rs` does, on the rig's kernel.
+- Afterwards the host's `Get-Content` shows `.git\config` and `egress\rule` as the host wrote
+  them, and `cmd /c dir /x /a .ko-agent-sandbox\egress` lists `rule` alone.
+
+The create side, in a filtered session over a new, empty project: `mkdir GIT~1` exits 0, and the
+host's `cmd /c dir /x /a` afterwards lists one directory, long name `GIT~1`, no short name, and
+no `.git`.
 
 ## End-to-end coherency through the host share
 
@@ -112,42 +175,44 @@ file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not
-git's, and an 8.3 short name should not be able to alias a dot-leading name like `.git` — which the
-NTFS run above confirmed on a volume with generation active.
+git's. The Windows Server 24H2 run met `EEXIST` creating `GIT~1`; "Verified: NTFS 8.3 short
+names" has the creation, and the short names of an existing `.git` and `.ko-agent-sandbox`.
 
 
 ## The cost of a path walk
 
-### Measured: per-operation and per-component cost through the filter (same machine; 2026-08-25)
+### Measured: cost per operation and per component (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
-From inside a session over this repository's tree (3,856 entries), warm, 200 iterations per point.
-`lstat` of a file by absolute path, by the file's depth under the mount:
+`probe/walk-probe.py`, from inside a filtered session over this repository's tree on an arm64 Mac
+(container → FUSE → daemon → virtiofs), warm, 200 iterations per point. `lstat` of a file by
+absolute path, by the file's depth under the mount:
 
-    depth   1     2     3     4     5     6     7     8
-    ms      0.44  0.74  1.16  1.67  2.36  3.10  3.82  5.05
+    depth   1     2     3     4     5     6     7     8     9
+    ms      0.64  1.24  2.00  2.73  3.62  4.60  5.92  7.12  8.11
 
-One file at depth 9, three ways: absolute path 8.07 ms; the same name relative to a `chdir` into
-its directory 1.74 ms; through a directory fd 1.67 ms. The kernel walks one component in the
-latter two, so the difference is the kernel re-asking the daemon per component, and the ~1.7 ms
+One file at depth 11, three ways: absolute path 10.81 ms; the same name relative to a `chdir`
+into its directory 2.04 ms; through a directory fd 1.95 ms. The kernel walks one component in the
+latter two, so the difference is the kernel re-asking the daemon per component, and the ~1.9 ms
 left is one FUSE operation including the daemon's own full-path resolution.
 
-`find . -type f` over the same tree at each layer: macOS 0.14 s (0.036 ms per entry), the guest
-over virtiofs 0.98 s (0.25 ms), the container through the filter 8.1 s (2.1 ms) — the filter is
-88 % of the total. The 8,858-entry tree of the real-tree table below gives 0.24 s / 1.63 s /
-12.2 s, 87 %.
-
-### Measured: the filter's ratio over an unfiltered bind mount (macOS Podman machine; undated)
+### Measured: the filter's ratio over a bind mount (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
 `probe/perf-probe.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs, against
-the same corpus over an unfiltered bind mount. No date, podman or OS version was recorded.
+the same corpus over an unfiltered bind mount of the same directory (`probe/unfiltered.sh`).
 
 | operation                       | unfiltered | filtered | ratio |
 | ------------------------------- | ---------- | -------- | ----- |
-| `find` (readdir only)           | 65 µs      | 317 µs   | 4.9×  |
-| `find -printf` (readdir + stat) | 147 µs     | 1052 µs  | 7.2×  |
-| `rm -rf`                        | 277 µs     | 1391 µs  | 5.0×  |
-| `cp -r` (create + write)        | 1149 µs    | 5842 µs  | 5.1×  |
-| `ls -lR` (stat + xattr probes)  | 644 µs     | 7793 µs  | 12.1× |
+| `find` (readdir only)           | 73 µs      | 419 µs   | 5.7×  |
+| `find -printf` (readdir + stat) | 147 µs     | 1361 µs  | 9.3×  |
+| `rm -rf`                        | 288 µs     | 2356 µs  | 8.2×  |
+| `cp -r` (create + write)        | 1143 µs    | 8819 µs  | 7.7×  |
+| `ls -lR` (stat + xattr probes)  | 707 µs     | 12712 µs | 18.0× |
+
+The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures. Against a run
+of a filter without them on the same machine, the filtered column is 29–69 % higher — least where
+directory fds are held (`find`, +32 %), most where every entry is resolved by path (`rm -rf`,
++69 %; `ls -lR`, +63 %) — which bounds their cost: the two runs do not separate the checks from
+the daemon's other changes between them.
 
 `find` batches reads per directory; `find -printf` needs about one lookup and one getattr round
 trip per entry. `ls -lR` needs about 4–8 round trips: each path-based syscall re-resolves every
@@ -157,24 +222,155 @@ The unfiltered bind mount is fast because the hypervisor answers a guest lookup 
 guest caches nothing ("the virtiofs layer itself", above), so what the ratio measures is this
 layer's cost alone.
 
-### Measured: a real tree (same machine; 2026-08-25)
+### Measured: the filter's ratio on Windows (Server 2025 10.0.26100.32522, podman 6.1.0; 2026-09-19)
 
-3,190 tracked files at mean depth 6.6 among 8,858 entries, warm:
+The same probe through the Windows production stack — container → FUSE → daemon in the WSL2
+machine → the machine's drive mount of NTFS — on an EC2 m7i-flex.xlarge, against the same corpus
+over an unfiltered bind mount of the same directory (the command in `probe/unfiltered.ps1`):
 
-| operation                              | per file     | total                               |
-| -------------------------------------- | ------------ | ----------------------------------- |
-| `git status`                           | 4.7 ms       | 18 s (15 s, `--untracked-files=no`) |
-| `lstat` of each tracked file, by path  | 3.6 ms       | 11.6 s                              |
-| the same files through a directory fd  | 1.7 ms       | 5.4 s                               |
-| `find . -type f`                       | 1.4 ms/entry | 12 s                                |
+| operation                       | unfiltered | filtered  | ratio |
+| ------------------------------- | ---------- | --------- | ----- |
+| `find` (readdir only)           | 674 µs     | 3989 µs   | 5.9×  |
+| `find -printf` (readdir + stat) | 1720 µs    | 14454 µs  | 8.4×  |
+| `rm -rf`                        | 1949 µs    | 23145 µs  | 11.9× |
+| `cp -r` (create + write)        | 14694 µs   | 78822 µs  | 5.4×  |
+| `ls -lR` (stat + xattr probes)  | 3382 µs    | 102428 µs | 30.3× |
 
-A depth-1 `lstat` costs 0.44 ms, of which the guest's own resolution is ~0.06 ms; each further
-component adds ~0.6 ms, one more LOOKUP round trip (the depth table above). The two `lstat` rows
-are two workloads — git stats every tracked file by its full path from the root and pays the depth,
-`find` and the other `fts` walkers hold directory fds and pay depth 1 — and the 2.2× between them
-is the whole path-walk term. Claude Code runs `git status` at startup: in that project it answers
-`pwd` in 51 s from `/workspace` and 4.4 s from `/tmp` of the same container, against 5.4 s on the
-host.
+The share itself is 5–13× slower than the macOS machine's virtiofs, and the filter multiplies it:
+each of its round trips ends in lookups on that share. The ratios are within 1.5× of the macOS ones
+except `ls -lR`, the workload with the most path-based syscalls per entry. The host is of a
+different class from the macOS rows': compare the columns within this table, not across the two.
+
+### Measured: a real tree (macOS 26.4.1, podman 6.1.1; 2026-09-19)
+
+`probe/walk-probe.py` on the machine and stack of the depth table above, over a shallow clone of
+sbt/sbt: 4,249 tracked files at mean depth 7.0 among 7,524 entries, warm:
+
+| operation                              | per file      | total                                   |
+| -------------------------------------- | ------------- | --------------------------------------- |
+| `git status`                           | 16.8 ms       | 71.5 s (38.8 s, `--untracked-files=no`) |
+| `lstat` of each tracked file, by path  | 5.97 ms       | 25.4 s                                  |
+| the same files through a directory fd  | 1.56 ms       | 6.6 s                                   |
+| `find . -type f`                       | 1.95 ms/entry | 14.7 s                                  |
+
+A depth-1 `lstat` costs 0.64 ms, of which the guest's own resolution is ~0.06 ms; each further
+component adds one more LOOKUP round trip, ~0.9 ms to depth 9 (the depth table above) and ~1.6 ms
+beyond it: this tree's `lstat` costs 8.38 ms at depth 9 and 18.04 ms at depth 15. The two `lstat`
+rows are two workloads — git stats every tracked file by its full path from the root and pays the
+depth, `find` and the other `fts` walkers hold directory fds and pay depth 1 — and the 3.8×
+between them is the whole path-walk term. Claude Code runs `git status` at startup; on the host
+the same command takes 0.13 s. The untracked walk is 32.7 s of it, 4.3 ms per entry where `find`
+pays 1.95 ms over the same entries.
+
+`find . -type f` over the same tree at each layer: macOS 0.19 s (0.025 ms per entry), the guest
+over virtiofs 1.65 s (0.22 ms), the container through the filter 14.7 s (1.95 ms) — the filter is
+89 % of the total.
+
+### Measured: an sbt build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+`sbt 'testOnly *SandboxTextWidthTest'` on this repository — sbt 2.0.8 compiling 35 main and 41
+test sources from nothing, then one suite of 10 tests — on the machine of the tables above:
+
+| where sbt runs, and its `rootOutputDirectory`            | from nothing | rerun |
+| -------------------------------------------------------- | ------------ | ----- |
+| the host                                                 | 12 s         | 0 s   |
+| the container, `target/out` through the filter           | 604 s        | —     |
+| the container, `~/.cache/sbt-out` outside the filter     | 28 s         | 21 s  |
+
+The 604 s run also downloaded its dependencies; the same run with the output outside the filter
+took 43 s with those downloads and 28 s without. The image sets the third row's directory
+(`container/ko-agent-sandbox/config/sbt/2/ko-sandbox-output.sbt`). The host rows compile and do
+not test: that host has no `wcwidth`, so the suite skips its 10 tests.
+
+Two measurements from inside a session say why the output dominates. Throughput does not rise
+with client threads — `lstat` at depth 4 serves 328, 363 and 372 operations a second from 1, 4
+and 8 threads — so a parallel compiler shares one request stream (`fs.rs`, `mount_config`). And a
+class file sits at depth 9, about 8 ms per path operation in the depth table above.
+
+A rerun of the third row under `-Dsbt.task.timings=true`, nothing to compile: 23.7 s. sbt reports
+two evaluations of the task graph for one `testOnly`, 6.8 s and 16.7 s, and each repeats the
+first two rows:
+
+| what                                                              | total   |
+| ----------------------------------------------------------------- | ------- |
+| `managedResources`: `build.sbt` copies 64 files out of the mount  | 9.9 s   |
+| listing, stamping and hashing sources and resources in the mount  | ~5.5 s  |
+| the suite, which starts a Python script about 30 times            | 8.4 s   |
+
+The copy costs 77 ms a file. One run of the script costs 261 ms from the mount and 177 ms from a
+copy outside it, so the filter's share of the suite is about a third and Python's start is the
+rest. About 18 s of the 23.7 s is operations in the mount. The copy and the script runs issue
+theirs one after another, so threads in the daemon would not shorten their 12 s; a shorter
+per-operation path would (`TODO.md`, "Performance").
+
+### Measured: a gradle build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+A generated build in a session, under gradle 9.7.1 and Java 25: two `java-library` projects of 100
+one-method classes each, a `buildSrc` and an included build of one class each, no dependencies to
+download. Each row is `gradle build :included:build` on a fresh copy with no daemon running, after
+one discarded run that pays gradle's first-use setup.
+
+| the build's files | `build/` | the project's `.gradle/` | time |
+|---|---|---|---|
+| in the mount | in the mount | in the mount | 75 s |
+| in the mount | `~/.cache`, by an init script | in the mount | 44 s |
+| in the mount | `~/.cache`, by an init script | `~/.cache`, by `--project-cache-dir` | 41 s |
+| under `~` | under `~` | under `~` | 4.5 s |
+
+The init script sets `layout.buildDirectory` in `allprojects`, keyed by each project's absolute
+path, and reaches `buildSrc` and the included build: none of the four projects keeps a `build/`
+in the mount. Moving the output takes 31 s off. After the run with `--project-cache-dir` too, the
+mount contains only the 202 sources and 7 build scripts. No `.gradle/` directory remains,
+including under `buildSrc` or the included build. That run still takes 36 s more than the build
+outside the mount: most of the extra build time remains after moving the persistent output outside
+the mount. For sbt, moving the output outside the mount removed most of the extra build time. What
+gradle's remaining time is spent on — operations on the inputs, or files gradle creates in the
+mount and removes during the build — is not measured.
+
+### Measured: a Maven build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+The gradle entry's 202 classes as two Maven modules under a parent POM, in a session, under
+Maven 3.9.16 and Java 25. Each row is `mvn -q -B package` on a fresh copy, with the plugins
+already in `~/.m2`.
+
+| the build's files | `target/` | time |
+|---|---|---|
+| in the mount | in the mount | 85 s |
+| in the mount | in the mount, with `-Dproject.build.directory=<a path under ~/.cache>` | 81 s |
+| in the mount | `~/.cache`, by `<build><directory>` in the parent POM | 47 s |
+| under `~` | under `~` | 1.9 s |
+
+Maven ignores the property: each module keeps its `target/` in the project, and nothing appears
+at the path given. The POM's `<directory>`, keyed by `${project.artifactId}`, moves both modules'
+output, and no `target/` remains in the mount. That run still takes 45 s more than the build
+outside the mount: as with gradle, most of the extra build time remains after moving the
+persistent output outside the mount. What the remaining time is spent on is not measured.
+
+### Measured: sbt over dangling cache links (macOS 26.4.1, podman 6.1.1, sbt 2.0.8; 2026-09-20)
+
+A one-source sbt 2.0.8 project that keeps its output in the project. On the host, a build, then
+`rm -rf target project/target`, then a build again: the second is a build-cache hit, and it leaves
+35 symlinks under `target/` into `~/Library/Caches/sbt/v2/cas`, the 5 class files among them; a
+build that compiles leaves class files as regular files. In a filtered session all 35 dangle.
+`sbt package` there, with the image's `rootOutputDirectory` setting turned off
+(`-Dsbt.global.base=<an empty directory>`, which also gives the run its own cache):
+
+| sources   | the session's sbt cache | result                                                   |
+| --------- | ----------------------- | -------------------------------------------------------- |
+| unchanged | empty                   | exit 1, `error writing … .class: NoSuchFileException`    |
+| unchanged | populated               | the same                                                 |
+| changed   | populated               | the same                                                 |
+
+Each run leaves 16 of the 35 dangling. Afterwards the host compiles a changed source over what
+the session left and succeeds: the filter refuses the session's own absolute links, so sbt left
+copies (`fs.rs`, `symlink`).
+
+The failure is a write through a link whose target *directory* is absent. Planting dangling links
+by hand in a session: with targets in a directory that does not exist, the build fails in the
+same words; with targets beside the link, it succeeds and a file of the target's name appears
+there; and on xfs, links into sbt's own store succeed once sbt has recreated that store's
+directory. After `find … -type d -name target -exec find {} -xtype l -delete \;` the failing
+build succeeds.
 
 ## What a staged lower can represent
 

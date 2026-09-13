@@ -2,7 +2,7 @@
 #
 # Install a rootless podman in this session, configured the one way that works here.
 #
-#     sandbox-install-podman
+#     ko-sandbox-install-podman
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 #     podman run --rm docker.io/library/alpine:latest echo hello
 #
@@ -17,13 +17,14 @@ nesting=${KO_AGENT_SANDBOX_NESTING:-none}
 if [ "$nesting" != same-uid ]; then
     echo "${0##*/}: this session is KO_AGENT_SANDBOX_NESTING=$nesting; a container runtime" >&2
     echo "  runs only under same-uid, which is the user's choice at launch. Run the service" >&2
-    echo "  directly instead, or ask them to relaunch (AGENTS-SANDBOX.md)." >&2
+    echo "  directly instead, or ask them to relaunch (sandbox instructions," >&2
+    echo "  \"Containers in here\")." >&2
     exit 1
 fi
 
-sandbox-apt-get update
+ko-sandbox-apt-get update
 # netavark is unused under host networking, but podman refuses to start without the binary.
-sandbox-apt-get install podman
+ko-sandbox-apt-get install podman
 
 mkdir -p /tmp/xdg "$HOME/.config/containers"
 

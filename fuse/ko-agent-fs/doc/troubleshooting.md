@@ -47,7 +47,8 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
 
   - Absolute targets and targets that climb above the workspace root are refused (`fs.rs`,
     `target_has_portable_syntax`).
-  - sbt falls back to copying from its cache after the first refusal.
+  - sbt 2 falls back to copying from its cache after the first refusal, where a build keeps
+    its output in the project ("Everything works but slowly" has where the image puts it).
   - For `python3 -m venv`, create the environment under `~`, or use `--copies` if it must be in
     the project. A virtualenv created in the container still names container paths in
     `pyvenv.cfg` and shebangs; copying does not make it usable on the host.
@@ -61,10 +62,16 @@ Reopen the path. A handle held across a rename can refer to names that no longer
 original directories. The resolver refuses that stale path without a DENY line (`fs.rs`,
 `open_ino`).
 
+## "Stale file handle" (ESTALE) in a directory that was renamed or replaced
+
+Reopen the path, or `cd` to it again. The names a held handle or a working directory was opened
+under now lead to another object, and the resolver serves a handle only the object it was
+classified as (`fs.rs`, `open_ino`). There is no DENY line.
+
 ## "Transport endpoint is not connected" (ENOTCONN)
 
-The daemon died; only `/workspace` is inaccessible, including to a shell whose current directory is
-inside it. Read the logs on the host, then quit the session and relaunch:
+The daemon died; only the project mount is inaccessible, including to a shell whose current
+directory is inside it. Read the logs on the host, then quit the session and relaunch:
 
     podman machine ssh "tail -20 .local/share/ko-agent-sandbox/mounts/*/daemon.log*"
     podman machine ssh "journalctl -k | grep -iE 'oom|killed' | tail -5"
@@ -89,7 +96,7 @@ keeps the previous log as `daemon.log.1`.
 - `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
   no filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 
-## `/workspace` is empty inside the container
+## The project mount is empty inside the container
 
 Quit and relaunch. The container may have started after the filter mount disappeared, leaving
 it attached to the empty mountpoint. The project files remain in the backing directory. Mount
@@ -98,20 +105,66 @@ and cleanup races are described beside `KoAgentFs.koAgentFsReapScript`.
 ## Everything works but slowly
 
 Compare your timings with `verification-log.md`, "The cost of a path walk". The measured metadata
-operations took about 5–12 times as long through the filter as through an unfiltered bind mount.
-If your slowdown is much greater, check the machine as described in the next section.
+operations took about 6–18 times as long through the filter as through an unfiltered bind mount on
+macOS, and 5–30 times on Windows. If your slowdown is much greater, check the machine as described
+in the next section.
 
 `git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
 appears as a long silence before its first word. git stats every tracked file by its full path and
-each path component is a round trip, so the cost is tracked files × depth: ~4.7 ms per file at
-depth 6–7, 18 s for 3,200 files. What shortens it, set on the host (a session cannot write
-`.git/config`):
+each path component is a round trip, so the cost is tracked files × depth: ~9 ms per file at
+depth 7 and nearly as much again for the untracked walk, 72 s for 4,200 files. What shortens it,
+set on the host (a session cannot write `.git/config`):
 
-- `git config core.untrackedCache true` — drops the untracked walk, about a sixth of the total.
+- `git config core.untrackedCache true` — drops the untracked walk, nearly half of the total.
 - Ignore whole directories (`target/`, `node_modules/`), not file patterns (`*.class`): git prunes
   an ignored directory without entering it, and walks every entry of one it must enter.
 - The tracked-file pass itself shortens only with fewer or shallower tracked files; the rest is
   the filter's per-operation cost, and `TODO.md`, "Performance", is where that is being worked.
+
+A build in the session that writes its output into the project pays that cost per file written,
+and a compiler writes deep: this repository's sbt compile takes 604 s into `target/out` and 28 s
+into a directory outside the mount (`verification-log.md`, "an sbt build"). The image moves what
+an sbt 2 build derives from `rootOutputDirectory` to `~/.cache/sbt-out`, so by default a jar
+`sbt package` builds in a session is there, not under `target/`, and is discarded with the
+session; a build that names an output path itself still writes the project, and can fail there
+with `NoSuchFileException` on links the host's sbt left
+(`container/ko-agent-sandbox/AGENTS-SANDBOX.md` has the cleanup). For another build program, point
+its output directory under `~/.cache` the same way, or run it on the host with `--run-on-host`
+(macOS).
+
+For mill the image sets nothing. mill takes its output directory from the environment variable
+`MILL_OUTPUT_DIR`, one value for every build that environment runs, where sbt's setting is computed
+per build; set in the image, it would give two mill builds in one session the same directory. Set
+it per command instead, keyed by the build:
+`MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path> ./mill …`. Use the same value
+on every command of that build: another value starts from an empty directory with a daemon of its
+own. What this saves for a mill build is not measured. `--run-on-host` does not forward the
+variable, so a host mill build keeps `out/`.
+
+For gradle the image sets nothing either. An init script can move every project's `build/`,
+`buildSrc` and included builds too, keyed by the project's path:
+
+    // ~/.gradle/init.d/out.init.gradle
+    allprojects { project ->
+        def key = project.projectDir.absolutePath.substring(1)
+        project.layout.buildDirectory.set(
+            new File(System.getProperty('user.home'), ".cache/gradle-out/${key}"))
+    }
+
+The image does not ship it because a gradle build, and the scripts around one, often name
+`build/` literally — `file("build/libs/…")`, a Containerfile's `COPY build/libs` — and those
+break with the directory moved. Check the project for such paths before using it. It also saves less
+than sbt's setting: a generated 202-class build takes 75 s with `build/` in the mount, 44 s with
+it moved, and 4.5 s wholly outside the mount, so most of the extra build time remains after
+moving the persistent output outside the mount (`verification-log.md`, "a gradle build").
+`--project-cache-dir` for the project's `.gradle/` takes off 3 s more.
+
+For Maven the image supplies nothing that moves `target/` from outside the project:
+`-Dproject.build.directory=…` is ignored, and a core extension could do it but none is written.
+`<build><directory>` in the project's own POM works, and takes the same generated build from 85 s
+to 47 s, against 1.9 s wholly outside the mount (`verification-log.md`, "a Maven build"). Where
+the POM is not to change, build a copy of the project under `~`, or run Maven on the host with
+`--run-on-host`.
 
 ## The whole machine degrades (every podman command slow or erroring)
 

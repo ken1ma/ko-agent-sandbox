@@ -108,18 +108,6 @@ class KoAgentFsTest extends munit.FunSuite:
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
-  test("the backing path crosses into the machine in the daemon's own spelling"):
-    def backing(os: Os, path: String): Either[String, String] =
-      koAgentFsBackingPath(os, Paths.get(path))
-    assertEquals(backing(Os.Windows, """C:\work\ko-agent-sandbox"""), Right("/mnt/c/work/ko-agent-sandbox"))
-    assertEquals(backing(Os.Windows, """D:\a b\proj"""), Right("/mnt/d/a b/proj"))
-    // A UNC path has no /mnt spelling: refused with the reason, never guessed at.
-    assert(backing(Os.Windows, """\\server\share\proj""").isLeft)
-    // POSIX paths pass through as the runner's Path type spells them — a POSIX host is the only
-    // one that produces them for real, and a Windows runner respells them with its own separator.
-    assertEquals(backing(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
-    assertEquals(backing(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
-
   test("lifecycle scripts run in the VM on podman machine and locally on Linux"):
     val script = "if mountpoint -q \"$mnt\"; then exit 0; fi"
     val vm = koAgentFsScriptCommand("podman", Os.Mac, script)
@@ -177,7 +165,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // session that is gone — a launch in flight has a created container for `container exists` to
     // answer for. Deterministic because the stub podman answers "no such container" for every
     // marker.
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
       survivingMarkers(podmanExit = 1, Seq("fresh" -> 5L, "crashed" -> 3600L)),
       Set(),
@@ -189,7 +177,7 @@ class KoAgentFsTest extends munit.FunSuite:
     )
 
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
       survivingMarkers(podmanExit = 125, Seq("crashed" -> 3600L, "fresh" -> 5L)),
       Set("crashed", "fresh"),
@@ -228,7 +216,7 @@ class KoAgentFsTest extends munit.FunSuite:
       deleteRecursively(home)
 
   test("a reap unmounts at zero sessions, and never when it cannot tell how many there are"):
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assume(System.getProperty("user.name") != "root", "root reads an unreadable directory fine")
     assert(unmountRequested(readable = true, Seq.empty), "no sessions left, yet no unmount")
     assert(!unmountRequested(readable = true, Seq("live")), "unmounted under a live session")
@@ -348,21 +336,6 @@ class KoAgentFsTest extends munit.FunSuite:
         )),
       )
     finally deleteRecursively(context)
-
-  test("the workspace guard fails closed on anything it does not recognize"):
-    // Exactly fuse and none, case-sensitive: every accepted value must be handled consistently
-    // everywhere it is parsed.
-    assertEquals(workspaceGuard(None), Right("fuse"))
-    assertEquals(workspaceGuard(Some("")), Right("fuse"))
-    assertEquals(workspaceGuard(Some("fuse")), Right("fuse"))
-    assertEquals(workspaceGuard(Some("none")), Right("none"))
-    Vector("on", "off", "1", "0", "None", "Fuse", "FUSE", "true", "no", " none ").foreach: value =>
-      assert(workspaceGuard(Some(value)).isLeft, s"'$value' was not refused")
-    // The refusal says what to do instead.
-    val refused = workspaceGuard(Some("on")).swap.getOrElse("")
-    assert(refused.contains("the only values are fuse and none, exactly"), refused)
-    assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
-    assert(refused.contains(RawWorkspaceBoundary), refused)
 
   test("the setup exit code matches in the filter and launcher"):
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a

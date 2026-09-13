@@ -8,33 +8,45 @@ You are `nonroot` with `no-new-privileges` set. Linux capabilities are dropped e
 `SYS_CHROOT` when `$KO_AGENT_SANDBOX_NESTING` is `same-uid`.
 You cannot become `root`; `apt-get install` and `systemctl` fail.
 `/home/nonroot`, `/tmp` and `/var/tmp` are writable. The appended "What this session may do"
-section gives `/workspace`'s write mode.
+section names the project directory and gives its write mode.
 
-`/workspace` is the user's project, and the only place deliverables belong.
+The project directory is mounted at the same path the host has it at (on Windows, at the path
+WSL gives it, `/mnt/<drive>/...`), so a path you print is a path the user and their IDE can open. It
+is the user's project, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
 `~/persistent-volume` survives and holds agent state, not project output. These paths point into
 it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`, `~/.local/share/kiro-cli` and
 opencode's `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`.
+
+Permission prompts are off, but a removal may still prompt the user, who then reads the whole
+command. Give `rm -rf` the literal absolute path of the directory itself, with no glob, variable
+or preceding `cd`, in a short command.
 
 When `$KO_AGENT_SANDBOX_CLIPBOARD` is `paste`, read a copied image with Ctrl-V in claude or
 `xclip -selection clipboard -t image/png -o`; `bidirectional` also accepts text on `wl-copy`'s
 stdin. Without clipboard access, paste reports no image; tell the user to save it under the
 project and pass its path instead.
 
-With the default `ko-agent-fs` guard, new symlinks in `/workspace` must have relative targets
-staying inside it; even absolute `/workspace/...` targets fail. Programs caching outside it, such
-as `sbt`, fall back to copying. The appended section identifies unfiltered direct bind mounts.
+With the default `ko-agent-fs` guard, new symlinks in the project must have relative targets
+staying inside it; even absolute targets inside it fail. The appended section identifies
+unfiltered direct bind mounts.
 
-### Host-cache links
+Build output:
 
-Host-created symlinks keep their targets, which may be absent here. Host sbt leaves `target/`
-class files linked into its cache. If compilation fails on those links, remove dangling links from
-every `target` tree, including the meta-build and subprojects:
+- sbt 2 here writes its classes and packaged jars under
+  `~/.cache/sbt-out/<the build's absolute path>`, not the project's `target/out`.
+- A build that names an output path itself still writes the project, where the host's sbt leaves
+  class files as links into the host's cache.
+  - If a compile there fails with `NoSuchFileException` on `error writing … .class`, check whether
+    that class file is a dangling link: `find <path> -xtype l` prints it.
+  - If so, remove the dangling links and build again:
 
-```sh
-find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
-    -type d -name target -exec find {} -xtype l -delete \;
-```
+    ```sh
+    find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
+        -type d -name target -exec find {} -xtype l -delete \;
+    ```
+- When a mill build in the project is slow, run it as
+  `MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path> ./mill …`.
 
 
 ## Use what is already installed
@@ -46,6 +58,13 @@ Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Pytho
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
 
+If the project limits line width, do not count columns yourself: `ko-sandbox-text-width --over 100
+FILE...` prints `path:line:width` for every line wider than 100 columns. Add `--show-text` to see
+those lines in the same report.
+
+After renaming a heading or moving a file, run `ko-sandbox-markdown-link-check` to find broken
+local links across the repository's Markdown files.
+
 
 ## git
 
@@ -53,12 +72,12 @@ Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` 
 
 The default `ko-agent-fs` guard refuses these operations. Report refusals; do not work around them.
 
-- Writing `config`, `hooks/` or rebase state in any repository under `/workspace`.
-- `git init` and `git clone` under `/workspace`. Clone under `~`; the unblocked bare forms
+- Writing `config`, `hooks/` or rebase state in any repository under the project.
+- `git init` and `git clone` under the project. Clone under `~`; the unblocked bare forms
   (`--bare`, `--mirror`) belong there too.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
   clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `~`.
-- `git worktree add` under `/workspace`.
+- `git worktree add` under the project.
 - `git submodule update --init` on a submodule not yet checked out, even a public one.
   Host-initialized submodules work normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
@@ -104,8 +123,8 @@ curl -fsSL URL -o ~/.local/bin/PROGRAM && chmod +x ~/.local/bin/PROGRAM
 Last resort, when only a Debian package will do:
 
 ```sh
-sandbox-apt-get update
-sandbox-apt-get install shellcheck   # shellcheck is then on PATH
+ko-sandbox-apt-get update
+ko-sandbox-apt-get install shellcheck   # shellcheck is then on PATH
 ```
 
 It unpacks rather than installs, so a package expecting users, services or setuid bits will not
@@ -122,7 +141,7 @@ The appended section gives the egress profile and how to consult its rules.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run
-`sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
+`ko-sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
 For TLS errors on allowed hosts, check the trust store (below). Connections without SNI or with
 Encrypted ClientHello, including browser GREASE, are closed. Inspected hosts require HTTP/1.1;
 HTTP/2-only clients fail. Plain `curl` and `git` have none of these incompatibilities.
@@ -134,7 +153,7 @@ Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -co
 
 A program with its own trust store needs the proxy's CA:
 `/etc/ko-agent-sandbox/egress-proxy-ca.crt`, or the whole bundle in `$SSL_CERT_FILE`. A JVM needs
-the proxy as well, and ignores `HTTPS_PROXY`: run `sandbox-jdk-use-proxy <jdk-home>` on one you
+the proxy as well, and ignores `HTTPS_PROXY`: run `ko-sandbox-jdk-use-proxy <jdk-home>` on one you
 installed yourself. The native-image `scala` and `cs` launchers need the proxy and CA options on
 their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
 `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs no additional setup.
@@ -158,13 +177,13 @@ At `same-uid` a runtime runs, within four limits:
 - **Most registries need a rule.** Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and
   `public.ecr.aws` are in the defaults; for any other, ask the user to add
   `allow https://<registry>/ read` to `.ko-agent-sandbox/egress/rule`. If a pull stalls, run
-  `sandbox-egress-check <registry>` and report its output to the user.
+  `ko-sandbox-egress-check <registry>` and report its output to the user.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
-podman is not preinstalled. `sandbox-install-podman` fetches and configures it:
+podman is not preinstalled. `ko-sandbox-install-podman` fetches and configures it:
 
 ```sh
-sandbox-install-podman
+ko-sandbox-install-podman
 export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 podman run --rm docker.io/library/alpine:latest echo hello
 ```

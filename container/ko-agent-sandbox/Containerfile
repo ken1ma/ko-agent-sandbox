@@ -12,8 +12,10 @@ LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 ARG BUNDLE_ID
 LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 
-ARG UV_VERSION=0.12.13
+ARG UV_VERSION=0.12.17
 ARG PYTHON_VERSION=3.14
+ARG WCWIDTH_VERSION=0.8.4
+ARG LYCHEE_VERSION=0.24.2
 ARG NODE_VERSION=24.21.0
 
 # ---------------------------------------------------------------------------
@@ -61,6 +63,21 @@ RUN set -euxo pipefail; \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install "${PYTHON_VERSION}" --default
+
+# ko-sandbox-text-width's import comment explains why this is outside site-packages.
+RUN set -euxo pipefail; \
+    uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"
+
+# ko-sandbox-markdown-link-check runs lychee. The musl asset is static, so it needs nothing from the base image.
+RUN set -euxo pipefail; \
+    LYCHEE_ASSET="lychee-$(uname -m)-unknown-linux-musl.tar.gz"; \
+    LYCHEE_RELEASE="https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -O "${LYCHEE_RELEASE}/${LYCHEE_ASSET}"; \
+    curl -fsSL "${LYCHEE_RELEASE}/${LYCHEE_ASSET}.sha256" | sha256sum -c -; \
+    tar -xzf "$LYCHEE_ASSET" --strip-components=1 -C /usr/local/bin "${LYCHEE_ASSET%.tar.gz}/lychee"; \
+    rm "$LYCHEE_ASSET"; \
+    lychee --version
 
 ENV PATH="/home/nonroot/.local/bin:$PATH"
 
@@ -178,28 +195,28 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 # ~/.kiro, the logins and the rest of its data under
 # ~/.local/share/kiro-cli — so both of its directories are linked.
 # The volume's content starts as the seed below, which
-# sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
+# ko-sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
 # not only into a fresh volume, as Podman's copy-up would, but into one an
 # older image created before an agent was added. A directory the volume has
 # is agent state and is never touched, so a seed change reaches existing
 # volumes only through --reset, which also discards their logins.
 
-ENV SANDBOX_VOLUME_SEED=/etc/ko-agent-sandbox/persistent-volume-seed
+ENV KO_SANDBOX_VOLUME_SEED=/etc/ko-agent-sandbox/persistent-volume-seed
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 /home/nonroot/persistent-volume; \
-    # nonroot-owned: sandbox-entrypoint reads the seed as nonroot, and the copies keep the mode
+    # nonroot-owned: ko-sandbox-entrypoint reads the seed as nonroot, and the copies keep the mode
     install -d -o nonroot -g nonroot -m 0700 \
-        $SANDBOX_VOLUME_SEED/claude \
-        $SANDBOX_VOLUME_SEED/codex \
-        $SANDBOX_VOLUME_SEED/antigravity \
-        $SANDBOX_VOLUME_SEED/kiro \
-        $SANDBOX_VOLUME_SEED/kiro/config \
-        $SANDBOX_VOLUME_SEED/kiro/data \
-        $SANDBOX_VOLUME_SEED/copilot \
-        $SANDBOX_VOLUME_SEED/opencode \
-        $SANDBOX_VOLUME_SEED/opencode/config \
-        $SANDBOX_VOLUME_SEED/opencode/data \
-        $SANDBOX_VOLUME_SEED/opencode/state; \
+        $KO_SANDBOX_VOLUME_SEED/claude \
+        $KO_SANDBOX_VOLUME_SEED/codex \
+        $KO_SANDBOX_VOLUME_SEED/antigravity \
+        $KO_SANDBOX_VOLUME_SEED/kiro \
+        $KO_SANDBOX_VOLUME_SEED/kiro/config \
+        $KO_SANDBOX_VOLUME_SEED/kiro/data \
+        $KO_SANDBOX_VOLUME_SEED/copilot \
+        $KO_SANDBOX_VOLUME_SEED/opencode \
+        $KO_SANDBOX_VOLUME_SEED/opencode/config \
+        $KO_SANDBOX_VOLUME_SEED/opencode/data \
+        $KO_SANDBOX_VOLUME_SEED/opencode/state; \
     # the parents of the links below
     install -d -o nonroot -g nonroot \
         /home/nonroot/.config \
@@ -264,54 +281,47 @@ RUN set -euxo pipefail; \
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
 ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
 
-# Seed the /workspace trust decision — one entry covers every project. These
-# keys are Claude Code internals and may change between releases.
-RUN set -euxo pipefail; \
-    printf '%s\n' \
-        '{' \
-        '  "projects": {' \
-        '    "/workspace": {' \
-        '      "hasTrustDialogAccepted": true,' \
-        '      "hasCompletedProjectOnboarding": true' \
-        '    }' \
-        '  }' \
-        '}' \
-        > $SANDBOX_VOLUME_SEED/claude/.claude.json
-
 # Skip permission prompts (README.md explains why).
 #
-# Managed settings is the highest-precedence scope a project can reach, in
-# the read-only image: a mounted project cannot weaken it (the trust dialog
-# above is pre-accepted, so project settings take effect unreviewed),
-# removing the volume cannot drop it, and it does not depend on launcher
-# flags. One source outranks it: an organization's server-managed settings,
-# fetched when the session signs in to Anthropic directly. Claude Code
-# reads a single admin source, so under one this file is ignored entirely —
-# prompts, hooks and the sandbox alike — and `/status` names `(remote)` as
-# the source in force — and can require the sandbox (the apt step above).
+# Managed settings in the read-only image take precedence over user and
+# project settings, survive removal of the persistent volume, and apply
+# without launcher flags. An organization's remote managed settings can
+# supersede the image's permission, hook and sandbox settings, including
+# requiring the sandbox installed in the apt step above. By default Claude
+# Code selects one managed source for most keys; administrators can enable
+# merging across sources.
+# `/status` identifies the active sources. Precedence and exceptions:
+# https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources
 #
 # `bypassPermissions` refuses to start as root; USER below is nonroot.
 # `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time
-# dialog. None of this touches prompt injection (SECURITY.md); consider
-# `"defaultMode": "auto"` where that matters.
+# dialog. These settings do not prevent prompt injection (SECURITY.md).
+# Consider `"defaultMode": "auto"` to screen tool calls induced by prompt
+# injection.
 #
-# `disableAllHooks` is about persistence: a project's hooks would run
-# unreviewed and could write ~/.claude/settings.json — startup input for
-# every later session of that project. This narrows the class, not closes
-# it: the volume stays trusted input (SECURITY.md), and per-project volumes
-# bound whatever survives to the one project.
+# Hook commands run without the model choosing them as tool calls, so
+# restoring permission prompts or enabling auto mode does not review those
+# commands. `allowManagedHooksOnly` blocks this automatic execution path
+# from project settings and writable user settings in the persistent volume.
+# ko-sandbox-entrypoint pre-accepts workspace trust, so the trust dialog
+# reviews neither source. Sandbox commands can still modify persistent
+# state (SECURITY.md, "What the persistent volume holds").
+# Managed hooks, SDK hooks and hooks from plugins force-enabled by managed
+# settings remain allowed:
+# https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
+#
+# Host verification with Claude Code 2.1.274 shows that a project's
+# SessionStart hook is blocked under this image and runs under a variant
+# image without the key. The comparison uses a variant image because /etc
+# is read-only in a session. A project cannot instead redirect the managed
+# settings through its settings env: that version's
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH is a stub that returns nothing.
 #
 # `sandbox` off: this container is the boundary, and Claude Code's own
 # bubblewrap sandbox would be a second one inside it, which a project's
 # `sandbox.failIfUnavailable` could otherwise demand. Off also keeps
 # anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
 # distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
-#
-# `disableAllHooks`'s own effect is unverified from inside: the managed file
-# cannot be displaced there (a writable /etc is needed, and
-# CLAUDE_CODE_MANAGED_SETTINGS_PATH does not displace it either), which is
-# itself evidence for the premise above. Verifying it needs a host-side run
-# where the managed file is yours to vary.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/claude-code; \
     printf '%s\n' \
@@ -320,7 +330,7 @@ RUN set -euxo pipefail; \
         '    "defaultMode": "bypassPermissions"' \
         '  },' \
         '  "skipDangerousModePermissionPrompt": true,' \
-        '  "disableAllHooks": true,' \
+        '  "allowManagedHooksOnly": true,' \
         '  "sandbox": {' \
         '    "enabled": false,' \
         '    "failIfUnavailable": false,' \
@@ -328,6 +338,13 @@ RUN set -euxo pipefail; \
         '  }' \
         '}' \
         > /etc/claude-code/managed-settings.json
+
+# allowManagedHooksOnly also blocks user and project status-line commands.
+# The managed command accepts a data-only project template so display
+# customization does not require a project-supplied command.
+# Usage: doc/agent-settings.md, "Claude Code status line".
+COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
+COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +368,7 @@ RUN set -euxo pipefail; \
 ENV PATH="/opt/codex/bin:$PATH"
 
 # What codex/bash-env restores (codex/config.toml has why).
-ENV SANDBOX_TOOLCHAIN_PATH="$PATH"
+ENV KO_SANDBOX_TOOLCHAIN_PATH="$PATH"
 
 # /etc/codex/config.toml is the documented system layer, lowest precedence:
 # in the read-only image like managed settings, but supplying *defaults* the
@@ -365,7 +382,8 @@ ENV SANDBOX_TOOLCHAIN_PATH="$PATH"
 # podman's masked /proc entries are in place, and the bubblewrap-style
 # sandbox needs one for its pid namespace.
 #
-# trust_level: the Codex counterpart of the trust seeding above, same warning.
+# The project's trust_level is ko-sandbox-entrypoint's, in the user layer
+# ~/.codex/config.toml: it is per project, and this layer is the image's.
 COPY --chmod=0644 codex/config.toml /etc/codex/config.toml
 COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 
@@ -397,19 +415,16 @@ RUN set -euxo pipefail; \
 
 # All agy state is under ~/.gemini, a symlink into the persistent volume.
 # toolPermission=always-proceed auto-approves tool execution (the counterpart of
-# Claude's bypassPermissions and Codex's approval_policy="never"), and
-# /workspace is pre-trusted so agy prompts neither on startup.
+# Claude's bypassPermissions and Codex's approval_policy="never"); the project's
+# trust entry is ko-sandbox-entrypoint's, per launch.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 \
-        $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
+        $KO_SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
     printf '%s\n' \
         '{' \
-        '  "toolPermission": "always-proceed",' \
-        '  "trustedWorkspaces": [' \
-        '    "/workspace"' \
-        '  ]' \
+        '  "toolPermission": "always-proceed"' \
         '}' \
-        > $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli/settings.json
+        > $KO_SANDBOX_VOLUME_SEED/antigravity/antigravity-cli/settings.json
 
 
 # ---------------------------------------------------------------------------
@@ -447,14 +462,14 @@ RUN set -euxo pipefail; \
 # arrive by rebuilding like the others.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 \
-        $SANDBOX_VOLUME_SEED/kiro/config/settings \
-        $SANDBOX_VOLUME_SEED/kiro/config/agents; \
+        $KO_SANDBOX_VOLUME_SEED/kiro/config/settings \
+        $KO_SANDBOX_VOLUME_SEED/kiro/config/agents; \
     printf '%s\n' \
         '{' \
         '  "app.disableAutoupdates": true,' \
         '  "chat.defaultAgent": "ko-agent-sandbox"' \
         '}' \
-        > $SANDBOX_VOLUME_SEED/kiro/config/settings/cli.json; \
+        > $KO_SANDBOX_VOLUME_SEED/kiro/config/settings/cli.json; \
     printf '%s\n' \
         '{' \
         '  "description": "Every tool trusted: the container is the boundary",' \
@@ -466,7 +481,7 @@ RUN set -euxo pipefail; \
         '    "@*/*"' \
         '  ]' \
         '}' \
-        > $SANDBOX_VOLUME_SEED/kiro/config/agents/ko-agent-sandbox.json
+        > $KO_SANDBOX_VOLUME_SEED/kiro/config/agents/ko-agent-sandbox.json
 
 
 # ---------------------------------------------------------------------------
@@ -502,19 +517,9 @@ ENV COPILOT_AUTO_UPDATE=false
 # Tool prompts off, the Codex counterpart above. Copilot has no system config
 # layer, so the default is an environment variable a launch can override
 # (COPILOT_ALLOW_ALL=false). It covers tools only; --yolo adds paths outside
-# /workspace and URLs, whose prompts the user keeps otherwise.
+# the project and URLs, whose prompts the user keeps otherwise. The project's
+# trust entry in ~/.copilot/config.json is ko-sandbox-entrypoint's, per launch.
 ENV COPILOT_ALLOW_ALL=true
-
-# The trust seeding for copilot: ~/.copilot/config.json is user state that
-# copilot rewrites, in the persistent volume like Claude's .claude.json.
-RUN set -euxo pipefail; \
-    printf '%s\n' \
-        '{' \
-        '  "trustedFolders": [' \
-        '    "/workspace"' \
-        '  ]' \
-        '}' \
-        > $SANDBOX_VOLUME_SEED/copilot/config.json
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +559,7 @@ RUN set -euxo pipefail; \
 # user's and the project's files, so neither can turn these back.
 # permission allow: the counterpart of Claude's bypassPermissions above.
 # OPENCODE_PERMISSION is read after this file, so a launch that forwards it
-# puts the prompts back (README, "Restoring permission prompts").
+# puts the prompts back (doc/agent-settings.md, "Restoring permission prompts").
 # share disabled: /share would post the session to opncd.ai, or to an
 # enterprise's own URL, either of which a project rule line could allow.
 # autoupdate false: the binary is the image's, and the check alone reads the
@@ -574,13 +579,11 @@ RUN set -euxo pipefail; \
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
-# AGENTS-SANDBOX.md tells the running agent what this container is;
-# AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
-# every link below. The launcher mounts its own assembly over AGENTS.md — the
-# session's permissions and ruleset lookup instructions appended, and a project's
-# .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
-# why the parts ship beside the whole.
-# Without them an agent reads `Read-only file system` as breakage, or writes
+# AGENTS-SANDBOX.md tells the running agent what this container is. It ships
+# as AGENTS.md, the target of every link below. The launcher mounts a copy over
+# AGENTS.md with the session's permissions and ruleset lookup instructions
+# appended.
+# Without it an agent reads `Read-only file system` as breakage, or writes
 # deliverables somewhere discarded on exit.
 #
 #   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
@@ -599,40 +602,50 @@ RUN set -euxo pipefail; \
 #
 # Each script's own header says what it is for; they ship because an agent would otherwise retype
 # them from the instructions.
+#
+# The image's own programs are named ko-sandbox-*, and the variables it sets for them KO_SANDBOX_*:
+# the agent CLIs installed above share /usr/local/bin and the environment, where a bare sandbox-*
+# or SANDBOX_* name does not say whose it is. KO_AGENT_SANDBOX_* are the launcher's variables
+# (AgentSandboxLauncher.LauncherVariablePrefix).
 COPY --chmod=0755 \
-    sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman sandbox-run-on-host sandbox-egress-check \
-    ko-agent-clipboard \
-    sandbox-entrypoint \
+    ko-sandbox-jdk-use-proxy ko-sandbox-apt-get ko-sandbox-install-podman ko-sandbox-run-on-host \
+    ko-sandbox-egress-check ko-sandbox-clipboard ko-sandbox-text-width ko-sandbox-markdown-link-check \
+    ko-sandbox-entrypoint \
     /usr/local/bin/
-RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
+RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipboard /usr/local/bin/$name; done
 
-COPY AGENTS-SANDBOX.md AGENTS-CUSTOM.md /etc/ko-agent-sandbox/
+# sbt 2 reads its global settings from ~/.config/sbt/2, not ~/.sbt/2, unless SBT_CONFIG_HOME or
+# XDG_CONFIG_HOME names another place; the image sets neither. sbt 1 has no rootOutputDirectory,
+# so there is no such file for ~/.sbt/1.0.
+# nonroot-owned: sbt keeps its staging and zinc directories beside the settings.
+RUN install -d -o nonroot -g nonroot /home/nonroot/.config/sbt /home/nonroot/.config/sbt/2
+COPY --chown=nonroot:nonroot --chmod=0644 config/sbt/2/ /home/nonroot/.config/sbt/2/
+
+# The image has no Maven, so there is no ${maven.home}/conf to hold this: a project's `./mvnw`
+# brings its own, and the user settings are the one file every Maven reads.
+# nonroot-owned: Maven keeps its local repository beside it.
+RUN install -d -o nonroot -g nonroot /home/nonroot/.m2
+COPY --chown=nonroot:nonroot --chmod=0644 m2/settings.xml /home/nonroot/.m2/settings.xml
+
+COPY AGENTS-SANDBOX.md /etc/ko-agent-sandbox/AGENTS.md
 
 RUN set -euxo pipefail; \
-    { cat /etc/ko-agent-sandbox/AGENTS-SANDBOX.md; echo; \
-      cat /etc/ko-agent-sandbox/AGENTS-CUSTOM.md; } \
-        > /etc/ko-agent-sandbox/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
-    install -d -o nonroot -g nonroot -m 0700 $SANDBOX_VOLUME_SEED/kiro/config/steering; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/kiro/config/steering/AGENTS.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md; \
-    ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/opencode/config/AGENTS.md
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $KO_SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $KO_SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \
+    install -d -o nonroot -g nonroot -m 0700 $KO_SANDBOX_VOLUME_SEED/kiro/config/steering; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $KO_SANDBOX_VOLUME_SEED/kiro/config/steering/AGENTS.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $KO_SANDBOX_VOLUME_SEED/copilot/copilot-instructions.md; \
+    ln -s /etc/ko-agent-sandbox/AGENTS.md $KO_SANDBOX_VOLUME_SEED/opencode/config/AGENTS.md
 
 
 # ---------------------------------------------------------------------------
 # Unprivileged runtime user
 # ---------------------------------------------------------------------------
 
-RUN set -euxo pipefail; \
-    install -d \
-      -o nonroot \
-      -g nonroot \
-      /workspace
-WORKDIR /workspace
-
+# No project directory and no WORKDIR: the launcher mounts the project at its own path, which
+# podman creates in the read-only root at create, and starts the session there.
 USER nonroot
 
-ENTRYPOINT ["sandbox-entrypoint"]
+ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]

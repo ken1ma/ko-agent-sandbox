@@ -10,7 +10,7 @@ copy-on-write view:
 
 ```text
 live host project directory, read-only ---+
-                                  +--- staged /workspace
+                                  +--- staged project mount
 persistent writable upper layers-+
 ```
 
@@ -61,8 +61,8 @@ one settles which part of the staged contract.
 | upper and lower names differing only by case       | in situ, APFS and NTFS      |
 | upper durability and reflink behavior             | in situ, each Linux backing |
 
-A successful `--self-test` stamps the filter's source id and the machine it proved — podman version,
-machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
+A successful `--self-test` stamps the filter's source id and the machine it proved — podman
+version, machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
 non-matching stamp, which is what makes "failure aborts staged launch" above a mechanism rather than
 an intention, and what turns "re-run after a podman or macOS upgrade" from a row someone remembers
 into a refused launch until `--self-test` runs again. The stamp records that a machine was proved
@@ -237,17 +237,11 @@ its private Git metadata cannot be applied.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-5. Make `reject` the default only after step 4. Remove the writable mode without the filter and
-   make any present `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration
-   message: `fuse` needs no replacement — the filter is `--write=live`'s only guard then — and the
-   weaker `none` mode has no equivalent. Remove that mode's launcher branch, Git
-   mount construction, `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned
-   empty mount sources only where another mount still needs one; and update the documents that
-   describe that mode and the writable default — README, SECURITY.md ("Silent changes to what you
-   own", "The read-only `.git` mounts under `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same
-   change. Persistent stages narrow the meaning of reset: `--reset` and `--reset-all` no longer mean
-   the project was never opened; launcher comments, help, README and SECURITY must point to explicit
-   stage discard. Remove completed TODO rows rather than retaining a change history.
+5. Make `reject` the default only after step 4, and update the documents that describe the
+   writable default — README, SECURITY.md, `doc/design.md` — in the same change. Persistent stages
+   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
+   opened; launcher comments, help, README and SECURITY must point to explicit stage discard.
+   Remove completed TODO rows rather than retaining a change history.
 
 ## Verification
 

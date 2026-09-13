@@ -41,8 +41,9 @@ Use names to say what methods, parameters and values are before adding comments.
 comments that only do this with better names.
 
 Use concrete subject–verb–object wording. Use abstractions or metaphors ("invariant", "venue",
-"prose") only when concrete wording loses meaning or precision; name what they stand for in the
-same sentence. Read each sentence alone: compared nouns must be the same kind, and `only` or
+"prose", the verb "mint") only when concrete wording loses meaning or precision; name what they
+stand for in the same sentence. For what a tool or service does, use the verb its own
+documentation uses. Read each sentence alone: compared nouns must be the same kind, and `only` or
 `every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
 
 Record a standing practice or fact once, where it binds — the document that made the decision or
@@ -63,7 +64,7 @@ shorter instruction. Test each sentence by what the reader does differently in t
 Put supporting details in subitems when they interrupt an action or choice; keep conditions inline.
 For a reader seeking understanding, explain mechanisms; test what the reader understands
 differently. The reader's state determines the mode, not the filename; a document can hold both.
-Errors, refusals and prompts say what to do next.
+Errors, refusals and prompts say what to do next when naming what failed does not.
 
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present

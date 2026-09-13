@@ -10,8 +10,8 @@
 # over — no route to the proxy, and no trust for the certificate an inspected host presents — with
 # nothing to say why.
 #
-#   sandbox-jdk-use-proxy                  # $JAVA_HOME
-#   sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
+#   ko-sandbox-jdk-use-proxy                  # $JAVA_HOME
+#   ko-sandbox-jdk-use-proxy /path/to/jdk     # some other JDK
 #
 # Not for a GraalVM native image (cs, scala): it has no conf/ to edit and takes the same facts
 # as -D options — KO_AGENT_SANDBOX_JAVA_OPTS, in the agent instructions.

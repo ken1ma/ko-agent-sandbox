@@ -3,9 +3,9 @@
 ## Outcome
 
 A secret the session needs is never inside the sandbox. The sandbox holds a placeholder of the
-same format; the proxy holds the value and substitutes it into one header of requests to the one
-inspected host the secret is bound to. Everywhere else the placeholder goes out as it is and
-authenticates nothing.
+same format; the proxy holds the value and substitutes it into one header or one query parameter
+of requests to the one inspected host the secret is bound to. Everywhere else the placeholder goes
+out as it is and authenticates nothing.
 
 One secret qualifies here: a value forwarded with `--env`, bound to a host —
 `--env=GH_TOKEN@api.github.com`. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web
@@ -29,8 +29,8 @@ web (real GitHub token in a proxy outside the VM), Codex CLI (`credential_broker
 same prefix and length in the child's environment, swapped only for the bound GitHub hosts),
 Docker Sandboxes (`proxy-managed` sentinel, value in the OS keychain), greywall
 (`greyproxy:credential:v1:…`, headers and query only), clampdown (auth-proxy container, `sk-proxy`
-inside). This plan keeps the recurring rules: sentinel inside, one host per secret,
-header-only rewrite.
+inside). This plan keeps the recurring rules: sentinel inside, one host per secret, a rewrite in
+a declared header or one named parameter, never a body or a response.
 
 What brokering does not change: the bound host still receives authenticated requests, within the
 method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
@@ -46,24 +46,30 @@ socket is the route of docker/sbx-releases #121.
 ## Guarantees
 
 1. The value reaches the proxy container only, never the sandbox's environment, the persistent
-   volume, `/workspace`, the launch banner, or the audit log.
+   volume, the project, the launch banner, or the audit log.
 1. An explicit `--env` binding names exactly one host, which must be inspected in the
    resolved profile. A `tunnel` host is opaque, where no substitution can
    happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
    reason. A service instance (`plan-provider-credential-proxy.md`) spends on its finite
    target list instead, under the same rewrite.
-1. Substitution happens in a declared header only — `Authorization`, or the header a binding
-   names — and only when the whole credential token equals the placeholder. Never in the
-   request target, the query, a body, or a response. A placeholder that appears anywhere else is
-   forwarded verbatim, which is harmless: it authenticates nothing.
-1. A value and a header name reach the request bytes only through one grammar, checked where
-   each is produced and again where the proxy loads the file. A value is 1–4096 bytes of
-   visible ASCII (`0x21`–`0x7E`): no space, tab, control byte, CR, LF, or byte above `0x7E`,
-   so it cannot end a field, start another, or alter framing. A header name is one of a closed
-   set — `Authorization`, `x-api-key`, `PRIVATE-TOKEN` — never a free token: `Host`,
+1. Substitution happens in one declared place only — `Authorization`, the header a binding
+   names, or the query parameter a binding names — and only when the whole credential token
+   equals the placeholder. Never in the request path, another header or parameter, a body, or a
+   response. A placeholder that appears anywhere else is forwarded verbatim, which is harmless:
+   it authenticates nothing.
+1. A value, a header name and a parameter name reach the request bytes only through one grammar,
+   checked where each is produced and again where the proxy loads the file. A value is 1–4096
+   bytes of visible ASCII (`0x21`–`0x7E`): no space, tab, control byte, CR, LF, or byte above
+   `0x7E`, so it cannot end a field, start another, or alter framing. A header name is one of a
+   closed set — `Authorization`, `x-api-key`, `PRIVATE-TOKEN` — never a free token: `Host`,
    `Content-Length`, `Transfer-Encoding`, `Connection` and their kin route or frame, and a
-   closed set is the one form that needs no list of them. The rewrite replaces the token inside a
-   header the client sent; it never adds a header.
+   closed set is the one form that needs no list of them. A parameter name is free: a parameter
+   frames nothing, and the one the proxy reads for policy — `service` in Git discovery
+   (`GitHelper`) — is read after the rewrite, since authorization runs on the rewritten head
+   ("Substitution"), so no binding passes a check with the placeholder and reaches the origin
+   with the value. Into a query the value is written percent-encoded (RFC 3986), since
+   the grammar admits `&`, `=`, `#` and `%`, which raw would split or re-parse the query. The
+   rewrite replaces the token inside a header or parameter the client sent; it never adds one.
 1. The placeholder is unpredictable to the project: fresh random bytes per launch, in the format
    of the value it stands for (prefix and length preserved for a recognizable prefix such as
    `ghp_`, `gho_`, `github_pat_`; otherwise the same length of base64url). Programs that validate
@@ -81,8 +87,15 @@ socket is the route of docker/sbx-releases #121.
 --env=NAME=VALUE@HOST      the same with an explicit value
 --env=NAME@HOST:HEADER     substitute into HEADER instead of Authorization
                            (x-api-key, PRIVATE-TOKEN)
---env=NAME@HOST/PREFIX/    substitute only for requests whose path is under /PREFIX/
+--env=NAME@HOST?PARAM      substitute where the whole value of query parameter PARAM equals the
+                           placeholder, instead of a header (an Azure SAS `sig`, a Google API
+                           `key`)
+--env=NAME@HOST/PREFIX/    substitute only for requests whose path is under /PREFIX/; combines
+                           with the two above as NAME@HOST/PREFIX/:HEADER or /PREFIX/?PARAM
 ```
+
+The value of `NAME` is the parameter's value alone. An Azure SAS token is composed around it
+inside the sandbox: `"sv=…&sp=rl&sig=$AZURE_SAS_SIG"`.
 
 The prefix form takes the ruleset's own matcher: the canonical-form rule for `PREFIX` and the
 literal comparison are the proxy's rule-path ones (doc/egress-proxy.md, "The rule file";
@@ -104,6 +117,9 @@ Refusals, each fatal at launch and naming the fix:
 - the value outside the grammar (guarantee 4): "value of `NAME` contains a byte a header cannot
   carry" — the byte's offset, never the value; an empty value is "`NAME` is empty".
 - `HEADER` outside the set: "header must be one of `Authorization`, `x-api-key`, `PRIVATE-TOKEN`".
+- `PARAM` empty or containing `&`, `=`, `#` or a byte outside the value grammar: "parameter name
+  cannot be carried in a query".
+- both `:HEADER` and `?PARAM`: refused; one binding, one place.
 
 ## Custody
 
@@ -128,7 +144,8 @@ reused: the next run has its own directory and placeholder.
 
 ## Substitution
 
-In the inspected relay, after the request head is parsed and before `toOriginBytes`:
+In the inspected relay, after the request head is parsed and before `authorizeInspectedRequest`,
+so that authorization and the origin see the same head:
 
 1. Take the header the binding names. `Authorization` is parsed by scheme:
     - `Bearer <token>`, `token <token>`: the whole `<token>` must equal a placeholder.
@@ -138,20 +155,60 @@ In the inspected relay, after the request head is parsed and before `toOriginByt
     - any other scheme, or a token that is not a placeholder: forwarded unchanged.
 1. Another header named by a binding (`x-api-key`, `PRIVATE-TOKEN`): the whole value must equal
    a placeholder.
-1. Only bindings whose host is the request's authorized host are consulted. A placeholder bound
-   to `api.github.com` inside a request to `gitlab.com` stays a placeholder.
+1. A query parameter named by a binding: it must occur once, and its percent-decoded value must
+   equal a placeholder; the value is written percent-encoded. A parameter that occurs twice is
+   forwarded unchanged, as is a placeholder in the path, a header or a parameter no binding
+   names.
+1. Only bindings whose host is the tunnel's `CONNECT` host are consulted. A placeholder bound to
+   `api.github.com` inside a request to `gitlab.com` stays a placeholder.
 1. The substituted head is what goes to the origin; the client never sees the value in any response.
    Response bodies are not rewritten — a server echoing a credential is out of scope, as it is
    without brokering.
 
-The audit line gains one field, `inject=NAME`, on a request whose header was substituted; absent
-otherwise. The value and the placeholder never appear in the log.
+The `allow` line, printed once the origin leg connects, gains one field, `inject=NAME`, when the
+head it forwards had a header or parameter substituted; absent otherwise. A request denied after
+substitution spent nothing and its `deny` line carries no `inject`. The value and the placeholder
+never appear in the log, on either line: the target is recorded whole, query included
+(SECURITY.md, "The audit line grammar"), so a bound parameter's value prints as the binding's
+name — `?sig=AZURE_SAS_SIG`.
 
 A credential sent any other way — `https://user:token@host/` in a URL (git puts that into
-`Authorization: Basic`, so the URL form is rewritten too; curl likewise), a query parameter, a
-multipart field — reaches the origin as the placeholder and fails with the origin's 401. The
-proxy cannot tell that case from a wrong token, so the launch banner says it once: "brokered
-values are substituted in `Authorization` only".
+`Authorization: Basic`, so the URL form is rewritten too; curl likewise), a parameter no binding
+names, a multipart field — reaches the origin as the placeholder and fails with the origin's 401.
+The proxy cannot tell that case from a wrong token, so the launch banner says it once: "brokered
+values are substituted in the bound header or parameter only".
+
+The header form reaches more than forge tokens. Google Cloud and Azure access tokens are bearer
+tokens in `Authorization`, so a binding covers them unchanged once a project inspects the API
+host — with the `method=POST` grants cloud APIs need and the cloud's CLI or SDK trusting the
+launch CA. A Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`) is a bearer token too, at a host no
+default names ("Claude Code and Codex logins: excluded" has why it stays a tunnel).
+
+## Credentials in the query
+
+Two kinds of credential travel in the query, and the rewrite holds one:
+
+- A whole token in one parameter: an Azure storage SAS token's `sig` — an HMAC over the SAS's own
+  fields (permissions, expiry, resource), not over the request, so whoever holds it reuses it —
+  or a Google API key in `key`. These are bearer credentials in the query, and the `?PARAM`
+  binding is for them.
+- A request-bound signature: an S3 presigned URL's `X-Amz-Signature`, a Cloud Storage V4 signed
+  URL's `X-Goog-Signature`. The signature covers that one request, so the URL is itself a
+  one-object, time-bounded credential. Consuming one the sandbox received needs nothing here.
+  Generating one computes the signature locally from the signing secret, and no request passes
+  the proxy while it happens, so nothing here can hold the secret. Cloud Storage can sign through
+  the IAM Credentials `signBlob` API instead: the request carries a bearer token the header form
+  covers once the host is inspected, and the response is the signature, so the key stays with
+  Google. Azure's `getUserDelegationKey` runs under a bearer token too, but its response is the
+  delegation key itself, forwarded unchanged (guarantee 3), so the sandbox then holds a signing
+  credential for the account until the expiry the request asked for, at most seven days
+  (https://learn.microsoft.com/en-us/rest/api/storageservices/get-user-delegation-key); a
+  session that must not hold one obtains the key and signs on the host. AWS has no signing API,
+  so a presigned URL is the SigV4 case ("Deliberate exclusions").
+
+This is not the query rewriting "Deliberate exclusions" refuses. That is rewriting every
+occurrence of a token, the form that broke applications' own tokens (docker/sbx-releases #8); one
+named parameter under whole-value equality is greywall's headers-and-query rule.
 
 ## Copilot
 
@@ -176,8 +233,9 @@ Not brokered, for reasons that hold independently of effort:
   a per-release contract with the CLI.
 - `--env=ANTHROPIC_API_KEY@api.anthropic.com` is the one Claude case the mechanism would fit —
   API-key mode, a fixed header, no lifecycle — and it is refused by guarantee 2 because the host
-  is a tunnel. If the model endpoints are ever inspected for another reason, the binding
-  works unchanged; nothing in this plan is built for it.
+  is a tunnel. `AWS_BEARER_TOKEN_BEDROCK` at a project's `bedrock-runtime.<region>.amazonaws.com`
+  line is the same case: a model endpoint, so a tunnel. If the model endpoints are ever inspected
+  for another reason, the binding works unchanged; nothing in this plan is built for it.
 
 ## Security model
 
@@ -190,7 +248,8 @@ Additions to SECURITY.md, each at its binding site:
   a holder of what the ruleset allows spending. Compromising it compromises both ruleset and
   credential — one boundary. What a lost reaper leaves, and that `--reset` is what removes it
   ("Custody").
-- "The audit line grammar": the `inject` field.
+- "The audit line grammar": the `inject` field, and the one exception to "query string
+  included": a bound parameter's value prints as the binding's name.
 
 Gaps that stay, stated: the credential is still spent by the agent on the bound host within
 the allowed methods; the placeholder tells a hostile project that a `GH_TOKEN` exists and
@@ -200,35 +259,39 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 ### `src/main/scala/AgentSandboxLauncher.scala`
 
-- `EnvForward` gains `binding: Option[(host, header)]`; `forwardedEnvironment` returns the
+- `EnvForward` gains `binding: Option[Binding]` — the host, the place (a header from the closed
+  set, or a query parameter name) and the optional prefix; `forwardedEnvironment` returns the
   sandbox `--env` list with placeholders and, separately, the proxy's secret-file contents.
 - Binding validation against the resolved profile, reusing the inspected hosts read from the
   allow lines of
   `--print-ruleset` (what the leaf certificate's names are derived from, so no second host list).
-- `CredentialGrammar`: the value and header-name checks of guarantee 4, one source file under
-  `container/ko-agent-egress-proxy/app/src/shared/scala/`, which that build compiles and the
-  launcher's `build.sbt` adds to `Compile / unmanagedSourceDirectories`
-  — one file, two jars, no copy to drift. Not the proxy dry run, the launcher's authority for
-  rule arithmetic: the gate must fire in `plan-provider-credential-proxy.md`'s management
-  actions before any run exists, and the dry run mounts nothing by design — a secret file in it
-  would be one more custody site. The executable-source result there passes through the same
-  object.
+- `CredentialGrammar`: the value, header-name and parameter-name checks of guarantee 4, one
+  object in the proxy's main sources, which `build.sbt` compiles into the launcher jar for
+  `--serve-proxy-on-host`, so both sides run the same check. Not the proxy dry run, the
+  launcher's authority for rule arithmetic: the gate must fire in
+  `plan-provider-credential-proxy.md`'s management actions before any run exists, and the dry run
+  mounts nothing by design — a secret file in it would be one more custody site. The
+  executable-source result there passes through the same object.
 - Placeholder generation: `SecureRandom`, format rules from guarantee 5.
 - Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
   into the proxy, removed in `SandboxLifecycle` with the leaf.
-- Banner and `--egress-effective`: `NAME → HOST (Authorization)` per binding.
+- Banner and `--egress-effective`: `NAME → HOST (Authorization)` or `NAME → HOST (?sig)` per
+  binding.
 
 ### `container/ko-agent-egress-proxy/app`
 
 - Start-up: load bindings, re-check each through `CredentialGrammar`, check hosts against the
   resolved inspected set both ways, refuse otherwise with the mismatch named.
 - `HTTPHelper`: `HttpRequestHead.withCredential(bindings)` — the scheme-aware rewrite of one
-  header; pure, so it is unit-testable on heads alone.
-- `AgentEgressProxy`: apply it on the inspected path before forwarding; emit `inject=NAME`.
+  header, or the percent-aware rewrite of one query parameter; pure, so it is unit-testable on
+  heads alone. The same object yields the target as the audit line prints it.
+- `AgentEgressProxy`: apply it on the inspected path before forwarding; emit `inject=NAME` and
+  the printed target.
 
 ### Tests
 
-- Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`), every refusal with its message;
+- Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`, `?PARAM`, each with `/PREFIX/`),
+  every refusal with its message;
   `CredentialGrammar` over the population of bytes a header cannot carry — CR, LF, NUL, tab,
   space, `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused from the
   environment and from `=VALUE` alike, and each header name outside the set, `Host` and
@@ -237,12 +300,17 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   `--env` argument the sandbox receives (`AgentSandboxLauncherTest` already checks the forwarded
   list — extend the same test).
 - Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
-  header, wrong host, placeholder in URL and query left alone, non-placeholder token untouched
-  under every scheme, `Bearer` or a `Basic` password — an application's own credential for the
-  bound host (docker/sbx-releases #8), two placeholders in one request (one bound to another
-  host); a secret file with a value or header outside the grammar refuses start-up;
-  `HostileInputTest` gains the substituted head re-parsed as exactly one request with the same
-  header count.
+  header, wrong host, placeholder in the path or an unbound parameter left alone, non-placeholder
+  token untouched under every scheme, `Bearer` or a `Basic` password — an application's own
+  credential for the bound host (docker/sbx-releases #8), two placeholders in one request (one
+  bound to another host); a bound parameter substituted and percent-encoded, a value containing
+  `&` and `%` decoding intact at the origin, the parameter twice untouched, the printed target
+  naming the binding; a `service` binding on a Git host — the value `git-receive-pack` refused at
+  ref discovery, its `deny` line printing `?service=NAME` and no `inject`; `git-upload-pack`
+  allowed as a fetch, its `allow` line with `inject` — so authorization reads the rewritten head
+  in both Git discovery cases; a secret file with a value, header or parameter outside the grammar
+  refuses start-up; `HostileInputTest` gains the substituted head re-parsed as exactly one request
+  with the same header count and the same parameter count.
 - Proxy end-to-end (`AgentEgressProxyTest` style, local TLS origin): a `GET` with the
   placeholder arrives at the origin with the value; the same to an unbound inspected host
   arrives with the placeholder; audit line shows `inject` exactly once; an application's own
@@ -253,15 +321,15 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   owner-only under its own run directory and gone after `--reset`; never under another run's
   directory.
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
-  the persistent volume and `/workspace` contain neither the value nor the placeholder-to-value
+  the persistent volume and the project contain neither the value nor the placeholder-to-value
   mapping — the openai/codex #30971 check, population-level over every agent's state directory.
 
 ### Documentation
 
 - README `--env` entry.
 - SECURITY.md sites above.
-- Agent instructions: one line — "a brokered credential works only as `Authorization` on its
-  host; a 401 elsewhere is the placeholder, not a wrong token".
+- Agent instructions: one line — "a brokered credential works only in its bound header or
+  parameter on its host; a 401 elsewhere is the placeholder, not a wrong token".
 - The proxy's 403/401-adjacent guidance is unchanged: the origin answers 401, the proxy does
   not intervene.
 
@@ -276,6 +344,10 @@ where it is honoured (harmless); an origin echoing a credential in a response is
       succeeds, and returning the `api.github.com` one fails with the origin's 401; `git push`
       is still refused at ref discovery. One credential at both hosts under one name is
       `plan-provider-credential-proxy.md`'s first use case.
+- [ ] `--env=SAS_SIG@<account>.blob.core.windows.net?sig`, or any `?PARAM` binding, against the
+      end-to-end test's local TLS origin, there being no real host to exercise yet: the origin
+      receives the value, percent-encoded, in that parameter alone; `--proxy-log` prints
+      `?sig=SAS_SIG` and `inject=SAS_SIG`.
 - [ ] Every refusal in "Command-line contract" fires with its message.
 - [ ] `--proxy-log` shows `inject=GH_TOKEN` and `inject=GIT_TOKEN` on exactly the authenticated
       requests, each at its own host.
@@ -286,15 +358,18 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 - Repository scoping (Claude Code cloud's "attached repositories" 403): needs path knowledge
   per forge API; a separate increment on top of this one.
-- Response rewriting, body rewriting, query rewriting: the recurring failure of broader
-  rewriters is breaking applications with tokens of their own (docker/sbx-releases #8);
-  header-only is the durable form.
+- Response rewriting, body rewriting, and rewriting every occurrence of a token in a query: the
+  recurring failure of broader rewriters is breaking applications with tokens of their own
+  (docker/sbx-releases #8); a declared header or one named parameter is the durable form.
 - Brokering for tunnel hosts, hence the Claude/Codex logins ("Claude Code and Codex
   logins: excluded").
 - AWS SigV4 re-signing (sandbox-runtime does it): no AWS host is in the catalog; a signed
-  request is a body-dependent signature, which is body inspection by another name. What a
-  Pulumi session forwards instead, and what bounds it, is the comment in
-  `doc/egress-rule-example/pulumi-aws/rule`.
+  request is a body-dependent signature, which is body inspection by another name. Every AWS
+  login — `aws login`, `aws sso login`, a static key — ends in an access key the client signs
+  with and never sends, so no header carries a placeholder to replace: with the hosts as the
+  Pulumi example's `tunnel` lines, guarantee 2 refuses the binding at launch, and with them
+  inspected the origin answers `SignatureDoesNotMatch`, not a 401. What a session forwards
+  instead, and what bounds it, is `doc/cloud-credentials.md`.
 - A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password):
   `--env=NAME` already reads the host environment; a resolver is a shell pipeline in front of
   it.

@@ -47,7 +47,7 @@ FUSE addresses objects by inode number and `(parent_ino, name)`, never by path, 
 unavoidable. The table is the minimum that reconstructs a position:
 
 ```
-Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
+Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, dev: u64, ino_id: u64 }
 ```
 
 - **Resolution.** To act on an inode, walk its parent chain to the root collecting names (depth is
@@ -63,14 +63,31 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
   concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
 - **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
   stale view of what the host wrote — matching "correctness over caching". Its cost is a stored
-  path that stops naming its inode once the tree moves, which either side may do and no later
-  lookup repairs: the kernel goes on addressing a renamed directory by the inode it holds rather
-  than looking the new name up. `RESOLVE_NO_SYMLINKS` is what makes that merely stale instead of
-  wrong — the chain then resolves to whatever now bears those names, which those same names
-  classify, or it fails (`fs.rs`, `open_ino`). The fd-per-inode alternative trades the staleness for
-  its own mirror quirk (an fd to a renamed-away subtree keeps operating on the moved inode) plus one
-  open fd per live inode, which at 100k files is real fd pressure. The path model holds one fd for
-  the root and transient fds per op.
+  path that stops naming its inode once the tree moves, which either side may do and no later lookup
+  repairs: the kernel goes on addressing a renamed directory by the inode it holds rather than
+  looking the new name up. `RESOLVE_NO_SYMLINKS` and an identity comparison are what make that
+  merely stale instead of wrong — the chain resolves to the object the node was classified as, or
+  it fails: `ELOOP` through a symlink, `ESTALE` at another object, which a second name of a guarded
+  entry would otherwise let an ordinary chain reach (`fs.rs`, `open_ino`). The fd-per-inode
+  alternative trades the staleness for its own mirror quirk (an fd to a renamed-away subtree keeps
+  operating on the moved inode) plus one open fd per live inode, which at 100k files is real fd
+  pressure. The path model holds one fd for the root and transient fds per op.
+- **Backing identity, so a replacement is a new inode.** `dev`/`ino_id` are the `(st_dev, st_ino)`
+  the position named when the entry was allocated. `lookup` re-stats the name and reuses the entry
+  only when identity still matches; a host replacement — a different object left at the same name
+  — re-points the name to a freshly allocated inode number for the new object (`inode.rs`,
+  `lookup`). This is what keeps the FUSE inode identity tracking the *object*, not just the name.
+  Without it, the kernel keeps one inode — and one page cache — across the replacement, and
+  `AUTO_INVAL_DATA` cannot save it: that mechanism invalidates on a size or mtime change, so a
+  replacement at equal size and mtime (`tar -x`, `cp -p`, `touch -r` all produce one) would serve
+  the old object's cached pages to a reader of the new one. A fresh inode gets a fresh, empty page
+  cache, so the read reflects the new object. A descriptor opened before the replacement is
+  unaffected: it reads and writes through its own backing fd (`fs.rs`, `read`/`write`), and an
+  attribute or truncate request carrying its handle acts on that fd too (`fs.rs`, `getattr`/
+  `setattr`), so it keeps addressing the object it opened — POSIX open-file semantics. The vacated
+  number is only unhooked from the name, not dropped, so that descriptor and any child it holds
+  reconstruct the path they always did (the stale-path resolution `RESOLVE_NO_SYMLINKS` guards);
+  the kernel forgets the number in its own time.
 
 ### Bounded memory and the O(1) policy fast-path (the scale constraints)
 
@@ -81,9 +98,13 @@ At hundreds of thousands of files the two risks are table growth and per-op poli
   tens of MB, not a leak that grows with every file the compiler ever stat'd.
 - **`git` is a cached, incremental context.** `GitContext` is computed once at `lookup` from the
   parent's context plus this name (O(1)), never by re-walking. The overwhelming majority of files in
-  a Scala build are outside any `.git`, so their context is a single "not in a gitdir" tag and every
-  mutation on them takes an immediate allow — no classification, no path scan. The policy core only
-  does real work inside a gitdir, which is a vanishing fraction of the op stream.
+  a Scala build are outside any `.git`, so their context is a single "not in a gitdir" tag and the
+  policy core allows every mutation on them without a path scan. The policy core only does real
+  work inside a gitdir, which is a vanishing fraction of the op stream.
+  - The name is not always the one the session used: an entry that is the same backing object as
+    the `.git` or `.ko-agent-sandbox` beside it takes that name's context (`fs.rs`,
+    `policy_name`; `security-research.md`, "Windows 8.3 short names", has why). Outside a gitdir
+    that costs a lookup two `fstatat` calls, and an operation on a parent and a name one more.
 
 
 ## Data path: userspace I/O, and the `FUSE_PASSTHROUGH` accelerator it does not use
@@ -112,7 +133,8 @@ a stale attribute without re-asking the daemon, so a host edit stays invisible u
 expires. A build program keying on mtime would then miss the change and compile stale content — a
 correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
 *backing's* state at the moment of the call — never older, and never fresher than the backing
-itself. Therefore these are fixed, not settings:
+itself — with two residual data-cache exceptions the mechanism below cannot reach, stated there.
+Therefore these are fixed, not settings:
 
 - entry, attribute, and negative-entry TTLs are **0**, always;
 - writeback caching is **off** (it would let the kernel hold writes the host cannot see);
@@ -120,8 +142,18 @@ itself. Therefore these are fixed, not settings:
   `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
   log rather than serving a view that can go stale. Zero metadata TTL keeps *attributes* fresh, but
   a file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
-  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when a zero-TTL `GETATTR` reports
-  an mtime change, so data stays coherent while shared `mmap` keeps working.
+  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when a `GETATTR` reports a size
+  or mtime change, so data stays coherent while shared `mmap` keeps working — when the change moves
+  an attribute and a `GETATTR` looks. A *replacement* at equal size and mtime moves no attribute,
+  but it is a different object, so the identity rekey above gives it a fresh inode and empty cache.
+  Two cases nothing here reaches remain, both inherent to `AUTO_INVAL_DATA` and both narrow:
+    - an *in-place* edit of one object that restores its size and mtime (a same-length overwrite
+      then `touch -r`): same object, so no rekey, and no attribute change, so no invalidation — a
+      cached `read` can serve the old bytes;
+    - a mapping read purely through memory, with no `read` or `stat` in between: the invalidation
+      hangs off a `GETATTR`, and a page fault issues none, so an already-cached page can lag until
+      some call does. The self-test's share probe reads before it checks the mapping, so its `mmap`
+      row measures invalidation-after-a-read, not a mapping left entirely to itself.
   Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
   the self-test container, and its share rows measure it across the real host share.
 
@@ -160,7 +192,7 @@ policy is enforced whoever is asking. Exposure is bounded by the machine running
 project's containers.
 
 A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
-write the same files and can overwrite one another's changes. If the daemon dies, `/workspace`
+write the same files and can overwrite one another's changes. If the daemon dies, the project mount
 returns `ENOTCONN` in every attached session, so none can continue accessing the files through the
 mount. When the project's last session ends, the daemon unmounts and exits.
 
@@ -185,8 +217,8 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
 
 1. **`sbt dist`** bundles `fuse/ko-agent-fs/**` into the jar next to the container build contexts,
    minus this `doc/` directory and `probe/`, neither of which is a build input or distribution
-   (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot be
-   enumerated at runtime, so an `INDEX` lists what is there.
+   (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot
+   be enumerated at runtime, so an `INDEX` lists what is there.
 2. **`--build`** unpacks that bundle to a temporary directory and runs `podman build` from it
    (`AgentSandboxLauncher.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
    `KoAgentFs.scala`). For this image the launcher first
@@ -224,12 +256,11 @@ code: `KoAgentFs.koAgentFsSourceId`.
 
 **All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
-`--write=live` session under `KO_AGENT_SANDBOX_WORKSPACE_GUARD=fuse`** (`--write=reject` binds the
-tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear value is a refused
-launch, never a silently weaker boundary): each launch gates on the installed binary's identity
-and self-test, then mounts the project through a per-project daemon shared by its sessions and
-binds the mountpoint at `/workspace`. The lifecycle's design and reasoning
-are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
+`--write=live` session** (`--write=reject` binds the tree read-only without it): each launch gates
+on the installed binary's identity and self-test, then mounts the project through a per-project
+daemon shared by its sessions and binds the mountpoint at the project's own path. The lifecycle's
+design and reasoning are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount
+lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid
 `fusermount3` when direct `mount(2)` is denied, so an ordinary VM user's mount appears in their

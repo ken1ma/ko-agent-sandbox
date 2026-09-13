@@ -54,7 +54,7 @@ trap cleanup EXIT INT TERM
 
 # --- M1: the proxy, hosted on macOS ------------------------------------------------------------
 
-dist=container/ko-agent-egress-proxy/app/target/dist/agent-egress-proxy.jar
+dist=container/ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
 proxy_src=container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
 if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
     echo "building the proxy dist (absent or older than its source)"
@@ -69,7 +69,7 @@ else
 allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &
     proxy_pid=$!
     tries=0; m1_ready=1
-    until grep -q 'agent-egress-proxy listening' "$work/proxy.log" 2>/dev/null; do
+    until grep -q 'ko-agent-egress-proxy listening' "$work/proxy.log" 2>/dev/null; do
         tries=$((tries + 1))
         if [ "$tries" -gt 30 ] || ! kill -0 "$proxy_pid" 2>/dev/null; then
             report FAIL "M1 proxy starts on macOS" "no ready line; log tail follows"
@@ -103,7 +103,7 @@ fi
 # --- one sbt server in a scratch project, its state under probe-owned directories -------------
 
 mkdir -p "$work/proj/project" "$work/srv"
-echo "sbt.version=2.0.8" > "$work/proj/project/build.properties"
+echo "sbt.version=2.0.9" > "$work/proj/project/build.properties"
 : > "$work/proj/build.sbt"
 
 echo "booting a scratch sbt server (can take a minute)"

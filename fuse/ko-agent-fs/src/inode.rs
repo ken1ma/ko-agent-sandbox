@@ -1,8 +1,8 @@
 //! The inode table of the path inode model (`doc/architecture.md`). FUSE addresses objects by inode
 //! number and `(parent, name)`, so this maps those to a position in the backing tree: each entry keeps its
-//! parent, basename, kernel lookup count, and cached [`GitContext`]. A path is reconstructed by
-//! walking parents to the root only when an operation needs one; nothing here caches attributes or
-//! opens backing fds (that is the resolver's job, per operation).
+//! parent, basename, kernel lookup count, cached [`GitContext`], and the backing object's identity.
+//! A path is reconstructed by walking parents to the root only when an operation needs one; nothing
+//! here caches attributes or opens backing fds (that is the resolver's job, per operation).
 //!
 //! `forget` is honoured so the table stays bounded to what the kernel currently references — the
 //! property that keeps memory flat while a compiler stats hundreds of thousands of files.
@@ -23,10 +23,18 @@ pub struct Inode {
     /// Outstanding kernel references (sum of `lookup`/`entry` replies minus `forget`s).
     pub nlookup: u64,
     pub git: GitContext,
+    /// The backing object this position named when the entry was allocated, as `(st_dev, st_ino)`.
+    /// `lookup` compares it against a fresh `stat` so a host replacement — a different object at the
+    /// same name — takes a fresh number rather than reusing this entry's (`lookup` has the why and
+    /// what becomes of this entry). The root's is never read: the root is inserted here, never
+    /// looked up, so nothing compares its identity.
+    dev: u64,
+    ino_id: u64,
 }
 
-/// Maps inode numbers to positions, reusing a number for a `(parent, name)` while it is referenced
-/// so the kernel sees a stable inode, and dropping entries once the kernel forgets them.
+/// Maps inode numbers to positions, reusing a number for a `(parent, name)` while it names the same
+/// object and is referenced so the kernel sees a stable inode, and dropping entries once the kernel
+/// forgets them.
 pub struct InodeTable {
     by_ino: HashMap<u64, Inode>,
     by_name: HashMap<(u64, OsString), u64>,
@@ -43,6 +51,8 @@ impl InodeTable {
                 name: OsString::new(),
                 nlookup: 1,
                 git: GitContext::root(),
+                dev: 0,
+                ino_id: 0,
             },
         );
         InodeTable {
@@ -54,6 +64,13 @@ impl InodeTable {
 
     pub fn get(&self, ino: u64) -> Option<&Inode> {
         self.by_ino.get(&ino)
+    }
+
+    /// The backing identity `(st_dev, st_ino)` recorded for `ino` at its last allocating `lookup`,
+    /// or `None` if the number is unknown. The resolver compares it against the object it actually
+    /// opened (`fs.rs`, `open_ino`).
+    pub fn identity(&self, ino: u64) -> Option<(u64, u64)> {
+        self.by_ino.get(&ino).map(|node| (node.dev, node.ino_id))
     }
 
     /// `None` if the inode or an ancestor is unknown.
@@ -78,23 +95,60 @@ impl InodeTable {
     /// context it was created with, so a directory that *becomes* a gitdir root after its first
     /// lookup stays a namespace — protected — until the kernel forgets it. Both drift directions
     /// give the stricter answer.
-    pub fn lookup(&mut self, parent: u64, name: &OsStr, is_gitdir_root: bool) -> u64 {
+    ///
+    /// `policy_name` is the name the context is computed from: `name`, or the guarded name `name`
+    /// is an alias of (`fs.rs`, `policy_name`). An entry whose context differs from the one
+    /// `policy_name` gives is not reused, so a name that becomes an alias after its first lookup —
+    /// a host hard link — does not keep its ordinary context.
+    ///
+    /// `(dev, ino_id)` is the freshly-stat'd backing identity of what the name resolves to now. An
+    /// existing entry is reused only when it matches: a host replacement leaves size and mtime free
+    /// to coincide (`tar -x`, `cp -p`, `touch -r`), so identity is the only signal that separates
+    /// the old object from the new one. Reusing the number across a replacement would give the new
+    /// object the old one's kernel page cache — a stale read that no attribute-driven invalidation
+    /// catches when the attributes match (`doc/architecture.md`, "Inode model").
+    ///
+    /// On a mismatch the name is re-pointed at a freshly allocated number, and the old entry is left
+    /// in place, only unhooked from the name. It keeps its number and its parent link, so a
+    /// descriptor still open on it — or on a child of it — reconstructs the same path it always did,
+    /// which is what the stale-path resolution rests on (`fs.rs`, `open_ino`; the stale-handle tests
+    /// in `tests/mounted_mutate.rs`). Removing it here instead would strand those children with a
+    /// missing ancestor. The kernel forgets the old number in its own time, and `forget` clears only
+    /// the name mapping still pointing at the number it forgets, so retiring the name cannot be
+    /// undone by a late `forget` of the object that vacated it.
+    pub fn lookup(
+        &mut self,
+        parent: u64,
+        name: &OsStr,
+        policy_name: &OsStr,
+        is_gitdir_root: bool,
+        dev: u64,
+        ino_id: u64,
+    ) -> u64 {
+        let context = |table: &Self| {
+            let parent_git = table
+                .by_ino
+                .get(&parent)
+                .map_or(GitContext::NotGit, |node| node.git.clone());
+            match child_context(&parent_git, policy_name.as_bytes()) {
+                GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
+                other => other,
+            }
+        };
+        let is_alias = policy_name != name;
+
         let key = (parent, name.to_os_string());
-        if let Some(&ino) = self.by_name.get(&key) {
+        if let Some(&ino) = self.by_name.get(&key)
+            && self.by_ino.get(&ino).is_some_and(|node| {
+                node.dev == dev && node.ino_id == ino_id && (!is_alias || node.git == context(self))
+            })
+        {
             if let Some(node) = self.by_ino.get_mut(&ino) {
                 node.nlookup += 1;
             }
             return ino;
         }
-
-        let parent_git = self
-            .by_ino
-            .get(&parent)
-            .map_or(GitContext::NotGit, |node| node.git.clone());
-        let git = match child_context(&parent_git, name.as_bytes()) {
-            GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
-            other => other,
-        };
+        let git = context(self);
 
         let ino = self.next_ino;
         self.next_ino += 1;
@@ -105,6 +159,8 @@ impl InodeTable {
                 name: name.to_os_string(),
                 nlookup: 1,
                 git,
+                dev,
+                ino_id,
             },
         );
         self.by_name.insert(key, ino);
@@ -120,7 +176,12 @@ impl InodeTable {
             if node.nlookup == 0 {
                 let key = (node.parent, node.name.clone());
                 self.by_ino.remove(&ino);
-                self.by_name.remove(&key);
+                // Only if the name still points here. A `lookup` that found this position holding a
+                // replaced object re-pointed the name at a new number and left this one to be
+                // forgotten; clearing the mapping unconditionally would delete that new binding.
+                if self.by_name.get(&key) == Some(&ino) {
+                    self.by_name.remove(&key);
+                }
             }
         }
     }
@@ -158,10 +219,20 @@ mod tests {
         OsStr::new(s)
     }
 
+    /// A stable fake backing identity per name, so a second lookup of the same name reuses its
+    /// entry exactly as a real unchanged object would. A test that needs a *replacement* passes a
+    /// different id for the same name through `table.lookup` directly.
+    fn ident(name: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// An ordinary lookup: nothing outside a `modules/` namespace is ever a gitdir root, so the
     /// hint is `false` everywhere but the one test that exercises it.
     fn look(table: &mut InodeTable, parent: u64, name: &str) -> u64 {
-        table.lookup(parent, os(name), false)
+        table.lookup(parent, os(name), os(name), false, 0, ident(name))
     }
 
     #[test]
@@ -214,6 +285,71 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_backing_object_takes_a_fresh_inode_number() {
+        // A host replacement keeps the name but changes the backing identity. Reusing the number
+        // would hand the new object the old one's cached pages (`lookup`), so the name must be
+        // re-pointed at a fresh number.
+        let mut table = InodeTable::new();
+        let first = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 100);
+        let again = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 100);
+        assert_eq!(first, again, "an unchanged object keeps its number");
+
+        let replaced = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200);
+        assert_ne!(
+            replaced, first,
+            "a replacement must not reuse the old number"
+        );
+        assert_eq!(
+            table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200),
+            replaced,
+            "the name now resolves to the replacement's number",
+        );
+
+        // The old number is only unhooked from the name, not dropped: a descriptor still open on it
+        // reconstructs the same path it always did.
+        assert_eq!(
+            table.components(first),
+            Some(vec![b"x".to_vec()]),
+            "the vacated number keeps reconstructing its path for open descriptors",
+        );
+
+        // Forgetting the vacated number must not disturb the name's new binding.
+        table.forget(first, 2);
+        assert!(
+            table.get(first).is_none(),
+            "the vacated number is dropped at zero references"
+        );
+        assert_eq!(
+            table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200),
+            replaced,
+            "forgetting the vacated number left the live mapping intact",
+        );
+    }
+
+    #[test]
+    fn an_alias_takes_the_context_of_the_guarded_name_even_after_an_ordinary_lookup() {
+        let mut table = InodeTable::new();
+        let ordinary = table.lookup(ROOT_INO, os("GIT~1"), os("GIT~1"), false, 7, 100);
+        assert_eq!(table.get(ordinary).unwrap().git, GitContext::NotGit);
+
+        // The same object, since found to be what `.git` resolves to.
+        let alias = table.lookup(ROOT_INO, os("GIT~1"), os(".git"), false, 7, 100);
+        assert_ne!(alias, ordinary, "the ordinary context must not be reused");
+        assert_eq!(table.get(alias).unwrap().git, gitdir_root());
+        assert_eq!(table.components(alias), Some(vec![b"GIT~1".to_vec()]));
+        assert_eq!(
+            table.lookup(ROOT_INO, os("GIT~1"), os(".git"), false, 7, 100),
+            alias,
+        );
+
+        let config = look(&mut table, alias, "config");
+        assert_eq!(
+            classify(&table.get(config).unwrap().git),
+            GitPathClass::Protected,
+        );
+    }
+
+    #[test]
     fn forget_never_removes_the_root() {
         let mut table = InodeTable::new();
         table.forget(ROOT_INO, 100);
@@ -254,7 +390,7 @@ mod tests {
         let dotgit = look(&mut table, ROOT_INO, ".git");
         let modules = look(&mut table, dotgit, "modules");
         let libs = look(&mut table, modules, "libs");
-        let foo = table.lookup(libs, os("foo"), true);
+        let foo = table.lookup(libs, os("foo"), os("foo"), true, 0, ident("foo"));
 
         let objects = look(&mut table, foo, "objects");
         let pack = look(&mut table, objects, "pack");

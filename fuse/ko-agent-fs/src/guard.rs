@@ -262,8 +262,8 @@ impl Workspace {
         }
 
         if metadata.file_type().is_symlink() {
-            // The launcher refuses a symlinked `.git` outright and so does this: a link decides
-            // where Git metadata resides, and following it would make the guarded set
+            // Refused outright, as the launcher refuses a symlinked `.ko-agent-sandbox`: a link
+            // decides where Git metadata resides, and following it would make the guarded set
             // depend on where it points at this instant.
             return Err(Refusal {
                 reason: format!("{dotgit:?} is a symlink"),

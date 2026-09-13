@@ -1,5 +1,5 @@
 // The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side broker
-// that serves it. The sandbox side is the image's sandbox-run-on-host
+// that serves it. The sandbox side is the image's ko-sandbox-run-on-host
 // shim; the broker is a detached process of the launcher's own executable — the jar or native
 // binary — spawned per session under --run-on-host. SECURITY.md "Run on host" has what the
 // channel grants and withholds.
@@ -45,9 +45,6 @@ object RunOnHostChannel:
    * the broker drops what it cannot frame, and the authority it enforces is unaffected.
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/run-on-host"
-
-  /** What the project is mounted at inside the container: the spelling requests arrive in. */
-  val WorkspaceMount = "/workspace"
 
   /**
    * Set in the sandbox to the programs `--run-on-host` names: the shim's cue to wait for a `req`
@@ -144,17 +141,20 @@ object RunOnHostChannel:
         case 0  => remaining -= 1
         case _  => ()
 
+  /** The field and the bytes it consumed, its NUL included, as drainFields charges them. The bound
+    * is tested before each read: a field refused after its NUL was read would leave the caller's
+    * drain waiting for one NUL more than the requester writes. */
   private def readField(in: InputStream, budget: Int): Either[String, (String, Int)] =
     val buffer = ByteArrayOutputStream()
     var result: Option[Either[String, (String, Int)]] = None
     while result.isEmpty do
-      in.read() match
-        case -1 => result = Some(Left("the stream ended inside a request"))
-        case 0  => result = Some(Right((String(buffer.toByteArray, UTF_8), buffer.size)))
-        case byte =>
-          if buffer.size >= budget then
-            result = Some(Left(s"the request passed the $MaxRequestBytes-byte bound"))
-          else buffer.write(byte)
+      if buffer.size >= budget then
+        result = Some(Left(s"the request passed the $MaxRequestBytes-byte bound"))
+      else
+        in.read() match
+          case -1   => result = Some(Left("the stream ended inside a request"))
+          case 0    => result = Some(Right((String(buffer.toByteArray, UTF_8), buffer.size + 1)))
+          case byte => buffer.write(byte)
     result.get
 
   // ---------------------------------------------------------------------------
@@ -195,7 +195,9 @@ object RunOnHostChannel:
       * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
-    mount: String = WorkspaceMount,
+    /** What the project is mounted at inside the container — its own path
+      * (SandboxProject.mountPathOf): the spelling requests arrive in. */
+    mount: String,
     /** How long the broker waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
   )
@@ -530,6 +532,7 @@ object RunOnHostChannel:
     project: Path,
     programs: Seq[String],
     logFile: Path,
+    mount: String,
     // `--env` as launched: the names travel as arguments down to each command, the values through
     // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
     // argument below the launcher carries a value and an explicit one is read by no trusted
@@ -544,7 +547,7 @@ object RunOnHostChannel:
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
-            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
+            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name) :+ mount)*,
           ))*,
       )
       forwards.foreach: forward =>
@@ -558,13 +561,13 @@ object RunOnHostChannel:
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--env=<name>...] [mount]`: spawned by the launcher before it hands over to podman, detached
-    * like the reaper. The trailing mount override is the gate's, whose shim runs at the project's
-    * own path rather than /workspace. */
+    * [--env=<name>...] <mount>`: spawned by the launcher before it hands over to podman, detached
+    * like the reaper. The trailing mount is what the project is mounted at inside the container;
+    * the gate's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
-      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
+      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -591,7 +594,7 @@ object RunOnHostChannel:
         val session =
           RunOnHostSession.ensureRoot(root, uid).flatMap { _ =>
             RunOnHostSession
-              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .scavenge(root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_))
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
             RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
           }.flatMap: session =>
@@ -611,7 +614,7 @@ object RunOnHostChannel:
         )(scavenge = () =>
           RunOnHostSession
             .scavenge(
-              root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_),
               ownSession = Some(session.directory),
             )
             .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")))
@@ -623,7 +626,7 @@ object RunOnHostChannel:
             // after endCurrentCommand and before the records are read.
             runtimes.commandEnded(RunOnHostPrereqs.Program.Gradle)
             RunOnHostSession
-              .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              .endSession(root, session, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_),
                 beforeRemoval = condemned =>
                   RunOnHostSandbox.appendSessionLogs(
                     logPath, condemned, s"the broker's session ${condemned.getFileName} ended",
@@ -663,7 +666,7 @@ object RunOnHostChannel:
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           ended = programName =>
             RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
-          mount = trailing.headOption.getOrElse(WorkspaceMount),
+          mount = trailing.head,
         )
         log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)

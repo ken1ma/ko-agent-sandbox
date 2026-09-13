@@ -135,8 +135,9 @@ object HTTPHelper:
         )
 
     def parsePort(value: String): Int =
-      value.toIntOption
+      parseDecimal(value)
         .filter(port => port >= 1 && port <= 65535)
+        .map(_.toInt)
         .getOrElse(throw BadRequest("invalid CONNECT port"))
 
     def validateHeaders(lines: Vector[String]): Unit =
@@ -203,23 +204,13 @@ object HTTPHelper:
       else if lengths.nonEmpty then
         val declared =
           lengths.map: value =>
-            value.trim.toLongOption
-              .filter(_ >= 0)
-              .getOrElse(throw BadRequest("invalid Content-Length"))
+            parseDecimal(value).getOrElse(throw BadRequest("invalid Content-Length"))
 
         if declared.distinct.size != 1 then
           throw BadRequest("conflicting Content-Length headers")
 
         BodyFraming.Length(declared.head)
       else BodyFraming.Empty
-
-    /** The client is waiting for a 100 before it sends its body (RFC 9110 §10.1.1). This proxy
-      * answers the 100 itself (relayInspected) and forwards the body unconditionally, so
-      * toOriginBytes drops the Expect — an origin must not be left waiting for a body this
-      * proxy sends regardless. Without this, the client stalls until its own 100 timeout on
-      * every large POST (git's fetch negotiation past http.postBuffer sends it). */
-    def expectsContinue: Boolean =
-      values("Expect").exists(_.trim.equalsIgnoreCase("100-continue"))
 
     /** HTTP/1.1, this hop's headers removed — the fixed hop-by-hop set plus whatever the
       * message's own Connection header names — and `Connection: close` added: end-of-stream
@@ -229,9 +220,7 @@ object HTTPHelper:
 
       builder.append(s"$method $target HTTP/1.1\r\n")
 
-      val dropped =
-        HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
-          ++ (if expectsContinue then Set("expect") else Set.empty)
+      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
       headers
         .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
         .foreach((name, value) => builder.append(s"$name: $value\r\n"))
@@ -331,17 +320,17 @@ object HTTPHelper:
 
   /**
    * The response head, parsed for status and framing only — just enough to tell a completed body
-   * from a truncated one — and relayed with only its hop-by-hop headers replaced (toClientBytes):
+   * from a truncated one — and relayed with only its version and hop-by-hop headers replaced
+   * (toClientBytes):
    * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
    * response content, because that would require the response-content rule language this proxy refuses to
    * have. Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and
    * the 502 should say so.
    */
   case class HttpResponseHead(
-    statusLine: String,
     status: Int,
+    reason: String,
     headers: Vector[(String, String)],
-    rawBytes: Array[Byte],
   ):
     def values(name: String): Vector[String] =
       val wanted = name.toLowerCase(Locale.ROOT)
@@ -349,24 +338,29 @@ object HTTPHelper:
       headers.collect:
         case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
 
-    /** The head as the client receives it: status line and end-to-end headers unchanged, but the
-      * hop-by-hop headers are this hop's own (they describe the origin↔proxy leg), and this
-      * proxy's answer is always `Connection: close` — each connection carries one request, and the client
-      * must hear that even when the origin's headers omit it. A client that misses it reuses or
+    def interim: Boolean = status / 100 == 1
+
+    /** The head as the client receives it, an interim one as well as the final: the status and
+      * reason and the end-to-end headers unchanged, the version this hop's own (RFC 9112 §2.3
+      * has an intermediary send its version, not the origin's), and the hop-by-hop headers this
+      * hop's own too (they describe the origin↔proxy leg). On the final head this proxy's answer
+      * is always `Connection: close` — each connection carries one request, and the client must
+      * hear that even when the origin's headers omit it. A client that misses it reuses or
       * pipelines, its next request meets the closed socket's RST, and the RST destroys this
       * response's unread tail in the client's buffer — measured as apt's intermittent
-      * mid-download EOFs, invisible in the proxy's own log. */
+      * mid-download EOFs, invisible in the proxy's own log. An interim head carries no
+      * Connection at all: the disposition is the final head's to state. */
     def toClientBytes: Array[Byte] =
       val builder = StringBuilder()
 
-      builder.append(s"$statusLine\r\n")
+      builder.append(s"HTTP/1.1 $status $reason\r\n")
 
       val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
       headers
         .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
         .foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
-      builder.append("Connection: close\r\n\r\n")
+      builder.append(if interim then "\r\n" else "Connection: close\r\n\r\n")
 
       builder.toString.getBytes(StandardCharsets.ISO_8859_1)
 
@@ -377,7 +371,7 @@ object HTTPHelper:
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
 
-      if requestMethod == "HEAD" || status / 100 == 1 || status == 204 || status == 304 then
+      if requestMethod == "HEAD" || interim || status == 204 || status == 304 then
         BodyFraming.Empty
       else
         val encodings = values("Transfer-Encoding")
@@ -395,9 +389,7 @@ object HTTPHelper:
         else if lengths.nonEmpty then
           val declared =
             lengths.map: value =>
-              value.trim.toLongOption
-                .filter(_ >= 0)
-                .getOrElse(throw IOException("origin sent an invalid Content-Length"))
+              parseDecimal(value).getOrElse(throw IOException("origin sent an invalid Content-Length"))
 
           if declared.distinct.size != 1 then
             throw IOException("origin sent conflicting Content-Length headers")
@@ -421,19 +413,38 @@ object HTTPHelper:
       val statusLine = lines.headOption.getOrElse(malformed("missing status line"))
 
       statusLine.split(" ", 3).toList match
-        case version :: statusText :: _ if version.startsWith("HTTP/1.") =>
+        case version :: statusText :: rest if isHttp1Version(version) =>
+          // Three digits exactly (RFC 9112 §4): toClientBytes writes the parsed number, and the
+          // client must not receive a status line the origin did not send.
           val status =
-            statusText.toIntOption
+            Option.when(statusText.length == 3)(statusText).flatMap(parseDecimal)
               .filter(value => value >= 100 && value <= 599)
+              .map(_.toInt)
               .getOrElse(malformed(s"status '$statusText'"))
+
+          val reason = rest.headOption.getOrElse("")
+          if reason.exists(ch => isForbiddenControl(ch) && ch != '\t') then
+            malformed("control character in reason phrase")
 
           val headers =
             try HttpRequestHead.parseHeaders(lines.drop(1))
             catch case ex: BadRequest => malformed(ex.getMessage)
 
-          HttpResponseHead(statusLine, status, headers, bytes)
+          HttpResponseHead(status, reason, headers)
 
         case _ => malformed(s"status line '$statusLine'")
+
+  /** ASCII digits and nothing else, which is all that the grammars of Content-Length, a port and
+    * a status code allow. `toLongOption` alone also accepts a sign, and a forwarded
+    * `Content-Length: +1` leaves the origin free to read a length other than the one this proxy
+    * framed the body by. */
+  def parseDecimal(text: String): Option[Long] =
+    Option.when(text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9'))(text.toLongOption).flatten
+
+  /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3; every minor version, since the framing
+    * rules cover them all. */
+  def isHttp1Version(text: String): Boolean =
+    text.length == 8 && text.startsWith("HTTP/1.") && text(7) >= '0' && text(7) <= '9'
 
   /**
    * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
@@ -542,26 +553,22 @@ object HTTPHelper:
 
     loop(count)
 
-  /** Re-emitted canonically — extensions and trailers dropped — so nothing
-    * in it reads differently at the two ends. */
+  /** Re-emitted canonically — extensions and trailers dropped, after each is checked against its
+    * grammar — so nothing in it reads differently at the two ends. */
   def copyChunked(in: InputStream, out: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
 
     @tailrec
     def loop(): Unit =
-      val header = readCrLfLine(in, MaxChunkLineBytes)
-      val size =
-        try java.lang.Long.parseLong(header.takeWhile(_ != ';').trim, 16)
-        catch
-          case _: NumberFormatException =>
-            throw BadRequest("invalid chunk size")
-
-      if size < 0 then throw BadRequest("negative chunk size")
+      val size = parseChunkHeader(readCrLfLine(in, MaxChunkLineBytes))
 
       if size == 0 then
         @tailrec
         def skipTrailers(): Unit =
-          if readCrLfLine(in, MaxChunkLineBytes).nonEmpty then skipTrailers()
+          val trailer = readCrLfLine(in, MaxChunkLineBytes)
+          if trailer.nonEmpty then
+            HttpRequestHead.parseHeaders(Vector(trailer))
+            skipTrailers()
 
         skipTrailers()
         out.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII))
@@ -578,6 +585,20 @@ object HTTPHelper:
         loop()
 
     loop()
+
+  private val ChunkHeader =
+    val token = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+    val quotedString = "\"(?:[\t \\x21\\x23-\\x5B\\x5D-\\x7E\\x80-\\xFF]|\\\\[\t \\x21-\\x7E\\x80-\\xFF])*\""
+    val extension = s"[ \t]*;[ \t]*$token(?:[ \t]*=[ \t]*(?:$token|$quotedString))?"
+    s"([0-9A-Fa-f]+)(?:$extension)*".r
+
+  /** The size of a `chunk-size [ chunk-ext ]` line (RFC 9112 §7.1). */
+  def parseChunkHeader(line: String): Long =
+    line match
+      case ChunkHeader(size) =>
+        try java.lang.Long.parseLong(size, 16)
+        catch case _: NumberFormatException => throw BadRequest("invalid chunk size")
+      case _ => throw BadRequest("invalid chunk size")
 
   def copyUntilEof(in: InputStream, out: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
@@ -603,7 +624,7 @@ object HTTPHelper:
 
       if value == '\n' then
         if !previousWasCr then throw BadRequest("bare LF in chunked body")
-        String(out.toByteArray, StandardCharsets.US_ASCII).dropRight(1)
+        String(out.toByteArray, StandardCharsets.ISO_8859_1).dropRight(1)
       else
         out.write(value)
         loop(value == '\r')

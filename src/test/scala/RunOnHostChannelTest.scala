@@ -42,12 +42,12 @@ class RunOnHostChannelTest extends munit.FunSuite:
     * cleanup either, which is why the copy is tracked rather than the value forced. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
-    val source = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
+    val source = Paths.get("container/ko-agent-sandbox/ko-sandbox-run-on-host").toAbsolutePath
     val text = Files.readString(source)
     val rewritten = Map(s"dir=${RunOnHostChannel.SandboxDir}" -> s"dir=$FifoDir", "bound=30" -> s"bound=$ShimBound")
     rewritten.keys.foreach: line =>
       require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
-    val copy = Files.createTempFile("sandbox-run-on-host", "")
+    val copy = Files.createTempFile("ko-sandbox-run-on-host", "")
     Files.writeString(copy, rewritten.foldLeft(text)((text, entry) => text.replace(entry._1, entry._2)))
     Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
     shimCopy = Some(copy)
@@ -67,15 +67,15 @@ class RunOnHostChannelTest extends munit.FunSuite:
     (s"$program ${args.size}\n" + (cwd +: args).map(_ + "\u0000").mkString).getBytes(UTF_8)
 
   test("a request round-trips, empty and awkward arguments included"):
-    val bytes = framed("sbt", "/workspace/sub dir", "test", "", "set x := \"a\nb\"", "λ")
+    val bytes = framed("sbt", "/Users/me/app/sub dir", "test", "", "set x := \"a\nb\"", "λ")
     assertEquals(
       readRequest(ByteArrayInputStream(bytes)),
-      Right(Some(Request("sbt", "/workspace/sub dir", Vector("test", "", "set x := \"a\nb\"", "λ")))),
+      Right(Some(Request("sbt", "/Users/me/app/sub dir", Vector("test", "", "set x := \"a\nb\"", "λ")))),
     )
 
   test("no arguments is a request; end of stream at a boundary is None"):
-    val in = ByteArrayInputStream(framed("mill", "/workspace"))
-    assertEquals(readRequest(in), Right(Some(Request("mill", "/workspace", Vector.empty))))
+    val in = ByteArrayInputStream(framed("mill", "/Users/me/app"))
+    assertEquals(readRequest(in), Right(Some(Request("mill", "/Users/me/app", Vector.empty))))
     assertEquals(readRequest(in), Right(None))
 
   test("a stream that cannot frame a request is refused whole"):
@@ -86,7 +86,19 @@ class RunOnHostChannelTest extends munit.FunSuite:
     refused(s"sbt ${MaxArguments + 1}\n".getBytes(UTF_8)) // over the bound
     refused("sbt 0\n".getBytes(UTF_8) ++ Array.fill(MaxRequestBytes + 1)('a'.toByte)) // too big
     refused(Array.fill(MaxLineBytes + 1)('a'.toByte)) // a header that never ends
-    refused("sbt 2\n/workspace\u0000only-one\u0000".getBytes(UTF_8)) // ends inside the request
+    refused("sbt 2\n/Users/me/app\u0000only-one\u0000".getBytes(UTF_8)) // ends inside the request
+
+  test("the request bound charges the NUL delimiters, as the drain does"):
+    // An empty argument is its delimiter alone, so MaxArguments of them put into the frame the most
+    // NULs an accepted request can hold.
+    def withCwdOf(bytes: Int): Array[Byte] =
+      framed("sbt", "a" * bytes, Vector.fill(MaxArguments)("")*)
+    val fits = withCwdOf(MaxRequestBytes - MaxArguments - 1)
+    assertEquals(fits.length - s"sbt $MaxArguments\n".length, MaxRequestBytes, "fields and NULs fill the bound")
+    assert(readRequest(ByteArrayInputStream(fits)).isRight, "a request at the bound")
+    val over = ByteArrayInputStream(withCwdOf(MaxRequestBytes - MaxArguments))
+    assert(readRequest(over).isLeft, "one byte past it")
+    assertEquals(over.available(), 0, "the refused frame is drained whole")
 
   test("a NUL-dense frame is bounded by bytes, not by its claimed field count"):
     // The drain must charge the NUL delimiters too: with an argument count near Int.MaxValue and
@@ -104,12 +116,13 @@ class RunOnHostChannelTest extends munit.FunSuite:
   // The boundary
   // ---------------------------------------------------------------------------
 
-  private def service(project: Path, mount: String = WorkspaceMount, deadline: Long = 30_000): Service =
+  /** The project mounted at its own path, as a launch has it. */
+  private def service(project: Path, deadline: Long = 30_000): Service =
     Service(
       project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
       buildLock = (_, _) => Right(Path.of("/unused")),
       runtime = (_, _, _) => Right(Seq.empty),
-      mount = mount, requestDeadlineMillis = deadline,
+      mount = project.toString, requestDeadlineMillis = deadline,
     )
 
   test("the working directory is translated, and proven inside the project"):
@@ -117,20 +130,20 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val sub = Files.createDirectory(project.resolve("sub"))
     val outside = Files.createTempDirectory("channel-outside").toRealPath()
     val svc = service(project)
-    assertEquals(validated(svc, Request("sbt", "/workspace", Vector.empty)), Right(project))
-    assertEquals(validated(svc, Request("sbt", "/workspace/sub", Vector.empty)), Right(sub))
+    assertEquals(validated(svc, Request("sbt", project.toString, Vector.empty)), Right(project))
+    assertEquals(validated(svc, Request("sbt", s"$project/sub", Vector.empty)), Right(sub))
     def refused(workingDirectory: String): Unit =
       val answer = validated(svc, Request("sbt", workingDirectory, Vector.empty))
       assert(answer.left.exists(_.startsWith("CHANNEL_UNAVAILABLE")), s"$workingDirectory: $answer")
     refused(outside.toString) // an unrelated host path
-    refused("/workspace/../escape") // climbing out
-    refused("/workspace/absent") // nothing to canonicalize
+    refused(s"$project/../escape") // climbing out
+    refused(s"$project/absent") // nothing to canonicalize
     Files.createSymbolicLink(project.resolve("link"), outside)
-    refused("/workspace/link") // a symlink leaving the project
+    refused(s"$project/link") // a symlink leaving the project
 
   test("a program the launch did not name is refused, not run"):
     val project = Files.createTempDirectory("channel-project").toRealPath()
-    val answer = validated(service(project), Request("mill", "/workspace", Vector.empty))
+    val answer = validated(service(project), Request("mill", project.toString, Vector.empty))
     assert(answer.left.exists(_.contains("does not name mill")), answer.toString)
 
   // ---------------------------------------------------------------------------
@@ -187,7 +200,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val broker = Thread(() =>
       serve(
         transport,
-        service(project, mount = project.toString, deadline = deadline).copy(
+        service(project, deadline = deadline).copy(
           buildLock = (_, _) => Right(lockFile),
           wrapperCommand = (program, directory, _, arguments) =>
             RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),

@@ -19,21 +19,23 @@ again.
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Allow an ECH extension on an inspected host, only if a client that sends GREASE ECH —
-  a browser, a BoringSSL-based program — enters the image. The proxy is the TLS server there, so
-  ignoring an extension it cannot decrypt is what every non-ECH server does: a GREASE client
-  continues, a real-ECH client aborts on its own when the rejection is not confirmed, and the
-  origin never sees the client's hello. On a `tunnel` host the refusal stays: GREASE and real ECH
-  are indistinguishable by design (RFC 9849, 6.2), and real ECH under a passing outer SNI is
-  domain fronting through the allowed host (`TLSHelper`, the extension constant). This adds a
-  second ECH step to SECURITY.md's handshake list and its tests.
+  a browser, a BoringSSL-based program — enters the image.
+  - The proxy is the TLS server there, so ignoring an extension it cannot decrypt is what every
+    non-ECH server does: a GREASE client continues, a real-ECH client aborts on its own when the
+    rejection is not confirmed, and the origin never sees the client's hello.
+  - On a `tunnel` host the refusal stays: GREASE and real ECH are indistinguishable by design
+    (RFC 9849, 6.2), and real ECH under a passing outer SNI is domain fronting through the allowed
+    host (`TLSHelper`, the extension constant).
+  - This adds a second ECH step to SECURITY.md's handshake list and its tests.
 
 ## Deferred — inspected-relay keep-alive
 
 - [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
-  measurably hurts (104 handshakes added seconds to the recorded 104-archive install). Both legs'
-  framing is parsed and enforced, so the design is a request loop per client connection with a
-  fresh origin connection per request; this needs a larger state machine at the enforcement
-  point and the one-request rule's smuggling argument re-argued in SECURITY.md.
+  measurably hurts (104 handshakes added seconds to the recorded 104-archive install).
+  - Both legs' framing is parsed and enforced, so the design is a request loop per client
+    connection with a fresh origin connection per request.
+  - This needs a larger state machine at the enforcement point and the one-request rule's
+    smuggling argument re-argued in SECURITY.md.
 
 ## Deferred — Git LFS batch downloads
 
@@ -63,53 +65,60 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   the LAN through the name.
 - [ ] An exception to the lifecycle's step 10 for the listed addresses, and only those: a
   ClientHello with no SNI is the form a client sends to an address and is allowed there, one
-  naming any host stays refused. Opaque, as the simplest form; an inspected address is
-  possible — the leaf can include an `iPAddress` name — and is its own further decision. Opaque,
-  the consequence is stated with it: nothing binds the tunnel to a name, so the origin's
-  identity rests on the client's own certificate check, which the client may skip, and the
-  grant reaches every application endpoint selectable at the address — by `Host`, by HTTP/2's
-  `:authority`, by whatever protocol the client speaks after the handshake — since the proxy
-  sees none of it.
-- [ ] Stated cost, in SECURITY.md when it is implemented: the traffic is a tunnel by construction —
-  the hello allowed at step 10 leads to opaque application traffic at step 11 — so request
-  methods, targets and bodies are neither inspected nor logged; and the sandbox then reaches,
-  from the host’s own address, services that authenticate by location — router and NAS pages, dev
-  servers, dashboards, registries, CI runners — with the cloud metadata endpoint in the same class.
-  Port 443 and the one-client network bound the attack surface, not the trust.
+  naming any host stays refused.
+  - Opaque, as the simplest form; an inspected address is possible — the leaf can include an
+    `iPAddress` name — and is its own further decision.
+  - Opaque, the consequence is stated with it: nothing binds the tunnel to a name, so the
+    origin's identity rests on the client's own certificate check, which the client may skip, and
+    the grant reaches every application endpoint selectable at the address — by `Host`, by
+    HTTP/2's `:authority`, by whatever protocol the client speaks after the handshake — since the
+    proxy sees none of it.
+- [ ] Stated cost, in SECURITY.md when it is implemented:
+  - the traffic is a tunnel by construction — the hello allowed at step 10 leads to opaque
+    application traffic at step 11 — so request methods, targets and bodies are neither inspected
+    nor logged;
+  - the sandbox then reaches, from the host's own address, services that authenticate by
+    location — router and NAS pages, dev servers, dashboards, registries, CI runners — with the
+    cloud metadata endpoint in the same class;
+  - port 443 and the one-client network bound the attack surface, not the trust.
 
 ## Deferred — the upstream proxy's interception CA, explicit resolvers, the container matrix
 
 - [ ] Trust an upstream proxy's interception CA, so a TLS-terminating one stops failing closed
-  with certificate errors (`egress-proxy.md`, "Through an upstream proxy"). Its inclusion is
-  authority — it lets that proxy read and change opaque model traffic — so it needs a
-  launch-time selection and a banner line of its own, and four stores extended: the proxy's
-  origin trust, the sandbox PEM bundle, the image JDK's `cacerts`, and `sandbox-jdk-use-proxy`'s
-  certificate. An endpoint CA, for an `https` endpoint under a private CA, is carried the same
-  way but extends one store only, the trust the proxy verifies the endpoint against: in any of
-  the four it would be interception authority.
+  with certificate errors (`egress-proxy.md`, "Through an upstream proxy").
+  - Its inclusion is authority — it lets that proxy read and change opaque model traffic — so it
+    needs a launch-time selection and a banner line of its own.
+  - Four stores are extended: the proxy's origin trust, the sandbox PEM bundle, the image JDK's
+    `cacerts`, and `ko-sandbox-jdk-use-proxy`'s certificate.
+  - An endpoint CA, for an `https` endpoint under a private CA, is carried the same way but
+    extends one store only, the trust the proxy verifies the endpoint against: in any of the four
+    it would be interception authority.
 - [ ] Explicit resolvers for the proxy container, only when podman's resolver — which follows the
   host's on Linux and the host's through the machine elsewhere — stops answering for someone.
-  Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
-  name is a refusal naming the non-public answer, never a private address allowed.
+  - Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
+    name is a refusal naming the non-public answer, never a private address allowed.
 - [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
-  podman machines, and record whether each can route to a private endpoint; one that cannot must
-  fail the launch, never bypass the upstream proxy. Whether an address the host has on its network
-  reaches a loopback helper such as cntlm under rootless podman is part of the same run.
+  podman machines, and record whether each can route to a private endpoint.
+  - One that cannot must fail the launch, never bypass the upstream proxy.
+  - Whether an address the host has on its network reaches a loopback helper such as cntlm under
+    rootless podman is part of the same run.
 
 ## Deferred — `--explain-request`, the ordered rules traced for one request
 
 The rule file's order being its meaning (`egress-proxy.md`, "The rule file"), the question an
-operator
-asks is no longer "is this host allowed" — `--egress-check` answers that — but "which line
-decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
+operator asks is no longer "is this host allowed" — `--egress-check` answers that — but "which
+line decided this request". doas answers it with `doas -C`, which evaluates a hypothetical command
 against the file through the same code that would run it; the equivalent here is a trace:
 
-- [ ] `--explain-request METHOD URL`, printing the request's classification, each applicable
-  line with the grant state it leaves, the boundary the longest match selects, and the
-  decision. The trace comes from the proxy's own resolver and authorizer emitting it as they
-  decide, run through the launcher's dry run — never a second evaluator in production: the
-  tests' plain ordered evaluator stays the oracle the fold is checked against, and a trace
-  that could disagree with enforcement would be worse than none.
+- [ ] `--explain-request METHOD URL`, printing:
+  - the request's classification;
+  - each applicable line with the grant state it leaves;
+  - the boundary the longest match selects;
+  - the decision.
+- [ ] The trace comes from the proxy's own resolver and authorizer emitting it as they decide, run
+  through the launcher's dry run — never a second evaluator in production: the tests' plain
+  ordered evaluator stays the oracle the fold is checked against, and a trace that could disagree
+  with enforcement would be worse than none.
 
 ## Deferred — staged-workspace extensions and hardening
 
@@ -117,49 +126,60 @@ These are separate increments after the staged workspace in `plan-staged.md`, no
 of its lifecycle into one change. The initial one-stage-per-project sharing unit and what happens
 when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 
-- [ ] Detect project-directory replacement before attaching a persistent stage. Record a host-only
-  root identity, an optional resolved-gitdir identity and a small secondary fingerprint; ordinary
-  branch switches and host edits must remain live. An uncertain or different origin preserves the
-  stage and requires explicit reattachment. Reattachment must not rewrite the per-path baselines
-  that detect apply conflicts.
-- [ ] Create a host-only rollback bundle before applying a sealed generation. It records the
-  original contents and metadata, absence of new paths, and the sealed-plan identity, making a
-  partial multi-file apply recoverable. Preflight its storage cost and require an explicit override
-  when a bundle cannot be made.
-- [ ] Treat stage and apply disk exhaustion as a boundary condition: preflight upper-layer,
-  temporary-replacement, rollback and staged-control-journal space; fail writes or apply closed;
-  retain a precise partial result; and never spill into the host project directory, discard pending
-  state, or fall back to live write. The live mutation journal's bounded, fail-closed storage
-  behavior is defined in the initial increment and is not deferred here.
-- [ ] Add a tested host-side migration when a persistent stage representation first changes. The
-  staged-workspace increment versions upper layers and whiteouts, lower baselines, sealed
-  generations and apply plans and refuses an unknown version; extend the manifest to rollback
-  bundles when those are implemented. A migration never silently reinterprets or deletes an older
-  stage.
+- [ ] Detect project-directory replacement before attaching a persistent stage.
+  - Record a host-only root identity, an optional resolved-gitdir identity and a small secondary
+    fingerprint; ordinary branch switches and host edits must remain live.
+  - An uncertain or different origin preserves the stage and requires explicit reattachment.
+  - Reattachment must not rewrite the per-path baselines that detect apply conflicts.
+- [ ] Create a host-only rollback bundle before applying a sealed generation.
+  - It records the original contents and metadata, absence of new paths, and the sealed-plan
+    identity, making a partial multi-file apply recoverable.
+  - Preflight its storage cost and require an explicit override when a bundle cannot be made.
+- [ ] Treat stage and apply disk exhaustion as a boundary condition.
+  - Preflight upper-layer, temporary-replacement, rollback and staged-control-journal space.
+  - Fail writes or apply closed; retain a precise partial result.
+  - Never spill into the host project directory, discard pending state, or fall back to live
+    write.
+  - The live mutation journal's bounded, fail-closed storage behavior is defined in the initial
+    increment and is not deferred here.
+- [ ] Add a tested host-side migration when a persistent stage representation first changes.
+  - The staged-workspace increment versions upper layers and whiteouts, lower baselines, sealed
+    generations and apply plans and refuses an unknown version; extend the manifest to rollback
+    bundles when those are implemented.
+  - A migration never silently reinterprets or deletes an older stage.
 - [ ] Attribute mutations in shared live and staged workspaces to attached sessions where the
-  request supplies reliable identity. Keep this diagnostic and best-effort: journal entries may
-  report an unknown session and status may report multiple or unknown sessions, while the
-  workspace-wide journal or trusted upper-layer delta remains authoritative.
-- [ ] Add non-interactive plan/apply only with a concrete automation use case. `--stage plan` seals
-  the current generation and returns a digest; `--stage apply --plan=<digest> --yes` applies the
-  whole conflict-free plan. The digest binds the project identity, representation version,
-  generation, complete operation groups, content and metadata hashes, lower baselines, and rename
-  and hardlink relationships. A mismatch changes nothing; path selection remains interactive and
-  rewrites the remaining plan under a new digest.
+  request supplies reliable identity.
+  - Keep this diagnostic and best-effort: journal entries may report an unknown session and
+    status may report multiple or unknown sessions, while the workspace-wide journal or trusted
+    upper-layer delta remains authoritative.
+- [ ] Add non-interactive plan/apply only with a concrete automation use case.
+  - `--stage plan` seals the current generation and returns a digest;
+    `--stage apply --plan=<digest> --yes` applies the whole conflict-free plan.
+  - The digest binds the project identity, representation version, generation, complete
+    operation groups, content and metadata hashes, lower baselines, and rename and hardlink
+    relationships.
+  - A mismatch changes nothing; path selection remains interactive and rewrites the remaining
+    plan under a new digest.
 - [ ] Add `--stage-name=<name>` only when one project needs concurrent independent staged change
-  sets. Each name selects a separate upper layer, merged mount, cache and failure domain over the
-  same project directory; sessions sharing a name still share those resources. Define safe name
-  encoding, resource limits, management-command selection, project-wide apply serialization and
-  migration from the sole unnamed stage before exposing it.
+  sets.
+  - Each name selects a separate upper layer, merged mount, cache and failure domain over the
+    same project directory; sessions sharing a name still share those resources.
+  - Define safe name encoding, resource limits, management-command selection, project-wide apply
+    serialization and migration from the sole unnamed stage before exposing it.
 
 ## Deferred — `--self-test`'s remaining share rows
 
 `--self-test` runs share rows after the crate's suites (`SelfTestShare.scala`,
-`../fuse/ko-agent-fs/doc/testing.md`): the share is what the container suites cannot reach,
-and the coherency rows cross it launcher-driven and machine-recorded, the scratch gone on
-success and kept on failure — its files are how a row that measured a refusal is told apart from a
-row where the probe broke — with a killed run leaving nothing outside the mounts/ sweep,
-`--reset-all`'s container sweep and the named scratch. Still to fold, to that same standard:
+`../fuse/ko-agent-fs/doc/testing.md`):
+
+- the share is what the container suites cannot reach;
+- the coherency rows cross it launcher-driven and machine-recorded;
+- the scratch is gone on success and kept on failure — its files are how a row that measured a
+  refusal is told apart from a row where the probe broke;
+- a killed run leaves nothing outside the mounts/ sweep, `--reset-all`'s container sweep and the
+  named scratch.
+
+Still to fold, to that same standard:
 
 - [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
   folding, open-file holds — with the launcher in place of `lower-probe-host.py`; both probe
@@ -187,38 +207,26 @@ launcher execs away on POSIX, so neither side has an obvious place to run it.
 - The launcher mounts a launcher-owned lease directory there and starts a host-side watcher that
   reads lease **freshness, never content** — nothing to inject into; the channel is one bit whose
   worst misuse drains a battery (it belongs in SECURITY.md's low-bandwidth list when it returns).
-- The watcher per host: macOS, a detached sh loop (reaper pattern) running
-  `/usr/bin/caffeinate -i -t 20` while fresh — the assertion doubling as the poll interval, so no
-  child pid to manage; Linux, the same loop with `/usr/bin/systemd-inhibit --what=idle:sleep`,
-  keyed on that absolute path existing; Windows, a daemon thread in the resident launcher calling
-  kernel32 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` via FFM — per-thread
-  state that clears when the thread dies, so no teardown path. WSL is a documented gap: the Linux
-  mechanism cannot reach the Windows power manager.
-- Simpler work that comes with it: `--build`/`--update` wrapped in `caffeinate -i`
-  unconditionally on macOS (finite work, no reason to ask), and *not* a session-wide env-var wrap —
-  the launcher's only scope is the whole session, so an idle open agent would keep the laptop awake,
-  which is the reason the lease is scoped to a command at all.
+- The watcher per host:
+  - macOS, a detached sh loop (reaper pattern) running `/usr/bin/caffeinate -i -t 20` while
+    fresh — the assertion doubling as the poll interval, so no child pid to manage;
+  - Linux, the same loop with `/usr/bin/systemd-inhibit --what=idle:sleep`, keyed on that absolute
+    path existing;
+  - Windows, a daemon thread in the resident launcher calling kernel32
+    `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` via FFM — per-thread state that
+    clears when the thread dies, so no teardown path;
+  - WSL is a documented gap: the Linux mechanism cannot reach the Windows power manager.
+- Simpler work that comes with it:
+  - `--build`/`--update` wrapped in `caffeinate -i` unconditionally on macOS (finite work, no
+    reason to ask);
+  - *not* a session-wide env-var wrap — the launcher's only scope is the whole session, so an idle
+    open agent would keep the laptop awake, which is the reason the lease is scoped to a command
+    at all.
 
 **Open questions:** whether the feature is worth building at all, and whether a container→host
 channel — however narrow — should exist for a convenience. One constraint on any implementation:
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
-
-## Deferred — extra hardening, low value
-
-- [ ] Fold case in the host command profile's guard pattern (`SeatbeltProfile.anyDepth`), so a
-  `.GIT` or `.KO-AGENT-SANDBOX` the command creates where no lowercase entry exists is denied on a
-  case-insensitive volume (`run-on-host.md`, "The host command's filesystem rules"), with a gate
-  row creating one. Until then the workspace filter is the stricter of the two guards there.
-
-- [ ] Filter `mach-lookup` in the host command profile, and in the proxy's, which needs it too
-  (`SeatbeltProfile.renderProxy`). It is granted unfiltered, and the system
-  program directories are executable (a command's scripts need `find`, `mount` and whatever else;
-  `runtime-authority.txt`); together those let a command reach any Mach service — `open` through
-  LaunchServices would start an application outside the profile. Measure the services a command
-  actually needs, as `ops` measures operation families, and filter to them (`(allow mach-lookup
-  (global-name …))`, the pattern Apple's profiles use); the gate's forked-process rows are where the
-  answer is checked.
 
 ## Deferred — a bound on a silent host command
 
@@ -231,18 +239,37 @@ One form would, and it waits on a measurement:
 
 - [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
   so the command's logs are kept, with a stderr line naming the bound and the host command log.
-  Silence is measured where the command's bytes are read, and time the pump spends blocked on a
-  slow requester does not count. N must exceed a healthy silence — a module compiling, a large
-  download, which the proxy logs once at its start, a slow test — because a value below one is not
-  a one-off failure: the rerun hits the same silence, and the project cannot build on the host
-  until the constant changes. Five minutes is the smallest value defensible without measurement.
+  - Silence is measured where the command's bytes are read, and time the pump spends blocked on a
+    slow requester does not count.
+  - N must exceed a healthy silence — a module compiling, a large download, which the proxy logs
+    once at its start, a slow test — because a value below one is not a one-off failure: the rerun
+    hits the same silence, and the project cannot build on the host until the constant changes.
+  - Five minutes is the smallest value defensible without measurement.
 
 A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_OPTIONS` banner.
+
+## Deferred — a container mill or gradle beside the host's daemon
+
+Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in the project's
+`out/mill-daemon`, and a `./mill` run in the container without `MILL_OUTPUT_DIR` uses the same
+`out/`. The rules allow the bootstrap's downloads by default, so an agent can run it.
+
+- [ ] Measure, on a small mill build with a host daemon up: what the container's `./mill` does
+  with the host's lock and port, and what the host's next command does with what the container
+  left.
+  - The same run gives a cold compile with and without `MILL_OUTPUT_DIR` under `~/.cache`, which
+    `fuse/ko-agent-fs/doc/troubleshooting.md` ("Everything works but slowly") says is not measured.
+  - If the two conflict, the run-on-host text the launcher appends is the place to tell an agent
+    to set the variable.
+- [ ] The same conflict for gradle. The two sides' daemon registries are separate — the host's
+  is under the broker's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
+  in its gradle user home — but both builds use the project's `build/` and the locks under its
+  `.gradle/`, and the rules allow `./gradlew`'s download by default.
 
 ## Deferred — an idle bound for the sbt server
 
 The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
-`sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
+`ko-sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
 (`run-on-host.md`, the startup-cost paragraph). A warm server is what a terminal user keeps on
 purpose, so its heap is the price chosen; Mill's daemon exits on Mill's own thirty minutes.
 
@@ -251,137 +278,57 @@ environment variable, since the command's environment is closed by design — wi
 Mill's default, as the value to start from. Idle counts from the end of the last sbt command,
 never from the server's start. The broker's serve loop blocks in the handshake reader between
 requests, so the bound needs a timer thread, the one thread retiring runtimes outside the serial
-dispatch, fenced thus: one lock covers the broker's runtime state; a request takes it, marks the
-runtime busy and cancels its pending expiry before the command receives the runtime, and re-arms
-the expiry when the command ends; each re-arming increments an idle generation kept with the
-runtime; an expiry carries the generation it was armed with and, under the lock, retires the
-runtime only if that instance is idle and its generation is still the expiry's own — so a
-cancelled callback that had left its sleep before a request re-armed the timer does nothing, and
-a timer outliving a retired runtime is a no-op on its replacement. Its tests: a request arriving
-as the timer fires, that late callback, and a stale timer after replacement, each leaving one
-consistent runtime.
+dispatch, fenced thus:
 
-## Deferred — cross-launch server takeover
+- one lock covers the broker's runtime state;
+- a request takes it, marks the runtime busy and cancels its pending expiry before the command
+  receives the runtime, and re-arms the expiry when the command ends;
+- each re-arming increments an idle generation kept with the runtime;
+- an expiry carries the generation it was armed with and, under the lock, retires the runtime
+  only if that instance is idle and its generation is still the expiry's own — so a cancelled
+  callback that had left its sleep before a request re-armed the timer does nothing, and a timer
+  outliving a retired runtime is a no-op on its replacement.
 
-Two `ko-agent-sandbox` launches on one project share files and caches, but each broker keeps
-its own sbt servers. One launch’s command for a build directory another launch’s broker still
-owns is refused rather than served (`SECURITY.md` "Run on host";
-`RunOnHostSandbox.BrokerRuntimes`). The build lock already serializes the *commands* of one
-directory across launches, so a running command never overlaps; what is deferred is a launch
-*ending or adopting another live launch's
-warm server* so the second need not wait for the first launch to end. This is separate from
-sharing one server between two launches ("two launches sharing one server or daemon", below):
-takeover ends the other launch's server and starts its own; sharing runs both launches' clients
-against one server.
+Its tests: a request arriving as the timer fires, that late callback, and a stale timer after
+replacement, each leaving one consistent runtime.
 
-Ending a process another party owns is implemented for Mill, for the user's own daemon
-(`MillDaemons.endForeign`): the daemon is found in the process table, its idleness observed on its
-own TCP table, and its pid and start time proved again immediately before each signal. Another
-launch's daemon is refused, as another launch's sbt server is, and for the same reason.
+## The project mounted at its own path
 
-The reason it is deferred, not done: a broker ending another broker's server means one process
-signalling another's recorded process group, and `endRecordedGroup` validates the leader's pid and
-start time and then signals — so a peer ending the same group, and the pid being recycled between
-the check and the signal, would send the signal to an unrelated group. Making that safe needs a
-shared exclusion held from the identity check through the signal, across:
+- [ ] Run `sbt "testWithPodman *MountPathTest"` on Linux; all Linux cases must pass.
+- [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
+  rootless podman installed there — from `/mnt/c/Users/<me>/src/app`: `bash -c pwd` must print
+  that path, the one a PowerShell launch of the same directory prints.
 
-- **cancellation** — the owner retiring its own server after a cancel,
-- **replacement** — the owner replacing a server whose proxy or portfile changed,
-- **teardown** — the owner ending all its servers at the launch's end, including on `SIGTERM`,
-- **scavenging** — a start collecting a *dead* owner's leftover server (this one already has its
-  exclusion: the scavenger condemns the dead session by rename under a lock, so no live broker
-  races it; a live owner is what the takeover must coordinate with).
+Recorded macOS results (2026-09-18):
 
-The build lock, held per program and build directory, is the natural exclusion, but every one of
-those paths must take it around the whole validate-and-signal, and teardown taking build locks on
-`SIGTERM` is the hard part. When built, this needs deterministic concurrency tests that pause one
-retirement between the identity check and the signal while another retires and recycles the group
-(through the injected `Processes` seam, without real OS pids), covering all four paths.
+- `MountPathTest`, `MountLifecycleTest` and the run-on-host gate pass.
+- `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
+  `SandboxLifecycleTest`; those two pass when run alone on Linux.
+- The four agents start without a trust prompt on fresh and used volumes.
+- A host build's error reports a path accessible inside the session.
 
-## Deferred — two launches sharing one server or daemon
+Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2026-09-19):
 
-Two launches on one project could share one sbt server or mill daemon when everything the
-runtime was created from is equal — JDK home, executable and distribution, cache root, rule
-lines, and the forwarded name/value pairs, the one that decides it for security, since a launch
-forwarding a secret must not serve a launch that does not. The egress profile is never part of
-it: every host command's proxy gets `deny defaults`, Maven Central and the rule file. The second
-launch is refused the directory while the first lives; "cross-launch server takeover", above, is
-the other way past that refusal, ending the first launch's runtime.
-
-The design: the broker writes that set as a descriptor into its session, out of the confined
-command's reach since the profile grants `tmp/` alone; a second launch finding a server whose
-socket, or a daemon whose group, belongs to a live broker session compares descriptors and, when
-equal, attaches with that session's socket directory or daemon port and proxy port in its client
-profile, Mill's own fingerprint check agreeing by construction; when different, the refusal
-stays. Its costs, documented with it: a cancel across launches is the program's own, since the
-server is not the canceller's to retire, so a test that ignores interruption runs on until the
-next command queues behind it; and the owning launch's end takes the shared server with it, a
-build of the other launch included, whose next command starts its own.
-
-## Deferred — fetching mill's launcher and Gradle's distribution for the user
-
-A `mill` command whose pinned version, or a `gradle` command whose distribution, the user has
-not provisioned is refused with the command to run on the host (`run-on-host.md`,
-"`mill`", "Gradle"). The sandbox does not fetch either itself because of where the stock program
-keeps it: `~/.cache/mill/download` and `~/.gradle/wrapper/dists` are the folders the user's own
-unconfined `./mill` and `./gradlew` run from, so an executable the sandbox chose there would
-later run outside any sandbox. The refusal is clear, and once per version per user it is a
-tolerable cost.
-
-A way to remove the step while keeping the rule that the user provisions executables and the
-sandbox fetches only artifacts: the wrapper fetches the file through the proxy into the
-project's run-on-host cache like any other jar, and starts the program's launcher class with
-`java -cp` instead of through the stock script.
-
-- Benefits: no host step for the user, for a first project and for every version bump; nothing
-  written where the user's own script looks; the file is never executed directly, since the
-  profile grants caches no process-exec and the JVM only loads them, so the pin in the project
-  selects a version, never a file the user runs.
-- Costs: the wrapper runs the launcher class rather than the stock script, so the script's own
-  resolution and JVM options are the wrapper's to reproduce; and the first command from a
-  project downloads the file, tens of megabytes, through the proxy.
-
-### mill
-
-The JVM launcher is the Maven Central artifact `com.lihaoyi:mill-dist:<v>` (its `-assembly`
-jar, the file the bootstrap downloads), on the host every `mill` command's proxy already allows;
-the start is `java -cp <jar> mill.launcher.MillLauncherMain`. The script's resolution the
-wrapper replaces — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and `-native`
-cases — it already reads; and starting the daemon with the stock bootstrap (`MillDaemons.scala`
-has why) would be revised, with the daemon start and the gate's Mill rows measured again.
-
-### gradle
-
-The distribution is the zip the project's `distributionUrl` names, at `services.gradle.org` or
-a mirror, not a Maven Central artifact, so the fetch is of a project-chosen URL and needs that
-host in the proxy's rules for the fetch, and the archive would be verified against
-`distributionSha256Sum` when the project pins one. The wrapper would unpack it under the
-confinement and start `java -cp lib/gradle-launcher-*.jar org.gradle.launcher.GradleMain`, as
-`BootstrapMainStarter` does, in place of `bin/gradle`.
-
-## Deferred — same-path workspace mounting under `--run-on-host`
-
-Its own launch option, when it arrives. It aligns source paths and nothing else — the host command's
-JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
-does not establish compatibility between the two builds' state. That leaves readable paths in
-build output as the benefit, which did not justify the change. The host path is already in
-the container: the command's streamed output names it (`SECURITY.md`, "Run on host"). Prior
-art, both mounting the project at its host path for path legibility rather than shared state:
-
-- Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
-- Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
-  https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/
+- A launch from PowerShell in `C:\Users\<me>\src\app` mounts the filter at
+  `/mnt/c/Users/<me>/src/app`, and `bash -c pwd` prints that path.
+- A launch from PowerShell in `\\wsl.localhost\podman-machine-default\home\user\<dir>` is
+  refused with `error: cannot map ... into the podman machine`, before any `workspace:` line.
+- A first launch of a new project prepares the image's JDK (`JdkTrust.prepareScript` through
+  `HostCommands.quoteFreeSh`) and reaches a shell.
+- Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
+  session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
 
 ## Deferred — readable session directory names under `--run-on-host`
 
 - [ ] Name the sessions `broker-<random>` and `command-<random>` instead of `b<random>` and
-  `s<random>` (`RunOnHostSession.Kind`), once the path length allows it: the session's `tmp/` hosts
-  sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength` leaves that path 53 characters,
-  of which the root and Java's 20-digit temp-directory name take 51. Either sbt's boot socket
-  comes to need fewer than its 50 characters past the directory (`sbt-issues.md`, the thin-client
-  entry — its fix as requested only turns the crash into a message, and lifts no length), or the
-  session names get a shorter random part of their own, with the collision retry
-  `Files.createTempDirectory` does today.
+  `s<random>` (`RunOnHostSession.Kind`), once the path length allows it.
+  - The session's `tmp/` hosts sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength`
+    leaves that path 53 characters, of which the root and Java's 20-digit temp-directory name
+    take 51.
+  - Either sbt's boot socket comes to need fewer than its 50 characters past the directory
+    (`upstream-issues.md`, the thin-client entry — its fix as requested only turns the crash into a
+    message, and lifts no length), or the session names get a shorter random part of their own,
+    with the collision retry `Files.createTempDirectory` does today.
 - [ ] Name the root after the launcher and the feature,
   `/private/tmp/ko-agent-sandbox-run-on-host-<uid>` in place of `/private/tmp/ko-agent-<uid>`
   (`RunOnHostSession.root`), under the same budget: a second host feature keeping state under
@@ -391,23 +338,53 @@ art, both mounting the project at its host path for path legibility rather than 
 
 - [ ] Re-evaluate the wrapper, the `--run-command-on-host` process the broker starts for each
   request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
-  What it buys: the broker's cancel is a SIGTERM to one process, answered by that process's
-  shutdown hook, which ends exactly the command's groups and directory; a command's death,
-  however it dies, is confined to its own process and never takes the broker and its warm
-  servers with it; and the gate drives one command's whole lifecycle as `RunOnHost` with no
-  broker, which is how the wrapper rows measure the profile. What it costs: one more JVM start
-  per command, about a third of a second in the jar form and tens of milliseconds as the native
-  image, and a second code path for the command's runtime, the wrapper's own under Maven. The
-  alternative is the same work in a broker thread with cancellation done by hand; decide with the
-  measured cost per command and what the gate would drive instead.
+  - What it buys:
+    - the broker's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
+      which ends exactly the command's groups and directory;
+    - a command's death, however it dies, is confined to its own process and never takes the
+      broker and its warm servers with it;
+    - the gate drives one command's whole lifecycle as `RunOnHost` with no broker, which is how
+      the wrapper rows measure the profile.
+  - What it costs:
+    - one more JVM start per command, about a third of a second in the jar form and tens of
+      milliseconds as the native image;
+    - a second code path for the command's runtime, the wrapper's own under Maven.
+  - The alternative is the same work in a broker thread with cancellation done by hand; decide
+    with the measured cost per command and what the gate would drive instead.
+
+## Deferred — the native-image launcher
+
+A GraalVM (JDK 25) native image, with `native-image` and a C toolchain, starts in tens of
+milliseconds where `java -jar` takes ~350 ms. The launcher branches on running as an image
+(`RunOnHostSandbox.isNativeImage`: the wrapper's self-invocation, its launch file, the Seatbelt
+proxy inputs) and stays resident when GraalVM refuses the FFM execvp (`SandboxLifecycle.handOver`).
+No build or test exercises any of it, and the proxy as an image does not start under its profile
+(macOS 26.4.1, GraalVM CE 25.0.2, `run-on-host-profile-iterate.sh mach-proxy <binary>`):
+`Fatal error: CSunMiscSignal.open() failed`. What the profile lacks for it is unmeasured, and so
+are the image's Mach services, which the same mode measures once it starts.
+
+    sbt dist
+    cd target/dist
+    eval $(cs java --jvm graalvm-community:25 --env)
+    export PATH="$JAVA_HOME/bin:$PATH"
+    native-image --enable-native-access=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.util=ALL-UNNAMED \
+      -H:IncludeResources='sandbox-build/.*|defaults/.*|agentsandbox/.*' \
+      -o ko-agent-sandbox -jar ko-agent-sandbox.jar
+
+- [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
+  architectures; only then does the README offer it. build.sbt's comments explain the two exports
+  and the resource includes the command carries.
+- [ ] Decide it together with the published identity: whether the binary is a release artifact at
+  all, or `java -jar` and a Coursier command are the two forms.
 
 ## Before the first release — continuous integration
 
-There is no CI. [README.md](../README.md#development) gives the launcher, proxy and filter
-test commands.
-`--self-test` runs the filter suites on demand. A user's `--build` instead performs the gates whose
-answers belong to that artifact and machine: `cargo deny check licenses bans sources`, compilation,
-binary identity, and the installed filter's mount self-test.
+There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter
+test commands. `--self-test` runs the filter suites on demand. A user's `--build` instead performs
+the gates whose answers belong to that artifact and machine: `cargo deny check licenses bans
+sources`, compilation, binary identity, and the installed filter's mount self-test.
 
 - [ ] Add CI for the launcher's and proxy's `sbt testFull`, and the filter's pure and binary suites
   on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
@@ -417,9 +394,12 @@ binary identity, and the installed filter's mount self-test.
 
 ## Before the first release — the published identity
 
-- [ ] One decision that must settle several names together: the jar's artifact name and
-  publication coordinates; the Scala package names (`agentsandbox.*`, containing neither the
-  `ko-` prefix nor an organization); and the image label key (`ko-agent-sandbox.bundle` —
-  OCI convention wants a reverse-DNS key, and the right prefix is this same identity, so deciding
-  the key alone would decide the identity by accident). Until then a changed key ends in
-  the "rebuild with --build" refusal, so the exposure is bounded.
+- [ ] One decision that must settle several names together:
+  - the jar's artifact name and publication coordinates;
+  - the Scala package names (`agentsandbox.*`, containing neither the `ko-` prefix nor an
+    organization);
+  - the image label key (`ko-agent-sandbox.bundle` — OCI convention wants a reverse-DNS key, and
+    the right prefix is this same identity, so deciding the key alone would decide the identity by
+    accident).
+
+  Until then a changed key ends in the "rebuild with --build" refusal, so the exposure is bounded.

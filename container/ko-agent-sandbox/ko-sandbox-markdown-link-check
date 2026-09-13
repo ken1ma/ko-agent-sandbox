@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+Check that the local links in Markdown files resolve, so an agent that renamed a heading or moved
+a file runs one command instead of opening every link's target.
+
+    ko-sandbox-markdown-link-check          # every *.md file of the repository that git does not
+                                            # ignore, tracked or not, from any directory in it
+    ko-sandbox-markdown-link-check FILE...  # these files
+
+Run it without FILE after renaming a heading or moving a file: the broken link can be in a file
+the change did not touch.
+
+lychee (https://lychee.cli.rs) extracts and checks the links: inline and reference-style links,
+images, and HTML `href` and `src`, but nothing inside a code span or fence. A link starting with
+`/` resolves from --root, as GitHub resolves it from the repository. Only the working tree is
+read: a link to an untracked or ignored file is valid.
+
+Each reference that did not pass prints `path:line: kind: target`, ordered by path and line, with
+the target relative to the current directory and percent-decoded:
+
+    doc/setup.md:18: missing-file: scripts/install.sh
+    doc/setup.md:42: missing-anchor: README.md#install
+    doc/setup.md:57: unchecked-fragment: src/Main.scala#L10
+
+- unchecked-fragment: the file exists, and lychee looks for fragments only in Markdown and HTML
+  files, so in this one it would accept any.
+- The target is the path the link resolved to, not the link's own text: `../a%20b.md` in
+  `doc/setup.md` prints as `a b.md`. Find the link by its line.
+- A reference-style link is reported on the line that uses it; its target is written in its
+  `[label]:` definition.
+- Any other failure lychee reports is printed in its words: `path:line: lychee says '...': target`.
+
+The last line counts what was checked. `external excluded` are the links to other schemes,
+`https:` and `mailto:`, which are never fetched:
+
+    summary: files 8; local references 40: valid 37, broken 2, unchecked 1; external excluded 12
+
+Exit 1 when a reference is broken; 2 when the check could not run; otherwise 0, unchecked
+fragments included: their writer has nothing to repair.
+
+Anchors follow lychee's rules. SandboxMarkdownLinkCheckTest has the cases where they are the rules
+GitHub documents — lowercase, punctuation removed, spaces to hyphens, `-1` for a repeated heading
+— and an `<a id>` anchor. Not compared with a page GitHub renders: lychee accepts `#Setup` for the
+heading `Setup`.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+NAME = "ko-sandbox-markdown-link-check"
+
+# The file types lychee looks for a fragment in, compared in lowercase. SandboxMarkdownLinkCheckTest
+# has a missing anchor in each: a lychee release that stops checking one fails it.
+FRAGMENT_CHECKED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
+
+
+class CannotCheck(Exception):
+    pass
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True)
+
+
+def markdown_files_git_does_not_ignore():
+    # :(top) — the whole repository, not the current directory's part of it: a renamed heading's
+    # links can be anywhere. The names are still relative to the current directory.
+    listing = git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(top)*.md")
+    if listing.returncode != 0:
+        raise CannotCheck("not in a git repository: name the files to check")
+    # A tracked file deleted from the working tree is still listed.
+    return [name for name in listing.stdout.split("\0") if name and os.path.isfile(name)]
+
+
+def default_root():
+    toplevel = git("rev-parse", "--show-toplevel")
+    return toplevel.stdout.rstrip("\n") if toplevel.returncode == 0 else os.getcwd()
+
+
+def lychee(root, files):
+    """lychee's JSON report on `files`, keyed by their absolute paths."""
+    # lychee reads lychee.toml and .lycheeignore from its working directory, and either can hide
+    # a broken link; an empty directory has neither.
+    with tempfile.TemporaryDirectory() as empty:
+        try:
+            # --verbose: without it the report leaves out the references that passed.
+            ran = subprocess.run(
+                ["lychee", "--offline", "--include-fragments", "--no-progress", "--verbose", "--format", "json",
+                 "--root-dir", root, "--", *files],
+                cwd=empty, capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            raise CannotCheck("lychee is not on PATH")
+    # 2 is lychee's exit for broken links.
+    if ran.returncode not in (0, 2):
+        raise CannotCheck(f"lychee exited {ran.returncode}: {ran.stderr.strip()}")
+    return json.loads(ran.stdout)
+
+
+def references(report_map):
+    """
+    (source, line, column, target path, fragment, entry) for each reference in one of the report's
+    maps. The path is None when lychee did not attribute the entry to a file: URL, as for a link
+    it could not parse.
+    """
+    for source, entries in report_map.items():
+        for entry in entries:
+            url = urlsplit(entry["url"])
+            span = entry.get("span") or {}
+            local = url.scheme == "file"
+            yield (source, span.get("line", 0), span.get("column", 0),
+                   unquote(url.path) if local else None, unquote(url.fragment) if local else "", entry)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog=NAME,
+        description=__doc__.strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--root", metavar="DIRECTORY",
+                        help="where a link starting with / resolves from; "
+                             "default: the git repository's top, or outside one the current directory")
+    parser.add_argument("files", nargs="*", metavar="FILE")
+    args = parser.parse_args()
+
+    try:
+        given = args.files or markdown_files_git_does_not_ignore()
+        unreadable = [name for name in given if not os.path.isfile(name)]
+        if unreadable:
+            raise CannotCheck(f"not a file: {', '.join(unreadable)}")
+        root = os.path.abspath(args.root or default_root())
+        name_given = {os.path.abspath(name): name for name in given}
+        report = lychee(root, list(name_given)) if given else {"success_map": {}, "error_map": {}, "excludes": 0}
+
+        passed = [reference for reference in references(report["success_map"]) if reference[3] is not None]
+    except CannotCheck as ex:
+        print(f"{NAME}: {ex}", file=sys.stderr)
+        sys.exit(2)
+
+    def shown(target, fragment):
+        return os.path.relpath(target) + (f"#{fragment}" if fragment else "")
+
+    findings = []
+    for source, line, column, target, fragment, _ in passed:
+        if fragment and not (os.path.isfile(target) and Path(target).suffix.lower() in FRAGMENT_CHECKED_SUFFIXES):
+            findings.append((source, line, column, f"unchecked-fragment: {shown(target, fragment)}"))
+    unchecked = len(findings)
+    for source, line, column, target, fragment, entry in references(report["error_map"]):
+        if target is None or (os.path.exists(target) and not fragment):
+            said = f"lychee says '{entry['status']['text']}': {entry['url'] if target is None else shown(target, '')}"
+        elif os.path.exists(target):
+            said = f"missing-anchor: {shown(target, fragment)}"
+        else:
+            said = f"missing-file: {shown(target, fragment)}"
+        findings.append((source, line, column, said))
+    broken = len(findings) - unchecked
+
+    for source, line, _, said in sorted(findings):
+        # lychee can spell a source differently from os.path.abspath, through a symlink.
+        print(f"{name_given.get(source, source)}:{line}: {said}")
+    print(f"summary: files {len(given)}; local references {len(passed) + broken}: "
+          f"valid {len(passed) - unchecked}, broken {broken}, unchecked {unchecked}; "
+          f"external excluded {report['excludes']}")
+    sys.exit(1 if broken else 0)
+
+
+if __name__ == "__main__":
+    main()

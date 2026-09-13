@@ -21,7 +21,7 @@ prevents adding targets during a session.
 
 ## Both suites, anywhere podman runs — `--self-test`
 
-Run `--build` first to provide the sandbox image, then:
+Run `--build` first to provide the sandbox image and pull the Rust image, then:
 
     java -jar target/dist/ko-agent-sandbox.jar --self-test
     java -jar target/dist/ko-agent-sandbox.jar --self-test a_handle_held
@@ -66,15 +66,17 @@ The rig's flags and toolchain selection are documented beside their implementati
 ## What the mounted suites cover
 
 `tests/common/mod.rs` is their harness: a filter over a temporary backing tree, mounted with
-`fs::mount_config` — the product's options, not a convenient subset — and every refusal asserted as
-`EPERM` specifically rather than merely as an error. Over it run the read path; the adversarial set
-(`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hardlink
+`fs::mount_config` — the product's options, not a convenient subset — and every refusal asserted
+as `EPERM` specifically rather than merely as an error. Over it run the read path; the adversarial
+set (`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hardlink
 aliasing in both directions, the full name-rule corpus, an existing `.git` pointer file, a symlinked
-`hooks/`, nested `modules/` and `worktrees/` protected entries, a directory handle held across the
-rename that vacates its name); real git, where the everyday commands
-must pass, `rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist
-cannot quietly reopen them, and the host's own hook must still run; and the concurrency/TOCTOU pair,
-the only tests that reach `openat2`'s `EAGAIN` path.
+`hooks/`, nested `modules/` and `worktrees/` protected entries, a second name of a guarded entry, a
+directory handle held across the rename that vacates its name, to a symlink or to a second name, a
+file descriptor whose name becomes a second name); real git, where the everyday commands must pass,
+`rebase`/`config --local`/`init` must **fail** so a later widening of the allowlist cannot quietly
+reopen them, and the host's own hook must still run; and the concurrency tests: the rename pair, the
+only tests that reach `openat2`'s `EAGAIN` path, and the create pair, where the host makes an entry
+between the kernel's lookup and the backing open.
 
 The suites run as a single uid, so they cannot tell `allow_other` + `default_permissions`
 (`architecture.md`, "Who may reach the mount") from the alternative; only the launcher mounting for

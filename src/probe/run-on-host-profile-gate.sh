@@ -14,8 +14,8 @@
 # RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile and be ended by
 # the wrapper (one server per build directory). Each wrapper row scavenges, publishes a command directory, starts the
-# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session — runs
-# the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
+# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session —
+# runs the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
 # profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
 # profile, which is the measurement.
 #
@@ -30,7 +30,8 @@
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker is in a scratch tree this script makes and
 # removes. A denied row prints the denial on stderr; a wrongly permitted one leaves a marker the
-# cleanup removes, and the row reports FAIL.
+# cleanup removes, and the row reports FAIL. The `open` row, wrongly permitted, starts Calculator,
+# which the row ends unless it was running before.
 set -u
 . "$(dirname "$0")/run-on-host-gate-setup.sh"
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
@@ -107,15 +108,16 @@ else machine "podman: absent"; fi
 # The .GIT probe reaches the existing .git only on a case-insensitive volume.
 case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
 : > "$case_probe/a"
-if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"
-else machine "project filesystem: case-sensitive"; fi
+if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"; folding=1
+else machine "project filesystem: case-sensitive"; folding=0; fi
 rm -rf "$case_probe"
 
 emit() { # program
     rm -f "$work/gate-$1.env"
     # Each path quoted for sbt's own command parser: a checkout with a space in its path would
     # otherwise split into two arguments.
-    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/runtime-authority.txt $1 \"$(project_of "$1")\""
+    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt $1"
+    args="$args \"$(project_of "$1")\""
     sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile $args" >"$work/emit-$1.log" 2>&1 \
         || { echo "emit failed for $1:"; tail -20 "$work/emit-$1.log"; return 1; }
     mv "$work/gate-$1.sb.env" "$work/gate-$1.env"
@@ -187,7 +189,7 @@ locked_wrapper() { # program project command...
     # subshell whose kill would miss them (victim_wrapper's own reason).
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
-        src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
+        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- "$@"
 }
 wrapper() { # program project command...
     wrapper_program=$1; wrapper_project=$2; shift 2
@@ -234,7 +236,7 @@ ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
 # A launch's gradle daemons carry the launch's tmp/ as java.io.tmpdir in their initial
-# environment, the client's own (GradleDaemons): those of every session under the root here,
+# environment, the client's own (RunOnHostGradleDaemons): those of every session under the root here,
 # this gate's own included. The "yours" row's daemon, unconfined in a registry under $work, is
 # found by its log open there (DaemonMain).
 gradle_daemons() {
@@ -379,7 +381,7 @@ test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
 # The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
 echo "emitting the proxy profile"
 sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/gate-proxy.sb\" \
-        src/main/resources/agentsandbox/runtime-authority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
+        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
         >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
 # `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
@@ -459,8 +461,10 @@ cleanup() {
     # session's live inside its container.
     if [ -n "${channel_broker:-}" ]; then
         kill "$channel_broker" 2>/dev/null
+        [ -n "${second_broker:-}" ] && kill "$second_broker" 2>/dev/null
         kill_channel_execs
         rm -rf /tmp/ko-agent-sandbox/run-on-host
+        [ -n "${channel_dir2:-}" ] && rm -rf "$channel_dir2"
     fi
     end_project_servers
 }
@@ -584,8 +588,8 @@ if want mill; then
     # Each wrapper row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
-    # (RunOnHostSandbox.BrokerRuntimes, MillDaemons), beyond the classpath memo a start deletes
-    # when it names paths the profile denies (MillDaemons.discardForeignMemo).
+    # (RunOnHostSandbox.BrokerRuntimes, RunOnHostMillDaemons), beyond the classpath memo a start deletes
+    # when it names paths the profile denies (RunOnHostMillDaemons.discardForeignMemo).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
@@ -603,7 +607,7 @@ if want gradle; then
     use_profile gradle
     # Each wrapper row's client starts a daemon in the registry under the command's session,
     # resolving through the proxy into the run-on-host cache's Gradle user home; the wrapper
-    # records the daemon after the command and ends it with the session (GradleDaemons).
+    # records the daemon after the command and ends it with the session (RunOnHostGradleDaemons).
     for task in help build; do
         [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (wrapper)" "quick mode"; continue; }
         if wrapper gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
@@ -693,6 +697,16 @@ for p in $profiles; do
     expect_denied "$p" "write PROJECT/sub/nested/.git/hooks/x" ": > '$scratch/sub/nested/.git/hooks/x'"
     expect_denied "$p" "write existing .git/config through .GIT" ": >> '$scratch/sub/nested/.GIT/config'"
     expect_denied "$p" "create PROJECT/.git during the command" "mkdir '$scratch/.git'"
+    # A spelling the volume folds to a guarded name, created where no entry exists for the access
+    # to resolve to: host git and the launcher would open it as the name (seatbelt-semantics.sh
+    # E9-E12). U+212A KELVIN SIGN and U+017F LONG S fold to k and s; .git has no such letter.
+    mkdir "$scratch/fresh"
+    for spelling in .GIT .KO-AGENT-SANDBOX "$(printf '.\342\204\252o-agent-sandbox')" \
+        "$(printf '.ko-agent-\305\277andbox')"; do
+        if [ "$folding" = 1 ]
+        then expect_denied "$p" "create PROJECT/$spelling where no such entry exists" "mkdir '$scratch/fresh/$spelling'"
+        else report SKIP "create PROJECT/$spelling where no such entry exists" "the project volume folds no case"; fi
+    done
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
     expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/rule'"
@@ -726,6 +740,27 @@ for p in $profiles; do
         else report FAIL "read and execute the mill launcher" "$(first_error)"; fi
         expect_denied mill "list the mill download folder" "ls '$mill_downloads'"
     fi
+
+    echo
+    echo "Mach services, under the $p profile"
+    calculator_before=$(pgrep -x Calculator)
+    expect_denied "$p" "start an application through open" "/usr/bin/open -g -a Calculator"
+    [ -n "$calculator_before" ] || pkill -x Calculator
+    # The proxy's JVM dies of a segmentation fault without the service SeatbeltProfile.MachServices
+    # names; a command's JVM asking the system's resolver must not. Whether the name resolves is
+    # not this row's question.
+    cat > "$SESSION_TMP/Resolve.java" <<'EOF'
+class Resolve {
+    public static void main(String[] arguments) {
+        try { System.out.println(java.net.InetAddress.getByName("localhost")); }
+        catch (java.net.UnknownHostException ex) { System.out.println(ex); }
+    }
+}
+EOF
+    # From the profile's own project: a JVM asks for its working directory at start, and the
+    # gate's is the sbt profile's project alone.
+    expect_allowed "$p" "a JVM resolving a name survives it" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java'"
 
     echo
     echo "allowed writes, under the $p profile"
@@ -827,10 +862,12 @@ else report FAIL "the proxy cannot write a file" "$(first_error)"; fi
 
 echo
 echo "the command lifecycle"
-# Command sessions alone: the broker's own session (b<random>) and the build locks are not commands.
+# Command sessions alone: the broker's own session (b<random>), the build locks and the retirement
+# locks are not commands.
 commands_now() {
     ls "$command_root" 2>/dev/null \
-        | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$' -e '^build-lock$' -e '^b[0-9]'
+        | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$' -e '^build-lock$' -e '^retire-lock$' \
+            -e '^b[0-9]'
 }
 lifecycle_rows="two concurrent commands
 SIGTERM: the wrapper cleans up behind itself
@@ -869,7 +906,7 @@ victim_wrapper() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost \
-        sbt "$project" src/main/resources/agentsandbox/runtime-authority.txt -- compile >"$work/$1" 2>&1
+        sbt "$project" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- compile >"$work/$1" 2>&1
 }
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
@@ -999,6 +1036,8 @@ channel: a cancelled command's warm server survives, and the next command reuses
 channel: the denied-host report is per command
 channel: a second build directory stays warm beside the first, each reused
 channel: an edited sbt.version takes effect after shutdown
+channel: a second launch attaches to the first's sbt server, recording nothing
+channel: a second launch forwarding a variable the first did not is refused, the server kept
 channel: a working directory outside the project is refused
 channel: a dead shim ends the running command
 channel: a dead sandbox ends the channel, its command and the broker's runtimes
@@ -1006,7 +1045,8 @@ channel: TERM to the broker ends its command before the broker exits
 channel: a killed broker's command ends with it, and its server with the next start
 channel: a planted portfile nominates nothing: refused, no shutdown spoken
 channel: the broker's end takes the gradle daemon, and the JVM its build forked"
-mill_channel_rows="channel: mill compile starts the broker's daemon, and the next command reuses it
+mill_channel_rows="channel: a second launch attaches to the first's mill daemon
+channel: mill compile starts the broker's daemon, and the next command reuses it
 channel: a mill build's forked JVM writes temporary files where the daemon's profile allows
 channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it
 channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched
@@ -1060,7 +1100,8 @@ kill_channel_execs() {
     [ -f "$work/exec.pids" ] || return 0
     while IFS='|' read -r pid start; do
         [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] || continue
-        ps -o command= -p "$pid" 2>/dev/null | grep -qF "$channel_dir" || continue
+        ps -o command= -p "$pid" 2>/dev/null | grep -qF -e "$channel_dir" -e "${channel_dir2:-$channel_dir}" \
+            || continue
         kill_owned_children "$pid"
         [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] && kill -9 "$pid" 2>/dev/null
     done < "$work/exec.pids"
@@ -1069,7 +1110,7 @@ kill_channel_execs() {
 channel_shim() { # log cwd args...
     chan_log=$1; chan_cwd=$2; shift 2
     cd "$chan_cwd" || exit 1
-    PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/sandbox-run-on-host" "$@" \
+    PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" "$@" \
         >"$work/$chan_log" 2>"$work/$chan_log.err"
 }
 channel_settled() { # await the broker between rows: no command directory, command server or command proxy
@@ -1277,19 +1318,259 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         else report FAIL "channel: an edited sbt.version takes effect after shutdown" \
             "before: ${before_edit:-none}, after shutdown: ${after_shutdown:-none}"; fi
 
+        # --- two launches on one project (doc/run-on-host.md, "The channel and the command") ------
+        #
+        # A second broker on the same project: its commands attach to the first broker's server
+        # and daemon when they would start one under the same confinement and environment, and
+        # otherwise end them by the first's records and start their own
+        # (RunOnHostSandbox.BrokerRuntimes.attached, takeOver). The shim and the
+        # broker both spell the channel directory as one constant, and the stub podman runs every
+        # exec on this host, so a second broker would share the first's FIFOs: its own stub
+        # rewrites the constant in each script it execs, and its shim is a copy with the constant
+        # rewritten. Its execs go into the same pid file, which the cleanup reads for both
+        # directories. The directory is this run's own under /tmp, its name safe for the
+        # rewrites and the shim's unquoted uses, where the checkout's path may carry a space or a
+        # sed delimiter; the cleanup removes it.
+        channel_dir2=$(mktemp -d /tmp/ko-agent-gate-channel.XXXXXX) || exit 1
+        sed "s|^dir=/tmp/ko-agent-sandbox/run-on-host\$|dir=$channel_dir2|" \
+            "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" > "$work/shim2"
+        chmod +x "$work/shim2"
+        cat > "$work/podman2" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+    "exec -i")
+        echo "\$\$|\$(ps -o lstart= -p \$\$)" >> "$work/exec.pids"
+        script=\$(printf '%s' "\$6" | sed 's|/tmp/ko-agent-sandbox/run-on-host|$channel_dir2|g')
+        exec sh -c "\$script" ;;
+    "container inspect") cat "$work/running2" ;;
+esac
+EOF
+        chmod +x "$work/podman2"
+        # A name-only forward's value travels under its carrier name in the broker's own
+        # environment (RunOnHostChannel.spawnBroker), which the launcher sets: this gate sets it.
+        # The broker sessions under the root — `b` and digits, as commands_now tells them from
+        # `build-lock/` — are not the gate's alone: a launch on this project from another
+        # terminal, an agent session's included, keeps its own broker session there. So the
+        # second broker's session is the one that appears when it starts, and the first's the
+        # one whose server record for the project is alive.
+        broker_sessions() { ls "$command_root" 2>/dev/null | grep '^b[0-9]' | sed "s|^|$command_root/|"; }
+        session_record() { # session record-name
+            cat "$1/records/$2" 2>/dev/null
+        }
+        sbt_record=server-sbt-$(build_hash "$project")
+        mill_record=daemon-mill-$(build_hash "$mill_project")
+        start_second_broker() { # [--env=NAME]: false when it made no FIFO and published no session
+            echo true > "$work/running2"
+            rm -rf "$channel_dir2"
+            broker_sessions > "$work/sessions-before"
+            KO_AGENT_RUN_ON_HOST_ENV_GATE_SHARE=1 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+                agentsandbox.launcher.AgentSandboxLauncher --serve-run-on-host "$work/podman2" C2 "$project" \
+                sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_broker=$!
+            tries=0
+            second_session_dir=""
+            while { [ ! -p "$channel_dir2/req" ] || [ -z "$second_session_dir" ]; } && [ "$tries" -lt 100 ]; do
+                tries=$((tries + 1)); sleep 0.2
+                second_session_dir=$(broker_sessions | grep -vxFf "$work/sessions-before" | head -1)
+            done
+            [ -p "$channel_dir2/req" ] && [ -n "$second_session_dir" ]
+        }
+        stop_second_broker() {
+            [ -n "${second_broker:-}" ] || return 0
+            kill -TERM "$second_broker" 2>/dev/null
+            tries=0
+            while kill -0 "$second_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
+            kill -9 "$second_broker" 2>/dev/null
+            second_broker=""
+            rm -rf "$channel_dir2"
+        }
+        second_shim() { # log cwd args...
+            chan_log=$1; chan_cwd=$2; shift 2
+            cd "$chan_cwd" || exit 1
+            PATH="$work/bin:$PATH" exec "$work/shim2" "$@" >"$work/$chan_log" 2>"$work/$chan_log.err"
+        }
+        first_session=""
+        for candidate in $(broker_sessions); do
+            record_alive "$(session_record "$candidate" "$sbt_record")" && first_session=$candidate
+        done
+        second_session() { printf '%s\n' "$second_session_dir"; }
+        root_now() { ls "$command_root" 2>/dev/null | tr '\n' ' '; }
+        share_row="channel: a second launch attaches to the first's sbt server, recording nothing"
+        takeover_row="channel: a second launch forwarding a variable the first did not takes the sbt server over"
+        takeback_row="channel: the first launch's next command takes the sbt server back"
+        teardown_row="channel: the first launch's command during the second's teardown starts its own server"
+        mill_share_row="channel: a second launch attaches to the first's mill daemon"
+        mill_takeover_row="channel: a second launch forwarding a variable the first did not takes the mill daemon over"
+        # The mill rows are reported once: here, or with the mill rows' own skip.
+        if ! start_second_broker; then
+            report FAIL "$share_row" "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
+            report SKIP "$takeover_row" "no second broker"
+            report SKIP "$takeback_row" "no second broker"
+            report SKIP "$teardown_row" "no second broker"
+            want mill && report SKIP "$mill_share_row" "no second broker"
+            want mill && report SKIP "$mill_takeover_row" "no second broker"
+        else
+            # The first broker's server for the project is warm from the rows above. The second
+            # launch's `about` runs in it: the record and its group unchanged, no second server,
+            # and nothing recorded in the second broker's session.
+            share_before=$(broker_server_record "$project")
+            with_timeout 600 second_shim chan-share-sbt.log "$project" sbt about; share_status=$?
+            channel_settled
+            share_session=$(second_session)
+            share_records=$(ls "$share_session/records" 2>/dev/null | tr '\n' ' ')
+            if [ "$share_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-sbt.log" \
+                && [ -n "$share_before" ] && record_alive "$share_before" \
+                && [ "$(broker_server_record "$project")" = "$share_before" ] \
+                && [ -n "$(server_in_group "$share_before")" ] && [ -z "$(command_servers)" ] \
+                && [ -n "$share_session" ] && [ -z "$share_records" ] \
+                && grep -q 'attached to' "$work/channel2.log"
+            then report PASS "$share_row" "$(grep -m1 -o 'attached to [^ ]*' "$work/channel2.log")"
+            else report FAIL "$share_row" "exit $share_status, record before ${share_before:-none}, after \
+$(broker_server_record "$project"), command servers: $(command_servers | tr '\n' ' '), second session \
+${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-share-sbt.log.err" | cut -c1-50)"; fi
+
+            # The daemon the second launch attaches to is the first broker's, started here by its
+            # own `version` — the start meets the wrapper rows' memo before the mill rows below
+            # do — and shut down after, so the mill rows still measure a start of their own.
+            if want mill; then
+                with_timeout 900 channel_shim chan-share-mill1.log "$mill_project" mill version
+                channel_settled
+                mill_share_record=$(broker_daemon_record "$mill_project")
+                mill_share_daemon=$(daemon_in_group "$mill_share_record")
+                with_timeout 600 second_shim chan-share-mill.log "$mill_project" mill version; mill_share_status=$?
+                channel_settled
+                if [ "$mill_share_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill.log" \
+                    && [ -n "$mill_share_daemon" ] && record_alive "$mill_share_record" \
+                    && [ "$(broker_daemon_record "$mill_project")" = "$mill_share_record" ] \
+                    && [ "$(daemon_in_group "$mill_share_record")" = "$mill_share_daemon" ] \
+                    && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] \
+                    && [ -z "$(ls "$(second_session)/records" 2>/dev/null)" ] \
+                    && grep -q 'attached to .* mill runtime' "$work/channel2.log"
+                then report PASS "$mill_share_row" "daemon $mill_share_daemon in group ${mill_share_record%% *}"
+                else report FAIL "$mill_share_row" "exit $mill_share_status, daemon before ${mill_share_daemon:-none}, \
+after $(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '); \
+$(tail -1 "$work/chan-share-mill.log.err" | cut -c1-50)"; fi
+                with_timeout 300 channel_shim chan-share-mill2.log "$mill_project" mill shutdown
+                channel_settled
+            fi
+            stop_second_broker
+
+            # The second launch forwards a variable the first did not: the server it would start
+            # has another environment, so it ends the first broker's server by its record, under
+            # the retirement lock, and starts its own; the first's record stays, its group gone.
+            # The first launch's next command finds its group dead and takes the server back
+            # the same way: two launches whose runtimes differ alternate restarts.
+            if ! start_second_broker --env=GATE_SHARE; then
+                report FAIL "$takeover_row" \
+                    "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
+                report SKIP "$takeback_row" "no second broker"
+                report SKIP "$teardown_row" "no second broker"
+                want mill && report SKIP "$mill_takeover_row" "no second broker"
+            else
+                taken_before=$(session_record "$first_session" "$sbt_record")
+                with_timeout 600 second_shim chan-share-takeover.log "$project" sbt about; takeover_status=$?
+                channel_settled
+                second=$(second_session)
+                taken_after=$(session_record "$second" "$sbt_record")
+                if [ "$takeover_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-takeover.log" \
+                    && [ -n "$taken_before" ] && ! record_alive "$taken_before" \
+                    && [ -z "$(server_in_group "$taken_before")" ] \
+                    && [ -n "$taken_after" ] && record_alive "$taken_after" \
+                    && [ -n "$(server_in_group "$taken_after")" ] && [ -z "$(command_servers)" ] \
+                    && grep -q 'took over' "$work/channel2.log"
+                then report PASS "$takeover_row" "$(grep -m1 -o 'took over [^ ]*' "$work/channel2.log")"
+                else report FAIL "$takeover_row" "exit $takeover_status, first's record ${taken_before:-none} \
+$(record_alive "$taken_before" && echo alive || echo gone), second's ${taken_after:-none} \
+$(record_alive "$taken_after" && echo alive || echo gone) in ${second:-no session}, command servers: \
+$(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share-takeover.log.err" | cut -c1-60)"; fi
+
+                with_timeout 600 channel_shim chan-share-takeback.log "$project" sbt about; takeback_status=$?
+                channel_settled
+                taken_back=$(session_record "$first_session" "$sbt_record")
+                if [ "$takeback_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-takeback.log" \
+                    && [ -n "$taken_back" ] && [ "$taken_back" != "$taken_before" ] && record_alive "$taken_back" \
+                    && [ -n "$(server_in_group "$taken_back")" ] \
+                    && [ -n "$taken_after" ] && ! record_alive "$taken_after" \
+                    && [ -z "$(server_in_group "$taken_after")" ] && [ -z "$(command_servers)" ] \
+                    && grep -q 'took over' "$work/channel.log"
+                then report PASS "$takeback_row" "$(grep -m1 -o 'took over [^ ]*' "$work/channel.log")"
+                else report FAIL "$takeback_row" "exit $takeback_status, first's record ${taken_back:-none} \
+$(record_alive "$taken_back" && echo alive || echo gone), second's ${taken_after:-none} \
+$(record_alive "$taken_after" && echo alive || echo gone) in ${second:-no session}, command servers: \
+$(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share-takeback.log.err" | cut -c1-60)"; fi
+
+                # The daemon likewise: the first broker's, started by its own `version`, is ended
+                # by the second's and replaced; the first's `shutdown` then ends the second's the
+                # same way and stops its own, so the mill rows still measure a start of their own.
+                if want mill; then
+                    with_timeout 900 channel_shim chan-share-mill-takeover0.log "$mill_project" mill version
+                    channel_settled
+                    mill_before=$(session_record "$first_session" "$mill_record")
+                    mill_daemon_before=$(daemon_in_group "$mill_before")
+                    with_timeout 600 second_shim chan-share-mill-takeover.log "$mill_project" mill version
+                    mill_takeover_status=$?
+                    channel_settled
+                    mill_after=$(session_record "$second" "$mill_record")
+                    if [ "$mill_takeover_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill-takeover.log" \
+                        && [ -n "$mill_daemon_before" ] && ! record_alive "$mill_before" \
+                        && ! kill -0 "$mill_daemon_before" 2>/dev/null \
+                        && [ -n "$mill_after" ] && record_alive "$mill_after" \
+                        && [ -n "$(daemon_in_group "$mill_after")" ] \
+                        && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] \
+                        && grep -q 'took over .* mill daemon' "$work/channel2.log"
+                    then report PASS "$mill_takeover_row" "daemon $mill_daemon_before ended, \
+$(daemon_in_group "$mill_after") in group ${mill_after%% *}"
+                    else report FAIL "$mill_takeover_row" "exit $mill_takeover_status, daemon before \
+${mill_daemon_before:-none} $(kill -0 "$mill_daemon_before" 2>/dev/null && echo alive || echo gone), second's \
+record ${mill_after:-none}, all: $(mill_daemons | tr '\n' ' '); \
+$(tail -1 "$work/chan-share-mill-takeover.log.err" | cut -c1-50)"; fi
+                    with_timeout 600 channel_shim chan-share-mill-takeover1.log "$mill_project" mill shutdown
+                    channel_settled
+                fi
+
+                # The second launch owning the server again, its broker is ended while the
+                # first's command runs: the taker waits on the retirement lock the teardown
+                # holds, finds the group ended or ends it, and starts its own — one server, its
+                # record the first's, no signal twice, the second's session collected.
+                with_timeout 600 second_shim chan-share-retake.log "$project" sbt about; retake_status=$?
+                channel_settled
+                retaken=$(session_record "$second" "$sbt_record")
+                takeovers_before=$(grep -c "took over $(basename "$second")" "$work/channel.log")
+                kill -TERM "$second_broker" 2>/dev/null
+                with_timeout 600 channel_shim chan-share-teardown.log "$project" sbt about; teardown_status=$?
+                stop_second_broker
+                channel_settled
+                torn_down=$(session_record "$first_session" "$sbt_record")
+                if [ "$retake_status" -eq 0 ] && [ "$teardown_status" -eq 0 ] \
+                    && grep -q 'This is sbt' "$work/chan-share-teardown.log" \
+                    && [ -n "$retaken" ] && ! record_alive "$retaken" && [ -z "$(server_in_group "$retaken")" ] \
+                    && [ -n "$torn_down" ] && record_alive "$torn_down" \
+                    && [ -n "$(server_in_group "$torn_down")" ] && [ -z "$(command_servers)" ] \
+                    && [ ! -d "$second" ] && [ ! -d "$command_root/condemned/$(basename "$second")" ]
+                then report PASS "$teardown_row" "$(if [ "$(grep -c "took over $(basename "$second")" \
+                    "$work/channel.log")" -gt "$takeovers_before" ]; then echo "took the group over"; \
+                    else echo "found the group ended by the teardown"; fi)"
+                else report FAIL "$teardown_row" "exits $retake_status/$teardown_status, second's record \
+${retaken:-none} $(record_alive "$retaken" && echo alive || echo gone), first's ${torn_down:-none} \
+$(record_alive "$torn_down" && echo alive || echo gone), second's session \
+$([ -d "$second" ] && echo kept || echo gone), condemned \
+$([ -d "$command_root/condemned/$(basename "$second")" ] && echo kept || echo gone), root: $(root_now); \
+$(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
+            fi
+        fi
+
         # --- mill: the broker's daemon (doc/run-on-host.md, "mill") ------------------------------
         #
         # The daemon the broker starts in its session serves every mill command of the build
         # directory; each client runs under a profile naming that daemon's port and no other. The
         # first row also meets the memo the wrapper rows left, naming the fixture project's cache,
         # which this broker's profile — the fixture as this repository's build directory — denies:
-        # the start deletes it (MillDaemons.discardForeignMemo), or the daemon dies unable to
+        # the start deletes it (RunOnHostMillDaemons.discardForeignMemo), or the daemon dies unable to
         # open its jars. The
         # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
         # cancel and busy-daemon rows.
         if ! want mill; then skip_mill_channel "needs mill"; else
         mill_row="channel: mill compile starts the broker's daemon, and the next command reuses it"
-        # The start TERMs its starter once the daemon listens (MillDaemons.endStarter): the channel
+        # The start TERMs its starter once the daemon listens (RunOnHostMillDaemons.endStarter): the channel
         # log says the TERM was sent — counted before and after, since the log accumulates — and
         # the starter's exit record, beside the daemon record, says it ended on it, 143.
         starters_termed_before=$(grep -c 'TERM to the mill starter' "$work/channel.log")
@@ -1333,7 +1614,8 @@ $(grep -v 'Picked up' "$work/chan-mill-tmp.log.err" | tail -1 | cut -c1-50)"; fi
         channel_settled
         printf '%s' "$port_saved" > "$port_file"; port_saved=""
         if [ "$planted_status" -ne 0 ] \
-            && grep -q 'Operation not permitted' "$work/chan-mill-planted-port.log" "$work/chan-mill-planted-port.log.err" \
+            && grep -q 'Operation not permitted' \
+                "$work/chan-mill-planted-port.log" "$work/chan-mill-planted-port.log.err" \
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ]
         then report PASS "$port_row" "exit $planted_status; daemon $mill_daemon kept"
         else report FAIL "$port_row" "exit $planted_status; daemon now \
@@ -1393,7 +1675,7 @@ $(kill -0 "$cancel_daemon" 2>/dev/null && echo alive || echo gone), after ${new_
 ${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
 
         # A link at out/mill-daemon would point Mill's launcher at another build directory's
-        # daemon, past the ownership and idleness checks (MillDaemons.rendezvousIsOwn): refused
+        # daemon, past the ownership and idleness checks (RunOnHostMillDaemons.rendezvousIsOwn): refused
         # before any of it runs. With the broker's daemon shut down first, since the daemon reads
         # its processId by path and would exit while the directory is aside.
         redirect_row="channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it"
@@ -1472,7 +1754,7 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         else report FAIL "$busy_row" "foreign ${foreign:-none} alive while busy: $foreign_alive, command \
 waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
 
-        # One busy past the bound (MillDaemons.ForeignIdleDeadlineMillis): the command is refused
+        # One busy past the bound (RunOnHostMillDaemons.ForeignIdleDeadlineMillis): the command is refused
         # naming it, and the daemon and its build are left alone. The broker's daemon is shut down
         # first: a ./mill of yours with matching settings attaches to a live daemon of the launch's,
         # and the row needs a daemon of its own to be busy.
@@ -1507,7 +1789,7 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
         #
         # Gradle's own client starts the daemon in the launch's registry under the broker's tmp/,
         # and later clients match it there; the broker records each daemon after every command
-        # and ends the records' groups with its session (GradleDaemons). The fixture's `run`
+        # and ends the records' groups with its session (RunOnHostGradleDaemons). The fixture's `run`
         # prints the TMPDIR the forked JVM sees and, with `sleep`, stays up for the cancel and
         # teardown rows.
         if ! want gradle; then skip_gradle_channel "needs gradle"; else
@@ -1817,7 +2099,8 @@ listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
                     && kill -0 "$planted_sleep" 2>/dev/null
                 then report PASS "$planted_mill_row" "daemon $adopted; the planted port heard nothing, the pid lives"
                 else report FAIL "$planted_mill_row" "exit $status, daemon ${adopted:-none}, connects: \
-$(grep -c connect "$work/planted-tcp.log"), planted pid $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
+$(grep -c connect "$work/planted-tcp.log"), planted pid \
+$(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
             fi
             kill -TERM "$channel_broker" 2>/dev/null
             tries=0

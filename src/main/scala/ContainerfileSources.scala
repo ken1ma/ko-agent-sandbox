@@ -211,7 +211,7 @@ object ContainerfileSources:
    */
   val BuildCommandFlags =
     Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true,
-      "--no-cache" -> false)
+      "--no-cache" -> false, "--pull=never" -> false)
 
   /**
    * The Containerfile and build arguments one launcher build command hands podman, read back from
@@ -282,9 +282,11 @@ object ContainerfileSources:
    * behavior change. Do not use `newer`: it suppresses pull errors when a local image exists.
    *
    * --quiet, because the default output answers the wrong question: it is the copier's per-layer
-   * report, printed for every layer before the store is asked whether it already holds it, so an
-   * unchanged image and a fresh download look alike. What is wanted is whether the image changed,
-   * and podman does not say; --quiet leaves the image id, and runBuilds adds the verdict.
+   * report. On a terminal each layer's progress bar ends in "done" or "skipped: already exists";
+   * elsewhere every layer prints the same "Copying blob" line, before the store is asked whether
+   * it already holds it, so an unchanged image and a fresh download look alike. What is wanted is
+   * whether the image changed, and podman does not say either way; --quiet leaves the image id,
+   * and runBuilds adds the verdict.
    */
   def remoteImagePullCommands(podman: String, images: Vector[String]): Vector[Vector[String]] =
     images.map(image => Vector(podman, "pull", image, "--quiet"))

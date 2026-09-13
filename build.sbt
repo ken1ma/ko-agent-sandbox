@@ -5,8 +5,6 @@ scalaVersion := "3.9.0"
 Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 
 libraryDependencies ++= Seq(
-  "org.bouncycastle" % "bcpkix-jdk18on" % "1.86",  // JCA cannot build X.509 certificates
-
   "org.scalameta" %% "munit" % "1.3.6" % Test,
 )
 
@@ -42,6 +40,52 @@ commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patt
   finally System.clearProperty(TestWithPodmanProperty)
 }
 
+// munit prints `==> s <test> skipped` without the clue its `assume` gave (doc/upstream-issues.md,
+// "scalameta/munit"), and the clue is what tells one passing run from another:
+//
+// - A clue names a missing program, a command to use (`sbt testWithPodman`, for the
+//   container-launching suites), or why the test cannot run in this environment.
+// - A suite can skip whole: a host without wcwidth runs none of SandboxTextWidthTest.
+// - A thin client attaches to whichever sbt server is running, so `sbt testFull` typed in a host
+//   shell can run under the run-on-host profile. Its skips differ there, and the clues show which
+//   environment ran the tests.
+//
+// The event sbt receives still carries the exception, so the clues of a run's skipped tests are
+// printed before sbt's totals, grouped by clue, with each suite's count:
+//
+//     skipped 10: needs python3 with wcwidth (SandboxTextWidthTest: 10)
+//
+// A test event names its test as `<suite>.<test name>` and not its suite, so the suite is the
+// started group that name begins with.
+Test / testListeners += new TestsListener {
+  private val suites = scala.collection.mutable.Set.empty[String]
+  private val suitesByReason = scala.collection.mutable.LinkedHashMap.empty[String, Vector[String]]
+
+  def doInit(): Unit = synchronized {
+    suites.clear()
+    suitesByReason.clear()
+  }
+  def startGroup(name: String): Unit = synchronized(suites += name)
+  def testEvent(event: TestEvent): Unit = synchronized {
+    for (detail <- event.detail if detail.status == sbt.testing.Status.Skipped) {
+      val reason =
+        if (detail.throwable.isDefined) Option(detail.throwable.get.getMessage).getOrElse("no reason given")
+        else "no reason given"
+      val test = detail.fullyQualifiedName
+      val suite = suites.filter(name => test.startsWith(name + ".")).maxByOption(_.length).getOrElse(test)
+      suitesByReason(reason) = suitesByReason.getOrElse(reason, Vector.empty) :+ suite
+    }
+  }
+  def endGroup(name: String, thrown: Throwable): Unit = ()
+  def endGroup(name: String, result: TestResult): Unit = ()
+  def doComplete(finalResult: TestResult): Unit = synchronized {
+    for ((reason, skipped) <- suitesByReason) {
+      val counts = skipped.distinct.map(suite => s"${suite.split('.').last}: ${skipped.count(_ == suite)}")
+      println(s"skipped ${skipped.size}: $reason (${counts.mkString(", ")})")
+    }
+  }
+}
+
 // --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject, compiled into
 // this jar from the same sources so an installed launcher carries it — the Scala sources, and the
 // /defaults resources their class initialization loads eagerly. The subproject's own build still
@@ -53,9 +97,9 @@ Compile / unmanagedResourceDirectories +=
   baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "resources"
 
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
-// The exports open the JDK's internal certificate builder to the proxy sources compiled in below
-// (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the README's
-// native-image command for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
+// The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
+// assembly manifest carries both for `java -jar`, the native-image command in doc/TODO.md for the
+// binary, and .jvmopts for the tests, which run in sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
@@ -89,7 +133,7 @@ Compile / resourceGenerators += Def.task {
 // Bundle the build contexts into the jar so --build works with no checkout present
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
-// Native-image's resource discovery misses required files; the README's command must explicitly include
+// Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
 // sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt runtime authority).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log
@@ -169,25 +213,9 @@ assembly / assemblyJarName := "ko-agent-sandbox.jar"
 assembly / assemblyOutputPath :=
   baseDirectory.value / "target" / "dist" / "ko-agent-sandbox.jar"
 
-// BouncyCastle drops: colliding module-info copies, and per-jar OSGi manifests. Signature files are already
-// sbt-assembly's default discard.
-assembly / assemblyMergeStrategy := {
-  case path if path.endsWith("module-info.class")     => MergeStrategy.discard
-  case path if path.endsWith("OSGI-INF/MANIFEST.MF")  => MergeStrategy.discard
-  case path =>
-    val default = (assembly / assemblyMergeStrategy).value
-    default(path)
-}
-
-// Multi-Release is required, not an optimization: the assembled jar carries BouncyCastle's versioned
-// trees, and 49 of those classes — the X25519 and Ed25519 key implementations among them — exist
-// *only* under META-INF/versions, so without the attribute the JVM never looks there and they are
-// missing rather than merely older. sbt-assembly copies the entries but does not set the flag; a fat
-// jar built from multi-release inputs is not itself multi-release.
 assembly / packageOptions += Package.ManifestAttributes(
   "Enable-Native-Access" -> "ALL-UNNAMED",
   "Add-Exports" -> "java.base/sun.security.x509 java.base/sun.security.util",
-  "Multi-Release" -> "true",
 )
 
 lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist")

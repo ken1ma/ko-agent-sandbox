@@ -61,10 +61,10 @@ object EgressRules:
    * source alone insufficient. The full lines are one `--egress-effective` away, and the proxy
    * writes them into this session's own log; a thousand characters of hostnames in the banner is
    * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
-   * An unparseable resolution is printed whole rather than guessed at.
+   * On parse failure, show only the first line to avoid dumping the resolved host list.
    *
-   * @param color tints the profile, except under the permissive one, where the caller tints the
-   *              whole line.
+   * @param color tints the profile, except under the permissive one, whose line is tinted whole
+   *              (HostCommands.weakenedByUser).
    */
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
@@ -82,16 +82,15 @@ object EgressRules:
       for
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
         inspected <- counts.get("inspected hosts")
-        opaque <- counts.get("opaque hosts")
+        tunnel <- counts.get("tunnel hosts")
         denied <- counts.get("denial patterns")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
         profile match
           case "allow-unless-denied" =>
-            // Plain: the caller tints this line whole, and a word tinted inside it would end that
-            // colour at its own reset. The opaque hosts are the exception set; the inspected count
-            // says nothing where every unlisted host is inspected too.
-            s"egress: $profile; public HTTPS read; $opaque opaque, $denied denied"
+            // The tunnel hosts are the exception set; the inspected count says nothing where
+            // every unlisted host is inspected too.
+            weakenedByUser(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -103,14 +102,14 @@ object EgressRules:
               case "none" => "no provider selected"
               case "all"  => "every model provider"
               case name   => s"model provider $name"
-            s"egress: ${chosen(profile, color)}; $selected; $inspected inspected, $opaque opaque"
+            s"egress: ${chosen(profile, color)}; $selected; $inspected inspected, $tunnel tunnel"
           case _ =>
-            s"egress: ${chosen(profile, color)}; $inspected inspected, $opaque opaque"
+            s"egress: ${chosen(profile, color)}; $inspected inspected, $tunnel tunnel"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /** The one profile weaker than the launcher's default — public HTTPS to whatever is not
-    * denied — and so the one banner line a terminal has reason to tint. */
+    * denied. */
   def permissiveProfile(resolved: String): Boolean =
     resolved.linesIterator.nextOption().exists(_.startsWith("egress profile: allow-unless-denied"))
 
@@ -133,10 +132,6 @@ object EgressRules:
   val RetainedProxyLogs = 20
 
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
-
-  /** Retired rule filenames are refused with migration advice: the workspace guard prevents
-    * a session from correcting them, so the launcher must report that their rules are unread. */
-  val RetiredRuleFiles: Vector[String] = Vector("allowed", "denied")
 
   /**
    * Present egress rule files as (name, normalized text). Refuse forms that could hide or
@@ -169,9 +164,6 @@ object EgressRules:
 
       val refusal = entries
         .collectFirst:
-          case entry if RetiredRuleFiles.contains(entry.getFileName.toString) =>
-            s"error: $entry is a file of the retired grammar\nThe rules are one file, egress/rule, " +
-              "in the rule grammar; doc/egress-proxy.md has it. Rewrite the lines there and delete this file."
           case entry if !RuleFiles.exists(_(0) == entry.getFileName.toString) =>
             s"error: $entry is not a rule file\negress/ holds only " +
               s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."

@@ -3,7 +3,7 @@
 
 package agentsandbox.launcher
 
-import java.io.IOException
+import java.io.{IOException, UncheckedIOException}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardCopyOption}
 import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
@@ -127,9 +127,9 @@ object FileHelper:
    * A write that would change neither the content nor the mode is skipped: a cache stamp that
    * misses on identical output must not replace the shared source's inode during another launch's
    * copy. A real change replaces the inode and reaches only the runs that copy after it — a mount
-   * cannot follow a file out from under it (SECURITY.md, "The read-only `.git` mounts under
-   * `WORKSPACE_GUARD=none`", has the measurement), which is why containers mount per-run copies
-   * rather than these files.
+   * cannot follow a file out from under it (measured on a macOS podman machine: a replaced source
+   * is stale in the container for about two seconds, then served without the mount's read-only
+   * option), which is why containers mount per-run copies rather than these files.
    *
    * The mode is requested at creation and set again after the write, and both halves earn their
    * place. Creating with it is what leaves no window: a file created under the umask and chmodded
@@ -202,7 +202,26 @@ object FileHelper:
     Using.resource(Files.list(path)): entries =>
       entries.iterator().asScala.toVector
 
+  /** Every failure is an IOException: `Files.walk` reports a directory it cannot open as an
+    * UncheckedIOException during iteration, which a caller's IOException handling — a counted reset
+    * step — would otherwise miss. */
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Using.resource(Files.walk(path)): entries =>
-        entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(Files.delete)
+      try
+        Using.resource(Files.walk(path)): entries =>
+          entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(deleteEntry)
+      catch case ex: UncheckedIOException => throw ex.getCause
+
+  /** Windows refuses to delete an entry with the read-only attribute, where POSIX asks the
+    * directory alone. A run's copy of `cacerts` met that refusal: the prepared store has no write
+    * bit (JdkTrust), and attributes travel with the copy (AgentSandboxLauncher, `carried`). */
+  private def deleteEntry(path: Path): Unit =
+    try Files.delete(path)
+    catch
+      case ex: java.nio.file.AccessDeniedException =>
+        val dos = Files.getFileAttributeView(
+          path, classOf[java.nio.file.attribute.DosFileAttributeView], java.nio.file.LinkOption.NOFOLLOW_LINKS,
+        )
+        if dos == null || !dos.readAttributes().isReadOnly then throw ex
+        dos.setReadOnly(false)
+        Files.delete(path)

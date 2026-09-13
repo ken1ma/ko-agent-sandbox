@@ -11,95 +11,152 @@ costs are described below.
 
 ## Defended
 
-**Compromise the host.** The host exposes the project directory and the agent-state volume, without
-exposing the user's home or unrelated projects. The containers run rootless, and
-agents run as an unprivileged user with `no-new-privileges`. Writable `$HOME` and `/tmp` contents
-outside the persistent volume are discarded with the session. No host container-runtime socket is
-mounted: access to one would let a session control containers outside its confinement.
-`SessionBoundaryTest` checks both Docker and Podman socket paths.
+**Compromise the host.**
 
-**Credential theft.** The launcher does not automatically mount host forge-token stores, cloud
-credential files, SSH private keys or the SSH agent's socket. The sandbox supports work on private
-repository checkouts without forwarding host Git credentials. Agents' own provider logins are kept
-in the persistent volume. Some grant authority beyond model access, including repository or cloud
-access; "The web reached through the model provider" describes those exceptions.
+- The host exposes the project directory and the agent-state volume, without exposing the user's
+  home or unrelated projects.
+- The containers run rootless, and agents run as an unprivileged user with `no-new-privileges`.
+- Writable `$HOME` and `/tmp` contents outside the persistent volume are discarded with the session.
+- No host container-runtime socket is mounted: access to one would let a session control containers
+  outside its confinement. `SessionBoundaryTest` checks both Docker and Podman socket paths.
 
-This guarantee concerns automatic forwarding. A credential placed in the project directory is
-accessible like any other project file; one forwarded with `--env` is available in the sandbox's
-environment. Egress rules limit where it can be sent, not its authority at an allowed destination
-("Exfiltration through allowed network traffic", below). Only the launch command line can specify
-`--env`; a project file cannot choose which host variables it receives. The launcher refuses
-`KO_AGENT_SANDBOX_*`, which describe its enforcement settings, and prints every forwarded name. Any
-process in the session can use a forwarded credential with the authority its issuer granted.
+**Credential theft.**
 
-**Project data reaching a destination nobody chose.** Outbound HTTPS traffic passes through the
-proxy, which enforces the resolved egress rules and records protocol and policy decisions ("Egress
-proxy", below). The default profile starts from every model provider's default rules and the
-inspected catalog. The project's rule file can remove or extend those grants.
+- The launcher does not automatically mount host forge-token stores, cloud credential files, SSH
+  private keys or the SSH agent's socket. The sandbox supports work on private repository checkouts
+  without forwarding host Git credentials.
+- Agents' own provider logins are kept in the persistent volume. Some grant authority beyond model
+  access, including repository or cloud access; "The web reached through the model provider"
+  describes those exceptions.
+- The guarantee concerns automatic forwarding:
+  - A credential placed in the project directory is accessible like any other project file.
+  - A credential forwarded with `--env` is available in the sandbox's environment. Egress rules
+    limit where it can be sent, not its authority at an allowed destination ("Exfiltration through
+    allowed network traffic", below). Any process in the session can use it with the authority its
+    issuer granted.
+  - Only the launch command line can specify `--env`; a project file cannot choose which host
+    variables it receives. The launcher refuses `KO_AGENT_SANDBOX_*`, which describe its
+    enforcement settings, and prints every forwarded name.
 
-**Writing to remote hosts**, subject to the resolved egress rules. The defaults allow opaque
-model-provider traffic and inspected requests for reading, Git fetch (`clone` and `pull`), and
-GitHub device login. An inspected request is refused unless its operation is granted at its path.
-The defaults refuse `git push`; a project can grant it through `method=POST` or an opaque tunnel.
+**Project data reaching a destination nobody chose.**
+
+- Outbound HTTPS traffic passes through the proxy, which enforces the resolved egress rules and
+  records protocol and policy decisions ("Egress proxy", below).
+- The default profile starts from every model provider's default rules and the inspected catalog.
+  The project's rule file can remove or extend those grants.
+
+**Writing to remote hosts**, subject to the resolved egress rules.
+
+- The defaults allow opaque model-provider traffic and inspected requests for reading, Git fetch
+  (`clone` and `pull`), and GitHub device login.
+- An inspected request is refused unless its operation is granted at its path.
+- The defaults refuse `git push`; a project can grant it through `method=POST` or an opaque tunnel.
+
 "Reading without being able to write" below explains the rules, costs, and limits.
 
-**Being used to attack someone else.** The egress rules limit reachable targets and operations; they
-do not establish that an allowed request is harmless. Whatever the profile — the widest allows any
-public hostname on port 443 — the proxy refuses other ports and private addresses, cloud metadata
-services such as 169.254.169.254 included: the proxy validates every resolved address at connection
-time.
+**Being used to attack someone else.**
 
-**A session reaching another project, or persisting outside declared state.** Agent state is a
-per-project volume and deliberately affects later sessions of that project ("What the persistent
-volume holds", below); the rest of the sandbox home is discarded on exit. Claude Code's hooks
-are disabled (the sandbox Containerfile's `disableAllHooks` note has the reasoning). The networks
-and proxy are per run and removed with it, so concurrent sessions cannot reach one another through
-those networks and no network object is reused.
+- The egress rules limit reachable targets and operations; they do not establish that an allowed
+  request is harmless.
+- Whatever the profile — the widest allows any public hostname on port 443 — the proxy refuses
+  other ports and private addresses, cloud metadata services such as 169.254.169.254 included. The
+  proxy validates every resolved address at connection time.
 
-**A project loosening its own confinement.** Claude Code's managed settings are stored in the
-read-only image and take precedence over repository settings. An organization's server-managed
-settings take precedence over that file and replace it entirely (the sandbox Containerfile's
-managed-settings note explains the consequences). The egress rules and the project's agent
-instructions in `.ko-agent-sandbox` are read on the host before the container starts, and the
-session's write mode is what keeps a session from writing the configuration governing the next
-launch: under `--write=reject` the whole tree is read-only, and under the filter `.ko-agent-sandbox`
-is protected — the name cannot be created at any depth, under the same name-matching rules as
-`.git`, and nothing under an existing one can be written. Only
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is writable, still needs the directory
-mounted back over itself read-only.
+**A session reaching another project, or persisting outside declared state.**
+
+- Agent state is a per-project volume and deliberately affects later sessions of that project
+  ("What the persistent volume holds", below); the rest of the sandbox home is discarded on exit.
+- The networks and proxy are per run and removed with it, so concurrent sessions cannot reach one
+  another through those networks and no network object is reused.
+
+**Claude Code running commands from user or project hooks, status lines and file suggestions.**
+
+- Claude Code's user and project hooks are blocked (the sandbox Containerfile's
+  `allowManagedHooksOnly` note has the reasoning and exceptions).
+- `allowManagedHooksOnly` also restricts `statusLine`, `subagentStatusLine` and `fileSuggestion`
+  to managed settings, so refreshing a display or suggesting a file cannot run a command from
+  user or project settings.
+- The image's [status-line command](doc/agent-settings.md#claude-code-status-line) lets a project
+  customize the display through a template. It substitutes field values without executing the
+  template or evaluating the inserted values; that section defines its input and output limits.
+
+**A project loosening its own confinement.**
+
+- Claude Code's managed settings are stored in the read-only image and take precedence over
+  repository settings. An organization's remote managed settings can supersede the image's settings
+  (the sandbox Containerfile's managed-settings note explains the consequences).
+- The egress rules in `.ko-agent-sandbox` are read on the host before the container starts.
+- The session's write mode keeps a session from writing the configuration governing the next
+  launch:
+  - under `--write=reject` the whole tree is read-only;
+  - under the filter `.ko-agent-sandbox` is protected: the name cannot be created at any depth,
+    under the same name-matching rules as `.git`, and nothing under an existing one can be
+    written, with the exception "The host's git executing what the sandbox wrote" states for a
+    concurrent host change.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the
 pager. By default the workspace FUSE filter prevents a session from planting commands for the
-user's next host `git` invocation: it refuses a new entry named `.git` at any depth, under any
-spelling a case-insensitive host filesystem treats as that name, and prevents changes to the
-protected Git entries of every repository rooted at a `.git` entry — `config`, `hooks/`, files
-that redirect Git to another directory, and rebase instructions — while operational state stays
-writable, so the agent's own git keeps working. It serves the tree live: a repository created on
-the host mid-session appears at once, with the same Git entries protected against modification.
+user's next host `git` invocation:
+
+- It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
+  filesystem treats as that name.
+- It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
+  `config`, `hooks/`, files that redirect Git to another directory, and rebase instructions — while
+  operational state stays writable, so the agent's own git keeps working.
+- It serves the tree live: a repository created on the host mid-session appears at once, with the
+  same Git entries protected against modification.
+- It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
+  8.3 short name (`GIT~1`, `KO-AGE~1`) or a hard link is the same object on the host filesystem,
+  and the filter compares objects where spellings cannot be listed
+  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names", has the cases it
+  does not cover).
+
+An additional open exception affects these claims, a change the host makes to the project tree
+while a session mutates it:
+
+- Linux offers `rename`, `unlink` and `rmdir` by name only, so the filter decides about a name
+  and then performs the operation on that name. A second name of a guarded entry that takes an
+  ordinary name's place between the two is moved, replaced or removed as the ordinary entry
+  would have been.
+- A guarded entry moved to an ordinary name is an ordinary entry there: its Git configuration and
+  hooks, or its egress rules, are writable under the new name.
+- This exception affects the claims above, including protection of repositories created
+  mid-session and `.ko-agent-sandbox` (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3
+  short names"; `fuse/ko-agent-fs/doc/TODO.md` keeps it open).
 
 Every path through which host git reaches these entries must also be protected. The mount-time guard
-checks the repository host git discovers from the project directory. It refuses a workspace-root
-repository whose gitdir, config or hooks reach host git through a writable workspace path — a
-redirected gitdir (`git init --separate-git-dir`), a config or hook aliased into the worktree, or a
-`commondir` pointing back in — and a bare layout at the workspace root. A directory laid out as a
-gitdir *without* a `.git` name elsewhere in the tree is the gap "The project directory" describes. A
-repository whose Git directory is outside the project can pass the guard if its configuration and
-hooks are also unreachable through writable workspace paths. This includes submodule checkouts,
-linked worktrees, separate Git directories, `.git` files naming an external directory by its
-absolute path, and launches from a subdirectory of a repository. Git cannot work in those sessions:
-the container has the project directory and nothing above or beside it. The launcher and agent
-instructions report this limitation as a warning, because a session that only edits files can still
-be useful without exposing the host's Git configuration or hooks.
+checks the repository host git discovers from the project directory, and refuses:
 
-These are the default protections, with qualifications under "Not defended": a launch that sets
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets read-only bind mounts instead, for which the claim does
-not hold ("The read-only `.git` mounts under `WORKSPACE_GUARD=none`"); and on some platforms the
-filter has no measured evidence ("The workspace filter, on the platforms where it is unverified").
+- a workspace-root repository whose gitdir, config or hooks reach host git through a writable
+  workspace path — a redirected gitdir (`git init --separate-git-dir`), a config or hook aliased
+  into the worktree, or a `commondir` pointing back in;
+- a bare layout at the workspace root.
 
-Under `--run-on-host`, host commands write directly to the host tree without passing through the
-workspace filter. The Seatbelt profile's deny rules protect those Git entries on that path ("Run on
-host", below).
+A directory laid out as a gitdir *without* a `.git` name elsewhere in the tree is the gap "The
+project directory" describes.
+
+A repository whose Git directory is outside the project can pass the guard if its configuration and
+hooks are also unreachable through writable workspace paths:
+
+- submodule checkouts;
+- linked worktrees;
+- separate Git directories;
+- `.git` files naming an external directory by its absolute path;
+- launches from a subdirectory of a repository.
+
+Git cannot work in those sessions: the container has the project directory and nothing above or
+beside it. The launcher and agent instructions report this limitation as a warning, because a
+session that only edits files can still be useful without exposing the host's Git configuration or
+hooks.
+
+These are the default protections, with qualifications under "Not defended":
+
+- On some platforms the filter has no measured evidence ("The workspace filter, on the platforms
+  where it is unverified").
+- Under `--run-on-host`, host commands write directly to the host tree without passing through the
+  workspace filter. The Seatbelt profile's deny rules protect those Git entries on that path ("Run
+  on host", below).
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own. Unannounced changes to host configuration or metadata can invalidate the user's
@@ -112,34 +169,35 @@ are:
   yourself;
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
-- during **session setup**, the project tree is unchanged except for the empty directories that
-  the read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode. This mode
-  creates an empty `.ko-agent-sandbox` when absent because the read-only bind mount needs a target
-  ("A project loosening its own confinement", above). In a project with no repository, it also
-  creates an empty `.git`: the launcher binds its own empty directory read-only over that name so
-  the sandbox cannot fabricate a repository for host git to discover. The container runtime creates
-  that mount target in the project. The filter denies creation of either name and needs no mount
-  target; `--write=reject` makes the entire tree read-only. Those modes therefore require no
-  project-directory creation;
+- during **session setup**, the project tree is unchanged: the filter denies creation of `.git`
+  and `.ko-agent-sandbox` by name and needs no mount target in the project, and `--write=reject`
+  makes the entire tree read-only;
 - **`--self-test` without a case filter** writes to its own scratch directory in the project
   ([testing.md](fuse/ko-agent-fs/doc/testing.md));
-- the **project tree's SELinux labels**: on an enforcing host, the unfiltered bind mount of
-  `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the project
-  directory recursively. Each affected launch reports this host-metadata change in its `workspace:`
-  line. The filter's mountpoint needs no relabel, a permissive or disabled host reads unrelabeled
-  and is never relabeled, and `--write=reject` refuses on an enforcing host rather than relabeling,
-  unless the tree already has a shared container-accessible context — a container type with no MCS
-  categories, since categories from a previous `:Z` are private to the container they were assigned
-  to;
+- the **project tree's SELinux labels** are never changed. On an enforcing host a container reads
+  an unfiltered bind mount only under `:Z`, which relabels the directory recursively, and no
+  launch passes it:
+  - The filter's mountpoint needs no relabel.
+  - A permissive or disabled host reads unrelabeled.
+  - `--write=reject` refuses on an enforcing host rather than relabeling, unless the tree already
+    has a shared container-accessible context — a container type with no MCS categories, since
+    categories from a previous `:Z` are private to the container they were assigned to.
 
-What the launcher does write, it owns: its images, containers, networks and named volumes, its
-per-project state root, and its install directory `~/.local/share/ko-agent-sandbox`. For the podman
-objects, ownership is by name: `--reset-all` force-removes every container, network and
-volume matching the generated name patterns — `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in
-the twelve-hex path hash and, for per-run resources, the eight-hex run suffix, and the self-test
-probe container `ko-agent-self-test-share-` followed by that suffix alone. Those patterns are
-reserved: an object created by hand inside one is removed like the launcher's own, and a
-`KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
+What the launcher does write, it owns:
+
+- its images, containers, networks and named volumes;
+- its per-project state root;
+- its install directory `~/.local/share/ko-agent-sandbox`.
+
+For the podman objects, ownership is by name. `--reset-all` force-removes every container, network
+and volume matching the generated name patterns:
+
+- `ko-agent-sandbox-*` and `ko-agent-egress-*` ending in the twelve-hex path hash and, for per-run
+  resources, the eight-hex run suffix;
+- the self-test probe container `ko-agent-self-test-share-` followed by that suffix alone.
+
+Those patterns are reserved: an object created by hand inside one is removed like the launcher's
+own, and a `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
 
 **Accidentally exposing an over-broad project directory.** Before creating any resource, the
 launcher refuses:
@@ -153,16 +211,28 @@ launcher refuses:
   `/Users` and the Windows profiles root (`%SystemDrive%\Users`, `C:\Users` when `SystemDrive`
   is unset), plus their direct children — another account's home exposes that account exactly
   as this one's would — and POSIX root's own homes, `/root` and `/var/root`;
-- a path whose current or ancestor directory has a dot-prefixed name.
+- a path whose current or ancestor directory has a dot-prefixed name;
+- the container user's home, `/home/nonroot`, and anything beneath it: the project is mounted at
+  its own path, where it would sit among the session's home, the persistent volume and the
+  agents' state;
+- a path at which the sandbox image has an entry (`/tmp`, `/usr/local/bin`), or beneath a
+  directory of the image the sandbox user cannot enter (`/root`), asked of the image with a run of
+  it so that a directory the image gains later is refused without a list to update; `/tmp/app`
+  binds into `/tmp` and is accepted;
+- on Windows, a UNC path, in every write mode: the mount path is the one WSL gives a drive,
+  `/mnt/<drive>/...`, which a share has not.
 
 A project *inside* a home is not refused: `~/src/app` and `~/app` are both valid choices, and
 refusing them would leave nowhere obvious to work.
 
-Home discovery degrades loudly, never silently: a `HOME` that is set but invalid fails the
-launch on POSIX, while on Windows an invalid secondary value (Git Bash's POSIX-style `HOME`)
-is dropped with a warning when another home variable resolved; a home that cannot be resolved
-to a real path is refused by its exact spelling, with a warning; and with no home variable set
-at all (cron, CI, `env -i`) the launch proceeds under the built-in refusals above and says so.
+Home discovery degrades loudly, never silently:
+
+- a `HOME` that is set but invalid fails the launch on POSIX;
+- on Windows an invalid secondary value (Git Bash's POSIX-style `HOME`) is dropped with a warning
+  when another home variable resolved;
+- a home that cannot be resolved to a real path is refused by its exact spelling, with a warning;
+- with no home variable set at all (cron, CI, `env -i`) the launch proceeds under the built-in
+  refusals above and says so.
 
 This is an accident guard, not a complete path boundary. The launcher does not enumerate the
 system's accounts or prove that the chosen directory is a project; selecting some other broad
@@ -174,80 +244,101 @@ directory the user selects.
 **Prompt injection.** The sandbox does not detect or prevent an agent from following malicious
 instructions. It limits the actions available to the compromised agent.
 
-**Exfiltration through allowed network traffic.** An opaque tunnel allows writes wherever the
-endpoint offers a write API; `api.anthropic.com` receives the conversation by design. At inspected
-hosts, the proxy constrains methods, paths and HTTP framing, but does not validate application
-payloads. An allowed `GET` carries its URL; a path grant narrows the recipient, but the path suffix
-and query can still encode data. Forwarded headers and allowed request bodies can also carry data.
+**Exfiltration through allowed network traffic.**
+
+- An opaque tunnel allows writes wherever the endpoint offers a write API; `api.anthropic.com`
+  receives the conversation by design.
+- At inspected hosts, the proxy constrains methods, paths and HTTP framing, but does not validate
+  application payloads. An allowed `GET` carries its URL; a path grant narrows the recipient, but
+  the path suffix and query can still encode data. Forwarded headers and allowed request bodies can
+  also carry data.
+
 Inspection therefore does not establish that a request contains no project information.
 
-**The web reached through the model provider.** Claude Code's WebSearch and Codex's web search run
-on the provider's servers: the query and its results travel inside the model-endpoint tunnel, and
-the provider's infrastructure does the searching. The proxy sees one connection to
-`api.anthropic.com` or `chatgpt.com`, so neither the ruleset nor the audit log (`--proxy-log`)
-applies to the domains searched — a query is outbound information the provider relays onward.
-Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
-proxy, answered only by an allowed host and logged like any other connection.
+**The web reached through the model provider.**
 
-Copilot CLI's sign-in stores a forge credential, not merely a model-provider credential. `copilot
-login` obtains an OAuth token with `repo` scope, which includes private-repository access subject to
-the account's permissions and organization restrictions. Because the container has no credential
-store, Copilot keeps the token in plaintext under `~/.copilot` in the persistent volume, alongside
-the other agents' provider logins. Inside the sandbox, that token can authenticate private clones
-from `github.com` and `GET`s on `api.github.com`. Under the default
-rules, it cannot push or modify repositories through inspected hosts. It can write through Copilot's
-model endpoint, `api.githubcopilot.com`, which also serves the built-in GitHub MCP server — files,
-branches, issues and pull requests written with the signed-in account, which the opaque tunnel
-cannot tell from model traffic — and Copilot's session export to GitHub's web UI. Copilot provides
-`--disable-builtin-mcps` and `--no-remote-export` to disable those features. The proxy rule `deny
-model-provider github` denies every host in GitHub's model-provider rules, including `github.com`,
-`api.github.com` and the model tunnels, unless a later rule grants access again. Resetting the
-project's agent-state volume discards the stored token ("What the persistent volume holds", below).
+- Claude Code's WebSearch and Codex's web search run on the provider's servers: the query and its
+  results travel inside the model-endpoint tunnel, and the provider's infrastructure does the
+  searching.
+- The proxy sees one connection to `api.anthropic.com` or `chatgpt.com`, so neither the ruleset
+  nor the audit log (`--proxy-log`) applies to the domains searched — a query is outbound
+  information the provider relays onward.
+- Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
+  proxy, answered only by an allowed host and logged like any other connection.
 
-GitHub defines the provider-side limits in its [OAuth
-scopes](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps) and
-[organization access
-restrictions](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/about-oauth-app-access-restrictions).
+Copilot CLI's sign-in stores a forge credential, not merely a model-provider credential.
 
-agy's Business sign-in stores a Google Cloud credential for the licensed project. Google's default
-rules tunnel the Agent Platform API — Vertex AI's — at `aiplatform.googleapis.com` and its `us` and
-`eu` multi-region hosts; the API manages the project's resources as well as serving its model
-endpoints. Through those opaque tunnels, the credential can perform whatever operations the user's
-IAM roles allow in the signed-in project; the proxy cannot distinguish them from model traffic.
-Sufficient permissions can permit deploying or deleting model endpoints, starting paid training,
-tuning or batch-prediction jobs, or deploying agent code. Jobs may also require permission to use a
-service account. Their server-side Cloud Storage access depends on the service identity performing
-the operation, not just the signed-in user's bucket access. Such jobs can read or write storage
-without the sandbox contacting a storage host. Google's [batch-inference
-documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/predictions/get-batch-predictions)
-describes those execution identities. Storage, Compute and IAM use separate hosts, reachable only
-where the profile or a project rule allows them. The project can deny the three aiplatform hosts
-while retaining the Business AI Code API, or use `deny model-provider google` to deny every host in
-Google's default rules, unless a later rule grants access again. Resetting the project's agent-state
-volume discards the stored token ("What the persistent volume holds", below).
+- `copilot login` obtains an OAuth token with `repo` scope, which includes private-repository
+  access subject to the account's permissions and organization restrictions.
+- Because the container has no credential store, Copilot keeps the token in plaintext under
+  `~/.copilot` in the persistent volume, alongside the other agents' provider logins.
+- Inside the sandbox, that token:
+  - can authenticate private clones from `github.com` and `GET`s on `api.github.com`;
+  - cannot, under the default rules, push or modify repositories through inspected hosts;
+  - can write through Copilot's model endpoint, `api.githubcopilot.com`; the proxy cannot
+    distinguish those writes from model traffic. The endpoint also serves the built-in GitHub MCP
+    server — files, branches, issues and pull requests written with the signed-in account — and
+    Copilot's session export to GitHub's web UI. Copilot provides `--disable-builtin-mcps` and
+    `--no-remote-export` to disable those features.
+- The proxy rule `deny model-provider github` denies every host in GitHub's model-provider rules,
+  including `github.com`, `api.github.com` and the model tunnels, unless a later rule grants access
+  again.
+- Resetting the project's agent-state volume discards the stored token ("What the persistent
+  volume holds", below).
+- GitHub defines the provider-side limits in its [OAuth
+  scopes](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps) and
+  [organization access
+  restrictions](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/about-oauth-app-access-restrictions).
+
+agy's Business sign-in stores a Google Cloud credential for the licensed project.
+
+- Google's default rules tunnel the Agent Platform API — Vertex AI's — at
+  `aiplatform.googleapis.com` and its `us` and `eu` multi-region hosts; the API manages the
+  project's resources as well as serving its model endpoints.
+- Through those opaque tunnels, the credential can perform whatever operations the user's IAM roles
+  allow in the signed-in project; the proxy cannot distinguish them from model traffic.
+  - Sufficient permissions can permit deploying or deleting model endpoints, starting paid
+    training, tuning or batch-prediction jobs, or deploying agent code. Jobs may also require
+    permission to use a service account.
+  - A job's server-side Cloud Storage access depends on the service identity performing the
+    operation, not just the signed-in user's bucket access, so a job can read or write storage
+    without the sandbox contacting a storage host. Google's [batch-inference
+    documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/predictions/get-batch-predictions)
+    describes those execution identities.
+- Storage, Compute and IAM use separate hosts, reachable only where the profile or a project rule
+  allows them.
+- The project can deny the three aiplatform hosts while retaining the Business AI Code API, or use
+  `deny model-provider google` to deny every host in Google's default rules, unless a later rule
+  grants access again.
+- Resetting the project's agent-state volume discards the stored token ("What the persistent
+  volume holds", below).
 
 **Low-bandwidth channels.** The choice of allowed host, request timing and request order can all
 encode information. The proxy does not detect or bound these covert channels.
 
-**The project directory.** `/workspace` is writable on purpose: the sandbox protects the rest of the
-host, not the project. With the Git entries listed above protected, what an agent can still write
-there is data which your git then parses, so a memory-safety bug in git itself remains reachable,
-exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but can only
-invoke filter commands your host configuration already defines).
+**The project directory.** The project is mounted at the path the host has it at (on Windows, at
+the path WSL gives it, `/mnt/<drive>/...`), so a path the agent prints is one the user, an IDE and
+a host build all name alike, and none translates. The path itself — the home directory's name and
+the layout above the project — is therefore visible to the agent, and through its prompts to the
+model provider, in every session. The directory is writable on purpose: the sandbox protects the
+rest of the host, not the project. With the Git entries listed above protected, what an agent can
+still write there is data which your git then parses, so a memory-safety bug in git itself remains
+reachable, exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but
+can only invoke filter commands your host configuration already defines).
 
-Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
-is output from an untrusted execution environment: editing them is the job, and confining their
+Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries
+— is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. That includes a repository the agent created deeper in the tree,
-in both guard modes: under `WORKSPACE_GUARD=none` any nested layout is outside those mounts'
-protection, and the filter — which refuses creating a `.git` entry — cannot refuse a *bare layout*,
-built from ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config
-and hooks are served as writable data anywhere in the writable workspace, and git's ascending
-discovery adopts it for a host command run at or beneath it. Running host git *inside* a directory
-the agent created is running the agent's output.
+for a contribution from a stranger. That includes a repository the agent created deeper in the
+tree: the filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
+ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks
+are served as writable data anywhere in the writable workspace, and git's ascending discovery
+adopts it for a host command run at or beneath it.
+
+Running host git *inside* a directory the agent created is running the agent's output.
 
 A symlink can expose files outside the project because its target is resolved in the reader's
-filesystem namespace. `/workspace/x -> /etc/passwd` written inside resolves to the *container's*
+filesystem namespace. A link `x -> /etc/passwd` written in the project resolves to the *container's*
 `/etc/passwd`, and a relative `../../..` clamps at the container root, so from in there it reaches
 nothing the sandbox did not already expose. On the host the identical link resolves to the host's
 file, outside the project directory. The exposure occurs when a later host process follows the link:
@@ -256,40 +347,54 @@ step. A diff shows only the target text, which can make this risk easy to overlo
 
 The workspace filter reduces this risk by refusing absolute targets and targets whose syntax climbs
 above the workspace root, including common links into external caches. Two gaps remain (`fs.rs`,
-`target_has_portable_syntax`): a target containing other symlinks can resolve differently on each
-side, and a later `rename` or `link` can move a relative symlink so that its target escapes the
-workspace. The creation-time syntax check does not prevent deliberate construction of such links;
-they still require review. Direct hardlinks across the workspace mount boundary fail with `EXDEV`,
-because `/workspace` and the container root are different filesystems. Hardlinking a symlink within
-the workspace can still change where its relative target resolves.
+`target_has_portable_syntax`):
 
-The tree is also shared live with the host: your editor, builds and git run against the same files
-the agent is writing, host and sandbox writes race like any two processes on one directory, and
-git's own lock files are the only arbiter the writable parts of `.git` get. On Windows the
-sharing adds one rule: a file a live session holds open cannot be written from the host —
-the machine's 9p handle imposes Windows sharing rules, so a host editor's save meets "used by
-another process" until the session lets go
-(`fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Concurrent sandbox
-sessions of one project race each other the same way — under the workspace filter too, where they
-share the one filter mount: the same files, the same live view, the same races.
+- a target containing other symlinks can resolve differently on each side;
+- a later `rename` or `link` can move a relative symlink so that its target escapes the workspace.
 
-**The workspace filter, on the platforms where it is unverified.** `/workspace` reaches the sandbox
-through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount enforcing the policy stated under "The
-host's git executing what the sandbox wrote". Unlike root-level read-only bind mounts, the filter
-refuses new `.git` entries and protects the listed Git entries at any depth. The design uses
-FUSE to mediate the VM's filesystem view across host platforms;
-`fuse/ko-agent-fs/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
+The creation-time syntax check does not prevent deliberate construction of such links; they still
+require review. Direct hardlinks across the workspace mount boundary fail with `EXDEV`, because
+the project mount and the container root are different filesystems. Hardlinking a symlink within the
+workspace can still change where its relative target resolves.
+
+The tree is also shared live with the host:
+
+- Your editor, builds and git run against the same files the agent is writing; host and sandbox
+  writes race like any two processes on one directory, and git's own lock files are the only
+  arbiter the writable parts of `.git` get.
+- On Windows the sharing adds one rule: a file a live session holds open cannot be written from the
+  host. The machine's 9p handle imposes Windows sharing rules, so a host editor's save meets "used
+  by another process" until the session lets go (`fuse/ko-agent-fs/doc/verification-log.md` has
+  the measurement).
+- Concurrent sandbox sessions of one project race each other the same way, under the workspace
+  filter too: they share the one filter mount — the same files, the same live view, the same
+  races.
+
+**The workspace filter, on the platforms where it is unverified.**
+
+- The project reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
+  enforcing the policy stated under "The host's git executing what the sandbox wrote".
+- The filter refuses new `.git` entries and protects the listed Git entries at any depth;
+  `doc/design.md`, "No writable session without the workspace filter", has why read-only bind
+  mounts cannot.
+- The design uses FUSE to mediate the VM's filesystem view across host platforms;
+  `fuse/ko-agent-fs/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
 
 The mount-time guard has two scope limits (`fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook
-directories"). First, it checks the repository discovered from the project directory, not every
-nested repository. The protected entries under a nested repository's `.git` cannot be modified, but
-pre-existing redirections into writable worktree files — relocated hooks or a redirected gitdir —
-remain writable (`fuse/ko-agent-fs/doc/TODO.md`). Bare layouts below the workspace root are also
-outside that check; a bare layout present at the root at launch is refused ("The project
-directory"). Second, the check is a snapshot. It does not revalidate protected Git entries relocated
-by the host during a session. The resolution chains it accepts consist of components the sandbox
-cannot write or rename, so the sandbox cannot redirect those chains itself. This does not prevent it
-from constructing a new bare layout from ordinary writable files, as described above.
+directories"):
+
+- It checks the repository discovered from the project directory, not every nested repository.
+  - The protected entries under a nested repository's `.git` cannot be modified, but pre-existing
+    redirections into writable worktree files — relocated hooks or a redirected gitdir — remain
+    writable (`fuse/ko-agent-fs/doc/TODO.md`).
+  - Bare layouts below the workspace root are also outside that check; a bare layout present at
+    the root at launch is refused ("The project directory").
+- The check is a snapshot. It does not revalidate protected Git entries relocated by the host during
+  a session.
+  - The resolution chains it accepts consist of components the sandbox cannot write or rename, so
+    the sandbox cannot redirect those chains itself.
+  - This does not prevent it from constructing a new bare layout from ordinary writable files, as
+    described above.
 
 What an auditor trusts, and how each link is checked:
 
@@ -308,103 +413,93 @@ What an auditor trusts, and how each link is checked:
   Enabling `user_allow_other` in the machine's `/etc/fuse.conf`, required for a cross-uid mount,
   requires consent ("Silent changes to what you own", above).
 
-Its name rule is verified on macOS against both APFS variants and on Windows against a real NTFS
-volume, its coherency on macOS and — with the share-lock cost "The project directory" notes — on
-Windows, each through the whole production stack
-(`fuse/ko-agent-fs/doc/verification-log.md` has the runs). The rest is what the README's status
-line means: on Linux the guarantees are reasoned rather than measured, while the filter is the
-enforcement of every `--write=live` session under `WORKSPACE_GUARD=fuse`, on every platform.
+What is measured, each through the whole production stack
+(`fuse/ko-agent-fs/doc/verification-log.md` has the runs):
 
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the read-only bind mounts instead, the next entry.
-They are alternatives, never a stack: the filter's policy is a strict superset of the mounts'
-protection, and preparing their bind targets would mean creating `.git` entries through the filter,
-which the filter denies. Every gate on the filtered path fails closed — a version mismatch, a failed
-self-test or a failed mount aborts the launch, never falling back to an unfiltered bind.
+- the name rule, on macOS against both APFS variants and on Windows against a real NTFS volume;
+- coherency, on macOS and — with the share-lock cost "The project directory" notes — on Windows.
+
+The rest is what the README's status line means: on Linux the guarantees are reasoned rather than
+measured, while the filter is the enforcement of every `--write=live` session, on every platform.
+
+Every gate on the filtered path fails closed: a version mismatch, a failed self-test or a failed
+mount aborts the launch, never falling back to an unfiltered bind.
+
 Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 
-**The read-only `.git` mounts under `WORKSPACE_GUARD=none`.**
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces the filter with mounts: `.git/config` and
-`.git/hooks` remounted read-only (a pointer-file `.git` mounted read-only in full, and the bare name
-when no repository exists). A session that takes it says so on its `workspace:` line. The set of
-mounts is fixed at launch — a host-created repository appears behind the whole-directory mount,
-read-only until the next launch — and they cover only the workspace root, so a repository the agent
-creates deeper in the tree is outside their protection, the gap "The project directory" describes.
+**What is inside TLS, for the hosts that stay opaque.**
 
-Replacing a file on the host can defeat its read-only mount's protection. On a macOS podman machine,
-once the host gives
-`.git/config` or `.git/hooks` a new inode while the session runs — a rename over it, or a rename
-away and a fresh object at the path, which is how `git config` and most editors write — the sandbox
-is writing the host's current file within about two seconds, through the writable parent. It is
-stale in between, and the mount stays listed in the sandbox's mount table throughout, so neither
-that table nor a check made immediately after the write shows anything wrong. On the Windows
-machine the same replacement left the mount refusing writes for the whole two-minute observation —
-measured, not designed, so the macOS behavior stays the one to plan around. The protection survives
-mutations that preserve the inode: in-place file edits, and creation or deletion of entries inside
-the read-only `.git/hooks` mount.
+- A `tunnel` host is deliberately not inspected, so the proxy sees only the handshake and cannot
+  tell a `GET` from a `POST`.
+- In the defaults that is the model-provider endpoints alone: their required writes cannot be
+  refused, and inspection would expose the conversation and provider tokens in plaintext to the
+  proxy process.
+- Inspection lets the retained log record each request's method and target; an opaque tunnel logs
+  the `CONNECT` alone.
+- Every other defaults host is inspected, the bulk package registries included at a known
+  per-request handshake cost: security is not traded for performance (design.md's principles).
 
-Native Linux remains unmeasured. WorkspaceGuardOffTest expects the macOS fall-through there until
-a Linux run supplies evidence, so this mode makes no stronger claim on that platform.
+**What the persistent volume holds.**
 
-This mode cannot guarantee protection while host programs replace the mounted files or directories.
-`WorkspaceGuardOffTest` records the measurements.
-
-**What is inside TLS, for the hosts that stay opaque.** A `tunnel` host is deliberately not
-inspected, so the proxy sees only the handshake and cannot tell a `GET` from a `POST`. In the
-defaults that is the model-provider endpoints alone: their required writes cannot be refused, and
-inspection would expose the conversation and provider tokens in plaintext to the proxy process.
-Inspection lets the retained log record each request's method and target; an opaque tunnel logs
-the `CONNECT` alone. Every other defaults host is inspected, the bulk package registries included
-at a known per-request handshake cost: security is not traded for performance (design.md's
-principles).
-
-**What the persistent volume holds.** Every session mounts every installed agent's state
-read-write under the same uid, regardless of which agent the host launched. The launched command is
-not a security principal: any process in the sandbox can read another agent's provider login,
-history and session metadata, or change its configuration and MCP definitions for a later session.
-This is deliberate. An agent can invoke another installed agent as a command or MCP server and the
-called agent reuses its persisted login and configuration; the project, not the agent executable,
-is the isolation boundary.
-
-Later sessions read the volume as trusted input. Some stored state, especially MCP server
-definitions, names commands to execute. `--reset` removes the project's default agent-state volume;
-use it if that state is suspect. `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` lets projects share a named
-volume: state written by one project becomes input to every other project using that volume.
-`--reset` deliberately preserves this explicitly shared volume, so it does not remove credentials or
-suspect state stored there. Removing a stored credential does not revoke copies already held
-elsewhere; revocation remains the provider's operation.
-
-Concurrent sessions of a project mount the volume read-write. Writes to the same state file can
-overwrite earlier changes or leave inconsistent content. A `--reset` from another terminal
-deliberately ends live sessions; if it races with a launch, that launch fails rather than continuing
-with weaker confinement.
+- Every session mounts every installed agent's state read-write under the same uid, regardless of
+  which agent the host launched.
+- The launched command is not a security principal: any process in the sandbox can read another
+  agent's provider login, history and session metadata, or change its configuration and MCP
+  definitions for a later session.
+- This is deliberate. An agent can invoke another installed agent as a command or MCP server and
+  the called agent reuses its persisted login and configuration; the project, not the agent
+  executable, is the isolation boundary.
+- Later sessions read the volume as trusted input. Some stored state, especially MCP server
+  definitions, names commands to execute. `--reset` removes the project's default agent-state
+  volume; use it if that state is suspect.
+- `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` lets projects share a named volume: state written by one
+  project becomes input to every other project using that volume. `--reset` deliberately preserves
+  this explicitly shared volume, so it does not remove credentials or suspect state stored there.
+- Removing a stored credential does not revoke copies already held elsewhere; revocation remains the
+  provider's operation.
+- Concurrent sessions of a project mount the volume read-write. Writes to the same state file can
+  overwrite earlier changes or leave inconsistent content.
+- A `--reset` from another terminal deliberately ends live sessions; if it races with a launch, that
+  launch fails rather than continuing with weaker confinement.
 
 **A repository that ships wide egress rules.** Review `.ko-agent-sandbox/egress/rule` before running
-an unfamiliar project, as you would its build scripts. A `tunnel` line allows opaque traffic to its
-host, and a `method=` line can grant writes at its path. The sandbox enforces those grants; it does
-not establish that the project's choices are appropriate.
+an unfamiliar project, as you would its build scripts.
 
-**The supply chain.** Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the agent's
-request are trusted as they arrive. npm's install-time audit is off by default (the audit line
-of `doc/egress-rule-example/npm-audit/rule`, "Reading without being able to write" below); where
-a project enables it, its warnings do not stop installation.
+- A `tunnel` line allows opaque traffic to its host, and a `method=` line can grant writes at its
+  path.
+- The sandbox enforces those grants; it does not establish that the project's choices are
+  appropriate.
+
+**The supply chain.**
+
+- Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the agent's request are
+  trusted as they arrive.
+- npm's install-time audit is off by default (the audit line of
+  `doc/egress-rule-example/npm-audit/rule`, "Reading without being able to write" below); where a
+  project enables it, its warnings do not stop installation.
 
 **Container, runtime and kernel escape.** On Linux the boundary ultimately depends on rootless
 podman, the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to
 contain a working kernel or container-runtime exploit; if that enters the threat model, the answer
 is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, not more flags here.
 
-**Resource exhaustion.** The PID limit and memory limit bound runaway process and memory use.
-CPU, disk growth under `/workspace`, network bandwidth, and denial of service against the host
-generally are not comprehensively bounded.
+**Resource exhaustion.**
+
+- The PID limit and memory limit bound runaway process and memory use.
+- CPU, disk growth in the project, network bandwidth, and denial of service against the host
+  generally are not comprehensively bounded.
 
 ## Egress proxy
 
-The HTTP proxy runs in a separate container that the agent cannot modify. The sandbox's internal
-network has no route to external destinations, so outbound HTTPS connections must pass through the
-proxy. Its container is created for each run and removed afterward, using the reserved names
-described under "Silent changes to what you own". The audit log is appended through a bind mount to
-a per-run file in the launcher's host state directory and survives container removal. Each
-connection passes these checks and transitions in order:
+- The HTTP proxy runs in a separate container that the agent cannot modify.
+- The sandbox's internal network has no route to external destinations, so outbound HTTPS
+  connections must pass through the proxy.
+- Its container is created for each run and removed afterward, using the reserved names described
+  under "Silent changes to what you own".
+- The audit log is appended through a bind mount to a per-run file in the launcher's host state
+  directory and survives container removal.
+
+Each connection passes these checks and transitions in order:
 
 1. `CONNECT` only — any other method is a 400
 1. port 443 only
@@ -434,21 +529,27 @@ connection passes these checks and transitions in order:
 
 Steps 8-11 prevent `CONNECT allowed.example:443` from carrying a TLS handshake for another name at
 the same address. These checks follow the `200`, so a failure closes the connection. Before the
-`200`, malformed or non-CONNECT requests receive `400`; policy refusals receive `403` with the
-reason and suggested next step; DNS or connection failures receive `502`. Clients often hide
-failed-CONNECT response bodies, so the sandbox image provides `sandbox-egress-check <host>` to read
-them ([README.md](README.md#reference), `--egress-check`).
+`200`:
+
+- malformed or non-CONNECT requests receive `400`;
+- policy refusals receive `403` with the reason and suggested next step;
+- DNS or connection failures receive `502`.
+
+Clients often hide failed-CONNECT response bodies, so the sandbox image provides
+`ko-sandbox-egress-check <host>` to read them ([README.md](README.md#reference), `--egress-check`).
 
 With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through an upstream proxy"),
-step 6 connects through the upstream proxy with a `CONNECT` naming the validated numeric address.
-The local checks still decide what is allowed; the upstream proxy does not resolve the origin
-hostname.
-The returned tunnel carries the same steps 8 to 11. The upstream proxy cannot override a local
-refusal. An upstream refusal or connection failure produces `502`, with no direct-connect fallback.
-The variable reaches the proxy container's environment by name — podman copies a value-less `--env`
-from the launcher's process — so its userinfo is in no argument, and the proxy keeps the credential
-in memory and prints the endpoint alone. The sandbox never sees the variable: its own proxy
-variables name the per-run proxy, as `SessionBoundaryTest` asserts.
+step 6 connects through the upstream proxy with a `CONNECT` naming the validated numeric address:
+
+- The local checks still decide what is allowed; the upstream proxy does not resolve the origin
+  hostname. The returned tunnel carries the same steps 8 to 11. The upstream proxy cannot override
+  a local refusal.
+- An upstream refusal or connection failure produces `502`, with no direct-connect fallback.
+- The variable reaches the proxy container's environment by name — podman copies a value-less
+  `--env` from the launcher's process — so its userinfo is in no argument, and the proxy keeps the
+  credential in memory and prints the endpoint alone.
+- The sandbox never sees the variable: its own proxy variables name the per-run proxy, as
+  `SessionBoundaryTest` asserts.
 
 ### The audit line grammar
 
@@ -462,19 +563,22 @@ tooling; the trailing explanation is intended for people and may change:
 Timestamps use UTC with second precision, for example `2026-08-26T11:59:38Z`. Every line carries a
 timestamp, including startup lines; the examples below omit it.
 
-The host is the `CONNECT` target as the sandbox requested it — what was asked for, not necessarily a
-hostname allowed by the ruleset. The method is `CONNECT` for tunnel-level events and the inspected
-method inside one; `-` fills a field the connection ended before revealing, so the field never
-carries a token the proxy did not allow — a refused method is named in the text instead. The target
-appears exactly when a parsed inspected request exists, query string included: the URL is the
-message an allowed `GET` can carry ("Exfiltration through allowed network traffic", above), so the
-log records it whole, which is also why the log files are owner-only. Whole, but not arbitrary — a
-control character in a request target, a field value or a `CONNECT` authority is refused at the
-parser, so nothing that reaches this log can split a line's fields with a tab or rewrite it with an
-escape sequence on the terminal reading it. `deny` records a protocol or policy refusal; `error`
-records a connection, origin or relay failure without such a refusal. A count of `deny` lines
-therefore includes malformed requests but excludes ordinary network failures. The stages emit the
-following kinds of events:
+- **`<host>`** is the `CONNECT` target as the sandbox requested it — what was asked for, not
+  necessarily a hostname allowed by the ruleset.
+- **`<method>`** is `CONNECT` for tunnel-level events and the inspected method inside one. `-`
+  fills a field the connection ended before revealing, so the field never carries a token the proxy
+  did not allow; a refused method is named in the text instead.
+- **`<target>`** appears exactly when a parsed inspected request exists, query string included.
+  - The URL is the message an allowed `GET` can carry ("Exfiltration through allowed network
+    traffic", above), so the log records it whole, which is also why the log files are owner-only.
+  - Whole, but not arbitrary: a control character in a request target, a field value or a `CONNECT`
+    authority is refused at the parser, so nothing that reaches this log can split a line's fields
+    with a tab or rewrite it with an escape sequence on the terminal reading it.
+- **`deny`** records a protocol or policy refusal; **`error`** records a connection, origin or relay
+  failure without such a refusal. A count of `deny` lines therefore includes malformed requests but
+  excludes ordinary network failures.
+
+The stages emit the following kinds of events:
 
     # the CONNECT gate — lifecycle steps 1 to 6
     deny - - GET non-CONNECT request
@@ -512,23 +616,28 @@ following kinds of events:
     error github.com GET /big.tar relay: 8192-byte response truncated: body ended 100 bytes early
     error github.com - client closed before sending a request
 
-The `relay:` error records response-body framing and I/O failures after the response head was
-forwarded, including timeouts and resets in close-delimited bodies. The proxy aborts the client
-connection without a clean TLS shutdown so the client can detect the incomplete download.
-A client closing without sending a request is not a refusal; pooled clients routinely discard
-unused connections. It is logged as `error`. A partial request header is instead classified as
-malformed input and logged as `deny`.
+- The `relay:` error records response-body framing and I/O failures after the response head was
+  forwarded, including timeouts and resets in close-delimited bodies. The proxy aborts the client
+  connection without a clean TLS shutdown so the client can detect the incomplete download.
+- A client closing without sending a request is not a refusal; pooled clients routinely discard
+  unused connections. It is logged as `error`. A partial request header is instead classified as
+  malformed input and logged as `deny`.
+- A refused request's `403` body is the agent's copy of `<why>`, with the next step under it
+  (`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
+  for the person who has this document.
 
-A refused request's `403` body is the agent's copy of `<why>`, with the next step under it
-(`RefusalAdvice` in the proxy); the advice is for the agent, and never enters the log, which is
-for the person who has this document.
+Startup lines precede these events and use a separate format. They record, in order:
 
-Startup lines precede these events and use a separate format. They record, in order: the transport
-(direct, or the upstream proxy and its addresses resolved at startup), the listening port, the
-ruleset in `--print-ruleset` format, its digest, summary counts, grants exceeding a host's defaults,
-warnings, and the inspection summary. Metadata about the project's rule file is excluded from the
-digest, so different files that resolve to the same ruleset have the same digest. There is no
-peer-address field: the per-run internal network has one client container.
+1. the transport: direct, or the upstream proxy and its addresses resolved at startup;
+1. the listening port;
+1. the ruleset in `--print-ruleset` format, its digest, and summary counts. Metadata about the
+   project's rule file is excluded from the digest, so different files that resolve to the same
+   ruleset have the same digest;
+1. grants exceeding a host's defaults;
+1. warnings;
+1. the inspection summary.
+
+There is no peer-address field: the per-run internal network has one client container.
 
 ### Reading without being able to write
 
@@ -541,43 +650,52 @@ The catalog grants `read git-fetch` to three Git hosting services:
 These grants allow `git clone` and `git fetch`. An opaque tunnel would also carry `git push`,
 allowing project contents to be uploaded wherever the agent has access.
 
-The rest of the catalog is `read` alone — `GET` and `HEAD` with no body, and no POST at all: the
-GitHub content hosts, the documentation and reference sites, the content CDNs, and the
-container-image pull hosts. A grant's POST must not reach a host without it: on a content host
-whose paths are anyone's to choose, a path that mimics `git-upload-pack` would pass under the git
-rule. The proxy image's `defaults/host` file is the canonical built-in membership, grants
-included, with the reason beside each line; what stays opaque, and why, is "What is inside TLS"
-above.
+The rest of the catalog is `read` alone — `GET` and `HEAD` with no body, and no POST at all:
+
+- the GitHub content hosts;
+- the documentation and reference sites;
+- the content CDNs;
+- the container-image pull hosts.
+
+A grant's POST must not reach a host without it: on a content host whose paths are anyone's to
+choose, a path that mimics `git-upload-pack` would pass under the git rule. The proxy image's
+`defaults/host` file is the canonical built-in membership, grants included, with the reason beside
+each line; what stays opaque, and why, is "What is inside TLS" above.
 
 For each inspected request, the proxy terminates TLS and checks the grants in the resolved scope
 with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
 
-- `read`: bodyless `GET` and `HEAD`, except the Git discovery requests classified separately below
-- `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and `POST` to a path
-  consisting of at least two nonempty segments followed by `/git-upload-pack` — the transfer step of
-  `clone` and `fetch`. Git sends fetch-negotiation data as a `POST` and receives a packfile in the
-  response. Granting only `read` would therefore prevent cloning. Discovery also requires
-  `git-fetch`, so a clone without the transfer grant fails at its first request rather than its
-  second
+- `read`: bodyless `GET` and `HEAD`, except the Git discovery requests classified separately below.
+- `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and the transfer
+  step of `clone` and `fetch`, a `POST` to a path of at least two nonempty segments followed by
+  `/git-upload-pack`.
+  - Git sends fetch-negotiation data as a `POST` and receives a packfile in the response, so
+    granting only `read` would prevent cloning.
+  - Discovery also requires `git-fetch`, so a clone without the transfer grant fails at its first
+    request rather than its second.
 - `method=POST` on GitHub's two default login rules, `/login/device/code` and
-  `/login/oauth/access_token`, GitHub's OAuth device flow, which is how Copilot CLI signs in. The
-  second is GitHub's general token endpoint, shared with the web flow's code exchange, whose
-  redirect cannot reach the sandbox. These are method-and-path grants; the payload limitations under
-  "Exfiltration through allowed network traffic" apply here too. A session can initiate device
-  authorization for a GitHub OAuth app; completing that flow requires user authorization on GitHub's
-  device page
+  `/login/oauth/access_token`: GitHub's OAuth device flow, which is how Copilot CLI signs in.
+  - The second is GitHub's general token endpoint, shared with the web flow's code exchange, whose
+    redirect cannot reach the sandbox.
+  - These are method-and-path grants; the payload limitations under "Exfiltration through allowed
+    network traffic" apply here too.
+  - A session can initiate device authorization for a GitHub OAuth app; completing that flow
+    requires user authorization on GitHub's device page.
 - `method=` on a project's own line: the listed HTTP methods at that path, inspected and logged. The
-  defaults have no such line beyond the login pair. `doc/egress-rule-example/npm-audit/rule` is the
-  measured case: `POST` to the audit endpoint the image's npm uses at install time. Older npm
-  endpoints are refused and logged without failing the installation. Audit is off by default because
-  the request sends a package/version inventory, including names the registry's own `GET`s never
-  carried, such as private-registry and Git dependencies in a lockfile. It does not send dependency
-  edges. Enabling install-time vulnerability warnings allows that disclosure
-- Nothing else. `POST .../git-receive-pack` is the push and is refused, as is its ref discovery —
-  a `GET`, refused anyway so that `git push` fails at its first request rather than its second,
-  except where a line grants `POST` at the repository, the project's own visible grant. `PUT`,
-  `PATCH` and `DELETE` are refused, and so is every other `POST`, where no line grants the
-  method
+  defaults have no such line beyond the login pair.
+  - `doc/egress-rule-example/npm-audit/rule` is the measured case: `POST` to the audit endpoint the
+    image's npm uses at install time. Older npm endpoints are refused and logged without failing
+    the installation.
+  - Audit is off by default because the request sends a package/version inventory, including names
+    the registry's own `GET`s never carried, such as private-registry and Git dependencies in a
+    lockfile. It does not send dependency edges. Enabling install-time vulnerability warnings
+    allows that disclosure.
+- Nothing else.
+  - `POST .../git-receive-pack` is the push and is refused, and so is its ref discovery — a `GET`,
+    refused anyway so that `git push` fails at its first request rather than its second.
+  - The exception is a line granting `POST` at the repository, the project's own visible grant.
+  - `PUT`, `PATCH` and `DELETE` are refused, and so is every other `POST`, where no line grants the
+    method.
 
 A policy refusal returns `403` inside the tunnel, with the reason and suggested next step, and
 produces a `deny` audit line ("The audit line grammar", above). Malformed HTTP receives `400` and is
@@ -589,99 +707,123 @@ Consequences under the default grants; a project can explicitly grant the releva
 - GraphQL requests using `POST` are refused, including read-only queries. Distinguishing a query
   from a mutation would require interpreting the payload, which the proxy does not do. If an
   endpoint supports GraphQL over bodyless `GET`, those requests are governed by `read`, just like
-  REST reads. GitHub's GraphQL API requires authentication; GitLab supports anonymous queries, so
-  refusing `POST` queries can cost GitLab reads even without a stored token. Their documentation
-  describes the authentication requirements:
-  [GitHub](https://docs.github.com/en/graphql/guides/forming-calls-with-graphql),
-  [GitLab](https://docs.gitlab.com/api/graphql/).
-  Codeberg uses the [Forgejo API](https://forgejo.org/docs/latest/user/api/usage/);
-  its bodyless REST `GET` reads remain allowed under the defaults.
+  REST reads. Each host's documentation describes its authentication requirements:
+  - [GitHub's GraphQL API](https://docs.github.com/en/graphql/guides/forming-calls-with-graphql)
+    requires authentication.
+  - [GitLab](https://docs.gitlab.com/api/graphql/) supports anonymous queries, so refusing `POST`
+    queries can cost GitLab reads even without a stored token.
+  - Codeberg uses the [Forgejo API](https://forgejo.org/docs/latest/user/api/usage/); its bodyless
+    REST `GET` reads remain allowed under the defaults.
 - The LFS batch endpoint is not opened. It is a `POST` whose body chooses between download and
   upload — another request whose meaning is in the body. Public-repository LFS batch downloads can
   be anonymous. The absence of git-lfs from the image does not enforce this restriction: an agent
   can fetch its static binary through release-assets.githubusercontent.com, but the proxy still
-  refuses its batch requests. This costs `git lfs pull`, without making all LFS content unreachable.
-  GitHub serves individual LFS files at media.githubusercontent.com, which is in the defaults.
-  GitLab documents GET downloads through its
-  [raw-file API](https://docs.gitlab.com/api/repository_files/#get-raw-file-from-repository),
-  with `lfs=true`, and its
-  [archive API](https://docs.gitlab.com/api/repositories/#get-file-archive),
-  with `include_lfs_blobs=true`. These downloads remain subject to the destination rules, including
-  any redirected destination. TODO.md records the download-only inspection that would allow LFS
-  batch downloads.
+  refuses its batch requests. This costs `git lfs pull`, without making all LFS content
+  unreachable:
+  - GitHub serves individual LFS files at media.githubusercontent.com, which is in the defaults.
+  - GitLab documents GET downloads through its
+    [raw-file API](https://docs.gitlab.com/api/repository_files/#get-raw-file-from-repository),
+    with `lfs=true`, and its
+    [archive API](https://docs.gitlab.com/api/repositories/#get-file-archive),
+    with `include_lfs_blobs=true`.
+
+  These downloads remain subject to the destination rules, including any redirected destination.
+  TODO.md records the download-only inspection that would allow LFS batch downloads.
 
 Each inspected connection carries one request, forwarded using validated body framing, and its
-response, then closes. The proxy sends `Connection: close` to the origin and validates the
-response's framing to detect truncation. This removes connection reuse as a request-smuggling path
-without assuming that the origin parses every byte identically. Ambiguous framings — a
-`Content-Length` beside a `Transfer-Encoding`, or conflicting `Content-Length` values — are refused
-rather than resolved. ALPN is restricted to `http/1.1` so the proxy can parse the request.
-`Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the one inspected request
-into a stream the proxy no longer reads.
+response, then closes:
+
+- The proxy sends `Connection: close` to the origin and validates the response's framing to detect
+  truncation. This removes connection reuse as a request-smuggling path without assuming that the
+  origin parses every byte identically.
+- Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, conflicting
+  `Content-Length` values, or a `Content-Length` with anything but digits in it, which the origin
+  receives as written — are refused rather than resolved.
+- ALPN is restricted to `http/1.1` so the proxy can parse the request.
+- `Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the one inspected request into
+  a stream the proxy no longer reads.
 
 ### Who holds the CA key
 
-The launcher keeps the CA private key on the host under every profile except `allow-unless-denied`.
-That profile uses a separate per-run CA, described below.
-
-Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
-(`%LOCALAPPDATA%` on Windows) — outside `/workspace`, so the agent can neither read the key that
-signs what it is shown nor replace it for the next session. A CA created for one project cannot be
-used to read another's traffic.
-
-The launcher reissues the CA a month before expiry. It reissues the leaf with the CA, a month
-before the leaf expires, or when the resolved inspected set changes.
+- The launcher keeps the CA private key on the host under every profile except
+  `allow-unless-denied`. That profile uses a separate per-run CA, described below.
+- Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
+  (`%LOCALAPPDATA%` on Windows) — outside the project, so the agent can neither read the key that
+  signs what it is shown nor replace it for the next session. A CA created for one project cannot
+  be used to read another's traffic.
+- The launcher reissues the CA a month before expiry. It reissues the leaf with the CA, a month
+  before the leaf expires, or when the resolved inspected set changes.
 
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
-read-only. The leaf names exactly this project's resolved inspected set — the inspected hosts after
-its profile and `egress/rule` apply — which the launcher does not keep a copy of: it reads the hosts
-off the `allow` lines of the proxy image's own `--print-ruleset` under the same rules at launch, so
-a custom proxy image, or a project adding an inspected host, gets a matching leaf and there is no
-second list to drift. The proxy still refuses to start unless the certificate names exactly the
-inspected set of the ruleset it resolved. A missing name would cause a TLS error for an allowed
-inspected host. An extra name would let the proxy authenticate as a host outside its inspection set,
-potentially including an opaque model endpoint.
+read-only.
+
+- The leaf names exactly this project's resolved inspected set — the inspected hosts after its
+  profile and `egress/rule` apply.
+- The launcher does not keep a copy of that set: it reads the hosts off the `allow` lines of the
+  proxy image's own `--print-ruleset` under the same rules at launch, so a custom proxy image, or a
+  project adding an inspected host, gets a matching leaf and there is no second list to drift.
+- The proxy still refuses to start unless the certificate names exactly the inspected set of the
+  ruleset it resolved:
+  - a missing name would cause a TLS error for an allowed inspected host;
+  - an extra name would let the proxy authenticate as a host outside its inspection set,
+    potentially including an opaque model endpoint.
 
 Under `allow-unless-denied`, allowed unlisted hosts receive inspected `read` access. They cannot
 all be named in a leaf issued at launch, so the proxy issues a leaf at each host's first connection,
 which needs a CA key inside the proxy container — the process facing the internet, and under this
-profile all of it. The CA is created for the run and trusted by that session alone through a bundle
-kept in the run's directory under `tls/<project>/` and removed with it. The project CA never enters
-the container. During the run, a compromised proxy could issue a certificate for an opaque tunnel
-host and intercept model traffic or provider tokens. This is the additional authority required to
-inspect unlisted hosts and restrict them to logged reads. The proxy is written in memory-safe code
-and exposes no query endpoint (`doc/design.md`, "No HTTP query endpoint on the proxy"). Preparing
-the run CA requires one keypair and one image-JDK trust store per launch. The run CA and its leaves
-use the leaf validity period. Session isolation relies on which CA each session trusts, not on
-expiration coinciding with an exit whose time was unknown at launch. The proxy requires a run CA
-under this profile and refuses one under other profiles.
+profile all of it.
 
-The sandbox trusts that CA — the project's, or under `allow-unless-denied` the run's — through a
-bundle assembled on the host from the image's own CA bundle plus it, mounted over
-`/etc/ssl/certs/ca-certificates.crt`. `SSL_CERT_FILE`,
-`CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO` point at the same
-file, for the programs with a trust store of their own rather than the system's.
+- The CA is created for the run and trusted by that session alone through a bundle kept in the
+  run's directory under `tls/<project>/` and removed with it. The project CA never enters the
+  container.
+- During the run, a compromised proxy could issue a certificate for an opaque tunnel host and
+  intercept model traffic or provider tokens. This is the additional authority required to inspect
+  unlisted hosts and restrict them to logged reads. The proxy is written in memory-safe code and
+  exposes no query endpoint (`doc/design.md`, "No HTTP query endpoint on the proxy").
+- Preparing the run CA requires one keypair and one image-JDK trust store per launch.
+- The run CA and its leaves use the leaf validity period. Session isolation relies on which CA each
+  session trusts, not on expiration coinciding with an exit whose time was unknown at launch.
+- The proxy requires a run CA under this profile and refuses one under other profiles.
+
+The sandbox trusts that CA — the project's, or under `allow-unless-denied` the run's — through:
+
+- a bundle assembled on the host from the image's own CA bundle plus it, mounted over
+  `/etc/ssl/certs/ca-certificates.crt`;
+- for the programs with a trust store of their own rather than the system's, variables pointing at
+  the same file: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and
+  `GIT_SSL_CAINFO`.
 
 The image's JDK is covered by the same technique one layer over, because it reads none of the
-above: a JVM consults a `cacerts` keystore and a `net.properties` file. The image ships
-`sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that JDK's own `keytool`
-and appends the proxy to its `net.properties`; the launcher runs it on the image's own JDK in a
-throwaway container with no network, copies the files out, and mounts them read-only over the
-originals — with `JAVA_HOME` read from the image's own environment, so the launcher never
-hardcodes the arch-dependent Temurin directory and an image without a JDK skips the mounts.
-Every root the image shipped survives: dropping one would stay invisible until a TLS client reaches
-an origin signed by that public CA, so the mounted store test checks the complete root set. The
-store is prepared at launch rather than baked in, since the per-project CA postdates the image.
+above: a JVM consults a `cacerts` keystore and a `net.properties` file.
 
-Programs not covered by the launcher's prepared trust stores need separate handling. A JVM the agent
-installs itself (`cs java --jvm ...`) brings its own untouched store —
-`sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
-certificate it reads is mounted beside the agent instructions, and is the same public one already
-inside the bundle. A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and
-reads no variable, so the proxy and CA settings travel as `-D` options in
-`KO_AGENT_SANDBOX_JAVA_OPTS`, which the agent passes by hand.
-A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
-uninspected OpenAI.
+- The image ships `ko-sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that
+  JDK's own `keytool` and appends the proxy to its `net.properties`.
+- The launcher runs it on the image's own JDK in a throwaway container with no network, copies the
+  files out, and mounts them read-only over the originals.
+  - `JAVA_HOME` is read from the image's own environment, so the launcher never hardcodes the
+    arch-dependent Temurin directory and an image without a JDK skips the mounts.
+  - Every root the image shipped survives: dropping one would stay invisible until a TLS client
+    reaches an origin signed by that public CA, so the mounted store test checks the complete root
+    set.
+  - The store is prepared at launch rather than baked in, since the per-project CA postdates the
+    image.
+
+Programs not covered by the launcher's prepared trust stores need separate handling:
+
+- A JVM the agent installs itself (`cs java --jvm ...`) brings its own untouched store.
+  `ko-sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
+  certificate it reads is mounted beside the agent instructions, and is the same public one already
+  inside the bundle.
+- Maven, which a project's `./mvnw` brings, trusts what its JDK trusts but by default takes the
+  proxy from its settings, neither `HTTPS_PROXY` nor the JDK's `net.properties`; the image ships a
+  `~/.m2/settings.xml` naming it (`container/ko-agent-sandbox/m2/settings.xml`). On the host the
+  broker passes the resolver's `aether.connector.http.useSystemProperties` instead
+  (`doc/run-on-host.md`, "Maven").
+- A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
+  so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
+  agent passes by hand.
+- A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
+  uninspected OpenAI.
 
 ### Why the rules are per project, in the project, and read-only
 
@@ -689,14 +831,17 @@ A single shared rule file would combine the access requirements of otherwise unr
 Per-project rules let a repository that only reads public documentation use different grants from
 one that holds credentials. The rules can be reviewed in a pull request alongside the project.
 
-Without separate protection, an agent with a writable `/workspace` could rewrite the rules for the
+Without separate protection, an agent with a writable project could rewrite the rules for the
 next session. The write-mode protections prevent this ("A project loosening its own confinement",
-above). The launcher rejects a symlink or any other non-directory object at the boundary-directory
-path. Only recognized configuration entries are accepted: an unrecognized entry — a misspelled
-`egres/`, notes, or a backup — causes launch failure instead of being silently ignored. The same
-rule applies within `egress/` (`doc/egress-proxy.md` lists the refusals; dot-named editor and OS
-metadata are excepted, since no configuration will ever be named that way). What remains is "A
-repository that ships wide egress rules", above.
+above). The launcher also rejects:
+
+- a symlink or any other non-directory object at the boundary-directory path;
+- an unrecognized entry — a misspelled `egres/`, notes, or a backup — which causes launch failure
+  instead of being silently ignored. The same rule applies within `egress/` (`doc/egress-proxy.md`
+  lists the refusals; dot-named editor and OS metadata are excepted, since no configuration will
+  ever be named that way).
+
+What remains is "A repository that ships wide egress rules", above.
 
 ### Adding hosts, not patterns
 
@@ -704,67 +849,88 @@ The rule file's lines name exact hostnames, as URLs; the one wildcard is `**.dom
 side — `deny https://**.domain/`. This asymmetry is deliberate.
 
 Exact-host grants make the allowed destinations explicit and enumerable for review. Wildcard
-grants would also allow matching hosts added later. For a shared apex like a cloud provider's,
-`allow https://*.example.com/` could allow names an attacker can register or take over. The breadth
-is in the grant, not the matcher, so no careful pattern syntax removes it. For an inspected host
-under the finite profiles, an open-ended subtree also cannot satisfy the design's certificate check:
-the leaf issued at launch must enumerate the inspected host set. Grants therefore name exact hosts.
-`allow-unless-denied` separately allows unlisted public hosts unless denied, with inspected `read`
-access. The user selects that profile on the launch command line; a repository cannot select it by
-adding a wildcard grant.
+grants would also allow matching hosts added later:
+
+- For a shared apex like a cloud provider's, `allow https://*.example.com/` could allow names an
+  attacker can register or take over. The breadth is in the grant, not the matcher, so no careful
+  pattern syntax removes it.
+- For an inspected host under the finite profiles, an open-ended subtree also cannot satisfy the
+  design's certificate check: the leaf issued at launch must enumerate the inspected host set.
+
+Grants therefore name exact hosts. `allow-unless-denied` separately allows unlisted public hosts
+unless denied, with inspected `read` access. The user selects that profile on the launch command
+line; a repository cannot select it by adding a wildcard grant.
 
 A line grants exactly its words, under the path it names, and nothing else on the host; nothing is
 implied, so a line with no grant word is refused rather than read as `read`. The grammar, the order
 the lines apply in and how a request finds its line are `doc/egress-proxy.md`, "The rule file"; what
-follows is why. A `deny` names a host or a subtree, never a path, because a grant by path needs one
-spelling that works while a denial by path needs every spelling that reaches the tenant, and the
-proxy, comparing literally, cannot know them. With the defaults granting `git-fetch` on
-`github.com`, a hypothetical `deny https://github.com/secret-org/` would be bypassed by
-`/%73ecret-org/…`, which misses the deny, matches the root line and is allowed, GitHub decoding
-`%73` to `s`; by `/Secret-Org/…`, GitHub folding case; by `/secret-org./` and `/secret-org;v=1/` on
-an origin that strips a segment's trailing dot or a `;parameter`; and by `/orgs/secret-org` or a
-search page, reaching the organisation under paths the deny never named. Each such spelling gains
-access: a denial by path fails open. The ordering the grammar gives instead — a host-wide `deny`
-with the narrower `allow` beneath it — fails closed: every spelling that misses the narrower allow
-stays governed by the host-wide deny and is refused. A case-folding keyword would close one of these
-on one origin and none of the others.
+follows is why.
+
+A `deny` names a host or a subtree, never a path, because a grant by path needs one spelling that
+works while a denial by path needs every spelling that reaches the tenant, and the proxy, comparing
+literally, cannot know them. With the defaults granting `git-fetch` on `github.com`, a hypothetical
+`deny https://github.com/secret-org/` would be bypassed by:
+
+- `/%73ecret-org/…`, which misses the deny, matches the root line and is allowed, GitHub decoding
+  `%73` to `s`;
+- `/Secret-Org/…`, GitHub folding case;
+- `/secret-org./` and `/secret-org;v=1/`, on an origin that strips a segment's trailing dot or a
+  `;parameter`;
+- `/orgs/secret-org` or a search page, reaching the organisation under paths the deny never named.
+
+Each such spelling gains access: a denial by path fails open. The ordering the grammar gives
+instead — a host-wide `deny` with the narrower `allow` beneath it — fails closed: every spelling
+that misses the narrower allow stays governed by the host-wide deny and is refused. A case-folding
+keyword would close one of these on one origin and none of the others.
 
 A path on an `allow` line, written after a host-wide `deny`, restricts access relative to a
 whole-host grant. It does not prove tenant isolation for every possible origin. The proxy checks a
 request path's syntax and matches it literally, without reproducing the origin's handling of
-percent-escapes, `..`, backslashes, empty segments or letter case. A rule's path must be in
-canonical form or the launch fails; checks on request spellings depend on the matched scope
-(`doc/egress-proxy.md`, "The rule file"). Under the root a request has the host's least grants and
-gains nothing by decoding, so `GET` and `HEAD` are exempt from the path-spelling checks there. The
-other supported methods still refuse percent-encoding and dot segments at the root. The cost is a
-path the origin would have accepted and this rule refuses, and a path only spellable encoded — a
-space, a non-ASCII name — that cannot be narrowed at all. A path in the wrong case fails closed on
-GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where they are two buckets, alike.
-The proxy does not follow redirects. A client following one sends a new request, which must
-independently satisfy the rules for its destination and path; an earlier grant does not authorize
-the redirected request. A path grant does not bound the message ("Exfiltration through allowed
-network traffic", above). The catalog grants whole-host access to public Git hosting services by
-default; a project that needs access to one owner can deny the host and then allow that owner's
-path.
+percent-escapes, `..`, backslashes, empty segments or letter case:
 
-Two forms of widening are allowed but made explicit. A `method=POST` grant covering a repository's
-discovery and `git-receive-pack` paths allows push; the launch's widening report and
-`--egress-effective` show that grant. A `tunnel` grant for a host inspected by the defaults requires
-`deny defaults` followed by the project's complete ruleset. This makes the loss of inspection and
-request-level auditing an explicit decision about the whole ruleset. Restricting an existing tunnel
-to inspected reads requires only a deny and an allow for that host.
+- A rule's path must be in canonical form or the launch fails.
+- Checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule file").
+  Under the root a request has the host's least grants and gains nothing by decoding, so `GET` and
+  `HEAD` are exempt from the path-spelling checks there. The other supported methods still refuse
+  percent-encoding and dot segments at the root.
+- The cost is a path the origin would have accepted and this rule refuses, and a path only
+  spellable encoded — a space, a non-ASCII name — that cannot be narrowed at all. A path in the
+  wrong case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where
+  they are two buckets, alike.
+- The proxy does not follow redirects. A client following one sends a new request, which must
+  independently satisfy the rules for its destination and path; an earlier grant does not authorize
+  the redirected request.
+- A path grant does not bound the message ("Exfiltration through allowed network traffic", above).
+
+The catalog grants whole-host access to public Git hosting services by default; a project that
+needs access to one owner can deny the host and then allow that owner's path.
+
+Two forms of widening are allowed but made explicit:
+
+- A `method=POST` grant covering a repository's discovery and `git-receive-pack` paths allows push;
+  the launch's widening report and `--egress-effective` show that grant.
+- A `tunnel` grant for a host inspected by the defaults requires `deny defaults` followed by the
+  project's complete ruleset. This makes the loss of inspection and request-level auditing an
+  explicit decision about the whole ruleset. Restricting an existing tunnel to inspected reads
+  requires only a deny and an allow for that host.
 
 A wildcard *removal* is the mirror image: it only ever shrinks what is allowed, so its worst case
-is denying a wanted host — fail-closed — never reaching a new one. `**.foo.com` is the concise
-way to drop a provider that ships several subdomains without re-listing its current ones; `deny
-model-provider NAME` names every host in that provider's default rules as its endpoints change
-(`doc/egress-proxy.md`, "The rule file"). Unlike a grant, a removal can fail when a typo matches
-nothing, leaving a default in place while reading as though it were dropped. A `deny` matching
-nothing at its position produces a warning under every profile. Under `allow-unless-denied`, it
-may intentionally deny an otherwise unlisted host, so the validator cannot treat it as a typo.
-The other two warnings (`doc/egress-proxy.md`, "The rule file") concern lines that grant nothing;
-a warning rather than a refusal because the check reads the defaults, and a file that launches
-today must not fail under a later image whose defaults include it.
+is denying a wanted host — fail-closed — never reaching a new one.
+
+- `**.foo.com` is the concise way to drop a provider that ships several subdomains without
+  re-listing its current ones.
+- `deny model-provider NAME` names every host in that provider's default rules as its endpoints
+  change (`doc/egress-proxy.md`, "The rule file").
+
+Unlike a grant, a removal can fail when a typo matches nothing, leaving a default in place while
+reading as though it were dropped. The warnings:
+
+- A `deny` matching nothing at its position produces a warning under every profile. Under
+  `allow-unless-denied`, it may intentionally deny an otherwise unlisted host, so the validator
+  cannot treat it as a typo.
+- The other two warnings (`doc/egress-proxy.md`, "The rule file") concern lines that grant nothing;
+  a warning rather than a refusal because the check reads the defaults, and a file that launches
+  today must not fail under a later image whose defaults include it.
 
 Every other ambiguity — `doc/egress-proxy.md` lists them — is a failed launch, never ignored
 config.
@@ -816,34 +982,43 @@ Clipboard access is off by default because the host clipboard may contain sensit
 `KO_AGENT_SANDBOX_CLIPBOARD` accepts `off`, `paste` or `bidirectional`; unset or empty selects
 `off`, and any other value fails the launch. The enabled channel has these properties:
 
-- **The sandbox asks; the host answers.** The sandbox opens no connection to the host. The broker —
-  a job of the reaper on POSIX, a thread of the resident launcher on Windows — holds one `podman
-  exec` reading a FIFO under the sandbox's `/tmp`, and answers requests through another. No host
-  listener, no port, no proxy rule, no file in the project, and nothing moves until a clipboard call
-  from inside (`ClipboardBroker`, the image's `ko-agent-clipboard` shim).
+- **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
+  - The broker — a job of the reaper on POSIX, a thread of the resident launcher on Windows —
+    reads requests through a `podman exec` on the FIFO `/tmp/ko-agent-sandbox/clipboard/req` in
+    the sandbox, and answers each through another on `rsp` beside it.
+  - No host listener, no port, no proxy rule, no file in the project, and nothing moves until a
+    clipboard call from inside (`ClipboardBroker`, the image's `ko-sandbox-clipboard` shim).
+- **A request is read to a fixed size and no further.** Anything in the sandbox can write the
+  FIFO.
+  - What the host reads of one exec's stream is cut at `ClipboardBroker.MaxRequestBytes` whatever
+    a request declares.
+  - A `set` whose count passes it is refused, and a body is copied only whole.
+  - The rest of an exec's stream after a refused request is dropped.
 - **The grant is to the container, not to the agent.** Any process can invoke the shim: an agent
   subprocess, a build script, or a dependency's postinstall script. The selected mode therefore
   applies to everything the session executes. Use `off` when that code must not access the
   clipboard.
-- **`paste` grants reads of the current image, as often as asked, for the whole session.** Each
-  request gets a PNG when the clipboard holds one, with no prompt and no per-read consent: what
-  the user controls is what is on the clipboard at each moment, and a process polling the FIFOs
-  can capture images copied later in the session. Text is never served. A `set` request is read
-  and dropped.
+- **`paste` grants reads of the current image, as often as asked, for the whole session.**
+  - Each request gets a PNG when the clipboard holds one, with no prompt and no per-read consent:
+    what the user controls is what is on the clipboard at each moment, and a process polling the
+    FIFOs can capture images copied later in the session.
+  - Text is never served.
+  - A `set` request is read and dropped.
 - **`bidirectional` adds writes.** A session can replace the clipboard with arbitrary text,
   including text the user may later paste into a terminal. The user must explicitly select this
   mode.
-- **The channel lasts for the session.** The FIFOs are on the container's tmpfs, and the broker ends
-  with the sandbox. If the broker dies, the shim fails within its timeout rather than blocking the
-  TUI indefinitely. Clipboard contents written by the session can remain after exit.
+- **The channel lasts for the session.**
+  - The FIFOs are on the container's tmpfs, and the broker ends with the sandbox.
+  - If the broker dies, the shim fails within its timeout rather than blocking the TUI
+    indefinitely.
+  - Clipboard contents written by the session can remain after exit.
 
 ## Run on host
 
 `--run-on-host=<programs>` (`sbt`, `mill`, `gradle`, `mvn`) is off by default and available only on
-macOS. It
-allows agent-chosen code to execute on the host under a Seatbelt profile. The profile provides the
-confinement for these commands; they execute outside the container. `doc/run-on-host.md` describes
-the mechanism. Its security properties and costs are:
+macOS. It allows agent-chosen code to execute on the host under a Seatbelt profile. The profile
+provides the confinement for these commands; they execute outside the container.
+`doc/run-on-host.md` describes the mechanism. Its security properties and costs are:
 
 - **macOS only, structurally, not by neglect.** The `.git` and `.ko-agent-sandbox` denies below must
   hold at every access, for a directory the command creates as much as for one present at its
@@ -855,168 +1030,229 @@ the mechanism. Its security properties and costs are:
     host memory.
   - Windows: AppContainer's ACLs express the grants but not the denies: ACL inheritance has no
     name patterns, so a `.git` created during the command inherits the project's allow.
-
 - **The sandbox asks; the host answers.** A host-side broker uses a FIFO channel like the clipboard
   broker's. It starts each command as its child, streams output back, and returns the exit code.
   There is no host listener or port; the host broker initiates execution (`RunOnHostChannel`, the
-  image's `sandbox-run-on-host` shim).
+  image's `ko-sandbox-run-on-host` shim).
 - **The profile is the boundary; the request is not.** A request names a program, a working
-  directory and arguments. The program must be among those `--run-on-host` named. The requested
-  working directory is resolved and proven inside the project before anything derives from it, and
-  never changes the profile's project grant. The arguments are deliberately not vetted: they select
-  code the agent already chooses (`sbt 'set …'` reaches arbitrary Scala without touching
-  `build.sbt`), and the profile confines whatever they select. A command's access consists of: the
-  project read-write except `.git` and `.ko-agent-sandbox` — denied at any depth after path
-  resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records — its own
-  per-project run-on-host caches, one Coursier-managed JDK read-only, the program's own executable
-  and distribution read-only — the cs-installed `sbt` and the distribution it execs in the Coursier
-  archive cache, the one mill launcher the user provisioned, the one Gradle the build directory's
-  wrapper unpacked under `$GRADLE_USER_HOME/wrapper/dists`, or `~/.gradle/wrapper/dists` when
-  `GRADLE_USER_HOME` is unset, the one Maven the project's wrapper unpacked under
-  `$MAVEN_USER_HOME/wrapper/dists`, or `~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset — a
-  temporary directory for that
-  command, the broker's own under `mill` and `gradle`, where the daemons' forked JVMs write, for
-  an sbt command the sockets of the launch's sbt server under the broker's own directory, for a
-  `mill` command the one port of the launch's mill daemon, and the port of one egress proxy: the
-  broker's for that program under sbt, `mill` and `gradle`, kept across the launch's commands of
-  one build directory, or the command's own under Maven. The mill daemon and every Gradle
-  process, alone among the host processes, may bind listeners on any port — Mill and Gradle bind
-  port 0, and no rule confines a bind to one port — and every process they fork inherits that
-  grant: a test under `mill` or `gradle` can bind a TCP or UDP listener where one under sbt or
-  Maven gets `EPERM`, and at any address of this host, not loopback alone: SBPL's `localhost`
-  class admits a bind to the wildcard or to the LAN address, and a socket so bound answers at the
-  LAN address (measured from this host, `src/probe/run-on-host-broker-session.sh` G1, G9, G10;
-  the filter admits by the local address, so a LAN peer's connection is the same case). The cost
-  is Mill's and Gradle's, and the table at the end of this section states it beside the other
-  programs': the mill client's own profile reaches the daemon's one port and the proxy, and the
-  daemon's outbound is the proxy's port alone; a Gradle process reaches, beyond the proxy, any
-  port of this host, since its daemon, workers and file-lock socket connect to each other's
-  ports of the kernel's choosing. The proxy allows repositories named in
-  `.ko-agent-sandbox/run-on-host/<program>/egress/rule` (`allow https://<host>/ read` lines only;
-  unrecognized configuration entries are refused, as in the parent directory) plus Maven Central, as
-  the file read when that proxy started: a host removed from the file stays reachable from the
-  broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
-  The proxy runs under a profile of its own, granting its executable, the runtime authority as
-  reads and the network, and nothing of the user's: no project, no cache, no write anywhere.
+  directory and arguments.
+  - The program must be among those `--run-on-host` named.
+  - The requested working directory is resolved and proven inside the project before anything
+    derives from it, and never changes the profile's project grant.
+  - The arguments are deliberately not vetted: they select code the agent already chooses
+    (`sbt 'set …'` reaches arbitrary Scala without touching `build.sbt`), and the profile confines
+    whatever they select.
+
+  A command's access is:
+  - the project, read-write, except `.git` and `.ko-agent-sandbox`: denied at any depth after path
+    resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records;
+  - its own per-project run-on-host caches;
+  - one Coursier-managed JDK, read-only;
+  - the program's own executable and distribution, read-only: the cs-installed `sbt` and the
+    distribution it execs in the Coursier archive cache; the one mill launcher the user
+    provisioned; the one Gradle the build directory's wrapper unpacked under
+    `$GRADLE_USER_HOME/wrapper/dists` (`~/.gradle/wrapper/dists` when `GRADLE_USER_HOME` is unset);
+    the one Maven the project's wrapper unpacked under `$MAVEN_USER_HOME/wrapper/dists`
+    (`~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset);
+  - a temporary directory for that command — under `mill` and `gradle`, the broker's own, where the
+    daemons' forked JVMs write;
+  - under sbt, the sockets of the launch's sbt server under the broker's own directory; under
+    `mill`, the one port of the launch's mill daemon;
+  - the port of one egress proxy: the broker's for that program under sbt, `mill` and `gradle`,
+    kept across the launch's commands of one build directory, or the command's own under Maven.
+
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
+
+  The mill daemon and every Gradle process, alone among the host processes, may bind listeners on
+  any port: Mill and Gradle bind port 0, and no rule confines a bind to one port.
+  - Every process they fork inherits that grant, so a test under `mill` or `gradle` can bind a TCP
+    or UDP listener where one under sbt or Maven gets `EPERM`.
+  - The bind is at any address of this host, not loopback alone: SBPL's `localhost` class admits a
+    bind to the wildcard or to the LAN address, and a socket so bound answers at the LAN address
+    (measured from this host, `src/probe/run-on-host-broker-session.sh` G1, G9, G10; the filter
+    admits by the local address, so a LAN peer's connection is the same case).
+  - The cost is Mill's and Gradle's, and the table at the end of this section states it beside the
+    other programs': the mill client's own profile reaches the daemon's one port and the proxy, and
+    the daemon's outbound is the proxy's port alone; a Gradle process reaches, beyond the proxy, any
+    port of this host, since its daemon, workers and file-lock socket connect to each other's ports
+    of the kernel's choosing.
+
+  The proxy allows repositories named in `.ko-agent-sandbox/run-on-host/<program>/egress/rule` plus
+  Maven Central.
+  - The file takes `allow https://<host>/ read` lines only; unrecognized configuration entries are
+    refused, as in the parent directory.
+  - A launch selecting the program prints the file's hosts, so a host that arrived with the
+    repository does not take effect unseen.
+  - The proxy reads the file when it starts: a host removed from the file stays reachable from the
+    broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
+  - The proxy runs under a profile of its own, granting its executable, the runtime authority as
+    reads and the network, and nothing of the user's: no project, no cache, no write anywhere.
 - **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
   its own settings, three pass-through variables, and the variables named by `--env` at launch
   (`doc/run-on-host.md`, "The command's lifetime and environment", lists them). The same forwarded
   variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is refused on both paths. Inheriting the
   full host environment would expose unrelated secrets, including an upstream proxy credential in
-  the launcher's `HTTPS_PROXY`, to agent-chosen code. The wrapper's settings take precedence, so a
-  forwarded `HTTPS_PROXY` cannot redirect the command past its proxy. The wrapper supplies its JVM
-  properties through HotSpot's `_JAVA_OPTIONS`, replacing any forwarded value of that variable.
-  These properties take precedence over `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and command-line
-  properties.
-  `MILL_VERSION` names the launcher the profile authorizes, whatever was forwarded. Below the
-  launcher, whose arguments are what the user typed, forwarded names travel to the broker and
-  each command as arguments. Values
-  travel through their environments under carrier names (`RunOnHostSandbox.carrierName`), so no
-  unconfined helper reads an explicit value before the command's environment is built. The broker
-  inherits the launcher's environment as the launcher's own JVM ran in it, so a name-only forward
-  names a variable already there.
+  the launcher's `HTTPS_PROXY`, to agent-chosen code.
+  - The wrapper's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
+    command past its proxy.
+  - The wrapper supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
+    forwarded value of that variable. These properties take precedence over `JAVA_TOOL_OPTIONS`,
+    `JDK_JAVA_OPTIONS` and command-line properties.
+  - `MILL_VERSION` names the launcher the profile authorizes, whatever was forwarded.
+  - Below the launcher, whose arguments are what the user typed, forwarded names travel to the
+    broker and each command as arguments. Values travel through their environments under carrier
+    names (`RunOnHostSandbox.carrierName`), so no unconfined helper reads an explicit value before
+    the command's environment is built. The broker inherits the launcher's environment as the
+    launcher's own JVM ran in it, so a name-only forward names a variable already there.
+- **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
+  launch finds the mill launchers and the Gradle and Maven distributions its commands would
+  refuse for want of, and offers the run that downloads each: the build directory's own `./mill`,
+  `./gradlew` or `./mvnw`, a project file the agent can edit, shown as the full command, with any
+  character the terminal would act on spelled out, and run, unconfined and in the launcher's
+  environment, only on a `y` to a prompt that says so (`doc/run-on-host.md`, "Program
+  prerequisites"). That is the manual run the refusal asks of you, with the same authority: the
+  script is the project's, and what it downloads lands where your own script runs from. Nothing
+  runs without the answer; a launch without a terminal, or one starting immediately, prints the
+  refusal and runs nothing.
 - **One sbt server, and one mill daemon, per build directory, owned by the launch's broker.** A
   thin sbt client attaches to whatever server the build directory's portfile names, and Mill's
   launcher to whatever daemon holds `out/mill-daemon`, and then runs with *that process's*
-  environment — its cache, its confinement or lack of it — so the broker starts the server or
-  daemon itself, inside its own profile, before the first sbt or `mill` command of a build
-  directory, and every command from that directory attaches to it: the sbt client through the
-  sockets under the broker's own directory, the `mill` client through the one port the
-  broker proved the daemon listening on, read from `out/mill-daemon/socketPort` as a candidate
-  the file never authorizes; a link redirecting `out/mill-daemon` or an entry in it refuses the
-  command, since Mill's launcher would otherwise act on another build directory's daemon through
-  it — a link the build makes after that check is not caught, and lets the launcher end a daemon
-  whose directory lies under the command's writable roots on a fingerprint mismatch, the reach the
-  profile's write grant sets, while the one-port rule keeps the client from attaching to it. The
-  broker keeps one
-  per build directory it visits, all warm at
-  once, and ends them with the launch or when their proxy is gone. A cancel follows the stock
-  program: an sbt client's disconnect cancels the running exec and the warm server survives for the
-  next command, so an interruption-ignoring test lingers in it exactly as one does in a
-  terminal; a `mill` client's disconnect mid-command makes the daemon shut itself down, and the
-  next command starts one (`doc/run-on-host.md`, "Where a host command deviates from the stock
-  program"). Gradle's daemon is Gradle's own: the client starts it under the profile and matches it
-  in a daemon registry of the launch's own, under the broker's `tmp/` — not in the per-project
-  user home, where one launch's `gradle --stop` would end another launch's builds, and never
-  yours under `~/.gradle` — and the broker records it after each command by pid and start time,
-  the launch's `java.io.tmpdir` in its initial environment the proof, and ends its group, workers
-  and test executors in it, with the launch. A daemon started under a broker that died during the
-  command is unrecorded, and so is one whose build code rewrote that environment in the daemon's
-  own memory, which `ps` reads it from: confined and holding nothing of the launch, it exits on
-  Gradle's idle timeout, three hours, once idle, and one hung in its build has no bound. Maven
-  runs once and exits, so no warm process spans its commands.
+  environment — its cache, its confinement or lack of it. So the broker starts the server or daemon
+  itself, inside its own profile, before the first sbt or `mill` command of a build directory, and
+  every command from that directory attaches to it:
+  - the sbt client through the sockets under the broker's own directory;
+  - the `mill` client through the one port the broker proved the daemon listening on, read from
+    `out/mill-daemon/socketPort` as a candidate the file never authorizes.
+    - A link redirecting `out/mill-daemon` or an entry in it refuses the command, since Mill's
+      launcher would otherwise act on another build directory's daemon through it.
+    - A link the build makes after that check is not caught, and lets the launcher end a daemon
+      whose directory lies under the command's writable roots on a fingerprint mismatch — the reach
+      the profile's write grant sets — while the one-port rule keeps the client from attaching to
+      it.
 
-  A broker signals only its own servers and daemons. A server of *yours* holding a build directory's
-  portfile — from your own terminal, outside any launch — is ended before the broker's starts, and
-  the transcript says so: by protocol, which the server runs after the exec it is on, at the socket
-  the broker derives from the build directory using sbt's derivation, never at one the portfile
-  names. The portfile is workspace content, so trusting its spelling would let the project redirect
-  an unconfined client exchange to any socket this uid can reach. The derived path is refused if a
-  command could have planted it: resolution proceeds one link at a time, and no step may resolve
-  into the project or the per-project caches that outlive a session; an environment placing sbt's
-  server directory inside either — and a chain that passes through one on its way somewhere innocent
-  — leaves the refusal in place. A daemon of yours holding `out/mill-daemon` is ended the same way:
-  found in the process table, never through `processId`, and signalled behind its pid and start time
-  once it has no client connected — the observation is `lsof`'s, repeated immediately before the
-  signal — with a two-minute bound after which the command is refused instead; a terminal `./mill`
-  connecting between that observation and the signal dies with it, and no observation closes that
-  window. A server another *launch* still owns — its broker's session names the build directory — is
-  never signalled by this broker; the command is refused instead, since ending another launch's
-  group would need a coordination this version does not implement (`doc/TODO.md`, "Cross-launch
-  server takeover"). A dead launch's leftover server is not owned by anyone live; the scavenger
-  collects it, by its own exclusive claim, before a fresh one starts. The costs: your own terminal
-  server or daemon for a build directory is ended when the agent runs that program there; while the
-  launch's daemon lives, your own `./mill` with matching settings attaches to it and runs your build
-  under the profile, and one with different settings ends it, as stock Mill does, after which the
-  broker ends yours once idle and starts its own again; and two launches on one project cannot use
-  the same build directory at once — the second is refused while the first launch lives.
+  The broker keeps one per build directory it visits, all warm at once, and ends them with the
+  launch or when their proxy is gone. A cancel follows the stock program (`doc/run-on-host.md`,
+  "Where a host command deviates from the stock program"):
+  - an sbt client's disconnect cancels the running exec and the warm server survives for the next
+    command, so an interruption-ignoring test lingers in it exactly as one does in a terminal;
+  - a `mill` client's disconnect mid-command makes the daemon shut itself down, and the next
+    command starts one.
+
+  Gradle's daemon is Gradle's own.
+  - The client starts it under the profile and matches it in a daemon registry of the launch's own,
+    under the broker's `tmp/` — not in the per-project user home, where one launch's
+    `gradle --stop` would end another launch's builds, and never yours under `~/.gradle`.
+  - The broker records it after each command by pid and start time, the launch's `java.io.tmpdir`
+    in its initial environment the proof, and ends its group, workers and test executors in it,
+    with the launch.
+  - A daemon started under a broker that died during the command is unrecorded, and so is one whose
+    build code rewrote that environment in the daemon's own memory, which `ps` reads it from:
+    confined and holding nothing of the launch, it exits on Gradle's idle timeout, three hours,
+    once idle, and one hung in its build has no bound.
+
+  Maven runs once and exits, so no warm process spans its commands.
+
+  A broker signals only its own servers and daemons. The exceptions:
+  - A server of *yours* holding a build directory's portfile — from your own terminal, outside any
+    launch — is ended before the broker's starts, and the transcript says so.
+    - It is ended by protocol, which the server runs after the exec it is on, at the socket the
+      broker derives from the build directory using sbt's derivation, never at one the portfile
+      names: the portfile is workspace content, so trusting its spelling would let the project
+      redirect an unconfined client exchange to any socket this uid can reach.
+    - The derived path is refused if a command could have planted it: resolution proceeds one link
+      at a time, and no step may resolve into the project or the per-project caches that outlive a
+      session; an environment placing sbt's server directory inside either — and a chain that
+      passes through one on its way somewhere innocent — leaves the refusal in place.
+  - A daemon of yours holding `out/mill-daemon` is ended the same way: found in the process table,
+    never through `processId`, and signalled behind its pid and start time once it has no client
+    connected.
+    - The observation is `lsof`'s, repeated immediately before the signal, with a two-minute bound
+      after which the command is refused instead.
+    - A terminal `./mill` connecting between that observation and the signal dies with it, and no
+      observation closes that window.
+  - A server or daemon another *launch* still owns — its broker's session names the build
+    directory — the command attaches to when the one this launch would start has the running one's
+    confinement and environment, and otherwise ends, by that broker's record and under the
+    retirement lock every ender of a recorded group holds, then replaces with its own.
+    - The owner describes each runtime by a fingerprint of the profile's inputs, the closed
+      environment and the proxy's rule lines, the forwarded values included, so a launch that
+      forwards a secret never serves one that does not, and a launch whose rules differ never
+      resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command").
+    - The request's own launcher flags are not in the fingerprint: they select settings inside a
+      process the profile confines and the wrapper's `_JAVA_OPTIONS` outranks, as they do within a
+      launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach).
+    - That is the one group of a live launch a broker signals that is not its own — a dead launch's
+      group the scavenger collects, below — and the record alone attributes it: a file in the
+      owner's session directory, which no confined process can write, never the portfile or the
+      process table, so nothing a command writes can aim the signal; the group is signalled only
+      behind its leader's recorded start time, as every ender does.
+  - A dead launch's leftover server is not owned by anyone live; the scavenger collects it, by its
+    own exclusive claim, before a fresh one starts.
+
+  The costs:
+  - your own terminal server or daemon for a build directory is ended when the agent runs that
+    program there;
+  - while the launch's daemon lives, your own `./mill` with matching settings attaches to it and
+    runs your build under the profile, and one with different settings ends it, as stock Mill does,
+    after which the broker ends yours once idle and starts its own again;
+  - two launches on one project share a build directory's server or daemon only while each would
+    start one under the same confinement and environment — otherwise each launch's command ends the
+    other's and starts its own, and the warm build the other left is lost with it.
 - **The payload that matters runs later, as you.** If a command could write an executable
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
-  sandbox. Preventing that write has two enforcement points — the workspace filter
-  for writes through `/workspace`, this profile's deny rules for writes by the command — both named
+  sandbox. Preventing that write has two enforcement points — the workspace filter for writes
+  through the project mount, this profile's deny rules for writes by the command — both named
   under "The host's git executing what the sandbox wrote", above.
 - **Cache poisoning stops at the project.** The command writes its own per-project caches, never
-  yours: the Coursier cache, sbt's global base — its boot directory and content-addressed
-  store — sbt's Ivy home, which `publishLocal` writes, Gradle's user home, which holds every
-  plugin and dependency a Gradle build resolves, and Maven's local repository, which holds
-  every plugin a Maven build runs. A poisoned artifact in any of them reaches later agent
-  commands of the same project, which are themselves sandboxed, and no other project and no
-  unsandboxed
-  command — and `--reset` discards them all with the project's other state; `--reset-run-on-host`
-  discards those caches alone. The separation is by root, one directory holding them
-  (`doc/run-on-host.md`, "The run-on-host cache"), because Seatbelt has no mount namespace to
-  overlay with (`plan-coursier.md` reaches the same property for the container by a podman `:O`
-  upper).
-- **The command's output can disclose host paths.** Compiler messages can include the project's
-  absolute path on the host.
+  yours:
+  - the Coursier cache;
+  - sbt's global base — its boot directory and content-addressed store — and sbt's Ivy home, which
+    `publishLocal` writes;
+  - Gradle's user home, which holds every plugin and dependency a Gradle build resolves;
+  - Maven's local repository, which holds every plugin a Maven build runs.
+
+  What that separation gives, and how it is kept:
+  - A poisoned artifact in any of them reaches later agent commands of the same project, which
+    are themselves sandboxed, and no other project and no unsandboxed command.
+  - `--reset` discards them all with the project's other state; `--reset-run-on-host` discards
+    those caches alone.
+  - The separation is by root, one directory holding them (`doc/run-on-host.md`, "The run-on-host
+    cache"), because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches
+    the same property for the container by a podman `:O` upper).
+- **The command's output names host paths**, as every session's does: the project is mounted at
+  its own path ("The project directory", above).
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A host
   command can write `target/` and any other path allowed by the profile's project grant. Selecting
   both options authorizes those writes despite the container's read-only mount, and the launch
-  says so in a red line. A session that must leave the project untouched must not enable
+  says so on a line of its own. A session that must leave the project untouched must not enable
   `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
-  request, and the request itself travels on it, so no command starts without its liveness; an
-  interrupted command, a killed shim and a dead sandbox container all close it, and the broker ends
-  the command with SIGTERM — the wrapper's own hook teardown, which ends the command's process
-  groups and, under Maven, its proxy, appends the command's proxy audit log to the channel's log
-  on the host (`doc/run-on-host.md`, "The channel and the command"), and removes the command's
-  directory; the broker's server or daemon stays, as above. The wrapper holds the broker's
-  pipe the same way: a broker gone, ended or killed, closes it, and the wrapper ends its command
-  by the same teardown; a broker ended by TERM exits only after that teardown, and then ends its
-  own session — its servers', daemons' and proxies' groups, the servers' logs, the
-  daemon starters' output and the proxies' audit logs appended to the channel's log first — as
-  it does at the launch's end. No server or daemon the broker recorded survives the launch that
-  owns it — a Gradle daemon its client started and the broker then recorded included; one it never
-  recorded is the residual above — and a later launch adopts none whose owner is gone: a new
-  broker publishes a new session and reuses nothing. If SIGKILL prevents the wrapper's or the
-  broker's teardown, the recorded groups remain, the broker's servers, daemons and proxies among
-  them, and the next start's scavenger ends them by proof, never by guess — a server whose group
-  leader is gone, by the shutdown
-  protocol at the socket its portfile names, sent only once that socket is proven inside the dead
-  session's directory; a daemon whose group leader is gone is nothing a file attributes, and
-  exits on Mill's own idle timeout.
+  request, and the request itself travels on it, so no command starts without its liveness.
+  - An interrupted command, a killed shim and a dead sandbox container all close it, and the broker
+    ends the command with SIGTERM. The wrapper's own hook teardown ends the command's process
+    groups and, under Maven, its proxy; appends the command's proxy audit log to the channel's log
+    on the host (`doc/run-on-host.md`, "The channel and the command"); and removes the command's
+    directory. The broker's server or daemon stays, as above.
+  - The wrapper holds the broker's pipe the same way: a broker gone, ended or killed, closes it, and
+    the wrapper ends its command by the same teardown. A broker ended by TERM exits only after that
+    teardown, and then ends its own session — its servers', daemons' and proxies' groups, the
+    servers' logs, the daemon starters' output and the proxies' audit logs appended to the
+    channel's log first — as it does at the launch's end.
+  - No server or daemon the broker recorded survives the launch that owns it — a Gradle daemon its
+    client started and the broker then recorded included; one it never recorded is the residual
+    above. A later launch adopts none whose owner is gone: a new broker publishes a new session and
+    reuses nothing.
+  - If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups remain, the
+    broker's servers, daemons and proxies among them, and the next start's scavenger ends them by
+    proof, never by guess:
+    - a server whose group leader is gone, by the shutdown protocol at the socket its portfile
+      names, sent only once that socket is proven inside the dead session's directory;
+    - a daemon whose group leader is gone is nothing a file attributes, and exits on Mill's own
+      idle timeout.
+
+    A record is forgotten only once `ps` shows its group ended or empty: one whose members outlive
+    the KILL, or that `ps` could not observe, stays for the next start to retry.
 
 What a build's processes can do on your host's network, per program, beyond the egress rule file —
 the reach you accept by naming the program in `--run-on-host`:
@@ -1027,14 +1263,16 @@ the reach you accept by naming the program in `--run-on-host`:
 | `mill` | any port, any address | the proxy's and the daemon's ports | a build serving the LAN |
 | `gradle` | as `mill` | any port of this host | and every service on this host |
 
-"Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
-alone (the boundary bullet above; `doc/run-on-host.md` "Network"). The table covers IP sockets;
-UNIX sockets under the launch’s directories have separate path grants. The `mill` daemon’s port
-is reached by its clients alone. A port grant is a port at every address of this host too: the
-proxy listens on the loopback address, so the grant reaches, beside it, only a service listening
-on that port at another address.
-Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
-each other's, so it needs both grants (`doc/run-on-host.md`, "Network").
+- "Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
+  alone (the boundary bullet above; `doc/run-on-host.md` "Network").
+- The table covers IP sockets; UNIX sockets under the launch's directories have separate path
+  grants.
+- The `mill` daemon's port is reached by its clients alone.
+- A port grant is a port at every address of this host too: the proxy listens on the loopback
+  address, so the grant reaches, beside it, only a service listening on that port at another
+  address.
+- Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
+  each other's, so it needs both grants (`doc/run-on-host.md`, "Network").
 
 ## No containers inside the sandbox by default
 
@@ -1044,8 +1282,8 @@ The default excludes both forms of additional container execution:
   capability settings, as detailed below. In particular, a nested container cannot mount its own
   `/proc` while the locked overmounts remain in place. Those relaxations also apply to untrusted
   repository code running in the outer container.
-- **Sibling** — a service container beside the sandbox would be a new host-level object with its own
-  attack surface, reachable laterally from the sandbox and running outside its confinement.
+- **Sibling** — a service container beside the sandbox would be a new host-level object with its
+  own attack surface, reachable laterally from the sandbox and running outside its confinement.
 
 Test services can instead run as ordinary processes inside the sandbox, with the same uid,
 capabilities and egress confinement: PostgreSQL through `initdb`/`pg_ctl`, for example, or an S3
@@ -1072,14 +1310,16 @@ code. `NestingLoosenings` records why each change is required:
 namespace — measured, the container rootfs mounts as `overlay` and the test matrix passes with
 the fuse-overlayfs binary removed — so the kernel's FUSE code stays unreachable.
 
-The remaining controls bound nested execution. `no-new-privileges` prevents `newuidmap` from gaining
-its setuid privilege, limiting a nested user namespace to one mapped uid: an image that switches
-`USER` or chowns to a second uid fails by design — this repository's own images among them, so the
-sandbox still cannot build itself. The egress topology is inherited, not escaped: inner containers
-share the sandbox's network namespace, their only route out is still the proxy, and an image pull is
-an ordinary logged CONNECT to a registry the ruleset allows — Docker Hub, `ghcr.io`, `quay.io`,
-`gcr.io` and ECR Public are built in, any other registry is the project's `egress/rule` to add. No
-runtime is preinstalled. The image's `sandbox-install-podman` refuses to run outside this mode;
-within it, the script unpacks Podman under `$HOME` without acquiring additional privileges. Its
-storage is discarded with the session. The next launch without the opt-in uses the default process
-masks and security options.
+The remaining controls bound nested execution:
+
+- `no-new-privileges` prevents `newuidmap` from gaining its setuid privilege, limiting a nested user
+  namespace to one mapped uid: an image that switches `USER` or chowns to a second uid fails by
+  design — this repository's own images among them, so the sandbox still cannot build itself.
+- The egress topology is inherited, not escaped: inner containers share the sandbox's network
+  namespace, their only route out is still the proxy, and an image pull is an ordinary logged
+  CONNECT to a registry the ruleset allows — Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and ECR
+  Public are built in, any other registry is the project's `egress/rule` to add.
+- No runtime is preinstalled. The image's `ko-sandbox-install-podman` refuses to run outside this
+  mode; within it, the script unpacks Podman under `$HOME` without acquiring additional privileges.
+  Its storage is discarded with the session.
+- The next launch without the opt-in uses the default process masks and security options.

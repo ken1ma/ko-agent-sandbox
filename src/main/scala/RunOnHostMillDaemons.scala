@@ -27,7 +27,7 @@ import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
 import RunOnHostSession.{Processes, Record, Session}
 import RunOnHostSession.HostProcesses.lines
 
-object MillDaemons:
+object RunOnHostMillDaemons:
 
   /** A daemon on the host: its pid with the `ps -o lstart=` start time every later reuse or
     * signal proves first, and the port it listens on. */
@@ -73,36 +73,27 @@ object MillDaemons:
     val assembled = start.assembled
     val prereqs = assembled.prereqs
     val output = starterLog(session, start.hash)
+    val inputs = RunOnHostSandbox.runtimeInputs(
+      assembled, session.tmp, start.runtime.proxyPort, authority, forwards, SeatbeltProfile.Network.MillDaemon,
+    )
     def said =
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
-        spawn <- spawnStarter(session, forwards, start, profileFile, output)
+        spawn <- spawnStarter(start, profileFile, inputs.environment, output)
         _ <- awaitStarter(spawn, start, output, processes, log)
         daemon <- memberDaemon(start.record) match
           case Some((pid, daemonStart)) =>
             verifiedPort(start.buildDirectory, pid).map(port => Daemon(pid, daemonStart, port))
           case None if retriesLeft > 0 && foreignDaemons(start.buildDirectory, processes).nonEmpty =>
-            retire(start.record, processes)
-            endForeign(start.buildDirectory, processes, log).flatMap(_ => attempt(retriesLeft - 1, profileFile))
+            retire(session.directory.getParent, start.record, processes)
+              .flatMap(_ => endForeign(start.buildDirectory, processes, log))
+              .flatMap(_ => attempt(retriesLeft - 1, profileFile))
           case None => Left(s"the mill starter left no daemon in its group; $said")
       yield daemon
     for
       _ <- endForeign(start.buildDirectory, processes, log)
-      profile <- SeatbeltProfile.render(
-        SeatbeltProfile.ProfileInputs(
-          prereqs = prereqs,
-          sessionTmp = session.tmp,
-          distribution = assembled.distribution,
-          sbtGlobal = assembled.sbtGlobalGranted,
-          ivyHome = assembled.ivyHomeGranted,
-          gradleUserHome = assembled.gradleUserHomeGranted,
-          m2Repository = assembled.m2RepositoryGranted,
-          proxyPort = start.runtime.proxyPort,
-          runtime = authority,
-          network = SeatbeltProfile.Network.MillDaemon,
-        ),
-      )
+      profile <- SeatbeltProfile.render(inputs.profile)
       profileFile <-
         try Right(Files.writeString(session.directory.resolve(s"daemon-mill-${start.hash}.sb"), profile, UTF_8))
         catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
@@ -115,9 +106,8 @@ object MillDaemons:
     * to the starter log, the closed environment with the broker's `tmp/` as its temporary and
     * socket directory, which the daemon inherits. */
   private def spawnStarter(
-    session: Session, forwards: Vector[(String, String)], start: DaemonStart, profileFile: Path, output: Path,
+    start: DaemonStart, profileFile: Path, environment: Map[String, String], output: Path,
   ): Either[String, Process] =
-    val assembled = start.assembled
     try
       val builder = ProcessBuilder(
         RunOnHostSession.registeredSpawn(
@@ -131,13 +121,7 @@ object MillDaemons:
       builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
       builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
       builder.environment.clear()
-      builder.environment.putAll(
-        RunOnHostSandbox.commandEnvironment(
-          name => Option(System.getenv(name)), forwards, assembled.prereqs, assembled.sbtGlobal, assembled.ivyHome,
-          assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
-          session.tmp, session.tmp, start.runtime.proxyPort, System.getProperty("user.name"),
-        ).asJava,
-      )
+      builder.environment.putAll(environment.asJava)
       Right(builder.start())
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 
@@ -428,9 +412,12 @@ object MillDaemons:
         case found =>
           val ended = found.filter: (pid, start) =>
             idle(pid).contains(true) && processes.startOf(pid).contains(start) && {
-              end(pid, start, processes)
-              log(s"ended the mill daemon $pid of $buildDirectory: not this launch's, and idle")
-              true
+              val gone = end(pid, start, processes)
+              log(
+                if gone then s"ended the mill daemon $pid of $buildDirectory: not this launch's, and idle"
+                else s"the mill daemon $pid of $buildDirectory, not this launch's and idle, is listed after its KILL",
+              )
+              gone
             }
           if ended.isEmpty then
             if System.nanoTime > deadline then
@@ -443,14 +430,15 @@ object MillDaemons:
             else Thread.sleep(500)
     result.get
 
-  /** TERM, then KILL after a grace, each behind the start-time proof; waits for the pid to go. */
-  private def end(pid: Long, start: String, processes: Processes): Unit =
+  /** TERM, then KILL after a grace, each behind the start-time proof: whether the pid went. */
+  private def end(pid: Long, start: String, processes: Processes): Boolean =
     def alive = processes.startOf(pid).contains(start)
     signal(pid, start, "TERM", processes)
-    val settled = (1 to 100).exists(_ => if !alive then true else { Thread.sleep(100); false })
-    if !settled then
+    val settled = (1 to 100).exists(_ => !alive || { Thread.sleep(100); false })
+    settled || {
       signal(pid, start, "KILL", processes)
-      (1 to 50).exists(_ => if !alive then true else { Thread.sleep(100); false })
+      (1 to 50).exists(_ => !alive || { Thread.sleep(100); false })
+    }
 
   /** One signal to the pid, sent only while the pid bears the start time observed: the proof
     * immediately before the signal, against a pid recycled since. Whether it was sent. */
@@ -459,11 +447,18 @@ object MillDaemons:
     if proved then processes.signal(pid, name)
     proved
 
-  /** A starter's group ended behind its leader, and its record and exit file removed, before the
-    * same record name is spawned again: the failed starter's spawn is that group's live leader. */
-  private def retire(record: Path, processes: Processes): Unit =
-    RunOnHostSession.endRecordedGroup(record, processes)
-    try
-      Files.deleteIfExists(record)
-      Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-    catch case _: IOException => ()
+  /** A starter's group ended behind its leader, under the record's retirement lock, and its
+    * record and exit file removed, before the same record name is spawned again: the failed
+    * starter's spawn is that group's live leader. A group listed after its KILL, or a lock not
+    * free within the bound, keeps its record, and Left refuses the spawn that would rename over
+    * it. */
+  private def retire(root: Path, record: Path, processes: Processes): Either[String, Unit] =
+    RunOnHostSession.endRecordedGroup(root, record, processes) match
+      case Some(kept) if kept.keeps =>
+        Left(s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $kept")
+      case _ =>
+        try
+          Files.deleteIfExists(record)
+          Files.deleteIfExists(RunOnHostSession.exitRecord(record))
+        catch case _: IOException => ()
+        Right(())

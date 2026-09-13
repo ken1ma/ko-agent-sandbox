@@ -53,7 +53,7 @@ cp "$here/apfs-name-rule-probe.py" "$project/"
 # the mounted volume — `podman machine ssh ls "$project"` shows what the VM sees.
 (
     cd "$project"
-    env -u KO_AGENT_SANDBOX_WORKSPACE_GUARD KO_AGENT_SANDBOX_SESSION_START=immediate \
+    KO_AGENT_SANDBOX_SESSION_START=immediate \
         java -jar "$jar" python3 apfs-name-rule-probe.py
 )
 
@@ -65,6 +65,10 @@ if ls .git >/dev/null 2>&1; then
 fi
 if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "FAIL: host-side git discovered a repository at $project" >&2
+    exit 1
+fi
+if ls .ko-agent-sandbox >/dev/null 2>&1; then
+    echo "FAIL: host-side ls resolves a .ko-agent-sandbox in $project" >&2
     exit 1
 fi
 

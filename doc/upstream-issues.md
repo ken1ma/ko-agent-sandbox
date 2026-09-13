@@ -1,10 +1,14 @@
-# Issues to report upstream to sbt/sbt
+# Issues to report upstream
 
-Found while measuring the `--run-on-host` build sandbox, each written as the report to submit.
-What this project does about each is in `run-on-host.md` and the code it points to; the row here
-is only what upstream needs.
+Each entry is written as the report to submit and holds only what upstream needs. Each group says
+where this project's own handling is.
 
-## Quoted JVM options are copied into arguments
+## sbt/sbt
+
+Found while measuring the `--run-on-host` build sandbox. What this project does about each is in
+`run-on-host.md` and the code it points to.
+
+### Quoted JVM options are copied into arguments
 
 **Versions:** sbt runner 2.0.8, Temurin 25.0.4 on macOS; also reproduced on Linux.
 
@@ -28,7 +32,7 @@ environment values without unquoting them when selecting the preloaded cache dir
 **Expected:** preserve the JVM's parsing of its environment options, including quoted paths;
 the script's cache lookup should agree with the JVM's value.
 
-## The JVM thin client crashes instead of reporting a long boot-socket path
+### The JVM thin client crashes instead of reporting a long boot-socket path
 
 **Title:** `--jvm-client` dies with `Trace/BPT trap: 5` when `java.io.tmpdir` is over 52 characters
 on macOS
@@ -63,7 +67,7 @@ from whichever side sees the path first.
 **Related:** #3932 (`SBT_GLOBAL_SERVER_DIR` for long server-socket paths), #6887 / #6907
 (`XDG_RUNTIME_DIR` for the boot socket).
 
-## sbtn exits 0 with nothing run when it cannot start its server
+### sbtn exits 0 with nothing run when it cannot start its server
 
 **Title:** sbtn reports success and runs nothing when the server fork dies
 
@@ -87,7 +91,7 @@ The client then exits 0. Nothing was compiled, nothing more is printed, no serve
 same environment either completes the command or fails with output; success with no work is the
 one behavior automation cannot detect.
 
-## No one-shot mode: every invocation is a server rendezvous
+### No one-shot mode: every invocation is a server rendezvous
 
 **Title:** Feature: a one-shot mode that runs the build in-process and touches no server
 
@@ -108,3 +112,55 @@ could then coexist with a developer's live server instead of ending it.
 
 **Related:** #8030 (a one-shot-style `sbt "show scalaVersion"` leaving a hanging server
 surprises users; a true one-shot mode would answer it too).
+
+## scalameta/munit
+
+What this project does about it is the test listener in `build.sbt`.
+
+### A skipped test's `assume` clue is not printed
+
+**Title:** The clue of a failed `assume` is not shown for the skipped test
+
+**Versions:** munit 1.3.6, sbt 2.0.8, Scala 3.9.0 and 3.7.3.
+
+**Reproducer:**
+
+```scala
+class BodyTest extends munit.FunSuite:
+  test("body assumption")(assume(false, "needs lychee on PATH"))
+
+class FixtureTest extends munit.FunSuite:
+  private val directory = FunFixture[String](
+    setup = _ => { assume(false, "needs python3 with wcwidth"); "x" },
+    teardown = _ => (),
+  )
+  directory.test("fixture assumption")(_ => ())
+```
+
+**What happens:** `sbt test` prints that each test was skipped and not why:
+
+```text
+==> s BodyTest.body assumption skipped 0.001s
+==> s FixtureTest.fixture assumption skipped 0.006s
+```
+
+A reader cannot tell a skip that belongs to the platform from a missing prerequisite, or learn
+which command would run the test.
+
+**Why:** `EventDispatcher.testAssumptionFailure` receives the `Failure` and logs the test's name
+and ` skipped`, without the exception's message:
+https://github.com/scalameta/munit/blob/v1.3.6/junit-interface/src/main/java/munit/internal/junitinterface/EventDispatcher.java
+
+The exception is not lost: the `ErrorEvent` passed to sbt carries it, and an sbt `TestsListener`
+reading `event.detail.throwable` prints the clue in both cases above.
+
+**Expected:** the clue on the skipped test's line, or on a line after it:
+
+```text
+==> s BodyTest.body assumption skipped 0.001s: needs lychee on PATH
+==> s FixtureTest.fixture assumption skipped 0.006s: needs python3 with wcwidth
+```
+
+The test stays skipped and the run's totals do not change.
+
+**Not verified:** reproduced under sbt only, not under Mill, Gradle or Maven.

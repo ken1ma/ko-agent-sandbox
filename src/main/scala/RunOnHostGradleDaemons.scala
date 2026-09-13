@@ -26,7 +26,7 @@ import java.nio.file.{Files, Path, StandardCopyOption}
 
 import RunOnHostSession.{HostProcesses, Processes, Record}
 
-object GradleDaemons:
+object RunOnHostGradleDaemons:
 
   /** The daemon's main class, on its command line (`DefaultDaemonStarter`) and nowhere on the
     * client's. */

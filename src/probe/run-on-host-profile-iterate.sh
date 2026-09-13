@@ -18,12 +18,16 @@
 #   sh src/probe/run-on-host-profile-iterate.sh paths          # what does /bin/sh need?
 #   sh src/probe/run-on-host-profile-iterate.sh paths "$JAVA_HOME/bin/java -version"   # ... or the JDK
 #   sh src/probe/run-on-host-profile-iterate.sh narrow         # drop every grant that is not needed
+#   sh src/probe/run-on-host-profile-iterate.sh mach-route     # does `open` start a program outside the profile?
+#   sh src/probe/run-on-host-profile-iterate.sh mach ["<sbt command>"]   # which Mach services does sbt fail without?
+#   sh src/probe/run-on-host-profile-iterate.sh mach-proxy [native-image]   # ... and the host proxy, in either form?
 #
 # Whether the current grant set builds is src/probe/run-on-host-profile-gate.sh's question, not this one's.
 #
-# Runtime authority accumulates in src/main/resources/agentsandbox/runtime-authority.txt, which you edit by hand: a line
-# added because a command failed once is a grant that outlives every later command, so each belongs
-# there only if it is a stable runtime read and not a path into user data.
+# Runtime authority accumulates in src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt,
+# which you edit by hand: a line added because a command failed once is a grant that outlives every
+# later command, so each belongs there only if it is a stable runtime read and not a path into user
+# data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 . "$(dirname "$0")/run-on-host-gate-setup.sh"
@@ -32,7 +36,7 @@ gate_require_idle "/private/tmp/ko-agent-$(id -u)" "$(pwd -P)" || exit 1
 mode=${1:-checks}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-run-on-host-profile
-authority=src/main/resources/agentsandbox/runtime-authority.txt
+authority=src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt
 mkdir -p "$work"
 [ -f "$authority" ] ||
     printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
@@ -54,16 +58,19 @@ emit() {
 # The environment is the command's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
 # run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the command's temporary directory.
-run_command() {
+# `run_bound` seconds, 0 for none: `mach` sets it, because an sbt client waits without end for a
+# server that a denied lookup ended. The alarm is kept across each exec down to the client.
+run_command() { # log [profile] [sbt-command]
     . "$work/command.env"
     tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"
     PATH="$JAVA_HOME/bin:$PATH" \
     COURSIER_CACHE=$(sed -n 's/^run-on-host cache: //p' "$work/emit.log") \
     XDG_RUNTIME_DIR=$SESSION_TMP SBT_GLOBAL_SERVER_DIR=$SESSION_TMP \
     _JAVA_OPTIONS="$tool_options -Dsbt.global.base=$SESSION_TMP/sbt-global -Dsbt.ivy.home=$SESSION_TMP/ivy-home" \
-    /usr/bin/sandbox-exec -f "$work/command.sb" \
+    /usr/bin/perl -e 'alarm shift; exec @ARGV or die "exec: $!\n"' "${run_bound:-0}" \
+    /usr/bin/sandbox-exec -f "${2:-$work/command.sb}" \
         sbt "-Dsbt.global.base=$SESSION_TMP/sbt-global" \
-        --jvm-client -batch -java-home "$JAVA_HOME" "$command" >"$1" 2>&1
+        --jvm-client -batch -java-home "$JAVA_HOME" "${3:-$command}" >"$1" 2>&1
 }
 
 # A profile sandbox-exec cannot compile fails exactly as a missing grant does: the child dies
@@ -96,6 +103,132 @@ path_family() {
         file-read*|file-write*|file-map-executable|process-exec*|file-ioctl) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# --- mach-lookup -----------------------------------------------------------------------------------
+# A rendered profile with its mach-lookup rule (SeatbeltProfile.MachServices) replaced, in place so
+# the guard denies stay last: by one global-name rule per line of a names file, or, with no names
+# file, by the unfiltered grant — the baseline, since a JDK or a build may need a service the
+# rendered rule does not name, and that is what the search is for.
+mach_profile() { # rendered-profile names-file|"" out
+    if [ -n "$2" ]
+    then sed 's/.*/(allow mach-lookup (global-name "&"))/' "$2" > "$work/mach-rules.sb"
+    else echo '(allow mach-lookup)' > "$work/mach-rules.sb"
+    fi
+    awk -v rules="$work/mach-rules.sb" '
+        /^\(version 1\)$/ { print; print "(debug deny)"; next }
+        /^\(allow mach-lookup \(global-name .*\)$/ {
+            while ((getline rule < rules) > 0) print rule
+            close(rules); found = 1; next
+        }
+        { print }
+        END { exit found ? 0 : 3 }' "$1" > "$3" || {
+        echo "$1 has no mach-lookup rule to replace; this mode measures nothing there." >&2
+        exit 1
+    }
+}
+
+# The names a launchd job definition registers: the MachServices keys of the launchd plists under
+# /System/Library, /Library and ~/Library. A key of a nested dictionary (ResetAtClose,
+# HideUntilCheckIn) comes along as a name no service has, which the search drops like any other.
+# Names a process registers at run time are not here; `mach_search` says so when the full list
+# does not run the command, and mach-extra.txt takes them.
+mach_candidates() { # out
+    for directory in /System/Library/LaunchDaemons /System/Library/LaunchAgents \
+        /Library/LaunchDaemons /Library/LaunchAgents "$HOME/Library/LaunchAgents"; do
+        for plist in "$directory"/*.plist; do
+            [ -f "$plist" ] || continue
+            /usr/bin/plutil -extract MachServices xml1 -o - "$plist" 2>/dev/null
+        done
+    done | sed -n 's|.*<key>\(.*\)</key>.*|\1|p' > "$work/mach-found.txt"
+    [ -f "$work/mach-extra.txt" ] || : > "$work/mach-extra.txt"
+    cat "$work/mach-found.txt" "$work/mach-extra.txt" | grep -v -e '["\\&]' -e '^$' | sort -u > "$1"
+}
+
+# Drop `chunk` from `keep` if `passes` still succeeds without it, else halve it, down to single
+# names: cumulative removal as `paths` does it, by halves because the candidates are thousands
+# and the needed names few. Greedy like `ops`: of two interchangeable names it keeps the one it
+# tested last.
+mach_reduce() { # passes keep chunk
+    reduce_passes=$1; reduce_keep=$2
+    cp "$3" "$work/mach-chunk-0"
+    printf '%s\n' "$work/mach-chunk-0" > "$work/mach-queue"
+    chunks=1
+    while [ -s "$work/mach-queue" ]; do
+        chunk=$(sed -n 1p "$work/mach-queue")
+        sed 1d "$work/mach-queue" > "$work/mach-queue.rest"; mv "$work/mach-queue.rest" "$work/mach-queue"
+        size=$(grep -c . "$chunk")
+        [ "$size" != 0 ] || continue
+        grep -vxFf "$chunk" "$reduce_keep" > "$work/mach-without.txt"
+        if "$reduce_passes" "$work/mach-without.txt"; then
+            printf '  drop    %s\n' "$([ "$size" = 1 ] && cat "$chunk" || echo "$size names")"
+            cp "$work/mach-without.txt" "$reduce_keep"
+        elif [ "$size" = 1 ]; then
+            printf '  KEEP    %s\n' "$(cat "$chunk")"
+        else
+            half=$(( (size + 1) / 2 ))
+            sed -n "1,${half}p" "$chunk" > "$work/mach-chunk-$chunks"
+            sed "1,${half}d" "$chunk" > "$work/mach-chunk-$((chunks + 1))"
+            { printf '%s\n' "$work/mach-chunk-$chunks" "$work/mach-chunk-$((chunks + 1))"
+              cat "$work/mach-queue"; } > "$work/mach-queue.rest"
+            mv "$work/mach-queue.rest" "$work/mach-queue"
+            chunks=$((chunks + 2))
+        fi
+    done
+}
+
+# The names the quick command needs first — `java -version`, since a JVM start is seconds and
+# `slow` is a build or a served fetch: the slow command is then tried with those names alone, and
+# halves the rest only if that fails. `quick_label` names the quick command in the output.
+mach_search() { # quick-passes slow-passes baseline-passes attempt-log
+    all=$work/mach-all.txt; needed=$work/mach-needed.txt
+    if ! "$3"; then
+        echo "with mach-lookup unfiltered the profile still does not run the measured command, so no" \
+            "lookup is the cause:" >&2
+        tail -20 "$4" >&2
+        exit 1
+    fi
+    echo "the rendered profile with mach-lookup unfiltered: PASS"
+    echo "collecting candidate names from the launchd plists"
+    mach_candidates "$all"
+    echo "$(grep -c . "$all") candidates, $(grep -c . "$work/mach-extra.txt") of them from $work/mach-extra.txt"
+    : > "$work/mach-none.txt"
+    if ! "$2" "$all"; then
+        cat >&2 <<EOF
+every candidate granted and it still fails: a name it looks up is in no launchd plist.
+Read the denied names while rerunning this mode, and add them to $work/mach-extra.txt, one per line:
+  log stream --style compact --predicate 'sender == "Sandbox" AND eventMessage CONTAINS "mach-lookup"'
+The attempt's own output:
+EOF
+        tail -20 "$4" >&2
+        exit 1
+    fi
+    echo "all candidates: PASS"
+    if "$2" "$work/mach-none.txt"; then
+        echo "no name at all: PASS — the measured command fails on no denied lookup."
+        : > "$needed"
+    else
+        echo "$quick_label, removing by halves:"
+        cp "$all" "$needed"
+        mach_reduce "$1" "$needed" "$all"
+        if "$2" "$needed"; then
+            echo "the measured command runs with those names alone."
+        else
+            echo "the measured command needs more than those names. Removing the rest by halves:"
+            cp "$needed" "$work/mach-java.txt"
+            grep -vxFf "$work/mach-java.txt" "$all" > "$work/mach-rest.txt"
+            cp "$all" "$needed"
+            mach_reduce "$2" "$needed" "$work/mach-rest.txt"
+            echo "the first names again, with the rest settled:"
+            mach_reduce "$2" "$needed" "$work/mach-java.txt"
+        fi
+    fi
+    echo
+    echo "the names it needs ($needed):"
+    sed 's/^/  /' "$needed"
+    echo
+    echo "A name is listed because the measured command fails without it. A lookup whose denial the"
+    echo "command survives is not listed, so the gate decides whether a build under these names behaves."
 }
 
 case "$mode" in
@@ -162,8 +295,8 @@ ops)
     echo
     dump_profile "$work/ops.sb"
     echo "the operations it needs: $keep"
-    printf '%s\n' "$keep" > src/probe/runtime-operations.txt
-    echo "written to src/probe/runtime-operations.txt, which 'paths' uses as its base"
+    printf '%s\n' "$keep" > src/probe/seatbelt-runtime-operations.txt
+    echo "written to src/probe/seatbelt-runtime-operations.txt, which 'paths' uses as its base"
     ;;
 paths)
     # The minimal set of trees /bin/sh needs, by cumulative removal.
@@ -175,8 +308,8 @@ paths)
     base='(deny default)'
     # The families `ops` measured, so a path search is not defeated by a missing operation. Without
     # this the JDK reports "not a path" when the truth is "not only a path".
-    if [ -f src/probe/runtime-operations.txt ]; then
-        ops=$(cat src/probe/runtime-operations.txt)
+    if [ -f src/probe/seatbelt-runtime-operations.txt ]; then
+        ops=$(cat src/probe/seatbelt-runtime-operations.txt)
     else
         ops='file-read* process-exec*'
     fi
@@ -351,6 +484,190 @@ narrow)
     echo "the grants that earned their place: $kept"
     echo "review it, then replace the body of $authority with it."
     ;;
+mach-route)
+    # Whether a command, /usr/bin being executable, starts a program outside the profile through
+    # LaunchServices. Each confined row has a control, the same `open` unconfined: a control that
+    # starts nothing — an approval prompt, a changed default application — leaves its row undecided.
+    emit "$authority" || exit 1
+    . "$work/command.env"
+    project=$(pwd -P)
+    route=$project/target/mach-route
+    rm -rf "$route"; mkdir -p "$route"
+    confined() { /usr/bin/sandbox-exec -f "$work/command.sb" /bin/sh -c "$1" >"$work/route.out" 2>&1; }
+    await() { # seconds condition...
+        tries=$(( $1 * 2 )); shift
+        while [ "$tries" -gt 0 ]; do
+            "$@" && return 0
+            tries=$((tries - 1)); sleep 0.5
+        done
+        return 1
+    }
+    row() { printf '%-64s %s\n' "$1" "$2"; }
+
+    # R1: an application of the system's.
+    calculator_runs() { pgrep -x Calculator >/dev/null; }
+    if calculator_runs; then echo "Quit Calculator first: R1 tells a start by whether it runs." >&2; exit 2; fi
+    echo "R1 open -a Calculator"
+    /usr/bin/open -g -a Calculator
+    if await 10 calculator_runs; then row "  control, unconfined" "STARTED"; r1_control=1
+    else row "  control, unconfined" "not started: R1 decides nothing"; r1_control=0; fi
+    pkill -x Calculator; await 10 sh -c '! pgrep -x Calculator >/dev/null'
+    if [ "$r1_control" = 1 ]; then
+        confined "/usr/bin/open -g -a Calculator"; status=$?
+        if await 10 calculator_runs
+        then row "  under the command profile" "STARTED: LaunchServices is reachable"
+        else row "  under the command profile" "not started (open exited $status: $(sed -n 1p "$work/route.out"))"
+        fi
+        pkill -x Calculator
+    fi
+
+    # R2: a program the command wrote, run by Terminal, which no profile confines. The marker is
+    # where the profile denies a write, so its existence is the program having run outside it.
+    echo "R2 open PROJECT/target/mach-route/<script>.command (it opens Terminal windows; close them after)"
+    script_text() { printf '#!/bin/sh\n: > "%s"\n' "$1"; }
+    for kind in control confined; do
+        marker=$work/mach-route-marker-$kind
+        script=$route/$kind.command
+        rm -f "$marker"
+        if [ "$kind" = control ]; then
+            script_text "$marker" > "$script"; chmod +x "$script"
+            /usr/bin/open -g "$script"
+            if await 20 test -e "$marker"; then row "  control, unconfined" "RAN"
+            else row "  control, unconfined" "did not run: R2 decides nothing"; break; fi
+        else
+            if confined ": > '$marker'" || [ -e "$marker" ]; then
+                row "  under the command profile" "the marker is writable under the profile: R2 decides nothing"
+                break
+            fi
+            script_text "$marker" > "$route/text"
+            confined "cp '$route/text' '$script' && chmod +x '$script' && /usr/bin/open -g '$script'"; status=$?
+            if await 20 test -e "$marker"
+            then row "  under the command profile" "RAN: a program the command wrote ran outside the profile"
+            else row "  under the command profile" "did not run (open exited $status: $(sed -n 1p "$work/route.out"))"
+            fi
+            row "  extended attributes of the script the command wrote" \
+                "$(xattr "$script" 2>/dev/null | paste -sd ' ' -)"
+        fi
+    done
+    rm -rf "$route" "$work"/mach-route-marker-*
+    ;;
+mach)
+    emit "$authority" || exit 1
+    . "$work/command.env"
+    # emit's own sbt server holds this project's portfile (the gate ends it for the same reason).
+    sbt --jvm-client -batch shutdown >/dev/null 2>&1
+    run_bound=${MACH_BOUND:-600}
+    # A build of its own inside the project the profile grants: this checkout's target/ links into
+    # the store of the unconfined sbt that emit ran, which the profile denies (run-on-host.md,
+    # the sbt server's state), and the broker's sweep of those links is not this probe's to run.
+    fixture=$(pwd -P)/target/mach-fixture
+    rm -rf "$fixture"; mkdir -p "$fixture/project"
+    cp project/build.properties "$fixture/project/"
+    : > "$fixture/build.sbt"
+    fixture_command() { (cd "$fixture" && run_command "$@"); }
+    mach_profile "$work/command.sb" "" "$work/mach-open.sb"
+    end_server() {
+        [ ! -e "$fixture/project/target/active.json" ] ||
+            fixture_command "$work/mach-shutdown.log" "$work/mach-open.sb" shutdown
+    }
+    quick_passes() {
+        mach_profile "$work/command.sb" "$1" "$work/mach.sb"
+        attempt_profile "$work/mach.sb" "'$JAVA_HOME/bin/java' -version"
+    }
+    # The server a passing attempt leaves would serve the next attempt's client from under the
+    # earlier attempt's names, so it is ended under the unfiltered profile, which the baseline proved.
+    build_passes() {
+        mach_profile "$work/command.sb" "$1" "$work/mach.sb"
+        fixture_command "$work/mach-try.log" "$work/mach.sb"; result=$?
+        end_server
+        if [ -e "$fixture/project/target/active.json" ]; then
+            echo "an sbt server outlived its shutdown ($fixture/project/target/active.json," \
+                "$work/mach-shutdown.log); end it, then rerun." >&2
+            exit 1
+        fi
+        return "$result"
+    }
+    build_baseline() {
+        fixture_command "$work/mach-try.log" "$work/mach-open.sb"; result=$?
+        end_server
+        return "$result"
+    }
+    quick_label="java -version"
+    echo "measuring: sbt $command in $fixture, each attempt bounded at ${run_bound}s (MACH_BOUND)"
+    mach_search quick_passes build_passes build_baseline "$work/mach-try.log"
+    rm -rf "$fixture"
+    ;;
+mach-proxy)
+    image=${2:-}
+    if [ -n "$image" ]; then
+        [ -f "$image" ] && [ -x "$image" ] || { echo "$image is not an executable file" >&2; exit 2; }
+        # Absolute, since the proxy is started from /.
+        image=$(cd "$(dirname "$image")" && pwd -P)/$(basename "$image")
+        sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/proxy.sb\" \
+                $authority proxy-image \"$image\"" >"$work/emit-proxy.log" 2>&1 ||
+            { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
+    else
+        emit "$authority" || exit 1
+        proxy_cp=$(sed -n 's/^classpath: //p' "$work/emit.log")
+        [ -n "$proxy_cp" ] || { echo "emit printed no classpath" >&2; exit 1; }
+        sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/proxy.sb\" \
+                $authority proxy \"$JAVA_HOME\" \"$proxy_cp\"" >"$work/emit-proxy.log" 2>&1 ||
+            { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
+    fi
+    sbt --jvm-client -batch shutdown >/dev/null 2>&1
+    # java itself, from /: the proxy's profile grants no shell and no other working directory. A
+    # native image has no quicker start than serving, so serving is its quick check too.
+    quick_passes() {
+        if [ -n "$image" ]; then serve_passes "$1"; return; fi
+        mach_profile "$work/proxy.sb" "$1" "$work/mach.sb"
+        (cd / && /usr/bin/sandbox-exec -f "$work/mach.sb" "$JAVA_HOME/bin/java" -version) >/dev/null 2>&1
+    }
+    # Started as RunOnHostSandbox.startProxy starts it, then one fetch through it, which makes it
+    # resolve a name and connect.
+    proxy_ready() { grep -q 'ko-agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
+    # Not exec'd: the subshell then reports a JVM that a denied lookup ends with a segmentation
+    # fault into the log, where this shell would report it on the terminal at every attempt.
+    serve_under() { # profile
+        served_profile=$1
+        if [ -n "$image" ]
+        then set -- "$image" -Djava.net.preferIPv4Stack=true --serve-proxy-on-host
+        else set -- "$JAVA_HOME/bin/java" -Djava.net.preferIPv4Stack=true -cp "$proxy_cp" \
+            agentsandbox.launcher.AgentSandboxLauncher --serve-proxy-on-host
+        fi
+        : > "$work/mach-proxy.log"
+        (cd / && env -i ${HTTPS_PROXY:+"HTTPS_PROXY=$HTTPS_PROXY"} ${https_proxy:+"https_proxy=$https_proxy"} \
+            EGRESS_PROFILE=deny-unless-allowed \
+            EGRESS_RULE='deny defaults
+allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:0 \
+            /usr/bin/sandbox-exec -f "$served_profile" "$@"; true) \
+            >/dev/null 2>"$work/mach-proxy.log" &
+        proxy_pid=$!
+        result=1
+        tries=60
+        while [ "$tries" -gt 0 ] && kill -0 "$proxy_pid" 2>/dev/null && ! proxy_ready; do
+            tries=$((tries - 1)); sleep 0.5
+        done
+        if proxy_ready; then
+            port=$(sed -n 's/.*ko-agent-egress-proxy listening on :\([0-9]*\).*/\1/p' "$work/mach-proxy.log" |
+                sed -n 1p)
+            curl -fsS -o /dev/null --max-time 30 --proxy "http://127.0.0.1:$port" \
+                https://repo1.maven.org/maven2/ 2>"$work/mach-curl.err" && result=0
+        fi
+        pkill -P "$proxy_pid" 2>/dev/null; wait "$proxy_pid" 2>/dev/null
+        return "$result"
+    }
+    serve_passes() {
+        mach_profile "$work/proxy.sb" "$1" "$work/mach.sb"
+        serve_under "$work/mach.sb"
+    }
+    serve_baseline() {
+        mach_profile "$work/proxy.sb" "" "$work/mach-open.sb"
+        serve_under "$work/mach-open.sb"
+    }
+    if [ -n "$image" ]; then quick_label="the image serving"; else quick_label="java -version"; fi
+    echo "measuring: the host proxy${image:+ ($image)} serving one fetch of https://repo1.maven.org/maven2/"
+    mach_search quick_passes serve_passes serve_baseline "$work/mach-proxy.log"
+    ;;
 *)
-    echo "usage: $0 [checks|ops|paths|narrow] [command]" >&2; exit 2 ;;
+    echo "usage: $0 [checks|ops|paths|narrow|mach-route|mach|mach-proxy] [command|native-image]" >&2; exit 2 ;;
 esac
