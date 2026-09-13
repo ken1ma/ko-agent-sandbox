@@ -240,8 +240,14 @@ object SeatbeltProfile:
           lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
         inputs.network match
           case Network.MillDaemon =>
-            // "localhost:*", since the daemon binds port 0 and the filter names no range; the
-            // starter's own connect stays denied, which is what leaves the daemon behind.
+            // "localhost:*", since the daemon binds port 0 and the filter names no range. No
+            // outbound: the daemon and every JVM the build forks inherit this profile, and the
+            // only spelling that would admit a connect to the daemon's port — chosen by the
+            // kernel during the starter's own run, so no rule can name it — is
+            // (remote ip "localhost:*"), which reaches every service of this host (Gradle's
+            // grant; run-on-host.md "Network" records the cost). So the starter's own connect
+            // is denied, which is what leaves the daemon behind, and the broker ends the starter
+            // once the daemon listens rather than widen the grant (MillDaemons.endStarter).
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""

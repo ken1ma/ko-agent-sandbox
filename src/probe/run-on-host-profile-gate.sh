@@ -1289,19 +1289,27 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         # cancel and busy-daemon rows.
         if ! want mill; then skip_mill_channel "needs mill"; else
         mill_row="channel: mill compile starts the broker's daemon, and the next command reuses it"
+        # The start TERMs its starter once the daemon listens (MillDaemons.endStarter): the channel
+        # log says the TERM was sent — counted before and after, since the log accumulates — and
+        # the starter's exit record, beside the daemon record, says it ended on it, 143.
+        starters_termed_before=$(grep -c 'TERM to the mill starter' "$work/channel.log")
         with_timeout 900 channel_shim chan-mill1.log "$mill_project" mill __.compile; mill_status=$?
         channel_settled
         mill_record=$(broker_daemon_record "$mill_project")
         mill_daemon=$(daemon_in_group "$mill_record")
+        starters_termed=$(grep -c 'TERM to the mill starter' "$work/channel.log")
+        starter_exit=$(cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$mill_project")".exit 2>/dev/null)
         with_timeout 300 channel_shim chan-mill2.log "$mill_project" mill version
         channel_settled
         if [ "$mill_status" -eq 0 ] && [ -n "$mill_daemon" ] && record_alive "$mill_record" \
             && [ "$(broker_daemon_record "$mill_project")" = "$mill_record" ] \
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ] \
-            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q '1\.1\.9' "$work/chan-mill2.log"
-        then report PASS "$mill_row" "daemon $mill_daemon in group ${mill_record%% *}"
+            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q '1\.1\.9' "$work/chan-mill2.log" \
+            && [ "$starters_termed" -gt "$starters_termed_before" ] && [ "${starter_exit:-none}" = 143 ]
+        then report PASS "$mill_row" "daemon $mill_daemon in group ${mill_record%% *}; starter exit 143 on the TERM"
         else report FAIL "$mill_row" "compile exit $mill_status, daemon before ${mill_daemon:-none}, after \
-$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' ')"; fi
+$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '), \
+TERMs: $starters_termed (before $starters_termed_before), starter exit ${starter_exit:-none}"; fi
 
         # A forked JVM — a `run`, a test — inherits the daemon's profile but gets the command's
         # environment (RunModule.scala, ctx.env): the fixture's main creates a temporary file where

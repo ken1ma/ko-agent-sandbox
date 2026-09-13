@@ -67,8 +67,8 @@ deviates from the stock program"), so a start is paid by the first command from 
 sbt command leaves its server warm. A `mill` start is also paid after a cancel, which ends the
 daemon as stock Mill does, and after an edit to what Mill restarts the daemon on — its version
 pin, `mill-jvm-opts`, `mill-repositories`, or anything in `build.mill.yaml`, the header Mill
-reads them from — and costs the starter's connect retry, ten seconds, on top of the daemon's own
-start ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens"). Gradle's daemon
+reads them from — and costs the daemon's own start: the starter is ended as soon as the daemon
+listens ("`mill`"). Gradle's daemon
 is Gradle's own ("Gradle"): a start is paid by the first command and after Gradle's idle exit,
 three hours, and a client attaches to a compatible daemon in the launch's own registry.
 Maven runs once, so every invocation starts a JVM and loads the build, while the on-disk state
@@ -339,11 +339,20 @@ it (`MillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
    session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with listeners
    granted and no outbound but the proxy — with the closed environment and the
    broker's `tmp/` as its temporary directory. The launcher starts the daemon, the daemon binds
-   its port, and the launcher's own connect is denied, so it retries for ten seconds, exits
-   nonzero, and the daemon stays in the spawn's group (measured, M1). Its output goes to
-   `daemon-mill-<hash>.log` in the session directory, the finding when a start fails; a starter
-   that neither ends nor writes anything for two minutes, the proxy log not growing either, is a
-   failed start.
+   its port and writes `socketPort`, and the launcher's own connect is denied: the daemon
+   inherits the starter's profile, and the only outbound that would admit the connect is
+   outbound to every port of this host (`SeatbeltProfile.Network.MillDaemon` has the reasoning).
+   Once `lsof` shows the daemon listening on the port `socketPort` names, the broker ends the
+   launcher — TERM to its pid alone, the daemon's parent in the group, behind its pid and start
+   time. Without that proof the launcher retries for ten seconds and exits nonzero, and a
+   launcher the TERM does not end reaches that bound too; either way the daemon stays in the
+   spawn's group (measured, M1 for the exit, M8 for the TERM: the daemon is spawned with
+   `destroyOnExit = false`). The group is three processes — the leader, the launcher JVM as its
+   child, since `sandbox-exec`, the bootstrap and the assembly's shell prefix each `exec`, and
+   the daemon as the launcher's — and after the TERM the daemon is reparented while the leader
+   stays as the group's proof (M8). The starter's output goes to `daemon-mill-<hash>.log` in the
+   session directory, the finding when a start fails; a starter that neither ends nor writes
+   anything for two minutes, the proxy log not growing either, is a failed start.
 2. The **daemon** is the member of that group whose command line names
    `mill.daemon.MillDaemonMain`, proved from then on by its pid and start time. `socketPort` is
    read as a candidate — an integer in port range, nothing more — and granted only after `lsof`
@@ -372,18 +381,21 @@ and is ended with the group first. Mill's idle exit counts from the last client'
 and a daemon no client has connected to yet never expires (`Server.ConnectionTracker`): a
 starter's daemon whose first command never comes lives until the launch ends. `out/mill-daemon`
 is Mill's: the broker neither clears nor writes it, beyond the classpath memo below, and reads
-only the port candidate and that memo. A command is refused while `out`, `out/mill-daemon` or an
-entry directly in it is a symlink or a file with a second name
-(`MillDaemons.rendezvousIsOwn`), because the launcher acts on that directory as it finds it — it
-removes a `processId` whose fingerprint differs, ending the daemon it names — and a link would
-point it at another build directory's daemon, past the ownership and idleness checks, which this
-directory keys. That catches a link already planted; one made after the check — by the bootstrap
-script, or by build code running in the daemon, neither of which the build lock excludes — is not
-caught, and no check before the command closes that. What bounds it is the profile: the launcher
-writes only where the command may write, so the daemon it can end that way is one whose
-`out/mill-daemon` lies under the command's writable roots — this project, its run-on-host caches,
-the broker's `tmp/` — that is, this launch's for another build directory, another launch's on
-this project, or yours; and the one-port rule keeps the client from attaching to it.
+only the port candidate and that memo. The `launcherLock` there names the ended starter until the
+next client: it is a pid lock (`PidLock`, `pid:start`) the launcher deletes on its own exit, which
+the TERM skips, and a client's launcher finds its pid dead and replaces it. A command is refused
+while `out`, `out/mill-daemon` or an entry directly in it is a symlink or a file with a second
+name (`MillDaemons.rendezvousIsOwn`), because the launcher acts on that directory as it finds it
+— it removes a `processId` whose fingerprint differs, ending the daemon it names — and a link
+would point it at another build directory's daemon, past the ownership and idleness checks, which
+this directory keys. That catches a link already planted; one made after the check — by the
+bootstrap script, or by build code running in the daemon, neither of which the build lock
+excludes — is not caught, and no check before the command closes that. What bounds it is the
+profile: the launcher writes only where the command may write, so the daemon it can end that way
+is one whose `out/mill-daemon` lies under the command's writable roots — this project, its
+run-on-host caches, the broker's `tmp/` — that is, this launch's for another build directory,
+another launch's on this project, or yours; and the one-port rule keeps the client from attaching
+to it.
 `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are never forwarded, since every check looks under
 `out/`. Mill's classpath memo there, `out/mill-daemon/cache/mill-daemon-classpath`, is deleted
 before a start when it names a path outside the cache the profile grants
@@ -735,8 +747,8 @@ where the caller is not interactive.
 ### Under `mill`
 
 - **The daemon is started by the broker's `./mill version`, not by the first client —
-  ownership.** The starter's denied connect leaves the daemon in the broker's group and costs
-  ten seconds of retry ("`mill`"; `TODO.md`, "ending the mill starter once the daemon listens").
+  ownership.** The starter's denied connect leaves the daemon in the broker's group, and the
+  starter is ended once the daemon listens ("`mill`").
 - **The JVM launcher, never the native image — confinement.** The stock bootstrap runs the
   native image for a bare pin; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that the client
   takes the environment's `preferIPv4Stack` and connects under the one-port rule, which the

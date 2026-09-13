@@ -261,17 +261,6 @@ a timer outliving a retired runtime is a no-op on its replacement. Its tests: a 
 as the timer fires, that late callback, and a stale timer after replacement, each leaving one
 consistent runtime.
 
-## Deferred — ending the mill starter once the daemon listens
-
-The broker starts Mill's daemon by running the build directory's `./mill version` under the
-daemon profile, which denies the launcher's own connect, so the launcher retries for ten seconds
-before it exits (`run-on-host.md`, "`mill`"); every daemon start pays that retry. Ending the
-starter as soon as `lsof` shows the daemon listening would save it. That must signal the
-starter's own pid alone — the daemon lives in the same registered group, so ending the group
-would end it — and it needs the process topology the gate's daemon rows record first: which pid
-is the launcher and which the daemon, and that the daemon survives its starter's TERM as it
-survives the starter's own exit (`destroyOnExit = false`, `MillServerLauncher.scala`).
-
 ## Deferred — cross-launch server takeover
 
 Two `ko-agent-sandbox` launches on one project share files and caches, but each broker keeps

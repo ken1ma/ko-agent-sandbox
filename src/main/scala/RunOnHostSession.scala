@@ -64,6 +64,9 @@ object RunOnHostSession:
     /** End the whole group, TERM then KILL after a grace, and wait for it to empty. */
     def endGroup(pgid: Long): Unit
 
+    /** `kill -<name> <pid>`, one process; the caller proves the pid by its start time first. */
+    def signal(pid: Long, name: String): Unit
+
   /** How one collected session ended up, for the wrapper's report. */
   enum Collected:
     case GroupEnded(pgid: Long)
@@ -140,7 +143,8 @@ object RunOnHostSession:
         .resolve(s"$program-${buildHash(buildDirectory)}"))
     catch case ex: IOException => Left(s"the build locks under $root: ${ex.getMessage}")
 
-  /** The command under the build lock: perl takes the lock and execs the command holding it.
+  /** The command under the build lock: perl (registeredSpawn has why) takes the lock and execs
+    * the command holding it, so the lock ends exactly when the command does, however it dies.
     * When it has to wait it says so on stderr, the requester's. `underBroker`, its stdin is the
     * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
     * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
@@ -554,8 +558,8 @@ object RunOnHostSession:
   // ---------------------------------------------------------------------------
 
   /**
-   * The registration, as the command the wrapper spawns. perl — present on every macOS —
-   * makes itself its own group's leader, publishes `<pgid> <leader start>` beside the record path
+   * The registration, as the command the wrapper spawns. perl makes itself its own group's
+   * leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
    * instead, which is the spawn ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
@@ -564,6 +568,16 @@ object RunOnHostSession:
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
+   *
+   * perl, and not a shell or Python: the leader must be the process the broker started, so that
+   * its `Process` handle and the record name one pid, and a shell cannot move itself into a new
+   * group — it has no builtin for `setpgid` on its own pid, and `set -m` moves a child job
+   * instead, one process below the handle. The lock script needs `flock` held across `exec`
+   * (lockedSpawn), which no macOS command offers. Python is not part of macOS: 2.7 was removed
+   * in 12.3, and `/usr/bin/python3` is a stub that installs the Command Line Tools. perl is in
+   * macOS through 26, deprecated with Python and Ruby since Catalina but not removed; the JVM
+   * cannot set a child's group through `ProcessBuilder`, and a compiled helper would need a
+   * toolchain on the host. Should perl go, a bundled helper replaces these two scripts.
    */
   def registeredSpawn(record: Path, command: Seq[String]): Seq[String] =
     Seq("/usr/bin/perl", "-e", RegistrationScript, record.toString) ++ command
@@ -627,6 +641,9 @@ object RunOnHostSession:
       if !settled then
         signal("KILL")
         (1 to 50).exists(_ => if members.isEmpty then true else { Thread.sleep(100); false })
+
+    def signal(pid: Long, name: String): Unit =
+      java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()
 
     /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
     private[launcher] def lines(command: String*): Vector[String] =

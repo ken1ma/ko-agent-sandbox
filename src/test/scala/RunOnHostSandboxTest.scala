@@ -301,6 +301,86 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
     assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
 
+  test("the starter to end is the daemon's parent in the group, other than the leader; any other topology is none"):
+    import MillDaemons.{Member, starterOf}
+    import RunOnHostSession.Record
+    val leader = Record(500, "Sat Sep 12 15:42:15 2026")
+    val daemonMain = "/usr/bin/java -Djava.io.tmpdir=/s/tmp mill.daemon.MillDaemonMain /p/out/mill-daemon"
+    val rows = Vector(
+      "  500   400 Sat Sep 12 15:42:15 2026 /usr/bin/perl -e setpgrp(0, 0) or exit 71; /s/records/daemon-mill-ab",
+      "  501   500 Sat Sep 12 15:42:16 2026 /usr/bin/java -cp /dl/1.1.9 mill.launcher.MillLauncherMain version",
+      s"  502   501 Sat Sep 12 15:42:19 2026 $daemonMain",
+      "garbage",
+    )
+    val group = MillDaemons.parseMembers(rows, leader)
+    assertEquals(group.map(_.pid), Vector(500L, 501L, 502L))
+    assertEquals(group(2), Member(502, 501, "Sat Sep 12 15:42:19 2026", daemonMain))
+    assertEquals(starterOf(group, leader.pgid), Some((group(2), group(1))))
+    // The start time's width is the leader's, whatever ps spells: a padded day, the same width.
+    val padded = MillDaemons.parseMembers(
+      Vector("  500   400 Sat Sep  2 15:42:15 2026 perl", "  501   500 Sat Sep  2 15:42:16 2026 java"),
+      Record(500, "Sat Sep  2 15:42:15 2026"),
+    )
+    assertEquals(padded.map(member => member.start -> member.command), Vector(
+      "Sat Sep  2 15:42:15 2026" -> "perl", "Sat Sep  2 15:42:16 2026" -> "java",
+    ))
+    // A listing whose leader row does not carry the recorded start proves no width: empty.
+    assertEquals(MillDaemons.parseMembers(rows, Record(500, "Sat Sep 12 15:42:14 2026")), Vector.empty)
+    assertEquals(MillDaemons.parseMembers(rows.drop(1), leader), Vector.empty)
+    val perl = group(0)
+    val launcher = group(1)
+    // The daemon's parent is the leader: the group's proof is never signalled.
+    assertEquals(starterOf(Vector(perl, Member(502, 500, "D", daemonMain)), leader.pgid), None)
+    // The daemon's parent is outside the group: a daemon the launcher attached to, not spawned.
+    assertEquals(starterOf(Vector(perl, launcher, Member(502, 77, "D", daemonMain)), leader.pgid), None)
+    // A java that does not exec: the daemon's parent names DaemonMain too, whichever row comes first.
+    val shim = Member(502, 501, "D", daemonMain)
+    val underShim = Member(503, 502, "D2", daemonMain)
+    assertEquals(starterOf(Vector(perl, launcher, underShim, shim), leader.pgid), None)
+    assertEquals(starterOf(Vector(perl, launcher, shim, underShim), leader.pgid).map(_(0).pid), Some(502L))
+    // No daemon yet.
+    assertEquals(starterOf(Vector(perl, launcher), leader.pgid), None)
+
+  test("the starter is TERMed behind the start time its group listing carries; one recycled meanwhile is not"):
+    import MillDaemons.Member
+    val root = Files.createTempDirectory("starter")
+    val record = root.resolve("daemon-mill-ab")
+    Files.writeString(record, "500 L\n")
+    val group = Vector(
+      Member(500, 1, "L", "/usr/bin/perl -e setpgrp(0, 0) or exit 71;"),
+      Member(501, 500, "A", "java -cp /dl/1.1.9 mill.launcher.MillLauncherMain version"),
+      Member(502, 501, "D", "java mill.daemon.MillDaemonMain /p/out/mill-daemon"),
+    )
+    class Fake(var alive: Map[Long, String]) extends RunOnHostSession.Processes:
+      val signalled = scala.collection.mutable.ListBuffer[(Long, String)]()
+      def startOf(pid: Long): Option[String] = alive.get(pid)
+      def endGroup(pgid: Long): Unit = fail(s"ended the group $pgid")
+      def signal(pid: Long, name: String): Unit = signalled += pid -> name
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val listens = (_: Path, pid: Long) => Option.when(pid == 502)(61210)
+    def stillAlive = Fake(Map(500L -> "L", 501L -> "A", 502L -> "D"))
+    // The daemon listens on the candidate and the launcher bears the start time listed: one TERM.
+    val processes = stillAlive
+    assert(MillDaemons.endStarter(record, root, processes, logged += _, _ => group, listens))
+    assertEquals(processes.signalled.toList, List(501L -> "TERM"))
+    assertEquals(logged.toList, List("TERM to the mill starter (pid 501): its daemon (pid 502) listens on port 61210"))
+    logged.clear()
+    // The launcher's pid is recycled after the listing was taken — during lsof, or before the
+    // listing even returns: the start time listed no longer holds, so nothing is signalled or said.
+    val recycledDuringLsof = stillAlive
+    val lsofRecycles = (_: Path, _: Long) => { recycledDuringLsof.alive += 501L -> "B"; Some(61210) }
+    assert(!MillDaemons.endStarter(record, root, recycledDuringLsof, logged += _, _ => group, lsofRecycles))
+    assertEquals(recycledDuringLsof.signalled.toList, Nil)
+    val recycledAfterListing = stillAlive
+    val listingThenRecycle = (_: RunOnHostSession.Record) => { recycledAfterListing.alive += 501L -> "B"; group }
+    assert(!MillDaemons.endStarter(record, root, recycledAfterListing, logged += _, listingThenRecycle, listens))
+    assertEquals(recycledAfterListing.signalled.toList, Nil)
+    // The launcher gone before the signal, or the daemon not yet on its port: nothing.
+    assert(!MillDaemons.endStarter(record, root, Fake(Map(500L -> "L", 502L -> "D")), logged += _, _ => group, listens))
+    assert(!MillDaemons.endStarter(record, root, processes, logged += _, _ => group, (_, _) => None))
+    assertEquals(processes.signalled.size, 1)
+    assertEquals(logged.toList, Nil)
+
   test("a classpath memo naming a path outside the granted cache is deleted; one inside, a link or none is left"):
     val build = Files.createTempDirectory("build")
     val cache = Files.createTempDirectory("cache").toRealPath()
@@ -522,6 +602,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         ProcessHandle.of(pgid).ifPresent: leader =>
           leader.descendants().forEach(_.destroyForcibly())
           leader.destroyForcibly()
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     def await(what: String)(condition: => Boolean): Unit =
       var waited = 0
       while !condition && waited < 200 do
@@ -822,6 +903,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
       def endGroup(pgid: Long): Unit = endedGroups += pgid
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
       None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
@@ -879,6 +961,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = Option.when(pid == 4242)("S")
       def endGroup(pgid: Long): Unit = ()
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     val observed = scala.collection.mutable.ListBuffer[Path]()
     val logged = scala.collection.mutable.ListBuffer[String]()
     val runtimes = BrokerRuntimes(

@@ -12,6 +12,7 @@ class GradleDaemonsTest extends munit.FunSuite:
     val ended = scala.collection.mutable.ListBuffer[Long]()
     def startOf(pid: Long): Option[String] = alive.get(pid)
     def endGroup(pgid: Long): Unit = ended += pgid
+    def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
 
   private def recordOf(records: Path, pid: Long): Option[Record] =
     val file = records.resolve(GradleDaemons.recordName(pid))
