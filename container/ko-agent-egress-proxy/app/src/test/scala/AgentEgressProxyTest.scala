@@ -692,7 +692,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(lockdown.warnings, Vector.empty)
     intercept[Refusal](authorize("github.com", 443, lockdown))
     // Under `allow-unless-denied` the lockdown is the same map with the public default on top: one
-    // provider opaque, every other host unlisted.
+    // provider's tunnel hosts, every other host unlisted.
     val open = rulesetOf(profile = "allow-unless-denied", rule = "deny defaults\nallow model-provider anthropic")
     assertEquals(open.hosts, lockdown.hosts)
     assertEquals(authorize("github.com", 443, open), "github.com")
@@ -967,12 +967,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       metadataLines(resolved),
       Vector(
         s"ruleset summary: ${resolved.inspected.size} inspected hosts; " +
-          s"${resolved.tunnelHosts.size} opaque hosts; 0 denial patterns; 0 widening lines",
+          s"${resolved.tunnelHosts.size} tunnel hosts; 0 denial patterns; 0 widening lines",
       ),
     )
     assertEquals(
       metadataLines(rulesetOf(profile = "deny-all")),
-      Vector("ruleset summary: 0 inspected hosts; 0 opaque hosts; 0 denial patterns; 0 widening lines"),
+      Vector("ruleset summary: 0 inspected hosts; 0 tunnel hosts; 0 denial patterns; 0 widening lines"),
     )
     // Under allow-unless-denied the deny lines come before the allow lines, so a host surviving
     // beneath one reads as the exception the grammar's order makes it; the tunnel hosts are printed,
@@ -989,7 +989,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(unlistedLines.contains("allow https://api.anthropic.com/ tunnel"), unlistedLines.toString)
     assertEquals(
       metadataLines(publicDefault)(0),
-      s"ruleset summary: ${publicDefault.inspected.size} inspected hosts; ${publicDefault.tunnelHosts.size} opaque " +
+      s"ruleset summary: ${publicDefault.inspected.size} inspected hosts; ${publicDefault.tunnelHosts.size} tunnel " +
         "hosts; 2 denial patterns; 0 widening lines",
     )
     assertEquals(authorize("docs.example.com", 443, publicDefault), "docs.example.com")

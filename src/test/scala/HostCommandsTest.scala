@@ -12,6 +12,142 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  test("POSIX log paths abbreviate only the host user's home"):
+    assume(!isWindows, "POSIX path spellings need a POSIX filesystem")
+    val root = Paths.get("").toAbsolutePath.getRoot
+    val home = root.resolve("Users").resolve("test user")
+    val otherHome = root.resolve("Users").resolve("someone else")
+    for os <- Seq(Os.Linux, Os.Mac) do
+      val environment = Map("HOME" -> home.toString, "USERPROFILE" -> otherHome.toString)
+      for name <- Seq("proxy-run.log", "run-on-host-run.log") do
+        val relative = Paths.get("logs", name)
+        val log = home.resolve(relative)
+        assertEquals(displayPath(log, os, environment.get), s"~${root.getFileSystem.getSeparator}$relative")
+      assertEquals(displayPath(home, os, environment.get), "~")
+      for (outside, expected) <- Seq(
+          otherHome.resolve("log") -> s"'${otherHome.resolve("log")}'",
+          home.resolveSibling("test user-other").resolve("log") ->
+            s"'${home.resolveSibling("test user-other").resolve("log")}'",
+          root.resolve("logs").resolve("proxy-run.log") -> root.resolve("logs").resolve("proxy-run.log").toString,
+          Paths.get("logs", "proxy-run.log") -> "logs/proxy-run.log",
+        )
+      do assertEquals(displayPath(outside, os, environment.get), expected)
+      for missing <- Seq(None, Some(""), Some("relative/home"), Some("bad\u0000home")) do
+        val log = home.resolve("log")
+        assertEquals(displayPath(log, os, _ => missing), s"'$log'")
+
+  test("POSIX log paths paste into a shell as one unchanged argument, including after home expansion"):
+    assume(!isWindows, "the round trip uses a POSIX shell")
+    val home = Paths.get("/Users/test user")
+    val environment = Map("HOME" -> home.toString)
+    for
+      os <- Seq(Os.Linux, Os.Mac)
+      directory <- Seq(home, Paths.get("/var/log"))
+      name <- Seq("proxy-run.log", "host command.log", "quote's\"$cash$(printf changed);[glob]*\\backslash.log")
+    do
+      val path = directory.resolve(name)
+      val displayed = displayPath(path, os, environment.get)
+      for label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca") do
+        assertEquals(pathLine(label, path, os, environment.get), s"$label: $displayed")
+      assertEquals(pathLine("==>", path, os, environment.get, separator = " "), s"==> $displayed")
+      val builder = ProcessBuilder("/bin/sh", "-c", s"set -- $displayed; printf '%s\\n' \"$$#\"; printf '%s' \"$$1\"")
+      builder.environment().put("HOME", home.toString)
+      val process = builder.start()
+      process.getOutputStream.close()
+      val output = String(process.getInputStream.readAllBytes())
+      val error = String(process.getErrorStream.readAllBytes())
+      assertEquals(process.waitFor(), 0, error)
+      assertEquals(output, s"1\n$path", displayed)
+    assertEquals(displayPath(home.resolve("host command.log"), Os.Mac, environment.get), "~/'host command.log'")
+    val posix = Paths.get("/var/log/$USER.log")
+    assertEquals(pathLine("egress log", posix, Os.Linux, _ => None), "egress log: '/var/log/$USER.log'")
+
+  test("Windows log paths quote spaces and separators for cmd.exe and PowerShell"):
+    for
+      user <- Seq("kenichi", "test user", "test&user", "test(user)", "test^user", "test;user", "test'user")
+      name <- Seq("proxy-run.log", "run-on-host-run.log")
+    do
+      val home = s"C:\\Users\\$user"
+      val path = Paths.get(s"$home\\AppData\\Local\\ko-agent-sandbox\\log\\$name")
+      val expected = if user == "kenichi" then path.toString else s"\"$path\""
+      assertEquals(displayPath(path, Os.Windows, _ => Some(home)), expected)
+      for label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca") do
+        assertEquals(pathLine(label, path, Os.Windows, _ => Some(home)), s"$label: $expected")
+      assertEquals(pathLine("==>", path, Os.Windows, separator = " "), s"==> $expected")
+
+  test("Windows paths with expansions use labeled PowerShell literals, including embedded quote characters"):
+    for
+      (name, escaped) <- Seq(
+        "$USER.log" -> "$USER.log",
+        "$(Write-Output changed).log" -> "$(Write-Output changed).log",
+        "%USERPROFILE%.log" -> "%USERPROFILE%.log",
+        "!USERNAME!.log" -> "!USERNAME!.log",
+        "back`tick.log" -> "back`tick.log",
+        "a'$USER.log" -> "a''$USER.log",
+        "\u2018\u2019\u201a\u201b$USER.log" -> "\u2018\u2018\u2019\u2019\u201a\u201a\u201b\u201b$USER.log",
+        "\u201c\u201d\u201e.log" -> "\u201c\u201d\u201e.log",
+      )
+      label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca")
+    do
+      val path = Paths.get(s"C:\\logs\\$name")
+      val expected = s"'C:\\logs\\$escaped'"
+      assertEquals(displayPath(path, Os.Windows), expected)
+      assertEquals(pathLine(label, path, Os.Windows), s"$label (PowerShell): $expected")
+      assertEquals(pathLine("==>", path, Os.Windows, separator = " "), s"==> (PowerShell) $expected")
+
+  test("the Podman announcement includes the client version without depending on a running service"):
+    for
+      path <- Seq("/opt/podman/bin/podman", "C:\\Program Files\\Podman\\podman.exe")
+      version <- Seq("6.1.1", "6.2.0-dev", "6.1.1+vendor.1")
+    do
+      val result = Run(0, s"podman version $version\r\n".getBytes, "")
+      assertEquals(podmanUsingLine(path, Some(result)), s"using: $path (v$version)")
+
+    val path = "/usr/bin/podman"
+    for result <- Seq(
+        None,
+        Some(Run(127, "podman version 6.1.1".getBytes, "cannot execute")),
+        Some(Run(0, Array.emptyByteArray, "")),
+        Some(Run(0, "unexpected output\nsecond line".getBytes, "")),
+      )
+    do assertEquals(podmanUsingLine(path, result), s"using: $path")
+
+  test("the Podman announcement, availability check, and machine record share one version probe"):
+    assume(!isWindows, "the fake executable is a POSIX shell script")
+    val directory = Files.createTempDirectory("podman-version").toRealPath()
+    val executable = directory.resolve("podman")
+    val calls = directory.resolve("podman.calls")
+    def location(of: Class[?]) = Paths.get(of.getProtectionDomain.getCodeSource.getLocation.toURI).toString
+    val classpath = Vector(
+      PodmanResolutionProbe.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]],
+    ).map(location).distinct.mkString(java.io.File.pathSeparator)
+    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+    try
+      for status <- Seq(0, 1) do
+        Files.writeString(
+          executable,
+          "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf 'podman version 6.1.1\\n'\n" +
+            s"exit $status\n",
+        )
+        executable.toFile.setExecutable(true)
+        val builder = ProcessBuilder(jvm, "-cp", classpath, "agentsandbox.launcher.PodmanResolutionProbe")
+        builder.environment().put("PATH", directory.toString)
+        val process = builder.start()
+        process.getOutputStream.close()
+        val output = String(process.getInputStream.readAllBytes())
+        val error = String(process.getErrorStream.readAllBytes())
+        assertEquals(process.waitFor(), 0, error)
+        val version = if status == 0 then "podman version 6.1.1" else "podman version unknown"
+        assertEquals(
+          output.linesIterator.toVector,
+          Vector(s"${status == 0}", version, executable.toString, s"${status == 0}", version),
+        )
+        val suffix = if status == 0 then " (v6.1.1)" else ""
+        assertEquals(error.linesIterator.filter(_.startsWith("using:")).toVector, Vector(s"using: $executable$suffix"))
+        assertEquals(Files.readString(calls), "--version\n")
+        Files.delete(calls)
+    finally deleteRecursively(directory)
+
   test("only an explicit yes is consent"):
     assert(consented(Some("y")))
     assert(consented(Some("Y")))
@@ -177,3 +313,11 @@ class HostCommandsTest extends munit.FunSuite:
       ScriptPath.split(":").forall(entry => entry.startsWith("/") && entry.length > 1),
       ScriptPath,
     )
+
+object PodmanResolutionProbe:
+  def main(args: Array[String]): Unit =
+    println(podmanRuns)
+    println(podmanVersion())
+    println(podman)
+    println(podmanRuns)
+    println(podmanVersion())

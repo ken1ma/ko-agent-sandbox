@@ -29,6 +29,9 @@ The words the documents share, each defined where it binds and listed here once:
   - **tunnel, inspected** — an allowed host’s two treatments: application traffic left opaque after
     the TLS identity check, or TLS terminated and each request decided against its grants
     (SECURITY.md, "Reading without being able to write").
+    Use `tunnel` for the grant and host treatment in code and output. Retain `opaque` when
+    describing application traffic the proxy does not decrypt or inspect: a CONNECT tunnel can
+    also carry inspected traffic, so the transport description needs that distinction.
 - **boundary directory** — `.ko-agent-sandbox`, read on the host before launch and unwritable in
   every write mode (SECURITY.md, "Why the rules are per project, in the project, and read-only").
 - **workspace filter** — `ko-agent-fs`, the FUSE mount the project is shared through, which refuses

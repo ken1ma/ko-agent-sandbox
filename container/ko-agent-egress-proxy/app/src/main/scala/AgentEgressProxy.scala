@@ -83,11 +83,9 @@ object AgentEgressProxy:
    * grant, a selected provider the profile does not fully allow — go to
    * stderr, so the data lines pipe cleanly.
    *
-   * The lines say what this ruleset *would* inspect, not what a given
-   * run will: unlike serve() this reads no certificate, because the dry run
-   * is not given one. Every launch mounts the leaf, or under allow-unless-denied
-   * the run CA, so the two agree there; only the standalone image run without
-   * material logs the inspected hosts as opaque.
+   * The dry run receives no inspection material, so these counts describe the configured
+   * treatments. serve() reports actual inspection separately: a host-command proxy or standalone
+   * image without material forwards even the configured inspected hosts without inspection.
    */
   def printRuleset(provenance: Boolean): Unit =
     try

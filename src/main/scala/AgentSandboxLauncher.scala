@@ -573,7 +573,7 @@ object AgentSandboxLauncher:
    * --build, brings the machine up itself.
    */
   def requirePodman(os: Os, memoryScale: Long => Headroom = launchMemoryHeadroom): Unit =
-    if !runOk(podman, "--version") then
+    if !podmanRuns then
       fail(
         s"""error: $podman does not run
            |
@@ -1110,11 +1110,6 @@ object AgentSandboxLauncher:
     echoCommand(privileged)
     finish(ProcessBuilder(privileged*).inheritIO().start().waitFor())
 
-  /** The podman build the machine record names, so a run is evidence rather than an outcome. */
-  def podmanVersion(): String =
-    val reported = run(podman, "--version")
-    if reported.ok then reported.text.trim else "podman version unknown"
-
   def stepOk(command: String*): Boolean =
     echoCommand(command)
     ProcessBuilder(command*).inheritIO().start().waitFor() == 0
@@ -1132,9 +1127,9 @@ object AgentSandboxLauncher:
 
     if extra.isEmpty then
       val files = retainedLogs(logDir)
-      if files.isEmpty then fail(s"no proxy logs for this project under $logDir")
+      if files.isEmpty then fail("no proxy logs for this project\n" + pathLine("egress log dir", logDir, os))
       files.foreach: file =>
-        System.err.println(s"==> $file")
+        System.err.println(pathLine("==>", file, os, separator = " "))
         Files.copy(file, System.out)
       System.out.flush()
       sys.exit(0)
@@ -1151,7 +1146,8 @@ object AgentSandboxLauncher:
         fail(
           s"""no running egress proxy for this project; each run's proxy is
              |removed when its sandbox exits. Its retained logs are files:
-             |run --proxy-log without arguments, or read $logDir""".stripMargin
+             |run --proxy-log without arguments, or read files under:
+             |${pathLine("egress log dir", logDir, os)}""".stripMargin
         )
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)
@@ -1225,8 +1221,8 @@ object AgentSandboxLauncher:
     resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
 
     val caCert = tlsStateRoot(os).resolve(projectId).resolve("ca.crt")
-    if Files.isRegularFile(caCert) then System.err.println(s"egress tls ca: $caCert")
-    System.err.println(s"egress log dir: ${logStateRoot(os).resolve(projectId)}")
+    if Files.isRegularFile(caCert) then System.err.println(pathLine("egress tls ca", caCert, os))
+    System.err.println(pathLine("egress log dir", logStateRoot(os).resolve(projectId), os))
     sys.exit(0)
 
   /**
@@ -1824,18 +1820,18 @@ object AgentSandboxLauncher:
   // Main
   // -------------------------------------------------------------------------
 
-  /** The launch's `run on host:` lines: the programs chosen and what running them on the host costs
-    * the user; under `--write=reject` a second line, red as a boundary weaker than the option
+  /** The launch's host-command lines: the programs chosen and what running them on the host costs
+    * the user; under `--write=reject` an extra line, red as a boundary weaker than the option
     * says, since a host command writes the project as its program does while the session's own
     * writes are refused (SECURITY.md "Run on host"). */
   def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
-    val programs = s"run on host: ${chosen(runOnHost.mkString(", "), color)} by --run-on-host; " +
-      "sandbox-run-on-host relays commands to a Seatbelt-confined wrapper on this host" +
-      (if runOnHost.contains("sbt") then "; your own sbt server for this project is shut down when the agent runs sbt"
-       else "") +
-      (if runOnHost.contains("mill")
-       then "; your own mill daemon for this project is shut down when the agent runs mill"
-       else "")
+    val programs = s"sandbox-run-on-host: ${chosen(runOnHost.mkString(", "), color)} on host"
+    val displaced = runOnHost.collect:
+      case "sbt" => "sbt server"
+      case "mill" => "mill daemon"
+    val shutdown = Option.when(displaced.nonEmpty)(
+      s"your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
+    )
     val reject = Option.when(writeMode == "reject")(
       weakened(
         "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
@@ -1843,7 +1839,7 @@ object AgentSandboxLauncher:
         color,
       ),
     )
-    Vector(programs) ++ reject
+    Vector(programs) ++ shutdown ++ reject
 
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
@@ -2498,10 +2494,8 @@ object AgentSandboxLauncher:
     // empty line is the price, a refusal's among them.
     var heldLineClosed = false
     val removeWhatThisRunCreated = () =>
-      // Said rather than left silent, here and at the start below: podman takes about a second
-      // either way, and on every path that reaches this one — a Ctrl-C, a refused launch, the
-      // resident model's ordinary end — the terminal is the user's again, so a silent second reads
-      // as a hang.
+      // Podman takes about a second on cleanup, whether a launch was refused, interrupted, or ended
+      // normally through the resident path. Report progress so the pause does not look like a hang.
       System.err.println((if heldLineClosed then "" else "\n") + "removing this run's containers and networks")
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them (its
@@ -2568,6 +2562,7 @@ object AgentSandboxLauncher:
       .withZone(ZoneOffset.UTC)
       .format(Instant.now())
     val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
+    val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
 
     // :Z relabels privately, right for a file only this run's proxy writes — launcher-owned
     // state, never the user's.
@@ -2944,7 +2939,7 @@ object AgentSandboxLauncher:
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
     if inspectedHosts.isEmpty && !publicDefault then
       System.err.println("egress tls inspection: this ruleset inspects no hosts; no leaf issued")
-    System.err.println(s"egress log: $hostLogFile")
+    System.err.println(pathLine("egress log", hostLogFile, os))
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
@@ -3018,6 +3013,7 @@ object AgentSandboxLauncher:
       if runOnHost.isEmpty then Vector.empty
       else
         runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
+        System.err.println(pathLine("host command log", channelLogFile, os))
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
     // -----------------------------------------------------------------------
@@ -3166,25 +3162,22 @@ object AgentSandboxLauncher:
     filteredWorkspace.foreach: prepared =>
       val joined = mountKoAgentFs(podman, os, prepared, projectId, projectDir, sandboxContainer)
       System.err.println(
-        if joined then "workspace filter: reusing the mount shared by sessions in the same project directory"
-        else "workspace filter: mounted",
+        if joined then "ko-agent-fs filter: joined the existing mount for this project directory"
+        else "ko-agent-fs filter: mounted",
       )
-
-    // The start, behind the create, for the reason removeWhatThisRunCreated states.
-    // The blank line separates the launch's own output from the agent's.
-    System.err.println("starting in sandbox\n")
 
     // The command broker, detached like the reaper: it must outlive the exec below, and it ends
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
-      val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
           forwards = parsed.env,
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")
-      System.err.println(s"host command log: $channelLogFile")
+
+    // Separate the launch diagnostics from the agent's terminal UI.
+    System.err.println()
 
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),
