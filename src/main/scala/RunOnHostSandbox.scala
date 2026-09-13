@@ -285,9 +285,8 @@ object RunOnHostSandbox:
   /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
     * image binary itself — under one of the launcher's private actions. */
   def selfInvocation(actionAndArguments: String*): Seq[String] =
-    if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
-      val self = ProcessHandle.current().info().command()
-      self.orElseThrow(() => IllegalStateException("the native image cannot name itself"))
+    if isNativeImage then
+      launchFile.getOrElse(throw IllegalStateException("the native image cannot name itself")).toString
         +: actionAndArguments
     else
       Seq(
@@ -302,6 +301,56 @@ object RunOnHostSandbox:
     * element names nothing. */
   def selfClassPath(classPath: String = System.getProperty("java.class.path")): Seq[String] =
     classPath.split(java.io.File.pathSeparator, -1).toSeq.map(entry => Path.of(entry).toAbsolutePath.toString)
+
+  /** Whether this launcher runs as the GraalVM native image rather than as a JVM over the jar. */
+  def isNativeImage: Boolean = System.getProperty("org.graalvm.nativeimage.imagecode") != null
+
+  /** The class-path entry this process's code was loaded from, spelled as the class path spells
+    * it, or none when that code is off the class path — under sbt, which loads the project's
+    * classes through loaders of its own. Matched by resolved path, since the JDK canonicalizes an
+    * entry as it loads it: the CodeSource has a launch symlink resolved away, while the
+    * re-invocation (selfInvocation) spells the link, and it is the link that must remain. Any
+    * other entry is the JVM's to skip when missing. */
+  def launchEntry(classPath: String, codeSource: Option[Path]): Option[Path] =
+    codeSource.flatMap(realPath).flatMap: source =>
+      selfClassPath(classPath).map(Path.of(_)).find(entry => realPath(entry).contains(source))
+
+  /** The file this launcher's own executable is re-invoked from (selfInvocation): the native
+    * image binary, which is self-contained and reads no jar, or the jar form's launch entry
+    * (launchEntry). Read once, when this object initializes — at each launcher process's start,
+    * since every one calls in here before it serves or spawns — so it is the file the process was
+    * loaded from. The JDK is left out: coursier's under the cache root, which no project clean
+    * removes. */
+  private val launchFile: Option[Path] =
+    if isNativeImage then
+      val command = ProcessHandle.current().info().command()
+      Option.when(command.isPresent)(Path.of(command.get))
+    else
+      launchEntry(
+        System.getProperty("java.class.path"),
+        Option(getClass.getProtectionDomain.getCodeSource).map(source => Path.of(source.getLocation.toURI)),
+      )
+
+  /** The launch file resolved, still present, or the reason to refuse the re-invocation with,
+    * naming it as spelled; none to check passes, there being no file a re-invocation loads this
+    * process's code from. Both forms alike: the jar and the native image are each one file, built
+    * under `target/dist`, which `sbt clean` or `git clean` removes while a session runs. Checked
+    * before a wrapper is exec'd (BrokerRuntimes.prepare, every program) and before a proxy is
+    * started (proxyInputs): a JVM starts with a missing class-path entry and fails only at loading
+    * the main class, so unchecked, the jar form's failure is the proxy's ready wait timing out over
+    * a Java error in its log, and the native form's is a spawn that fails to exec. Not checked at
+    * the launch's own broker spawn (RunOnHostChannel.spawnBroker), which follows the launcher's
+    * own load from that file. A rebuild at the same path is not a removal, nor is a symlink's
+    * retargeting: the running processes keep their inode, and the next re-invocation runs the new
+    * file. */
+  def selfPresent(file: Option[Path] = launchFile): Either[String, Option[Path]] =
+    file match
+      case None => Right(None)
+      case Some(path) =>
+        realPath(path).map(Some(_)).toRight(
+          s"the launcher's executable $path no longer exists; rebuild it at that path, " +
+            "or relaunch the session from an executable outside the project",
+        )
 
   /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port>]] --
@@ -823,6 +872,7 @@ object RunOnHostSandbox:
     scavenge: () => Unit = () => (),
     // The daemons holding the launch's registry under the given tmp/ (GradleDaemons.daemons).
     gradleDaemons: Path => Vector[(Long, String)] = GradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
+    executable: () => Either[String, Option[Path]] = () => selfPresent(),
   ):
     /** A runtime and, for mill, its daemon with the configuration it was started from. */
     private case class Live(
@@ -850,14 +900,17 @@ object RunOnHostSandbox:
         // directory must be collected on the next launch's next command, not only when that
         // command needs a runtime of its own.
         scavenge()
-        if program == Program.Mvn then Right(None)
-        else
-          val hash = RunOnHostSession.buildHash(buildDirectory)
-          val key = (program, hash)
-          // Before a mill client or starter runs: Mill's launcher acts on the rendezvous
-          // directory as it finds it, so a redirected one is refused here, never handed to it.
-          val rendezvous = if program == Program.Mill then MillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
-          rendezvous.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
+        // The word this returns is what the spawn execs the wrapper on (RunOnHostChannel.dispatch):
+        // the executable's last check before that exec, Maven's included (selfPresent has why).
+        executable().flatMap: _ =>
+          if program == Program.Mvn then Right(None)
+          else
+            val hash = RunOnHostSession.buildHash(buildDirectory)
+            val key = (program, hash)
+            // Before a mill client or starter runs: Mill's launcher acts on the rendezvous
+            // directory as it finds it, so a redirected one is refused here, never handed to it.
+            val rendezvous = if program == Program.Mill then MillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
+            rendezvous.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
 
     /** After a dispatched command ended, however it ended, and before the session's end: the
       * launch's Gradle daemons recorded, so the session's end takes them (GradleDaemons.record).
@@ -1389,23 +1442,24 @@ object RunOnHostSandbox:
   /**
    * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): the native
    * image alone, or the JDK and each class-path entry of the jar form — what selfInvocation
-   * runs. An entry that does not exist is skipped, as the JVM skips it; a relative or empty one
-   * is resolved as selfClassPath spells it. The JDK and class path are parameters for the gate's
-   * emitter, which renders the profile from inside sbt's JVM for the java it runs the rows with.
+   * runs, the executable itself checked first (selfPresent, both forms). Any other entry that
+   * does not exist is skipped, as the JVM skips it; a relative or empty one is resolved as
+   * selfClassPath spells it. The JDK and class path are parameters for the gate's emitter, which
+   * renders the profile from inside sbt's JVM for the java it runs the rows with.
    */
   def proxyInputs(
     authority: SeatbeltProfile.RuntimeAuthority,
     javaHome: String = System.getProperty("java.home"),
     classPath: String = System.getProperty("java.class.path"),
+    self: Option[Path] = launchFile,
   ): Either[String, SeatbeltProfile.ProxyInputs] =
-    if System.getProperty("org.graalvm.nativeimage.imagecode") != null then
-      val self = ProcessHandle.current().info().command()
-      Option.when(self.isPresent)(self.get).flatMap(path => realPath(Path.of(path)))
-        .toRight("the native image cannot name itself")
-        .map(binary => SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, authority))
-    else
-      realPath(Path.of(javaHome)).toRight(s"the JDK $javaHome is not readable").map: jdk =>
-        SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), authority)
+    selfPresent(self).flatMap: executable =>
+      if isNativeImage then
+        executable.toRight("the native image cannot name itself")
+          .map(binary => SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, authority))
+      else
+        realPath(Path.of(javaHome)).toRight(s"the JDK $javaHome is not readable").map: jdk =>
+          SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), authority)
 
   /** The proxy's profile, beside its log. */
   private def proxyProfileFile(proxyLog: Path): Path =

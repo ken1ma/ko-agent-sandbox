@@ -387,7 +387,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.contains("--label"))
 
-  test("image-producing actions refresh exactly the remote sources their Containerfiles use"):
+  test("--build and --update refresh exactly the remote sources their Containerfiles use"):
     val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
     val buildCommands = AgentSandboxLauncher.buildCommands(
@@ -411,19 +411,36 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       buildImages.filter(_.startsWith("ghcr.io/astral-sh/uv:")),
     )
     assertEquals(
-      remoteImagesForBuildCommands(
-        selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid"),
-        readContainerfile,
-        localImages,
-      ),
-      Vector("docker.io/library/rust:test-rust-slim-trixie"),
-    )
-    assertEquals(
       remoteImagePullCommands("podman", buildImages),
       buildImages.map(image => Vector("podman", "pull", image, "--quiet")),
     )
     buildCommands.foreach: command =>
       assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
+
+  test("self-test builds refresh no remote source of their own"):
+    // --self-test pulls nothing (selfTest), sound only while every remote source of its
+    // Containerfile is one --build pulls; the Rust version read from the filter's Containerfile
+    // makes the two references the same, and a base of its own here would never be refreshed.
+    val readContainerfile: String => String = BundledBuildContext.resource
+    val localImages = managedImageTags("1.2-3").toSet
+    val context = Files.createTempDirectory("self-test-sources")
+    Files.writeString(
+      Files.createDirectories(context.resolve("ko-agent-fs")).resolve("Containerfile"),
+      readContainerfile("ko-agent-fs/Containerfile"),
+    )
+    val rustVersion = pinnedRustVersion(context)
+    val buildImages = remoteImagesForBuildCommands(
+      AgentSandboxLauncher.buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid"),
+      readContainerfile,
+      localImages,
+    )
+    val selfTestImages = remoteImagesForBuildCommands(
+      selfTestBuildCommands("podman", rustVersion, "sourceid", "selftestid"),
+      readContainerfile,
+      localImages,
+    )
+    assert(selfTestImages.nonEmpty)
+    assert(selfTestImages.forall(buildImages.contains), s"$selfTestImages not among $buildImages")
 
   test("an echoed command shows each word unambiguously on one line, a script argument included"):
     import HostCommands.shellWord
