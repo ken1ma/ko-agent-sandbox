@@ -291,7 +291,7 @@ object SandboxStats:
     Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
 
   private def cacheDir(os: Os): Option[Path] =
-    RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(_.resolve("run-on-host"))
+    RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.runOnHostCachesOf)
 
   private val VolumePrefix = "ko-agent-sandbox-persistent-"
 

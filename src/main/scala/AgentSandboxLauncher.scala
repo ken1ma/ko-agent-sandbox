@@ -1271,8 +1271,8 @@ object AgentSandboxLauncher:
    */
   def resetProject(os: Os, givenIds: Vector[String]): Nothing =
     val projectDir = resolveProjectDir()
-    // Before the deletions below: a state root inside the project directory must refuse here, not aim
-    // `rm -rf` at it.
+    // Before the deletions below: a state root overlapping the project directory must refuse here,
+    // not aim `rm -rf` at it.
     requireStateRootOutside(os, projectDir)
     val ids = if givenIds.isEmpty then Vector(projectIdOf(projectDir, os)) else givenIds
     val outcomes = ids.map: id =>
@@ -1370,8 +1370,10 @@ object AgentSandboxLauncher:
     // nothing about what a usable root once held, and a named project's builds may well have used
     // a root this directory happens to contain; both are failed steps, and the reset is run again
     // from elsewhere or with the root repaired.
-    runOnHostCacheRoot(os, projectDir) match
-      case Right(root) => deleteTree(RunOnHostPrereqs.runOnHostCacheDir(root, id))
+    runOnHostCacheRoot(os, projectDir)
+      .flatMap(root => runOnHostRemoval(os, projectDir, RunOnHostPrereqs.runOnHostCacheDir(root, id)))
+    match
+      case Right(caches) => deleteTree(caches)
       case Left(refusal @ RunOnHostPrereqs.Refusal.CacheRootInsideProject(_, _)) if !named =>
         System.err.println(s"note: run-on-host cache not removed; ${cacheRootError(refusal)}")
       case Left(refusal) =>
@@ -1417,10 +1419,12 @@ object AgentSandboxLauncher:
     // roots are resolved and checked against the current directory before the first of them.
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
-    // The whole run-on-host cache root, removed after the podman resources and the per-project state:
-    // every project's run-on-host caches go with everything else, and only the directory
-    // records follow them.
-    val caches = runOnHostCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
+    // Every project's run-on-host caches as one tree (RunOnHostPrereqs.runOnHostCachesOf has why
+    // not the cache root itself), removed after the podman resources and the per-project state;
+    // only the directory records follow them.
+    val caches = runOnHostCacheRoot(os, project)
+      .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCachesOf(root)))
+      .fold(refusal => fail(cacheRootError(refusal)), identity)
     val imageState = stateRoot(os).resolve("image-build")
     val cleanupJournal = imageState.resolve("cleanup.ids")
     if Files.exists(cleanupJournal) then
@@ -1481,7 +1485,8 @@ object AgentSandboxLauncher:
    * The run-on-host cache root, refused when it would be inside the project — the check every action
    * that deletes under it makes, as [[requireStateRootOutside]] does for the state root and with
    * the same [[couldBeAProject]] exemption; from an exempt directory only the root's own
-   * resolution can refuse. The canonical answer either way, since deletion follows it.
+   * resolution can refuse. The canonical answer either way, since deletion follows it: what the
+   * deletion's own path may resolve to is [[runOnHostRemoval]].
    */
   private def runOnHostCacheRoot(os: Os, project: Path): Either[RunOnHostPrereqs.Refusal, Path] =
     RunOnHostPrereqs
@@ -1491,6 +1496,24 @@ object AgentSandboxLauncher:
           RunOnHostPrereqs.cacheRootOutsideProject(root, project, os, canonicalizedFuturePath)
         else
           canonicalizedFuturePath(root).left.map(RunOnHostPrereqs.Refusal.CacheRootUnusable(_))
+
+  /**
+   * A directory under the run-on-host tree an action is about to remove, refused when its canonical
+   * form — a symlinked `run-on-host` or project directory places it wherever the link points —
+   * overlaps the project, with [[couldBeAProject]]'s exemption, or the state root
+   * (RunOnHostPrereqs.cachePathClearOfStateRoot), from which no directory is exempt. The spelling is
+   * the answer: removal follows it, so a link standing for the directory itself goes as a link, as
+   * `rm -rf` removes one, while a link among its ancestors is followed, which is what the check is for.
+   */
+  private def runOnHostRemoval(os: Os, project: Path, target: Path): Either[RunOnHostPrereqs.Refusal, Path] =
+    for
+      canonical <- canonicalizedFuturePath(target).left.map(RunOnHostPrereqs.Refusal.CacheRootUnusable(_))
+      _ <-
+        if couldBeAProject(os, project) then
+          RunOnHostPrereqs.cacheRootOutsideProject(canonical, project, os, Right(_))
+        else Right(canonical)
+      _ <- RunOnHostPrereqs.cachePathClearOfStateRoot(canonical, stateRoot(os), os)
+    yield target
 
   private def cacheRootError(refusal: RunOnHostPrereqs.Refusal): String =
     s"error: ${RunOnHostPrereqs.wording(refusal)}"
@@ -1504,8 +1527,9 @@ object AgentSandboxLauncher:
     val project = resolveProjectDir()
     requireStateRootOutside(os, project)
     val id = projectIdOf(project, os)
-    val root = runOnHostCacheRoot(os, project).fold(refusal => fail(cacheRootError(refusal)), identity)
-    val caches = RunOnHostPrereqs.runOnHostCacheDir(root, id)
+    val caches = runOnHostCacheRoot(os, project)
+      .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCacheDir(root, id)))
+      .fold(refusal => fail(cacheRootError(refusal)), identity)
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
@@ -1558,19 +1582,24 @@ object AgentSandboxLauncher:
               .left.map(reason => s"error: $variable: $reason")
 
   /**
-   * Why the resolved state root may not serve this project, or None. startsWith on two canonical
-   * paths — the project directory is toRealPath-resolved, and stateRootOf canonicalized its
-   * answer — with each compared under its macOS data-volume spellings too: a firmlink is not a
+   * Why the resolved state root may not serve this project, or None: the two overlap in either
+   * direction. A state root inside the project hands the sandbox the CA signing key; a project
+   * inside the state root puts the project under a reset's recursive deletions, as
+   * RunOnHostPrereqs.cacheRootOutsideProject refuses for the cache root. startsWith on two
+   * canonical paths — the project directory is toRealPath-resolved, and stateRootOf canonicalized
+   * its answer — with each compared under its macOS data-volume spellings too: a firmlink is not a
    * symlink, so toRealPath leaves `/System/Volumes/Data/...` and its `/...` alias as two
    * spellings of one directory (SandboxProject.withMacDataVolumeAliases).
    */
   def forbiddenStateRootReason(os: Os, stateRoot: Path, projectDir: Path): Option[String] =
     def spellings(path: Path): Seq[Path] =
       if os == Os.Mac then withMacDataVolumeAliases(Seq(path)) else Seq(path)
-    Option.when(spellings(stateRoot).exists(root => spellings(projectDir).exists(root.startsWith)))(
-      s"error: the launcher's state root $stateRoot is inside the project directory\n" +
+    def overlaps(root: Path, project: Path) = root.startsWith(project) || project.startsWith(root)
+    Option.when(spellings(stateRoot).exists(root => spellings(projectDir).exists(overlaps(root, _))))(
+      s"error: the launcher's state root $stateRoot overlaps the project directory $projectDir\n" +
         "It holds the CA signing key, proxy audit logs and launch state, which the sandbox must\n" +
-        "not reach; point XDG_STATE_HOME (or LOCALAPPDATA) outside the project.",
+        "not reach and a reset removes; point XDG_STATE_HOME (or LOCALAPPDATA) at a directory\n" +
+        "outside the project.",
     )
 
   /**
@@ -1586,8 +1615,8 @@ object AgentSandboxLauncher:
       case Left(_)           => true
 
   /**
-   * The containment check for the actions run *from* a directory: refuse when the state root lies
-   * inside what a launch would accept as this project. Every caller that deletes or reads under
+   * The containment check for the actions run *from* a directory: refuse when the state root
+   * overlaps what a launch would accept as this project. Every caller that deletes or reads under
    * the state root calls this before touching it.
    */
   def requireStateRootOutside(os: Os, projectDir: Path): Unit =

@@ -119,6 +119,25 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val inside = Paths.get("/System/Volumes/Data" + project.toString + "/.cache/ko-agent-sandbox")
     assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
 
+  test("a cache path overlapping the state root is refused, unless under the state root's own tree"):
+    val state = Paths.get(s"$home/.local/state/ko-agent-sandbox")
+    val tree = runOnHostCachesOf(Paths.get(s"$home/.cache/ko-agent-sandbox"))
+    assertEquals(cachePathClearOfStateRoot(tree, state, Os.Mac), Right(tree))
+    assertEquals(cachePathClearOfStateRoot(tree.resolve("a-0123456789ab"), state, Os.Mac).isRight, true)
+    // Holding the state root: XDG_STATE_HOME under the tree, or a symlinked tree resolving above it.
+    val holding = state.getParent.getParent
+    assertEquals(
+      cachePathClearOfStateRoot(holding, state, Os.Mac), Left(Refusal.CachePathOverlapsStateRoot(holding, state)),
+    )
+    assert(cachePathClearOfStateRoot(Paths.get("/System/Volumes/Data" + holding.toString), state, Os.Mac).isLeft)
+    // Under a state subtree: every project's caches would go with that project's --reset.
+    assert(cachePathClearOfStateRoot(runOnHostCachesOf(state.resolve("tls/a-0123456789ab")), state, Os.Mac).isLeft)
+    assert(cachePathClearOfStateRoot(state.resolve("image-build/x"), state, Os.Mac).isLeft)
+    // The shared-root layout, %LOCALAPPDATA%\ko-agent-sandbox for both: the tree beside the subtrees.
+    assertEquals(cachePathClearOfStateRoot(runOnHostCachesOf(state), state, Os.Windows).isRight, true)
+    val sharedProject = runOnHostCachesOf(state).resolve("b-0123456789ab")
+    assertEquals(cachePathClearOfStateRoot(sharedProject, state, Os.Mac), Right(sharedProject))
+
   // --------------------------------------------------------------------------
   // JDK
   // --------------------------------------------------------------------------
@@ -814,6 +833,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),
       Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
       Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
+      Refusal.CachePathOverlapsStateRoot(project, project),
       Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
       Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
     )

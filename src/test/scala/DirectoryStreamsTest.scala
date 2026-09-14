@@ -104,7 +104,7 @@ class DirectoryStreamsTest extends munit.FunSuite:
         Files.setPosixFilePermissions(blocked, PosixFilePermissions.fromString("---------"))
         assume(!Files.isReadable(blocked), "the test user must not bypass directory permissions")
         assertNoDescriptorGrowth("failed recursive deletion"):
-          intercept[UncheckedIOException](deleteRecursively(root.resolve("context")))
+          intercept[IOException](deleteRecursively(root.resolve("context")))
         assertNoDescriptorGrowth("failed source traversal"):
           intercept[UncheckedIOException](KoAgentFs.contextSourceId(root, "context"))
       finally Files.setPosixFilePermissions(blocked, permissions)

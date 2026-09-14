@@ -53,6 +53,7 @@ object RunOnHostPrereqs:
     /** Apart from [[CacheRootUnusable]] because it alone proves the project's commands never wrote
       * under this root: they refuse it by this same check. */
     case CacheRootInsideProject(root: Path, project: Path)
+    case CachePathOverlapsStateRoot(path: Path, stateRoot: Path)
     case WorkingDirectoryOutsideProject(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
     case RuleOutsideProgramGrammar(line: String)
@@ -100,6 +101,9 @@ object RunOnHostPrereqs:
     case Refusal.CacheRootUnusable(reason)            => s"cache root: $reason"
     case Refusal.CacheRootInsideProject(root, project) =>
       s"cache root $root overlaps the project directory $project"
+    case Refusal.CachePathOverlapsStateRoot(path, stateRoot) =>
+      s"the run-on-host cache path $path overlaps the launcher's state root $stateRoot; the cache root " +
+        "must be the state root itself or a directory outside it: point XDG_CACHE_HOME or XDG_STATE_HOME accordingly"
     case Refusal.WorkingDirectoryOutsideProject(requested) =>
       s"the working directory $requested is not inside the project"
     case Refusal.SessionTmpTooLong(path, max) =>
@@ -155,7 +159,39 @@ object RunOnHostPrereqs:
    * home (RunOnHostPrereqs.millExecutable).
    */
   def runOnHostCacheDir(cacheRoot: Path, projectId: String): Path =
-    cacheRoot.resolve("run-on-host").resolve(projectId)
+    runOnHostCachesOf(cacheRoot).resolve(projectId)
+
+  /**
+   * Every project's run-on-host caches, the one tree under the cache root the launcher owns:
+   * `--reset-all` removes it whole. The cache root itself is shared — on Windows it is the state
+   * root, `%LOCALAPPDATA%\ko-agent-sandbox`, and on POSIX `XDG_CACHE_HOME` and `XDG_STATE_HOME`
+   * can name one directory — so the built images' journal and the project records beside this
+   * tree are never this tree's. Where the tree may lie is [[cachePathClearOfStateRoot]].
+   */
+  def runOnHostCachesOf(cacheRoot: Path): Path = cacheRoot.resolve("run-on-host")
+
+  /**
+   * A path under the run-on-host tree that host commands write or a reset removes, refused unless
+   * it is disjoint from the launcher's state root or under the state root's own run-on-host tree,
+   * the shared-root layout. A path holding the state root, which `XDG_STATE_HOME` can place there,
+   * hands the CA signing key, the built images' journal and the project records to the commands and
+   * to `--reset-all`. A path under a state subtree goes with that subtree's reset:
+   * `XDG_CACHE_HOME=<state root>/tls/A` puts every project's caches under project A's TLS
+   * directory, which `--reset A` removes.
+   *
+   * `path` must be canonical — a symlinked `run-on-host` or project directory places it wherever
+   * the link points, which the spelling never shows — and is compared under the macOS data-volume
+   * spellings as [[cacheRootOutsideProject]] compares.
+   */
+  def cachePathClearOfStateRoot(path: Path, stateRoot: Path, os: Os): Either[Refusal, Path] =
+    val clear = spellings(os, path).forall: candidate =>
+      spellings(os, stateRoot).forall: state =>
+        candidate.startsWith(runOnHostCachesOf(state)) ||
+          (!candidate.startsWith(state) && !state.startsWith(candidate))
+    if clear then Right(path) else Left(Refusal.CachePathOverlapsStateRoot(path, stateRoot))
+
+  private def spellings(os: Os, path: Path): Seq[Path] =
+    if os == Os.Mac then SandboxProject.withMacDataVolumeAliases(Seq(path)) else Seq(path)
 
   def coursierV1Of(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
@@ -208,15 +244,13 @@ object RunOnHostPrereqs:
     // leaves `/System/Volumes/Data/...` and `/...` as two names of one directory
     // (SandboxProject.withMacDataVolumeAliases). The canonical root is the answer, and every path
     // derived from it must come from that answer, not from the spelling that was checked.
-    def spellings(path: Path): Seq[Path] =
-      if os == Os.Mac then SandboxProject.withMacDataVolumeAliases(Seq(path)) else Seq(path)
     canonicalize(cacheRoot) match
       case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
       case Right(root) =>
         // Exact, both being canonical: folding would refuse a case-different sibling that a
         // case-sensitive volume keeps distinct.
         def overlapsExactly(left: Path, right: Path) = left.startsWith(right) || right.startsWith(left)
-        if spellings(root).exists(r => spellings(project).exists(p => overlapsExactly(r, p))) then
+        if spellings(os, root).exists(r => spellings(os, project).exists(p => overlapsExactly(r, p))) then
           Left(Refusal.CacheRootInsideProject(root, project))
         else Right(root)
 

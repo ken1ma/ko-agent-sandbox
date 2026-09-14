@@ -175,15 +175,33 @@ object RunOnHostSandbox:
       cacheRoot <- context("cache root")(
         cacheRootOutsideProject(configuredRoot, project, os, FileHelper.canonicalizedFuturePath),
       )
+      // stateRootOf words its refusals for `fail`, which prints them whole.
+      stateRoot <- context("state root")(
+        AgentSandboxLauncher.stateRootOf(os, env).left.map(_.stripPrefix("error: ")),
+      )
       projectId = projectIdOf(project, os)
-      v1 = coursierV1Of(cacheRoot, projectId)
-      _ = Files.createDirectories(v1)
+      v1Dir = coursierV1Of(cacheRoot, projectId)
+      sbtGlobalDir = sbtGlobalOf(cacheRoot, projectId)
+      ivyHomeDir = ivyHomeOf(cacheRoot, projectId)
+      gradleUserHomeDir = gradleUserHomeOf(cacheRoot, projectId)
+      m2RepositoryDir = m2RepositoryOf(cacheRoot, projectId)
+      // Each directory as it will be granted, before it is created: an existing symlink among its
+      // ancestors — `run-on-host`, the project's directory — places it wherever the link points.
+      _ <- Vector(v1Dir, sbtGlobalDir, ivyHomeDir, gradleUserHomeDir, m2RepositoryDir)
+        .foldLeft(Right(()): Either[String, Unit]): (checked, dir) =>
+          checked.flatMap: _ =>
+            context("cache directory"):
+              FileHelper.canonicalizedFuturePath(dir).left.map(Refusal.CacheRootUnusable(_))
+                .flatMap(cacheRootOutsideProject(_, project, os, Right(_)))
+                .flatMap(cachePathClearOfStateRoot(_, stateRoot, os))
+                .map(_ => ())
+      v1 = Files.createDirectories(v1Dir)
       programCache = (owner: Program, dir: Path) =>
         if program == owner then Files.createDirectories(dir).toRealPath() else dir
-      sbtGlobal = programCache(Program.Sbt, sbtGlobalOf(cacheRoot, projectId))
-      ivyHome = programCache(Program.Sbt, ivyHomeOf(cacheRoot, projectId))
-      gradleUserHome = programCache(Program.Gradle, gradleUserHomeOf(cacheRoot, projectId))
-      m2Repository = programCache(Program.Mvn, m2RepositoryOf(cacheRoot, projectId))
+      sbtGlobal = programCache(Program.Sbt, sbtGlobalDir)
+      ivyHome = programCache(Program.Sbt, ivyHomeDir)
+      gradleUserHome = programCache(Program.Gradle, gradleUserHomeDir)
+      m2Repository = programCache(Program.Mvn, m2RepositoryDir)
     yield Assembled(
       CommandPrereqs(
         project = project,
