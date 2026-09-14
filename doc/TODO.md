@@ -261,62 +261,152 @@ a timer outliving a retired runtime is a no-op on its replacement. Its tests: a 
 as the timer fires, that late callback, and a stale timer after replacement, each leaving one
 consistent runtime.
 
-## Deferred — cross-launch server takeover
+## Deferred — cross-launch server takeover and sharing
 
 Two `ko-agent-sandbox` launches on one project share files and caches, but each broker keeps
-its own sbt servers. One launch’s command for a build directory another launch’s broker still
-owns is refused rather than served (`SECURITY.md` "Run on host";
-`RunOnHostSandbox.BrokerRuntimes`). The build lock already serializes the *commands* of one
-directory across launches, so a running command never overlaps; what is deferred is a launch
-*ending or adopting another live launch's
-warm server* so the second need not wait for the first launch to end. This is separate from
-sharing one server between two launches ("two launches sharing one server or daemon", below):
-takeover ends the other launch's server and starts its own; sharing runs both launches' clients
-against one server.
+its own sbt servers and mill daemons, and a command for a build directory another live launch's
+broker owns is refused (`SECURITY.md` "Run on host"; `RunOnHostSandbox.BrokerRuntimes`). The
+build lock already serializes the *commands* of one directory across launches, so a running
+command never overlaps. Two behaviours end the refusal, in one work item of three stages, each
+reviewable alone, the refusal kept until the stage that replaces it passes:
 
-Ending a process another party owns is implemented for Mill, for the user's own daemon
-(`MillDaemons.endForeign`): the daemon is found in the process table, its idleness observed on its
-own TCP table, and its pid and start time proved again immediately before each signal. Another
-launch's daemon is refused, as another launch's sbt server is, and for the same reason.
+1. **Sharing**: the second launch attaches its clients to the first launch's server or daemon
+   when everything the runtime was created from is equal.
+2. **Takeover**: when it is not, the second launch ends the first launch's runtime under the
+   retirement lock and starts its own. Takeover alone would restart identical runtimes on every
+   alternation; sharing alone keeps the refusal for a differing configuration and for a mill
+   daemon whose configuration changed under its owner, which only the owner may replace.
 
-The reason it is deferred, not done: a broker ending another broker's server means one process
-signalling another's recorded process group, and `endRecordedGroup` validates the leader's pid and
-start time and then signals — so a peer ending the same group, and the pid being recycled between
-the check and the signal, would send the signal to an unrelated group. Making that safe needs a
-shared exclusion held from the identity check through the signal, across:
+Maven has no warm runtime, and Gradle's daemons live in a launch-specific registry
+(`run-on-host.md`, "Gradle"): neither is shared or taken over, and their cleanup paths are checked
+against the retirement change, nothing more. Planning allowance: three to five focused days
+including tests, documentation and the host gates; the race tests and the gates decide completion.
 
-- **cancellation** — the owner retiring its own server after a cancel,
-- **replacement** — the owner replacing a server whose proxy or portfile changed,
-- **teardown** — the owner ending all its servers at the launch's end, including on `SIGTERM`,
-- **scavenging** — a start collecting a *dead* owner's leftover server (this one already has its
-  exclusion: the scavenger condemns the dead session by rename under a lock, so no live broker
-  races it; a live owner is what the takeover must coordinate with).
+### The retirement lock — the rule every signaller follows
 
-The build lock, held per program and build directory, is the natural exclusion, but every one of
-those paths must take it around the whole validate-and-signal, and teardown taking build locks on
-`SIGTERM` is the hard part. When built, this needs deterministic concurrency tests that pause one
-retirement between the identity check and the signal while another retires and recycles the group
-(through the injected `Processes` seam, without real OS pids), covering all four paths.
+Ending a recorded group is `endRecordedGroup`: prove the leader's pid bears the recorded start
+time, then signal the pgid. Two processes running those two steps on one group make the pid
+recycling window correlated: the owner's kill frees the pids at the moment the taker's already
+proved kill is on its way. So exactly one process may run them for a group, and the loser sends
+nothing. The exclusion is a dedicated lock, `retire-lock/<program>-<hash>` under the wrapper
+root, one per program and build directory, held across validate-and-signal alone. Not the build
+lock: that one is held for a command's whole life, so an owner's teardown would wait on another
+launch's build before ending its own server. Not a claim by renaming the record: that moves the
+record, its exit file and the attribution into the taker's session, and a taker dying midway
+leaves recovery to the taker's scavenger. Under the lock the record stays in the owner's session,
+and every recovery is the owner's own dead-group handling.
 
-## Deferred — two launches sharing one server or daemon
+- Every signaller takes it: the owner's cancel-retire and replacement (`discard`), Mill's
+  `retire`, the owner's teardown, the scavenger's `collect`, and the taker. The record is read
+  and validated only after the lock is held.
+- Order, one-way: preparation holds the build lock (the command's spawn), then the runtimes
+  monitor, then the retirement lock; teardown holds the runtimes monitor and the session's own
+  lock, then the retirement lock; scavenging holds the condemned entry's lock, then the
+  retirement lock. The retirement lock is always last; nothing takes a build lock, a session
+  lock or the monitor while holding one, and no process holds two retirement locks at once.
+- A holder keeps it for TERM, the grace and KILL at most. A taker that cannot take it within a
+  bound refuses the command with the reason. Teardown and scavenging that cannot take it within
+  a bound produce a `Collected` outcome, retirement busy, with `keeps` true: the directory and
+  records stay and the next collection retries. Nothing is deleted on a timeout.
+- Death releases the lock, not the group. The successor validates as every holder does: leader
+  alive with its start time, end it; leader gone and group empty, delete the record; leader gone
+  and members listed, `GroupAlive`, kept, admission blocked.
+- The lock files are never deleted, as the build locks are not: deleted and recreated, one name
+  would let two holders lock different inodes. `retire-lock/` joins the names the root scan
+  excludes (`scavenge`); otherwise a scavenge reads it as a dead session and deletes it.
+- One `FileChannel` per lock, closed after the signal: OpenJDK's lock is a POSIX `fcntl` lock,
+  dropped for the whole process when any descriptor to the file is closed — the reason
+  `scavenge` skips the caller's own session.
+- `runtimeOwner` ignores a record whose group is dead — leader gone and group empty — so a
+  taken-over owner does not block admission with a record it has not yet deleted; one `ps` per
+  owner record. A record whose group lives, or is leaderless with members, owns as before.
 
-Two launches on one project could share one sbt server or mill daemon when everything the
-runtime was created from is equal — JDK home, executable and distribution, cache root, rule
-lines, and the forwarded name/value pairs, the one that decides it for security, since a launch
-forwarding a secret must not serve a launch that does not. The egress profile is never part of
-it: every host command's proxy gets `deny defaults`, Maven Central and the rule file. The second
-launch is refused the directory while the first lives; "cross-launch server takeover", above, is
-the other way past that refusal, ending the first launch's runtime.
+**The leaderless group stays blocked.** A record whose leader is gone while members are listed is
+never signalled and keeps admission blocked; the owner's teardown, or the scavenger once the
+owner is dead, reaches its server by protocol at the socket proved inside the condemned session
+(`collectServers`). Ending the listed members by their own pid and start time is excluded: a
+group empty at any unobserved instant frees its number, a stranger's group can hold it, that
+leader can exit leaving children, and a start-time recheck binds the signal to the process
+observed, never to the record. POSIX reserves a group's number only while the group exists.
 
-The design: the broker writes that set as a descriptor into its session, out of the confined
-command's reach since the profile grants `tmp/` alone; a second launch finding a server whose
-socket, or a daemon whose group, belongs to a live broker session compares descriptors and, when
-equal, attaches with that session's socket directory or daemon port and proxy port in its client
-profile, Mill's own fingerprint check agreeing by construction; when different, the refusal
-stays. Its costs, documented with it: a cancel across launches is the program's own, since the
-server is not the canceller's to retire, so a test that ignores interruption runs on until the
-next command queues behind it; and the owning launch's end takes the shared server with it, a
-build of the other launch included, whose next command starts its own.
+### Stage 1 — retirement foundation
+
+- [ ] The retirement lock as above, taken in every path that ends a recorded group; the
+  `Collected` outcome for a busy lock; the dead-group check in `runtimeOwner`; the lock
+  directory excluded from the scavenge. The foreign-runtime refusal stays in place through this
+  stage.
+- [ ] Deterministic tests through the `Processes` seam, no real pids: the four signaller pairs —
+  teardown, scavenge, cancel-retire and replacement, each against a taker — with the seam
+  pausing one between its proof and its signal, each leaving one consistent runtime; an
+  unrelated group under a recycled number never signalled; a retirement interrupted before TERM
+  and one between TERM and KILL, each resumed by a successor that may correctly retain a
+  blocked group — the test must not require termination; lock contention past the bound
+  retaining the session, its records and its directory; the acquisition order under each of
+  the three entry paths; the lock directory surviving a scavenge of the root; Gradle and Maven
+  cleanup unchanged.
+
+### Stage 2 — compatible sharing
+
+- [ ] The descriptor: `runtime-<program>-<hash>` in the owner's session directory, out of the
+  confined command's reach since the profile grants `tmp/` alone; published by rename after the
+  server or daemon is up, deleted before its group is ended, republished on every server or
+  daemon replacement. It carries a format version; a SHA-256 of the canonical rendering of
+  program, JDK home, executable, distribution, cache root, rule lines and the forwarded
+  name/value pairs — the pairs decide it for security, since a launch forwarding a secret must
+  not serve one that does not, and a hash so that no value is persisted; the proxy port; for
+  mill the daemon's pid, start time, port and configuration hash; and the pgid and start time
+  of the records it describes, so a descriptor of a replaced runtime fails against its
+  successor's record. The rule lines are the ones captured when the proxy was created, never
+  the file re-read: a warm proxy keeps the rules it started with. The egress profile is never
+  part of it: every host command's proxy gets `deny defaults`, Maven Central and the rule file.
+- [ ] The sharer's check, in the owned branch of `noForeignServer` and `startDaemon`, before
+  any runtime of its own is created: descriptor equal and bound to the owner's present records;
+  the owner's proxy record alive; for sbt the server record alive (`spawnLives`) and the
+  portfile naming `expectedServerSocket(owner tmp, directory)` with neither the socket nor its
+  parent a link; for mill the daemon alive with its start time and the configuration hash equal
+  to the directory's — `spawnLives` is no liveness for mill, whose starter has exited by design.
+  Attached, the command runs against `Runtime(owner session, owner proxy port, owner proxy log,
+  daemon port)`; the wrapper already takes its socket directory, ports and temporary directory
+  from that value (`runCommand`), so it changes nothing. The sharer records and caches nothing;
+  the check is repeated per command.
+- [ ] Its costs, documented with it: a cancel across launches is the program's own, since the
+  server is not the canceller's to retire, so a test that ignores interruption runs on until
+  the next command queues behind it; a mill client's disconnect mid-command ends the shared
+  daemon as stock Mill does, and the owner's next command starts one; the owning launch's end
+  takes the shared server with it, a build of the other launch included, whose next command
+  starts its own or attaches elsewhere; a sharer's audit lines land in the owner's proxy log.
+- [ ] Tests: alternating launches attaching to one runtime; a differing forward, rule line or
+  cache root refusing to share; a descriptor of a replaced runtime failing against the
+  successor's record; the owner's death mid-command; a mill daemon under a changed
+  configuration refused, or falling to stage 3 once that exists.
+
+### Stage 3 — incompatible takeover
+
+- [ ] The taker, under the build lock it already holds: take the retirement lock, read and
+  validate the owner's record, end the group by the existing proof, release; then start its own
+  runtime as a first command does. No protocol shutdown, and no socket is connected to: the
+  record is the attribution, per program and build directory by construction, so neither a
+  planted portfile nor a link under the owner's `tmp/` can send the taker to another directory's
+  server. An owner found in `condemned/` is waited for, bounded by the grace plus the protocol
+  deadline, then the start proceeds or the wait is reported. A group that outlives its KILL, or
+  a leaderless one, refuses the command naming the record, as `discard` refuses a kept record.
+  The owner's next command finds its record's group dead, replaces the runtime under its own
+  proxy, and the owned branch decides again: two launches with differing configurations
+  alternate restarts, the honest cost of the difference.
+- [ ] Tests: a portfile in one directory naming another directory's socket in the same owner
+  session, the other server's pid never signalled; a link planted under the owner's `tmp/`
+  during retirement, no connect attempted; a taker killed after its TERM, and a takeover whose
+  KILL leaves a member listed — either can leave the group partly ended or blocked, so the test
+  asserts what must hold in every outcome: the owner's record survives, admission stays
+  blocked while the group is neither proved ended nor empty, and the owner's next prepare and
+  its teardown each reach one consistent runtime, replacing or retaining as the group's state
+  dictates, never assuming it ended; the four pairs of stage 1 with the real taker.
+- [ ] Documentation: the ownership bullet of `SECURITY.md` "Run on host"; `run-on-host.md` at
+  "`mill`", "The channel and the command" and the deviation bullet; the comment at
+  `src/probe/run-on-host-broker-session.sh` S4; this section removed.
+- [ ] Host acceptance: two live brokers on one project cannot be measured from a container, so
+  the gate gains two-broker rows — sharing, takeover, and a takeover during the owner's
+  teardown — run on the host after each stage that changes behaviour.
 
 ## Deferred — fetching mill's launcher and Gradle's distribution for the user
 
