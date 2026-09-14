@@ -354,7 +354,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     class Fake(var alive: Map[Long, String]) extends RunOnHostSession.Processes:
       val signalled = scala.collection.mutable.ListBuffer[(Long, String)]()
       def startOf(pid: Long): Option[String] = alive.get(pid)
-      def endGroup(pgid: Long): Unit = fail(s"ended the group $pgid")
+      def endGroup(pgid: Long): Boolean = fail(s"ended the group $pgid")
+      def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
       def signal(pid: Long, name: String): Unit = signalled += pid -> name
     val logged = scala.collection.mutable.ListBuffer[String]()
     val listens = (_: Path, pid: Long) => Option.when(pid == 502)(61210)
@@ -631,14 +632,19 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // closes with its group.
     val listeners = scala.collection.mutable.Map[Path, ServerSocketChannel]()
     val socketOfGroup = scala.collection.mutable.Map[Long, Path]()
+    var groupSurvives = false
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
-      def endGroup(pgid: Long): Unit =
+      def endGroup(pgid: Long): Boolean =
         endedGroups += pgid
-        socketOfGroup.remove(pgid).foreach(socket => listeners.remove(socket).foreach(_.close()))
-        ProcessHandle.of(pgid).ifPresent: leader =>
-          leader.descendants().forEach(_.destroyForcibly())
-          leader.destroyForcibly()
+        if groupSurvives then false
+        else
+          socketOfGroup.remove(pgid).foreach(socket => listeners.remove(socket).foreach(_.close()))
+          ProcessHandle.of(pgid).ifPresent: leader =>
+            leader.descendants().forEach(_.destroyForcibly())
+            leader.destroyForcibly()
+          true
+      def groupEmpty(pgid: Long): Boolean = ProcessHandle.of(pgid).isEmpty
       def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     def await(what: String)(condition: => Boolean): Unit =
       var waited = 0
@@ -828,6 +834,27 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(!Files.exists(recordOf(dirC)) && !Files.exists(logOf(dirC)) && !Files.exists(buildOf(dirC)))
       throwsAfterRegistering = false
       assert(Files.exists(serverOf(dirA)) && Files.exists(serverOf(dirB)), "the warm runtimes are untouched")
+      // A failed creation whose proxy group outlives its KILL keeps the record; while it does,
+      // the next request is refused before a spawn could rename its record over the kept one.
+      val dirD = Files.createDirectory(project.resolve("d"))
+      neverReady = true
+      groupSurvives = true
+      val refused = runtimes.prepare(Program.Sbt, dirD, Seq("test"))
+      assert(
+        refused.swap.exists(reason => reason.startsWith("never ready; ") && reason.contains("kept for the next start")),
+        refused.toString,
+      )
+      val keptProxy = pgidOf(recordOf(dirD))
+      val spawnsKept = spawns.size
+      val again = runtimes.prepare(Program.Sbt, dirD, Seq("test"))
+      assert(again.swap.exists(_.contains("kept for the next start")), again.toString)
+      assertEquals(pgidOf(recordOf(dirD)), keptProxy, "the kept record is not renamed over")
+      assertEquals(spawns.size, spawnsKept, "no spawn while the record is kept")
+      // The group ends at last: the record goes, and the creation is retried.
+      groupSurvives = false
+      neverReady = false
+      assertEquals(runtimes.prepare(Program.Sbt, dirD, Seq("test")), current(dirD))
+      assertEquals(endedGroups.takeRight(1).toList, List(keptProxy))
 
       // Mill's runtime is its proxy and its daemon, the client confined to the daemon's port;
       // sbt and mill share the directory's build file, so it outlives the retirement of one
@@ -939,7 +966,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val endedGroups = scala.collection.mutable.ListBuffer[Long]()
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = RunOnHostSession.HostProcesses.startOf(pid)
-      def endGroup(pgid: Long): Unit = endedGroups += pgid
+      def endGroup(pgid: Long): Boolean = { endedGroups += pgid; true }
+      def groupEmpty(pgid: Long): Boolean = true
       def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
@@ -997,7 +1025,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = Option.when(pid == 4242)("S")
-      def endGroup(pgid: Long): Unit = ()
+      def endGroup(pgid: Long): Boolean = true
+      def groupEmpty(pgid: Long): Boolean = true
       def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     val observed = scala.collection.mutable.ListBuffer[Path]()
     val logged = scala.collection.mutable.ListBuffer[String]()

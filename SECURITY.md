@@ -817,10 +817,15 @@ Clipboard access is off by default because the host clipboard may contain sensit
 `off`, and any other value fails the launch. The enabled channel has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host. The broker —
-  a job of the reaper on POSIX, a thread of the resident launcher on Windows — holds one `podman
-  exec` reading a FIFO under the sandbox's `/tmp`, and answers requests through another. No host
-  listener, no port, no proxy rule, no file in the project, and nothing moves until a clipboard call
-  from inside (`ClipboardBroker`, the image's `ko-agent-clipboard` shim).
+  a job of the reaper on POSIX, a thread of the resident launcher on Windows — reads requests
+  through a `podman exec` on the FIFO `/tmp/ko-agent-sandbox/clipboard/req` in the sandbox, and
+  answers each through another on `rsp` beside it. No host listener, no port, no proxy rule, no
+  file in the project, and nothing moves until a clipboard call from inside (`ClipboardBroker`,
+  the image's `ko-agent-clipboard` shim).
+- **A request is read to a fixed size and no further.** Anything in the sandbox can write the
+  FIFO. What the host reads of one exec's stream is cut at `ClipboardBroker.MaxRequestBytes`
+  whatever a request declares, a `set` whose count passes it is refused, a body is copied only
+  whole, and the rest of an exec's stream after a refused request is dropped.
 - **The grant is to the container, not to the agent.** Any process can invoke the shim: an agent
   subprocess, a build script, or a dependency's postinstall script. The selected mode therefore
   applies to everything the session executes. Use `off` when that code must not access the
@@ -1016,7 +1021,9 @@ the mechanism. Its security properties and costs are:
   leader is gone, by the shutdown
   protocol at the socket its portfile names, sent only once that socket is proven inside the dead
   session's directory; a daemon whose group leader is gone is nothing a file attributes, and
-  exits on Mill's own idle timeout.
+  exits on Mill's own idle timeout. A record is forgotten only once `ps` shows its group ended or
+  empty: one whose members outlive the KILL, or that `ps` could not observe, stays for the next
+  start to retry.
 
 What a build's processes can do on your host's network, per program, beyond the egress rule file —
 the reach you accept by naming the program in `--run-on-host`:

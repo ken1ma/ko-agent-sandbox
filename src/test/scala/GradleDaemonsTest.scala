@@ -11,7 +11,8 @@ class GradleDaemonsTest extends munit.FunSuite:
   private class FakeProcesses(var alive: Map[Long, String]) extends Processes:
     val ended = scala.collection.mutable.ListBuffer[Long]()
     def startOf(pid: Long): Option[String] = alive.get(pid)
-    def endGroup(pgid: Long): Unit = ended += pgid
+    def endGroup(pgid: Long): Boolean = { ended += pgid; true }
+    def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
     def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
 
   private def recordOf(records: Path, pid: Long): Option[Record] =

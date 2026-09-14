@@ -40,7 +40,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     try Files.getAttribute(probe, "unix:uid").asInstanceOf[Integer].intValue
     finally Files.delete(probe)
 
-  test("ensureRoot creates an absent root owner-only"):
+  test("ensureRoot creates an absent root owner-only, and takes one another launch just made"):
     val parent = Files.createTempDirectory("command-session")
     val root = parent.resolve("ko-agent-0")
     assertEquals(ensureRoot(root, uid), Right(root))
@@ -48,6 +48,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(root)),
       "rwx------",
     )
+    assertEquals(ensureRoot(root, uid), Right(root), "found by the launch whose creation lost")
 
   test("ensureRoot refuses a symlinked, shared, or foreign root"):
     val parent = Files.createTempDirectory("command-session")
@@ -139,7 +140,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
   class FakeProcesses(alive: Map[Long, String]) extends Processes:
     val ended = ListBuffer[Long]()
     def startOf(pid: Long): Option[String] = alive.get(pid)
-    def endGroup(pgid: Long): Unit = ended += pgid
+    def endGroup(pgid: Long): Boolean = { ended += pgid; true }
+    def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
     def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
 
   def processes(alive: (Long, String)*): FakeProcesses = FakeProcesses(alive.toMap)
@@ -250,6 +252,108 @@ class RunOnHostSessionTest extends munit.FunSuite:
       results.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g },
       Vector(7L),
     )
+
+  test("a group listed after its KILL keeps its directory, until a collection ends it"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+
+    class Survivors(alive: Map[Long, String]) extends FakeProcesses(alive):
+      override def endGroup(pgid: Long): Boolean = { ended += pgid; false }
+    val survivors = Survivors(Map(7L -> "START-A"))
+    val first = scavenge(root, survivors, _ => ServerAnswer.ShutDown)
+    assertEquals(survivors.ended.toList, List(7L))
+    assertEquals(
+      first.flatMap(_(1)).collect { case Collected.GroupAlive(g, _) => g },
+      Vector(7L),
+    )
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+    // Its leader still proven, the next collection signals again; this time the group empties.
+    val fakes = processes(7L -> "START-A")
+    val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(7L))
+    assertEquals(second.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    assert(!Files.exists(condemned))
+
+  test("an observation ps could not make keeps the record, as a live group does"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+
+    class Unobservable extends FakeProcesses(Map.empty):
+      override def startOf(pid: Long): Option[String] = throw java.io.IOException("ps could not list")
+    val results = scavenge(root, Unobservable(), _ => ServerAnswer.ShutDown)
+    assertEquals(
+      results.flatMap(_(1)).collect { case Collected.GroupAlive(g, reason) => (g, reason) },
+      Vector(7L -> "ps could not answer: ps could not list"),
+    )
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+  test("a member listed behind a leader that is gone keeps the record, unsignalled, until none is"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    val dead = die(session)
+    val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
+
+    // The KILL took the leader and left a member: the pgid is no longer provable, so nothing is
+    // signalled, and the member may still be the record's, so nothing is deleted.
+    class Orphaned extends FakeProcesses(Map.empty):
+      override def groupEmpty(pgid: Long): Boolean = false
+    val orphaned = Orphaned()
+    val first = scavenge(root, orphaned, _ => ServerAnswer.ShutDown)
+    assertEquals(orphaned.ended.toList, Nil)
+    assertEquals(
+      first.flatMap(_(1)).collect { case Collected.GroupAlive(g, reason) => (g, reason) },
+      Vector(7L -> "leader gone, a member still listed"),
+    )
+    assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
+
+    val fakes = processes()
+    val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(second.flatMap(_(1)).collect { case Collected.GroupSkipped(g, _) => g }, Vector(7L))
+    assert(!Files.exists(condemned))
+
+  test("a ps listing proves itself by this process; without it nothing is observed"):
+    import HostProcesses.{groupEmptyFrom, startFrom}
+    val start = "Mon Sep 14 10:00:00 2026"
+    assertEquals(startFrom(Vector(s"41 $start", "40 Sun Sep 13 09:00:00 2026"), 40, 41), Some(start))
+    assertEquals(startFrom(Vector("40 Sun Sep 13 09:00:00 2026"), 40, 41), None, "not listed: no such process")
+    // What Apple's ps prints when its process-table sysctl fails, and when nothing is selected.
+    intercept[java.io.IOException](startFrom(Vector.empty, 40, 41))
+    intercept[java.io.IOException](startFrom(Vector(s"41 $start"), 40, 41))
+    assertEquals(groupEmptyFrom(Vector("40"), 40), true)
+    assertEquals(groupEmptyFrom(Vector("40", "77", "78"), 40), false)
+    intercept[java.io.IOException](groupEmptyFrom(Vector.empty, 40))
+    intercept[java.io.IOException](groupEmptyFrom(Vector("77"), 40))
+
+  test("a session whose condemnation fails keeps its directory in place while a group lives"):
+    val root = freshRoot()
+    val session = publish(root, Path.of("/p")).toOption.get
+    Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
+    // A file where the condemned directory would be: the rename fails, and the fallback ends the
+    // recorded groups in place.
+    Files.writeString(root.resolve(CondemnedDir), "", UTF_8)
+
+    class Survivors(alive: Map[Long, String]) extends FakeProcesses(alive):
+      override def endGroup(pgid: Long): Boolean = { ended += pgid; false }
+    val survivors = Survivors(Map(7L -> "START-A"))
+    val kept = endSession(root, session, survivors, _ => ServerAnswer.ShutDown)
+    assertEquals(kept.collect { case Collected.GroupAlive(g, _) => g }, Vector(7L))
+    assert(Files.exists(session.records.resolve("client")), "the record is kept where it was")
+
+    // The lock released, the next scavenge condemns the directory and retries.
+    Files.delete(root.resolve(CondemnedDir))
+    val fakes = processes(7L -> "START-A")
+    val results = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
+    assertEquals(fakes.ended.toList, List(7L))
+    assertEquals(results.flatMap(_(1)).collect { case Collected.GroupEnded(g) => g }, Vector(7L))
+    assert(!Files.exists(session.directory))
 
   test("a recycled or vanished leader is never signalled"):
     val root = freshRoot()

@@ -84,7 +84,8 @@ object MillDaemons:
             verifiedPort(start.buildDirectory, pid).map(port => Daemon(pid, daemonStart, port))
           case None if retriesLeft > 0 && foreignDaemons(start.buildDirectory, processes).nonEmpty =>
             retire(start.record, processes)
-            endForeign(start.buildDirectory, processes, log).flatMap(_ => attempt(retriesLeft - 1, profileFile))
+              .flatMap(_ => endForeign(start.buildDirectory, processes, log))
+              .flatMap(_ => attempt(retriesLeft - 1, profileFile))
           case None => Left(s"the mill starter left no daemon in its group; $said")
       yield daemon
     for
@@ -428,9 +429,12 @@ object MillDaemons:
         case found =>
           val ended = found.filter: (pid, start) =>
             idle(pid).contains(true) && processes.startOf(pid).contains(start) && {
-              end(pid, start, processes)
-              log(s"ended the mill daemon $pid of $buildDirectory: not this launch's, and idle")
-              true
+              val gone = end(pid, start, processes)
+              log(
+                if gone then s"ended the mill daemon $pid of $buildDirectory: not this launch's, and idle"
+                else s"the mill daemon $pid of $buildDirectory, not this launch's and idle, is listed after its KILL",
+              )
+              gone
             }
           if ended.isEmpty then
             if System.nanoTime > deadline then
@@ -443,14 +447,15 @@ object MillDaemons:
             else Thread.sleep(500)
     result.get
 
-  /** TERM, then KILL after a grace, each behind the start-time proof; waits for the pid to go. */
-  private def end(pid: Long, start: String, processes: Processes): Unit =
+  /** TERM, then KILL after a grace, each behind the start-time proof: whether the pid went. */
+  private def end(pid: Long, start: String, processes: Processes): Boolean =
     def alive = processes.startOf(pid).contains(start)
     signal(pid, start, "TERM", processes)
-    val settled = (1 to 100).exists(_ => if !alive then true else { Thread.sleep(100); false })
-    if !settled then
+    val settled = (1 to 100).exists(_ => !alive || { Thread.sleep(100); false })
+    settled || {
       signal(pid, start, "KILL", processes)
-      (1 to 50).exists(_ => if !alive then true else { Thread.sleep(100); false })
+      (1 to 50).exists(_ => !alive || { Thread.sleep(100); false })
+    }
 
   /** One signal to the pid, sent only while the pid bears the start time observed: the proof
     * immediately before the signal, against a pid recycled since. Whether it was sent. */
@@ -460,10 +465,16 @@ object MillDaemons:
     proved
 
   /** A starter's group ended behind its leader, and its record and exit file removed, before the
-    * same record name is spawned again: the failed starter's spawn is that group's live leader. */
-  private def retire(record: Path, processes: Processes): Unit =
-    RunOnHostSession.endRecordedGroup(record, processes)
-    try
-      Files.deleteIfExists(record)
-      Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-    catch case _: IOException => ()
+    * same record name is spawned again: the failed starter's spawn is that group's live leader. A
+    * group listed after its KILL keeps its record, and Left refuses the spawn that would rename
+    * over it. */
+  private def retire(record: Path, processes: Processes): Either[String, Unit] =
+    RunOnHostSession.endRecordedGroup(record, processes) match
+      case Some(alive: RunOnHostSession.Collected.GroupAlive) =>
+        Left(s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $alive")
+      case _ =>
+        try
+          Files.deleteIfExists(record)
+          Files.deleteIfExists(RunOnHostSession.exitRecord(record))
+        catch case _: IOException => ()
+        Right(())

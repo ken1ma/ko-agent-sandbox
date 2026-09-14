@@ -58,11 +58,17 @@ object RunOnHostSession:
   /** What the scavenger observes and does about processes. Injected: the tests exercise the
     * decision protocol, and a real implementation runs only on macOS. */
   trait Processes:
-    /** `ps -o lstart= -p pid`, None when no such process exists. */
+    /** `ps -o lstart= -p pid`, None when no such process exists. An observation that could not
+      * be made throws IOException — never None, which the callers read as absence. */
     def startOf(pid: Long): Option[String]
 
-    /** End the whole group, TERM then KILL after a grace, and wait for it to empty. */
-    def endGroup(pgid: Long): Unit
+    /** End the whole group, TERM then KILL after a grace: whether `ps` then listed no member. A
+      * listing that could not be made proves nothing, and neither does a signal sent — a member
+      * can exit before the signal arrives, so the listing decides. */
+    def endGroup(pgid: Long): Boolean
+
+    /** Whether `ps` lists no member of the group; IOException when it could not say. */
+    def groupEmpty(pgid: Long): Boolean
 
     /** `kill -<name> <pid>`, one process; the caller proves the pid by its start time first. */
     def signal(pid: Long, name: String): Unit
@@ -70,11 +76,19 @@ object RunOnHostSession:
   /** How one collected session ended up, for the wrapper's report. */
   enum Collected:
     case GroupEnded(pgid: Long)
+    /** A member still listed — after the KILL, or with the leader gone — or no listing to be
+      * had: its record is kept, and the next collection retries. */
+    case GroupAlive(pgid: Long, reason: String)
     case GroupSkipped(pgid: Long, reason: String)
     case ServerShutDown(socket: Path)
     case ServerSkipped(reason: String)
     /** Alive but not answering: its condemned directory is kept, and the next start retries. */
     case ServerUnanswered(socket: Path, reason: String)
+
+    /** Whether this outcome keeps the directory, records and all, for the next collection. */
+    def keeps: Boolean = this match
+      case GroupAlive(_, _) | ServerUnanswered(_, _) => true
+      case _                                         => false
 
   /** What a shutdown sent to a socket established (SbtServerShutdown is the real sender). */
   enum ServerAnswer:
@@ -94,12 +108,14 @@ object RunOnHostSession:
   /**
    * `/private/tmp` is shared and sticky, so the root is trusted the way an XDG runtime directory
    * is — this user's, mode 0700, no symlink — and refused otherwise. Created when absent; created
-   * 0700 so there is no window at the default mode.
+   * 0700 so there is no window at the default mode. Created first and found to exist second,
+   * rather than looked for first: two launches making the root at once both find it absent, and
+   * the one whose creation loses goes on to the checks, which are what make the root trusted.
    */
   def ensureRoot(root: Path, uid: Int): Either[String, Path] =
     try
-      if !Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS) then
-        Files.createDirectory(root, ownerOnly)
+      try Files.createDirectory(root, ownerOnly)
+      catch case _: java.nio.file.FileAlreadyExistsException => ()
       if Files.isSymbolicLink(root) then Left(s"$root is a symlink; refusing a redirected root")
       else if !Files.isDirectory(root) then Left(s"$root is not a directory")
       else
@@ -373,7 +389,8 @@ object RunOnHostSession:
    * directory once its groups are ended, the wrapper's moment to read the session's logs
    * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
    * and removing in place, with no shutdown sent to any socket and no logs read: at the original
-   * pathname a process the command started could still redirect a read.
+   * pathname a process the command started could still redirect a read. A group alive after that
+   * keeps the directory where it is, its lock released: the next scavenge condemns it and retries.
    */
   def endSession(root: Path, session: Session, processes: Processes,
     shutdown: Path => ServerAnswer, beforeRemoval: Path => Unit = _ => ()): Vector[Collected] =
@@ -391,7 +408,7 @@ object RunOnHostSession:
         actions
       case None =>
         val ended = endRecordedGroups(session.records, processes)
-        remove(session)
+        if ended.exists(_.keeps) then session.close() else remove(session)
         ended
 
   // ---------------------------------------------------------------------------
@@ -455,8 +472,9 @@ object RunOnHostSession:
 
   /**
    * End what one condemned directory's records name, then delete it — unless a server was asked
-   * and did not answer: then the directory, records and socket stay for the next start to retry,
-   * because deleting them would strand a live server nothing can reach. A group is signalled only
+   * and did not answer, or a group is still listed after its KILL: then the directory, records and
+   * socket stay for the next start to retry, because deleting them would strand a live server
+   * nothing can reach, or a group nothing else names. A group is signalled only
    * while its recorded leader is alive with the recorded start time: a dead or mismatched leader
    * frees the pgid for strangers, so those groups are skipped and only the portfile-attributed
    * server is ended, by asking it.
@@ -468,27 +486,36 @@ object RunOnHostSession:
     // Whatever the reader does, the deletion follows it.
     try beforeRemoval(condemned)
     finally
-      if !actions.exists(_.isInstanceOf[Collected.ServerUnanswered]) then deleteSessionTree(condemned)
+      if !actions.exists(_.keeps) then deleteSessionTree(condemned)
     actions
 
   /** End every group the records name and prove — the scavenger's core. */
   def endRecordedGroups(recordsDir: Path, processes: Processes): Vector[Collected] =
     listDirectory(recordsDir).flatMap(endRecordedGroup(_, processes))
 
-  /** End the group one record names, if it proves one; None for a file that is no record. */
+  /** End the group one record names, if it proves one; None for a file that is no record. The
+    * record outlives anything but a proven end or a proven absence: a group with a member listed
+    * — after its KILL, or behind a leader that is gone, when the members may still be the
+    * record's, since a pgid is not reused while its group has one — or an observation that
+    * failed, is GroupAlive, which every deleter of records keeps. A recycled leader proves the
+    * group empty at some point, and what its pgid lists now is another group's. */
   def endRecordedGroup(file: Path, processes: Processes): Option[Collected] =
     val parsed =
       try parseRecord(Files.readString(file, UTF_8))
       catch case _: IOException => None
     parsed.map: record =>
-      processes.startOf(record.pgid) match
-        case Some(start) if start == record.leaderStart =>
-          processes.endGroup(record.pgid)
-          Collected.GroupEnded(record.pgid)
-        case Some(_) =>
-          Collected.GroupSkipped(record.pgid, "pid recycled: start time differs")
-        case None =>
-          Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
+      try
+        processes.startOf(record.pgid) match
+          case Some(start) if start == record.leaderStart =>
+            if processes.endGroup(record.pgid) then Collected.GroupEnded(record.pgid)
+            else Collected.GroupAlive(record.pgid, "a member is listed after the KILL")
+          case Some(_) =>
+            Collected.GroupSkipped(record.pgid, "pid recycled: start time differs")
+          case None if processes.groupEmpty(record.pgid) =>
+            Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
+          case None =>
+            Collected.GroupAlive(record.pgid, "leader gone, a member still listed")
+      catch case ex: IOException => Collected.GroupAlive(record.pgid, s"ps could not answer: ${ex.getMessage}")
 
   /**
    * The portfile attribution, for each build directory the session's build files name — the
@@ -626,21 +653,45 @@ object RunOnHostSession:
       else Thread.sleep(20)
     result.get
 
-  /** The observations on the real host: `ps` spellings that exist on macOS, where alone this
-    * runs. TERM first and KILL after a grace — the server flushes its portfile away on TERM. */
+  /**
+   * The observations on the real host: `ps` spellings that exist on macOS, where alone this
+   * runs. TERM first and KILL after a grace — the server flushes its portfile away on TERM.
+   *
+   * A listing proves itself by listing this process, selected alongside what is asked (ps ORs
+   * its selection criteria): nothing else tells an answer from a failure, since Apple's ps exits
+   * 0 with nothing printed when its process-table sysctl fails, and 1 both for nothing selected
+   * and for a failed allocation. A listing without this process is no observation.
+   */
   object HostProcesses extends Processes:
-    def startOf(pid: Long): Option[String] =
-      lines("ps", "-o", "lstart=", "-p", pid.toString).headOption.map(_.trim).filter(_.nonEmpty)
+    private def self: Long = ProcessHandle.current.pid
 
-    def endGroup(pgid: Long): Unit =
-      def members: Vector[String] = lines("ps", "-o", "pid=", "-g", pgid.toString)
+    def startOf(pid: Long): Option[String] =
+      startFrom(lines("ps", "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
+
+    def endGroup(pgid: Long): Boolean =
       def signal(name: String): Unit =
         java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", s"-$pgid").start().waitFor()
       signal("TERM")
-      val settled = (1 to 100).exists { _ => if members.isEmpty then true else { Thread.sleep(100); false } }
-      if !settled then
+      val settled = (1 to 100).exists { _ => groupEmpty(pgid) || { Thread.sleep(100); false } }
+      settled || {
         signal("KILL")
-        (1 to 50).exists(_ => if members.isEmpty then true else { Thread.sleep(100); false })
+        (1 to 50).exists(_ => groupEmpty(pgid) || { Thread.sleep(100); false })
+      }
+
+    def groupEmpty(pgid: Long): Boolean =
+      groupEmptyFrom(lines("ps", "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
+
+    /** `pid lstart` rows: the pid's start, None when the pid is not listed; IOException when
+      * `self` is not either, which is a listing that did not happen. */
+    private[launcher] def startFrom(rows: Vector[String], self: Long, pid: Long): Option[String] =
+      val parsed = rows.map(_.split("\\s+", 2)).collect { case Array(listed, rest) => listed -> rest.trim }
+      if !parsed.exists(_(0) == self.toString) then throw IOException(s"ps did not list $self alongside $pid")
+      parsed.collectFirst { case (listed, start) if listed == pid.toString && start.nonEmpty => start }
+
+    /** `pid` rows: whether none but `self` is listed; IOException when `self` is not. */
+    private[launcher] def groupEmptyFrom(rows: Vector[String], self: Long): Boolean =
+      if !rows.contains(self.toString) then throw IOException(s"ps did not list $self alongside the group")
+      rows.forall(_ == self.toString)
 
     def signal(pid: Long, name: String): Unit =
       java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()
