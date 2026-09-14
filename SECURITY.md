@@ -968,15 +968,25 @@ the mechanism. Its security properties and costs are:
   signal — with a two-minute bound after which the command is refused instead; a terminal `./mill`
   connecting between that observation and the signal dies with it, and no observation closes that
   window. A server another *launch* still owns — its broker's session names the build directory — is
-  never signalled by this broker; the command is refused instead: ending another launch's group
-  is the takeover `doc/TODO.md` plans ("Cross-launch server takeover"). A dead launch's leftover
+  never signalled by this broker: ending another launch's group is the takeover `doc/TODO.md`
+  plans ("Cross-launch server takeover"). The command attaches to it instead when the server or
+  daemon this launch would start has the running one's confinement and environment — the owner
+  describes each runtime by a fingerprint of the profile's inputs, the closed environment and the
+  proxy's rule lines, the forwarded values included, so a launch that forwards a secret never
+  serves one that does not, and a launch whose rules differ never resolves through the other's
+  proxy (`doc/run-on-host.md`, "The channel and the command") — and is refused otherwise. The
+  request's own launcher flags are not in the fingerprint: they select settings inside a process
+  the profile confines and the wrapper's `_JAVA_OPTIONS` outranks, as they do within a launch
+  (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach). A dead launch's
+  leftover
   server is not owned by anyone live; the scavenger collects it, by its own exclusive claim,
   before a fresh one starts. The costs: your own terminal
   server or daemon for a build directory is ended when the agent runs that program there; while the
   launch's daemon lives, your own `./mill` with matching settings attaches to it and runs your build
   under the profile, and one with different settings ends it, as stock Mill does, after which the
-  broker ends yours once idle and starts its own again; and two launches on one project cannot use
-  the same build directory at once — the second is refused while the first launch lives.
+  broker ends yours once idle and starts its own again; and two launches on one project share a
+  build directory's server or daemon only while each would start one under the same confinement
+  and environment — otherwise the second is refused while the first launch lives.
 - **The payload that matters runs later, as you.** If a command could write an executable
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
   sandbox. Preventing that write has two enforcement points — the workspace filter

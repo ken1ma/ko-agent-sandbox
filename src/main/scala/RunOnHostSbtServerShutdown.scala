@@ -19,7 +19,7 @@ import java.util.UUID
 
 import RunOnHostSession.ServerAnswer
 
-object SbtServerShutdown:
+object RunOnHostSbtServerShutdown:
 
   def frame(json: String): Array[Byte] =
     val body = json.getBytes(UTF_8)

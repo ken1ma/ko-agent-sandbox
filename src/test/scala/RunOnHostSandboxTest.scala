@@ -292,28 +292,28 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val root = Files.createTempDirectory("rendezvous")
     val build = Files.createDirectory(root.resolve("build"))
     val other = Files.createDirectories(root.resolve("other/out/mill-daemon"))
-    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "no out/ at all")
+    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()), "no out/ at all")
     val daemonDir = Files.createDirectories(build.resolve("out/mill-daemon"))
     Files.writeString(daemonDir.resolve("processId"), "1")
-    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()), "a plain directory")
+    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()), "a plain directory")
     // An entry linked elsewhere, then the directory, then out/ itself.
     Files.createSymbolicLink(daemonDir.resolve("daemonLock"), other.resolve("daemonLock"))
-    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
+    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
     Files.delete(daemonDir.resolve("daemonLock"))
     Files.createLink(daemonDir.resolve("stdout"), other.resolve("stdout").pipe(Files.writeString(_, "")))
-    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("more than one name")))
+    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("more than one name")))
     Files.delete(daemonDir.resolve("stdout"))
-    assertEquals(MillDaemons.rendezvousIsOwn(build), Right(()))
+    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()))
     Files.move(daemonDir, root.resolve("aside"))
     Files.createSymbolicLink(daemonDir, other)
-    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
+    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
     Files.delete(daemonDir)
     Files.move(build.resolve("out"), root.resolve("out-aside"))
     Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
-    assert(MillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
+    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
 
   test("the starter to end is the daemon's parent in the group, other than the leader; any other topology is none"):
-    import MillDaemons.{Member, starterOf}
+    import RunOnHostMillDaemons.{Member, starterOf}
     import RunOnHostSession.Record
     val leader = Record(500, "Sat Sep 12 15:42:15 2026")
     val daemonMain = "/usr/bin/java -Djava.io.tmpdir=/s/tmp mill.daemon.MillDaemonMain /p/out/mill-daemon"
@@ -323,12 +323,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       s"  502   501 Sat Sep 12 15:42:19 2026 $daemonMain",
       "garbage",
     )
-    val group = MillDaemons.parseMembers(rows, leader)
+    val group = RunOnHostMillDaemons.parseMembers(rows, leader)
     assertEquals(group.map(_.pid), Vector(500L, 501L, 502L))
     assertEquals(group(2), Member(502, 501, "Sat Sep 12 15:42:19 2026", daemonMain))
     assertEquals(starterOf(group, leader.pgid), Some((group(2), group(1))))
     // The start time's width is the leader's, whatever ps spells: a padded day, the same width.
-    val padded = MillDaemons.parseMembers(
+    val padded = RunOnHostMillDaemons.parseMembers(
       Vector("  500   400 Sat Sep  2 15:42:15 2026 perl", "  501   500 Sat Sep  2 15:42:16 2026 java"),
       Record(500, "Sat Sep  2 15:42:15 2026"),
     )
@@ -336,8 +336,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       "Sat Sep  2 15:42:15 2026" -> "perl", "Sat Sep  2 15:42:16 2026" -> "java",
     ))
     // A listing whose leader row does not carry the recorded start proves no width: empty.
-    assertEquals(MillDaemons.parseMembers(rows, Record(500, "Sat Sep 12 15:42:14 2026")), Vector.empty)
-    assertEquals(MillDaemons.parseMembers(rows.drop(1), leader), Vector.empty)
+    assertEquals(RunOnHostMillDaemons.parseMembers(rows, Record(500, "Sat Sep 12 15:42:14 2026")), Vector.empty)
+    assertEquals(RunOnHostMillDaemons.parseMembers(rows.drop(1), leader), Vector.empty)
     val perl = group(0)
     val launcher = group(1)
     // The daemon's parent is the leader: the group's proof is never signalled.
@@ -353,7 +353,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(starterOf(Vector(perl, launcher), leader.pgid), None)
 
   test("the starter is TERMed behind the start time its group listing carries; one recycled meanwhile is not"):
-    import MillDaemons.Member
+    import RunOnHostMillDaemons.Member
     val root = Files.createTempDirectory("starter")
     val record = root.resolve("daemon-mill-ab")
     Files.writeString(record, "500 L\n")
@@ -373,7 +373,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def stillAlive = Fake(Map(500L -> "L", 501L -> "A", 502L -> "D"))
     // The daemon listens on the candidate and the launcher bears the start time listed: one TERM.
     val processes = stillAlive
-    assert(MillDaemons.endStarter(record, root, processes, logged += _, _ => group, listens))
+    assert(RunOnHostMillDaemons.endStarter(record, root, processes, logged += _, _ => group, listens))
     assertEquals(processes.signalled.toList, List(501L -> "TERM"))
     assertEquals(logged.toList, List("TERM to the mill starter (pid 501): its daemon (pid 502) listens on port 61210"))
     logged.clear()
@@ -381,15 +381,18 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // listing even returns: the start time listed no longer holds, so nothing is signalled or said.
     val recycledDuringLsof = stillAlive
     val lsofRecycles = (_: Path, _: Long) => { recycledDuringLsof.alive += 501L -> "B"; Some(61210) }
-    assert(!MillDaemons.endStarter(record, root, recycledDuringLsof, logged += _, _ => group, lsofRecycles))
+    assert(!RunOnHostMillDaemons.endStarter(record, root, recycledDuringLsof, logged += _, _ => group, lsofRecycles))
     assertEquals(recycledDuringLsof.signalled.toList, Nil)
     val recycledAfterListing = stillAlive
     val listingThenRecycle = (_: RunOnHostSession.Record) => { recycledAfterListing.alive += 501L -> "B"; group }
-    assert(!MillDaemons.endStarter(record, root, recycledAfterListing, logged += _, listingThenRecycle, listens))
+    assert(
+      !RunOnHostMillDaemons.endStarter(record, root, recycledAfterListing, logged += _, listingThenRecycle, listens),
+    )
     assertEquals(recycledAfterListing.signalled.toList, Nil)
     // The launcher gone before the signal, or the daemon not yet on its port: nothing.
-    assert(!MillDaemons.endStarter(record, root, Fake(Map(500L -> "L", 502L -> "D")), logged += _, _ => group, listens))
-    assert(!MillDaemons.endStarter(record, root, processes, logged += _, _ => group, (_, _) => None))
+    val recycled = Fake(Map(500L -> "L", 502L -> "D"))
+    assert(!RunOnHostMillDaemons.endStarter(record, root, recycled, logged += _, _ => group, listens))
+    assert(!RunOnHostMillDaemons.endStarter(record, root, processes, logged += _, _ => group, (_, _) => None))
     assertEquals(processes.signalled.size, 1)
     assertEquals(logged.toList, Nil)
 
@@ -401,24 +404,24 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def written(paths: String*): Unit =
       Files.writeString(memo, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
     // The profile is the gate's to measure; here the read and the delete are the plain ones.
-    val direct = MillDaemons.Confined(
+    val direct = RunOnHostMillDaemons.Confined(
       read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
       delete = file => Files.deleteIfExists(file),
     )
     written(s"$cache/https/repo1.maven.org/a.jar", s"$cache/https/repo1.maven.org/b.jar")
-    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
     assert(Files.exists(memo))
     written(s"$cache/https/repo1.maven.org/a.jar", "/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar")
-    val said = MillDaemons.discardForeignMemo(build, cache, direct)
+    val said = RunOnHostMillDaemons.discardForeignMemo(build, cache, direct)
     assert(said.exists(_.contains("/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar, outside")), said)
     assert(!Files.exists(memo))
     // A memo that is a link is not the build's own file: rendezvousIsOwn refuses the command first,
     // and this deletes nothing through it.
     Files.createSymbolicLink(memo, build.resolve("elsewhere"))
-    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
     assert(Files.isSymbolicLink(memo))
     Files.delete(memo)
-    assertEquals(MillDaemons.discardForeignMemo(build, cache, direct), None)
+    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
 
   test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
     val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
@@ -717,7 +720,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         await("the sleep started")(leader.children().findFirst().isPresent)
         val sleeper = leader.children().findFirst().get.pid
         val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
-        Right(MillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
+        Right(RunOnHostMillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
     var assemblies = 0
     val runtimes = BrokerRuntimes(session, project, logged.append(_), authority, Vector.empty)(
       processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
@@ -989,19 +992,27 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val millDir = Files.createDirectory(project.resolve("mill-only"))
     val millHash = RunOnHostSession.buildHash(millDir)
     RunOnHostSession.publishBuildFile(peer.directory, millHash, millDir)
+    // A record without a stand-in spawn, as the proxy's: what the descriptor of a started
+    // runtime binds to.
+    def recordOnly(record: Path): Unit =
+      Files.writeString(record, RunOnHostSession.renderRecord(RunOnHostSession.Record(1, "S")), UTF_8)
     val started = scala.collection.mutable.ListBuffer[Path]()
     val server = (start: ServerStart) =>
       started += start.buildDirectory
+      recordOnly(start.record)
       Right(())
     val emptyAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
     val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
     val daemon = (start: DaemonStart) =>
       daemonStarts += start.buildDirectory
-      Right(MillDaemons.Daemon(1, "S", 40_001))
+      recordOnly(start.record)
+      Right(RunOnHostMillDaemons.Daemon(1, "S", 40_001))
     val runtimes = BrokerRuntimes(mine, project, _ => (), emptyAuthority, Vector.empty)(
       processes,
       (_, _, _) => Right(assembled),
-      (_, _, _, _) => Right(1), // a proxy port, no stand-in spawn
+      (_, _, record, _) =>
+        recordOnly(record)
+        Right(1),
       server,
       daemon,
     )
@@ -1251,6 +1262,187 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(table.ended.toList, List(serverLeader, proxyLeader))
     assert(!Files.exists(condemned))
 
+  /** Two brokers of one project in one JVM, over a shared process table and no real spawn: the
+    * proxy and the server or daemon are records with table pids, the server's socket a listener
+    * under its session's `tmp/` named by the portfile. The sharer's server and daemon seams must
+    * never run. */
+  private class TwoBrokers(program: Program):
+    val root: Path = Files.createTempDirectory("share")
+    val project: Path = Files.createDirectory(root.resolve("project"))
+    val dir: Path = Files.createDirectory(project.resolve("app"))
+    val hash: String = RunOnHostSession.buildHash(dir)
+    val owner: RunOnHostSession.Session =
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val sharer: RunOnHostSession.Session =
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    @volatile var alive = Map.empty[Long, String]
+    val ended = scala.collection.mutable.ListBuffer[Long]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = alive.get(pid)
+      def endGroup(pgid: Long): Boolean = { ended += pgid; alive -= pgid; true }
+      def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    private var nextPid = 300L
+    def register(record: Path): Long =
+      nextPid += 1
+      alive += nextPid -> s"START-$nextPid"
+      val leader = RunOnHostSession.Record(nextPid, s"START-$nextPid")
+      Files.writeString(record, RunOnHostSession.renderRecord(leader), UTF_8)
+      nextPid
+    val listeners = scala.collection.mutable.Map[Path, ServerSocketChannel]()
+    def listen(session: RunOnHostSession.Session): Unit =
+      val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, dir)
+      Files.createDirectories(socket.getParent)
+      listeners.remove(socket).foreach(_.close())
+      Files.deleteIfExists(socket)
+      val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+      listener.bind(UnixDomainSocketAddress.of(socket))
+      listeners(socket) = listener
+      writePortfile(dir, socket)
+    /** The owner's server gone on its own: its socket closes with it and its spawn publishes the exit. */
+    def serverExits(): Unit =
+      listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
+      Files.writeString(RunOnHostSession.exitRecord(owner.records.resolve(s"server-sbt-$hash")), "0\n", UTF_8)
+    def assembled(jdk: String = "/jdk"): Assembled =
+      Assembled(
+        RunOnHostPrereqs.CommandPrereqs(project, Path.of(jdk), Path.of("/v1"), program, Path.of("/exe")),
+        None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
+      )
+    val authority: SeatbeltProfile.RuntimeAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val ownerStarts = scala.collection.mutable.ListBuffer[Path]()
+    val ownerArguments = scala.collection.mutable.ListBuffer[Seq[String]]()
+    var daemonPid = 0L
+    def broker(
+      session: RunOnHostSession.Session, forwards: Vector[(String, String)] = Vector.empty, jdk: String = "/jdk",
+      starts: Boolean,
+    ): BrokerRuntimes =
+      BrokerRuntimes(session, project, _ => (), authority, forwards)(
+        processes,
+        (_, _, _) => Right(assembled(jdk)),
+        (_, _, record, proxyLog) =>
+          assert(starts, "the sharer created a proxy")
+          register(record)
+          Files.writeString(proxyLog, "listening\n", UTF_8)
+          Right(if session == owner then 7001 else 7002),
+        start =>
+          assert(starts, "the sharer started a server")
+          ownerStarts += start.record
+          ownerArguments += start.arguments
+          register(start.record)
+          listen(session)
+          Right(()),
+        start =>
+          assert(starts, "the sharer started a daemon")
+          ownerStarts += start.record
+          register(start.record)
+          daemonPid = register(start.record.resolveSibling("daemon-pid-scratch"))
+          Files.delete(start.record.resolveSibling("daemon-pid-scratch"))
+          Right(RunOnHostMillDaemons.Daemon(daemonPid, s"START-$daemonPid", 40_001)),
+      )
+    val descriptor: Path = RunOnHostRuntimeDescriptor.file(owner.directory, program, hash)
+    def ownerRecord(name: String): Path = owner.records.resolve(name)
+    def ownerRuntime(daemonPort: Option[Int]): Either[String, Option[Runtime]] =
+      val proxyLog = owner.directory.resolve(s"proxy-${program.name}-$hash.log")
+      Right(Some(Runtime(owner.directory, 7001, proxyLog, daemonPort)))
+    def refusal(prepared: Either[String, Option[Runtime]], why: String): Unit =
+      prepared match
+        case Left(reason) =>
+          assert(reason.contains("another launch's broker") && reason.contains(why), reason)
+        case other => fail(s"attached, or started, instead of refusing for '$why': $other")
+    def close(): Unit =
+      listeners.values.foreach(_.close())
+      owner.close(); sharer.close()
+
+  test("a second launch attaches to another launch's sbt server it would start alike; any difference refuses"):
+    assume(
+      !RunOnHostSessionTest.underRunOnHostProfile,
+      "the socket derived under the host's temporary directory is longer than sun_path",
+    )
+    val two = TwoBrokers(Program.Sbt)
+    import two.*
+    val proxyName = s"proxy-sbt-$hash"
+    val serverName = s"server-sbt-$hash"
+    try
+      val owning = broker(owner, starts = true)
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("-Dmode=A", "compile")), ownerRuntime(None))
+      val published = RunOnHostRuntimeDescriptor.read(descriptor).getOrElse(fail("no descriptor"))
+      def recordOf(name: String) = RunOnHostSession.parseRecord(Files.readString(ownerRecord(name), UTF_8)).get
+      assertEquals(published.proxy, recordOf(proxyName), "bound to the proxy's record")
+      assertEquals(published.group, recordOf(serverName), "bound to the server's record")
+      assertEquals(published.daemon, None)
+      // The sharer attaches: the owner's session, port and log, nothing of its own recorded. Its
+      // request's own launcher flags are not compared: the server keeps the flags it was started
+      // with, as it does for the owner's later commands (RunOnHostRuntimeDescriptor.fingerprint).
+      val sharing = broker(sharer, starts = false)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("-Dmode=B", "test")), ownerRuntime(None))
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("test")), ownerRuntime(None), "asked again, attached again")
+      assertEquals(ownerArguments.toList, List(Seq("-Dmode=A", "compile")), "the server's flags are the owner's")
+      assertEquals(FileHelper.directoryEntries(sharer.records), Vector.empty, "the sharer recorded nothing")
+      assert(!Files.exists(RunOnHostSession.buildFile(sharer.directory, hash)), "and published no build file")
+      // A forwarded value, a rule line and a JDK the owner did not start from each refuse.
+      val forwarding = broker(sharer, forwards = Vector("TOKEN" -> "t"), starts = false)
+      refusal(forwarding.prepare(Program.Sbt, dir, Nil), "differ")
+      val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+      Files.createDirectories(rule.getParent)
+      Files.writeString(rule, "allow https://example.org/ read\n", UTF_8)
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "rule lines differ")
+      Files.delete(rule)
+      refusal(broker(sharer, jdk = "/jdk2", starts = false).prepare(Program.Sbt, dir, Nil), "differ")
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None), "alike again")
+      // The server gone under its owner: refused until the owner replaces it; a descriptor of
+      // the replaced server, restored over the successor's, fails against the present records.
+      val stale = Files.readString(descriptor, UTF_8)
+      serverExits()
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "its server is gone")
+      val firstServer = recordOf(serverName).pgid
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), ownerRuntime(None))
+      assertEquals(ended.toList, List(firstServer))
+      assertEquals(ownerStarts.size, 2)
+      val fresh = Files.readString(descriptor, UTF_8)
+      assert(fresh != stale, "republished with the replacement")
+      Files.writeString(descriptor, stale, UTF_8)
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "records other than the present ones")
+      Files.writeString(descriptor, fresh, UTF_8)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
+      // The portfile not naming the owner's socket, and the owner's proxy gone, refuse.
+      Files.delete(dir.resolve("project/target/active.json"))
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "portfile")
+      listen(owner)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
+      Files.writeString(RunOnHostSession.exitRecord(ownerRecord(proxyName)), "0\n", UTF_8)
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "its proxy is gone")
+      Files.delete(RunOnHostSession.exitRecord(ownerRecord(proxyName)))
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
+      // The owner's lock released — its launch ended or died — is no runtime to attach to.
+      owner.close()
+      refusal(sharing.prepare(Program.Sbt, dir, Nil), "ending, or gone")
+      assertEquals(ended.toList, List(firstServer), "the sharer signalled nothing")
+    finally close()
+
+  test("a second launch attaches to another launch's mill daemon under the directory's configuration"):
+    val two = TwoBrokers(Program.Mill)
+    import two.*
+    try
+      val owning = broker(owner, starts = true)
+      assertEquals(owning.prepare(Program.Mill, dir, Seq("compile")), ownerRuntime(Some(40_001)))
+      val published = RunOnHostRuntimeDescriptor.read(descriptor).getOrElse(fail("no descriptor"))
+      assertEquals(published.daemon, Some(RunOnHostMillDaemons.Daemon(daemonPid, s"START-$daemonPid", 40_001)))
+      val sharing = broker(sharer, starts = false)
+      assertEquals(sharing.prepare(Program.Mill, dir, Seq("test")), ownerRuntime(Some(40_001)))
+      // A configuration edit: the daemon is not the directory's until the owner replaces it.
+      Files.writeString(dir.resolve(".mill-jvm-opts"), "-Xmx1g\n", UTF_8)
+      refusal(sharing.prepare(Program.Mill, dir, Nil), "configuration")
+      val firstDaemon = daemonPid
+      assertEquals(owning.prepare(Program.Mill, dir, Seq("test")), ownerRuntime(Some(40_001)))
+      assertEquals(ownerStarts.size, 2)
+      assert(daemonPid != firstDaemon)
+      assertEquals(sharing.prepare(Program.Mill, dir, Nil), ownerRuntime(Some(40_001)))
+      // The daemon gone — its idle exit, a cancel — while its starter's leader stays: refused.
+      alive -= daemonPid
+      refusal(sharing.prepare(Program.Mill, dir, Nil), "its daemon is gone")
+      assertEquals(ended.size, 1, "the owner's replacement ended the first starter's group, and nothing else")
+    finally close()
+
   test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
     val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
@@ -1271,7 +1463,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Vector(4242L -> "S"),
     )
     try
-      val record = session.records.resolve(GradleDaemons.recordName(4242))
+      val record = session.records.resolve(RunOnHostGradleDaemons.recordName(4242))
       runtimes.commandEnded(Program.Sbt)
       runtimes.commandEnded(Program.Mvn)
       assert(observed.isEmpty, "only a gradle command has daemons to observe")

@@ -683,7 +683,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(retirementLockName(s"server-sbt-$hash.pending"), Some(s"sbt-$hash"), "a kill's leftover")
     // The Gradle daemons and a command session's own records are ended under their session's
     // lock alone, which no other process holds while it lives.
-    assertEquals(retirementLockName(GradleDaemons.recordName(4242)), None)
+    assertEquals(retirementLockName(RunOnHostGradleDaemons.recordName(4242)), None)
     assertEquals(retirementLockName("client"), None)
     assertEquals(retirementLockName("proxy"), None)
 
@@ -915,12 +915,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(groups.ended.toList, List(9L, 7L))
     assert(!Files.exists(condemned))
 
-  /** What another process finds at the lock file — `held` or `taken` (LockProbe): the one
+  /** What another process finds at the lock file — `held` or `taken` (RunOnHostLockProbe): the one
     * observation of this JVM's fcntl lock, which its own FileChannel cannot make. */
   def probedByAnotherProcess(lockFile: Path): String =
     val launcher = Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString
     val process = java.lang.ProcessBuilder(
-      launcher, "-cp", EmitRunOnHostProfile.classpathForRelaunch, "agentsandbox.launcher.LockProbe", lockFile.toString,
+      launcher, "-cp", EmitRunOnHostProfile.classpathForRelaunch, "agentsandbox.launcher.RunOnHostLockProbe",
+      lockFile.toString,
     ).redirectError(java.lang.ProcessBuilder.Redirect.DISCARD).start()
     val said = String(process.getInputStream.readAllBytes(), UTF_8).trim
     assertEquals(process.waitFor(), 0, s"the probe exited with $said")
@@ -994,7 +995,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   test("a Gradle daemon's record is ended under its session's lock alone; no retirement lock is made for it"):
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
-    val record = dead.resolve(RecordsDir).resolve(GradleDaemons.recordName(4242))
+    val record = dead.resolve(RecordsDir).resolve(RunOnHostGradleDaemons.recordName(4242))
     Files.writeString(record, renderRecord(Record(4242, "S")), UTF_8)
     val fakes = processes(4242L -> "S")
     val collected = scavenge(root, fakes, _ => ServerAnswer.ShutDown).flatMap(_(1))
@@ -1187,7 +1188,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       channel.close(),
     )
     thread.start()
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 10_000)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 10_000)
     thread.join(10_000)
     assertEquals(result, ServerAnswer.ShutDown)
     assert(received(0).contains("\"method\": \"initialize\""), clue = received)
@@ -1201,12 +1202,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     server.bind(UnixDomainSocketAddress.of(socket))
     val thread = Thread(() => { val c = server.accept(); Thread.sleep(3_000); c.close() })
     thread.start()
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     thread.join(10_000)
 
   test("an absent socket is Unreachable: there is no server to stop"):
-    val result = SbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(Path.of("/no/such/sock"), deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
 
   test("a socket file whose listener is gone is Unreachable: the connect is refused"):
@@ -1214,7 +1215,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     server.bind(UnixDomainSocketAddress.of(socket))
     server.close() // the file stays; nothing listens
-    val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+    val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
     assert(result.isInstanceOf[ServerAnswer.Unreachable], clue = result)
 
   test("a connect failure that is no refusal stays retryable: a live server may hide behind it"):
@@ -1225,13 +1226,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
     server.bind(UnixDomainSocketAddress.of(socket))
     try
       Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("---------"))
-      val result = SbtServerShutdown.shutdown(socket, deadlineMillis = 500)
+      val result = RunOnHostSbtServerShutdown.shutdown(socket, deadlineMillis = 500)
       assert(result.isInstanceOf[ServerAnswer.Unanswered], clue = result)
     finally
       Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
       server.close()
 
-  private def frame(json: String): Array[Byte] = SbtServerShutdown.frame(json)
+  private def frame(json: String): Array[Byte] = RunOnHostSbtServerShutdown.frame(json)
 
   private def shortSocketPath(): Path =
     // sun_path is short on Linux too; keep the whole path well under it.

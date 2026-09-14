@@ -471,7 +471,7 @@ object RunOnHostSandbox:
 
   /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
     * `proxy.log`, the broker's one per runtime — the sbt servers' logs (serverLog),
-    * the mill starters' output (MillDaemons.starterLog), and the stderr file a thin client
+    * the mill starters' output (RunOnHostMillDaemons.starterLog), and the stderr file a thin client
     * leaves under `tmp/` when it forked a server of its own.
     * run-on-host.md "The channel and the command" has why every signal keeps them and what a
     * server's file holds. `condemned` is the session directory at its condemned pathname with
@@ -714,7 +714,7 @@ object RunOnHostSandbox:
       refused(s"its socket is not the one sbt derives for this build directory ($derived)")
     else
       log(s"shutting down the sbt server at $derived: it holds the portfile of $buildDirectory")
-      SbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
+      RunOnHostSbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
         case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
         // Unreachable is the server gone between the liveness probe and now — the outcome sought.
         case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
@@ -766,7 +766,7 @@ object RunOnHostSandbox:
         _ =
           if channelLog.isEmpty then
             RunOnHostSession
-              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .scavenge(root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_))
               .foreach: (entry, actions) =>
                 log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")
       yield assembled
@@ -786,7 +786,7 @@ object RunOnHostSandbox:
             val teardown = RunOnHostSession.Teardown: bySignal =>
               RunOnHostSession
                 .endSession(root, session, RunOnHostSession.HostProcesses,
-                  SbtServerShutdown.shutdown(_),
+                  RunOnHostSbtServerShutdown.shutdown(_),
                   beforeRemoval =
                     if bySignal then
                       condemned =>
@@ -822,10 +822,48 @@ object RunOnHostSandbox:
     * the profile and the environment name, the proxy's log, which the denied-host report
     * reads, and for mill the one port of its daemon, the port a client's profile admits.
     * Created with the program's rule file as read then, in the session whose records
-    * name its groups — the broker's for its launch's sbt and mill commands (BrokerRuntimes), the
-    * command's own for Maven and for the gate's entry — and ended with that session. */
+    * name its groups — the broker's for its launch's sbt and mill commands, or another launch's
+    * broker's when this launch attaches to its runtime (BrokerRuntimes), the command's own for
+    * Maven and for the gate's entry — and ended with that session. */
   case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
+
+  /** What a runtime's server or daemon is started with: its profile's inputs and its
+    * environment, derived from the assembly, the runtime's `tmp/` and proxy port, and the
+    * launch's forwards. One derivation for the starters (startSbtServer, RunOnHostMillDaemons.start) and
+    * for the fingerprint another launch compares before attaching (RunOnHostRuntimeDescriptor), so that
+    * equal fingerprints mean a start under the same confinement and environment. */
+  case class RuntimeInputs(profile: SeatbeltProfile.ProfileInputs, environment: Map[String, String])
+
+  def runtimeInputs(
+    assembled: Assembled,
+    tmp: Path,
+    proxyPort: Int,
+    authority: SeatbeltProfile.RuntimeAuthority,
+    forwards: Vector[(String, String)],
+    network: SeatbeltProfile.Network,
+    host: String => Option[String] = name => Option(System.getenv(name)),
+    userName: String = System.getProperty("user.name"),
+  ): RuntimeInputs =
+    val prereqs = assembled.prereqs
+    RuntimeInputs(
+      SeatbeltProfile.ProfileInputs(
+        prereqs = prereqs,
+        sessionTmp = tmp,
+        distribution = assembled.distribution,
+        sbtGlobal = assembled.sbtGlobalGranted,
+        ivyHome = assembled.ivyHomeGranted,
+        gradleUserHome = assembled.gradleUserHomeGranted,
+        m2Repository = assembled.m2RepositoryGranted,
+        proxyPort = proxyPort,
+        runtime = authority,
+        network = network,
+      ),
+      commandEnvironment(
+        host, forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome, assembled.gradleUserHome,
+        assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, tmp, proxyPort, userName,
+      ),
+    )
 
   /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
   private def createProxy(authority: SeatbeltProfile.RuntimeAuthority)(
@@ -841,7 +879,7 @@ object RunOnHostSandbox:
   )
 
   /** What one mill daemon is started from: the runtime whose proxy it uses, and the record its
-    * starter's group — the daemon's — is registered at (MillDaemons.start). */
+    * starter's group — the daemon's — is registered at (RunOnHostMillDaemons.start). */
   case class DaemonStart(assembled: Assembled, buildDirectory: Path, hash: String, record: Path, runtime: Runtime)
 
   /**
@@ -861,16 +899,18 @@ object RunOnHostSandbox:
    * mid-command, so the next mill command starts one. Gradle's runtime is its proxy: the client
    * starts and matches the daemon in the launch's own registry, inside the profile, and the
    * broker records the registry's daemons after each command and ends them with its session
-   * (GradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
+   * (RunOnHostGradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
    * The gate's entry holds one of these over the command's own session for its one command, so
    * the one lifecycle has two callers and no second owner.
    *
    * A broker signals only its own servers and daemons (SECURITY.md "Run on host"): when another
-   * launch owns the build directory's, this broker refuses rather than end it. `scavenge` runs
-   * before each preparation so a dead owner is collected by the exclusive scavenger — never
-   * signalled here — before a fresh server or daemon starts. Preparation and the session's end
-   * share this object's monitor. The seams register a stand-in spawn where the proxy, server or
-   * daemon would be, and stub the scavenger.
+   * launch owns the build directory's, this broker attaches its command to that runtime if it
+   * would start one under the same confinement and environment (`attached`), and refuses
+   * otherwise rather than end it.
+   * `scavenge` runs before each preparation so a dead owner is collected by the exclusive
+   * scavenger — never signalled here — before a fresh server or daemon starts. Preparation and
+   * the session's end share this object's monitor. The seams register a stand-in spawn where
+   * the proxy, server or daemon would be, and stub the scavenger.
    */
   final class BrokerRuntimes(
     session: Session,
@@ -885,17 +925,18 @@ object RunOnHostSandbox:
         RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
     proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(authority),
     server: ServerStart => Either[String, Unit] = start => startSbtServer(session, authority, forwards, start),
-    daemon: DaemonStart => Either[String, MillDaemons.Daemon] =
-      start => MillDaemons.start(session, authority, forwards, RunOnHostSession.HostProcesses, log, start),
+    daemon: DaemonStart => Either[String, RunOnHostMillDaemons.Daemon] =
+      start => RunOnHostMillDaemons.start(session, authority, forwards, RunOnHostSession.HostProcesses, log, start),
     scavenge: () => Unit = () => (),
-    // The daemons holding the launch's registry under the given tmp/ (GradleDaemons.daemons).
-    gradleDaemons: Path => Vector[(Long, String)] = GradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
+    // The daemons holding the launch's registry under the given tmp/ (RunOnHostGradleDaemons.daemons).
+    gradleDaemons: Path => Vector[(Long, String)] = RunOnHostGradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
     executable: () => Either[String, Option[Path]] = () => selfPresent(),
   ):
-    /** A runtime and, for mill, its daemon with the configuration it was started from. */
+    /** A runtime with the rule hosts its proxy was created from and, for mill, its daemon with
+      * the configuration it was started from. */
     private case class Live(
-      buildDirectory: Path, hash: String, assembled: Assembled, runtime: Runtime,
-      daemon: Option[MillDaemons.Daemon] = None, daemonConfig: String = "",
+      buildDirectory: Path, hash: String, assembled: Assembled, runtime: Runtime, hosts: Vector[String],
+      daemon: Option[RunOnHostMillDaemons.Daemon] = None, daemonConfig: String = "",
     )
     // Keyed by program and the build directory's hash: one runtime per (directory, program), all
     // kept warm.
@@ -927,17 +968,18 @@ object RunOnHostSandbox:
             val key = (program, hash)
             // Before a mill client or starter runs: Mill's launcher acts on the rendezvous
             // directory as it finds it, so a redirected one is refused here, never handed to it.
-            val rendezvous = if program == Program.Mill then MillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
+            val rendezvous =
+              if program == Program.Mill then RunOnHostMillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
             rendezvous.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
 
     /** After a dispatched command ended, however it ended, and before the session's end: the
-      * launch's Gradle daemons recorded, so the session's end takes them (GradleDaemons.record).
+      * launch's Gradle daemons recorded, so the session's end takes them (RunOnHostGradleDaemons.record).
       * The registry is the launch's, one for every build directory, so the program alone says
       * whether there is anything to observe. */
     def commandEnded(program: Program): Unit =
       synchronized:
         if program == Program.Gradle then
-          GradleDaemons.record(session.records, gradleDaemons(session.tmp), processes).foreach(log)
+          RunOnHostGradleDaemons.record(session.records, gradleDaemons(session.tmp), processes).foreach(log)
 
     /** prepare, past the mill rendezvous check: the runtime reused, its server or daemon
       * replaced, or the runtime created. */
@@ -955,12 +997,14 @@ object RunOnHostSandbox:
           // gone or the portfile no longer names it, and a fresh one starts under the same
           // proxy (startServer sweeps first).
           val serverLives = lives(serverRecord(hash))
-          if serverLives && namesOwnDerivedSocket(buildDirectory) then Right(Some(current.runtime))
+          if serverLives && namesDerivedSocket(buildDirectory, session.tmp) then Right(Some(current.runtime))
           else
             val why = if serverLives then "the portfile no longer names its server" else "its server is gone"
-            discard(serverRecord(hash)).flatMap: what =>
+            discard(program, hash, serverRecord(hash)).flatMap: what =>
               log(s"retired ${serverRecord(hash).getFileName}, $why: $what")
-              startServer(current, arguments).map(_ => Some(current.runtime))
+              foreignRuntime(program, buildDirectory, hash).flatMap:
+                case Some(shared) => Right(Some(shared))
+                case None         => startServer(current, arguments).map(_ => Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) && program == Program.Gradle =>
           // The runtime is the proxy: Gradle's client matches a daemon in the launch's registry
           // or starts one, inside the profile, and commandEnded records it.
@@ -978,14 +1022,17 @@ object RunOnHostSandbox:
             if same && current.daemon.exists(daemonLives) then Right(Some(current.runtime))
             else
               val why = if same then "its daemon is gone" else "its configuration changed"
-              for
-                what <- discard(daemonRecord(hash))
-                _ = log(s"retired ${daemonRecord(hash).getFileName}, $why: $what")
-                fresh <- assemble(project, program, buildDirectory)
-                started <- startDaemon(current.copy(assembled = fresh), config)
-              yield
-                live += key -> started
-                Some(started.runtime)
+              discard(program, hash, daemonRecord(hash)).flatMap: what =>
+                log(s"retired ${daemonRecord(hash).getFileName}, $why: $what")
+                foreignRuntime(program, buildDirectory, hash).flatMap:
+                  case Some(shared) => Right(Some(shared))
+                  case None =>
+                    for
+                      fresh <- assemble(project, program, buildDirectory)
+                      started <- startDaemon(current.copy(assembled = fresh), config)
+                    yield
+                      live += key -> started
+                      Some(started.runtime)
         case Some(current) =>
           // The proxy is gone: replace the whole runtime for this key, its records and build
           // file deleted. Forgotten only once discarded: a retirement that throws, or leaves a
@@ -997,7 +1044,16 @@ object RunOnHostSandbox:
         case None =>
           create(program, buildDirectory, hash, arguments)
 
+    /** The runtime for a key this launch holds none for: another launch's, attached to, or this
+      * launch's own, created. */
     private def create(
+      program: Program, buildDirectory: Path, hash: String, arguments: Seq[String],
+    ): Either[String, Option[Runtime]] =
+      foreignRuntime(program, buildDirectory, hash).flatMap:
+        case Some(shared) => Right(Some(shared))
+        case None         => created(program, buildDirectory, hash, arguments)
+
+    private def created(
       program: Program, buildDirectory: Path, hash: String, arguments: Seq[String],
     ): Either[String, Option[Runtime]] =
       val name = s"proxy-${program.name}-$hash"
@@ -1010,9 +1066,9 @@ object RunOnHostSandbox:
             assembled <- assemble(project, program, buildDirectory)
             hosts <- readProgramRules(project, program)
             // A record a failed creation kept: discarded, or the spawn that would rename over it refused.
-            _ <- discard(proxyRecord(program, hash))
+            _ <- discard(program, hash, proxyRecord(program, hash))
             port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
-            made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog))
+            made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog), hosts)
             current <- program match
               case Program.Sbt                  => startServer(made, arguments).map(_ => made)
               case Program.Mill                 => daemonConfig(buildDirectory).flatMap(startDaemon(made, _))
@@ -1031,16 +1087,17 @@ object RunOnHostSandbox:
           // would be read as that attempt's.
           Left(discardRuntime(program, hash, proxyLog).fold(kept => s"$reason; $kept", _ => reason))
 
-    /** The server of a runtime whose proxy is up, once no other launch owns the build
-      * directory's server and no foreign server holds its portfile; a start that fails, by
-      * refusal or exception, leaves no group behind its record. A record an earlier failure kept
-      * is discarded first, or refuses the start while its group lives: the spawn would rename
-      * over it. */
+    /** The server of a runtime whose proxy is up, no other launch owning the build directory's
+      * server (foreignRuntime, decided by every caller first), once no foreign server holds its
+      * portfile; up, it is described for other launches (publishDescriptor). A start that fails,
+      * by refusal or exception, leaves no group behind its record. A record an earlier failure
+      * kept is discarded first, or refuses the start while its group lives: the spawn would
+      * rename over it. */
     private def startServer(current: Live, arguments: Seq[String]): Either[String, Unit] =
       val record = serverRecord(current.hash)
       val started =
         try
-          discard(record).flatMap(_ => noForeignServer(current)).flatMap: _ =>
+          discard(Program.Sbt, current.hash, record).flatMap(_ => noForeignServer(current)).flatMap: _ =>
             // After any foreign server is gone, not before: shutdownForeignServer waits for the
             // user's build to finish, and sweeping its `target/` links mid-build would corrupt
             // it. Before the spawn: our server fails loading on a link into a denied store.
@@ -1048,27 +1105,27 @@ object RunOnHostSandbox:
             server(ServerStart(
               current.assembled, current.buildDirectory, current.hash, arguments, record, current.runtime,
             ))
+          .flatMap(_ => publishDescriptor(Program.Sbt, current, record, SeatbeltProfile.Network.ProxyOnly, None, None))
         catch case NonFatal(ex) => Left(s"starting the sbt server: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      started.left.map(reason => discard(record).fold(kept => s"$reason; $kept", _ => reason))
+      started.left.map: reason =>
+        discard(Program.Sbt, current.hash, record).fold(kept => s"$reason; $kept", _ => reason)
 
-    /** The daemon of a runtime whose proxy is up, once no other launch owns the build
-      * directory's daemon: the start itself ends a daemon of the user's own, by proof and once
-      * idle (MillDaemons.start). A start that fails, by refusal or exception, leaves no group
+    /** The daemon of a runtime whose proxy is up, no other launch owning the build directory's
+      * daemon (foreignRuntime, decided by every caller first): the start itself ends a daemon of
+      * the user's own, by proof and once idle (RunOnHostMillDaemons.start); up, it is described for other
+      * launches (publishDescriptor). A start that fails, by refusal or exception, leaves no group
       * behind its record; a record an earlier failure kept is discarded first, as startServer
       * does. */
     private def startDaemon(current: Live, config: String): Either[String, Live] =
       val record = daemonRecord(current.hash)
       val started =
         try
-          discard(record).flatMap(_ => runtimeOwner(daemonRecordName(current.hash)) match
-            case Some(other) =>
-              Left(
-                s"another launch's broker (${other.getFileName}) owns the mill daemon for ${current.buildDirectory}; " +
-                  "this launch does not end another's daemon — retry once that launch has ended, or use a " +
-                  "different build directory",
-              )
-            case None =>
-              daemon(DaemonStart(current.assembled, current.buildDirectory, current.hash, record, current.runtime)))
+          discard(Program.Mill, current.hash, record).flatMap: _ =>
+            daemon(DaemonStart(current.assembled, current.buildDirectory, current.hash, record, current.runtime))
+          .flatMap: found =>
+            publishDescriptor(
+              Program.Mill, current, record, SeatbeltProfile.Network.MillDaemon, Some(found), Some(config),
+            ).map(_ => found)
         catch case NonFatal(ex) => Left(s"starting the mill daemon: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
       started match
         case Right(found) =>
@@ -1076,9 +1133,34 @@ object RunOnHostSandbox:
             runtime = current.runtime.copy(daemonPort = Some(found.port)), daemon = Some(found), daemonConfig = config,
           ))
         case Left(reason) =>
-          Left(discard(record).fold(kept => s"$reason; $kept", _ => reason))
+          Left(discard(Program.Mill, current.hash, record).fold(kept => s"$reason; $kept", _ => reason))
 
-    private def daemonLives(found: MillDaemons.Daemon): Boolean = processes.startOf(found.pid).contains(found.start)
+    /** The runtime's descriptor, published once its server or daemon is up, for another launch
+      * to attach by (RunOnHostRuntimeDescriptor): the fingerprint of this start, and the proxy's and the
+      * server's or daemon's records as they now read. A descriptor that cannot be published is a
+      * failed start, discarded by the caller. */
+    private def publishDescriptor(
+      program: Program, current: Live, record: Path, network: SeatbeltProfile.Network,
+      daemon: Option[RunOnHostMillDaemons.Daemon], daemonConfig: Option[String],
+    ): Either[String, Unit] =
+      def read(file: Path): Either[String, RunOnHostSession.Record] =
+        (try RunOnHostSession.parseRecord(Files.readString(file, UTF_8)) catch case _: IOException => None)
+          .toRight(s"${file.getFileName} does not parse as a record")
+      for
+        proxy <- read(proxyRecord(program, current.hash))
+        group <- read(record)
+        inputs = runtimeInputs(current.assembled, session.tmp, current.runtime.proxyPort, authority, forwards, network)
+        _ <- RunOnHostRuntimeDescriptor.publish(
+          RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
+          RunOnHostRuntimeDescriptor(
+            RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, current.hosts)),
+            current.runtime.proxyPort, proxy, group, daemon, daemonConfig.map(RunOnHostRuntimeDescriptor.digest),
+          ),
+        )
+      yield ()
+
+    private def daemonLives(found: RunOnHostMillDaemons.Daemon): Boolean =
+      processes.startOf(found.pid).contains(found.start)
 
     private def daemonConfig(buildDirectory: Path): Either[String, String] =
       try Right(millDaemonConfig(buildDirectory, readLines))
@@ -1095,20 +1177,9 @@ object RunOnHostSandbox:
 
     /**
      * No server but this broker's may hold the build directory's portfile when its own starts
-     * (SECURITY.md "Run on host", one server per build directory). This broker never signals
-     * another broker's server:
+     * (SECURITY.md "Run on host", one server per build directory), another launch's ownership
+     * decided before this (foreignRuntime). This broker never signals another broker's server:
      *
-     *  - Another launch owns the directory's sbt server when its session — live under the root,
-     *    or in `condemned/` while its teardown or the scavenger is still collecting it — has a
-     *    `server-sbt-<hash>` record whose group is not proved gone (`runtimeOwner`). The command
-     *    is refused; ending each other's servers across launches is the deferred takeover of
-     *    `doc/TODO.md`. The record is the ownership, not `build-<hash>`, so a launch that ran
-     *    only Mill in the directory — which publishes `build-<hash>` but no sbt server —
-     *    reserves nothing. The condemned scan keeps
-     *    the claim through the owner's teardown, when its socket path has moved with the rename
-     *    and a missing portfile would otherwise read as free. A dead owner is collected by
-     *    `scavenge` (run first in prepare) before this check, so what remains is a launch still
-     *    running.
      *  - This launch's own derived socket, live but proved by no record, is a server it left
      *    unaccounted; refused, to be ended by hand — starting a second on the same socket would
      *    fail at the bind.
@@ -1116,34 +1187,127 @@ object RunOnHostSandbox:
      *    socket sbt derives (shutdownForeignServer); the portfile's own spelling is never
      *    connected to. A stale or planted portfile naming some other socket, and a missing
      *    portfile, authorize a start — which writes this directory's own portfile — only once the
-     *    ownership check above has passed.
+     *    ownership check has passed.
      */
     private def noForeignServer(current: Live): Either[String, Unit] =
-      runtimeOwner(serverRecordName(current.hash)) match
-        case Some(other) =>
+      val derived = expectedServerSocket(session.tmp, current.buildDirectory)
+      livePortfileServer(current.buildDirectory) match
+        case Some(socket) if namesDerivedSocket(current.buildDirectory, session.tmp) =>
           Left(
-            s"another launch's broker (${other.getFileName}) owns the sbt server for ${current.buildDirectory}; " +
-              "this launch does not end another's server — retry once that launch has ended, or use a " +
-              "different build directory",
+            s"a live sbt server holds the portfile of ${current.buildDirectory} at its own derived socket " +
+              s"$socket, which no record of this launch proves; end it by hand and retry",
           )
-        case None =>
-          val derived = expectedServerSocket(session.tmp, current.buildDirectory)
-          livePortfileServer(current.buildDirectory) match
-            case Some(socket) if namesOwnDerivedSocket(current.buildDirectory) =>
-              Left(
-                s"a live sbt server holds the portfile of ${current.buildDirectory} at its own derived socket " +
-                  s"$socket, which no record of this launch proves; end it by hand and retry",
-              )
-            case Some(socket) if socket == derived || RunOnHostSession.containedSocket(socket, session.tmp).isDefined =>
-              Right(()) // a stale or planted/redirected portfile under this launch; our start overwrites it
-            case Some(socket) =>
-              // The profile's own persistent writable set, so a socket an earlier command planted
-              // in a cache is no more a shutdown target than one planted in the project.
-              shutdownForeignServer(
-                project, current.buildDirectory, socket, env, log,
-                runOnHostCaches = Seq(current.assembled.prereqs.coursierV1) ++ current.assembled.sbtCachesGranted,
-              )
-            case None => Right(())
+        case Some(socket) if socket == derived || RunOnHostSession.containedSocket(socket, session.tmp).isDefined =>
+          Right(()) // a stale or planted/redirected portfile under this launch; our start overwrites it
+        case Some(socket) =>
+          // The profile's own persistent writable set, so a socket an earlier command planted
+          // in a cache is no more a shutdown target than one planted in the project.
+          shutdownForeignServer(
+            project, current.buildDirectory, socket, env, log,
+            runOnHostCaches = Seq(current.assembled.prereqs.coursierV1) ++ current.assembled.sbtCachesGranted,
+          )
+        case None => Right(())
+
+    /**
+     * Another launch's runtime for the build directory, attached to, or None when no other launch
+     * owns one: asked wherever this launch is about to start a server or daemon — a fresh
+     * runtime, or the replacement under its own live proxy — since the owner's is the one
+     * runtime the directory may have. Another launch owns the directory's sbt server or mill
+     * daemon when its session — live under the root, or in `condemned/` while its teardown or
+     * the scavenger is still collecting it — has a `server-sbt-<hash>` or `daemon-mill-<hash>`
+     * record whose group is not proved gone (`runtimeOwner`). The record is the ownership, not
+     * `build-<hash>`, so a launch that ran only Mill in the directory — which publishes
+     * `build-<hash>` but no sbt server — reserves nothing. The condemned scan keeps the claim
+     * through the owner's teardown, when its socket path has moved with the rename and a missing
+     * portfile would otherwise read as free. A dead owner is collected by `scavenge` (run first
+     * in prepare) before this check, so what remains is a launch still running. Gradle's and
+     * Maven's runtimes are the launch's own and another launch reads nothing of them.
+     */
+    private def foreignRuntime(program: Program, buildDirectory: Path, hash: String): Either[String, Option[Runtime]] =
+      val owner = program match
+        case Program.Sbt                  => runtimeOwner(serverRecordName(hash))
+        case Program.Mill                 => runtimeOwner(daemonRecordName(hash))
+        case Program.Gradle | Program.Mvn => None
+      owner match
+        case Some(other) =>
+          attached(program, buildDirectory, hash, other).map: runtime =>
+            log(s"attached to ${other.getFileName}'s ${program.name} runtime for $buildDirectory")
+            Some(runtime)
+        case None => Right(None)
+
+    /**
+     * The runtime `owner`, another launch's broker session, holds for the build directory, for
+     * this launch's command to run against, or the refusal naming what stops that. Attached to
+     * when the server or daemon this launch would start has the running one's confinement and
+     * environment (RunOnHostRuntimeDescriptor.fingerprint has what that covers and leaves out):
+     * the owner is live — locked
+     * under the root; one ending or dead is never attached to, and the scavenge before the next
+     * command collects a dead one — its descriptor (RunOnHostRuntimeDescriptor) carries the fingerprint of
+     * this launch's own would-be start, derived with the owner's `tmp/` and proxy port and the
+     * rule file as read now, and is bound to the owner's present records, whose proxy spawn
+     * lives; for sbt the server spawn lives and the portfile names the socket derived under the
+     * owner's `tmp/`, unredirected; for mill the daemon bears its start time and its
+     * configuration is the build directory's now — `spawnLives` is no liveness for a mill
+     * runtime, whose starter has exited by design. The command then runs against the owner's
+     * session, proxy and daemon port, exactly as the owner's own commands do (`Runtime`), and
+     * this launch records and keeps nothing of it: the next command asks again. What the sharer
+     * gives up (run-on-host.md "The channel and the command"): a cancel is the program's own,
+     * the server not being this launch's to retire; the owner's end takes the runtime, a build
+     * of this launch included; and this launch's audit lines land in the owner's proxy log.
+     * Nothing is signalled: ending another launch's group is the takeover `doc/TODO.md` plans.
+     */
+    private def attached(program: Program, buildDirectory: Path, hash: String, owner: Path): Either[String, Runtime] =
+      val (what, network, groupRecord) = program match
+        case Program.Mill => ("mill daemon", SeatbeltProfile.Network.MillDaemon, daemonRecordName(hash))
+        case _            => ("sbt server", SeatbeltProfile.Network.ProxyOnly, serverRecordName(hash))
+      def refused(why: String) =
+        Left(
+          s"another launch's broker (${owner.getFileName}) owns the $what for $buildDirectory, and this launch " +
+            s"cannot attach to it: $why; this launch does not end another launch's $what — retry once that " +
+            "launch has ended, or use a different build directory",
+        )
+      val ownerRecords = owner.resolve(RunOnHostSession.RecordsDir)
+      def record(name: String): Option[RunOnHostSession.Record] =
+        try RunOnHostSession.parseRecord(Files.readString(ownerRecords.resolve(name), UTF_8))
+        catch case _: IOException => None
+      val ownerTmp = owner.resolve(RunOnHostSession.TmpDir)
+      val proxyName = s"proxy-${program.name}-$hash"
+      if !RunOnHostSession.liveBrokerSessions(root, session.directory).contains(owner) then
+        refused("that launch is ending, or gone and not yet collected")
+      else
+        RunOnHostRuntimeDescriptor.read(RunOnHostRuntimeDescriptor.file(owner, program, hash)) match
+          case None => refused("no runtime descriptor this launcher reads is published for it")
+          case Some(descriptor) =>
+            for
+              assembled <- assemble(project, program, buildDirectory)
+              hosts <- readProgramRules(project, program)
+              inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, authority, forwards, network)
+              own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
+              _ <-
+                if descriptor.fingerprint == own then Right(())
+                else refused("its profile, environment or rule lines differ from what this launch would start")
+              _ <-
+                if record(proxyName).contains(descriptor.proxy) && record(groupRecord).contains(descriptor.group)
+                then Right(())
+                else refused("its descriptor names records other than the present ones")
+              _ <- if lives(ownerRecords.resolve(proxyName)) then Right(()) else refused("its proxy is gone")
+              _ <- program match
+                case Program.Mill =>
+                  for
+                    _ <-
+                      if descriptor.daemon.exists(daemonLives) then Right(())
+                      else refused("its daemon is gone")
+                    config <- daemonConfig(buildDirectory)
+                    _ <-
+                      if descriptor.daemonConfig.contains(RunOnHostRuntimeDescriptor.digest(config)) then Right(())
+                      else refused("its daemon's configuration is not the build directory's")
+                  yield ()
+                case _ =>
+                  if !lives(ownerRecords.resolve(groupRecord)) then refused("its server is gone")
+                  else if !namesDerivedSocket(buildDirectory, ownerTmp) then
+                    refused("the portfile does not name its server's socket, or the socket is redirected")
+                  else Right(())
+            yield Runtime(owner, descriptor.proxyPort, owner.resolve(s"$proxyName.log"), descriptor.daemon.map(_.port))
 
     /** The session of another launch that holds the ownership record `record`, or None
       * (RunOnHostSession.runtimeOwner: live sessions, then condemned, race-safe across the
@@ -1152,14 +1316,14 @@ object RunOnHostSandbox:
     private def runtimeOwner(record: String): Option[Path] =
       RunOnHostSession.runtimeOwner(root, session.directory, record, processes)
 
-    /** Whether `buildDirectory`'s portfile names this launch's own server for it: the exact
-      * socket sbt derives under this session's `tmp/`, connectable, with neither the socket entry
-      * nor its parent a symlink. The symlink checks matter because the server profile grants the
-      * build write across `tmp/`: without them, moving the socket directory aside and linking it
-      * to another warm directory's would redirect this client while the spelling stayed the
-      * same. */
-    private def namesOwnDerivedSocket(buildDirectory: Path): Boolean =
-      val derived = expectedServerSocket(session.tmp, buildDirectory)
+    /** Whether `buildDirectory`'s portfile names the server a launch whose session `tmp/` is `tmp`
+      * runs for it: the exact socket sbt derives under that `tmp/`, connectable, with neither the
+      * socket entry nor its parent a symlink. The symlink checks matter because the server
+      * profile grants the build write across `tmp/`: without them, moving the socket directory
+      * aside and linking it to another warm directory's would redirect this client while the
+      * spelling stayed the same. */
+    private def namesDerivedSocket(buildDirectory: Path, tmp: Path): Boolean =
+      val derived = expectedServerSocket(tmp, buildDirectory)
       livePortfileServer(buildDirectory).contains(derived)
         && !Files.isSymbolicLink(derived) && !Files.isSymbolicLink(derived.getParent)
 
@@ -1174,10 +1338,10 @@ object RunOnHostSandbox:
       * proxy's group still ended, when a group outlives its KILL (`discard`). */
     private def discardRuntime(program: Program, hash: String, proxyLog: Path): Either[String, String] =
       val attached = program match
-        case Program.Sbt                  => Some(discard(serverRecord(hash)).map(what => s"server $what"))
-        case Program.Mill                 => Some(discard(daemonRecord(hash)).map(what => s"daemon $what"))
-        case Program.Gradle | Program.Mvn => None
-      val proxy = discard(proxyRecord(program, hash)).map(what => s"proxy $what")
+        case Program.Sbt  => Some(discard(program, hash, serverRecord(hash)).map(what => s"server $what"))
+        case Program.Mill => Some(discard(program, hash, daemonRecord(hash)).map(what => s"daemon $what"))
+        case _            => None
+      val proxy = discard(program, hash, proxyRecord(program, hash)).map(what => s"proxy $what")
       try
         Files.deleteIfExists(proxyLog)
         Files.deleteIfExists(proxyProfileFile(proxyLog))
@@ -1192,11 +1356,17 @@ object RunOnHostSandbox:
       outcomes.collectFirst { case Left(kept) => kept }
         .toLeft(outcomes.collect { case Right(what) => what }.mkString(", "))
 
-    /** End the group one record proves, under its retirement lock, and delete the record and its
-      * exit file — unless the group outlives its KILL, or the lock is not free within the bound:
-      * then the record stays, and Left says so, for the caller to start nothing whose spawn would
-      * rename its record over the kept one. */
-    private def discard(record: Path): Either[String, String] =
+    /** End the group one record of the runtime `program` and `hash` name proves, under its
+      * retirement lock, and delete the record and its exit file — unless the group outlives its
+      * KILL, or the lock is not free within the bound: then the record stays, and Left says so,
+      * for the caller to start nothing whose spawn would rename its record over the kept one.
+      * The runtime's descriptor goes first, before any of its groups is ended, so another launch
+      * attaches to nothing ending; the start that follows republishes it. */
+    private def discard(program: Program, hash: String, record: Path): Either[String, String] =
+      try Files.deleteIfExists(RunOnHostRuntimeDescriptor.file(session.directory, program, hash))
+      catch
+        case ex: IOException =>
+          log(s"discarding the ${program.name} runtime descriptor for hash $hash: ${ex.getMessage}")
       val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(root, record, processes) else None
       ended match
         case Some(kept) if kept.keeps =>
@@ -1209,7 +1379,7 @@ object RunOnHostSandbox:
           Right(ended.map(_.toString).getOrElse("no record"))
 
   /** The ownership records of one build directory's server and daemon, by the directory's hash:
-    * what another launch's broker reads to refuse (RunOnHostSession.runtimeOwner). */
+    * what another launch's broker reads to attach or refuse (RunOnHostSession.runtimeOwner). */
   def serverRecordName(hash: String): String = s"server-sbt-$hash"
   def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
 
@@ -1310,21 +1480,11 @@ object RunOnHostSandbox:
     val assembled = start.assembled
     val prereqs = assembled.prereqs
     val output = serverLog(session, start.hash)
+    val inputs = runtimeInputs(
+      assembled, session.tmp, start.runtime.proxyPort, authority, forwards, SeatbeltProfile.Network.ProxyOnly,
+    )
     for
-      profile <- SeatbeltProfile.render(
-        SeatbeltProfile.ProfileInputs(
-          prereqs = prereqs,
-          sessionTmp = session.tmp,
-          distribution = assembled.distribution,
-          sbtGlobal = assembled.sbtGlobalGranted,
-          ivyHome = assembled.ivyHomeGranted,
-          gradleUserHome = assembled.gradleUserHomeGranted,
-          m2Repository = assembled.m2RepositoryGranted,
-          proxyPort = start.runtime.proxyPort,
-          runtime = authority,
-          network = SeatbeltProfile.Network.ProxyOnly,
-        ),
-      )
+      profile <- SeatbeltProfile.render(inputs.profile)
       spawn <-
         try
           val profileFile = session.directory.resolve(s"server-sbt-${start.hash}.sb")
@@ -1343,13 +1503,7 @@ object RunOnHostSandbox:
           builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
           builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
           builder.environment.clear()
-          builder.environment.putAll(
-            commandEnvironment(
-              name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-              assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
-              session.tmp, session.tmp, start.runtime.proxyPort, System.getProperty("user.name"),
-            ).asJava,
-          )
+          builder.environment.putAll(inputs.environment.asJava)
           Right(builder.start())
         catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
       _ <- awaitServer(session, start, spawn, output)
@@ -1438,8 +1592,8 @@ object RunOnHostSandbox:
       // Under the broker the daemons are the broker's to record (BrokerRuntimes.commandEnded).
       if program == Program.Gradle && brokerRuntime.isEmpty then
         val processes = RunOnHostSession.HostProcesses
-        val found = GradleDaemons.daemons(runtime.tmp, processes)
-        GradleDaemons.record(session.records, found, processes).foreach(log)
+        val found = RunOnHostGradleDaemons.daemons(runtime.tmp, processes)
+        RunOnHostGradleDaemons.record(session.records, found, processes).foreach(log)
       reportDenied(runtime.proxyLog, reportFrom, program, log)
       exit
 
@@ -1626,13 +1780,13 @@ object RunOnHostSandbox:
    * is already the launch's own: the client's `java.io.tmpdir`, the broker's `tmp/`, is among the
    * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
    * `DaemonCompatibilitySpec`). The daemons the registry holds are recorded after each command
-   * and ended with the launch (GradleDaemons). The toolchain inventory is closed to the JDK the
+   * and ended with the launch (RunOnHostGradleDaemons). The toolchain inventory is closed to the JDK the
    * profile grants, so a project asking for another toolchain fails naming it, not by a denial.
    */
   def gradleCommand(prereqs: CommandPrereqs, tmp: Path): Seq[String] =
     Seq(
       prereqs.executable.toString,
-      s"-Dorg.gradle.daemon.registry.base=${GradleDaemons.registryBase(tmp)}",
+      s"-Dorg.gradle.daemon.registry.base=${RunOnHostGradleDaemons.registryBase(tmp)}",
       "-Dorg.gradle.java.installations.auto-detect=false",
       "-Dorg.gradle.java.installations.auto-download=false",
       s"-Dorg.gradle.java.installations.paths=${prereqs.jdkHome}",

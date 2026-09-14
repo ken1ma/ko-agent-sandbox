@@ -628,7 +628,7 @@ if [ "${groups:-all}" = sbpl ]; then finish; fi
 # --- S: sbt, per version -------------------------------------------------------------------------
 
 cat > "$work/shutdown.py" <<'PY'
-# sbt's local-socket shutdown at a given socket path (SbtServerShutdown, session-recovery.sh M4).
+# sbt's local-socket shutdown at a given socket path (RunOnHostSbtServerShutdown, session-recovery.sh M4).
 import socket, sys, time, uuid
 deadline = time.monotonic() + 120
 s = socket.socket(socket.AF_UNIX)
@@ -750,7 +750,8 @@ SCALA
     if until_true 300 has_line probe-main "$d/client-run.log" && [ -n "$(forked)" ]; then
         forked_pid=$(forked)
         # The idle detector for a confined sbt server — a measurement no broker path reads, since
-        # the user's server is shut down by protocol after its exec and another launch's is refused
+        # the user's server is shut down by protocol after its exec and another launch's is
+        # attached to or refused
         # (doc/run-on-host.md, "The channel and the command") — on the server JVM and never its
         # group leader, and with no baseline, as a broker taking over has none: the clients of the
         # server's path-named sockets, as `peers` finds them. Measured first on the already-busy
@@ -1067,7 +1068,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
         group_start "$mp/m5" "$mp" /usr/bin/sandbox-exec -f "$mp/client.sb" $mill_client app.run >"$mp/m5.log" 2>&1
         run_leader=$leader
         if until_true 180 has_line probe-main "$mp/m5.log"; then
-            # The idle observation the broker's foreign-daemon rule rests on (MillDaemons.endForeign):
+            # The idle observation the broker's foreign-daemon rule rests on (RunOnHostMillDaemons.endForeign):
             # a running
             # command is an established connection on the daemon's port, and none once it ends.
             busy=$(lsof -a -p "$daemon" -iTCP -sTCP:ESTABLISHED -nP 2>/dev/null | grep -c ":$port")
@@ -1117,7 +1118,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
 
     # M7: a foreign daemon whose fingerprint differs (a JAVA_OPTS the closed environment lacks),
     # kept alive in its own group, then the starter: ServerLauncher removes the foreign processId
-    # on the mismatch before it probes the lock — the window MillDaemons.start closes by ending that
+    # on the mismatch before it probes the lock — the window RunOnHostMillDaemons.start closes by ending that
     # daemon and running the starter once more.
     probe_env=""
     group_start "$mp/foreign" "$mp" env JAVA_OPTS=-Dprobe.foreign=1 ./mill version >"$mp/m7-foreign.log" 2>&1
@@ -1139,7 +1140,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
     end_group "$foreign_leader"
     end_daemons
 
-    # M8: the broker's early end of a starter (MillDaemons.endStarter): once the daemon in the
+    # M8: the broker's early end of a starter (RunOnHostMillDaemons.endStarter): once the daemon in the
     # starter's group listens on the port socketPort names, TERM to the launcher alone — the
     # daemon's parent, a member of the group other than the leader — and the daemon stays,
     # listening, and serves a client. The group's rows before and after are the topology: which

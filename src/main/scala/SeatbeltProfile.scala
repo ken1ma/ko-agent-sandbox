@@ -96,7 +96,7 @@ object SeatbeltProfile:
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
     * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
-    * MillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
+    * RunOnHostMillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
     * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
     * client starts the daemon itself, so one profile serves both. Measured:
     * src/probe/run-on-host-broker-session.sh L1–L4, G1, G7–G10. */
@@ -247,7 +247,7 @@ object SeatbeltProfile:
             // (remote ip "localhost:*"), which reaches every service of this host (Gradle's
             // grant; run-on-host.md "Network" records the cost). So the starter's own connect
             // is denied, which is what leaves the daemon behind, and the broker ends the starter
-            // once the daemon listens rather than widen the grant (MillDaemons.endStarter).
+            // once the daemon listens rather than widen the grant (RunOnHostMillDaemons.endStarter).
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""

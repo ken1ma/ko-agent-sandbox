@@ -27,7 +27,7 @@ import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
 import RunOnHostSession.{Processes, Record, Session}
 import RunOnHostSession.HostProcesses.lines
 
-object MillDaemons:
+object RunOnHostMillDaemons:
 
   /** A daemon on the host: its pid with the `ps -o lstart=` start time every later reuse or
     * signal proves first, and the port it listens on. */
@@ -73,11 +73,14 @@ object MillDaemons:
     val assembled = start.assembled
     val prereqs = assembled.prereqs
     val output = starterLog(session, start.hash)
+    val inputs = RunOnHostSandbox.runtimeInputs(
+      assembled, session.tmp, start.runtime.proxyPort, authority, forwards, SeatbeltProfile.Network.MillDaemon,
+    )
     def said =
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
-        spawn <- spawnStarter(session, forwards, start, profileFile, output)
+        spawn <- spawnStarter(start, profileFile, inputs.environment, output)
         _ <- awaitStarter(spawn, start, output, processes, log)
         daemon <- memberDaemon(start.record) match
           case Some((pid, daemonStart)) =>
@@ -90,20 +93,7 @@ object MillDaemons:
       yield daemon
     for
       _ <- endForeign(start.buildDirectory, processes, log)
-      profile <- SeatbeltProfile.render(
-        SeatbeltProfile.ProfileInputs(
-          prereqs = prereqs,
-          sessionTmp = session.tmp,
-          distribution = assembled.distribution,
-          sbtGlobal = assembled.sbtGlobalGranted,
-          ivyHome = assembled.ivyHomeGranted,
-          gradleUserHome = assembled.gradleUserHomeGranted,
-          m2Repository = assembled.m2RepositoryGranted,
-          proxyPort = start.runtime.proxyPort,
-          runtime = authority,
-          network = SeatbeltProfile.Network.MillDaemon,
-        ),
-      )
+      profile <- SeatbeltProfile.render(inputs.profile)
       profileFile <-
         try Right(Files.writeString(session.directory.resolve(s"daemon-mill-${start.hash}.sb"), profile, UTF_8))
         catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
@@ -116,9 +106,8 @@ object MillDaemons:
     * to the starter log, the closed environment with the broker's `tmp/` as its temporary and
     * socket directory, which the daemon inherits. */
   private def spawnStarter(
-    session: Session, forwards: Vector[(String, String)], start: DaemonStart, profileFile: Path, output: Path,
+    start: DaemonStart, profileFile: Path, environment: Map[String, String], output: Path,
   ): Either[String, Process] =
-    val assembled = start.assembled
     try
       val builder = ProcessBuilder(
         RunOnHostSession.registeredSpawn(
@@ -132,13 +121,7 @@ object MillDaemons:
       builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
       builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
       builder.environment.clear()
-      builder.environment.putAll(
-        RunOnHostSandbox.commandEnvironment(
-          name => Option(System.getenv(name)), forwards, assembled.prereqs, assembled.sbtGlobal, assembled.ivyHome,
-          assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
-          session.tmp, session.tmp, start.runtime.proxyPort, System.getProperty("user.name"),
-        ).asJava,
-      )
+      builder.environment.putAll(environment.asJava)
       Right(builder.start())
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 

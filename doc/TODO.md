@@ -263,25 +263,24 @@ consistent runtime.
 
 ## Deferred — cross-launch server takeover and sharing
 
-Two `ko-agent-sandbox` launches on one project share files and caches, but each broker keeps
-its own sbt servers and mill daemons, and a command for a build directory another live launch's
-broker owns is refused (`SECURITY.md` "Run on host"; `RunOnHostSandbox.BrokerRuntimes`). The
-build lock already serializes the *commands* of one directory across launches, so a running
-command never overlaps, and the retirement lock below serializes the ending of one recorded
-group across every process. Two behaviours end the refusal, in one work item of two stages, each
-reviewable alone, the refusal kept until the stage that replaces it passes:
+Two `ko-agent-sandbox` launches on one project share files and caches, and a command for a build
+directory another live launch's broker owns attaches to that broker's sbt server or mill daemon
+when the one this launch would start has the same confinement and environment, and is refused
+otherwise (`SECURITY.md` "Run on host"; `run-on-host.md` "The channel and the command";
+`RunOnHostSandbox.BrokerRuntimes.attached`). The build lock serializes the *commands* of one
+directory across launches, so a running command never overlaps, and the retirement lock below
+serializes the ending of one recorded group across every process. One stage remains, the
+refusal kept until it passes:
 
-1. **Sharing**: the second launch attaches its clients to the first launch's server or daemon
-   when everything the runtime was created from is equal.
-2. **Takeover**: when it is not, the second launch ends the first launch's runtime under the
-   retirement lock and starts its own. Takeover alone would restart identical runtimes on every
-   alternation; sharing alone keeps the refusal for a differing configuration and for a mill
-   daemon whose configuration changed under its owner, which only the owner may replace.
+- **Takeover**: when the runtimes differ, the second launch ends the first launch's runtime under
+  the retirement lock and starts its own. Sharing alone keeps the refusal for a differing
+  configuration and for a mill daemon gone, or under a changed configuration, beneath its owner,
+  which only the owner may replace.
 
 Maven has no warm runtime, and Gradle's daemons live in a launch-specific registry
-(`run-on-host.md`, "Gradle"): neither is shared or taken over, and their cleanup paths are checked
-against the retirement change, nothing more. Planning allowance: three to five focused days
-including tests, documentation and the host gates; the race tests and the gates decide completion.
+(`run-on-host.md`, "Gradle"): neither is shared or taken over. Planning allowance: two to three
+focused days including tests, documentation and the host gate; the race tests and the gate decide
+completion.
 
 ### The retirement lock — what the taker follows
 
@@ -307,41 +306,6 @@ group empty at any unobserved instant frees its number, a stranger's group can h
 leader can exit leaving children, and a start-time recheck binds the signal to the process
 observed, never to the record. POSIX reserves a group's number only while the group exists.
 
-### Stage 2 — compatible sharing
-
-- [ ] The descriptor: `runtime-<program>-<hash>` in the owner's session directory, out of the
-  confined command's reach since the profile grants `tmp/` alone; published by rename after the
-  server or daemon is up, deleted before its group is ended, republished on every server or
-  daemon replacement. It carries a format version; a SHA-256 of the canonical rendering of
-  program, JDK home, executable, distribution, cache root, rule lines and the forwarded
-  name/value pairs — the pairs decide it for security, since a launch forwarding a secret must
-  not serve one that does not, and a hash so that no value is persisted; the proxy port; for
-  mill the daemon's pid, start time, port and configuration hash; and the pgid and start time
-  of the records it describes, so a descriptor of a replaced runtime fails against its
-  successor's record. The rule lines are the ones captured when the proxy was created, never
-  the file re-read: a warm proxy keeps the rules it started with. The egress profile is never
-  part of it: every host command's proxy gets `deny defaults`, Maven Central and the rule file.
-- [ ] The sharer's check, in the owned branch of `noForeignServer` and `startDaemon`, before
-  any runtime of its own is created: descriptor equal and bound to the owner's present records;
-  the owner's proxy record alive; for sbt the server record alive (`spawnLives`) and the
-  portfile naming `expectedServerSocket(owner tmp, directory)` with neither the socket nor its
-  parent a link; for mill the daemon alive with its start time and the configuration hash equal
-  to the directory's — `spawnLives` is no liveness for mill, whose starter has exited by design.
-  Attached, the command runs against `Runtime(owner session, owner proxy port, owner proxy log,
-  daemon port)`; the wrapper already takes its socket directory, ports and temporary directory
-  from that value (`runCommand`), so it changes nothing. The sharer records and caches nothing;
-  the check is repeated per command.
-- [ ] Its costs, documented with it: a cancel across launches is the program's own, since the
-  server is not the canceller's to retire, so a test that ignores interruption runs on until
-  the next command queues behind it; a mill client's disconnect mid-command ends the shared
-  daemon as stock Mill does, and the owner's next command starts one; the owning launch's end
-  takes the shared server with it, a build of the other launch included, whose next command
-  starts its own or attaches elsewhere; a sharer's audit lines land in the owner's proxy log.
-- [ ] Tests: alternating launches attaching to one runtime; a differing forward, rule line or
-  cache root refusing to share; a descriptor of a replaced runtime failing against the
-  successor's record; the owner's death mid-command; a mill daemon under a changed
-  configuration refused, or falling to stage 3 once that exists.
-
 ### Stage 3 — incompatible takeover
 
 - [ ] The taker, under the build lock it already holds: take the retirement lock, read and
@@ -353,8 +317,8 @@ observed, never to the record. POSIX reserves a group's number only while the gr
   deadline, then the start proceeds or the wait is reported. A group that outlives its KILL, or
   a leaderless one, refuses the command naming the record, as `discard` refuses a kept record.
   The owner's next command finds its record's group dead, replaces the runtime under its own
-  proxy, and the owned branch decides again: two launches with differing configurations
-  alternate restarts, the honest cost of the difference.
+  proxy, and `foreignRuntime` decides again — attach to the taker's, or take it over: two
+  launches with differing configurations alternate restarts, the honest cost of the difference.
 - [ ] Tests: a portfile in one directory naming another directory's socket in the same owner
   session, the other server's pid never signalled; a link planted under the owner's `tmp/`
   during retirement, no connect attempted; a taker killed after its TERM, and a takeover whose
@@ -369,8 +333,8 @@ observed, never to the record. POSIX reserves a group's number only while the gr
   "`mill`", "The channel and the command" and the deviation bullet; the comment at
   `src/probe/run-on-host-broker-session.sh` S4; this section removed.
 - [ ] Host acceptance: two live brokers on one project cannot be measured from a container, so
-  the gate gains two-broker rows — sharing, takeover, and a takeover during the owner's
-  teardown — run on the host after each stage that changes behaviour.
+  the gate's two-broker block ("two launches on one project", whose sharing rows pass) gains
+  takeover, and a takeover during the owner's teardown, run on the host.
 
 ## Deferred — fetching mill's launcher and Gradle's distribution for the user
 
@@ -401,8 +365,9 @@ The JVM launcher is the Maven Central artifact `com.lihaoyi:mill-dist:<v>` (its 
 jar, the file the bootstrap downloads), on the host every `mill` command's proxy already allows;
 the start is `java -cp <jar> mill.launcher.MillLauncherMain`. The script's resolution the
 wrapper replaces — the version pin, `MILL_FINAL_DOWNLOAD_FOLDER`, the `-jvm` and `-native`
-cases — it already reads; and starting the daemon with the stock bootstrap (`MillDaemons.scala`
-has why) would be revised, with the daemon start and the gate's Mill rows measured again.
+cases — it already reads; and starting the daemon with the stock bootstrap
+(`RunOnHostMillDaemons.scala` has why) would be revised, with the daemon start and the gate's Mill
+rows measured again.
 
 ### gradle
 

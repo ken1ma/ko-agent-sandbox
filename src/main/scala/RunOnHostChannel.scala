@@ -591,7 +591,7 @@ object RunOnHostChannel:
         val session =
           RunOnHostSession.ensureRoot(root, uid).flatMap { _ =>
             RunOnHostSession
-              .scavenge(root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_))
+              .scavenge(root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_))
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
             RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
           }.flatMap: session =>
@@ -611,7 +611,7 @@ object RunOnHostChannel:
         )(scavenge = () =>
           RunOnHostSession
             .scavenge(
-              root, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_),
               ownSession = Some(session.directory),
             )
             .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")))
@@ -623,7 +623,7 @@ object RunOnHostChannel:
             // after endCurrentCommand and before the records are read.
             runtimes.commandEnded(RunOnHostPrereqs.Program.Gradle)
             RunOnHostSession
-              .endSession(root, session, RunOnHostSession.HostProcesses, SbtServerShutdown.shutdown(_),
+              .endSession(root, session, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_),
                 beforeRemoval = condemned =>
                   RunOnHostSandbox.appendSessionLogs(
                     logPath, condemned, s"the broker's session ${condemned.getFileName} ended",
