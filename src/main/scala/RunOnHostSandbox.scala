@@ -903,12 +903,13 @@ object RunOnHostSandbox:
    * The gate's entry holds one of these over the command's own session for its one command, so
    * the one lifecycle has two callers and no second owner.
    *
-   * A broker signals only its own servers and daemons (SECURITY.md "Run on host"): when another
-   * launch owns the build directory's, this broker attaches its command to that runtime if it
-   * would start one under the same confinement and environment (`attached`), and refuses
-   * otherwise rather than end it.
+   * When another launch owns the build directory's server or daemon (SECURITY.md "Run on host"),
+   * this broker attaches its command to that runtime if it would start one under the same
+   * confinement and environment (`attached`), and otherwise ends it by its owner's record under
+   * the retirement lock and starts its own (`takeOver`) — the one case in which a broker signals
+   * a live launch's group not its own; a dead launch's the scavenger collects.
    * `scavenge` runs before each preparation so a dead owner is collected by the exclusive
-   * scavenger — never signalled here — before a fresh server or daemon starts. Preparation and
+   * scavenger before a fresh server or daemon starts; one dying after it is taken over. Preparation and
    * the session's end share this object's monitor. The seams register a stand-in spawn where
    * the proxy, server or daemon would be, and stub the scavenger.
    */
@@ -1178,7 +1179,8 @@ object RunOnHostSandbox:
     /**
      * No server but this broker's may hold the build directory's portfile when its own starts
      * (SECURITY.md "Run on host", one server per build directory), another launch's ownership
-     * decided before this (foreignRuntime). This broker never signals another broker's server:
+     * decided before this (foreignRuntime): another launch's is attached to, or ended by its
+     * record, never through the portfile. Beyond that:
      *
      *  - This launch's own derived socket, live but proved by no record, is a server it left
      *    unaccounted; refused, to be ended by hand — starting a second on the same socket would
@@ -1209,19 +1211,22 @@ object RunOnHostSandbox:
         case None => Right(())
 
     /**
-     * Another launch's runtime for the build directory, attached to, or None when no other launch
-     * owns one: asked wherever this launch is about to start a server or daemon — a fresh
-     * runtime, or the replacement under its own live proxy — since the owner's is the one
-     * runtime the directory may have. Another launch owns the directory's sbt server or mill
-     * daemon when its session — live under the root, or in `condemned/` while its teardown or
-     * the scavenger is still collecting it — has a `server-sbt-<hash>` or `daemon-mill-<hash>`
-     * record whose group is not proved gone (`runtimeOwner`). The record is the ownership, not
-     * `build-<hash>`, so a launch that ran only Mill in the directory — which publishes
-     * `build-<hash>` but no sbt server — reserves nothing. The condemned scan keeps the claim
-     * through the owner's teardown, when its socket path has moved with the rename and a missing
-     * portfile would otherwise read as free. A dead owner is collected by `scavenge` (run first
-     * in prepare) before this check, so what remains is a launch still running. Gradle's and
-     * Maven's runtimes are the launch's own and another launch reads nothing of them.
+     * Another launch's runtime for the build directory, attached to, or None once no other launch
+     * owns one — none did, or this launch took it over: asked wherever this launch is about to
+     * start a server or daemon — a fresh runtime, or the replacement under its own live proxy —
+     * since the owner's is the one runtime the directory may have. Another launch owns the
+     * directory's sbt server or mill daemon when its session — live under the root, or in
+     * `condemned/` while its teardown or the scavenger is still collecting it — has a
+     * `server-sbt-<hash>` or `daemon-mill-<hash>` record whose group is not proved gone
+     * (`runtimeOwner`). The record is the ownership, not `build-<hash>`, so a launch that ran only
+     * Mill in the directory — which publishes `build-<hash>` but no sbt server — reserves nothing.
+     * The condemned scan keeps the claim through the owner's teardown, when its socket path has
+     * moved with the rename and a missing portfile would otherwise read as free. A dead owner is
+     * collected by `scavenge` (run first in prepare) before this check, so what remains is a
+     * launch still running, or one that died since. Its runtime is attached to when this launch
+     * would start the same (`attached`), and ended otherwise (`takeOver`), for this launch's own
+     * to start in its place. Gradle's and Maven's runtimes are the launch's own and another launch
+     * reads nothing of them.
      */
     private def foreignRuntime(program: Program, buildDirectory: Path, hash: String): Either[String, Option[Runtime]] =
       val owner = program match
@@ -1230,42 +1235,46 @@ object RunOnHostSandbox:
         case Program.Gradle | Program.Mvn => None
       owner match
         case Some(other) =>
-          attached(program, buildDirectory, hash, other).map: runtime =>
-            log(s"attached to ${other.getFileName}'s ${program.name} runtime for $buildDirectory")
-            Some(runtime)
+          attached(program, buildDirectory, hash, other).flatMap:
+            case Attachment.Attached(runtime) =>
+              log(s"attached to ${other.getFileName}'s ${program.name} runtime for $buildDirectory")
+              Right(Some(runtime))
+            case Attachment.Unattachable(why) =>
+              takeOver(program, buildDirectory, hash, other, why).map(_ => None)
         case None => Right(None)
+
+    /** What another launch's runtime is to this launch's command: run against, or not, for the
+      * reason a takeover names. */
+    private enum Attachment:
+      case Attached(runtime: Runtime)
+      case Unattachable(why: String)
 
     /**
      * The runtime `owner`, another launch's broker session, holds for the build directory, for
-     * this launch's command to run against, or the refusal naming what stops that. Attached to
-     * when the server or daemon this launch would start has the running one's confinement and
-     * environment (RunOnHostRuntimeDescriptor.fingerprint has what that covers and leaves out):
-     * the owner is live — locked
-     * under the root; one ending or dead is never attached to, and the scavenge before the next
-     * command collects a dead one — its descriptor (RunOnHostRuntimeDescriptor) carries the fingerprint of
-     * this launch's own would-be start, derived with the owner's `tmp/` and proxy port and the
-     * rule file as read now, and is bound to the owner's present records, whose proxy spawn
-     * lives; for sbt the server spawn lives and the portfile names the socket derived under the
-     * owner's `tmp/`, unredirected; for mill the daemon bears its start time and its
-     * configuration is the build directory's now — `spawnLives` is no liveness for a mill
-     * runtime, whose starter has exited by design. The command then runs against the owner's
-     * session, proxy and daemon port, exactly as the owner's own commands do (`Runtime`), and
-     * this launch records and keeps nothing of it: the next command asks again. What the sharer
-     * gives up (run-on-host.md "The channel and the command"): a cancel is the program's own,
-     * the server not being this launch's to retire; the owner's end takes the runtime, a build
-     * of this launch included; and this launch's audit lines land in the owner's proxy log.
-     * Nothing is signalled: ending another launch's group is the takeover `doc/TODO.md` plans.
+     * this launch's command to run against, or why it cannot; Left is this launch's own failure
+     * to assemble what it would start. Attached to when the server or daemon this launch would
+     * start has the running one's confinement and environment
+     * (RunOnHostRuntimeDescriptor.fingerprint has what that covers and leaves out): the owner is
+     * live — locked under the root; one ending or dead is never attached to — its descriptor
+     * (RunOnHostRuntimeDescriptor) carries the fingerprint of this launch's own would-be start,
+     * derived with the owner's `tmp/` and proxy port and the rule file as read now, and is bound
+     * to the owner's present records, whose proxy spawn lives; for sbt the server spawn lives and
+     * the portfile names the socket derived under the owner's `tmp/`, unredirected; for mill the
+     * daemon bears its start time and its configuration is the build directory's now —
+     * `spawnLives` is no liveness for a mill runtime, whose starter has exited by design. The
+     * command then runs against the owner's session, proxy and daemon port, exactly as the
+     * owner's own commands do (`Runtime`), and this launch records and keeps nothing of it: the
+     * next command asks again. What the sharer gives up (run-on-host.md "The channel and the
+     * command"): a cancel is the program's own, the server not being this launch's to retire; the
+     * owner's end takes the runtime, a build of this launch included; and this launch's audit
+     * lines land in the owner's proxy log.
      */
-    private def attached(program: Program, buildDirectory: Path, hash: String, owner: Path): Either[String, Runtime] =
-      val (what, network, groupRecord) = program match
-        case Program.Mill => ("mill daemon", SeatbeltProfile.Network.MillDaemon, daemonRecordName(hash))
-        case _            => ("sbt server", SeatbeltProfile.Network.ProxyOnly, serverRecordName(hash))
-      def refused(why: String) =
-        Left(
-          s"another launch's broker (${owner.getFileName}) owns the $what for $buildDirectory, and this launch " +
-            s"cannot attach to it: $why; this launch does not end another launch's $what — retry once that " +
-            "launch has ended, or use a different build directory",
-        )
+    private def attached(
+      program: Program, buildDirectory: Path, hash: String, owner: Path,
+    ): Either[String, Attachment] =
+      val (network, groupRecord) = program match
+        case Program.Mill => (SeatbeltProfile.Network.MillDaemon, daemonRecordName(hash))
+        case _            => (SeatbeltProfile.Network.ProxyOnly, serverRecordName(hash))
       val ownerRecords = owner.resolve(RunOnHostSession.RecordsDir)
       def record(name: String): Option[RunOnHostSession.Record] =
         try RunOnHostSession.parseRecord(Files.readString(ownerRecords.resolve(name), UTF_8))
@@ -1273,46 +1282,93 @@ object RunOnHostSandbox:
       val ownerTmp = owner.resolve(RunOnHostSession.TmpDir)
       val proxyName = s"proxy-${program.name}-$hash"
       if !RunOnHostSession.liveBrokerSessions(root, session.directory).contains(owner) then
-        refused("that launch is ending, or gone and not yet collected")
+        Right(Attachment.Unattachable("that launch is ending, or gone and not yet collected"))
       else
         RunOnHostRuntimeDescriptor.read(RunOnHostRuntimeDescriptor.file(owner, program, hash)) match
-          case None => refused("no runtime descriptor this launcher reads is published for it")
+          case None => Right(Attachment.Unattachable("no runtime descriptor this launcher reads is published for it"))
           case Some(descriptor) =>
             for
               assembled <- assemble(project, program, buildDirectory)
               hosts <- readProgramRules(project, program)
-              inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, authority, forwards, network)
-              own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
-              _ <-
-                if descriptor.fingerprint == own then Right(())
-                else refused("its profile, environment or rule lines differ from what this launch would start")
-              _ <-
-                if record(proxyName).contains(descriptor.proxy) && record(groupRecord).contains(descriptor.group)
-                then Right(())
-                else refused("its descriptor names records other than the present ones")
-              _ <- if lives(ownerRecords.resolve(proxyName)) then Right(()) else refused("its proxy is gone")
-              _ <- program match
-                case Program.Mill =>
-                  for
-                    _ <-
-                      if descriptor.daemon.exists(daemonLives) then Right(())
-                      else refused("its daemon is gone")
-                    config <- daemonConfig(buildDirectory)
-                    _ <-
-                      if descriptor.daemonConfig.contains(RunOnHostRuntimeDescriptor.digest(config)) then Right(())
-                      else refused("its daemon's configuration is not the build directory's")
-                  yield ()
-                case _ =>
-                  if !lives(ownerRecords.resolve(groupRecord)) then refused("its server is gone")
-                  else if !namesDerivedSocket(buildDirectory, ownerTmp) then
-                    refused("the portfile does not name its server's socket, or the socket is redirected")
-                  else Right(())
-            yield Runtime(owner, descriptor.proxyPort, owner.resolve(s"$proxyName.log"), descriptor.daemon.map(_.port))
+              config <- if program == Program.Mill then daemonConfig(buildDirectory).map(Some(_)) else Right(None)
+            yield
+              val inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, authority, forwards, network)
+              val own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
+              val checked =
+                for
+                  _ <-
+                    if descriptor.fingerprint == own then Right(())
+                    else Left("its profile, environment or rule lines differ from what this launch would start")
+                  _ <-
+                    if record(proxyName).contains(descriptor.proxy) && record(groupRecord).contains(descriptor.group)
+                    then Right(())
+                    else Left("its descriptor names records other than the present ones")
+                  _ <- if lives(ownerRecords.resolve(proxyName)) then Right(()) else Left("its proxy is gone")
+                  _ <- config match
+                    case Some(present) =>
+                      if !descriptor.daemon.exists(daemonLives) then Left("its daemon is gone")
+                      else if !descriptor.daemonConfig.contains(RunOnHostRuntimeDescriptor.digest(present)) then
+                        Left("its daemon's configuration is not the build directory's")
+                      else Right(())
+                    case None =>
+                      if !lives(ownerRecords.resolve(groupRecord)) then Left("its server is gone")
+                      else if !namesDerivedSocket(buildDirectory, ownerTmp) then
+                        Left("the portfile does not name its server's socket, or the socket is redirected")
+                      else Right(())
+                yield Runtime(
+                  owner, descriptor.proxyPort, owner.resolve(s"$proxyName.log"), descriptor.daemon.map(_.port),
+                )
+              checked.fold(Attachment.Unattachable(_), Attachment.Attached(_))
+
+    /**
+     * The runtime `owner` holds for the build directory ended, for this launch's own to start in
+     * its place — `why` is what kept this launch from attaching — or the refusal when its group is
+     * not proved ended. One more holder of the record's retirement lock
+     * (RunOnHostSession.retirementLockFile): under the build lock its command holds, the group
+     * is ended by `endRecordedGroup`'s own proof — the record read only under the lock, the
+     * leader's pid bearing the recorded start time, the signal to the pgid — and the record is
+     * left to its owner, whose next command finds the group dead, replaces the runtime under its
+     * own proxy, and decides here again: attach to this launch's, or take it over. Two launches
+     * whose runtimes differ alternate restarts, the cost of the difference. The owner's proxy is
+     * left running: the owner replaces the server or daemon under it. Nothing is connected to and no
+     * portfile is read: the record is the attribution, per program and build directory by
+     * construction, so neither a planted portfile nor a link under the owner's `tmp/` can send
+     * this launch to another directory's server; the start that follows treats the portfile as
+     * any start does (noForeignServer). An owner tearing itself down holds the lock through its
+     * own end of the group, so the wait on the lock — bounded by `RetirementDeadlineMillis` — is
+     * the wait for it; between the owner's lookup and this read its session can move into
+     * `condemned/` (RunOnHostSession.runtimeOwner has the rename), so a record gone from where
+     * it was looked up is looked up once more, and one gone from both is a finished teardown,
+     * whose group ended before the record was deleted. A group listed after its KILL, or
+     * leaderless, keeps the record and admission blocked, as it does under `discard`.
+     */
+    private def takeOver(
+      program: Program, buildDirectory: Path, hash: String, owner: Path, why: String,
+    ): Either[String, Unit] =
+      val (what, name) = program match
+        case Program.Mill => ("mill daemon", daemonRecordName(hash))
+        case _            => ("sbt server", serverRecordName(hash))
+      def end(ownerNow: Path): Option[RunOnHostSession.Collected] =
+        RunOnHostSession.endRecordedGroup(root, ownerNow.resolve(RunOnHostSession.RecordsDir).resolve(name), processes)
+      val outcome = end(owner).orElse(runtimeOwner(name).flatMap(end))
+      outcome match
+        case Some(kept) if kept.keeps =>
+          Left(
+            s"another launch's broker (${owner.getFileName}) owns the $what for $buildDirectory; this launch " +
+              s"cannot attach to it — $why — and its group is not ended: $kept; retry, or use a different build " +
+              "directory",
+          )
+        case _ =>
+          log(
+            s"took over ${owner.getFileName}'s $what for $buildDirectory, which this launch cannot attach to " +
+              s"($why): ${outcome.map(_.toString).getOrElse("no record")}",
+          )
+          Right(())
 
     /** The session of another launch that holds the ownership record `record`, or None
       * (RunOnHostSession.runtimeOwner: live sessions, then condemned, race-safe across the
-      * teardown rename, a record whose group is dead ignored). Read, never signalled: that group
-      * is the owner's to end (`doc/TODO.md`, "Cross-launch server takeover"). */
+      * teardown rename, a record whose group is dead ignored). Read here; signalled only by
+      * `takeOver`, under the retirement lock. */
     private def runtimeOwner(record: String): Option[Path] =
       RunOnHostSession.runtimeOwner(root, session.directory, record, processes)
 
@@ -1379,7 +1435,7 @@ object RunOnHostSandbox:
           Right(ended.map(_.toString).getOrElse("no record"))
 
   /** The ownership records of one build directory's server and daemon, by the directory's hash:
-    * what another launch's broker reads to attach or refuse (RunOnHostSession.runtimeOwner). */
+    * what another launch's broker reads to attach or take over (RunOnHostSession.runtimeOwner). */
   def serverRecordName(hash: String): String = s"server-sbt-$hash"
   def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
 

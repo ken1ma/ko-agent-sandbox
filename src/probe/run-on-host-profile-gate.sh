@@ -1289,7 +1289,8 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         #
         # A second broker on the same project: its commands attach to the first broker's server
         # and daemon when they would start one under the same confinement and environment, and
-        # are refused otherwise (RunOnHostSandbox.BrokerRuntimes.attached). The shim and the
+        # otherwise end them by the first's records and start their own
+        # (RunOnHostSandbox.BrokerRuntimes.attached, takeOver). The shim and the
         # broker both spell the channel directory as one constant, and the stub podman runs every
         # exec on this host, so a second broker would share the first's FIFOs: its own stub
         # rewrites the constant in each script it execs, and its shim is a copy with the constant
@@ -1314,15 +1315,31 @@ EOF
         chmod +x "$work/podman2"
         # A name-only forward's value travels under its carrier name in the broker's own
         # environment (RunOnHostChannel.spawnBroker), which the launcher sets: this gate sets it.
-        start_second_broker() { # [--env=NAME]: false when it made no FIFO
+        # The broker sessions under the root — `b` and digits, as commands_now tells them from
+        # `build-lock/` — are not the gate's alone: a launch on this project from another
+        # terminal, an agent session's included, keeps its own broker session there. So the
+        # second broker's session is the one that appears when it starts, and the first's the
+        # one whose server record for the project is alive.
+        broker_sessions() { ls "$command_root" 2>/dev/null | grep '^b[0-9]' | sed "s|^|$command_root/|"; }
+        session_record() { # session record-name
+            cat "$1/records/$2" 2>/dev/null
+        }
+        sbt_record=server-sbt-$(build_hash "$project")
+        mill_record=daemon-mill-$(build_hash "$mill_project")
+        start_second_broker() { # [--env=NAME]: false when it made no FIFO and published no session
             echo true > "$work/running2"
             rm -rf "$channel_dir2"
+            broker_sessions > "$work/sessions-before"
             KO_AGENT_RUN_ON_HOST_ENV_GATE_SHARE=1 "$JAVA_HOME/bin/java" -cp "$test_cp" \
                 agentsandbox.launcher.AgentSandboxLauncher --serve-run-on-host "$work/podman2" C2 "$project" \
                 sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_broker=$!
             tries=0
-            while [ ! -p "$channel_dir2/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
-            [ -p "$channel_dir2/req" ]
+            second_session_dir=""
+            while { [ ! -p "$channel_dir2/req" ] || [ -z "$second_session_dir" ]; } && [ "$tries" -lt 100 ]; do
+                tries=$((tries + 1)); sleep 0.2
+                second_session_dir=$(broker_sessions | grep -vxFf "$work/sessions-before" | head -1)
+            done
+            [ -p "$channel_dir2/req" ] && [ -n "$second_session_dir" ]
         }
         stop_second_broker() {
             [ -n "${second_broker:-}" ] || return 0
@@ -1338,19 +1355,26 @@ EOF
             cd "$chan_cwd" || exit 1
             PATH="$work/bin:$PATH" exec "$work/shim2" "$@" >"$work/$chan_log" 2>"$work/$chan_log.err"
         }
-        # The second broker's session: the one holding no sbt runtime record for the project.
-        second_session() {
-            owner=$(broker_session_of "$project")
-            ls -d "$command_root"/b*/ 2>/dev/null | sed 's|/$||' | grep -v -e "^$owner\$" | head -1
-        }
+        first_session=""
+        for candidate in $(broker_sessions); do
+            record_alive "$(session_record "$candidate" "$sbt_record")" && first_session=$candidate
+        done
+        second_session() { printf '%s\n' "$second_session_dir"; }
+        root_now() { ls "$command_root" 2>/dev/null | tr '\n' ' '; }
         share_row="channel: a second launch attaches to the first's sbt server, recording nothing"
-        refuse_row="channel: a second launch forwarding a variable the first did not is refused, the server kept"
+        takeover_row="channel: a second launch forwarding a variable the first did not takes the sbt server over"
+        takeback_row="channel: the first launch's next command takes the sbt server back"
+        teardown_row="channel: the first launch's command during the second's teardown starts its own server"
         mill_share_row="channel: a second launch attaches to the first's mill daemon"
-        # The mill row is reported once: here, or with the mill rows' own skip.
+        mill_takeover_row="channel: a second launch forwarding a variable the first did not takes the mill daemon over"
+        # The mill rows are reported once: here, or with the mill rows' own skip.
         if ! start_second_broker; then
             report FAIL "$share_row" "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
-            report SKIP "$refuse_row" "no second broker"
+            report SKIP "$takeover_row" "no second broker"
+            report SKIP "$takeback_row" "no second broker"
+            report SKIP "$teardown_row" "no second broker"
             want mill && report SKIP "$mill_share_row" "no second broker"
+            want mill && report SKIP "$mill_takeover_row" "no second broker"
         else
             # The first broker's server for the project is warm from the rows above. The second
             # launch's `about` runs in it: the record and its group unchanged, no second server,
@@ -1398,26 +1422,106 @@ $(tail -1 "$work/chan-share-mill.log.err" | cut -c1-50)"; fi
             stop_second_broker
 
             # The second launch forwards a variable the first did not: the server it would start
-            # has another environment, so the command is refused naming the difference, and the
-            # first broker's server is untouched.
+            # has another environment, so it ends the first broker's server by its record, under
+            # the retirement lock, and starts its own; the first's record stays, its group gone.
+            # The first launch's next command finds its group dead and takes the server back
+            # the same way: two launches whose runtimes differ alternate restarts.
             if ! start_second_broker --env=GATE_SHARE; then
-                report FAIL "$refuse_row" \
+                report FAIL "$takeover_row" \
                     "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
+                report SKIP "$takeback_row" "no second broker"
+                report SKIP "$teardown_row" "no second broker"
+                want mill && report SKIP "$mill_takeover_row" "no second broker"
             else
-                refuse_before=$(broker_server_record "$project")
-                with_timeout 300 second_shim chan-share-refused.log "$project" sbt about; refuse_status=$?
+                taken_before=$(session_record "$first_session" "$sbt_record")
+                with_timeout 600 second_shim chan-share-takeover.log "$project" sbt about; takeover_status=$?
                 channel_settled
-                if [ "$refuse_status" -eq 2 ] && grep -q 'cannot attach to it' "$work/chan-share-refused.log.err" \
-                    && grep -q 'differ' "$work/chan-share-refused.log.err" \
-                    && [ -n "$refuse_before" ] && record_alive "$refuse_before" \
-                    && [ "$(broker_server_record "$project")" = "$refuse_before" ] \
-                    && [ -n "$(server_in_group "$refuse_before")" ] && [ -z "$(command_servers)" ]
-                then report PASS "$refuse_row" \
-                    "$(grep -m1 -o 'cannot attach to it: [^;]*' "$work/chan-share-refused.log.err")"
-                else report FAIL "$refuse_row" "exit $refuse_status, record before ${refuse_before:-none}, after \
-$(broker_server_record "$project"), command servers: $(command_servers | tr '\n' ' '); \
-$(tail -1 "$work/chan-share-refused.log.err" | cut -c1-60)"; fi
+                second=$(second_session)
+                taken_after=$(session_record "$second" "$sbt_record")
+                if [ "$takeover_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-takeover.log" \
+                    && [ -n "$taken_before" ] && ! record_alive "$taken_before" \
+                    && [ -z "$(server_in_group "$taken_before")" ] \
+                    && [ -n "$taken_after" ] && record_alive "$taken_after" \
+                    && [ -n "$(server_in_group "$taken_after")" ] && [ -z "$(command_servers)" ] \
+                    && grep -q 'took over' "$work/channel2.log"
+                then report PASS "$takeover_row" "$(grep -m1 -o 'took over [^ ]*' "$work/channel2.log")"
+                else report FAIL "$takeover_row" "exit $takeover_status, first's record ${taken_before:-none} \
+$(record_alive "$taken_before" && echo alive || echo gone), second's ${taken_after:-none} \
+$(record_alive "$taken_after" && echo alive || echo gone) in ${second:-no session}, command servers: \
+$(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share-takeover.log.err" | cut -c1-60)"; fi
+
+                with_timeout 600 channel_shim chan-share-takeback.log "$project" sbt about; takeback_status=$?
+                channel_settled
+                taken_back=$(session_record "$first_session" "$sbt_record")
+                if [ "$takeback_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-takeback.log" \
+                    && [ -n "$taken_back" ] && [ "$taken_back" != "$taken_before" ] && record_alive "$taken_back" \
+                    && [ -n "$(server_in_group "$taken_back")" ] \
+                    && [ -n "$taken_after" ] && ! record_alive "$taken_after" \
+                    && [ -z "$(server_in_group "$taken_after")" ] && [ -z "$(command_servers)" ] \
+                    && grep -q 'took over' "$work/channel.log"
+                then report PASS "$takeback_row" "$(grep -m1 -o 'took over [^ ]*' "$work/channel.log")"
+                else report FAIL "$takeback_row" "exit $takeback_status, first's record ${taken_back:-none} \
+$(record_alive "$taken_back" && echo alive || echo gone), second's ${taken_after:-none} \
+$(record_alive "$taken_after" && echo alive || echo gone) in ${second:-no session}, command servers: \
+$(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share-takeback.log.err" | cut -c1-60)"; fi
+
+                # The daemon likewise: the first broker's, started by its own `version`, is ended
+                # by the second's and replaced; the first's `shutdown` then ends the second's the
+                # same way and stops its own, so the mill rows still measure a start of their own.
+                if want mill; then
+                    with_timeout 900 channel_shim chan-share-mill-takeover0.log "$mill_project" mill version
+                    channel_settled
+                    mill_before=$(session_record "$first_session" "$mill_record")
+                    mill_daemon_before=$(daemon_in_group "$mill_before")
+                    with_timeout 600 second_shim chan-share-mill-takeover.log "$mill_project" mill version
+                    mill_takeover_status=$?
+                    channel_settled
+                    mill_after=$(session_record "$second" "$mill_record")
+                    if [ "$mill_takeover_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill-takeover.log" \
+                        && [ -n "$mill_daemon_before" ] && ! record_alive "$mill_before" \
+                        && ! kill -0 "$mill_daemon_before" 2>/dev/null \
+                        && [ -n "$mill_after" ] && record_alive "$mill_after" \
+                        && [ -n "$(daemon_in_group "$mill_after")" ] \
+                        && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] \
+                        && grep -q 'took over .* mill daemon' "$work/channel2.log"
+                    then report PASS "$mill_takeover_row" "daemon $mill_daemon_before ended, \
+$(daemon_in_group "$mill_after") in group ${mill_after%% *}"
+                    else report FAIL "$mill_takeover_row" "exit $mill_takeover_status, daemon before \
+${mill_daemon_before:-none} $(kill -0 "$mill_daemon_before" 2>/dev/null && echo alive || echo gone), second's \
+record ${mill_after:-none}, all: $(mill_daemons | tr '\n' ' '); \
+$(tail -1 "$work/chan-share-mill-takeover.log.err" | cut -c1-50)"; fi
+                    with_timeout 600 channel_shim chan-share-mill-takeover1.log "$mill_project" mill shutdown
+                    channel_settled
+                fi
+
+                # The second launch owning the server again, its broker is ended while the
+                # first's command runs: the taker waits on the retirement lock the teardown
+                # holds, finds the group ended or ends it, and starts its own — one server, its
+                # record the first's, no signal twice, the second's session collected.
+                with_timeout 600 second_shim chan-share-retake.log "$project" sbt about; retake_status=$?
+                channel_settled
+                retaken=$(session_record "$second" "$sbt_record")
+                takeovers_before=$(grep -c "took over $(basename "$second")" "$work/channel.log")
+                kill -TERM "$second_broker" 2>/dev/null
+                with_timeout 600 channel_shim chan-share-teardown.log "$project" sbt about; teardown_status=$?
                 stop_second_broker
+                channel_settled
+                torn_down=$(session_record "$first_session" "$sbt_record")
+                if [ "$retake_status" -eq 0 ] && [ "$teardown_status" -eq 0 ] \
+                    && grep -q 'This is sbt' "$work/chan-share-teardown.log" \
+                    && [ -n "$retaken" ] && ! record_alive "$retaken" && [ -z "$(server_in_group "$retaken")" ] \
+                    && [ -n "$torn_down" ] && record_alive "$torn_down" \
+                    && [ -n "$(server_in_group "$torn_down")" ] && [ -z "$(command_servers)" ] \
+                    && [ ! -d "$second" ] && [ ! -d "$command_root/condemned/$(basename "$second")" ]
+                then report PASS "$teardown_row" "$(if [ "$(grep -c "took over $(basename "$second")" \
+                    "$work/channel.log")" -gt "$takeovers_before" ]; then echo "took the group over"; \
+                    else echo "found the group ended by the teardown"; fi)"
+                else report FAIL "$teardown_row" "exits $retake_status/$teardown_status, second's record \
+${retaken:-none} $(record_alive "$retaken" && echo alive || echo gone), first's ${torn_down:-none} \
+$(record_alive "$torn_down" && echo alive || echo gone), second's session \
+$([ -d "$second" ] && echo kept || echo gone), condemned \
+$([ -d "$command_root/condemned/$(basename "$second")" ] && echo kept || echo gone), root: $(root_now); \
+$(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
             fi
         fi
 

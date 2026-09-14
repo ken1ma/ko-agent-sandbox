@@ -967,14 +967,19 @@ the mechanism. Its security properties and costs are:
   once it has no client connected — the observation is `lsof`'s, repeated immediately before the
   signal — with a two-minute bound after which the command is refused instead; a terminal `./mill`
   connecting between that observation and the signal dies with it, and no observation closes that
-  window. A server another *launch* still owns — its broker's session names the build directory — is
-  never signalled by this broker: ending another launch's group is the takeover `doc/TODO.md`
-  plans ("Cross-launch server takeover"). The command attaches to it instead when the server or
-  daemon this launch would start has the running one's confinement and environment — the owner
-  describes each runtime by a fingerprint of the profile's inputs, the closed environment and the
-  proxy's rule lines, the forwarded values included, so a launch that forwards a secret never
-  serves one that does not, and a launch whose rules differ never resolves through the other's
-  proxy (`doc/run-on-host.md`, "The channel and the command") — and is refused otherwise. The
+  window. A server or daemon another *launch* still owns — its broker's session names the build
+  directory — the command attaches to when the one this launch would start has the running one's
+  confinement and environment — the owner describes each runtime by a fingerprint of the profile's
+  inputs, the closed environment and the proxy's rule lines, the forwarded values included, so a
+  launch that forwards a secret never serves one that does not, and a launch whose rules differ
+  never resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command")
+  — and otherwise ends, by that broker's record and under the retirement lock every ender of a
+  recorded group holds, then replaces with its own. That is the one group of a live launch a
+  broker signals that is not its own — a dead launch's group the scavenger collects, below — and
+  the record alone attributes it: a file in the owner's session directory, which no confined
+  process can write, never the portfile or the process table, so nothing a command writes can aim
+  the signal; the group is signalled only behind its leader's recorded start time, as every ender
+  does. The
   request's own launcher flags are not in the fingerprint: they select settings inside a process
   the profile confines and the wrapper's `_JAVA_OPTIONS` outranks, as they do within a launch
   (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach). A dead launch's
@@ -986,7 +991,8 @@ the mechanism. Its security properties and costs are:
   under the profile, and one with different settings ends it, as stock Mill does, after which the
   broker ends yours once idle and starts its own again; and two launches on one project share a
   build directory's server or daemon only while each would start one under the same confinement
-  and environment — otherwise the second is refused while the first launch lives.
+  and environment — otherwise each launch's command ends the other's and starts its own, and the
+  warm build the other left is lost with it.
 - **The payload that matters runs later, as you.** If a command could write an executable
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
   sandbox. Preventing that write has two enforcement points — the workspace filter

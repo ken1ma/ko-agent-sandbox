@@ -50,7 +50,7 @@ the code that enforces each part:
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
 
-The full gate (`all`) reports **227 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+The full gate (`all`) reports **230 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
 Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-15).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
@@ -417,10 +417,10 @@ established connection on its port, observed through `lsof`, and the proof repea
 before the signal. A daemon busy past two minutes is a refusal naming it. Between the observation
 and the signal a terminal `./mill` can still connect, and its command then dies with the daemon;
 no observation closes that window. A daemon another launch owns — its broker's session holds
-`daemon-mill-<hash>` — is attached to or refused, never signalled, as its sbt server is ("The
-channel and the command"); attaching needs the daemon alive under the build directory's present
-configuration, so after an edit, or the daemon's own exit, the command is refused until the
-owner's next `mill` command replaces it. The reverse holds too:
+`daemon-mill-<hash>` — is attached to, or ended by that record and replaced, as its sbt server is
+("The channel and the command"); attaching needs the daemon alive under the build directory's
+present configuration, so after an edit, or the daemon's own exit, the command ends what the record
+still names — the starter's group — and starts its own. The reverse holds too:
 while the launch's daemon lives, your own `./mill` with matching settings attaches to it and runs
 your build under the profile and the launch's proxy, and one with different settings ends it, as
 Mill does on a fingerprint mismatch, after which the broker ends yours once idle and starts its
@@ -553,7 +553,8 @@ Each command the broker dispatches holds a build lock — one per program and bu
 under `build-lock/` — for the command's life, and the broker's own
 work on the runtime before a command runs under it, so two launches on one project queue behind
 each other's commands; the waiting one says so on its stderr. Ending a runtime's recorded group
-— the broker replacing or retiring its own, its teardown, the scavenger — runs under a
+— the broker replacing or retiring its own, its teardown, the scavenger, another launch taking
+the runtime over — runs under a
 retirement lock, `retire-lock/<program>-<hash>`, held across the leader's proof and the signal
 alone, so no two processes signal one group; one not free within twenty seconds keeps the
 record for the next collection (`RunOnHostSession.retirementLockFile` has the rules). The
@@ -662,12 +663,12 @@ leave a concurrent broker open as later work if a program ever makes it worth ha
 starting a server the broker checks who holds the build directory's portfile: the *user's own*
 server — from a terminal, outside any launch — is shut down by protocol at the socket the broker
 derives itself; a server *another launch* still owns — its broker's session names the directory,
-and the recorded group is not proved gone — is never signalled, since ending it across launches
-is the takeover `TODO.md` plans: the command attaches to it when the server this launch would
-start has the same confinement and environment, and is refused otherwise; a live socket under this
-launch's own directory that no record proves is a refusal naming it. Before starting a daemon it
-checks the process table the same way ("`mill`"): the user's own daemon is ended by proof once
-idle, another launch's is attached to or refused.
+and the recorded group is not proved gone — the command attaches to when the server this launch
+would start has the same confinement and environment, and otherwise ends by that record and
+replaces with its own (below); a live socket under this launch's own directory that no record
+proves is a refusal naming it. Before starting a daemon it checks the process table the same way
+("`mill`"): the user's own daemon is ended by proof once idle, another launch's is attached to or
+taken over.
 
 Attaching is decided per command from the owner's descriptor, `runtime-<program>-<hash>` in its
 session directory (`RunOnHostRuntimeDescriptor.scala`): the fingerprint of the server's or
@@ -689,6 +690,25 @@ this launch's proxy audit lines land in the owner's proxy log. An sbt request's 
 command that started it and every later command attaches regardless, within a launch as across
 them (`RunOnHostRuntimeDescriptor.fingerprint`). Gradle's daemons and Maven have nothing to attach
 to: the registry is the launch's own, and Maven runs once.
+
+A runtime the command cannot attach to — the fingerprints differ, the owner is ending or died
+since the scavenge, its descriptor is missing or names other records, its server or daemon is
+gone, the portfile does not name its socket, the daemon is not under the directory's present
+configuration — is taken over: under the build lock the command holds, the broker ends the group
+the owner's record names, under the retirement lock and by the same proof every ender uses, and
+starts its own server or daemon under its own proxy, as a first command does. The owner's record
+stays the owner's, its proxy runs on, and its next command finds the group dead, replaces the
+runtime under that proxy, and decides the same way — attaching to this launch's, or taking it
+back — so two launches whose runtimes differ alternate restarts, and each restart loses the warm
+build the other left; the launcher's channel log names each takeover and the reason. Nothing is
+connected to and no portfile is read for the takeover: the record attributes the group, so
+neither a planted portfile nor a link under the owner's `tmp/` can send the signal to another
+directory's server. An owner tearing itself down holds the retirement lock through its own end
+of the group, so the command waits on the lock — twenty seconds at most — and then starts its
+own. The command is refused, naming the record, when the group is not proved ended: a member
+still listed after the KILL, a leaderless group, or the lock busy past its bound; retry once the
+group is gone, or use a different build directory. Your own `./mill` attached to the daemon
+taken over dies with it, as it does when its owner replaces it.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-build-directory exclusivity is also the lock over `target/`. A second rendezvous
@@ -739,9 +759,9 @@ where the caller is not interactive.
   the build under that process's environment and confinement, or none. The user's own terminal
   server the broker shuts down by protocol at the socket it derives, and the user's own daemon it
   ends by proof once idle ("`mill`"); a server or daemon another launch still owns it attaches to
-  only when it would start one under the same confinement and environment, and refuses otherwise,
-  never signalling another broker's process ("The channel and the command"; `TODO.md`,
-  "Cross-launch server takeover").
+  only when it would start one under the same confinement and environment, and otherwise ends by
+  that launch's record, under the retirement lock, and replaces with its own ("The channel and
+  the command").
 - **The environment is a closed set — confinement.** The command sees the wrapper's set and not
   the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off

@@ -751,7 +751,7 @@ SCALA
         forked_pid=$(forked)
         # The idle detector for a confined sbt server — a measurement no broker path reads, since
         # the user's server is shut down by protocol after its exec and another launch's is
-        # attached to or refused
+        # attached to or taken over
         # (doc/run-on-host.md, "The channel and the command") — on the server JVM and never its
         # group leader, and with no baseline, as a broker taking over has none: the clients of the
         # server's path-named sockets, as `peers` finds them. Measured first on the already-busy

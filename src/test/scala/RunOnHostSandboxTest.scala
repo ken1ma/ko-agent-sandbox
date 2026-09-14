@@ -959,7 +959,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         spawn.destroyForcibly()
       session.close()
 
-  test("another live broker owning the build directory is refused, and its server is never signalled"):
+  test("another live broker's server is taken over by its record alone; a build file without one reserves nothing"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
     val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
     val root = Files.createTempDirectory("owned").toRealPath()
@@ -1017,26 +1017,32 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       daemon,
     )
     try
-      // The peer owns the sbt server for `dir`: refused, and its server never signalled.
-      val refused = runtimes.prepare(Program.Sbt, dir, Seq("compile"))
-      assert(refused.swap.exists(_.contains("another launch's broker")), refused.toString)
-      assert(!endedGroups.contains(peerLeader), "the peer's server was never signalled")
-      assert(peerServer.isAlive, "the peer's server is untouched")
-      assert(!started.contains(dir), "no server was started for the owned directory")
-      // The peer's Mill-only directory reserves no sbt server: this launch starts sbt there.
+      // The peer owns the sbt server for `dir`, and describes it by nothing this launch can
+      // attach to: the group its record names is ended, by the recorded pgid, and this launch's
+      // server starts in its place.
+      assertEquals(runtimes.prepare(Program.Sbt, dir, Seq("compile")).map(_.isDefined), Right(true))
+      assertEquals(endedGroups.toList, List(peerLeader), "the recorded group, ended once")
+      assert(started.contains(dir), "a server started for the taken-over directory")
+      // The peer's Mill-only directory reserves no sbt server: this launch starts sbt there,
+      // ending nothing.
       assertEquals(runtimes.prepare(Program.Sbt, millDir, Seq("compile")).map(_.isDefined), Right(true))
       assert(started.contains(millDir), "sbt started in the Mill-only directory")
-      // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` refuses a mill
-      // command for that directory, while its sbt-only `dir` admits one. The record names a live
-      // group — the peer's server spawn stands in — since a dead group's record owns nothing.
+      assertEquals(endedGroups.toList, List(peerLeader))
+      // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` is what a mill
+      // command for that directory takes over, while its sbt-only `dir` admits one with nothing
+      // to end. The record names a live group — the peer's server spawn stands in — since a dead
+      // group's record owns nothing.
       Files.copy(peerServerRecord, peer.records.resolve(s"daemon-mill-$millHash"))
-      val refusedMill = runtimes.prepare(Program.Mill, millDir, Seq("compile"))
-      assert(refusedMill.swap.exists(_.contains("owns the mill daemon")), refusedMill.toString)
-      assert(!daemonStarts.contains(millDir), "no daemon was started for the owned directory")
+      assertEquals(
+        runtimes.prepare(Program.Mill, millDir, Seq("compile")).map(_.flatMap(_.daemonPort)), Right(Some(40_001)),
+      )
+      assertEquals(endedGroups.toList, List(peerLeader, peerLeader))
+      assert(daemonStarts.contains(millDir), "a daemon started for the taken-over directory")
       assertEquals(
         runtimes.prepare(Program.Mill, dir, Seq("compile")).map(_.flatMap(_.daemonPort)), Right(Some(40_001)),
       )
       assert(daemonStarts.contains(dir), "mill started in the sbt-owned directory")
+      assertEquals(endedGroups.toList, List(peerLeader, peerLeader))
     finally
       peerServer.descendants().forEach(_.destroyForcibly())
       peerServer.destroyForcibly().waitFor()
@@ -1266,7 +1272,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     * proxy and the server or daemon are records with table pids, the server's socket a listener
     * under its session's `tmp/` named by the portfile. The sharer's server and daemon seams must
     * never run. */
-  private class TwoBrokers(program: Program):
+  /** Three launches' brokers on one project over one process table: `owner` starts the runtime
+    * for `dir`, `sharer` would start it alike, `taker` forwards a value the others do not. A
+    * stand-in's record names a fresh live leader; ending a group takes its leader from the table
+    * and closes the server socket it held, and `leaves` are the groups whose KILL leaves a
+    * member listed, the socket with it. `onEnd` runs between a group's proof and its signal,
+    * `onAssemble` at each assembly — the tests' seams for what another process does meanwhile. */
+  private class Brokers(program: Program):
     val root: Path = Files.createTempDirectory("share")
     val project: Path = Files.createDirectory(root.resolve("project"))
     val dir: Path = Files.createDirectory(project.resolve("app"))
@@ -1275,30 +1287,52 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     val sharer: RunOnHostSession.Session =
       RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val taker: RunOnHostSession.Session =
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     @volatile var alive = Map.empty[Long, String]
+    @volatile var leaves = Set.empty[Long]
+    @volatile var members = Set.empty[Long]
+    @volatile var onEnd: Long => Unit = _ => ()
+    @volatile var onAssemble: () => Unit = () => ()
     val ended = scala.collection.mutable.ListBuffer[Long]()
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = alive.get(pid)
-      def endGroup(pgid: Long): Boolean = { ended += pgid; alive -= pgid; true }
-      def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
+      def endGroup(pgid: Long): Boolean =
+        onEnd(pgid)
+        synchronized:
+          ended += pgid
+          alive -= pgid
+          if leaves.contains(pgid) then members += pgid
+          else groupSockets.get(pgid).flatMap(listeners.remove).foreach(_.close())
+        !leaves.contains(pgid)
+      def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid) && !members.contains(pgid)
       def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    /** The member a KILL left in the group exits, the socket it held closing with it. */
+    def memberExits(pgid: Long): Unit = synchronized:
+      members -= pgid
+      groupSockets.get(pgid).flatMap(listeners.remove).foreach(_.close())
     private var nextPid = 300L
-    def register(record: Path): Long =
+    def register(record: Path): Long = synchronized:
       nextPid += 1
       alive += nextPid -> s"START-$nextPid"
       val leader = RunOnHostSession.Record(nextPid, s"START-$nextPid")
       Files.writeString(record, RunOnHostSession.renderRecord(leader), UTF_8)
       nextPid
     val listeners = scala.collection.mutable.Map[Path, ServerSocketChannel]()
-    def listen(session: RunOnHostSession.Session): Unit =
-      val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, dir)
+    @volatile var groupSockets = Map.empty[Long, Path]
+    /** A server of `session`'s for `directory`: a listener at the socket sbt derives under its
+      * `tmp/`, named by the directory's portfile. */
+    def listen(session: RunOnHostSession.Session, directory: Path = dir): Unit =
+      val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, directory)
       Files.createDirectories(socket.getParent)
       listeners.remove(socket).foreach(_.close())
       Files.deleteIfExists(socket)
       val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
       listener.bind(UnixDomainSocketAddress.of(socket))
       listeners(socket) = listener
-      writePortfile(dir, socket)
+      writePortfile(directory, socket)
+    def listening(session: RunOnHostSession.Session, directory: Path = dir): Boolean =
+      listeners.get(RunOnHostSandbox.expectedServerSocket(session.tmp, directory)).exists(_.isOpen)
     /** The owner's server gone on its own: its socket closes with it and its spawn publishes the exit. */
     def serverExits(): Unit =
       listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
@@ -1309,138 +1343,275 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
       )
     val authority: SeatbeltProfile.RuntimeAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
-    val ownerStarts = scala.collection.mutable.ListBuffer[Path]()
-    val ownerArguments = scala.collection.mutable.ListBuffer[Seq[String]]()
+    /** Every server and daemon start, by its record. */
+    val started = scala.collection.mutable.ListBuffer[Path]()
+    val serverArguments = scala.collection.mutable.ListBuffer[Seq[String]]()
     var daemonPid = 0L
-    def broker(
-      session: RunOnHostSession.Session, forwards: Vector[(String, String)] = Vector.empty, jdk: String = "/jdk",
-      starts: Boolean,
-    ): BrokerRuntimes =
+    def port(session: RunOnHostSession.Session): Int =
+      if session == owner then 7001 else if session == sharer then 7002 else 7003
+    def broker(session: RunOnHostSession.Session, jdk: String = "/jdk"): BrokerRuntimes =
+      val forwards = if session == taker then Vector("TOKEN" -> "t") else Vector.empty
       BrokerRuntimes(session, project, _ => (), authority, forwards)(
         processes,
-        (_, _, _) => Right(assembled(jdk)),
+        (_, _, _) =>
+          onAssemble()
+          Right(assembled(jdk)),
         (_, _, record, proxyLog) =>
-          assert(starts, "the sharer created a proxy")
           register(record)
           Files.writeString(proxyLog, "listening\n", UTF_8)
-          Right(if session == owner then 7001 else 7002),
+          Right(port(session)),
         start =>
-          assert(starts, "the sharer started a server")
-          ownerStarts += start.record
-          ownerArguments += start.arguments
-          register(start.record)
-          listen(session)
+          started += start.record
+          serverArguments += start.arguments
+          val leader = register(start.record)
+          listen(session, start.buildDirectory)
+          groupSockets += leader -> RunOnHostSandbox.expectedServerSocket(session.tmp, start.buildDirectory)
           Right(()),
         start =>
-          assert(starts, "the sharer started a daemon")
-          ownerStarts += start.record
+          started += start.record
           register(start.record)
           daemonPid = register(start.record.resolveSibling("daemon-pid-scratch"))
           Files.delete(start.record.resolveSibling("daemon-pid-scratch"))
           Right(RunOnHostMillDaemons.Daemon(daemonPid, s"START-$daemonPid", 40_001)),
       )
-    val descriptor: Path = RunOnHostRuntimeDescriptor.file(owner.directory, program, hash)
-    def ownerRecord(name: String): Path = owner.records.resolve(name)
-    def ownerRuntime(daemonPort: Option[Int]): Either[String, Option[Runtime]] =
-      val proxyLog = owner.directory.resolve(s"proxy-${program.name}-$hash.log")
-      Right(Some(Runtime(owner.directory, 7001, proxyLog, daemonPort)))
-    def refusal(prepared: Either[String, Option[Runtime]], why: String): Unit =
+    def descriptor(session: RunOnHostSession.Session): Path =
+      RunOnHostRuntimeDescriptor.file(session.directory, program, hash)
+    def record(session: RunOnHostSession.Session, name: String): RunOnHostSession.Record =
+      RunOnHostSession.parseRecord(Files.readString(session.records.resolve(name), UTF_8)).get
+    def serverLeader(session: RunOnHostSession.Session): Long = record(session, s"server-sbt-$hash").pgid
+    def daemonLeader(session: RunOnHostSession.Session): Long = record(session, s"daemon-mill-$hash").pgid
+    def recordNames(session: RunOnHostSession.Session): List[String] =
+      FileHelper.directoryEntries(session.records).map(_.getFileName.toString).toList.sorted
+    /** The runtime `session`'s commands run against, its own or attached to. */
+    def runtime(session: RunOnHostSession.Session, daemonPort: Option[Int] = None): Either[String, Option[Runtime]] =
+      val proxyLog = session.directory.resolve(s"proxy-${program.name}-$hash.log")
+      Right(Some(Runtime(session.directory, port(session), proxyLog, daemonPort)))
+    def refusal(prepared: Either[String, Option[Runtime]], why: String*): Unit =
       prepared match
-        case Left(reason) =>
-          assert(reason.contains("another launch's broker") && reason.contains(why), reason)
-        case other => fail(s"attached, or started, instead of refusing for '$why': $other")
+        case Left(reason) => why.foreach(word => assert(reason.contains(word), s"'$word' in: $reason"))
+        case other        => fail(s"attached, or started, instead of refusing for '${why.mkString(", ")}': $other")
     def close(): Unit =
       listeners.values.foreach(_.close())
-      owner.close(); sharer.close()
+      owner.close(); sharer.close(); taker.close()
 
-  test("a second launch attaches to another launch's sbt server it would start alike; any difference refuses"):
+  def inThread[A](body: => A): java.util.concurrent.Future[A] =
+    val task = java.util.concurrent.FutureTask[A](() => body)
+    val thread = Thread(task)
+    thread.setDaemon(true)
+    thread.start()
+    task
+
+  def doneWithin(future: java.util.concurrent.Future[?], millis: Long): Boolean =
+    try
+      future.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
+      true
+    catch case _: java.util.concurrent.TimeoutException => false
+
+  test("a second launch attaches to another launch's sbt server it would start alike, and takes over one it would not"):
     assume(
       !RunOnHostSessionTest.underRunOnHostProfile,
       "the socket derived under the host's temporary directory is longer than sun_path",
     )
-    val two = TwoBrokers(Program.Sbt)
+    val two = Brokers(Program.Sbt)
     import two.*
     val proxyName = s"proxy-sbt-$hash"
     val serverName = s"server-sbt-$hash"
     try
-      val owning = broker(owner, starts = true)
-      assertEquals(owning.prepare(Program.Sbt, dir, Seq("-Dmode=A", "compile")), ownerRuntime(None))
-      val published = RunOnHostRuntimeDescriptor.read(descriptor).getOrElse(fail("no descriptor"))
-      def recordOf(name: String) = RunOnHostSession.parseRecord(Files.readString(ownerRecord(name), UTF_8)).get
-      assertEquals(published.proxy, recordOf(proxyName), "bound to the proxy's record")
-      assertEquals(published.group, recordOf(serverName), "bound to the server's record")
+      val owning = broker(owner)
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("-Dmode=A", "compile")), runtime(owner))
+      val published = RunOnHostRuntimeDescriptor.read(descriptor(owner)).getOrElse(fail("no descriptor"))
+      assertEquals(published.proxy, record(owner, proxyName), "bound to the proxy's record")
+      assertEquals(published.group, record(owner, serverName), "bound to the server's record")
       assertEquals(published.daemon, None)
       // The sharer attaches: the owner's session, port and log, nothing of its own recorded. Its
       // request's own launcher flags are not compared: the server keeps the flags it was started
       // with, as it does for the owner's later commands (RunOnHostRuntimeDescriptor.fingerprint).
-      val sharing = broker(sharer, starts = false)
-      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("-Dmode=B", "test")), ownerRuntime(None))
-      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("test")), ownerRuntime(None), "asked again, attached again")
-      assertEquals(ownerArguments.toList, List(Seq("-Dmode=A", "compile")), "the server's flags are the owner's")
-      assertEquals(FileHelper.directoryEntries(sharer.records), Vector.empty, "the sharer recorded nothing")
+      val sharing = broker(sharer)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("-Dmode=B", "test")), runtime(owner))
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("test")), runtime(owner), "asked again, attached again")
+      assertEquals(serverArguments.toList, List(Seq("-Dmode=A", "compile")), "the server's flags are the owner's")
+      assertEquals(recordNames(sharer), Nil, "the sharer recorded nothing")
       assert(!Files.exists(RunOnHostSession.buildFile(sharer.directory, hash)), "and published no build file")
-      // A forwarded value, a rule line and a JDK the owner did not start from each refuse.
-      val forwarding = broker(sharer, forwards = Vector("TOKEN" -> "t"), starts = false)
-      refusal(forwarding.prepare(Program.Sbt, dir, Nil), "differ")
+      // A rule line the owner did not start from: the sharer would start another proxy, so it
+      // ends the owner's server by its record and starts its own — recorded, described, the
+      // owner's record left to the owner, its proxy untouched. With the line gone the owner's
+      // would-be start differs from the sharer's, so its next command takes the server back,
+      // and the sharer, alike again, attaches to it.
+      val firstServer = serverLeader(owner)
       val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
       Files.createDirectories(rule.getParent)
       Files.writeString(rule, "allow https://example.org/ read\n", UTF_8)
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "rule lines differ")
-      Files.delete(rule)
-      refusal(broker(sharer, jdk = "/jdk2", starts = false).prepare(Program.Sbt, dir, Nil), "differ")
-      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None), "alike again")
-      // The server gone under its owner: refused until the owner replaces it; a descriptor of
-      // the replaced server, restored over the successor's, fails against the present records.
-      val stale = Files.readString(descriptor, UTF_8)
-      serverExits()
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "its server is gone")
-      val firstServer = recordOf(serverName).pgid
-      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), ownerRuntime(None))
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("-Dmode=B", "test")), runtime(sharer))
       assertEquals(ended.toList, List(firstServer))
-      assertEquals(ownerStarts.size, 2)
-      val fresh = Files.readString(descriptor, UTF_8)
-      assert(fresh != stale, "republished with the replacement")
-      Files.writeString(descriptor, stale, UTF_8)
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "records other than the present ones")
-      Files.writeString(descriptor, fresh, UTF_8)
-      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
-      // The portfile not naming the owner's socket, and the owner's proxy gone, refuse.
-      Files.delete(dir.resolve("project/target/active.json"))
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "portfile")
-      listen(owner)
-      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
-      Files.writeString(RunOnHostSession.exitRecord(ownerRecord(proxyName)), "0\n", UTF_8)
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "its proxy is gone")
-      Files.delete(RunOnHostSession.exitRecord(ownerRecord(proxyName)))
-      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), ownerRuntime(None))
-      // The owner's lock released — its launch ended or died — is no runtime to attach to.
-      owner.close()
-      refusal(sharing.prepare(Program.Sbt, dir, Nil), "ending, or gone")
-      assertEquals(ended.toList, List(firstServer), "the sharer signalled nothing")
+      assertEquals(recordNames(sharer), List(proxyName, serverName))
+      assert(Files.exists(descriptor(sharer)) && listening(sharer) && !listening(owner))
+      assert(Files.exists(owner.records.resolve(serverName)) && alive.contains(record(owner, proxyName).pgid))
+      Files.delete(rule)
+      val sharerServer = serverLeader(sharer)
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      assertEquals(ended.toList, List(firstServer, sharerServer))
+      assertEquals(started.size, 3)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Seq("test")), runtime(owner), "alike again")
+      assertEquals(started.size, 3)
+      // A forwarded value: the taker and the owner differ for good, and alternate: each command
+      // ends the other launch's server and starts its own under its own proxy.
+      val taking = broker(taker)
+      val secondServer = serverLeader(owner)
+      assertEquals(taking.prepare(Program.Sbt, dir, Seq("-Dmode=C", "compile")), runtime(taker))
+      assertEquals(ended.toList, List(firstServer, sharerServer, secondServer))
+      val takerServer = serverLeader(taker)
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      assertEquals(ended.toList, List(firstServer, sharerServer, secondServer, takerServer))
+      assertEquals(taking.prepare(Program.Sbt, dir, Seq("test")), runtime(taker))
+      val thirdServer = serverLeader(taker)
+      assertEquals(ended.size, 5)
+      // A KILL that leaves a member listed: the owner's command is refused naming the record,
+      // signalled once; the taker's next command reuses its server, whose group still lives,
+      // and once the taker's own replacement finds the leader gone with a member listed, its
+      // record is kept and the start refused, until the member is gone too.
+      leaves += thirdServer
+      refusal(owning.prepare(Program.Sbt, dir, Seq("test")), "another launch's broker", "not ended", "after the KILL")
+      assertEquals(ended.size, 6)
+      assert(Files.exists(taker.records.resolve(serverName)), "the taker's record survives the failed takeover")
+      assert(!Files.exists(owner.records.resolve(serverName)), "the owner's dead record was discarded first")
+      leaves -= thirdServer
+      refusal(
+        taking.prepare(Program.Sbt, dir, Seq("test")), "kept for the next start to retry", "a member still listed",
+      )
+      assertEquals(ended.size, 6)
+      memberExits(thirdServer)
+      assertEquals(taking.prepare(Program.Sbt, dir, Seq("test")), runtime(taker), "replaced once the group is empty")
+      assertEquals(ended.size, 6)
+      // The owner's server gone on its own: the sharer takes over what is left — the leader —
+      // and starts its own; a descriptor of a replaced server, restored over the successor's,
+      // names other records than the present ones, and is taken over too.
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      val stale = Files.readString(descriptor(owner), UTF_8)
+      serverExits()
+      val exitedLeader = serverLeader(owner)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), runtime(sharer))
+      assertEquals(ended.takeRight(2).toList, List(serverLeader(taker), exitedLeader))
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      Files.writeString(descriptor(owner), stale, UTF_8)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), runtime(sharer))
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      // The owner's session moving into condemned/ between its lookup and the takeover's read:
+      // the record is looked up once more where it is now, and the group ended there.
+      val condemned = Files.createDirectories(root.resolve(RunOnHostSession.CondemnedDir))
+        .resolve(owner.directory.getFileName)
+      val movingServer = serverLeader(owner)
+      onAssemble = () =>
+        if Files.exists(owner.directory) then
+          Files.move(owner.directory, condemned, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+      assertEquals(sharing.prepare(Program.Sbt, dir, Nil), runtime(sharer))
+      assertEquals(ended.last, movingServer)
+      assertEquals(ended.toList.distinct, ended.toList, "no group is signalled twice")
     finally close()
 
-  test("a second launch attaches to another launch's mill daemon under the directory's configuration"):
-    val two = TwoBrokers(Program.Mill)
+  test("the owner's teardown against a taker: the taker waits on the lock, and the group is signalled once"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the socket derived under the host's temporary directory")
+    val two = Brokers(Program.Sbt)
     import two.*
     try
-      val owning = broker(owner, starts = true)
-      assertEquals(owning.prepare(Program.Mill, dir, Seq("compile")), ownerRuntime(Some(40_001)))
-      val published = RunOnHostRuntimeDescriptor.read(descriptor).getOrElse(fail("no descriptor"))
+      assertEquals(broker(owner).prepare(Program.Sbt, dir, Seq("compile")), runtime(owner))
+      val ownerServer = serverLeader(owner)
+      val reached = java.util.concurrent.CountDownLatch(1)
+      val proceed = java.util.concurrent.CountDownLatch(1)
+      onEnd = pgid =>
+        if pgid == ownerServer then
+          reached.countDown()
+          proceed.await()
+      val teardown = inThread(
+        RunOnHostSession.endSession(root, owner, processes, _ => RunOnHostSession.ServerAnswer.ShutDown),
+      )
+      reached.await()
+      // The teardown has proved the leader and holds the lock: the taker, finding the owner in
+      // condemned/, waits rather than prove and signal the same group.
+      val taking = inThread(broker(taker).prepare(Program.Sbt, dir, Seq("compile")))
+      assert(!doneWithin(taking, 300), "the taker waits on the lock")
+      proceed.countDown()
+      assert(teardown.get.contains(RunOnHostSession.Collected.GroupEnded(ownerServer)))
+      assertEquals(taking.get, runtime(taker))
+      assertEquals(ended.count(_ == ownerServer), 1, "one signal")
+      val condemned = root.resolve(RunOnHostSession.CondemnedDir).resolve(owner.directory.getFileName)
+      assert(!Files.exists(owner.directory) && !Files.exists(condemned), "the owner's session is collected")
+    finally
+      listeners.values.foreach(_.close())
+      sharer.close(); taker.close()
+
+  test("a takeover ends the recorded group, never what the portfile or a planted link leads to"):
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the socket derived under the host's temporary directory")
+    val two = Brokers(Program.Sbt)
+    import two.*
+    val other = Files.createDirectory(project.resolve("lib"))
+    try
+      val owning = broker(owner)
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("compile")), runtime(owner))
+      assert(owning.prepare(Program.Sbt, other, Seq("compile")).isRight)
+      val otherServer = RunOnHostSession.parseRecord(
+        Files.readString(owner.records.resolve(s"server-sbt-${RunOnHostSession.buildHash(other)}"), UTF_8),
+      ).get.pgid
+      val otherSocket = RunOnHostSandbox.expectedServerSocket(owner.tmp, other)
+      // `dir`'s portfile naming the other directory's live socket: the takeover ends the group
+      // `dir`'s record names, and the start that follows refuses the live foreign socket the
+      // portfile leads to (noForeignServer), the other server never signalled.
+      val taking = broker(taker)
+      writePortfile(dir, otherSocket)
+      val first = serverLeader(owner)
+      val foreignSocket = "a live sbt server holds this build directory's portfile"
+      refusal(taking.prepare(Program.Sbt, dir, Seq("compile")), foreignSocket)
+      assertEquals(ended.filter(_ == otherServer).toList, Nil)
+      assertEquals(ended.filter(_ == first).toList, List(first))
+      assert(listening(owner, other))
+      // The owner's next command starts a fresh server under its proxy and rewrites the portfile.
+      assertEquals(owning.prepare(Program.Sbt, dir, Seq("test")), runtime(owner))
+      // A link planted at the owner's socket directory for `dir` during the takeover's end of
+      // the group, leading to the other server: the group ended is the record's, and the start
+      // that follows refuses the link's live socket as any start does.
+      val second = serverLeader(owner)
+      val socketDir = RunOnHostSandbox.expectedServerSocket(owner.tmp, dir).getParent
+      onEnd = pgid =>
+        if pgid == second then
+          listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
+          FileHelper.directoryEntries(socketDir).foreach(Files.delete)
+          Files.delete(socketDir)
+          Files.createSymbolicLink(socketDir, otherSocket.getParent)
+      refusal(taking.prepare(Program.Sbt, dir, Seq("compile")), foreignSocket)
+      assertEquals(ended.filter(_ == otherServer).toList, Nil, "the other server is never signalled")
+      assertEquals(ended.filter(_ == second).toList, List(second))
+      assert(listening(owner, other))
+      Files.delete(socketDir)
+    finally close()
+
+  test("a second launch attaches to another launch's mill daemon under the directory's configuration, else takes over"):
+    val two = Brokers(Program.Mill)
+    import two.*
+    try
+      val owning = broker(owner)
+      assertEquals(owning.prepare(Program.Mill, dir, Seq("compile")), runtime(owner, Some(40_001)))
+      val published = RunOnHostRuntimeDescriptor.read(descriptor(owner)).getOrElse(fail("no descriptor"))
       assertEquals(published.daemon, Some(RunOnHostMillDaemons.Daemon(daemonPid, s"START-$daemonPid", 40_001)))
-      val sharing = broker(sharer, starts = false)
-      assertEquals(sharing.prepare(Program.Mill, dir, Seq("test")), ownerRuntime(Some(40_001)))
-      // A configuration edit: the daemon is not the directory's until the owner replaces it.
+      val sharing = broker(sharer)
+      assertEquals(sharing.prepare(Program.Mill, dir, Seq("test")), runtime(owner, Some(40_001)))
+      assertEquals(recordNames(sharer), Nil)
+      // A configuration edit: the daemon is not the directory's, so the sharer ends its
+      // starter's group and starts its own under the new configuration; the owner's next
+      // command, whose own daemon is gone and whose would-be start is now the sharer's, attaches.
       Files.writeString(dir.resolve(".mill-jvm-opts"), "-Xmx1g\n", UTF_8)
-      refusal(sharing.prepare(Program.Mill, dir, Nil), "configuration")
-      val firstDaemon = daemonPid
-      assertEquals(owning.prepare(Program.Mill, dir, Seq("test")), ownerRuntime(Some(40_001)))
-      assertEquals(ownerStarts.size, 2)
-      assert(daemonPid != firstDaemon)
-      assertEquals(sharing.prepare(Program.Mill, dir, Nil), ownerRuntime(Some(40_001)))
-      // The daemon gone — its idle exit, a cancel — while its starter's leader stays: refused.
+      val firstStarter = daemonLeader(owner)
+      assertEquals(sharing.prepare(Program.Mill, dir, Nil), runtime(sharer, Some(40_001)))
+      assertEquals(ended.toList, List(firstStarter))
+      assertEquals(started.size, 2)
+      assertEquals(owning.prepare(Program.Mill, dir, Seq("test")), runtime(sharer, Some(40_001)))
+      assertEquals(started.size, 2)
+      assertEquals(recordNames(owner), List(s"proxy-mill-$hash"), "the owner's dead record discarded, its proxy kept")
+      // The daemon gone — its idle exit, a cancel — while its starter's leader stays: the
+      // owner's command takes over what is left and starts its own.
+      val sharerStarter = daemonLeader(sharer)
       alive -= daemonPid
-      refusal(sharing.prepare(Program.Mill, dir, Nil), "its daemon is gone")
-      assertEquals(ended.size, 1, "the owner's replacement ended the first starter's group, and nothing else")
+      assertEquals(owning.prepare(Program.Mill, dir, Seq("test")), runtime(owner, Some(40_001)))
+      assertEquals(ended.toList, List(firstStarter, sharerStarter))
+      assertEquals(started.size, 3)
     finally close()
 
   test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
