@@ -267,7 +267,8 @@ Two `ko-agent-sandbox` launches on one project share files and caches, but each 
 its own sbt servers and mill daemons, and a command for a build directory another live launch's
 broker owns is refused (`SECURITY.md` "Run on host"; `RunOnHostSandbox.BrokerRuntimes`). The
 build lock already serializes the *commands* of one directory across launches, so a running
-command never overlaps. Two behaviours end the refusal, in one work item of three stages, each
+command never overlaps, and the retirement lock below serializes the ending of one recorded
+group across every process. Two behaviours end the refusal, in one work item of two stages, each
 reviewable alone, the refusal kept until the stage that replaces it passes:
 
 1. **Sharing**: the second launch attaches its clients to the first launch's server or daemon
@@ -282,44 +283,21 @@ Maven has no warm runtime, and Gradle's daemons live in a launch-specific regist
 against the retirement change, nothing more. Planning allowance: three to five focused days
 including tests, documentation and the host gates; the race tests and the gates decide completion.
 
-### The retirement lock — the rule every signaller follows
+### The retirement lock — what the taker follows
 
 Ending a recorded group is `endRecordedGroup`: prove the leader's pid bears the recorded start
-time, then signal the pgid. Two processes running those two steps on one group make the pid
-recycling window correlated: the owner's kill frees the pids at the moment the taker's already
-proved kill is on its way. So exactly one process may run them for a group, and the loser sends
-nothing. The exclusion is a dedicated lock, `retire-lock/<program>-<hash>` under the wrapper
-root, one per program and build directory, held across validate-and-signal alone. Not the build
-lock: that one is held for a command's whole life, so an owner's teardown would wait on another
-launch's build before ending its own server. Not a claim by renaming the record: that moves the
-record, its exit file and the attribution into the taker's session, and a taker dying midway
-leaves recovery to the taker's scavenger. Under the lock the record stays in the owner's session,
-and every recovery is the owner's own dead-group handling.
+time, then signal the pgid, under `retire-lock/<program>-<hash>`
+(`RunOnHostSession.retirementLockFile` has the rules: why not the build lock, the one-way order,
+the bound, the `RetirementBusy` outcome, the never-deleted files). The taker is one more holder:
 
-- Every signaller takes it: the owner's cancel-retire and replacement (`discard`), Mill's
-  `retire`, the owner's teardown, the scavenger's `collect`, and the taker. The record is read
-  and validated only after the lock is held.
-- Order, one-way: preparation holds the build lock (the command's spawn), then the runtimes
-  monitor, then the retirement lock; teardown holds the runtimes monitor and the session's own
-  lock, then the retirement lock; scavenging holds the condemned entry's lock, then the
-  retirement lock. The retirement lock is always last; nothing takes a build lock, a session
-  lock or the monitor while holding one, and no process holds two retirement locks at once.
-- A holder keeps it for TERM, the grace and KILL at most. A taker that cannot take it within a
-  bound refuses the command with the reason. Teardown and scavenging that cannot take it within
-  a bound produce a `Collected` outcome, retirement busy, with `keeps` true: the directory and
-  records stay and the next collection retries. Nothing is deleted on a timeout.
-- Death releases the lock, not the group. The successor validates as every holder does: leader
-  alive with its start time, end it; leader gone and group empty, delete the record; leader gone
-  and members listed, `GroupAlive`, kept, admission blocked.
-- The lock files are never deleted, as the build locks are not: deleted and recreated, one name
-  would let two holders lock different inodes. `retire-lock/` joins the names the root scan
-  excludes (`scavenge`); otherwise a scavenge reads it as a dead session and deletes it.
-- One `FileChannel` per lock, closed after the signal: OpenJDK's lock is a POSIX `fcntl` lock,
-  dropped for the whole process when any descriptor to the file is closed — the reason
-  `scavenge` skips the caller's own session.
-- `runtimeOwner` ignores a record whose group is dead — leader gone and group empty — so a
-  taken-over owner does not block admission with a record it has not yet deleted; one `ps` per
-  owner record. A record whose group lives, or is leaderless with members, owns as before.
+- Under the build lock its command holds, it takes the retirement lock last, reads and validates
+  the owner's record only once it holds it, and releases after TERM, the grace and KILL at most.
+- A lock not free within `RetirementDeadlineMillis` refuses the command with the reason; nothing
+  is read or signalled.
+- It validates as every holder does, since death releases the lock and not the group: leader
+  alive with its start time, end it; leader gone and group empty, nothing to end — `runtimeOwner`
+  names no owner for such a record, which stays the owner's to delete; leader gone and members
+  listed, refuse, admission blocked.
 
 **The leaderless group stays blocked.** A record whose leader is gone while members are listed is
 never signalled and keeps admission blocked; the owner's teardown, or the scavenger once the
@@ -328,22 +306,6 @@ owner is dead, reaches its server by protocol at the socket proved inside the co
 group empty at any unobserved instant frees its number, a stranger's group can hold it, that
 leader can exit leaving children, and a start-time recheck binds the signal to the process
 observed, never to the record. POSIX reserves a group's number only while the group exists.
-
-### Stage 1 — retirement foundation
-
-- [ ] The retirement lock as above, taken in every path that ends a recorded group; the
-  `Collected` outcome for a busy lock; the dead-group check in `runtimeOwner`; the lock
-  directory excluded from the scavenge. The foreign-runtime refusal stays in place through this
-  stage.
-- [ ] Deterministic tests through the `Processes` seam, no real pids: the four signaller pairs —
-  teardown, scavenge, cancel-retire and replacement, each against a taker — with the seam
-  pausing one between its proof and its signal, each leaving one consistent runtime; an
-  unrelated group under a recycled number never signalled; a retirement interrupted before TERM
-  and one between TERM and KILL, each resumed by a successor that may correctly retain a
-  blocked group — the test must not require termination; lock contention past the bound
-  retaining the session, its records and its directory; the acquisition order under each of
-  the three entry paths; the lock directory surviving a scavenge of the root; Gradle and Maven
-  cleanup unchanged.
 
 ### Stage 2 — compatible sharing
 
@@ -400,7 +362,9 @@ observed, never to the record. POSIX reserves a group's number only while the gr
   asserts what must hold in every outcome: the owner's record survives, admission stays
   blocked while the group is neither proved ended nor empty, and the owner's next prepare and
   its teardown each reach one consistent runtime, replacing or retaining as the group's state
-  dictates, never assuming it ended; the four pairs of stage 1 with the real taker.
+  dictates, never assuming it ended; the signaller pairs of `RunOnHostSessionTest` and
+  `RunOnHostSandboxTest` — teardown, scavenge, cancel-retire and replacement, each against a
+  taker — with the real taker.
 - [ ] Documentation: the ownership bullet of `SECURITY.md` "Run on host"; `run-on-host.md` at
   "`mill`", "The channel and the command" and the deviation bullet; the comment at
   `src/probe/run-on-host-broker-session.sh` S4; this section removed.

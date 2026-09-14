@@ -1016,8 +1016,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(runtimes.prepare(Program.Sbt, millDir, Seq("compile")).map(_.isDefined), Right(true))
       assert(started.contains(millDir), "sbt started in the Mill-only directory")
       // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` refuses a mill
-      // command for that directory, while its sbt-only `dir` admits one.
-      Files.writeString(peer.records.resolve(s"daemon-mill-$millHash"), "1 S\n", UTF_8)
+      // command for that directory, while its sbt-only `dir` admits one. The record names a live
+      // group — the peer's server spawn stands in — since a dead group's record owns nothing.
+      Files.copy(peerServerRecord, peer.records.resolve(s"daemon-mill-$millHash"))
       val refusedMill = runtimes.prepare(Program.Mill, millDir, Seq("compile"))
       assert(refusedMill.swap.exists(_.contains("owns the mill daemon")), refusedMill.toString)
       assert(!daemonStarts.contains(millDir), "no daemon was started for the owned directory")
@@ -1029,6 +1030,226 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       peerServer.descendants().forEach(_.destroyForcibly())
       peerServer.destroyForcibly().waitFor()
       mine.close(); peer.close()
+
+  test("the broker retires its own server under the retirement lock, below its monitor, and signals once"):
+    // The process table the broker and a taker share; an ended group leaves it. The end pauses
+    // between the proof and the signal while `pause` is set.
+    class Table:
+      @volatile var alive = Map.empty[Long, String]
+      val ended = scala.collection.mutable.ListBuffer[Long]()
+      @volatile var pause: Option[(java.util.concurrent.CountDownLatch, java.util.concurrent.CountDownLatch)] = None
+    val table = Table()
+    class Shared(pausing: Boolean) extends RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = table.alive.get(pid)
+      def endGroup(pgid: Long): Boolean =
+        if pausing then
+          table.pause.foreach: (reached, proceed) =>
+            reached.countDown()
+            proceed.await()
+        table.synchronized:
+          table.ended += pgid
+          table.alive -= pgid
+        true
+      def groupEmpty(pgid: Long): Boolean = !table.alive.contains(pgid)
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    def started[A](body: => A): java.util.concurrent.Future[A] =
+      val task = java.util.concurrent.FutureTask[A](() => body)
+      val thread = Thread(task)
+      thread.setDaemon(true)
+      thread.start()
+      task
+    def doneWithin(future: java.util.concurrent.Future[?], millis: Long): Boolean =
+      try
+        future.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
+        true
+      catch case _: java.util.concurrent.TimeoutException => false
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
+    )
+    // The proxy and server stand-ins write their records themselves, each naming a fresh live
+    // leader; no portfile is written, so every later sbt command replaces the server.
+    var nextPid = 100L
+    def register(record: Path): Long =
+      nextPid += 1
+      table.alive += nextPid -> s"START-$nextPid"
+      val leader = RunOnHostSession.Record(nextPid, s"START-$nextPid")
+      Files.writeString(record, RunOnHostSession.renderRecord(leader), UTF_8)
+      nextPid
+    val proxy = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+      register(record)
+      Files.writeString(proxyLog, "listening\n", UTF_8)
+      Right(1)
+    val server = (start: ServerStart) =>
+      register(start.record)
+      Right(())
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+      Shared(pausing = true), (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
+    )
+    val dirA = Files.createDirectory(project.resolve("a"))
+    val dirB = Files.createDirectory(project.resolve("b"))
+    val recordA = session.records.resolve(s"server-sbt-${RunOnHostSession.buildHash(dirA)}")
+    def leaderA = RunOnHostSession.parseRecord(Files.readString(recordA, UTF_8)).get.pgid
+    def latches() = (java.util.concurrent.CountDownLatch(1), java.util.concurrent.CountDownLatch(1))
+    try
+      assert(runtimes.prepare(Program.Sbt, dirA, Seq("compile")).isRight)
+      val first = leaderA
+      // Another holder has the retirement lock — a taker on a crashed launch's record of the same
+      // hash, paused between its proof and its signal: the replacement waits for it under the
+      // monitor — a second command, for a directory with nothing to retire, waits behind it — and
+      // signals nothing until it is free. Monitor first, retirement lock last.
+      val crashed = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+      crashed.close()
+      val crashedRecord = crashed.records.resolve(recordA.getFileName)
+      val crashedLeader = register(crashedRecord)
+      val (holderReached, holderProceed) = latches()
+      table.pause = Some((holderReached, holderProceed))
+      val holding = started(RunOnHostSession.endRecordedGroup(root, crashedRecord, Shared(pausing = true)))
+      holderReached.await()
+      table.pause = None
+      val replacing = started(runtimes.prepare(Program.Sbt, dirA, Seq("test")))
+      assert(!doneWithin(replacing, 300), "the replacement waits on the retirement lock")
+      val other = started(runtimes.prepare(Program.Sbt, dirB, Seq("compile")))
+      assert(!doneWithin(other, 300), "the monitor is held while the lock is waited for")
+      assertEquals(table.ended.toList, Nil)
+      holderProceed.countDown()
+      assertEquals(holding.get, Some(RunOnHostSession.Collected.GroupEnded(crashedLeader)))
+      assert(replacing.get.isRight && other.get.isRight)
+      assertEquals(table.ended.toList, List(crashedLeader, first))
+      val second = leaderA
+      // The taker first, paused between its proof and its signal: the broker's replacement waits,
+      // then finds the leader gone and the group empty — skipped, not signalled — and starts a
+      // successor. One signal, one runtime.
+      val (takerReached, takerProceed) = latches()
+      table.pause = Some((takerReached, takerProceed))
+      val taking = started(RunOnHostSession.endRecordedGroup(root, recordA, Shared(pausing = true)))
+      takerReached.await()
+      table.pause = None
+      val waiting = started(runtimes.prepare(Program.Sbt, dirA, Seq("test")))
+      assert(!doneWithin(waiting, 300), "the replacement waits on the taker's lock")
+      takerProceed.countDown()
+      assertEquals(taking.get, Some(RunOnHostSession.Collected.GroupEnded(second)))
+      assert(waiting.get.isRight)
+      assertEquals(table.ended.toList, List(crashedLeader, first, second))
+      val third = leaderA
+      assert(table.alive.contains(third), "the successor lives behind its record")
+      // The broker first, paused: the taker waits, then reads what the broker left at the
+      // instant it acquired — the dead record before the successor's is published, no record, or
+      // the successor's, whose group it then ends as a taker would. Whichever it found, no group
+      // is signalled twice, and the broker's next command leaves one live server: replacing a
+      // dead group without a signal, as an owner does after a takeover, or a live one under its
+      // own.
+      val (brokerReached, brokerProceed) = latches()
+      table.pause = Some((brokerReached, brokerProceed))
+      val paused = started(runtimes.prepare(Program.Sbt, dirA, Seq("test")))
+      brokerReached.await()
+      table.pause = None
+      val takingLater = started(RunOnHostSession.endRecordedGroup(root, recordA, Shared(pausing = false)))
+      assert(!doneWithin(takingLater, 300), "the taker waits on the broker's lock")
+      brokerProceed.countDown()
+      assert(paused.get.isRight)
+      val fourth = leaderA
+      takingLater.get match
+        case Some(RunOnHostSession.Collected.GroupEnded(g))     => assertEquals(g, fourth, "the successor, taken")
+        case Some(RunOnHostSession.Collected.GroupSkipped(g, _)) => assertEquals(g, third, "the dead record")
+        case None                                                => ()
+        case other                                               => fail(s"the taker found $other")
+      assertEquals(table.ended.toList.take(4), List(crashedLeader, first, second, third))
+      assertEquals(table.ended.toList.distinct, table.ended.toList, "no group is signalled twice")
+      val endedBefore = table.ended.toList
+      val successorLives = table.alive.contains(fourth)
+      assert(runtimes.prepare(Program.Sbt, dirA, Seq("test")).isRight)
+      assertEquals(table.ended.toList, if successorLives then endedBefore :+ fourth else endedBefore)
+      assert(table.alive.contains(leaderA), "one live server behind the record")
+    finally session.close()
+
+  test("the gate's entry: its teardown waits on the lock its own preparation holds, and keeps the record"):
+    // One JVM, two threads and no shared monitor: prepare on the main thread, endSession from
+    // the shutdown hook (ownRuntime). The teardown's bounded wait must neither signal nor
+    // release the holder's lock; it keeps the session for the next collection.
+    class Table:
+      @volatile var alive = Map.empty[Long, String]
+      val ended = scala.collection.mutable.ListBuffer[Long]()
+      @volatile var pause: Option[(java.util.concurrent.CountDownLatch, java.util.concurrent.CountDownLatch)] = None
+    val table = Table()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = table.alive.get(pid)
+      def endGroup(pgid: Long): Boolean =
+        table.pause.foreach: (reached, proceed) =>
+          reached.countDown()
+          proceed.await()
+        table.synchronized:
+          table.ended += pgid
+          table.alive -= pgid
+        true
+      def groupEmpty(pgid: Long): Boolean = !table.alive.contains(pgid)
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    val root = Files.createTempDirectory("brk")
+    val project = Files.createDirectory(root.resolve("project"))
+    val session = RunOnHostSession.publish(root, project).toOption.get
+    val assembled = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
+    )
+    var nextPid = 200L
+    def register(record: Path): Unit =
+      nextPid += 1
+      table.alive += nextPid -> s"START-$nextPid"
+      val leader = RunOnHostSession.Record(nextPid, s"START-$nextPid")
+      Files.writeString(record, RunOnHostSession.renderRecord(leader), UTF_8)
+    val proxy = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+      register(record)
+      Files.writeString(proxyLog, "listening\n", UTF_8)
+      Right(1)
+    val server = (start: ServerStart) =>
+      register(start.record)
+      Right(())
+    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+      processes, (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
+    )
+    val recordName = s"server-sbt-${RunOnHostSession.buildHash(project)}"
+    assert(runtimes.prepare(Program.Sbt, project, Seq("compile")).isRight)
+    val proxyName = s"proxy-sbt-${RunOnHostSession.buildHash(project)}"
+    def leaderOf(record: Path) = RunOnHostSession.parseRecord(Files.readString(record, UTF_8)).get.pgid
+    val serverLeader = leaderOf(session.records.resolve(recordName))
+    val proxyLeader = leaderOf(session.records.resolve(proxyName))
+    val (reached, proceed) = (java.util.concurrent.CountDownLatch(1), java.util.concurrent.CountDownLatch(1))
+    table.pause = Some((reached, proceed))
+    val task = java.util.concurrent.FutureTask[Either[String, Option[Runtime]]](() =>
+      runtimes.prepare(Program.Sbt, project, Seq("test")))
+    val preparing = Thread(task)
+    preparing.setDaemon(true)
+    preparing.start()
+    reached.await()
+    table.pause = None
+    val teardown = RunOnHostSession.endSession(
+      root, session, processes, _ => RunOnHostSession.ServerAnswer.ShutDown, retirementDeadlineMillis = 200,
+    )
+    val condemned = root.resolve(RunOnHostSession.CondemnedDir).resolve(session.directory.getFileName)
+    // The proxy's record shares the server's lock: both wait, both are kept.
+    assertEquals(
+      teardown.collect { case RunOnHostSession.Collected.RetirementBusy(name, _) => name }.sorted,
+      Vector(proxyName, recordName),
+    )
+    assert(Files.exists(condemned.resolve(RunOnHostSession.RecordsDir).resolve(recordName)), "the record is kept")
+    assert(Files.exists(condemned.resolve(RunOnHostSession.RecordsDir).resolve(proxyName)))
+    assertEquals(table.ended.toList, Nil, "the teardown signalled nothing")
+    proceed.countDown()
+    task.get(10, java.util.concurrent.TimeUnit.SECONDS)
+    assertEquals(table.ended.toList, List(serverLeader), "the holder's signal, once")
+    // The next start's scavenge collects what the teardown kept: the server's group is dead and
+    // skipped; the proxy's lives and is ended.
+    val collected =
+      RunOnHostSession.scavenge(root, processes, _ => RunOnHostSession.ServerAnswer.ShutDown).flatMap(_(1))
+    assertEquals(collected.collect { case RunOnHostSession.Collected.GroupSkipped(g, _) => g }, Vector(serverLeader))
+    assertEquals(collected.collect { case RunOnHostSession.Collected.GroupEnded(g) => g }, Vector(proxyLeader))
+    assertEquals(table.ended.toList, List(serverLeader, proxyLeader))
+    assert(!Files.exists(condemned))
 
   test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
     val root = Files.createTempDirectory("brk")

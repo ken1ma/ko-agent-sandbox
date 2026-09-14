@@ -60,7 +60,7 @@ class GradleDaemonsTest extends munit.FunSuite:
     // The record is one the session's end reads like any other: the group behind the proved pid
     // is ended; a mismatched one is skipped.
     processes.alive = Map(100L -> "A", 200L -> "E", 300L -> "D")
-    val collected = RunOnHostSession.endRecordedGroups(records, processes)
+    val collected = RunOnHostSession.endRecordedGroups(records.getParent, records, processes)
     assertEquals(processes.ended.toSet, Set(100L, 300L))
     assert(collected.contains(RunOnHostSession.Collected.GroupSkipped(200, "pid recycled: start time differs")))
 

@@ -83,7 +83,7 @@ object MillDaemons:
           case Some((pid, daemonStart)) =>
             verifiedPort(start.buildDirectory, pid).map(port => Daemon(pid, daemonStart, port))
           case None if retriesLeft > 0 && foreignDaemons(start.buildDirectory, processes).nonEmpty =>
-            retire(start.record, processes)
+            retire(session.directory.getParent, start.record, processes)
               .flatMap(_ => endForeign(start.buildDirectory, processes, log))
               .flatMap(_ => attempt(retriesLeft - 1, profileFile))
           case None => Left(s"the mill starter left no daemon in its group; $said")
@@ -464,14 +464,15 @@ object MillDaemons:
     if proved then processes.signal(pid, name)
     proved
 
-  /** A starter's group ended behind its leader, and its record and exit file removed, before the
-    * same record name is spawned again: the failed starter's spawn is that group's live leader. A
-    * group listed after its KILL keeps its record, and Left refuses the spawn that would rename
-    * over it. */
-  private def retire(record: Path, processes: Processes): Either[String, Unit] =
-    RunOnHostSession.endRecordedGroup(record, processes) match
-      case Some(alive: RunOnHostSession.Collected.GroupAlive) =>
-        Left(s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $alive")
+  /** A starter's group ended behind its leader, under the record's retirement lock, and its
+    * record and exit file removed, before the same record name is spawned again: the failed
+    * starter's spawn is that group's live leader. A group listed after its KILL, or a lock not
+    * free within the bound, keeps its record, and Left refuses the spawn that would rename over
+    * it. */
+  private def retire(root: Path, record: Path, processes: Processes): Either[String, Unit] =
+    RunOnHostSession.endRecordedGroup(root, record, processes) match
+      case Some(kept) if kept.keeps =>
+        Left(s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $kept")
       case _ =>
         try
           Files.deleteIfExists(record)

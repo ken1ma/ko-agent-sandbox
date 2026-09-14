@@ -547,10 +547,14 @@ sbt server binds its sockets and where the servers and daemons keep their tempor
 Each command the broker dispatches holds a build lock — one per program and build directory,
 under `build-lock/` — for the command's life, and the broker's own
 work on the runtime before a command runs under it, so two launches on one project queue behind
-each other's commands; the waiting one says so on its stderr. The wrapper root is
-`/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must fit a UNIX-domain
-socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's `tmp/` is under the
-same budget.
+each other's commands; the waiting one says so on its stderr. Ending a runtime's recorded group
+— the broker replacing or retiring its own, its teardown, the scavenger — runs under a
+retirement lock, `retire-lock/<program>-<hash>`, held across the leader's proof and the signal
+alone, so no two processes signal one group; one not free within twenty seconds keeps the
+record for the next collection (`RunOnHostSession.retirementLockFile` has the rules). The
+wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
+fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's
+`tmp/` is under the same budget.
 
 The command's environment is the contract, not its command line: a closed set the wrapper supplies
 (`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
@@ -652,11 +656,12 @@ the runtime's selection, start and retirement never overlap a command; the per-t
 leave a concurrent broker open as later work if a program ever makes it worth having. Before
 starting a server the broker checks who holds the build directory's portfile: the *user's own*
 server — from a terminal, outside any launch — is shut down by protocol at the socket the broker
-derives itself; a server *another launch* still owns — its broker's session names the directory —
-is a refusal, never signalled, since ending it across launches needs a coordination this version
-leaves to `TODO.md`; a live socket under this launch's own directory that no record proves is a
-refusal naming it. Before starting a daemon it checks the process table the same way ("`mill`"):
-the user's own daemon is ended by proof once idle, another launch's is refused.
+derives itself; a server *another launch* still owns — its broker's session names the directory,
+and the recorded group is not proved gone — is a refusal, never signalled, since ending it across
+launches is the takeover `TODO.md` plans; a live socket under this launch's own directory that
+no record proves is a refusal naming it. Before starting a daemon it checks the process table
+the same way ("`mill`"): the user's own daemon is ended by proof once idle, another launch's is
+refused.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-build-directory exclusivity is also the lock over `target/`. A second rendezvous
