@@ -234,7 +234,8 @@ object RunOnHostSession:
    * The retirement lock of one build directory and program, `retire-lock/<program>-<hash>`: what
    * every process ending a runtime's recorded group — the broker replacing or retiring its own
    * (RunOnHostSandbox.BrokerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
-   * and the takeover of `doc/TODO.md` — holds across the leader's proof and the group's signal,
+   * and another launch taking the runtime over (RunOnHostSandbox.BrokerRuntimes.takeOver) —
+   * holds across the leader's proof and the group's signal,
    * and across nothing else. Two processes running that proof-then-signal on one group would
    * correlate the pid recycling window: the first's kill frees the pids at the moment the
    * second's already proved kill is on its way. Not the build lock, which a command holds for its
@@ -354,8 +355,8 @@ object RunOnHostSession:
 
   /** Every broker session directory under the root, locked or not — a just-crashed owner's is
     * unlocked but not yet condemned, and its server group can still be running, so runtimeOwner
-    * must weigh it too (its finding, admission blocked, and the next start's scavenge collects
-    * it). */
+    * must weigh it too (its finding is taken over, never attached to, and the next start's
+    * scavenge collects it). */
   def allBrokerSessions(root: Path, except: Path): Vector[Path] =
     listDirectory(root).filter: entry =>
       entry != except && entry.getFileName.toString.startsWith(Kind.Broker.prefix)
@@ -374,10 +375,11 @@ object RunOnHostSession:
    * Another launch's session that holds the ownership record `record` — `server-sbt-<hash>` or
    * `daemon-mill-<hash>` — or None. Any broker session under the root — live, or just-crashed
    * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
-   * finished, owns it; the record is read, never signalled (the group is the owner's to end —
-   * RunOnHostSandbox.BrokerRuntimes and doc/TODO.md "Cross-launch server takeover"). A dead
-   * owner's record blocks admission this time and the next start's scavenge collects it, so its
-   * server or daemon is never left running beside a fresh one.
+   * finished, owns it; the record is read here, and its group ended only by its owner, or by
+   * the launch taking the runtime over, under the retirement lock
+   * (RunOnHostSandbox.BrokerRuntimes.takeOver). A dead owner's runtime is taken over this time
+   * and the next start's scavenge collects its session, so its server or daemon is never left
+   * running beside a fresh one.
    *
    * The live sessions are enumerated, then looked up; `condemned/` is enumerated only if that
    * lookup finds nothing (`orElse` is by-name), so its enumeration is strictly later. Teardown
@@ -617,7 +619,13 @@ object RunOnHostSession:
     * listed — after its KILL, or behind a leader that is gone, when the members may still be the
     * record's, since a pgid is not reused while its group has one — or an observation that
     * failed, is GroupAlive, which every deleter of records keeps. A recycled leader proves the
-    * group empty at some point, and what its pgid lists now is another group's. */
+    * group empty at some point, and what its pgid lists now is another group's. The listed
+    * members are never ended by their own pid and start time: a group empty at any unobserved
+    * instant frees its number, a stranger's group can hold it, that leader can exit leaving
+    * children, and a start-time recheck binds the signal to the process observed, never to the
+    * record; a leaderless group with members is reached by its owner's teardown, or the
+    * scavenger, asking the server by protocol at the socket proved inside the condemned session
+    * (collectServers), and blocks admission until then. */
   def endRecordedGroup(
     root: Path, file: Path, processes: Processes, retirementDeadlineMillis: Long = RetirementDeadlineMillis,
   ): Option[Collected] =

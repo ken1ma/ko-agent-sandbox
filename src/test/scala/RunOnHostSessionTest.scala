@@ -758,8 +758,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     reached.await()
     (holding, proceed)
 
-  /** The taker of `doc/TODO.md`'s stage 3, as far as stage 1 goes: another launch ending the
-    * owner's recorded group under the retirement lock, the record read only once it is held. */
+  /** What another launch's takeover does under the lock (RunOnHostSandbox.BrokerRuntimes.takeOver):
+    * the owner's recorded group ended, the record read only once the lock is held. */
   def taker(root: Path, record: Path, groups: Groups): Option[Collected] =
     endRecordedGroup(root, record, SharedProcesses(groups))
 
