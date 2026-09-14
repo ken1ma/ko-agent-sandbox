@@ -1524,6 +1524,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       forbiddenStateRootReason(linux, project.resolve("state/ko-agent-sandbox"), project).isDefined,
     )
     assertEquals(forbiddenStateRootReason(linux, base.resolve("ko-agent-sandbox"), project), None)
+    // The other direction: a project under the state root would be under a reset's deletions.
+    val stateRoot = base.resolve("ko-agent-sandbox")
+    assert(forbiddenStateRootReason(linux, stateRoot, stateRoot.resolve("logs/proj")).isDefined)
     // Not exercised from a Windows runner, whose Path type cannot spell a POSIX absolute path.
     if !scala.util.Properties.isWin then
       val mac = HostCommands.Os.Mac
@@ -1531,7 +1534,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       val plainProject = Paths.get("/Users/me/proj")
       assert(forbiddenStateRootReason(mac, plainProject.resolve("state"), aliasedProject).isDefined)
       assert(forbiddenStateRootReason(mac, aliasedProject.resolve("state"), plainProject).isDefined)
+      assert(forbiddenStateRootReason(mac, plainProject, aliasedProject.resolve("under")).isDefined)
       assertEquals(forbiddenStateRootReason(linux, plainProject.resolve("state"), aliasedProject), None)
+
+  test("the run-on-host tree a reset removes never holds the state root, whatever the roots' layout"):
+    // On Windows the state and cache roots are one directory, %LOCALAPPDATA%\ko-agent-sandbox, and
+    // on POSIX XDG_STATE_HOME and XDG_CACHE_HOME can name one: the tree is then a sibling of the
+    // images' cleanup journal and the project records, accepted. XDG_STATE_HOME can also name a
+    // directory under the tree: refused before anything is removed (ResetRecordTest runs the reset).
+    val base = Files.createTempDirectory("shared-root").toRealPath()
+    val shared =
+      Map("LOCALAPPDATA" -> base.toString, "XDG_STATE_HOME" -> base.toString, "XDG_CACHE_HOME" -> base.toString)
+    for os <- Seq(Os.Windows, Os.Linux) do
+      val state = stateRootOf(os, shared.get).fold(fail(_), identity)
+      val root = RunOnHostPrereqs.cacheRootOf(os, shared.get).fold(refusal => fail(refusal.toString), identity)
+      assertEquals(RunOnHostPrereqs.runOnHostCachesOf(root).getParent, state, os.toString)
+      val tree = RunOnHostPrereqs.runOnHostCachesOf(root)
+      assertEquals(RunOnHostPrereqs.cachePathClearOfStateRoot(tree, state, os), Right(tree), os.toString)
+    val nested = Map(
+      "XDG_CACHE_HOME" -> base.toString,
+      "XDG_STATE_HOME" -> base.resolve("ko-agent-sandbox/run-on-host").toString,
+    )
+    val state = stateRootOf(Os.Linux, nested.get).fold(fail(_), identity)
+    val root = RunOnHostPrereqs.cacheRootOf(Os.Linux, nested.get).fold(refusal => fail(refusal.toString), identity)
+    val tree = RunOnHostPrereqs.runOnHostCachesOf(root)
+    assert(RunOnHostPrereqs.cachePathClearOfStateRoot(tree, state, Os.Linux).isLeft)
 
   test("a run's TLS mount copies are pruned only when no container names the run"):
     val names = Seq("run-1a2b3c4d", "run-ffffffff", "run-short", "ca.crt", ".lock", "run-1A2B3C4D")

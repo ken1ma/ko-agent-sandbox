@@ -976,8 +976,11 @@ directory, so
 `--reset-run-on-host` is a single removal, `--reset` takes it with the project's other state, and
 a further cache kind can join without moving anything. It is discovered exactly as the launcher's
 state root is, so the two answer alike on one machine; a relative override is refused because it
-would resolve against the repository being sandboxed, and a root inside the project is refused
-outright.
+would resolve against the repository being sandboxed, and a root overlapping the project is refused
+outright, as is a cache directory whose canonical path lies over or under the launcher's state
+root: `XDG_STATE_HOME` or a symlinked `run-on-host` can nest the two, so the separation argued
+below is checked on every command and reset rather than assumed
+(`RunOnHostPrereqs.cachePathClearOfStateRoot`).
 
 Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" has the security
 argument. The cost is a cold cache on a project's first agent command, warm from the second onward.

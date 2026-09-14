@@ -3,7 +3,7 @@
 
 package agentsandbox.launcher
 
-import java.io.IOException
+import java.io.{IOException, UncheckedIOException}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardCopyOption}
 import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
@@ -202,7 +202,12 @@ object FileHelper:
     Using.resource(Files.list(path)): entries =>
       entries.iterator().asScala.toVector
 
+  /** Every failure is an IOException: `Files.walk` reports a directory it cannot open as an
+    * UncheckedIOException during iteration, which a caller's IOException handling — a counted reset
+    * step — would otherwise miss. */
   def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then
-      Using.resource(Files.walk(path)): entries =>
-        entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(Files.delete)
+      try
+        Using.resource(Files.walk(path)): entries =>
+          entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(Files.delete)
+      catch case ex: UncheckedIOException => throw ex.getCause

@@ -213,6 +213,17 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(assembled.distribution, Some(gradleHome.toRealPath()))
     assertEquals(assembled.gradleUserHomeGranted, Some(assembled.gradleUserHome))
     assert(Files.isDirectory(assembled.gradleUserHome), "created for the program that reads it")
+
+    // The tree relinked elsewhere, and the state root placed under the granted directory's
+    // target: the directory would resolve above the CA signing key, which its spelling never shows.
+    val cacheRoot = root.resolve(".cache/ko-agent-sandbox")
+    val tree = RunOnHostPrereqs.runOnHostCachesOf(cacheRoot)
+    FileHelper.deleteRecursively(tree)
+    Files.createSymbolicLink(tree, Files.createDirectories(root.resolve("elsewhere")))
+    val granted =
+      RunOnHostPrereqs.gradleUserHomeOf(cacheRoot, SandboxProject.projectIdOf(project, HostCommands.Os.Mac))
+    val relinked = assemble(project, Program.Gradle, (env + ("XDG_STATE_HOME" -> granted.toString)).get, project)
+    assert(clue(relinked).left.exists(_.contains("overlaps the launcher's state root")))
     assert(assembled.gradleUserHome.startsWith(root.toRealPath().resolve(".cache/ko-agent-sandbox/run-on-host")))
     assertEquals(assembled.m2RepositoryGranted, None)
     assertEquals(assembled.sbtCachesGranted, Seq.empty)

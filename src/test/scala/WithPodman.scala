@@ -257,6 +257,9 @@ object WithPodman extends munit.Assertions:
 
   def resetRunOnHost(project: Path): (Boolean, String) = action(project, Vector("--reset-run-on-host"))
 
+  /** `--reset-all`, run from `from`, under the roots `extra` names: never the test host's own. */
+  def resetAll(from: Path, extra: (String, String)*): (Boolean, String) = action(from, Vector("--reset-all"), extra*)
+
   private def action(project: Path, action: Vector[String], extra: (String, String)*): (Boolean, String) =
     val log = project.resolve(s"${action.head.stripPrefix("--")}.log")
     val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ action)*)
