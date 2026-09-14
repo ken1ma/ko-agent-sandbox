@@ -968,10 +968,10 @@ the mechanism. Its security properties and costs are:
   signal — with a two-minute bound after which the command is refused instead; a terminal `./mill`
   connecting between that observation and the signal dies with it, and no observation closes that
   window. A server another *launch* still owns — its broker's session names the build directory — is
-  never signalled by this broker; the command is refused instead, since ending another launch's
-  group would need a coordination this version does not implement (`doc/TODO.md`, "Cross-launch
-  server takeover"). A dead launch's leftover server is not owned by anyone live; the scavenger
-  collects it, by its own exclusive claim, before a fresh one starts. The costs: your own terminal
+  never signalled by this broker; the command is refused instead: ending another launch's group
+  is the takeover `doc/TODO.md` plans ("Cross-launch server takeover"). A dead launch's leftover
+  server is not owned by anyone live; the scavenger collects it, by its own exclusive claim,
+  before a fresh one starts. The costs: your own terminal
   server or daemon for a build directory is ended when the agent runs that program there; while the
   launch's daemon lives, your own `./mill` with matching settings attaches to it and runs your build
   under the profile, and one with different settings ends it, as stock Mill does, after which the

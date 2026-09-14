@@ -1100,10 +1100,11 @@ object RunOnHostSandbox:
      *
      *  - Another launch owns the directory's sbt server when its session — live under the root,
      *    or in `condemned/` while its teardown or the scavenger is still collecting it — has a
-     *    `server-sbt-<hash>` record (`runtimeOwner`). The command is refused; ending each other's
-     *    servers across launches is the deferred takeover of `doc/TODO.md`. The record is the
-     *    ownership, not `build-<hash>`, so a launch that ran only Mill in the directory — which
-     *    publishes `build-<hash>` but no sbt server — reserves nothing. The condemned scan keeps
+     *    `server-sbt-<hash>` record whose group is not proved gone (`runtimeOwner`). The command
+     *    is refused; ending each other's servers across launches is the deferred takeover of
+     *    `doc/TODO.md`. The record is the ownership, not `build-<hash>`, so a launch that ran
+     *    only Mill in the directory — which publishes `build-<hash>` but no sbt server —
+     *    reserves nothing. The condemned scan keeps
      *    the claim through the owner's teardown, when its socket path has moved with the rename
      *    and a missing portfile would otherwise read as free. A dead owner is collected by
      *    `scavenge` (run first in prepare) before this check, so what remains is a launch still
@@ -1146,10 +1147,10 @@ object RunOnHostSandbox:
 
     /** The session of another launch that holds the ownership record `record`, or None
       * (RunOnHostSession.runtimeOwner: live sessions, then condemned, race-safe across the
-      * teardown rename). Read, never signalled: that group is the owner's to end (`doc/TODO.md`,
-      * "Cross-launch server takeover"). */
+      * teardown rename, a record whose group is dead ignored). Read, never signalled: that group
+      * is the owner's to end (`doc/TODO.md`, "Cross-launch server takeover"). */
     private def runtimeOwner(record: String): Option[Path] =
-      RunOnHostSession.runtimeOwner(root, session.directory, record)
+      RunOnHostSession.runtimeOwner(root, session.directory, record, processes)
 
     /** Whether `buildDirectory`'s portfile names this launch's own server for it: the exact
       * socket sbt derives under this session's `tmp/`, connectable, with neither the socket entry
@@ -1191,14 +1192,15 @@ object RunOnHostSandbox:
       outcomes.collectFirst { case Left(kept) => kept }
         .toLeft(outcomes.collect { case Right(what) => what }.mkString(", "))
 
-    /** End the group one record proves, and delete the record and its exit file — unless the
-      * group outlives its KILL: then the record stays, and Left says so, for the caller to start
-      * nothing whose spawn would rename its record over the kept one. */
+    /** End the group one record proves, under its retirement lock, and delete the record and its
+      * exit file — unless the group outlives its KILL, or the lock is not free within the bound:
+      * then the record stays, and Left says so, for the caller to start nothing whose spawn would
+      * rename its record over the kept one. */
     private def discard(record: Path): Either[String, String] =
-      val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(record, processes) else None
+      val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(root, record, processes) else None
       ended match
-        case Some(alive: RunOnHostSession.Collected.GroupAlive) =>
-          Left(s"${record.getFileName} kept for the next start to retry: $alive")
+        case Some(kept) if kept.keeps =>
+          Left(s"${record.getFileName} kept for the next start to retry: $kept")
         case _ =>
           try
             Files.deleteIfExists(record)
