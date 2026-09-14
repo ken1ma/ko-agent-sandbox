@@ -58,12 +58,12 @@ A typical workflow:
 
 The sandbox image preinstalls:
 
-1. Claude Code (Anthropic)
-1. Codex CLI (OpenAI)
-1. Antigravity CLI (Google)
-1. Kiro CLI (AWS)
-1. Copilot CLI (GitHub)
-1. OpenCode (multiple providers)
+1. [Claude Code](https://github.com/anthropics/claude-code)             (Anthropic)
+1. [Codex](https://github.com/openai/codex)                             (OpenAI)
+1. [Antigravity](https://github.com/google-antigravity/antigravity-cli) (Google)
+1. [Kiro CLI](https://kiro.dev/cli/)                                    (AWS)
+1. [Copilot CLI](https://github.com/github/copilot-cli)                 (GitHub)
+1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
 The agents are configured to run without permission prompts to avoid training users to approve
