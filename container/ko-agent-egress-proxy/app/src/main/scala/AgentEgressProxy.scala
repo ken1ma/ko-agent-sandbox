@@ -11,7 +11,7 @@ package agentsandbox.egress
 import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintStream}
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
 import java.nio.file.Path
-import java.time.Instant
+import java.time.{Duration, Instant}
 import java.security.GeneralSecurityException
 import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
 import scala.annotation.tailrec
@@ -50,6 +50,10 @@ object AgentEgressProxy:
    * objects before the first byte can legitimately take minutes.
    */
   val InspectedIdleTimeoutMillis = 300_000
+
+  /** Interim responses read past before a CONNECT's final one (TransportHelper). A count, because
+    * HandshakeTimeoutMillis bounds each read and not the handshake. */
+  val MaxInterimResponses = 8
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
@@ -162,7 +166,7 @@ object AgentEgressProxy:
       println(transport.summary.stripPrefix("egress transport: "))
       addresses.headOption.foreach: address =>
         try
-          closeQuietly(transport.connect(Vector(address), 443).socket)
+          transport.connect(Vector(address), 443).close()
           println(s"upstream tunnel: established to ${address.getHostAddress}")
         catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
@@ -389,7 +393,7 @@ object AgentEgressProxy:
       val origin = run.transport.connect(addresses, request.port)
 
       try runEstablishedTunnel(client, origin, host, run)
-      finally closeQuietly(origin.socket)
+      finally origin.close()
 
     catch
       case _: ClosedWithoutRequest =>
@@ -541,8 +545,8 @@ object AgentEgressProxy:
             auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
           )
 
-          relayInspected(clientTls, originTls, head)
-        finally closeQuietly(originTls)
+          relayInspected(clientTls, originTls, origin.transport, head)
+        finally closeTlsOutput(originTls, origin.transport)
 
       catch
         case _: ClosedWithoutRequest =>
@@ -568,58 +572,143 @@ object AgentEgressProxy:
           System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))
           respondInsideTls(clientTls, 502, "Bad Gateway", ex.getMessage)
 
-    finally closeQuietly(clientTls)
+    finally closeTlsOutput(clientTls, client)
 
   /*
    * Parse the final response's framing before forwarding its head, while an invalid head can
    * still be reported as a 502. Body relay failures require TruncatedResponse's abortive close.
+   *
+   * `originTransport` is the TCP connection under every TLS layer of the origin leg
+   * (OriginSocket.transport). Closing it is what ends I/O blocked in a layer: the layer's own
+   * close cannot (closeTlsOutput), and over a socket it does not own (TlsInspection) it does
+   * not close the transport either.
    */
   // Socket rather than SSLSocket: nothing here is TLS-specific — the sockets arrive already
   // inside the tunnel — and plain sockets are what lets the relay be tested on loopback pairs.
   def relayInspected(
     clientTls: Socket,
     originTls: Socket,
+    originTransport: Socket,
     head: HttpRequestHead,
   ): Unit =
     val toOrigin = originTls.getOutputStream
+    val fromOrigin = originTls.getInputStream
+    val toClient = clientTls.getOutputStream
 
     clientTls.setSoTimeout(InspectedIdleTimeoutMillis)
     originTls.setSoTimeout(InspectedIdleTimeoutMillis)
 
     toOrigin.write(head.toOriginBytes)
-    // The 100 the client is waiting for is this proxy's to send: the Expect never goes to the origin
-    // (toOriginBytes has the why), and without an answer the client stalls before its body.
-    if head.expectsContinue then
-      writeAscii(clientTls.getOutputStream, "HTTP/1.1 100 Continue\r\n\r\n")
-    forwardRequestBody(clientTls.getInputStream, toOrigin, head.bodyFraming)
     toOrigin.flush()
 
-    val fromOrigin = originTls.getInputStream
-    val toClient = clientTls.getOutputStream
+    val framing = head.bodyFraming
+    val upload =
+      Option.when(framing != BodyFraming.Empty)(Upload(clientTls.getInputStream, toOrigin, originTransport, framing))
 
-    @tailrec
-    def finalResponseHead(): HttpResponseHead =
+    /** The upload's failure in the origin's place when it came first: the client's malformed
+      * chunking is its 400, not the origin's 502, and its broken connection is named. */
+    def failed(ex: IOException): Exception =
+      upload.flatMap(_.failureBeforeAnswer) match
+        case Some(bad: BadRequest) => bad
+        case Some(broken)          => IOException(s"request body: ${broken.getMessage}")
+        case None                  => ex
+
+    def responseHead(): HttpResponseHead =
       val bytes =
         try readHttpHeader(fromOrigin, MaxHttpHeaderBytes)
         catch
-          case _: ClosedWithoutRequest => throw IOException("origin closed before the response head")
-          case ex: BadRequest          => throw IOException(s"origin response head: ${ex.getMessage}")
+          case _: ClosedWithoutRequest => throw failed(IOException("origin closed before the response head"))
+          case ex: BadRequest          => throw failed(IOException(s"origin response head: ${ex.getMessage}"))
+          case ex: IOException         => throw failed(ex)
+      HttpResponseHead.parse(bytes)
 
-      val response = HttpResponseHead.parse(bytes)
-      if response.status / 100 == 1 then
-        toClient.write(response.rawBytes)
+    /** Every interim head reaches the client, the origin's 100 among them, and none is this
+      * proxy's: the Expect went to the origin whole (toOriginBytes drops only this hop's
+      * headers), so a client holding its body back for a 100 the origin never sends is where it
+      * would be against that origin directly — sending on its own timer, curl's being 1 s. A 101
+      * is refused before it is forwarded: the origin never received an Upgrade, and what follows
+      * one is no longer HTTP. */
+    @tailrec
+    def finalResponseHead(): HttpResponseHead =
+      val response = responseHead()
+      if response.status == 101 then
+        throw IOException("origin answered 101 Switching Protocols to a request sent without Upgrade")
+      if !response.interim then
+        upload.foreach(_.originAnswered())
+        response
+      else
+        toClient.write(response.toClientBytes)
+        toClient.flush()
         finalResponseHead()
-      else response
 
-    val response = finalResponseHead()
-    val framing = response.bodyFraming(head.method)
-
-    toClient.write(response.toClientBytes)
     try
-      forwardResponseBody(fromOrigin, toClient, framing)
-      toClient.flush()
-    catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
-    drainClient(clientTls)
+      val response = finalResponseHead()
+      val responseFraming = response.bodyFraming(head.method)
+
+      toClient.write(response.toClientBytes)
+      try
+        forwardResponseBody(fromOrigin, toClient, responseFraming)
+        toClient.flush()
+      catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
+      // The client's input is the upload's until it ends. One still running is a client uploading
+      // past the final head or holding a body back after it, and gets the close as it is.
+      if upload.forall(_.ended(DrainTimeoutMillis)) then drainClient(clientTls)
+    finally
+      // Whatever ends this, an upload still blocked writing to an origin that stopped reading
+      // would hold the TLS layer's close for its whole deadline (closeTlsOutput), so the
+      // transport goes first.
+      if !upload.forall(_.ended(0)) then closeQuietly(originTransport)
+
+  /**
+   * The request body, sent to the origin as the client sends it, on its own thread, so the
+   * origin's answer is read meanwhile: an origin refusing before or during the upload (RFC 9112
+   * §9.5) reaches the client at once, which then stops. After the final head nothing more goes to
+   * the origin — a write to an origin that answered and closed resets the connection, and a
+   * reset destroys what of the answer is still unread — but the client is read on, so its
+   * close does not meet unread bytes. A write the origin refuses is left for its answer, or
+   * its absence, to report. A failure before the answer closes the origin's transport, so the
+   * head read reports it (failureBeforeAnswer) instead of waiting out the origin's own timeout
+   * for a body that stopped coming.
+   */
+  private final class Upload(
+    fromClient: InputStream,
+    toOrigin: OutputStream,
+    originTransport: Socket,
+    framing: BodyFraming,
+  ):
+    @volatile private var answered = false
+    private var failure: Option[Exception] = None
+
+    private val toOriginUntilAnswered = new OutputStream:
+      private var refused = false
+
+      override def write(byte: Int): Unit = write(Array(byte.toByte), 0, 1)
+
+      override def write(buffer: Array[Byte], offset: Int, length: Int): Unit =
+        if !answered && !refused then
+          try toOrigin.write(buffer, offset, length)
+          catch case _: IOException => refused = true
+
+      override def flush(): Unit =
+        if !answered && !refused then
+          try toOrigin.flush()
+          catch case _: IOException => refused = true
+
+    private val thread = Thread.startVirtualThread: () =>
+      try
+        forwardRequestBody(fromClient, toOriginUntilAnswered, framing)
+        toOriginUntilAnswered.flush()
+      catch
+        case ex: (IOException | BadRequest) =>
+          synchronized:
+            failure = Some(ex)
+            if !answered then closeQuietly(originTransport)
+
+    def originAnswered(): Unit = synchronized { answered = true }
+
+    def failureBeforeAnswer: Option[Exception] = synchronized(if answered then None else failure)
+
+    def ended(withinMillis: Int): Boolean = thread.join(Duration.ofMillis(withinMillis))
 
   val DrainTimeoutMillis = 2_000
 
