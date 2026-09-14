@@ -1163,7 +1163,10 @@ impl Filesystem for KoAgentFs {
         // The caller's flags as they are *now*, not as they were at open: `fcntl(F_SETFL)` can add
         // or drop `O_APPEND` on a live file description, and the kernel sends the current word with
         // every write. The backing descriptor is brought into step before the syscall is chosen,
-        // because both halves depend on it — `pwrite` on an appending fd ignores its offset.
+        // because both halves depend on it — `pwrite` on an appending fd ignores its offset. The
+        // step and the syscall are not locked together: fuser dispatches one request at a time
+        // (`Session::run`, with `Config::n_threads` left at one in `mount_config`), so no second
+        // write on this handle runs between them. A thread count above one would need that lock.
         let append = flags.0 & libc::O_APPEND != 0;
         if append != backing_append {
             if let Err(err) = set_backing_append(fd.as_ref(), append) {

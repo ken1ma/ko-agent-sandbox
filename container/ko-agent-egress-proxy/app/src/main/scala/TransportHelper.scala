@@ -9,6 +9,7 @@ package agentsandbox.egress
 import java.io.IOException
 import java.net.{Inet6Address, InetAddress, InetSocketAddress, Socket, UnknownHostException}
 import java.nio.charset.StandardCharsets
+import java.time.Duration
 import java.util.Base64
 import javax.net.ssl.{SNIHostName, SNIServerName, SSLContext, SSLSocket}
 import scala.annotation.tailrec
@@ -22,10 +23,19 @@ object TransportHelper:
     * has, uppercase first, and this is the same order. */
   val UpstreamProxyVariables = Vector("HTTPS_PROXY", "https_proxy")
 
-  /** A connected origin socket and the vetted address behind it. The address is carried apart
-    * from the socket because through the upstream proxy the socket's peer is the proxy, and the
-    * audit line records the origin reached. */
-  case class OriginSocket(socket: Socket, address: InetAddress)
+  /** A connected origin socket, the TCP connection under it, and the vetted address behind it.
+    * The address is carried apart from the socket because through the upstream proxy the
+    * socket's peer is the proxy, and the audit line records the origin reached. `transport` is
+    * `socket` itself, except through an HTTPS upstream proxy, where `socket` is the proxy's TLS
+    * layer over it; I/O blocked in a TLS layer ends with the transport (relayInspected). */
+  case class OriginSocket(socket: Socket, transport: Socket, address: InetAddress):
+    /** The upstream proxy's TLS, when there is one, told with close_notify and not waited for;
+      * then the transport. */
+    def close(): Unit =
+      socket match
+        case tls: SSLSocket => closeTlsOutput(tls, transport)
+        case _              => ()
+      closeQuietly(transport)
 
   /** No origin socket: `attempted` are the vetted addresses actually tried, in order — every one
     * for the direct dial, and through the upstream proxy only those up to the refusal that ended
@@ -65,7 +75,7 @@ object TransportHelper:
       val socket =
         try dial(addresses, port)
         catch case ex: IOException => throw TransportFailure(addresses, ex.getMessage)
-      OriginSocket(socket, socket.getInetAddress)
+      OriginSocket(socket, socket, socket.getInetAddress)
 
     val summary = "egress transport: direct"
 
@@ -229,48 +239,48 @@ object TransportHelper:
               try tunnelTo(address, port)
               catch case ex: IOException => throw TransportFailure(attempted :+ address, ex.getMessage)
             outcome match
-              case Right(socket) => OriginSocket(socket, address)
+              case Right(origin) => origin
               case Left(ex)      => loop(rest, attempted :+ address, Some(ex))
 
       loop(addresses.toList, Vector.empty, None)
 
     /** Left is the retryable outcome — the upstream proxy could not reach this address, as a
       * failed direct connect is — so the next address is tried; anything else ends the attempt. */
-    private def tunnelTo(address: InetAddress, port: Int): Either[IOException, Socket] =
+    private def tunnelTo(address: InetAddress, port: Int): Either[IOException, OriginSocket] =
+      val transport =
+        try dial(proxyAddresses, endpoint.port)
+        catch case ex: IOException => throw IOException(s"upstream proxy ${endpoint.spelled}: ${ex.getMessage}")
       val link =
-        val socket =
-          try dial(proxyAddresses, endpoint.port)
-          catch case ex: IOException => throw IOException(s"upstream proxy ${endpoint.spelled}: ${ex.getMessage}")
-        if !endpoint.tls then socket
+        if !endpoint.tls then transport
         else
-          try secure(socket)
+          try secure(transport)
           catch
             case ex: IOException =>
-              closeQuietly(socket)
+              closeQuietly(transport)
               throw IOException(s"upstream proxy ${endpoint.spelled}: ${ex.getMessage}")
 
+      // A failed attempt closes the transport, never the TLS link: that close waits on the
+      // upstream proxy (closeTlsOutput), and nothing is owed to it after a refusal.
       try
         link.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
         writeAscii(link.getOutputStream, connectRequest(address, port))
-        val head = responseHead(link)
+        val head = finalResponseHead(link, interimRead = 0)
         head.status match
           case status if status / 100 == 2 =>
             if head.values("Content-Length").nonEmpty || head.values("Transfer-Encoding").nonEmpty then
               throw IOException("upstream proxy answered 2xx with body framing")
             link.setSoTimeout(0)
-            Right(link)
+            Right(OriginSocket(link, transport, address))
           case 407 =>
             throw IOException("upstream proxy authentication required")
           case status @ (502 | 503 | 504) =>
-            closeQuietly(link)
+            closeQuietly(transport)
             Left(IOException(s"upstream proxy returned $status"))
-          case status if status / 100 == 1 =>
-            throw IOException("upstream proxy answered a CONNECT with an informational response")
           case status =>
             throw IOException(s"upstream proxy returned $status")
       catch
         case ex: IOException =>
-          closeQuietly(link)
+          closeQuietly(transport)
           throw ex
 
     def connectRequest(address: InetAddress, port: Int): String =
@@ -280,6 +290,19 @@ object TransportHelper:
       s"CONNECT $authority HTTP/1.1\r\nHost: $authority\r\n" +
         endpoint.authorization.fold("")(value => s"Proxy-Authorization: $value\r\n") +
         "\r\n"
+
+    /** The final head, past the interim ones RFC 9110 §15.2 lets precede it — 101 excepted: it
+      * switches the connection to a protocol this CONNECT never offered, and ends the attempt as
+      * the final answer it is. */
+    @tailrec
+    private def finalResponseHead(link: Socket, interimRead: Int): HttpResponseHead =
+      val head = responseHead(link)
+      if !head.interim || head.status == 101 then head
+      else if interimRead == AgentEgressProxy.MaxInterimResponses then
+        throw IOException(
+          s"upstream proxy sent more than ${AgentEgressProxy.MaxInterimResponses} interim responses to the CONNECT",
+        )
+      else finalResponseHead(link, interimRead + 1)
 
     private def responseHead(link: Socket): HttpResponseHead =
       val bytes =
@@ -316,6 +339,21 @@ object TransportHelper:
   def closeQuietly(socket: Socket): Unit =
     try socket.close()
     catch case _: IOException => ()
+
+  /** Ends this hop's side of a TLS layer, waiting on the peer for DrainTimeoutMillis at most:
+    * close_notify goes out, and the transport, closed by whoever opened it, ends the rest.
+    * SSLSocket.close is never called on a layer: JDK 25's waits for the peer's close_notify
+    * under the socket timeout (bruteForceCloseInput, deplete) and, under TLS 1.2, for the input
+    * lock a read still blocked in the layer holds (waitForClose), each for as long as the idle
+    * timeout. What close_notify itself waits for is the output lock, which a write blocked in
+    * the layer holds, and the transport's send buffer, which a peer that stopped reading leaves
+    * full (SSLSocketOutputRecord writes the alert synchronously); past the deadline the
+    * transport is closed under the layer, which ends the write. */
+  def closeTlsOutput(tls: SSLSocket, transport: Socket): Unit =
+    val sending = Thread.startVirtualThread: () =>
+      try tls.shutdownOutput()
+      catch case _: IOException => ()
+    if !sending.join(Duration.ofMillis(AgentEgressProxy.DrainTimeoutMillis)) then closeQuietly(transport)
 
   /**
    * The close that must not read as a completed response: no close_notify, and a RST in place of

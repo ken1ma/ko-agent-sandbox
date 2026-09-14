@@ -137,7 +137,7 @@ class TransportHelperTest extends munit.FunSuite:
 
   /**
    * One scripted connection per response: the CONNECT head is recorded, the response written —
-   * cut to `truncateAt` bytes when set — and after a 2xx the banner follows on the same stream,
+   * cut to `truncateAt` bytes when set — and after the established 200 the banner follows on the same stream,
    * which is how a test proves the socket it got back is the tunnel. The listener closes after
    * the script, so an attempt the script did not expect is a refused connection, not a hang.
    */
@@ -155,7 +155,7 @@ class TransportHelperTest extends munit.FunSuite:
             val bytes = ascii(response)
             socket.getOutputStream.write(bytes, 0, truncateAt.fold(bytes.length)(math.min(_, bytes.length)))
             socket.getOutputStream.flush()
-            if truncateAt.isEmpty && response.startsWith("HTTP/1.1 2") then
+            if truncateAt.isEmpty && response.endsWith(Established) then
               socket.getOutputStream.write(ascii(TunnelBanner))
               socket.getOutputStream.flush()
           finally socket.close()
@@ -208,6 +208,20 @@ class TransportHelperTest extends munit.FunSuite:
       ),
     )
 
+  test("interim responses before the final one are read past, up to a count"):
+    val interim = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>; rel=preload\r\n\r\n"
+    val proxy = ScriptedProxy(Vector(interim + Established))
+    val origin = proxy.endpoint().connect(Vector(OriginV4), 443)
+    assertEquals(String(origin.socket.getInputStream.readAllBytes(), StandardCharsets.US_ASCII), TunnelBanner)
+    origin.socket.close()
+    proxy.close()
+
+    val endless = ScriptedProxy(Vector("HTTP/1.1 100 Continue\r\n\r\n" * (MaxInterimResponses + 1) + Established))
+    assertEquals(
+      failure(endless, Vector(OriginV4)),
+      s"upstream proxy sent more than $MaxInterimResponses interim responses to the CONNECT",
+    )
+
   test("a 5xx meaning the origin was unreachable moves to the next vetted address; any other status ends it"):
     val next = ScriptedProxy(Vector("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n", Established))
     val origin = next.endpoint().connect(Vector(OriginV4, OriginV4Other), 443)
@@ -231,7 +245,8 @@ class TransportHelperTest extends munit.FunSuite:
         "upstream proxy authentication required",
       "HTTP/1.1 403 Forbidden\r\nContent-Length: 11\r\n\r\nsecret-body" -> "upstream proxy returned 403",
       "HTTP/1.1 301 Moved\r\nLocation: http://elsewhere.example/\r\n\r\n" -> "upstream proxy returned 301",
-      "HTTP/1.1 100 Continue\r\n\r\n" -> "upstream proxy answered a CONNECT with an informational response",
+      // Not an interim response to read past: the connection would no longer be the tunnel asked for.
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\n\r\n" -> "upstream proxy returned 101",
       "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello" -> "upstream proxy answered 2xx with body framing",
       "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" -> "upstream proxy answered 2xx with body framing",
     ).foreach: (response, expected) =>

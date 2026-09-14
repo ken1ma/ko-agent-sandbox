@@ -1162,6 +1162,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Origin-side malformations are IOExceptions — the 502 attributes the failure to the origin, never to the client.
     intercept[IOException](HttpResponseHead.parse(ascii("ICY 200 OK\r\n\r\n")))
     intercept[IOException](HttpResponseHead.parse(ascii("HTTP/1.1 abc OK\r\n\r\n")))
+    // The version is one digit each side of the dot: what would pass a prefix check is refused.
+    Vector("HTTP/1.x", "HTTP/1.10", "HTTP/1.", "HTTP/1", "HTTP/2.0", "http/1.1").foreach: version =>
+      intercept[IOException](HttpResponseHead.parse(ascii(s"$version 200 OK\r\n\r\n")))
+
+  test("the relayed status line carries this hop's version and the origin's status and reason"):
+    def relayed(statusLine: String): String =
+      String(HttpResponseHead.parse(ascii(s"$statusLine\r\n\r\n")).toClientBytes, StandardCharsets.ISO_8859_1)
+    assert(relayed("HTTP/1.0 200 OK").startsWith("HTTP/1.1 200 OK\r\n"))
+    assert(relayed("HTTP/1.9 404 Not Found Here").startsWith("HTTP/1.1 404 Not Found Here\r\n"))
+    assert(relayed("HTTP/1.1 204").startsWith("HTTP/1.1 204 \r\n"))
 
   test("response framing: HEAD and status codes without bodies, chunked, and the refusals"):
     def head(lines: String): HttpResponseHead = HttpResponseHead.parse(ascii(lines))
@@ -1269,7 +1279,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[IOException]:
-      relayInspected(client, origin, head)
+      relayInspected(client, origin, origin, head)
     client.close()
     served.join()
     assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
@@ -1283,18 +1293,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
       HttpRequestHead.parse(ascii("GET / HTTP/1.0\r\nHost: github.com\r\n\r\n")),
     )
     assertEquals(inTunnel.getMessage, "HTTP/1.0 is not supported")
-
-  test("Expect: 100-continue is answered by this proxy and never forwarded"):
-    val head = HttpRequestHead.parse(
-      ascii(
-        "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
-          "Content-Length: 4\r\n\r\n",
-      ),
-    )
-    assert(head.expectsContinue)
-    val sent = String(head.toOriginBytes, StandardCharsets.ISO_8859_1)
-    assert(!sent.toLowerCase.contains("expect"), sent)
-    assert(!HttpRequestHead.parse(ascii("GET /x HTTP/1.1\r\nHost: a.example\r\n\r\n")).expectsContinue)
 
   test("forwardResponseBody relays complete bodies and turns early EOF into TruncatedResponse"):
     // An origin close inside a declared length must become a loggable
@@ -1376,7 +1374,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, origin, head)
+    relayInspected(client, origin, origin, head)
     client.close()
     served.join()
 
@@ -1396,7 +1394,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
     intercept[TruncatedResponse]:
-      relayInspected(client, origin, head)
+      relayInspected(client, origin, origin, head)
     served.join()
 
   test("relayInspected reports origin resets in length-delimited and close-delimited bodies as TruncatedResponse"):
@@ -1415,7 +1413,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       clientPeer.shutdownOutput()
       val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
       intercept[TruncatedResponse]:
-        relayInspected(client, origin, head)
+        relayInspected(client, origin, origin, head)
       served.join()
       closeQuietly(client)
       closeQuietly(clientPeer)
@@ -1458,57 +1456,449 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val aborted = served((raw, tls) => { abortiveClose(raw); closeQuietly(tls) })
     assert(aborted.isLeft, aborted)
 
-  test("relayInspected answers Expect: 100-continue before the origin says anything"):
-    val (client, clientPeer) = socketPair()
-    val (origin, originPeer) = socketPair()
-    // The origin answers only after the whole request (head and body) arrives, so a 100 in front
-    // of its response can only have come from the proxy.
-    val served = Thread.startVirtualThread: () =>
-      try
-        readHttpHeader(originPeer.getInputStream, 64 * 1024)
-        val body = new Array[Byte](4)
-        originPeer.getInputStream.readNBytes(body, 0, 4)
-        originPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
-        originPeer.getOutputStream.close()
-      catch case _: Exception => ()
-    clientPeer.getOutputStream.write(ascii("ping"))
-    clientPeer.shutdownOutput()
-
-    val head = HttpRequestHead.parse(
+  private val ExpectingPost =
+    HttpRequestHead.parse(
       ascii(
         "POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nExpect: 100-continue\r\n" +
           "Content-Length: 4\r\n\r\n",
       ),
     )
-    relayInspected(client, origin, head)
+
+  /** The origin of a 100-continue exchange: records the head, answers `beforeBody` on it, and if
+    * that was interim, reads the body, then answers `afterBody`. */
+  private def expectingOrigin(socket: java.net.Socket, beforeBody: String, afterBody: String) =
+    val received = java.util.concurrent.atomic.AtomicReference("")
+    val thread = Thread.startVirtualThread: () =>
+      try
+        received.set(String(readHttpHeader(socket.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        socket.getOutputStream.write(ascii(beforeBody))
+        socket.getOutputStream.flush()
+        if beforeBody.isEmpty || beforeBody.startsWith("HTTP/1.1 1") then
+          val body = new Array[Byte](4)
+          socket.getInputStream.readNBytes(body, 0, 4)
+          received.updateAndGet(_ + String(body, StandardCharsets.ISO_8859_1))
+          socket.getOutputStream.write(ascii(afterBody))
+        socket.getOutputStream.close()
+      catch case _: Exception => ()
+    (thread, received)
+
+  test("relayInspected forwards Expect: 100-continue and the origin's 100 releases the body"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val (served, originReceived) = expectingOrigin(
+      originPeer,
+      "HTTP/1.1 100 Continue\r\nX-From: origin\r\n\r\n",
+      "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    )
+    // The client as curl behaves: the body only once the 100 arrives.
+    val interim = java.util.concurrent.atomic.AtomicReference("")
+    val sending = Thread.startVirtualThread: () =>
+      try
+        interim.set(String(readHttpHeader(clientPeer.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        clientPeer.getOutputStream.write(ascii("ping"))
+        clientPeer.shutdownOutput()
+      catch case _: Exception => ()
+
+    relayInspected(client, origin, origin, ExpectingPost)
+    client.close()
+    served.join()
+    sending.join()
+
+    assert(originReceived.get.contains("\r\nExpect: 100-continue\r\n"), originReceived.get)
+    assert(originReceived.get.endsWith("\r\n\r\nping"), originReceived.get)
+    // The origin's own 100, its end-to-end header kept, and no disposition on an interim head.
+    assertEquals(interim.get, "HTTP/1.1 100 Continue\r\nX-From: origin\r\n\r\n")
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 200 OK\r\n"), received)
+    assert(received.endsWith("Connection: close\r\n\r\nok"), received)
+
+  test("an origin refusing before the body gets its refusal relayed and no body"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val (served, originReceived) = expectingOrigin(
+      originPeer,
+      "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n",
+      "",
+    )
+    // The client holds its body back, sees a final head, and sends nothing but its close.
+    val finalHead = java.util.concurrent.atomic.AtomicReference("")
+    val waiting = Thread.startVirtualThread: () =>
+      try
+        finalHead.set(String(readHttpHeader(clientPeer.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        clientPeer.shutdownOutput()
+      catch case _: Exception => ()
+
+    relayInspected(client, origin, origin, ExpectingPost)
+    client.close()
+    served.join()
+    waiting.join()
+
+    assert(originReceived.get.endsWith("\r\n\r\n"), originReceived.get)
+    assert(finalHead.get.startsWith("HTTP/1.1 417 Expectation Failed\r\n"), finalHead.get)
+    assert(finalHead.get.endsWith("Connection: close\r\n\r\n"), finalHead.get)
+
+  test("an origin silent on the expectation gets the body when the client's own timer sends it"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    // Neither 100 nor refusal: the origin reads the body first, as an HTTP/1.0 server would.
+    val (served, originReceived) =
+      expectingOrigin(originPeer, "", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    // curl after its 1 s wait: the body goes without a 100, and nothing else was heard.
+    val sending = Thread.startVirtualThread: () =>
+      try
+        Thread.sleep(200)
+        clientPeer.getOutputStream.write(ascii("ping"))
+        clientPeer.shutdownOutput()
+      catch case _: Exception => ()
+
+    relayInspected(client, origin, origin, ExpectingPost)
+    client.close()
+    served.join()
+    sending.join()
+
+    assert(originReceived.get.endsWith("\r\n\r\nping"), originReceived.get)
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 200 OK\r\n"), received)
+    assert(received.endsWith("\r\n\r\nok"), received)
+
+  test("an origin refusing during an upload is relayed at once, and the rest of the body goes unsent"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val bodyLength = 64 * 1024 * 1024
+    val originReceived = java.util.concurrent.atomic.AtomicLong(0)
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getOutputStream.write(ascii("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"))
+        originPeer.getOutputStream.flush()
+        // Reads on, as a server may (RFC 9112 §9.5): what arrives is what the proxy still sent.
+        val buffer = new Array[Byte](64 * 1024)
+        var read = originPeer.getInputStream.read(buffer)
+        while read >= 0 do
+          originReceived.addAndGet(read)
+          read = originPeer.getInputStream.read(buffer)
+      catch case _: Exception => ()
+    val uploading = Thread.startVirtualThread: () =>
+      try
+        val chunk = new Array[Byte](64 * 1024)
+        var sent = 0
+        while sent < bodyLength do
+          clientPeer.getOutputStream.write(chunk)
+          sent += chunk.length
+        clientPeer.shutdownOutput()
+      catch case _: Exception => ()
+
+    val head = HttpRequestHead.parse(
+      ascii(s"POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: $bodyLength\r\n\r\n"),
+    )
+    relayInspected(client, origin, origin, head)
+    client.close()
+    origin.close()
+    served.join()
+    uploading.join()
+
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 401 Unauthorized\r\n"), received)
+    assert(originReceived.get < bodyLength, originReceived.get)
+
+  test("a malformed chunked upload is the client's 400, reported while the origin still waits for the body"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getInputStream.readAllBytes()
+      catch case _: Exception => ()
+    clientPeer.getOutputStream.write(ascii("zz\r\n"))
+
+    val head = HttpRequestHead.parse(
+      ascii("POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nTransfer-Encoding: chunked\r\n\r\n"),
+    )
+    assertEquals(intercept[BadRequest](relayInspected(client, origin, origin, head)).getMessage, "invalid chunk size")
+    client.close()
+    origin.close()
+    served.join()
+
+  test("an origin's 101 is refused before it is forwarded"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
+      ascii("HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\nnot http"),
+    )
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    assertEquals(
+      intercept[IOException](relayInspected(client, origin, origin, head)).getMessage,
+      "origin answered 101 Switching Protocols to a request sent without Upgrade",
+    )
+    client.close()
+    served.join()
+    assertEquals(clientPeer.getInputStream.readAllBytes().length, 0)
+
+  /** A CA the test's TLS servers are issued from and a client context trusting it. */
+  private def testTls(): (TlsInspection, javax.net.ssl.SSLContext) =
+    val (ca, caKey) = X509HelperTest.testCa(java.time.Instant.now(), days = 825)
+    val directory = java.nio.file.Files.createTempDirectory("test-ca")
+    val (certificateFile, keyFile) = X509HelperTest.writePem(directory, "ca", ca, caKey)
+    val inspection = TlsInspection.issuing(certificateFile, keyFile)
+    val clientContext = javax.net.ssl.SSLContext.getInstance("TLS")
+    clientContext.init(null, X509HelperTest.trusting(ca).getTrustManagers, null)
+    (inspection, clientContext)
+
+  /** The origin leg as production layers it: this proxy's TLS client over a socket it does not
+    * own (TlsInspection.connect), the test's origin a TLS server issued for the host — and,
+    * through an HTTPS upstream proxy, that over the proxy's own TLS (TransportHelper.secure).
+    * Returns the layer the relay uses, the OriginSocket handle() closes, and the origin's end. */
+  private def tlsOrigin(
+    viaTlsUpstream: Boolean = false,
+  ): (javax.net.ssl.SSLSocket, OriginSocket, javax.net.ssl.SSLSocket) =
+    val (inspection, clientContext) = testTls()
+    val (transport, peerTransport) = socketPair()
+    val peer = java.util.concurrent.atomic.AtomicReference[javax.net.ssl.SSLSocket]()
+    val accepting = Thread.startVirtualThread: () =>
+      val under =
+        if viaTlsUpstream then inspection.accept(peerTransport, Array.emptyByteArray, "proxy.corp.example")
+        else peerTransport
+      peer.set(inspection.accept(under, Array.emptyByteArray, "docs.example"))
+    def layer(under: java.net.Socket, host: String, autoClose: Boolean): javax.net.ssl.SSLSocket =
+      val tls = clientContext.getSocketFactory
+        .createSocket(under, host, 443, autoClose)
+        .asInstanceOf[javax.net.ssl.SSLSocket]
+      tls.startHandshake()
+      tls
+    val upstream = Option.when(viaTlsUpstream)(layer(transport, "proxy.corp.example", true))
+    val originTls = layer(upstream.getOrElse(transport), "docs.example", false)
+    accepting.join()
+    (originTls, OriginSocket(upstream.getOrElse(transport), transport, InetAddress.getLoopbackAddress), peer.get)
+
+  /** An origin that answers 401 only once the upload has had time to fill the socket buffers and
+    * block, then reads nothing until released. */
+  private def originStoppingReading(peer: javax.net.ssl.SSLSocket, released: java.util.concurrent.CountDownLatch) =
+    Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(peer.getInputStream, 64 * 1024)
+        Thread.sleep(500)
+        peer.getOutputStream.write(ascii("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"))
+        peer.getOutputStream.flush()
+        released.await()
+      catch case _: Exception => ()
+
+  private def uploading(socket: java.net.Socket, bodyLength: Int) =
+    Thread.startVirtualThread: () =>
+      try
+        val chunk = new Array[Byte](64 * 1024)
+        var sent = 0
+        while sent < bodyLength do
+          socket.getOutputStream.write(chunk)
+          sent += chunk.length
+      catch case _: Exception => ()
+
+  /** The relay against an origin that stops reading during the upload, then the closes as
+    * runInspectedConnection and handle do them: the layer, then the OriginSocket. Neither may
+    * wait on the origin. */
+  private def uploadBlockedAt(viaTlsUpstream: Boolean): Unit =
+    val (client, clientPeer) = socketPair()
+    val (originTls, origin, originPeer) = tlsOrigin(viaTlsUpstream)
+    val bodyLength = 64 * 1024 * 1024
+    val released = java.util.concurrent.CountDownLatch(1)
+    val served = originStoppingReading(originPeer, released)
+    val sending = uploading(clientPeer, bodyLength)
+
+    val head = HttpRequestHead.parse(
+      ascii(s"POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: $bodyLength\r\n\r\n"),
+    )
+    val started = System.nanoTime()
+    relayInspected(client, originTls, origin.transport, head)
+    closeTlsOutput(originTls, origin.transport)
+    origin.close()
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    client.close()
+    released.countDown()
+    served.join()
+    sending.join()
+
+    assert(elapsedMillis < DrainTimeoutMillis * 3, elapsedMillis)
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 401 Unauthorized\r\n"), received)
+
+  test("a TLS origin that stops reading during an upload neither holds the relay nor the closes"):
+    uploadBlockedAt(viaTlsUpstream = false)
+
+  test("a TLS origin behind an HTTPS upstream proxy: the upload blocked in one more layer over the transport"):
+    uploadBlockedAt(viaTlsUpstream = true)
+
+  test("a TLS origin holding the connection open after its answer does not hold the layer's close"):
+    val (client, clientPeer) = socketPair()
+    val (originTls, origin, originPeer) = tlsOrigin()
+    val released = java.util.concurrent.CountDownLatch(1)
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getOutputStream.write(ascii("HTTP/1.1 204 No Content\r\n\r\n"))
+        originPeer.getOutputStream.flush()
+        released.await()
+      catch case _: Exception => ()
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    relayInspected(client, originTls, origin.transport, head)
+    val started = System.nanoTime()
+    closeTlsOutput(originTls, origin.transport)
+    origin.close()
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    client.close()
+    released.countDown()
+    served.join()
+
+    assert(elapsedMillis < DrainTimeoutMillis, elapsedMillis)
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assert(received.startsWith("HTTP/1.1 204 No Content\r\n"), received)
+
+  test("a malformed chunked upload to a silent TLS origin is reported without waiting for it"):
+    val (client, clientPeer) = socketPair()
+    val (originTls, origin, originPeer) = tlsOrigin()
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getInputStream.readAllBytes()
+      catch case _: Exception => ()
+    clientPeer.getOutputStream.write(ascii("zz\r\n"))
+
+    val head = HttpRequestHead.parse(
+      ascii("POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nTransfer-Encoding: chunked\r\n\r\n"),
+    )
+    val started = System.nanoTime()
+    val refused = intercept[BadRequest](relayInspected(client, originTls, origin.transport, head))
+    closeTlsOutput(originTls, origin.transport)
+    origin.close()
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    assertEquals(refused.getMessage, "invalid chunk size")
+    assert(elapsedMillis < DrainTimeoutMillis * 3, elapsedMillis)
     client.close()
     served.join()
 
-    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
-    assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
-    assert(received.endsWith("\r\n\r\nok"), received)
+  test("a TLS 1.2 client withholding its body after the final head does not hold the layer's close"):
+    val (inspection, clientContext) = testTls()
+    val (clientEnd, proxyTransport) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val clientTls = java.util.concurrent.atomic.AtomicReference[javax.net.ssl.SSLSocket]()
+    val accepting = Thread.startVirtualThread: () =>
+      clientTls.set(inspection.accept(proxyTransport, Array.emptyByteArray, "docs.example"))
+    val client = clientContext.getSocketFactory
+      .createSocket(clientEnd, "docs.example", 443, true)
+      .asInstanceOf[javax.net.ssl.SSLSocket]
+    client.setEnabledProtocols(Array("TLSv1.2"))
+    client.startHandshake()
+    accepting.join()
+    assertEquals(client.getSession.getProtocol, "TLSv1.2")
 
-  test("relayInspected forwards an origin's own 1xx and frames the body by the final head"):
+    val (served, _) = expectingOrigin(originPeer, "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n", "")
+    // The client reads the final head and then neither sends its body nor closes.
+    val released = java.util.concurrent.CountDownLatch(1)
+    val finalHead = java.util.concurrent.atomic.AtomicReference("")
+    val holding = Thread.startVirtualThread: () =>
+      try
+        finalHead.set(String(readHttpHeader(client.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        released.await()
+      catch case _: Exception => ()
+
+    relayInspected(clientTls.get, origin, origin, ExpectingPost)
+    val started = System.nanoTime()
+    closeTlsOutput(clientTls.get, proxyTransport)
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    closeQuietly(proxyTransport)
+    origin.close()
+    released.countDown()
+    served.join()
+    holding.join()
+
+    assert(elapsedMillis < DrainTimeoutMillis, elapsedMillis)
+    assert(finalHead.get.startsWith("HTTP/1.1 417 Expectation Failed\r\n"), finalHead.get)
+
+  test("close_notify meeting a full send buffer is given up on at the deadline, the transport closed under it"):
+    val (inspection, clientContext) = testTls()
+    // A channel-backed transport: non-blocking writes fill the pipe exactly, so the writer has
+    // completed and only the alert meets the backpressure.
+    val listener = java.nio.channels.ServerSocketChannel.open()
+    listener.bind(java.net.InetSocketAddress(InetAddress.getLoopbackAddress, 0))
+    val channel = java.nio.channels.SocketChannel.open(listener.getLocalAddress)
+    val peerTransport = listener.accept().socket()
+    listener.close()
+    val transport = channel.socket()
+    val released = java.util.concurrent.CountDownLatch(1)
+    val peer = java.util.concurrent.atomic.AtomicReference[javax.net.ssl.SSLSocket]()
+    val accepting = Thread.startVirtualThread: () =>
+      try
+        peer.set(inspection.accept(peerTransport, Array.emptyByteArray, "docs.example"))
+        released.await()
+      catch case _: Exception => ()
+    val tls = clientContext.getSocketFactory
+      .createSocket(transport, "docs.example", 443, false)
+      .asInstanceOf[javax.net.ssl.SSLSocket]
+    tls.startHandshake()
+
+    channel.configureBlocking(false)
+    val filler = java.nio.ByteBuffer.allocate(64 * 1024)
+    def fill(): Long =
+      var total = 0L
+      var wrote = channel.write(filler)
+      while wrote > 0 do
+        total += wrote
+        filler.clear()
+        wrote = channel.write(filler)
+      filler.clear()
+      total
+    // A zero-length write means our send buffer is full, not the peer's window: the kernel keeps
+    // draining until both are. Full is when a pause frees no room.
+    var filled = fill()
+    var settled = false
+    while !settled do
+      Thread.sleep(100)
+      val more = fill()
+      filled += more
+      settled = more == 0
+    channel.configureBlocking(true)
+    assert(filled > 0, filled)
+
+    val started = System.nanoTime()
+    closeTlsOutput(tls, transport)
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    assert(elapsedMillis >= DrainTimeoutMillis && elapsedMillis < DrainTimeoutMillis * 2, elapsedMillis)
+    assert(transport.isClosed)
+    released.countDown()
+    accepting.join()
+    closeQuietly(peerTransport)
+
+  test("relayInspected forwards an origin's own 1xx, this hop's headers removed, and frames the body by the final one"):
     val (client, clientPeer) = socketPair()
     val (origin, originPeer) = socketPair()
     val served = playOrigin(
       originPeer,
       ascii(
-        "HTTP/1.1 100 Continue\r\n\r\n" +
+        "HTTP/1.0 103 Early Hints\r\nLink: </s.css>; rel=preload\r\nConnection: keep-alive, x-hint\r\n" +
+          "Keep-Alive: timeout=5\r\nX-Hint: h2\r\n\r\n" +
+          "HTTP/1.1 100 Continue\r\n\r\n" +
           "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata",
       ),
     )
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    relayInspected(client, origin, head)
+    relayInspected(client, origin, origin, head)
     client.close()
     served.join()
 
     val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
-    assert(received.startsWith("HTTP/1.1 100 Continue\r\n\r\n"), received)
+    assert(
+      received.startsWith(
+        "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n\r\nHTTP/1.1 100 Continue\r\n\r\n",
+      ),
+      received,
+    )
     assert(received.contains("HTTP/1.1 200 OK\r\n"), received)
-    assert(received.endsWith("\r\n\r\ndata"), received)
+    assert(received.endsWith("Connection: close\r\n\r\ndata"), received)
 
   /** An origin that records the request head it received and answers an empty 200: what reaches
     * the origin is the test's subject, so the head is captured before the reply. */
@@ -1541,7 +1931,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val (origin, originPeer) = socketPair()
       val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, origin, head)
+      relayInspected(client, origin, origin, head)
       client.close()
       served.join()
       assertEquals(received.get.linesIterator.next(), requestLine, request)
@@ -1557,7 +1947,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val (origin, originPeer) = socketPair()
       val (served, received) = recordingOrigin(originPeer)
       clientPeer.shutdownOutput()
-      relayInspected(client, origin, head)
+      relayInspected(client, origin, origin, head)
       client.close()
       served.join()
       assert(received.get.linesIterator.contains(forwarded), s"$sent: ${received.get}")
