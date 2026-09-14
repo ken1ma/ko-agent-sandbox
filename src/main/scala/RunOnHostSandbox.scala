@@ -776,7 +776,7 @@ object RunOnHostSandbox:
                           appendSessionLogs(_, condemned, s"command ${condemned.getFileName} ended by signal"),
                         )
                     else _ => ())
-                .collect { case kept: RunOnHostSession.Collected.ServerUnanswered => kept }
+                .filter(_.keeps)
                 .foreach(kept => log(s"kept for the next start to retry: $kept"))
             val hook = Thread(() => teardown(bySignal = true))
             java.lang.Runtime.getRuntime.addShutdownHook(hook)
@@ -940,8 +940,9 @@ object RunOnHostSandbox:
           if serverLives && namesOwnDerivedSocket(buildDirectory) then Right(Some(current.runtime))
           else
             val why = if serverLives then "the portfile no longer names its server" else "its server is gone"
-            log(s"retired ${serverRecord(hash).getFileName}, $why: ${discard(serverRecord(hash))}")
-            startServer(current, arguments).map(_ => Some(current.runtime))
+            discard(serverRecord(hash)).flatMap: what =>
+              log(s"retired ${serverRecord(hash).getFileName}, $why: $what")
+              startServer(current, arguments).map(_ => Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) && program == Program.Gradle =>
           // The runtime is the proxy: Gradle's client matches a daemon in the launch's registry
           // or starts one, inside the profile, and commandEnded records it.
@@ -959,8 +960,9 @@ object RunOnHostSandbox:
             if same && current.daemon.exists(daemonLives) then Right(Some(current.runtime))
             else
               val why = if same then "its daemon is gone" else "its configuration changed"
-              log(s"retired ${daemonRecord(hash).getFileName}, $why: ${discard(daemonRecord(hash))}")
               for
+                what <- discard(daemonRecord(hash))
+                _ = log(s"retired ${daemonRecord(hash).getFileName}, $why: $what")
                 fresh <- assemble(project, program, buildDirectory)
                 started <- startDaemon(current.copy(assembled = fresh), config)
               yield
@@ -968,11 +970,12 @@ object RunOnHostSandbox:
                 Some(started.runtime)
         case Some(current) =>
           // The proxy is gone: replace the whole runtime for this key, its records and build
-          // file deleted. Forgotten only once discarded: a retirement that throws is retried.
-          log(s"retired the ${program.name} runtime for $buildDirectory, its proxy is gone: " +
-            discardRuntime(program, hash, current.runtime.proxyLog))
-          live -= key
-          create(program, buildDirectory, hash, arguments)
+          // file deleted. Forgotten only once discarded: a retirement that throws, or leaves a
+          // group alive behind its record, is retried.
+          discardRuntime(program, hash, current.runtime.proxyLog).flatMap: what =>
+            log(s"retired the ${program.name} runtime for $buildDirectory, its proxy is gone: $what")
+            live -= key
+            create(program, buildDirectory, hash, arguments)
         case None =>
           create(program, buildDirectory, hash, arguments)
 
@@ -988,6 +991,8 @@ object RunOnHostSandbox:
             _ <- RunOnHostSession.publishBuildFile(session.directory, hash, buildDirectory)
             assembled <- assemble(project, program, buildDirectory)
             hosts <- readProgramRules(project, program)
+            // A record a failed creation kept: discarded, or the spawn that would rename over it refused.
+            _ <- discard(proxyRecord(program, hash))
             port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
             made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog))
             current <- program match
@@ -1006,17 +1011,18 @@ object RunOnHostSandbox:
           // A spawn that registered and never reported ready: left alone, its group would
           // outlive the record the next attempt's spawn renames over, and its late ready line
           // would be read as that attempt's.
-          discardRuntime(program, hash, proxyLog)
-          Left(reason)
+          Left(discardRuntime(program, hash, proxyLog).fold(kept => s"$reason; $kept", _ => reason))
 
     /** The server of a runtime whose proxy is up, once no other launch owns the build
       * directory's server and no foreign server holds its portfile; a start that fails, by
-      * refusal or exception, leaves no group behind its record. */
+      * refusal or exception, leaves no group behind its record. A record an earlier failure kept
+      * is discarded first, or refuses the start while its group lives: the spawn would rename
+      * over it. */
     private def startServer(current: Live, arguments: Seq[String]): Either[String, Unit] =
       val record = serverRecord(current.hash)
       val started =
         try
-          noForeignServer(current).flatMap: _ =>
+          discard(record).flatMap(_ => noForeignServer(current)).flatMap: _ =>
             // After any foreign server is gone, not before: shutdownForeignServer waits for the
             // user's build to finish, and sweeping its `target/` links mid-build would corrupt
             // it. Before the spawn: our server fails loading on a link into a denied store.
@@ -1025,19 +1031,18 @@ object RunOnHostSandbox:
               current.assembled, current.buildDirectory, current.hash, arguments, record, current.runtime,
             ))
         catch case NonFatal(ex) => Left(s"starting the sbt server: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      started.left.map: reason =>
-        discard(record)
-        reason
+      started.left.map(reason => discard(record).fold(kept => s"$reason; $kept", _ => reason))
 
     /** The daemon of a runtime whose proxy is up, once no other launch owns the build
       * directory's daemon: the start itself ends a daemon of the user's own, by proof and once
       * idle (MillDaemons.start). A start that fails, by refusal or exception, leaves no group
-      * behind its record. */
+      * behind its record; a record an earlier failure kept is discarded first, as startServer
+      * does. */
     private def startDaemon(current: Live, config: String): Either[String, Live] =
       val record = daemonRecord(current.hash)
       val started =
         try
-          runtimeOwner(daemonRecordName(current.hash)) match
+          discard(record).flatMap(_ => runtimeOwner(daemonRecordName(current.hash)) match
             case Some(other) =>
               Left(
                 s"another launch's broker (${other.getFileName}) owns the mill daemon for ${current.buildDirectory}; " +
@@ -1045,7 +1050,7 @@ object RunOnHostSandbox:
                   "different build directory",
               )
             case None =>
-              daemon(DaemonStart(current.assembled, current.buildDirectory, current.hash, record, current.runtime))
+              daemon(DaemonStart(current.assembled, current.buildDirectory, current.hash, record, current.runtime)))
         catch case NonFatal(ex) => Left(s"starting the mill daemon: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
       started match
         case Right(found) =>
@@ -1053,8 +1058,7 @@ object RunOnHostSandbox:
             runtime = current.runtime.copy(daemonPort = Some(found.port)), daemon = Some(found), daemonConfig = config,
           ))
         case Left(reason) =>
-          discard(record)
-          Left(reason)
+          Left(discard(record).fold(kept => s"$reason; $kept", _ => reason))
 
     private def daemonLives(found: MillDaemons.Daemon): Boolean = processes.startOf(found.pid).contains(found.start)
 
@@ -1147,12 +1151,14 @@ object RunOnHostSandbox:
       * line as its own, and the build file last, once no record of the hash remains: another
       * program's runtime for the same directory still publishes under it. Answers what became
       * of the groups. */
-    private def discardRuntime(program: Program, hash: String, proxyLog: Path): String =
+    /** The runtime's records discarded, server or daemon first, then the proxy; Left, with the
+      * proxy's group still ended, when a group outlives its KILL (`discard`). */
+    private def discardRuntime(program: Program, hash: String, proxyLog: Path): Either[String, String] =
       val attached = program match
-        case Program.Sbt                  => Some(s"server ${discard(serverRecord(hash))}")
-        case Program.Mill                 => Some(s"daemon ${discard(daemonRecord(hash))}")
+        case Program.Sbt                  => Some(discard(serverRecord(hash)).map(what => s"server $what"))
+        case Program.Mill                 => Some(discard(daemonRecord(hash)).map(what => s"daemon $what"))
         case Program.Gradle | Program.Mvn => None
-      val proxy = s"proxy ${discard(proxyRecord(program, hash))}"
+      val proxy = discard(proxyRecord(program, hash)).map(what => s"proxy $what")
       try
         Files.deleteIfExists(proxyLog)
         Files.deleteIfExists(proxyProfileFile(proxyLog))
@@ -1163,16 +1169,24 @@ object RunOnHostSandbox:
         if !recordsOfHash.exists(Files.exists(_)) then
           Files.deleteIfExists(RunOnHostSession.buildFile(session.directory, hash))
       catch case ex: IOException => log(s"discarding the runtime for hash $hash: ${ex.getMessage}")
-      (attached.toSeq :+ proxy).mkString(", ")
+      val outcomes = attached.toSeq :+ proxy
+      outcomes.collectFirst { case Left(kept) => kept }
+        .toLeft(outcomes.collect { case Right(what) => what }.mkString(", "))
 
-    /** End the group one record proves, and delete the record and its exit file. */
-    private def discard(record: Path): String =
+    /** End the group one record proves, and delete the record and its exit file — unless the
+      * group outlives its KILL: then the record stays, and Left says so, for the caller to start
+      * nothing whose spawn would rename its record over the kept one. */
+    private def discard(record: Path): Either[String, String] =
       val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(record, processes) else None
-      try
-        Files.deleteIfExists(record)
-        Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-      catch case ex: IOException => log(s"discarding ${record.getFileName}: ${ex.getMessage}")
-      ended.map(_.toString).getOrElse("no record")
+      ended match
+        case Some(alive: RunOnHostSession.Collected.GroupAlive) =>
+          Left(s"${record.getFileName} kept for the next start to retry: $alive")
+        case _ =>
+          try
+            Files.deleteIfExists(record)
+            Files.deleteIfExists(RunOnHostSession.exitRecord(record))
+          catch case ex: IOException => log(s"discarding ${record.getFileName}: ${ex.getMessage}")
+          Right(ended.map(_.toString).getOrElse("no record"))
 
   /** The ownership records of one build directory's server and daemon, by the directory's hash:
     * what another launch's broker reads to refuse (RunOnHostSession.runtimeOwner). */
