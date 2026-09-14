@@ -96,7 +96,7 @@ object RunOnHostSession:
       case GroupAlive(_, _) | ServerUnanswered(_, _) | RetirementBusy(_, _) => true
       case _                                                                => false
 
-  /** What a shutdown sent to a socket established (SbtServerShutdown is the real sender). */
+  /** What a shutdown sent to a socket established (RunOnHostSbtServerShutdown is the real sender). */
   enum ServerAnswer:
     case ShutDown
     /** The connect itself failed before reaching a server, so there is no server to stop. */
@@ -233,7 +233,7 @@ object RunOnHostSession:
   /**
    * The retirement lock of one build directory and program, `retire-lock/<program>-<hash>`: what
    * every process ending a runtime's recorded group — the broker replacing or retiring its own
-   * (RunOnHostSandbox.BrokerRuntimes.discard, MillDaemons.retire), its teardown, the scavenger,
+   * (RunOnHostSandbox.BrokerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
    * and the takeover of `doc/TODO.md` — holds across the leader's proof and the group's signal,
    * and across nothing else. Two processes running that proof-then-signal on one group would
    * correlate the pid recycling window: the first's kill frees the pids at the moment the
@@ -347,8 +347,8 @@ object RunOnHostSession:
         catch case _: IOException => None
 
   /** The other live brokers' sessions under the root: published under the broker prefix and
-    * locked. A broker reads another launch's ownership records from these to decide whether to
-    * refuse (runtimeOwner). */
+    * locked. A broker attaches to another launch's runtime only from one of these
+    * (RunOnHostSandbox.BrokerRuntimes.attached). */
   def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
     allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
 

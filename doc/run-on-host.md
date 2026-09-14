@@ -46,12 +46,12 @@ the code that enforces each part:
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
-| the broker's mill daemon: its start, its port, a daemon of yours | `MillDaemons.scala` |
+| the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
 
-The full gate (`all`) reports **224 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-13).
+The full gate (`all`) reports **227 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-15).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it
@@ -335,7 +335,7 @@ Mill is client/daemon by construction: the launcher starts a daemon that binds a
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
 (`Server.scala`, `ServerLauncher.scala`, Mill 1.1.9). The broker starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
-it (`MillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
+it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
 
 1. The **starter**: the build directory's `./mill version`, as a registered spawn in the broker's
    session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with listeners
@@ -387,22 +387,22 @@ only the port candidate and that memo. The `launcherLock` there names the ended 
 next client: it is a pid lock (`PidLock`, `pid:start`) the launcher deletes on its own exit, which
 the TERM skips, and a client's launcher finds its pid dead and replaces it. A command is refused
 while `out`, `out/mill-daemon` or an entry directly in it is a symlink or a file with a second
-name (`MillDaemons.rendezvousIsOwn`), because the launcher acts on that directory as it finds it
-— it removes a `processId` whose fingerprint differs, ending the daemon it names — and a link
-would point it at another build directory's daemon, past the ownership and idleness checks, which
-this directory keys. That catches a link already planted; one made after the check — by the
-bootstrap script, or by build code running in the daemon, neither of which the build lock
-excludes — is not caught, and no check before the command closes that. What bounds it is the
-profile: the launcher writes only where the command may write, so the daemon it can end that way
-is one whose `out/mill-daemon` lies under the command's writable roots — this project, its
+name (`RunOnHostMillDaemons.rendezvousIsOwn`), because the launcher acts on that directory as it
+finds it — it removes a `processId` whose fingerprint differs, ending the daemon it names — and
+a link would point it at another build directory's daemon, past the ownership and idleness
+checks, which this directory keys. That catches a link already planted; one made after the check
+— by the bootstrap script, or by build code running in the daemon, neither of which the build
+lock excludes — is not caught, and no check before the command closes that. What bounds it is
+the profile: the launcher writes only where the command may write, so the daemon it can end that
+way is one whose `out/mill-daemon` lies under the command's writable roots — this project, its
 run-on-host caches, the broker's `tmp/` — that is, this launch's for another build directory,
 another launch's on this project, or yours; and the one-port rule keeps the client from attaching
 to it.
 `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are never forwarded, since every check looks under
 `out/`. Mill's classpath memo there, `out/mill-daemon/cache/mill-daemon-classpath`, is deleted
 before a start when it names a path outside the cache the profile grants
-(`MillDaemons.discardForeignMemo`, the read and the delete under the daemon profile, so a link
-planted under `out/` after the rendezvous check sends neither past what the build could write):
+(`RunOnHostMillDaemons.discardForeignMemo`, the read and the delete under the daemon profile, so a
+link planted under `out/` after the rendezvous check sends neither past what the build could write):
 Mill keeps a memo while every path it names exists, and
 Seatbelt answers an existence test for a path it denies reading — measured, `Files.exists` true
 and the open denied — so a memo from an unconfined run, or from this directory served as another
@@ -417,7 +417,10 @@ established connection on its port, observed through `lsof`, and the proof repea
 before the signal. A daemon busy past two minutes is a refusal naming it. Between the observation
 and the signal a terminal `./mill` can still connect, and its command then dies with the daemon;
 no observation closes that window. A daemon another launch owns — its broker's session holds
-`daemon-mill-<hash>` — is refused, never signalled, as its sbt server is. The reverse holds too:
+`daemon-mill-<hash>` — is attached to or refused, never signalled, as its sbt server is ("The
+channel and the command"); attaching needs the daemon alive under the build directory's present
+configuration, so after an edit, or the daemon's own exit, the command is refused until the
+owner's next `mill` command replaces it. The reverse holds too:
 while the launch's daemon lives, your own `./mill` with matching settings attaches to it and runs
 your build under the profile and the launch's proxy, and one with different settings ends it, as
 Mill does on a fingerprint mismatch, after which the broker ends yours once idle and starts its
@@ -465,8 +468,8 @@ later commands attach to it through Gradle's own matching, inside the profile; a
 disconnected mid-build cancels the build, and a daemon still busy ten seconds later stops itself
 (`DaemonStateCoordinator`, `WatchForDisconnection`). The daemon detaches itself into a group of
 its own (`DaemonMain`, `setsid`), where its workers and test executors are forked, so ending the
-client's group leaves it alive; the broker ends it by proof (`GradleDaemons.scala`). After each
-command, and once more at the launch's end, the broker records every daemon started with the
+client's group leaves it alive; the broker ends it by proof (`RunOnHostGradleDaemons.scala`). After
+each command, and once more at the launch's end, the broker records every daemon started with the
 launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting the record
 of one gone; the launch's end signals the group behind each record as it does every recorded
 group. The proof is the daemon's initial environment, which the client starts it with
@@ -541,9 +544,11 @@ ending those processes and any leaderless sbt server its portfile identifies. Th
 session of the same kind for the launch's lifetime: its records name the launch's runtimes —
 `proxy-<program>-<hash>`, `server-sbt-<hash>` and `daemon-mill-<hash>`, the hash the build
 directory's, and `daemon-gradle-<pid>` for each Gradle daemon of the launch's one registry — a
-`build-<hash>` file names the directory those of a hash serve, a `run` file names the launch's
-sandbox container, by which `--stats` joins the broker to its session, and its `tmp/` is where the
-sbt server binds its sockets and where the servers and daemons keep their temporary files.
+`build-<hash>` file names the directory those of a hash serve, a `runtime-<program>-<hash>` file
+describes each sbt server and mill daemon for another launch to attach to
+(`RunOnHostRuntimeDescriptor.scala`), a `run` file names the launch's sandbox container, by which
+`--stats` joins the broker to its session, and its `tmp/` is where the sbt server binds its sockets
+and where the servers and daemons keep their temporary files.
 Each command the broker dispatches holds a build lock — one per program and build directory,
 under `build-lock/` — for the command's life, and the broker's own
 work on the runtime before a command runs under it, so two launches on one project queue behind
@@ -657,11 +662,33 @@ leave a concurrent broker open as later work if a program ever makes it worth ha
 starting a server the broker checks who holds the build directory's portfile: the *user's own*
 server — from a terminal, outside any launch — is shut down by protocol at the socket the broker
 derives itself; a server *another launch* still owns — its broker's session names the directory,
-and the recorded group is not proved gone — is a refusal, never signalled, since ending it across
-launches is the takeover `TODO.md` plans; a live socket under this launch's own directory that
-no record proves is a refusal naming it. Before starting a daemon it checks the process table
-the same way ("`mill`"): the user's own daemon is ended by proof once idle, another launch's is
-refused.
+and the recorded group is not proved gone — is never signalled, since ending it across launches
+is the takeover `TODO.md` plans: the command attaches to it when the server this launch would
+start has the same confinement and environment, and is refused otherwise; a live socket under this
+launch's own directory that no record proves is a refusal naming it. Before starting a daemon it
+checks the process table the same way ("`mill`"): the user's own daemon is ended by proof once
+idle, another launch's is attached to or refused.
+
+Attaching is decided per command from the owner's descriptor, `runtime-<program>-<hash>` in its
+session directory (`RunOnHostRuntimeDescriptor.scala`): the fingerprint of the server's or
+daemon's confinement and environment — the profile's inputs and the closed environment, forwarded
+values included, so a launch forwarding a secret never serves one that does not, and the proxy's
+rule lines as read when that proxy was created, since a warm proxy keeps them — must equal the
+fingerprint of what this launch would start, and the descriptor must name the owner's present
+records, whose processes live: for sbt the server behind the directory's portfile at the socket
+derived under the owner's `tmp/`, for `mill` the daemon by its start time under the build
+directory's present configuration. The command then runs against the owner's session, proxy and
+daemon port, as the owner's own commands do, and this launch records nothing of it. What the
+attaching launch gives up: a cancel is the program's own, since the server is not this launch's
+to retire — an interruption-ignoring sbt test runs on in the owner's server until the next
+command queues behind it, and a `mill` client's disconnect mid-command ends the shared daemon, as
+stock Mill does, so the owner's next command starts one; the owner's end takes the runtime with
+it, a build of this launch included, whose next command starts its own or attaches elsewhere; and
+this launch's proxy audit lines land in the owner's proxy log. An sbt request's own launcher flags
+— its `-D` properties and value flags — are not compared: the warm server keeps the flags of the
+command that started it and every later command attaches regardless, within a launch as across
+them (`RunOnHostRuntimeDescriptor.fingerprint`). Gradle's daemons and Maven have nothing to attach
+to: the registry is the launch's own, and Maven runs once.
 
 Ending it is the only resolution available, because the portfile is not merely a rendezvous: its
 one-server-per-build-directory exclusivity is also the lock over `target/`. A second rendezvous
@@ -711,8 +738,10 @@ where the caller is not interactive.
   unless its fingerprint differs; a client attached to one the broker did not start would run
   the build under that process's environment and confinement, or none. The user's own terminal
   server the broker shuts down by protocol at the socket it derives, and the user's own daemon it
-  ends by proof once idle ("`mill`"); a server or daemon another launch still owns it refuses,
-  never signalling another broker's process (`TODO.md`, "Cross-launch server takeover").
+  ends by proof once idle ("`mill`"); a server or daemon another launch still owns it attaches to
+  only when it would start one under the same confinement and environment, and refuses otherwise,
+  never signalling another broker's process ("The channel and the command"; `TODO.md`,
+  "Cross-launch server takeover").
 - **The environment is a closed set — confinement.** The command sees the wrapper's set and not
   the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
