@@ -9,9 +9,9 @@
 #
 # What install does: apt-get with its directories under ~/.local/deb — the image's real dpkg
 # status stays apt's baseline, so only what the image lacks is fetched, and Release signatures are
-# still verified against the image's own /etc/apt keyrings — then every archive is unpacked and
-# each new command gets a wrapper in ~/.local/bin (already on PATH) setting the library path it
-# needs. Nothing is exported, so it works from any shell, script, or pipe.
+# still verified against the image's own /etc/apt keyrings — then each package's newest archive is
+# unpacked and each new command gets a wrapper in ~/.local/bin (already on PATH) setting the
+# library path it needs. Nothing is exported, so it works from any shell, script, or pipe.
 #
 # What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
 # users or setuid bits a package expects do not materialize. Like everything under ~, it is gone
@@ -98,16 +98,41 @@ grep -E "newly installed|^Get:" "$apt/install.log" | tail -1
 
 # The cache is the only record of what was fetched — nothing registers with dpkg — and it is
 # deliberately not cleaned: deleting archives would turn every repeated install of the same
-# package into a re-download. A stamp per archive is the unpack bookkeeping dpkg would have kept:
-# re-runs skip what is already extracted, and a version bump is a new filename, unpacked afresh.
-# The stamp is written only after dpkg-deb succeeds, so an aborted extraction is retried, not skipped.
+# package into a re-download. A manifest per package stands in for the ownership database dpkg
+# would have kept: it names the extracted archive, its version, and every path that archive holds.
+# A re-run of the same archive is skipped. A newer version extracts over $root and then deletes the
+# paths its predecessor owned that no manifest lists any more, so no command an upgrade drops stays
+# behind, while a path that moved to another package — a Debian transition, and the other package
+# may well have been extracted first — stays; an archive no newer than the one already extracted is
+# left unopened. dpkg compares the versions because a filename does not sort by version — demo_1.10
+# precedes demo_1.9. The manifest is replaced only once the extraction and the deletions are through:
+# an aborted extraction, or a deletion refused by an unwritable directory, leaves the old one, so a
+# retry deletes what remains instead of skipping the archive as done.
 unpacked=$root/.unpacked
 mkdir -p "$unpacked"
 for archive in "$apt/cache/archives"/*.deb; do
     [ -e "$archive" ] || continue
-    [ -e "$unpacked/${archive##*/}" ] && continue
+    base=${archive##*/}
+    package=$(dpkg-deb -f "$archive" Package)
+    version=$(dpkg-deb -f "$archive" Version)
+    manifest=$unpacked/$package
+    current_base= current_version=
+    [ -f "$manifest" ] && { IFS= read -r current_base; IFS= read -r current_version; } < "$manifest"
+    [ "$current_base" = "$base" ] && continue
+    [ -n "$current_version" ] && dpkg --compare-versions "$version" le "$current_version" && continue
+    files=$(dpkg-deb --fsys-tarfile "$archive" | tar -tf - 2>/dev/null | sed 's#^\./##')
     dpkg-deb -x "$archive" "$root"
-    : > "$unpacked/${archive##*/}"
+    { printf '%s\n%s\n' "$base" "$version"; printf '%s\n' "$files"; } > "$manifest.new"
+    if [ -n "$current_base" ]; then
+        tail -n +3 "$manifest" | while IFS= read -r path; do
+            case "$path" in ''|*/) continue ;; esac
+            for other in "$unpacked"/*; do
+                [ "$other" != "$manifest" ] && grep -qxF -- "$path" "$other" && continue 2
+            done
+            rm -f "$root/$path"
+        done
+    fi
+    mv "$manifest.new" "$manifest"
 done
 
 # One wrapper per unpacked command: LD_LIBRARY_PATH scoped to that process tree instead of exported
@@ -136,6 +161,15 @@ WRAP
         chmod 0755 "$HOME/.local/bin/$name"
         wrapped="$wrapped $name"
     done
+done
+
+# A wrapper the upgrade above orphaned would still answer `command -v` for a command that is gone;
+# drop the ones whose $root target no longer exists. The exec line under $root names only our own
+# wrappers, so the image's commands and anything else in ~/.local/bin are left untouched.
+for wrapper in "$HOME/.local/bin"/*; do
+    [ -f "$wrapper" ] || continue
+    target=$(sed -n "s|^exec \\($root/[^\"]*\\) \"\$@\"\$|\\1|p" "$wrapper")
+    [ -n "$target" ] && [ ! -e "$target" ] && rm -f "$wrapper"
 done
 
 summary=$(printf '%s' "$wrapped" | tr ' ' '\n' | grep -c . || true)

@@ -38,7 +38,10 @@ if [ "$request" = set ]; then
   trap 'rm -f "$body"' EXIT
   cat > "$body"
   { printf 'set %s\n' "$(wc -c < "$body")"; cat "$body"; } | timeout 5 sh -c "cat > $dir/req"
-  # No response: the broker either set the host clipboard or, in paste mode, dropped it.
+  # `ok` is the host clipboard set, or paste mode's drop; anything else — a copy that failed, or a
+  # broker that is gone, which the read's timeout bounds — fails the copy here rather than passing
+  # a write that never reached the host as done.
+  [ "$(timeout 10 cat "$dir/rsp")" = ok ] || exit 1
   exit 0
 fi
 

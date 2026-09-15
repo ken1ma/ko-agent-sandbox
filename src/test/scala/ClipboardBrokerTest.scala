@@ -67,8 +67,14 @@ class ClipboardBrokerTest extends munit.FunSuite:
 
   // `wayland`: the host has only wl-clipboard, so the broker's xclip-first chain must fall through.
   // `blockingCopy`: the host's copy never returns, as a clipboard program waiting on its display
-  // may not. The broker's temporary files go under `host/tmp`.
-  private def exchange(mode: String, wayland: Boolean = false, blockingCopy: Boolean = false)(
+  // may not. `failingCopy`: the host's copy exits nonzero, as one with no display does. The broker's
+  // temporary files go under `host/tmp`.
+  private def exchange(
+    mode: String,
+    wayland: Boolean = false,
+    blockingCopy: Boolean = false,
+    failingCopy: Boolean = false,
+  )(
     check: (Path, Path) => Unit,
   ): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
@@ -87,14 +93,20 @@ class ClipboardBrokerTest extends munit.FunSuite:
         |""".stripMargin
     )
     // The host's real clipboard programs, answering the three calls the broker makes, by absolute
-    // path as the launcher resolves them; the host's PATH is deliberately not offered.
+    // path as the launcher resolves them; the host's PATH is deliberately not offered. xclip's copy
+    // leaves a child behind holding stdout, as its selection owner does (wl-copy's has stdout on
+    // /dev/null): on the response pipe it would hold the shim past `ok` until the writer's timeout.
+    val copyAction =
+      if blockingCopy then "sleep 60"
+      else if failingCopy then "cat >/dev/null; exit 1"
+      else s"""cat > "$host/copied.txt"; sleep 60 &"""
     executable(
       host.resolve("xclip"),
       s"""#!/bin/sh
          |case "$$*" in
          |  "-selection clipboard -t TARGETS -o") printf 'text/plain\\nimage/png\\n' ;;
          |  "-selection clipboard -t image/png -o") cat "$host/image.bin" ;;
-         |  "-selection clipboard -i") ${if blockingCopy then "sleep 60" else s"""cat > "$host/copied.txt""""} ;;
+         |  "-selection clipboard -i") $copyAction ;;
          |esac
          |""".stripMargin
     )
@@ -151,12 +163,21 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assert(!Files.exists(host.resolve("copied.txt")), "paste mode set the host clipboard")
       assertEquals(String(sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")._2, UTF_8), "image/png\n")
 
+  /** The call's exit status, asserting it returned on the broker's answer rather than on the
+    * response writer's ten-second timeout — what a copy's child left holding the pipe costs. */
+  private def promptly(call: => (Int, Array[Byte])): Int =
+    val started = System.nanoTime()
+    val (rc, _) = call
+    val seconds = (System.nanoTime() - started) / 1e9
+    assert(seconds < 5, s"the shim returned after $seconds s, on a timeout rather than an answer")
+    rc
+
   test("bidirectional sets the host clipboard from every copy spelling"):
     exchange("bidirectional"): (sandboxBin, host) =>
       def copied(): String =
         Thread.sleep(300)
         Files.readString(host.resolve("copied.txt"))
-      assertEquals(sandboxCall(sandboxBin, "via wl-copy".getBytes(UTF_8), "wl-copy")._1, 0)
+      assertEquals(promptly(sandboxCall(sandboxBin, "via wl-copy".getBytes(UTF_8), "wl-copy")), 0)
       assertEquals(copied(), "via wl-copy")
       sandboxCall(sandboxBin, "via xsel".getBytes(UTF_8), "xsel", "--clipboard", "--input")
       assertEquals(copied(), "via xsel")
@@ -204,18 +225,31 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(rawRequest("set 6\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 03\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
-      // The count's bytes and no more, as the Windows twin reads them (`requests`).
+      // The count's bytes and no more, as the Windows twin reads them (`requests`). A whole body is
+      // copied and answered `ok`; this raw writer must read that answer, or the broker holds the
+      // FIFO for the response writer's timeout as it would for an unread `get`.
       assertEquals(rawRequest("set 3\nabcdef".getBytes(UTF_8)), 0)
+      assertEquals(String(rawResponse(), UTF_8), "ok")
       assertEquals(copied(), Some("abc"))
       assertEquals(sandboxCall(sandboxBin, "after".getBytes(UTF_8), "wl-copy")._1, 0)
       assertEquals(copied(), Some("after"))
 
   test("a copy blocked in the clipboard program leaves no body file for the session's end"):
     exchange("bidirectional", blockingCopy = true): (sandboxBin, host) =>
-      assertEquals(sandboxCall(sandboxBin, "held".getBytes(UTF_8), "wl-copy")._1, 0)
+      // The copy never returns, so the shim waits out its own timeout for the `ok` that never comes;
+      // this checks the body file while it waits, in a thread the exchange's teardown abandons.
+      val call = Thread(() => { sandboxCall(sandboxBin, "held".getBytes(UTF_8), "wl-copy"); () })
+      call.setDaemon(true)
+      call.start()
       Thread.sleep(500)
       // The broker is inside the copy now, which the session's end will KILL: the body has no name.
       assertEquals(Files.list(host.resolve("tmp")).count(), 0L)
+
+  test("a copy the host program fails is reported to the caller, not answered ok"):
+    exchange("bidirectional", failingCopy = true): (sandboxBin, _) =>
+      // xclip exits nonzero, so the broker answers nothing and the shim fails the copy rather than
+      // report success on a write that never reached the host.
+      assertEquals(sandboxCall(sandboxBin, "lost".getBytes(UTF_8), "wl-copy")._1, 1)
 
   test("the Windows twin's stream grammar is the shell twin's"):
     import ClipboardBroker.{MaxRequestBytes, Request, requests}
@@ -248,7 +282,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
     exchange("bidirectional", wayland = true): (sandboxBin, host) =>
       val (_, png) = sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
       assertEquals(png.toVector, Image.toVector)
-      assertEquals(sandboxCall(sandboxBin, "via wl-copy".getBytes(UTF_8), "wl-copy")._1, 0)
+      assertEquals(promptly(sandboxCall(sandboxBin, "via wl-copy".getBytes(UTF_8), "wl-copy")), 0)
       Thread.sleep(300)
       assertEquals(Files.readString(host.resolve("copied.txt")), "via wl-copy")
 
