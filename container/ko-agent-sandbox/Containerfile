@@ -295,11 +295,14 @@ RUN set -euxo pipefail; \
 # dialog. None of this touches prompt injection (SECURITY.md); consider
 # `"defaultMode": "auto"` where that matters.
 #
-# `disableAllHooks` is about persistence: a project's hooks would run
+# `allowManagedHooksOnly` is about persistence: a project's hooks would run
 # unreviewed and could write ~/.claude/settings.json — startup input for
 # every later session of that project. This narrows the class, not closes
 # it: the volume stays trusted input (SECURITY.md), and per-project volumes
 # bound whatever survives to the one project.
+# Managed hooks, SDK hooks and hooks from plugins force-enabled by managed
+# settings remain allowed:
+# https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
 #
 # `sandbox` off: this container is the boundary, and Claude Code's own
 # bubblewrap sandbox would be a second one inside it, which a project's
@@ -307,7 +310,7 @@ RUN set -euxo pipefail; \
 # anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
 # distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
 #
-# `disableAllHooks`'s own effect is unverified from inside: the managed file
+# `allowManagedHooksOnly`'s own effect is unverified from inside: the managed file
 # cannot be displaced there (a writable /etc is needed, and
 # CLAUDE_CODE_MANAGED_SETTINGS_PATH does not displace it either), which is
 # itself evidence for the premise above. Verifying it needs a host-side run
@@ -320,7 +323,7 @@ RUN set -euxo pipefail; \
         '    "defaultMode": "bypassPermissions"' \
         '  },' \
         '  "skipDangerousModePermissionPrompt": true,' \
-        '  "disableAllHooks": true,' \
+        '  "allowManagedHooksOnly": true,' \
         '  "sandbox": {' \
         '    "enabled": false,' \
         '    "failIfUnavailable": false,' \

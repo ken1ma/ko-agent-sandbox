@@ -2320,7 +2320,7 @@ object AgentSandboxLauncher:
     //
     // Per project: the volume is startup input, not just storage — agent settings and MCP definitions in it name
     // commands to run, and a shared volume would let one hostile repository seed every later session (see the
-    // disableAllHooks note in the Containerfile). Costs one sign-in per project. KO_AGENT_SANDBOX_PERSISTENT_VOLUME
+    // allowManagedHooksOnly note in the Containerfile). Costs one sign-in per project. KO_AGENT_SANDBOX_PERSISTENT_VOLUME
     // deliberately shares one.
     val persistentVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
       case Some(shared) =>
