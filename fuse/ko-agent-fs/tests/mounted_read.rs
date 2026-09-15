@@ -343,3 +343,129 @@ fn fsync_and_fsyncdir_are_performed_rather_than_answered() {
         "fn main() { /* synced */ }\n"
     );
 }
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn an_open_handle_reaches_its_object_after_the_name_is_unlinked() {
+    // The two setattr/getattr requests that carry the descriptor's handle must act on the object it
+    // opened, not re-resolve a name that is now gone: a cached read's attribute refresh (getattr
+    // with the handle) and `ftruncate` (the one setattr that reaches the daemon with `FATTR_FH`).
+    // A bare `fstat(2)` carries no handle and still resolves by path, so it is deliberately not
+    // exercised here — that ENOENT is a path-model limit this change does not close (`fs.rs`,
+    // `getattr`).
+    use std::io::Read;
+    use std::os::unix::fs::FileExt;
+
+    let mount = TestMount::new(tree);
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for writing");
+
+    // The host unlinks the name out from under the still-open descriptor.
+    fs::remove_file(mount.backing_at("greeting.txt")).unwrap();
+
+    // A read carries the handle — the kernel refreshes attributes with it before serving — so the
+    // content comes back rather than an ENOENT from re-resolving a vanished name.
+    let mut whole = String::new();
+    file.read_to_string(&mut whole)
+        .expect("read the unlinked-but-open file");
+    assert_eq!(whole, "hello from the backing store\n");
+
+    // `ftruncate` carries the handle too: it shortens the object the descriptor opened, and a
+    // positional read (also handle-borne) sees the result.
+    file.set_len(5)
+        .expect("truncate the unlinked-but-open file");
+    let mut head = [0u8; 8];
+    let read = file
+        .read_at(&mut head, 0)
+        .expect("read after truncating the unlinked-but-open file");
+    assert_eq!(&head[..read], b"hello", "the truncation did not take");
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn an_open_handle_truncates_the_object_it_opened_not_a_replacement() {
+    // The name is replaced while the descriptor is open, so re-resolving it would truncate the
+    // wrong object. Honouring the handle keeps the truncation on the object the descriptor opened
+    // and leaves the replacement — now bearing that name — untouched.
+    let mount = TestMount::new(tree);
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mount.at("greeting.txt"))
+        .expect("open for writing");
+
+    // The host atomically replaces the name with a different object of the same length.
+    let replacement = vec![b'B'; 29];
+    fs::write(mount.backing_at("replacement"), &replacement).unwrap();
+    fs::rename(
+        mount.backing_at("replacement"),
+        mount.backing_at("greeting.txt"),
+    )
+    .unwrap();
+
+    // The held handle truncates the object it opened; the replacement at that name is left whole.
+    file.set_len(3).expect("truncate the held object");
+    assert_eq!(
+        fs::read(mount.backing_at("greeting.txt")).unwrap(),
+        replacement,
+        "the truncation re-resolved the name and hit the replacement",
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_replacement_at_equal_size_and_mtime_takes_a_fresh_inode() {
+    // Equal size and mtime defeat AUTO_INVAL_DATA's attribute check, so backing identity is the
+    // only thing separating the replacement from the object it replaced. The lookup must give the
+    // replacement a fresh inode number, or a read through a newly opened descriptor is served the
+    // old object's cached pages (`fs.rs`, `lookup`; `inode.rs`, `lookup`).
+    use std::io::Read;
+    use std::time::{Duration, SystemTime};
+
+    let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    let stamp_mtime = |path: &std::path::Path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+    };
+    let old = vec![b'A'; 16];
+    let new = vec![b'B'; 16];
+
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join("swap"), &old).unwrap();
+    });
+    stamp_mtime(&mount.backing_at("swap"));
+
+    // A descriptor opened before the swap keeps reading the object it opened.
+    let mut held = fs::File::open(mount.at("swap")).expect("open before the swap");
+
+    // The host replaces the name with a different object of identical length and mtime. rename(2)
+    // preserves the source's mtime, so the replacement keeps the stamp set here.
+    fs::write(mount.backing_at("swap.new"), &new).unwrap();
+    stamp_mtime(&mount.backing_at("swap.new"));
+    fs::rename(mount.backing_at("swap.new"), mount.backing_at("swap")).unwrap();
+
+    // Astra's sequence: open the replacement, fill the cache through the old descriptor, then read
+    // the replacement.
+    let mut fresh = fs::File::open(mount.at("swap")).expect("open after the swap");
+
+    let mut held_bytes = Vec::new();
+    held.read_to_end(&mut held_bytes).unwrap();
+    assert_eq!(
+        held_bytes, old,
+        "the pre-swap descriptor must still read the object it opened",
+    );
+
+    let mut fresh_bytes = Vec::new();
+    fresh.read_to_end(&mut fresh_bytes).unwrap();
+    assert_eq!(
+        fresh_bytes, new,
+        "a post-swap open was served the old object's cached pages",
+    );
+}
