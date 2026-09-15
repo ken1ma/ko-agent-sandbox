@@ -47,7 +47,7 @@ FUSE addresses objects by inode number and `(parent_ino, name)`, never by path, 
 unavoidable. The table is the minimum that reconstructs a position:
 
 ```
-Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
+Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, dev: u64, ino_id: u64 }
 ```
 
 - **Resolution.** To act on an inode, walk its parent chain to the root collecting names (depth is
@@ -71,6 +71,22 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext }
   its own mirror quirk (an fd to a renamed-away subtree keeps operating on the moved inode) plus one
   open fd per live inode, which at 100k files is real fd pressure. The path model holds one fd for
   the root and transient fds per op.
+- **Backing identity, so a replacement is a new inode.** `dev`/`ino_id` are the `(st_dev, st_ino)`
+  the position named when the entry was allocated. `lookup` re-stats the name and reuses the entry
+  only when identity still matches; a host replacement — a different object left at the same name —
+  re-points the name to a freshly allocated inode number for the new object (`inode.rs`, `lookup`).
+  This is what keeps the FUSE inode identity tracking the *object*, not just the name.
+  Without it, the kernel keeps one inode — and one page cache — across the replacement, and
+  `AUTO_INVAL_DATA` cannot save it: that mechanism invalidates on a size or mtime change, so a
+  replacement at equal size and mtime (`tar -x`, `cp -p`, `touch -r` all produce one) would serve
+  the old object's cached pages to a reader of the new one. A fresh inode gets a fresh, empty page
+  cache, so the read reflects the new object. A descriptor opened before the replacement is
+  unaffected: it reads and writes through its own backing fd (`fs.rs`, `read`/`write`), and an
+  attribute or truncate request carrying its handle acts on that fd too (`fs.rs`, `getattr`/
+  `setattr`), so it keeps addressing the object it opened — POSIX open-file semantics. The vacated
+  number is only unhooked from the name, not dropped, so that descriptor and any child it holds
+  reconstruct the path they always did (the stale-path resolution `RESOLVE_NO_SYMLINKS` guards);
+  the kernel forgets the number in its own time.
 
 ### Bounded memory and the O(1) policy fast-path (the scale constraints)
 
@@ -112,7 +128,8 @@ a stale attribute without re-asking the daemon, so a host edit stays invisible u
 expires. A build program keying on mtime would then miss the change and compile stale content — a
 correctness failure, not a slow path. The guarantee is scoped: an answer inside the sandbox is the
 *backing's* state at the moment of the call — never older, and never fresher than the backing
-itself. Therefore these are fixed, not settings:
+itself — with two residual data-cache exceptions the mechanism below cannot reach, stated there.
+Therefore these are fixed, not settings:
 
 - entry, attribute, and negative-entry TTLs are **0**, always;
 - writeback caching is **off** (it would let the kernel hold writes the host cannot see);
@@ -120,8 +137,18 @@ itself. Therefore these are fixed, not settings:
   `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
   log rather than serving a view that can go stale. Zero metadata TTL keeps *attributes* fresh, but
   a file's cached *data* pages (a `read` served from the page cache, or an `mmap`) could still lag a
-  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when a zero-TTL `GETATTR` reports
-  an mtime change, so data stays coherent while shared `mmap` keeps working.
+  host write. `AUTO_INVAL_DATA` makes the kernel drop cached pages when a `GETATTR` reports a size
+  or mtime change, so data stays coherent while shared `mmap` keeps working — when the change moves
+  an attribute and a `GETATTR` looks. A *replacement* at equal size and mtime moves no attribute,
+  but it is a different object, so the identity rekey above gives it a fresh inode and empty cache.
+  Two cases nothing here reaches remain, both inherent to `AUTO_INVAL_DATA` and both narrow:
+    - an *in-place* edit of one object that restores its size and mtime (a same-length overwrite
+      then `touch -r`): same object, so no rekey, and no attribute change, so no invalidation — a
+      cached `read` can serve the old bytes;
+    - a mapping read purely through memory, with no `read` or `stat` in between: the invalidation
+      hangs off a `GETATTR`, and a page fault issues none, so an already-cached page can lag until
+      some call does. The self-test's share probe reads before it checks the mapping, so its `mmap`
+      row measures invalidation-after-a-read, not a mapping left entirely to itself.
   Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
   the self-test container, and its share rows measure it across the real host share.
 

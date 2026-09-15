@@ -183,7 +183,9 @@ On the real tree the path-walk term is the 2.2× between the two `lstat` rows (`
   through the stale fd, unbounded in time, which is worse than any TTL.
 - [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help a walk that only
   lists entries, not one that stats each as `ls -lR` does: under TTL 0 the attributes it returns
-  expire immediately, so follow-up per-file stats still round-trip. Measure before and after.
+  expire immediately, so follow-up per-file stats still round-trip. Measure before and after. It
+  would also align `readdir`'s `d_ino` with the synthetic `st_ino`, since each entry would carry a
+  real lookup (Non-TODOs, inode-number reuse).
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
@@ -322,14 +324,18 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   empirical test above, instead.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.
-- **Guarding against inode reuse.** The path inode model reuses an inode number for a recreated
-  `(parent, name)`, which is safe because context and resolution derive from the *same* names
-  rather than from the backing inode's identity — `RESOLVE_NO_SYMLINKS` is what keeps the two from
-  parting company (`fs.rs`, `open_ino`). Reuse while the old object is still referenced — a name
-  recreated with a different file type — is the kernel's to police and it does, invalidating the
-  inode it held so operations on the old handle fail `EIO`; the stale-handle tests hold their
-  handle one level below the recreated name precisely so that the filter's own refusal is what
-  they measure. A backing mount point makes `readdir`'s reported `d_ino` cosmetic; harmless.
+- **A guard against inode-number reuse for *classification*.** Reusing a number for a recreated
+  `(parent, name)` is safe for the policy: context and resolution derive from the *same* names
+  rather than from the backing inode's identity, and `RESOLVE_NO_SYMLINKS` keeps the two from
+  parting company (`fs.rs`, `open_ino`). The stale-handle tests hold their handle one level below a
+  recreated name so that the filter's own `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table
+  artifact, is what they measure (`tests/mounted_mutate.rs`). Reuse for *coherency* is a different
+  question and is guarded: `lookup` gives a replaced object a fresh number so it does not inherit
+  the old one's page cache (`architecture.md`, "Inode model"). What stays advisory is `readdir`'s
+  `d_ino` — the backing number, which differs from the synthetic `st_ino` `getattr` returns;
+  aligning the two needs the per-entry lookup READDIRPLUS would do (Performance). The entry *type*
+  is not advisory: a `DT_UNKNOWN` entry is stat'd for its real type rather than assumed regular
+  (`fs.rs`, `opendir`).
 - **`FOPEN_DIRECT_IO` for coherency.** It would work, and it disables shared `mmap`, which git needs
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **An always-on nonzero cache TTL.** Real-time bidirectional visibility is the defining
