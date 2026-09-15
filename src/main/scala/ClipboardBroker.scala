@@ -16,11 +16,12 @@ object ClipboardBroker:
    * Two FIFOs under the sandbox's /tmp, both made by the broker's first exec so that a session
    * without a broker has neither and the shim fails at once. The shim opens `req` once per
    * request and writes one line — `types`, `get image/png`, or `set <bytes>` followed by that
-   * many bytes — and, for the first two, reads `rsp` to EOF: the MIME type (or nothing), the PNG
-   * (or nothing). `set` has no response. The broker reads requests through an exec that ends
-   * with the FIFO's writers — one open of it, or several that overlap — parsing them by line
-   * and count, and answers each through an exec of its own, so the sandbox opens nothing outward
-   * and the host runs nothing it did not start.
+   * many bytes — then reads `rsp` to EOF: the MIME type (or nothing), the PNG (or nothing), or for
+   * `set` the word `ok` once the host clipboard is set (or paste mode has dropped the body) and
+   * nothing when the copy failed, so the shim reports a write that did not reach the host. The
+   * broker reads requests through an exec that ends with the FIFO's writers — one open of it, or
+   * several that overlap — parsing them by line and count, and answers each through an exec of its
+   * own, so the sandbox opens nothing outward and the host runs nothing it did not start.
    *
    * The response writer is bounded from inside the sandbox — the host may have no `timeout` — so
    * a shim that gave up waiting cannot hold the broker on a FIFO nobody reads.
@@ -55,10 +56,10 @@ object ClipboardBroker:
    * Wayland program answers when it fails, as on a Wayland session without XWayland. One request at a
    * time, which the shim's lock guarantees. An exec's stream, cut at [[MaxRequestBytes]], is parsed
    * in a subshell as the requests it carries ([[requests]] is the same grammar in Scala); a `set`
-   * the mode refuses is read by its count and dropped, so the shim's write completes as it does
-   * for one served. A stream with no request in it — an exec that failed, or a writer that wrote
-   * nothing — pauses the loop a second, so a container that is gone or a writer opening and
-   * closing the FIFO costs one exec a second, not a spin.
+   * paste mode will not copy is read by its count and dropped, then answered `ok` like one copied,
+   * since the drop is the mode working as asked. A stream with no request in it — an exec that
+   * failed, or a writer that wrote nothing — pauses the loop a second, so a container that is gone
+   * or a writer opening and closing the FIFO costs one exec a second, not a spin.
    */
   def hostShellFunctions(sandboxDir: String = SandboxDir): String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
@@ -115,9 +116,16 @@ object ClipboardBroker:
       |                exec 3<> "$$body" 4< "$$body" 5< "$$body"
       |                rm -f "$$body" || exit $$status
       |                head -c "$$arg" >&3
-      |                [ "$$(wc -c <&4 | tr -d ' ')" -eq "$$arg" ] && copy <&5
+      |                # Answered only for a whole body: a short one — which only a raw writer,
+      |                # never the shim, sends — is dropped unanswered, so a FIFO that writer never
+      |                # reads does not hold the broker. The copy's stdout is not the response pipe:
+      |                # xclip forks a child that serves the selection and inherits stdout, and on
+      |                # the pipe it would hold the shim's read past `ok` until the response
+      |                # writer's timeout (wl-copy's child has stdout on /dev/null already).
+      |                [ "$$(wc -c <&4 | tr -d ' ')" -eq "$$arg" ] &&
+      |                  { copy <&5 >/dev/null && echo ok; } | reply "$$1" "$$2"
       |                exec 3<&- 4<&- 5<&-
-      |              else head -c "$$arg" >/dev/null; fi ;;
+      |              else head -c "$$arg" >/dev/null; echo ok | reply "$$1" "$$2"; fi ;;
       |            types) { has_image && echo image/png; } | reply "$$1" "$$2" ;;
       |            get) { [ "$$arg" = image/png ] && png; } | reply "$$1" "$$2" ;;
       |            *) exit $$status ;;
@@ -213,9 +221,14 @@ object ClipboardBroker:
       "$m = New-Object System.IO.MemoryStream; $i.Save($m, [System.Drawing.Imaging.ImageFormat]::Png); " +
       "$o = [System.Console]::OpenStandardOutput(); $m.WriteTo($o); $o.Flush() }"
 
+  // Stop turns a Set-Clipboard failure into a nonzero exit the caller reads as a copy that did not
+  // reach the host; without it the cmdlet's error is non-terminating and PowerShell still exits 0.
   private val Copy =
-    "[System.Console]::InputEncoding = [System.Text.Encoding]::UTF8; " +
-      "Set-Clipboard -Value ([System.Console]::In.ReadToEnd())"
+    "$ErrorActionPreference = 'Stop'; " +
+      "[System.Console]::InputEncoding = [System.Text.Encoding]::UTF8; " +
+      "try { Set-Clipboard -Value ([System.Console]::In.ReadToEnd()) } catch { exit 1 }"
+
+  private val Ok = "ok".getBytes(UTF_8)
 
   def startResident(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     if mode != "off" then
@@ -289,14 +302,17 @@ object ClipboardBroker:
     if stream.length == MaxRequestBytes then reader.destroy()
     val found = requests(stream)
     found.foreach:
-      case Request.Set(body) => if mode == "bidirectional" then host(powershell, Copy, body)
-      case Request.Types     => respond(podman, sandboxContainer, host(powershell, HasImage, Array.empty))
+      case Request.Set(body) =>
+        val copied = mode != "bidirectional" || host(powershell, Copy, body)._2 == 0
+        respond(podman, sandboxContainer, if copied then Ok else Array.empty[Byte])
+      case Request.Types => respond(podman, sandboxContainer, host(powershell, HasImage, Array.empty)._1)
       case Request.Get(mime) =>
-        val png = if mime == "image/png" then host(powershell, Png, Array.empty) else Array.empty[Byte]
+        val png = if mime == "image/png" then host(powershell, Png, Array.empty)._1 else Array.empty[Byte]
         respond(podman, sandboxContainer, png)
     found.nonEmpty
 
-  private def host(powershell: Path, command: String, stdin: Array[Byte]): Array[Byte] =
+  /** The command's stdout and its exit status: Types and Get read the bytes, Set the status. */
+  private def host(powershell: Path, command: String, stdin: Array[Byte]): (Array[Byte], Int) =
     val process = ProcessBuilder((powershell.toString +: PowerShellArgs :+ command)*)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
@@ -308,8 +324,7 @@ object ClipboardBroker:
     )
     feeder.start()
     val out = process.getInputStream.readAllBytes()
-    process.waitFor()
-    out
+    (out, process.waitFor())
 
   private def respond(podman: String, sandboxContainer: String, body: Array[Byte]): Unit =
     val writer = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", sandboxResponseWriter())
