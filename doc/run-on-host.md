@@ -45,6 +45,7 @@ the code that enforces each part:
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
+| provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
 | the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
@@ -241,8 +242,8 @@ falls back: a host command that cannot run is reported to the user, never re-run
 container — the same rule the egress refusal follows.
 
 - Every prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
-  case per category, so the wrapper and the channel word the same refusal for their own readers
-  without the tests matching on either wording.
+  case per category, so the wrapper, the channel and the launch word the same refusal for their
+  own readers without the tests matching on any wording.
 - A runtime the broker cannot prepare — a proxy, server or daemon that fails to start, the
   launcher's executable gone — is refused with its reason as text from the code that met it
   (`BrokerRuntimes.prepare`).
@@ -267,6 +268,30 @@ only artifacts.**
 
 `RunOnHostPrereqs.scala` validates these prerequisites before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
+
+The launch checks `mill`'s, Gradle's and Maven's before its start prompt
+(`RunOnHostProvisioning.scala`), so a launcher or distribution not yet provisioned is met by you at
+the launch, not by the agent at the first command. sbt has nothing to check: its executable is
+the one `cs install sbt` produced, whatever the project pins.
+
+- Every build directory of the selected programs is found — each directory holding a `mill`
+  bootstrap or a Gradle wrapper's properties file, the files the wrapper keys a build directory
+  on ("`mill`", "Gradle"), anywhere under the project except inside `.git`, `.ko-agent-sandbox`
+  or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and its executable
+  resolved as its first command would resolve it; each refusal is printed in the command's
+  wording. `gradlew` is only what the run below executes: a properties file without it is
+  reported, with nothing to run.
+- For the refusals a host run fixes, a launcher or distribution not yet provisioned, the prompt
+  shows that run — `MILL_VERSION=<v>-jvm ./mill version`, `./gradlew --version` or
+  `./mvnw --version` in the build directory — and runs it on an explicit `y`, unconfined and in
+  the launcher's environment: the run the refusal asks you for, made one answer (`SECURITY.md`,
+  "Run on host"). Each build directory is judged when its turn comes, so one run that provisions
+  a version two directories share is asked once, and the check repeats after the run, so a
+  script that exits zero without provisioning is reported at once.
+- A launch that holds nothing — no terminal, or `KO_AGENT_SANDBOX_SESSION_START=immediate` —
+  prints the refusals and runs nothing.
+- What the launch cannot see — a pin changed during the session, a build directory created
+  later — the first command refuses, naming the same run; a relaunch prompts for it.
 
 ### The JVM
 
@@ -370,7 +395,8 @@ A project-local bootstrap script, the build directory's own `mill`; no globally 
 - That launcher must already be provisioned — `MILL_VERSION=<v>-jvm ./mill version` once, on the
   host, whenever the pinned version changes — because `mill` 1.x fetches its launchers as
   executables, and fetching one would put an executable the sandbox chose into a directory the
-  user's own `./mill` runs from, outside any sandbox.
+  user's own `./mill` runs from, outside any sandbox. The launch offers that run at its start
+  prompt ("Program prerequisites").
 - What is granted is that one file, `<download folder>/<v>`, never the download folder around it,
   which holds every launcher the user ever ran.
 - A version the user never provisioned the JVM launcher for is a refusal naming the command to
@@ -525,7 +551,8 @@ as `./gradlew` run there would read them; a `gradle` installed globally is not u
 
 - A nested build directory with a wrapper of its own is another build, as under `mill`.
 - Run `./gradlew --version` once on the host, and again whenever `distributionUrl` changes: that
-  run downloads Gradle into `~/.gradle/wrapper/dists`.
+  run downloads Gradle into `~/.gradle/wrapper/dists`. The launch offers it at its start prompt
+  ("Program prerequisites").
 - The command is granted that one Gradle read-only — not the whole `dists` directory, which holds
   every Gradle the user ever ran a wrapper for.
 - If the wrapper has not downloaded it yet, the command is refused, and the refusal says what to
@@ -615,7 +642,7 @@ The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally i
 
 - Run `./mvnw --version` once on the host, and again whenever `distributionUrl` in
   `.mvn/wrapper/maven-wrapper.properties` changes: that run downloads Maven into
-  `~/.m2/wrapper/dists`.
+  `~/.m2/wrapper/dists`. The launch offers it at its start prompt ("Program prerequisites").
 - The command is granted that one Maven read-only — not the whole `dists` directory, which holds
   every Maven the user ever ran a wrapper for.
 - If the wrapper has not downloaded it yet, the command is refused, and the refusal says what to

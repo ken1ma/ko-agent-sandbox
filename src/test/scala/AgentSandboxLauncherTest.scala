@@ -215,6 +215,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(renderArgument("a\u2028b\u2029c"), "$'a\\u2028b\\u2029c'")
     assertEquals(renderArgument("a\ud83c\udff4\udb40\udc67b"), "$'a🏴\\U000e0067b'")
     assertEquals(renderArgument("日本語 café"), "'日本語 café'")
+    // A whole line shown: the same spelling without the quoting, a backslash kept.
+    assertEquals(shown("back\\slash\u2028line\ud83d\ude00 a\rb"), "back\\slash\\u2028line\ud83d\ude00 a\\rb")
     // Nothing rendered contains a character the terminal would act on, whatever the argument held:
     // every code point, in an argument that already needs quoting.
     (0 to Character.MAX_CODE_POINT).foreach: cp =>

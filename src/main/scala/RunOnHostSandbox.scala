@@ -97,79 +97,110 @@ object RunOnHostSandbox:
   def assemble(
     project: Path, program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[String, Assembled] =
-    try assembled(project, program, env, buildDirectory)
+    try assembled(project, program, env, buildDirectory).left.map(_.worded)
     catch case ex: Unreadable => Left(wording(ex.refusal))
+
+  /** Why one step of the assembly refuses, kept typed to the assembly's boundary: the launch's
+    * provisioning (RunOnHostProvisioning) runs a script for three of the cases and words the rest. */
+  final case class StepRefusal(step: String, refusal: Refusal | String):
+    def worded: String = refusal match
+      case refusal: Refusal => s"$step: ${wording(refusal)}"
+      case reason: String   => s"$step: $reason"
+
+  private def context[A](step: String)(value: Either[Refusal | String, A]): Either[StepRefusal, A] =
+    value.left.map(StepRefusal(step, _))
+
+  /** The executable a `mill`, `gradle` or `mvn` command from `buildDirectory` — the project, for
+    * Maven — would be granted, the one the user provisions (run-on-host.md "Program
+    * prerequisites"), or the step refusing it. */
+  def provisionedExecutable(
+    program: Program, env: String => Option[String], buildDirectory: Path,
+  ): Either[StepRefusal, Path] =
+    try
+      program match
+        case Program.Mill   => millLauncher(env, buildDirectory).map(_._1)
+        case Program.Gradle => gradleDistribution(env, buildDirectory).map(_.resolve("bin").resolve("gradle"))
+        case Program.Mvn    => mvnDistribution(env, buildDirectory).map(_.resolve("bin").resolve("mvn"))
+        case Program.Sbt    => Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the project's"))
+    catch case ex: Unreadable => Left(StepRefusal(program.name, ex.refusal))
+
+  /** Mill's provisioned JVM launcher and its version, `<v>-jvm`, resolved as the bootstrap in
+    * `buildDirectory` resolves them. */
+  private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, (Path, String)] =
+    for
+      _ <- context("mill bootstrap")(validateMillBootstrap(buildDirectory, isExecutableFile))
+      _ <- context("mill jvm")(millJvmIsSystem(buildDirectory, readLines))
+      pinned <- context("mill version")(millVersion(buildDirectory, readLines))
+      launcher <- context("mill version")(millLauncherVersion(pinned))
+      downloads <- context("mill executable")(millDownloadDir(env).toRight("no mill download folder"))
+      provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
+      real <- context("mill executable")(realPath(provisioned).toRight(s"$provisioned vanished"))
+    yield (real, launcher)
+
+  /** Gradle's home as the wrapper in `buildDirectory` would run it: a nested build directory with
+    * a wrapper of its own is another build, as under mill. */
+  private def gradleDistribution(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, Path] =
+    val properties = buildDirectory.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
+    for
+      text <- context("gradle wrapper")(readLatin1(properties).toRight(Refusal.PrereqGradleWrapperMissing))
+      url <- context("gradle wrapper")(
+        gradleDistributionUrl(text, properties.getParent, readLatin1(buildDirectory.resolve("gradle.properties"))),
+      )
+      userHome <- context("gradle distribution")(gradleUserHome(env).toRight("no Gradle user home"))
+      home <- context("gradle distribution")(
+        gradleDistributionHome(gradleDistributionDir(userHome, url), url, directories, isExecutableFile),
+      )
+      real <- context("gradle distribution")(realPath(home).toRight(s"$home vanished"))
+    yield real
+
+  /** Maven's home as the project's wrapper would run it. */
+  private def mvnDistribution(env: String => Option[String], project: Path): Either[StepRefusal, Path] =
+    for
+      wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
+      _ <- context("mvn wrapper")(validateMvnWrapperScript(readLines(wrapper).getOrElse(Seq.empty)))
+      properties = project.resolve(".mvn").resolve("wrapper").resolve("maven-wrapper.properties")
+      url <- context("mvn wrapper")(
+        readText(properties).toRight(Refusal.PrereqMvnWrapperUnreadable(s"$properties is absent"))
+          .flatMap(mvnDistributionUrl(_, env("MVNW_REPOURL"))),
+      )
+      userHome <- context("mvn distribution")(mvnUserHome(env).toRight("no Maven user home"))
+      home <- context("mvn distribution")(mvnDistributionHome(mvnDistributionDir(userHome, url), url, isExecutableFile))
+      real <- context("mvn distribution")(realPath(home).toRight(s"$home vanished"))
+    yield real
 
   private def assembled(
     project: Path, program: Program, env: String => Option[String], buildDirectory: Path,
-  ): Either[String, Assembled] =
+  ): Either[StepRefusal, Assembled] =
     val os = Os.Mac
-    def context[A](step: String)(value: Either[Any, A]): Either[String, A] =
-      value.left.map:
-        case refusal: Refusal => s"$step: ${wording(refusal)}"
-        case reason           => s"$step: $reason"
-
     for
-      coursierCache <- coursierCacheRoot(os, env).toRight("no Coursier cache root")
+      coursierCache <- context("jvm")(coursierCacheRoot(os, env).toRight("no Coursier cache root"))
       jdk <- context("jvm")(resolveJdkHome(env, coursierCache, realPath, isExecutableFile))
       executableAndDistribution <- program match
         case Program.Sbt =>
           for
-            installDir <- coursierInstallDir(os, env).toRight("no Coursier install directory")
+            installDir <- context("sbt executable")(
+              coursierInstallDir(os, env).toRight("no Coursier install directory"),
+            )
             sbt <- context("sbt executable")(
               validateSbtExecutable(installDir.resolve("sbt"), installDir, realPath, isExecutableFile),
             )
             // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text.
             // Every byte maps to a char, which leaves the ASCII path this searches for intact.
-            inner <- SeatbeltProfile
-              .sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
-              .toRight(s"$sbt names no distribution inside $coursierCache")
+            inner <- context("sbt distribution")(
+              SeatbeltProfile
+                .sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
+                .toRight(s"$sbt names no distribution inside $coursierCache"),
+            )
             home <- context("sbt distribution")(
               validateSbtDistribution(inner, coursierCache, realPath, isExecutableFile),
             )
           yield (sbt, Some(home), None)
         case Program.Mill =>
-          for
-            _ <- context("mill bootstrap")(validateMillBootstrap(buildDirectory, isExecutableFile))
-            _ <- context("mill jvm")(millJvmIsSystem(buildDirectory, readLines))
-            pinned <- context("mill version")(millVersion(buildDirectory, readLines))
-            launcher <- context("mill version")(millLauncherVersion(pinned))
-            downloads <- millDownloadDir(env).toRight("no mill download folder")
-            provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
-            real <- realPath(provisioned).toRight(s"$provisioned vanished")
-          yield (real, None, Some(launcher))
-        // The build directory's wrapper, as `./gradlew` there would run: a nested build directory
-        // with a wrapper of its own is another build, as under mill.
+          millLauncher(env, buildDirectory).map((real, launcher) => (real, None, Some(launcher)))
         case Program.Gradle =>
-          val properties = buildDirectory.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
-          for
-            text <- context("gradle wrapper")(readLatin1(properties).toRight(Refusal.PrereqGradleWrapperMissing))
-            url <- context("gradle wrapper")(
-              gradleDistributionUrl(
-                text, properties.getParent, readLatin1(buildDirectory.resolve("gradle.properties")),
-              ),
-            )
-            userHome <- gradleUserHome(env).toRight("no Gradle user home")
-            home <- context("gradle distribution")(
-              gradleDistributionHome(gradleDistributionDir(userHome, url), url, directories, isExecutableFile),
-            )
-            real <- realPath(home).toRight(s"$home vanished")
-          yield (real.resolve("bin").resolve("gradle"), Some(real), None)
+          gradleDistribution(env, buildDirectory).map(real => (real.resolve("bin").resolve("gradle"), Some(real), None))
         case Program.Mvn =>
-          for
-            wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
-            _ <- context("mvn wrapper")(validateMvnWrapperScript(readLines(wrapper).getOrElse(Seq.empty)))
-            properties = project.resolve(".mvn").resolve("wrapper").resolve("maven-wrapper.properties")
-            url <- context("mvn wrapper")(
-              readText(properties).toRight(Refusal.PrereqMvnWrapperUnreadable(s"$properties is absent"))
-                .flatMap(mvnDistributionUrl(_, env("MVNW_REPOURL"))),
-            )
-            userHome <- mvnUserHome(env).toRight("no Maven user home")
-            home <- context("mvn distribution")(
-              mvnDistributionHome(mvnDistributionDir(userHome, url), url, isExecutableFile),
-            )
-            real <- realPath(home).toRight(s"$home vanished")
-          yield (real.resolve("bin").resolve("mvn"), Some(real), None)
+          mvnDistribution(env, project).map(real => (real.resolve("bin").resolve("mvn"), Some(real), None))
       (executable, distribution, millLauncher) = executableAndDistribution
       configuredRoot <- context("cache root")(cacheRootOf(os, env))
       cacheRoot <- context("cache root")(
@@ -188,7 +219,7 @@ object RunOnHostSandbox:
       // Each directory as it will be granted, before it is created: an existing symlink among its
       // ancestors — `run-on-host`, the project's directory — places it wherever the link points.
       _ <- Vector(v1Dir, sbtGlobalDir, ivyHomeDir, gradleUserHomeDir, m2RepositoryDir)
-        .foldLeft(Right(()): Either[String, Unit]): (checked, dir) =>
+        .foldLeft(Right(()): Either[StepRefusal, Unit]): (checked, dir) =>
           checked.flatMap: _ =>
             context("cache directory"):
               FileHelper.canonicalizedFuturePath(dir).left.map(Refusal.CacheRootUnusable(_))

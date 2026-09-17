@@ -222,6 +222,9 @@ explains why.
                          the project even under --write=reject; access is
                          confined to the project (excluding .git and .ko-agent-sandbox),
                          per-project caches, and a dedicated egress proxy.
+                         Before the start prompt, offers to run the project's ./mill,
+                         ./gradlew or ./mvnw for a launcher or distribution not yet
+                         provisioned, on your explicit yes.
                          The session keeps one sbt/mill daemon warm per build directory.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's

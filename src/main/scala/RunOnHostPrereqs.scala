@@ -5,8 +5,9 @@
 //
 // Everything here is pure over (Os, environment, filesystem layout), so the macOS answers are
 // testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
-// is a value rather than an exit, because the same classification serves a launch preflight, a
-// channel request, and the tests that prove unsupported layouts stay unsupported.
+// is a value rather than an exit, because the same classification serves the launch's provisioning
+// (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay
+// unsupported.
 
 package agentsandbox.launcher
 
