@@ -179,7 +179,7 @@ explains why.
 #### Cloud credentials
 
 The launcher forwards nothing from `~/.aws` or another cloud CLI's configuration directory.
-[doc/cloud-credentials.md](doc/cloud-credentials.md) has how to forward the credentials a login
+[doc/cloud-credentials.md](doc/cloud-credentials.md) explains how to forward the credentials a login
 produced, and what that costs.
 
 #### Sessions
@@ -337,7 +337,7 @@ produced, and what that costs.
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
     (doc/egress-proxy.md). .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces the image's
-    conventions in the agent instructions (README "Overriding the agent instructions").
+    conventions in the agent instructions (doc/agent-settings.md).
 
 
 ### `--build`
@@ -362,24 +362,10 @@ produced, and what that costs.
    superseded, never a pulled image.
 
 
-### Claude Code status line
+### Agent settings
 
-Configure the image's status-line template through `.claude/settings.json`;
-see [Claude Code in the sandbox](doc/sandbox-claude.md) for options.
-
-### Restoring permission prompts
-
-1. `claude`: edit the managed settings in the Containerfile and rebuild the image. They take
-   precedence over user settings.
-1. `codex`: set `approval_policy = "on-request"` in `~/.codex/config.toml`. Your configuration
-   overrides the image's defaults.
-1. `agy`: set `"toolPermission": "request-review"` in `~/.gemini/antigravity-cli/settings.json`
-   (or via `/config`).
-1. `kiro-cli`: remove entries from `allowedTools` in the supplied agent configuration,
-   `~/.kiro/agents/ko-agent-sandbox.json`.
-1. `copilot`: set `COPILOT_ALLOW_ALL=false`.
-1. `opencode`: pass `OPENCODE_PERMISSION` with the value `{"*":"ask"}` through `--env` to
-   override the image's permission setting for one launch.
+[doc/agent-settings.md](doc/agent-settings.md) explains how to override the agent instructions,
+restore permission prompts and set the Claude Code status line.
 
 
 ## Egress proxy
@@ -403,18 +389,6 @@ prints the selected endpoint. A proxy that terminates TLS with its own certifica
 connections fail with certificate errors. See
 [doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
 upstream-proxy requirements.
-
-## Overriding the agent instructions
-
-To replace the working conventions for a project, put yours in
-`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`. Start from the image’s
-[AGENTS-CUSTOM.md](container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty to remove
-the image’s conventions; delete it to restore them. Sandbox facts and session permissions remain in
-force. [doc/design.md](doc/design.md#the-agent-instruction-override-replaces-only-the-conventions)
-explains the scope of the override.
-
-To add instructions, use the agent’s project-level file, such as `CLAUDE.md`, `AGENTS.md`, or
-`GEMINI.md`.
 
 ## Development
 
@@ -491,20 +465,3 @@ Run the commands below from the repository root.
 1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
    privileged container, on any machine with podman; running either suite directly is documented in
    [testing.md](fuse/ko-agent-fs/doc/testing.md).
-
-### Native image (optional, instant startup)
-
-Requires GraalVM (JDK 25) with `native-image` and a C toolchain.
-
-    sbt dist
-    cd target/dist
-    native-image --enable-native-access=ALL-UNNAMED \
-      --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
-      --add-exports=java.base/sun.security.util=ALL-UNNAMED \
-      -H:IncludeResources='sandbox-build/.*|defaults/.*|agentsandbox/.*' \
-      -o ko-agent-sandbox -jar ko-agent-sandbox.jar
-
-1. `java -jar` starts in ~350 ms; the native image in tens of milliseconds. Put the resulting
-   `ko-agent-sandbox` binary on PATH.
-1. If GraalVM cannot hand execution over to podman, the launcher stays resident and waits for it;
-   the sandbox still works.
