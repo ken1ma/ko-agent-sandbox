@@ -1110,6 +1110,16 @@ provides the confinement for these commands; they execute outside the container.
     names (`RunOnHostSandbox.carrierName`), so no unconfined helper reads an explicit value before
     the command's environment is built. The broker inherits the launcher's environment as the
     launcher's own JVM ran in it, so a name-only forward names a variable already there.
+- **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
+  launch finds the mill launchers and the Gradle and Maven distributions its commands would
+  refuse for want of, and offers the run that downloads each: the build directory's own `./mill`,
+  `./gradlew` or `./mvnw`, a project file the agent can edit, shown as the full command, with any
+  character the terminal would act on spelled out, and run, unconfined and in the launcher's
+  environment, only on a `y` to a prompt that says so (`doc/run-on-host.md`, "Program
+  prerequisites"). That is the manual run the refusal asks of you, with the same authority: the
+  script is the project's, and what it downloads lands where your own script runs from. Nothing
+  runs without the answer; a launch without a terminal, or one starting immediately, prints the
+  refusal and runs nothing.
 - **One sbt server, and one mill daemon, per build directory, owned by the launch's broker.** A
   thin sbt client attaches to whatever server the build directory's portfile names, and Mill's
   launcher to whatever daemon holds `out/mill-daemon`, and then runs with *that process's*

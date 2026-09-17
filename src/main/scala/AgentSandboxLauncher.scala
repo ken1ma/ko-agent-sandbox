@@ -298,20 +298,27 @@ object AgentSandboxLauncher:
     val plain = argument.nonEmpty && argument.forall(ch => ch.isLetterOrDigit && ch < 0x80 || "_@%+=:,./-".contains(ch))
     if plain then argument
     else if !argument.codePoints().anyMatch(invisible(_)) then s"'${argument.replace("'", "'\\''")}'"
-    else
-      val escaped = new StringBuilder
-      argument.codePoints().forEach: cp =>
-        cp match
-          case '\\'                   => escaped ++= "\\\\"
-          case '\''                   => escaped ++= "\\'"
-          case '\n'                   => escaped ++= "\\n"
-          case '\t'                   => escaped ++= "\\t"
-          case '\r'                   => escaped ++= "\\r"
-          case cp if cp < 0x80 && invisible(cp) => escaped ++= f"\\x$cp%02x"
-          case cp if invisible(cp) && cp <= 0xffff => escaped ++= f"\\u$cp%04x"
-          case cp if invisible(cp) => escaped ++= f"\\U$cp%08x"
-          case cp                  => escaped.appendAll(Character.toChars(cp))
-      s"$$'$escaped'"
+    else s"$$'${shown(argument.replace("\\", "\\\\").replace("'", "\\'"))}'"
+
+  /**
+   * One line as the terminal shows it whole: a code point the terminal would act on rather than
+   * show — a control, a bidi or other format character, a line or paragraph separator — spelled
+   * out as `\n`, `\xNN`, `\uNNNN` or `\UNNNNNNNN`, so nothing the text came from can erase or
+   * redraw what the reader answers to. A backslash stays as it is: the line may already carry
+   * renderArgument's escapes, and a literal one acts on nothing.
+   */
+  def shown(line: String): String =
+    val visible = new StringBuilder
+    line.codePoints().forEach: cp =>
+      cp match
+        case '\n'                                => visible ++= "\\n"
+        case '\t'                                => visible ++= "\\t"
+        case '\r'                                => visible ++= "\\r"
+        case cp if cp < 0x80 && invisible(cp)    => visible ++= f"\\x$cp%02x"
+        case cp if invisible(cp) && cp <= 0xffff => visible ++= f"\\u$cp%04x"
+        case cp if invisible(cp)                 => visible ++= f"\\U$cp%08x"
+        case cp                                  => visible.appendAll(Character.toChars(cp))
+    visible.result()
 
   /** Character.getType values the terminal would act on rather than show: escaped by renderArgument. */
   val InvisibleTypes: Set[Int] = Set(
@@ -3128,6 +3135,17 @@ object AgentSandboxLauncher:
       "--workdir", "/workspace",
       image,
     ) ++ command.toVector
+
+    // Before the hold, what the first mill, gradle or mvn command would refuse for want of an
+    // executable the user provisions, offered as that run now (RunOnHostProvisioning): the reader
+    // is the hold's, so a launch that holds nothing is told and asked nothing.
+    if runOnHost.nonEmpty then
+      RunOnHostProvisioning.run(
+        projectDir,
+        RunOnHostPrereqs.Program.values.filter(program => runOnHost.contains(program.name)).toSet,
+        name => Option(System.getenv(name)),
+        terminalReader.filter(_ => sessionStartMode == "pause"),
+      )
 
     // The hold, then the create, the reaper, the mount, and the start. The hold before the
     // container exists: a Ctrl-C there is then an ordinary shutdown, the hook removing this run's
