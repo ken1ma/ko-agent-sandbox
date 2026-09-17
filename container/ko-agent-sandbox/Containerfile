@@ -304,17 +304,18 @@ RUN set -euxo pipefail; \
 # settings remain allowed:
 # https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
 #
+# Its effect is verified on the host, with Claude Code 2.1.274: a project's
+# SessionStart hook does not run under this image, and runs under a variant
+# image with the key removed. A session cannot vary the managed file (a
+# writable /etc is needed, and that version ships
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH as a stub that returns nothing), which is
+# itself evidence that a mounted project cannot weaken managed settings.
+#
 # `sandbox` off: this container is the boundary, and Claude Code's own
 # bubblewrap sandbox would be a second one inside it, which a project's
 # `sandbox.failIfUnavailable` could otherwise demand. Off also keeps
 # anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
 # distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
-#
-# `allowManagedHooksOnly`'s own effect is unverified from inside: the managed file
-# cannot be displaced there (a writable /etc is needed, and
-# CLAUDE_CODE_MANAGED_SETTINGS_PATH does not displace it either), which is
-# itself evidence for the premise above. Verifying it needs a host-side run
-# where the managed file is yours to vary.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/claude-code; \
     printf '%s\n' \
