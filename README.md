@@ -76,7 +76,8 @@ without reading. The sandbox enforces the boundary.
 
 1. [podman](https://github.com/containers/podman) 6.1.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
-        1. Run `podman machine init` after a new installation
+        1. On macOS and Windows, run `podman machine init` after a new installation; native Linux
+           runs podman rootless with no machine.
     1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
         1. Check that WSL is installed with `wsl --version`.
@@ -121,10 +122,13 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 ### Running `<command>`
 
-1. To change `--write=` or `--egress=`, quit, relaunch, and continue the session.
+1. To change `--write=` or `--egress=`, quit, then relaunch with the new option and the agent's
+   resume arguments:
 
-    1. Resume with `claude --resume`, `codex resume`, `agy --continue`, `kiro-cli chat --resume`,
-       `copilot --continue` or `opencode --continue`.
+        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --write=reject claude --resume
+
+    1. The resume arguments are `claude --resume`, `codex resume`, `agy --continue`,
+       `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
 
 1. Use Ctrl-C to quit.
 
@@ -198,6 +202,36 @@ produced, and what that costs.
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
        limits: `distroless` and `alpine` images work.
     1. Stock `postgres` and `nginx` need multiple uids and fail.
+
+
+### Egress proxy
+
+Every session accesses the network through one HTTPS proxy. The `--egress=` profile and the
+project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
+allowed. The defaults include tunnels to supported model providers and TLS-inspected access
+to selected documentation sites, package registries, and Git hosting services.
+
+On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch; a running
+session keeps the ruleset it started with:
+
+    deny https://github.com/                         # the forge, whole
+    allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
+    allow https://api.example/ tunnel                # permits traffic without inspection
+
+See [doc/egress-proxy.md](doc/egress-proxy.md) for profiles, rule syntax, TLS inspection, audit logs
+and diagnostics, and [SECURITY.md](SECURITY.md#egress-proxy) for the limits.
+
+To use an upstream proxy, set `HTTPS_PROXY` in the launcher’s environment; the launch banner
+prints the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported;
+connections fail with certificate errors. See
+[doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
+upstream-proxy requirements.
+
+
+### Agent settings
+
+[doc/agent-settings.md](doc/agent-settings.md) explains how to override the agent instructions,
+restore permission prompts and set the Claude Code status line.
 
 
 ### Reference
@@ -361,34 +395,6 @@ produced, and what that costs.
 1. `--build`, `--update` and `--self-test` all end by removing the container images they
    superseded, never a pulled image.
 
-
-### Agent settings
-
-[doc/agent-settings.md](doc/agent-settings.md) explains how to override the agent instructions,
-restore permission prompts and set the Claude Code status line.
-
-
-## Egress proxy
-
-Every session accesses the network through one HTTPS proxy. The `--egress=` profile and the
-project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
-allowed. The defaults include tunnels to supported model providers and TLS-inspected access
-to selected documentation sites, package registries, and Git hosting services.
-
-Write one rule per line in `.ko-agent-sandbox/egress/rule`:
-
-    deny https://github.com/                         # the forge, whole
-    allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
-    allow https://api.example/ tunnel                # permits traffic without inspection
-
-See [doc/egress-proxy.md](doc/egress-proxy.md) for profiles, rule syntax, TLS inspection, audit logs
-and diagnostics, and [SECURITY.md](SECURITY.md#egress-proxy) for the limits.
-
-To use an upstream proxy, set `HTTPS_PROXY` in the launcher’s environment; the launch banner
-prints the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported;
-connections fail with certificate errors. See
-[doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
-upstream-proxy requirements.
 
 ## Development
 

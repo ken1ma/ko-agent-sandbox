@@ -3,11 +3,12 @@
 ## Overriding the agent instructions
 
 To replace the working conventions for a project, put yours in
-`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`. Start from the image’s
-[AGENTS-CUSTOM.md](../container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty to remove
-the image’s conventions; delete it to restore them. Sandbox facts and session permissions remain in
-force. [design.md](design.md#the-agent-instruction-override-replaces-only-the-conventions)
-explains the scope of the override.
+`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` on the host; the next launch reads it. Start from the
+image’s [AGENTS-CUSTOM.md](../container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty
+to remove the image’s conventions; delete it to restore them. Sandbox facts and session
+permissions remain in force.
+[design.md](design.md#the-agent-instruction-override-replaces-only-the-conventions) explains the
+scope of the override.
 
 To add instructions, use the agent’s project-level file, such as `CLAUDE.md`, `AGENTS.md`, or
 `GEMINI.md`.
