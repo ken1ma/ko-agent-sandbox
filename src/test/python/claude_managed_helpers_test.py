@@ -74,6 +74,54 @@ class ManagedHelpersTest(unittest.TestCase):
             with self.subTest(template=template):
                 self.assertEqual(FORMATTING["render"](template, data), expected)
 
+    def test_fallback_applies_only_to_missing_or_null_fields(self):
+        template = "context ${context_window.used_percentage.getOrElse(0)}%"
+        for data in ({}, {"context_window": None}, {"context_window": {}},
+                     {"context_window": {"used_percentage": None}}):
+            with self.subTest(data=data):
+                self.assertEqual(FORMATTING["render"](template, data), "context 0%")
+        for value, expected in [(0, "0"), (4, "4"), (False, "false"), ("", ""), ([], ""), ({}, "")]:
+            with self.subTest(value=value):
+                self.assertEqual(FORMATTING["render"]("${value.getOrElse(9)}", {"value": value}), expected)
+        self.assertEqual(
+            FORMATTING["render"]("${model.getOrElse}", {"model": {"getOrElse": "field value"}}),
+            "field value",
+        )
+
+    def test_fallback_literals_escaping_and_invalid_expressions(self):
+        cases = {
+            '${missing.getOrElse("unknown")}': "unknown",
+            '${missing.getOrElse("")}': "",
+            '${missing.getOrElse(true)}': "true",
+            '${missing.getOrElse(false)}': "false",
+            '${missing.getOrElse( -1.25e2 )}': "-125.0",
+            '${missing.getOrElse("${model.id} $$")}': "${model.id} $$",
+            '$${missing.getOrElse(0)}': '${missing.getOrElse(0)}',
+            '$$${missing.getOrElse(0)}': '$0',
+            r'${missing.getOrElse("a\n\u001b\"b")}': 'a"b',
+        }
+        for template, expected in cases.items():
+            with self.subTest(template=template):
+                self.assertEqual(FORMATTING["render"](template, {}), expected)
+        for literal in ["1 + 2", "SECRET", "[]", "{}", "null", "NaN", "1e999", "01", "'text'",
+                        "__import__('os').system('touch executed')"]:
+            template = "${missing.getOrElse(" + literal + ")}"
+            with self.subTest(literal=literal):
+                result = self.run_script("command/statusLine.py", {}, {"KO_CLAUDE_STATUSLINE_FORMAT": template})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.rstrip("\n"), template)
+                self.assertFalse((self.project / "executed").exists())
+
+    def test_project_format_handles_initial_and_reported_context_usage(self):
+        settings = json.loads((PROJECT / ".claude/settings.json").read_text())
+        data = {"model": {"display_name": "Fable 5.1"}, "effort": {"level": "high"}}
+        for value, expected in [(None, "0"), (0, "0"), (4, "4")]:
+            with self.subTest(value=value):
+                data["context_window"] = {"used_percentage": value}
+                result = self.run_script("command/statusLine.py", data, settings["env"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"Fable 5.1 high, context {expected}%\n")
+
     def test_template_cannot_execute_or_access_environment(self):
         marker = self.project / "executed"
         self.write("sitecustomize.py", "raise RuntimeError('project startup code ran')")
@@ -100,6 +148,10 @@ class ManagedHelpersTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(FORMATTING["render"]("${value}", {"value": "a\n\x1b\x07\u202eb"}), "ab")
         self.assertEqual(len(FORMATTING["render"]("${value}" * 100, {"value": "a" * 10000})), 4096)
+        fallback = "${value.getOrElse(" + json.dumps("x" * 4000) + ")}"
+        with self.assertRaisesRegex(ValueError, "4096"):
+            FORMATTING["render"](fallback + "x" * 100, {})
+        self.assertEqual(len(FORMATTING["render"](fallback + "${large}", {"large": "y" * 4096})), 4096)
 
     def test_hyperlink_controls_are_removed_from_templates_and_values(self):
         sequences = [
@@ -108,7 +160,12 @@ class ManagedHelpersTest(unittest.TestCase):
             "\x9d8;;https://example.com\x9clabel\x9d8;;\x9c",
         ]
         for sequence in sequences:
-            for template, data in [(sequence, {}), ("${model.display_name}", {"model": {"display_name": sequence}})]:
+            cases = [
+                (sequence, {}),
+                ("${model.display_name}", {"model": {"display_name": sequence}}),
+                ("${missing.getOrElse(" + json.dumps(sequence) + ")}", {}),
+            ]
+            for template, data in cases:
                 with self.subTest(sequence=sequence, template=template):
                     result = self.run_script(
                         "command/statusLine.py", data, {"KO_CLAUDE_STATUSLINE_FORMAT": template},

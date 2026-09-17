@@ -23,13 +23,19 @@ using syntax like Scala’s:
 | `context=${context_window.used_percentage}%` | Context usage | `context=42%` |
 | `cost=$$${cost.total_cost_usd}` | Estimated session cost | `cost=$1.25` |
 
-1. Unavailable values appear as empty text.
+1. Missing or null fields appear as empty text unless a fallback is supplied.
 2. Set `KO_CLAUDE_STATUSLINE_FORMAT` to `""` to hide the status line.
+
+Use `${context_window.used_percentage.getOrElse(0)}%` to show `0%` before usage is available.
+`.getOrElse(literal)` supplies a fallback for missing or null fields. The literal can be a number,
+boolean or double-quoted string, using JSON syntax. Existing `0`, `false` and empty strings
+stay as-is.
 
 ### Format limits
 
-1. Placeholders insert text, numbers or booleans; null, objects and arrays produce empty text.
-2. Expressions, array indexing and environment lookups are unsupported.
+1. Placeholders insert text, numbers or booleans. Objects and arrays produce empty text.
+2. Only field paths and `.getOrElse(literal)` are supported; expressions, array indexing and
+   environment lookups are unsupported.
 3. Invalid placeholders stay literal, and inserted values are never evaluated.
 4. Templates and output are limited to 4096 characters.
 5. Output strips non-printable characters and outer whitespace,

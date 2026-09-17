@@ -7,7 +7,14 @@ import sys
 
 MAX_INPUT = 2 * 1024 * 1024
 MAX_TEMPLATE = 4096
-TEMPLATE_TOKEN = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*)\}")
+FIELD_PATH = r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*"
+FALLBACK_LITERAL = (
+    r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"|true|false|'
+    r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
+)
+TEMPLATE_TOKEN = re.compile(
+    rf"\$\$|\$\{{({FIELD_PATH})(?:\.getOrElse\(\s*({FALLBACK_LITERAL})\s*\))?\}}",
+)
 
 
 def read_input():
@@ -31,11 +38,17 @@ def render(template, data):
     def replace(match):
         if match.group(0) == "$$":
             return "$"
+        fallback = json.loads(match.group(2)) if match.group(2) is not None else None
+        if isinstance(fallback, float) and not math.isfinite(fallback):
+            return match.group(0)
         value = data
         for name in match.group(1).split("."):
             if not isinstance(value, dict):
-                return ""
+                value = None
+                break
             value = value.get(name)
+        if value is None:
+            value = fallback
         if isinstance(value, bool):
             return "true" if value else "false"
         if isinstance(value, (str, int)):
