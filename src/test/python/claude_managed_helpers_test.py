@@ -120,7 +120,7 @@ class ManagedHelpersTest(unittest.TestCase):
                 data["context_window"] = {"used_percentage": value}
                 result = self.run_script("command/statusLine.py", data, settings["env"])
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, f"Fable 5.1 high, context {expected}%\n")
+                self.assertEqual(result.stdout, f"Fable 5.1 high · context {expected}%\n")
 
     def test_template_cannot_execute_or_access_environment(self):
         marker = self.project / "executed"
