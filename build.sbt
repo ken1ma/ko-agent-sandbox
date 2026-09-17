@@ -54,8 +54,8 @@ Compile / unmanagedResourceDirectories +=
 
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 // The exports open the JDK's internal certificate builder to the proxy sources compiled in below
-// (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the README's
-// native-image command for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
+// (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the native-image
+// command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
@@ -89,7 +89,7 @@ Compile / resourceGenerators += Def.task {
 // Bundle the build contexts into the jar so --build works with no checkout present
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
-// Native-image's resource discovery misses required files; the README's command must explicitly include
+// Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
 // sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt runtime authority).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log

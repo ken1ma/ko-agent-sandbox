@@ -334,7 +334,7 @@ RUN set -euxo pipefail; \
         > /etc/claude-code/managed-settings.json
 
 # Project settings supply the status-line template; managed settings fix the command.
-# Usage: doc/sandbox-claude.md.
+# Usage: doc/agent-settings.md, "Claude Code status line".
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
@@ -563,7 +563,7 @@ RUN set -euxo pipefail; \
 # user's and the project's files, so neither can turn these back.
 # permission allow: the counterpart of Claude's bypassPermissions above.
 # OPENCODE_PERMISSION is read after this file, so a launch that forwards it
-# puts the prompts back (README, "Restoring permission prompts").
+# puts the prompts back (doc/agent-settings.md, "Restoring permission prompts").
 # share disabled: /share would post the session to opncd.ai, or to an
 # enterprise's own URL, either of which a project rule line could allow.
 # autoupdate false: the binary is the image's, and the check alone reads the

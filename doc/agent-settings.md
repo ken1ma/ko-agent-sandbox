@@ -1,6 +1,32 @@
-# Claude Code in the sandbox
+# Agent settings
 
-## Status line template
+## Overriding the agent instructions
+
+To replace the working conventions for a project, put yours in
+`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md`. Start from the image’s
+[AGENTS-CUSTOM.md](../container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty to remove
+the image’s conventions; delete it to restore them. Sandbox facts and session permissions remain in
+force. [design.md](design.md#the-agent-instruction-override-replaces-only-the-conventions)
+explains the scope of the override.
+
+To add instructions, use the agent’s project-level file, such as `CLAUDE.md`, `AGENTS.md`, or
+`GEMINI.md`.
+
+## Restoring permission prompts
+
+1. `claude`: edit the managed settings in the Containerfile and rebuild the image. They take
+   precedence over user settings.
+1. `codex`: set `approval_policy = "on-request"` in `~/.codex/config.toml`. Your configuration
+   overrides the image's defaults.
+1. `agy`: set `"toolPermission": "request-review"` in `~/.gemini/antigravity-cli/settings.json`
+   (or via `/config`).
+1. `kiro-cli`: remove entries from `allowedTools` in the supplied agent configuration,
+   `~/.kiro/agents/ko-agent-sandbox.json`.
+1. `copilot`: set `COPILOT_ALLOW_ALL=false`.
+1. `opencode`: pass `OPENCODE_PERMISSION` with the value `{"*":"ask"}` through `--env` to
+   override the image's permission setting for one launch.
+
+## Claude Code status line
 
 Show the model and effort level, like Codex, by adding this to `.claude/settings.json`
 in the project:

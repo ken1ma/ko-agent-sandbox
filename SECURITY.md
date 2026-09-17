@@ -68,8 +68,8 @@ costs are described below.
   ("What the persistent volume holds", below); the rest of the sandbox home is discarded on exit.
 - Claude Code's user and project hooks are blocked (the sandbox Containerfile's
   `allowManagedHooksOnly` note has the reasoning and exceptions).
-  The image's [status-line command](doc/sandbox-claude.md) accepts a data-only project template;
-  that document defines its input and output limits.
+  The image's [status-line command](doc/agent-settings.md#claude-code-status-line) accepts a
+  data-only project template; that section defines its input and output limits.
 - The networks and proxy are per run and removed with it, so concurrent sessions cannot reach one
   another through those networks and no network object is reused.
 

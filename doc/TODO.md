@@ -338,6 +338,28 @@ art, both mounting the project at its host path for path legibility rather than 
   - The alternative is the same work in a broker thread with cancellation done by hand; decide
     with the measured cost per command and what the gate would drive instead.
 
+## Deferred — the native-image launcher
+
+A GraalVM (JDK 25) native image, with `native-image` and a C toolchain, starts in tens of
+milliseconds where `java -jar` takes ~350 ms. The launcher branches on running as an image
+(`RunOnHostSandbox.isNativeImage`: the wrapper's self-invocation, its launch file, the Seatbelt
+proxy inputs) and stays resident when GraalVM refuses the FFM execvp (`SandboxLifecycle.handOver`).
+No build or test exercises any of it.
+
+    sbt dist
+    cd target/dist
+    native-image --enable-native-access=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
+      --add-exports=java.base/sun.security.util=ALL-UNNAMED \
+      -H:IncludeResources='sandbox-build/.*|defaults/.*|agentsandbox/.*' \
+      -o ko-agent-sandbox -jar ko-agent-sandbox.jar
+
+- [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
+  architectures; only then does the README offer it. build.sbt's comments explain the two exports
+  and the resource includes the command carries.
+- [ ] Decide it together with the published identity: whether the binary is a release artifact at
+  all, or `java -jar` and a Coursier command are the two forms.
+
 ## Before the first release — continuous integration
 
 There is no CI. [README.md](../README.md#development) gives the launcher, proxy and filter
