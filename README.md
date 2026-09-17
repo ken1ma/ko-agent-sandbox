@@ -353,6 +353,11 @@ explains why.
    superseded, never a pulled image.
 
 
+### Claude Code status line
+
+Configure the image's status-line template through `.claude/settings.json`;
+see [Claude Code in the sandbox](doc/sandbox-claude.md) for options.
+
 ### Restoring permission prompts
 
 1. `claude`: edit the managed settings in the Containerfile and rebuild the image. They take
