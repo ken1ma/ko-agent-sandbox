@@ -68,14 +68,16 @@ costs are described below.
   ("What the persistent volume holds", below); the rest of the sandbox home is discarded on exit.
 - Claude Code's user and project hooks are blocked (the sandbox Containerfile's
   `allowManagedHooksOnly` note has the reasoning and exceptions).
+  The image's [status-line command](doc/sandbox-claude.md) accepts a data-only project template;
+  that document defines its input and output limits.
 - The networks and proxy are per run and removed with it, so concurrent sessions cannot reach one
   another through those networks and no network object is reused.
 
 **A project loosening its own confinement.**
 
 - Claude Code's managed settings are stored in the read-only image and take precedence over
-  repository settings. An organization's server-managed settings take precedence over that file and
-  replace it entirely (the sandbox Containerfile's managed-settings note explains the consequences).
+  repository settings. An organization's remote managed settings can supersede the image's settings
+  (the sandbox Containerfile's managed-settings note explains the consequences).
 - The egress rules and the project's agent instructions in `.ko-agent-sandbox` are read on the host
   before the container starts.
 - The session's write mode keeps a session from writing the configuration governing the next
