@@ -11,11 +11,12 @@ service definition   -> sandbox adapter and approved injection targets
 egress ruleset       -> whether each target is reachable
 ```
 
-The existing plan remains canonical for placeholder construction, exact-token header
-substitution, per-request auditing and the rule that a real value never enters the sandbox. This
-plan owns what that primitive does not: one service spanning several domains, persistent host
-custody, dynamic sources, expiry and refresh, explicit mechanism choice and provider endpoints
-whose writable traffic must be TLS-terminated before a header can be mediated.
+The existing plan remains canonical for placeholder construction, exact-token substitution in a
+declared header or named query parameter, per-request auditing and the rule that a real value
+never enters the sandbox. This plan owns what that primitive does not: one service spanning
+several domains, persistent host custody, dynamic sources, expiry and refresh, explicit mechanism
+choice and provider endpoints whose writable traffic must be TLS-terminated before a header or
+parameter can be mediated.
 
 An existing `--env=NAME@HOST` binding remains a one-run, one-host binding. Provider mediation is a
 separate session option; it neither changes that grammar nor turns a stored credential on by
@@ -58,8 +59,9 @@ not requirements of this plan.
    exact-target list; no wildcard, redirect or response can add a target.
 4. Every active instance has a fresh per-run placeholder. Two instances have different
    placeholders even when they use the same service, host, header, source value or run.
-5. Injection still requires equality with the complete placeholder in the declared header format.
-   It never rewrites a URL, query, body, response or arbitrary occurrence of the bytes.
+5. Injection still requires equality with the complete placeholder in the declared header or
+   named query parameter. It never rewrites a path, another parameter, a body, a response or an
+   arbitrary occurrence of the bytes.
 6. A denied destination remains denied. A selected service with no allowed target is inert and
    refuses launch rather than widening egress or silently falling back to an unbrokered value.
 7. The real value exists only in its host source, protected host store, launcher's bounded refresh
@@ -88,8 +90,8 @@ A **service definition** is trusted, versioned data shipped in the proxy image. 
 - its supported mechanisms, either `api-key` or a named built-in OAuth flow;
 - sandbox adapters: environment names and any image-owned client configuration that holds the
   placeholder;
-- injection targets, each an exact normalized host, one header and one fixed value format with a
-  single placeholder slot;
+- injection targets, each an exact normalized host and one place: a header with a fixed value
+  format holding a single placeholder slot, or a named query parameter;
 - an optional configured literal path prefix and method set, using the ruleset's existing matchers;
 - the client and image compatibility probes required before that service is offered.
 
@@ -167,13 +169,14 @@ path /
 The serialized form is internal to the image, not project configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
-- a header from the base plan's closed set (its guarantee 4);
-- a format containing exactly one `%s`, no other conversion, and otherwise only visible ASCII
-  and space: catalog text, trusted for the space `Bearer %s` needs, and the field is built by
-  placing a value that has separately passed the raw-value grammar into the format;
+- a header from the base plan's closed set, or a query parameter name under its grammar (its
+  guarantee 4);
+- with a header, a format containing exactly one `%s`, no other conversion, and otherwise only
+  visible ASCII and space: catalog text, trusted for the space `Bearer %s` needs, and the field
+  is built by placing a value that has separately passed the raw-value grammar into the format;
 - a method set and optional literal prefix that cannot be wider than the target's configured
   inspected scope;
-- unique `(host, header, format, matcher)` entries inside one service.
+- unique `(host, place, format, matcher)` entries inside one service.
 
 For a configured tunnel host, the target deliberately has no method or path grants:
 the existing authority already permits writable traffic. Mediation parses enough HTTP to inject
@@ -327,7 +330,8 @@ mediated     TLS-terminated writable relay for an allowed provider target
 ```
 
 The overlay applies only to exact targets in the selected service. A denied host remains absent.
-An inspected host stays inspected and is authorized before injection. A tunnel host is
+An inspected host stays inspected, and the rewritten head is what its authorization reads
+("Mediated provider traffic", steps 4 and 5). A tunnel host is
 mediated only for that run and otherwise remains an opaque tunnel.
 
 The launch leaf certificate names the union of inspected hosts and active mediated targets. The
@@ -347,8 +351,10 @@ For one mediated connection:
    validated origin address.
 2. Terminate client TLS and validate origin TLS for the original hostname.
 3. Parse a bounded HTTP request head and select the target by host, method and literal path matcher.
-4. Apply the configured inspected authorization when the ruleset says inspected.
-5. Replace only the selected instance's complete placeholder in the declared header format.
+4. Replace only the selected instance's complete placeholder in the declared header format or
+   query parameter.
+5. Apply the configured inspected authorization to the rewritten head when the ruleset says
+   inspected (base plan, "Substitution": authorization and the origin see the same head).
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when spent.
 
@@ -404,8 +410,9 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
   would let untrusted input choose where a credential is spent or what runs on the host.
 - **Wildcard targets:** every recipient is exact and reviewable; provider-controlled redirects do
   not extend the list.
-- **Body, query and response injection:** header-only replacement remains the durable enforcement
-  primitive. OAuth adapters do not make a general body rewriter.
+- **Body and response injection, and rewriting every occurrence in a query:** replacement in a
+  declared header or one named parameter remains the durable enforcement primitive. OAuth adapters
+  do not make a general body rewriter.
 - **Credential passthrough:** incompatibility fails the selected service; it never places the real
   value in the sandbox as a fallback.
 - **On-demand execution from a request:** request traffic cannot cause host code execution. Refresh
@@ -413,7 +420,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - **Repository or account scoping inferred by the proxy:** scope belongs in the issued credential.
   Literal request-path authority may narrow spending when a provider contract supports it.
 - **Registry, SSH and cloud signing credentials:** their challenge, signing and socket protocols
-  need separate brokers rather than exceptions in HTTP header substitution.
+  need separate brokers rather than exceptions in HTTP header or parameter substitution.
 - **A generic OAuth DSL:** every supported flow is code with a reviewed provider contract and test
   fixture; arbitrary authorization endpoints and client identities are not configuration.
 - **Transparent TLS pinning bypass:** a client that cannot trust the per-run CA remains unsupported.
@@ -433,11 +440,12 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### Placeholder and request path
 
-- Reuse the base plan's entire substitution suite for every supported header format.
+- Reuse the base plan's entire substitution suite for every supported header format and
+  parameter target.
 - Generate many concurrent runs and instances; assert all placeholders are distinct, including
   multiple credentials for one host, and each selects only its own value.
 - Run every target through denial, inspected authorization and mediated relay. Assert redirects,
-  aliases, wrong paths and wrong headers receive no credential.
+  aliases, wrong paths and wrong headers or parameters receive no credential.
 - Scan every sandbox environment, filesystem, persistent volume, argument, log, error and retained
   artifact for all real values and mappings after each lifecycle exit.
 

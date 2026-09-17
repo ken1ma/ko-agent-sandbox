@@ -176,6 +176,12 @@ Use the device-code or pasted-code methods above. Sign-in methods that redirect 
 127.0.0.1 cannot reach the agent in the sandbox. [doc/design.md](doc/design.md#sign-in)
 explains why.
 
+#### Cloud credentials
+
+The launcher forwards nothing from `~/.aws` or another cloud CLI's configuration directory.
+[doc/cloud-credentials.md](doc/cloud-credentials.md) has how to forward the credentials a login
+produced, and what that costs.
+
 #### Sessions
 
 1. Each launch prints the workspace mode and the resolved egress profile, plus its rule file and

@@ -41,8 +41,9 @@ Use names to say what methods, parameters and values are before adding comments.
 comments that only do this with better names.
 
 Use concrete subject–verb–object wording. Use abstractions or metaphors ("invariant", "venue",
-"prose") only when concrete wording loses meaning or precision; name what they stand for in the
-same sentence. Read each sentence alone: compared nouns must be the same kind, and `only` or
+"prose", the verb "mint") only when concrete wording loses meaning or precision; name what they
+stand for in the same sentence. For what a tool or service does, use the verb its own
+documentation uses. Read each sentence alone: compared nouns must be the same kind, and `only` or
 `every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
 
 Record a standing practice or fact once, where it binds — the document that made the decision or
