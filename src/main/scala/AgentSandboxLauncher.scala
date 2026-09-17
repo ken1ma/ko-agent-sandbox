@@ -326,9 +326,6 @@ object AgentSandboxLauncher:
 
   private def invisible(codePoint: Int): Boolean = InvisibleTypes.contains(Character.getType(codePoint))
 
-  /** Below this a JVM build in the sandbox does not fit; the launch says so once. */
-  val SmallMachineMemory: Long = 4L << 30
-
   /** Bodies stream independently of their total size. Eight concurrent TLS downloads throttled to
     * 1 MiB/s peaked near 60 MB, while sequential multi-gigabyte transfers remained bounded. Even
     * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB limit
@@ -398,11 +395,9 @@ object AgentSandboxLauncher:
   val BuildMemoryWarnThreshold: Long = 3L << 30
 
   /**
-   * The memory scale for a session launch: orange under MinimumMemoryLimit, where the sandbox takes
-   * more than the machine has and the entrypoint's warning follows; red under half of it, where the
-   * session starts starved rather than merely overcommitted. The image build's gate is not on this
-   * scale: a session does not build the image, and --build's own warning states the gate where it
-   * applies.
+   * A session launch does not build images, so its headroom follows the agent's minimum memory
+   * allowance. Below that allowance, the entrypoint warns about the shortage (memoryLimit explains
+   * the floor); below half, even starting the agent may exhaust available memory.
    */
   def launchMemoryHeadroom(available: Long): Headroom =
     if available >= MinimumMemoryLimit then Headroom.Ample
@@ -410,11 +405,9 @@ object AgentSandboxLauncher:
     else Headroom.Short
 
   /**
-   * The memory scale for an image build — the build actions, and the `--stats` report,
-   * which is read before deciding on one: green from BuildMemoryWarnThreshold up — also the
-   * limit a 4 GiB machine gives, the least a JVM build in the sandbox fits in
-   * (SmallMachineMemory); orange below it, where a session starts but a build is warned; red
-   * under MinimumMemoryLimit, as at a launch.
+   * Image builds and --stats share this scale so the report helps the user decide whether the
+   * machine has room for an image build. BuildMemoryWarnThreshold explains the build threshold;
+   * below MinimumMemoryLimit, even an agent session may exhaust available memory.
    */
   def buildMemoryHeadroom(available: Long): Headroom =
     if available >= BuildMemoryWarnThreshold then Headroom.Ample
@@ -3062,22 +3055,14 @@ object AgentSandboxLauncher:
     // Memory limit
     // -----------------------------------------------------------------------
     //
-    // Memory is the runaway this environment invites (the cs java OOM in the Containerfile), and
-    // the sandbox must die before the machine does: one in-sandbox build exhausting the VM takes
-    // podman's own service with it, and every session on the machine (the troubleshooting
-    // document's "The whole machine degrades"). Hence a limit by default, below the machine's
-    // total (memoryLimit). KO_AGENT_SANDBOX_MEMORY replaces the default for a machine shared with
-    // other sessions.
+    // The Coursier OOM in container/debian-coursier/Containerfile demonstrates why memoryLimit
+    // reserves memory for Podman's service, which every session needs. For diagnosis, see
+    // "The whole machine degrades" in fuse/ko-agent-fs/doc/troubleshooting.md.
     val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
     val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
       warn("podman info reports no machine memory; the sandbox runs without a memory limit")
-    machineMemory.filter(_ < SmallMachineMemory).foreach: total =>
-      warn(
-        s"podman runs on ${SandboxStats.humanBytes(total)} of memory; builds in the sandbox OOM below about 4.0G\n" +
-          "  on a podman machine, raise it with `podman machine set --memory` (machine stopped)",
-      )
     val memoryArgs = memoryArguments(explicitMemory, machineMemory, availableMemory)
 
     // -----------------------------------------------------------------------
