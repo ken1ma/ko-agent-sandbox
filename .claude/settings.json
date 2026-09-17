@@ -1,5 +1,6 @@
 {
   "env": {
-    "KO_CLAUDE_STATUSLINE_FORMAT": "${model.display_name} ${effort.level}, context ${context_window.used_percentage}%"
+    "KO_CLAUDE_STATUSLINE_FORMAT":
+      "${model.display_name} ${effort.level}, context ${context_window.used_percentage.getOrElse(0)}%"
   }
 }
