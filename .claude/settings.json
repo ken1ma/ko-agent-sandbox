@@ -1,4 +1,9 @@
 {
+  "_comment": "When safeguards flag a message, pause instead of silently downgrading,",
+  "_comment": "for example to Opus 4.8 when the cybersecurity guardrail fires.",
+  "switchModelsOnFlag": false,
+
+  "_comment": "Add a Codex-like status line at the bottom.",
   "env": {
     "KO_CLAUDE_STATUSLINE_FORMAT":
       "${model.display_name} ${effort.level} · context ${context_window.used_percentage.getOrElse(0)}%"
