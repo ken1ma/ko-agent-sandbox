@@ -76,11 +76,12 @@ without reading. The sandbox enforces the boundary.
 
 1. [podman](https://github.com/containers/podman) 6.1.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
-        1. On macOS and Windows, run `podman machine init` after a new installation; native Linux
-           runs podman rootless with no machine.
+        1. On macOS and Windows, run `podman machine init` after a new installation;
+           on native Linux, podman runs rootless without a machine.
     1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
-        1. Check that WSL is installed with `wsl --version`.
+        1. `wsl --version` shows the versions if WSL is installed.
+            1. Update WSL with `wsl --update`, then `wsl --shutdown`.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
         1. AWS EC2: before `podman machine init`, shut down the instance then
             1. Actions → Instance settings → Change CPU options: Enable Nested virtualization
@@ -166,7 +167,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 #### `opencode`
 
-1. Run `/connect`, then `/models` to pick a model of the connected provider.
+1. Run `/connect`, then `/models` to pick a model from the connected provider.
     1. Anthropic and Google take an API key.
     1. For a ChatGPT plan choose the headless method, not the browser method.
     1. GitHub Copilot prints a device code, and the token it stores has the `read:user` scope,
@@ -265,7 +266,7 @@ restore permission prompts and set the Claude Code status line.
                          per-project caches, and a dedicated egress proxy.
                          Before the start prompt, offers to run the project's ./mill,
                          ./gradlew or ./mvnw for a launcher or distribution not yet
-                         provisioned, on your explicit yes.
+                         provisioned, if you answer yes.
                          The session keeps one sbt/mill daemon warm per build directory.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's
@@ -339,8 +340,8 @@ restore permission prompts and set the Claude Code status line.
       KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
                                           machine's memory (on Linux, the host's) minus 1 GiB,
                                           and on Linux no more than was available at launch;
-                                          at least 1 GiB, or the whole memory when that is
-                                          less. The sandbox never swaps
+                                          at least 1 GiB, or all memory if less than 1 GiB.
+                                          The sandbox never swaps
       KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps the project shared live and
                                           writable while protecting Git configuration,
                                           hooks, other protected Git entries and
@@ -443,11 +444,11 @@ Run the commands below from the repository root.
 
     1. `testOnly` patterns can follow, quoted with the command:
        `sbt "testWithPodman *RunTopologyTest"`.
-    1. One case skips unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
+    1. One test is skipped unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
        bucket you own: the refusal of an owner-signed upload inside the inspected tunnel.
 
         1. The case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign
-           the URL and the run line, which uses `sbt --server` so the variable reaches the tests.
+           the URL and the test command, which uses `sbt --server` so the variable reaches the tests.
 
 1. On the host, start a sandbox with the default egress rules:
 
