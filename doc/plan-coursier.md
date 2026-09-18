@@ -116,7 +116,7 @@ future reviewed cache kinds do not require a comma-list grammar.
   than parsed by the launcher.
 - Do not accept `src:dst` or any caller-selected container destination. podman's volume shorthand
   has Windows drive-colon ambiguity, and an arbitrary destination could shadow managed settings,
-  `/workspace`, installed programs or persistent agent state.
+  the project mount, installed programs or persistent agent state.
 
 Absent `COURSIER_CACHE`, bare `coursier` discovery uses:
 
@@ -139,7 +139,7 @@ for each path relationship after canonicalization:
 - refuse the configured user home, a well-known parent of user homes such as `/home` or `/Users`,
   or any ancestor of them;
 - refuse any overlap with the project directory in either direction: a cache below the workspace
-  is writable through `/workspace`, while a cache above it exposes unrelated host files;
+  is writable through the project mount, while a cache above it exposes unrelated host files;
 - refuse any overlap with the launcher state root in either direction; it contains the inspection
   CA key and audit state;
 - refuse any overlap with the launcher's install directory in either direction;

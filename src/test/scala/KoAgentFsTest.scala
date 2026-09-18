@@ -108,18 +108,6 @@ class KoAgentFsTest extends munit.FunSuite:
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
-  test("the backing path crosses into the machine in the daemon's own spelling"):
-    def backing(os: Os, path: String): Either[String, String] =
-      koAgentFsBackingPath(os, Paths.get(path))
-    assertEquals(backing(Os.Windows, """C:\work\ko-agent-sandbox"""), Right("/mnt/c/work/ko-agent-sandbox"))
-    assertEquals(backing(Os.Windows, """D:\a b\proj"""), Right("/mnt/d/a b/proj"))
-    // A UNC path has no /mnt spelling: refused with the reason, never guessed at.
-    assert(backing(Os.Windows, """\\server\share\proj""").isLeft)
-    // POSIX paths pass through as the runner's Path type spells them — a POSIX host is the only
-    // one that produces them for real, and a Windows runner respells them with its own separator.
-    assertEquals(backing(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
-    assertEquals(backing(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
-
   test("lifecycle scripts run in the VM on podman machine and locally on Linux"):
     val script = "if mountpoint -q \"$mnt\"; then exit 0; fi"
     val vm = koAgentFsScriptCommand("podman", Os.Mac, script)

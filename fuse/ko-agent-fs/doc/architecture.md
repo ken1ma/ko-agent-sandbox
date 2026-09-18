@@ -187,7 +187,7 @@ policy is enforced whoever is asking. Exposure is bounded by the machine running
 project's containers.
 
 A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
-write the same files and can overwrite one another's changes. If the daemon dies, `/workspace`
+write the same files and can overwrite one another's changes. If the daemon dies, the project mount
 returns `ENOTCONN` in every attached session, so none can continue accessing the files through the
 mount. When the project's last session ends, the daemon unmounts and exits.
 
@@ -255,7 +255,7 @@ code: `KoAgentFs.koAgentFsSourceId`.
 tree read-only without it; the guard is exactly `fuse` or `none`, so an unclear value is a refused
 launch, never a silently weaker boundary): each launch gates on the installed binary's identity
 and self-test, then mounts the project through a per-project daemon shared by its sessions and
-binds the mountpoint at `/workspace`. The lifecycle's design and reasoning
+binds the mountpoint at the project's own path. The lifecycle's design and reasoning
 are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid

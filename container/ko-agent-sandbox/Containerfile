@@ -264,25 +264,11 @@ RUN set -euxo pipefail; \
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
 ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
 
-# Seed the /workspace trust decision — one entry covers every project. These
-# keys are Claude Code internals and may change between releases.
-RUN set -euxo pipefail; \
-    printf '%s\n' \
-        '{' \
-        '  "projects": {' \
-        '    "/workspace": {' \
-        '      "hasTrustDialogAccepted": true,' \
-        '      "hasCompletedProjectOnboarding": true' \
-        '    }' \
-        '  }' \
-        '}' \
-        > $SANDBOX_VOLUME_SEED/claude/.claude.json
-
 # Skip permission prompts (README.md explains why).
 #
 # Managed settings is the highest-precedence scope a project can reach, in
 # the read-only image: a mounted project cannot weaken it (the trust dialog
-# above is pre-accepted, so project settings take effect unreviewed),
+# is pre-accepted by sandbox-entrypoint, so project settings take effect unreviewed),
 # removing the volume cannot drop it, and it does not depend on launcher
 # flags. An organization's remote managed settings can supersede the image's
 # permission, hook and sandbox settings, including requiring the sandbox
@@ -374,7 +360,8 @@ ENV SANDBOX_TOOLCHAIN_PATH="$PATH"
 # podman's masked /proc entries are in place, and the bubblewrap-style
 # sandbox needs one for its pid namespace.
 #
-# trust_level: the Codex counterpart of the trust seeding above, same warning.
+# The project's trust_level is sandbox-entrypoint's, in the user layer
+# ~/.codex/config.toml: it is per project, and this layer is the image's.
 COPY --chmod=0644 codex/config.toml /etc/codex/config.toml
 COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 
@@ -406,17 +393,14 @@ RUN set -euxo pipefail; \
 
 # All agy state is under ~/.gemini, a symlink into the persistent volume.
 # toolPermission=always-proceed auto-approves tool execution (the counterpart of
-# Claude's bypassPermissions and Codex's approval_policy="never"), and
-# /workspace is pre-trusted so agy prompts neither on startup.
+# Claude's bypassPermissions and Codex's approval_policy="never"); the project's
+# trust entry is sandbox-entrypoint's, per launch.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 \
         $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
     printf '%s\n' \
         '{' \
-        '  "toolPermission": "always-proceed",' \
-        '  "trustedWorkspaces": [' \
-        '    "/workspace"' \
-        '  ]' \
+        '  "toolPermission": "always-proceed"' \
         '}' \
         > $SANDBOX_VOLUME_SEED/antigravity/antigravity-cli/settings.json
 
@@ -511,19 +495,9 @@ ENV COPILOT_AUTO_UPDATE=false
 # Tool prompts off, the Codex counterpart above. Copilot has no system config
 # layer, so the default is an environment variable a launch can override
 # (COPILOT_ALLOW_ALL=false). It covers tools only; --yolo adds paths outside
-# /workspace and URLs, whose prompts the user keeps otherwise.
+# the project and URLs, whose prompts the user keeps otherwise. The project's
+# trust entry in ~/.copilot/config.json is sandbox-entrypoint's, per launch.
 ENV COPILOT_ALLOW_ALL=true
-
-# The trust seeding for copilot: ~/.copilot/config.json is user state that
-# copilot rewrites, in the persistent volume like Claude's .claude.json.
-RUN set -euxo pipefail; \
-    printf '%s\n' \
-        '{' \
-        '  "trustedFolders": [' \
-        '    "/workspace"' \
-        '  ]' \
-        '}' \
-        > $SANDBOX_VOLUME_SEED/copilot/config.json
 
 
 # ---------------------------------------------------------------------------
@@ -634,13 +608,8 @@ RUN set -euxo pipefail; \
 # Unprivileged runtime user
 # ---------------------------------------------------------------------------
 
-RUN set -euxo pipefail; \
-    install -d \
-      -o nonroot \
-      -g nonroot \
-      /workspace
-WORKDIR /workspace
-
+# No project directory and no WORKDIR: the launcher mounts the project at its own path, which
+# podman creates in the read-only root at create, and starts the session there.
 USER nonroot
 
 ENTRYPOINT ["sandbox-entrypoint"]

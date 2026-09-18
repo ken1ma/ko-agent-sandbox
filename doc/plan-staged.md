@@ -10,7 +10,7 @@ copy-on-write view:
 
 ```text
 live host project directory, read-only ---+
-                                  +--- staged /workspace
+                                  +--- staged project mount
 persistent writable upper layers-+
 ```
 

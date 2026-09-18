@@ -1,5 +1,6 @@
 // The image's ENTRYPOINT, run as the shell script it is: what it seeds into a persistent volume
-// that is fresh, that predates an agent, or that two sessions open at once.
+// that is fresh, that predates an agent, or that two sessions open at once, and the trust entry it
+// records for the project — the working directory — in each agent's own file.
 
 package agentsandbox.launcher
 
@@ -18,10 +19,14 @@ class SandboxEntrypointTest extends munit.FunSuite:
       val output = String(process.getInputStream.readAllBytes())
       process.waitFor() == 0 && output.contains("GNU coreutils")
     catch case _: java.io.IOException => false
+  private lazy val jq =
+    try ProcessBuilder("jq", "--version").redirectErrorStream(true).start().waitFor() == 0
+    catch case _: java.io.IOException => false
 
   private def fixture(): (Path, Path) =
-    // `mv -T` is GNU coreutils': the script runs only in the Debian image, and so does this suite's host.
-    assume(Files.isExecutable(sh) && gnuMv, "runs the entrypoint under /bin/sh with GNU mv")
+    // `mv -T` is GNU coreutils' and `jq` is the image's: the script runs only in the Debian image,
+    // and so does this suite's host.
+    assume(Files.isExecutable(sh) && gnuMv && jq, "runs the entrypoint under /bin/sh with GNU mv and jq")
     val root = Files.createTempDirectory("sandbox-entrypoint")
     val seed = Files.createDirectories(root.resolve("seed"))
     Vector("claude", "codex", "antigravity", "kiro", "copilot", "opencode").foreach: agent =>
@@ -45,9 +50,13 @@ class SandboxEntrypointTest extends munit.FunSuite:
     home: Path,
     proc: Path = healthyProc(),
     path: Option[Path] = None,
+    // The project, where the launcher starts the session (--workdir); the entrypoint reads it
+    // from its working directory.
+    project: Path = Project,
   ): Process =
     val builder =
       ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
+    builder.directory(project.toFile)
     builder.environment.put("SANDBOX_VOLUME_SEED", seed.toString)
     builder.environment.put("HOME", home.toString)
     builder.environment.put("SANDBOX_PROC", proc.toString)
@@ -99,7 +108,30 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val output = String(process.getInputStream.readAllBytes())
     (process.waitFor(), output)
 
-  private def run(seed: Path, home: Path): (Int, String) = finish(start(seed, home))
+  private def run(seed: Path, home: Path, project: Path = Project): (Int, String) =
+    finish(start(seed, home, project = project))
+
+  /** A project directory with a name every agent's file must quote: a space, and for Codex a
+    * double quote and a backslash, the two characters a TOML basic string escapes. */
+  private lazy val Project: Path =
+    Files.createDirectories(Files.createTempDirectory("sandbox-entrypoint-project").resolve("my \"app\" \\ src"))
+
+  /** Every JSON file the suite reads, canonicalized with jq: keys sorted, no whitespace, after
+    * `filter`. */
+  private def parsed(file: Path, filter: String = "."): String =
+    val process = ProcessBuilder("jq", "-c", "-S", filter, file.toString).redirectErrorStream(true).start()
+    val output = String(process.getInputStream.readAllBytes()).trim
+    assertEquals(process.waitFor(), 0, output)
+    output
+
+  private def trustFiles(home: Path): (Path, Path, Path, Path) =
+    val volume = home.resolve("persistent-volume")
+    (
+      volume.resolve("claude/.claude.json"),
+      volume.resolve("antigravity/antigravity-cli/settings.json"),
+      volume.resolve("copilot/config.json"),
+      volume.resolve("codex/config.toml"),
+    )
 
   private def entries(volume: Path): Set[String] =
     FileHelper.directoryEntries(volume).map(_.getFileName.toString).toSet
@@ -136,7 +168,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (status, output) = run(seed, home)
     assertEquals(status, 0, output)
     assertEquals(Files.readString(volume.resolve("claude").resolve("seeded")), "login state")
-    assertEquals(entries(volume.resolve("codex")), Set.empty[String])
+    // Only the project's trust entry joins the agent's own directory.
+    assertEquals(entries(volume.resolve("codex")), Set("config.toml"))
     assertEquals(Files.readString(volume.resolve("copilot").resolve("seeded")), "copilot")
 
   test("seed metadata does not escape into the cross-session volume"):
@@ -153,10 +186,27 @@ class SandboxEntrypointTest extends munit.FunSuite:
   test("sessions seeding one volume at once all succeed, and leave one copy and no staging behind"):
     val (seed, home) = fixture()
     val volume = home.resolve("persistent-volume")
-    val results = (1 to 20).toVector.map(_ => start(seed, home)).map(finish)
+    // Two projects, so the launches also race on a shared volume's files, not only on the seed.
+    val other = Files.createTempDirectory("sandbox-entrypoint-other")
+    val results =
+      (1 to 20).toVector.map(i => start(seed, home, project = if i % 2 == 0 then other else Project)).map(finish)
     results.foreach((status, output) => assertEquals(status, 0, output))
     assertEquals(entries(volume), Set("claude", "codex", "antigravity", "kiro", "copilot", "opencode"))
-    assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md"))
+    assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md", "config.json"))
+    // Every launch's entry survives the others', once: no lost update, no second list element,
+    // and one Codex table per project, which a second would make invalid TOML.
+    val (claude, antigravity, copilot, codex) = trustFiles(home)
+    val quoted = "\"" + Project.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    assertEquals(
+      parsed(claude),
+      s"""{"projects":{"$other":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true},""" +
+        s"""$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
+    )
+    // The lists' order is the launches' order under the lock, so each is compared sorted.
+    assertEquals(parsed(antigravity, ".trustedWorkspaces |= sort"), s"""{"trustedWorkspaces":["$other",$quoted]}""")
+    assertEquals(parsed(copilot, ".trustedFolders |= sort"), s"""{"trustedFolders":["$other",$quoted]}""")
+    val tables = Files.readString(codex).linesIterator.filter(_.startsWith("[projects.")).toVector
+    assertEquals(tables.sorted, Vector(s"[projects.$quoted]", s"""[projects."$other"]""").sorted)
 
   test("a home with no persistent-volume — a container run by hand, not a session — still runs the command"):
     val (seed, home) = fixture()
@@ -215,3 +265,164 @@ class SandboxEntrypointTest extends munit.FunSuite:
       assertEquals(status, 0, output)
       assert(output.contains("memory available"), output)
       assert(!output.contains("memory pressure"), output)
+
+  test("a fresh volume records the project as trusted for every agent that asks, keyed by its path"):
+    val (seed, home) = fixture()
+    val (status, output) = run(seed, home)
+    assertEquals(status, 0, output)
+    val (claude, antigravity, copilot, codex) = trustFiles(home)
+    val quoted = "\"" + Project.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    assertEquals(
+      parsed(claude),
+      s"""{"projects":{$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
+    )
+    assertEquals(parsed(antigravity), s"""{"trustedWorkspaces":[$quoted]}""")
+    assertEquals(parsed(copilot), s"""{"trustedFolders":[$quoted]}""")
+    // TOML's basic string escapes the same two characters JSON does.
+    assertEquals(Files.readString(codex), s"\n[projects.$quoted]\ntrust_level = \"trusted\"\n")
+
+  test("the trust entry joins what the agent has written, and is written once"):
+    val (seed, home) = fixture()
+    val volume = home.resolve("persistent-volume")
+    val (claude, antigravity, copilot, codex) = trustFiles(home)
+    // Agent state around the entry: another project's entry, keys of the agent's own, a list the
+    // agent has ordered. The directories exist, so they are the agent's: edited, never seeded.
+    Files.createDirectories(claude.getParent)
+    Files.writeString(
+      claude,
+      """{"oauthAccount":{"emailAddress":"me@example.com"},""" +
+        """"projects":{"/Users/me/other":{"hasTrustDialogAccepted":true}}}""",
+    )
+    Files.createDirectories(antigravity.getParent)
+    Files.writeString(antigravity, """{"toolPermission":"always-proceed","trustedWorkspaces":["/Users/me/other"]}""")
+    Files.createDirectories(copilot.getParent)
+    Files.writeString(copilot, """{"trustedFolders":["/Users/me/zzz","/Users/me/other"]}""")
+    Files.createDirectories(codex.getParent)
+    Files.writeString(codex, "model = \"o3\"\n\n[projects.\"/Users/me/other\"]\ntrust_level = \"trusted\"\n")
+    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    val (status, output) = run(seed, home, simple)
+    assertEquals(status, 0, output)
+    val first = Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex)
+    assertEquals(
+      first(0),
+      """{"oauthAccount":{"emailAddress":"me@example.com"},""" +
+        """"projects":{"/Users/me/other":{"hasTrustDialogAccepted":true},""" +
+        s""""$simple":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
+    )
+    assertEquals(first(1), s"""{"toolPermission":"always-proceed","trustedWorkspaces":["/Users/me/other","$simple"]}""")
+    assertEquals(first(2), s"""{"trustedFolders":["/Users/me/zzz","/Users/me/other","$simple"]}""")
+    assertEquals(
+      first(3),
+      "model = \"o3\"\n\n[projects.\"/Users/me/other\"]\ntrust_level = \"trusted\"\n" +
+        s"\n[projects.\"$simple\"]\ntrust_level = \"trusted\"\n",
+    )
+    // A second launch of the same project changes nothing: no second list element, no second table,
+    // and no staging file left beside the agent's.
+    val (again, output2) = run(seed, home, simple)
+    assertEquals(again, 0, output2)
+    assertEquals(Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex), first)
+    assertEquals(entries(volume.resolve("claude")), Set(".claude.json"))
+
+  test("Codex's table is found in every spelling, and another trust level is left as written"):
+    val (seed, home) = fixture()
+    val (_, _, _, codex) = trustFiles(home)
+    Files.createDirectories(codex.getParent)
+    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    // A literal-string key, which a text search for the basic-string spelling would miss and then
+    // define twice.
+    Files.writeString(codex, s"[projects.'$simple']\ntrust_level = \"trusted\"\n")
+    val (status, output) = run(seed, home, simple)
+    assertEquals(status, 0, output)
+    assertEquals(Files.readString(codex), s"[projects.'$simple']\ntrust_level = \"trusted\"\n")
+    // An inline table under [projects], the third spelling.
+    Files.writeString(codex, s"[projects]\n\"$simple\" = { trust_level = \"trusted\" }\n")
+    val (inline, inlineOutput) = run(seed, home, simple)
+    assertEquals(inline, 0, inlineOutput)
+    assertEquals(Files.readString(codex), s"[projects]\n\"$simple\" = { trust_level = \"trusted\" }\n")
+    // A level Codex or the user set is theirs; the entrypoint says so rather than overriding it.
+    Files.writeString(codex, s"[projects.\"$simple\"]\ntrust_level = \"untrusted\"\n")
+    val (kept, keptOutput) = run(seed, home, simple)
+    assertEquals(kept, 0, keptOutput)
+    assertEquals(Files.readString(codex), s"[projects.\"$simple\"]\ntrust_level = \"untrusted\"\n")
+    assert(keptOutput.contains(s"marks $simple untrusted"), keptOutput)
+    // An inline `projects` table cannot take a table outside its braces: the document the append
+    // would make is parsed first, and the file is left as written, with a warning — empty, and
+    // holding another project.
+    for inline <- Vector("projects = {}\n", "projects = { \"/Users/me/other\" = { trust_level = \"trusted\" } }\n") do
+      Files.writeString(codex, inline)
+      val (status, output) = run(seed, home, simple)
+      assertEquals(status, 0, output)
+      assertEquals(Files.readString(codex), inline)
+      assert(output.contains("inline table"), output)
+    // A file that is not TOML is left alone with a warning.
+    Files.writeString(codex, "[projects\n")
+    val (invalid, invalidOutput) = run(seed, home, simple)
+    assertEquals(invalid, 0, invalidOutput)
+    assertEquals(Files.readString(codex), "[projects\n")
+    assert(invalidOutput.contains("warning: could not record"), invalidOutput)
+
+  test("an agent directory the session cannot write costs a warning, not the launch"):
+    assume(System.getProperty("user.name") != "root", "root writes anywhere")
+    val (seed, home) = fixture()
+    val volume = home.resolve("persistent-volume")
+    val claude = Files.createDirectory(volume.resolve("claude"))
+    claude.toFile.setWritable(false, false)
+    try
+      val (status, output) = run(seed, home)
+      assertEquals(status, 0, output)
+      assert(output.contains(s"warning: could not record $Project as trusted in $claude/.claude.json"), output)
+      assert(output.endsWith("a b c "), output)
+      // The other agents' entries were still recorded.
+      val (_, _, copilot, codex) = trustFiles(home)
+      assert(Files.exists(copilot) && Files.exists(codex))
+    finally claude.toFile.setWritable(true, true)
+
+  test("Copilot's comment lines above its JSON are read past, and its other keys kept"):
+    val (seed, home) = fixture()
+    val (_, _, copilot, _) = trustFiles(home)
+    Files.createDirectories(copilot.getParent)
+    // As Copilot writes the file (measured 2026-09-18): two comment lines, then the object.
+    Files.writeString(
+      copilot,
+      "// User settings belong in settings.json.\n// This file is managed automatically.\n" +
+        """{"trustedFolders":["/Users/me/other"],"firstLaunchAt":"2026-03-11T00:00:00.000Z",""" +
+        """"appTipShown":true}""" + "\n",
+    )
+    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    val (status, output) = run(seed, home, simple)
+    assertEquals(status, 0, output)
+    assert(!output.contains("warning"), output)
+    assertEquals(
+      parsed(copilot),
+      s"""{"appTipShown":true,"firstLaunchAt":"2026-03-11T00:00:00.000Z",""" +
+        s""""trustedFolders":["/Users/me/other","$simple"]}""",
+    )
+
+  test("a file the agent left unreadable or unparsable costs a warning, not the launch nor the file"):
+    val (seed, home) = fixture()
+    val (claude, _, copilot, _) = trustFiles(home)
+    Files.createDirectories(claude.getParent)
+    Files.writeString(claude, "{ not json")
+    // Unreadable, in a writable directory: a rename over it would leave an empty file where the
+    // agent's state was.
+    assume(System.getProperty("user.name") != "root", "root reads anywhere")
+    Files.createDirectories(copilot.getParent)
+    Files.writeString(copilot, """{"trustedFolders":["/Users/me/other"]}""")
+    copilot.toFile.setReadable(false, false)
+    try
+      val (status, output) = run(seed, home)
+      assertEquals(status, 0, output)
+      assert(output.contains(s"warning: could not record $Project as trusted in $claude"), output)
+      assert(output.contains(s"warning: could not record $Project as trusted in $copilot"), output)
+      assert(output.endsWith("a b c "), output)
+      assertEquals(Files.readString(claude), "{ not json")
+    finally copilot.toFile.setReadable(true, true)
+    assertEquals(Files.readString(copilot), """{"trustedFolders":["/Users/me/other"]}""")
+    assertEquals(entries(copilot.getParent), Set("config.json"))
+
+  test("a container run by hand, at /, records no project"):
+    val (seed, home) = fixture()
+    val (status, output) = run(seed, home, Path.of("/"))
+    assertEquals(status, 0, output)
+    val (claude, antigravity, copilot, codex) = trustFiles(home)
+    Vector(claude, antigravity, copilot, codex).foreach(file => assert(!Files.exists(file), file.toString))

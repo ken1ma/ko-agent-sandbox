@@ -6,7 +6,7 @@
 //
 // Sessions are driven with `sleep` rather than an agent — a session runs whatever command it is
 // given, which is what makes the sequence scriptable with no terminal — and the marker set is
-// asserted at every step. Asserting the markers rather than just that /workspace still reads is the
+// asserted at every step. Asserting the markers rather than just that the project still reads is the
 // point: the two ways the count can be wrong are opposite, and a leaked marker (a mount nobody
 // uses) is invisible to the user who would notice the other one.
 //
@@ -114,8 +114,9 @@ class MountLifecycleTest extends munit.FunSuite:
       started = started.filterNot(_.container == a)
       eventually(assertEquals(markers(), b, "markers after A exits"))
       assertEquals(mounted(), 1, "the mount went away while B was still using it")
-      assert(run(podman, "exec", b, "sh", "-c", "ls /workspace > /dev/null").ok,
-             "B's /workspace stopped serving when A exited")
+      val mount = SandboxProject.mountPathOf(currentOs, project).fold(fail(_), identity)
+      assert(run(podman, "exec", b, "sh", "-c", s"ls '$mount' > /dev/null").ok,
+             "B's project mount stopped serving when A exited")
 
       // Exactly the state a launch in flight presents to a reap, planted rather than raced for: a
       // marker whose container exists and is not running. Pruning on anything short of the

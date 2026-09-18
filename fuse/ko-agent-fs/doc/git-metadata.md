@@ -15,7 +15,7 @@ document's name rule, because the launcher resolves that name on the same case-f
 
 ## The property
 
-> Through the host-shared `/workspace` mount, the sandbox can never create or alter repository
+> Through the host-shared project mount, the sandbox can never create or alter repository
 > state that causes a subsequent host-side `git` command to run a program the sandbox chose.
 
 "Host-side" matters: the danger is not code running in the sandbox (the container is the boundary
@@ -346,21 +346,21 @@ of that session, just as they would without the mount-time guard.
   Legitimate host `git` metadata is created outside the sandbox and is not the threat.
 
 
-## Consequences: git operations blocked inside `/workspace`
+## Consequences: git operations blocked inside the project
 
 These follow from the name rule and must be documented, not silently broken (SECURITY.md, "The
 project directory", has the security reason for each):
 
-- `git init` / `git clone` into `/workspace` — creates a new `.git`. Blocked. Clone under `~`.
+- `git init` / `git clone` into the project — creates a new `.git`. Blocked. Clone under `~`.
   The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror` write
   only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name rule can
   refuse without refusing legitimate projects that have them. The guard refuses a bare layout at the
   workspace root at mount; one the sandbox creates — below the root, or at the root after that check
   — is the gap SECURITY.md records ("The project directory"): running host git inside an
   agent-created directory is running the agent's output.
-- `git worktree add <path>` with `<path>` in `/workspace` — writes a `.git` **file** at the new
+- `git worktree add <path>` with `<path>` in the project — writes a `.git` **file** at the new
   worktree. Blocked.
-- Submodule checkout that would materialize a submodule's worktree `.git` file in `/workspace` —
+- Submodule checkout that would materialize a submodule's worktree `.git` file in the project —
   operational state in `.git/modules/<n>/` stays writable, while its protected entries stay frozen
   by the recursion in "The immutable set". The new `.git` pointer in the worktree is refused.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
@@ -481,7 +481,7 @@ written does not make it safe to allow. Only real git against a real mount exerc
   `hooks/**`, `commondir`, `gitdir`, `description`, `branches/**` are written by init,
   `submodule add` and `worktree add`, never during ordinary commit/checkout/merge/fetch — which is
   why freezing them costs an existing repository nothing, and why creating a submodule or linked
-  worktree inside `/workspace` is blocked ("Consequences", above). Guarded by `tests/git_corpus.rs`.
+  worktree inside the project is blocked ("Consequences", above). Guarded by `tests/git_corpus.rs`.
 - **P4 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
   data (group 2). Re-check on upgrade that git still refuses a `submodule.<name>.update = !command`
   sourced from it; if that ever changed, `.gitmodules` would need protecting.

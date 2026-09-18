@@ -63,8 +63,8 @@ original directories. The resolver refuses that stale path without a DENY line (
 
 ## "Transport endpoint is not connected" (ENOTCONN)
 
-The daemon died; only `/workspace` is inaccessible, including to a shell whose current directory is
-inside it. Read the logs on the host, then quit the session and relaunch:
+The daemon died; only the project mount is inaccessible, including to a shell whose current
+directory is inside it. Read the logs on the host, then quit the session and relaunch:
 
     podman machine ssh "tail -20 .local/share/ko-agent-sandbox/mounts/*/daemon.log*"
     podman machine ssh "journalctl -k | grep -iE 'oom|killed' | tail -5"
@@ -89,7 +89,7 @@ keeps the previous log as `daemon.log.1`.
 - `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
   no filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 
-## `/workspace` is empty inside the container
+## The project mount is empty inside the container
 
 Quit and relaunch. The container may have started after the filter mount disappeared, leaving
 it attached to the empty mountpoint. The project files remain in the backing directory. Mount

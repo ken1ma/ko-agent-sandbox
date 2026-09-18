@@ -117,7 +117,12 @@ object WithPodman extends munit.Assertions:
         s"${entry.id}\t${entry.ownerPid}\t${entry.ownerStart}\t${entry.directory}"
       writeReadable(ScratchRegistry, lines.mkString("", "\n", "\n"))
 
-  private def scratchId(project: Path): String = SandboxProject.projectIdOf(project.toRealPath(), currentOs)
+  /** The id the launcher gives a directory: the real path, less the macOS data-volume alias
+    * (SandboxProject.canonicalProjectDir), hashed. */
+  private def launcherId(project: Path): String =
+    SandboxProject.projectIdOf(SandboxProject.canonicalProjectDir(project.toRealPath(), currentOs), currentOs)
+
+  private def scratchId(project: Path): String = launcherId(project)
 
   private def forget(id: String): Unit = updateRegistry(_.filterNot(_.id == id))
 
@@ -211,9 +216,7 @@ object WithPodman extends munit.Assertions:
     // The id the launcher will compute for this directory, derived through its own function rather
     // than parsed back out of whatever container turns up. Waiting for *any* new session instead
     // could select one another suite started concurrently.
-    // `toRealPath` because the launcher resolves the project directory before hashing it, and on
-    // macOS a temporary directory is reached through a symlink.
-    val id = SandboxProject.projectIdOf(project.toRealPath(), currentOs)
+    val id = launcherId(project)
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
     val before = running()
@@ -248,6 +251,20 @@ object WithPodman extends munit.Assertions:
     // On POSIX the exec'd podman exits with the container and the wait is instant.
     session.launcher.waitFor(Patience, java.util.concurrent.TimeUnit.SECONDS): Unit
 
+  /** A launch expected to end on its own, a refusal, from `from`: its exit status and output. A
+    * launch that ran instead ends with its command, `true`, and answers 0. */
+  def launchOutcome(from: Path, log: Path, options: Vector[String] = Vector.empty): (Int, String) =
+    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ options ++ Vector("--", "true"))*)
+    builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
+    builder.directory(from.toFile)
+    builder.redirectErrorStream(true)
+    builder.redirectOutput(log.toFile)
+    val launcher = builder.start()
+    if !launcher.waitFor(Patience, java.util.concurrent.TimeUnit.SECONDS) then
+      launcher.destroyForcibly()
+      fail(s"a launch from $from did not end; its output:\n${Files.readString(log)}")
+    (launcher.exitValue, Files.readString(log))
+
   /** `--reset` in a project, as the user runs it after a crash: whether it succeeded, and its own
     * output, all that is worth printing when it did not. */
   def reset(project: Path, extra: (String, String)*): (Boolean, String) = action(project, Vector("--reset"), extra*)
@@ -272,8 +289,7 @@ object WithPodman extends munit.Assertions:
 
   /** The file `--stats` names this project's directory from. */
   def projectRecord(project: Path): Path =
-    val id = SandboxProject.projectIdOf(project.toRealPath(), currentOs)
-    AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(id)
+    AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(launcherId(project))
 
   /** Each session creates project state — a volume, a CA, a ruleset cache, logs and the mount
     * tree — so a scratch project is reset before it is deleted. A scratch
@@ -286,6 +302,11 @@ object WithPodman extends munit.Assertions:
       assert(!Files.exists(record), s"--reset left the project's --stats record $record; its output:\n$output")
       forget(scratchId(project))
     finally deleteRecursively(project)
+
+  /** Where the session has its project: the project's own path, as the launcher spells it. */
+  def mountPath(session: Session): String =
+    val project = SandboxProject.canonicalProjectDir(session.project, currentOs)
+    SandboxProject.mountPathOf(currentOs, project).fold(reason => throw AssertionError(reason), identity)
 
   /** A command inside a live session, run the way the agent in it would. */
   def exec(session: Session, command: String*): Run =

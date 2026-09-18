@@ -20,6 +20,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   private val LauncherBuiltImages = Set("local-base:1")
 
+  /** The project's mount path as the instructions receive it: the one place they name it. */
+  private val Mount = "/Users/me/src/app"
+
   test("a misspelled launcher variable is reported, a foreign or known one is not"):
     assertEquals(
       unknownSandboxVariables(Seq("KO_AGENT_SANDBOX_MEMROY", "PATH", "KO_AGENT_SANDBOX_MEMORY")),
@@ -1162,12 +1165,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // A ruleset with no lines of its own, so every grant word found is the text's own.
     val emptyResolution = "egress profile: deny-all"
-    val section = appendedSection("live", "fuse", emptyResolution)
+    val section = appendedSection(Mount, "live", "fuse", emptyResolution)
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
     // Neither project-file metadata nor its hostnames belong in the instructions.
-    val widened = appendedSection(
+    val widened = appendedSection(Mount, 
       "live", "fuse",
       emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
@@ -1200,29 +1203,29 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         guard <- Vector("fuse", "none")
         programs <- Vector(Vector.empty[String], RunOnHostPrograms)
       do
-        val section = appendedSection(mode, guard, output, programs)
+        val section = appendedSection(Mount, mode, guard, output, programs)
         assert(section.contains(lines.head), section)
         assert(section.contains("consult `$KO_AGENT_SANDBOX_EGRESS_RULESET`"), section)
-        assertEquals(section, appendedSection(mode, guard, lines.head, programs))
+        assertEquals(section, appendedSection(Mount, mode, guard, lines.head, programs))
         assert(!section.linesIterator.exists(_.trim.matches("(?:allow|deny) https://.*")), section)
         assert(!section.contains("ruleset summary:") && !section.contains("widening lines"), section)
         assert(!section.contains("lines below") && !section.contains("allowed below"), section)
 
   test("the appended section directs the agent by write mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all"
-    val readOnly = appendedSection("reject", "fuse", resolution)
+    val readOnly = appendedSection(Mount, "reject", "fuse", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
     Vector(Vector.empty[String], RunOnHostPrograms).foreach: programs =>
-      val section = appendedSection("reject", "fuse", resolution, programs)
+      val section = appendedSection(Mount, "reject", "fuse", resolution, programs)
       assert(section.contains("temporary work"), section)
       assert(section.contains("return results in the conversation"), section)
       assert(section.contains("--write=live"), section)
-    val filtered = appendedSection("live", "fuse", resolution)
+    val filtered = appendedSection(Mount, "live", "fuse", resolution)
     assert(filtered.contains("ko-agent-fs"), filtered)
     assert(filtered.contains("at any depth"), filtered)
     assert(filtered.contains("symlink targets"), filtered)
-    val raw = appendedSection("live", "none", resolution)
+    val raw = appendedSection(Mount, "live", "none", resolution)
     assert(raw.contains("direct writable bind mount"), raw)
     assert(raw.contains(KoAgentFs.RawWorkspaceBoundary), raw)
     assert(raw.contains("entries in nested repositories remain writable"), raw)
@@ -1235,7 +1238,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // --run-on-host adds the run-on-host instruction, naming each served program's command. Without the
     // option, a macOS session gets one discovery line — only the launcher knows the platform —
     // and other platforms hear nothing about a command they can never have.
-    val runOnHostSection = appendedSection("live", "fuse", resolution, Vector("sbt", "mill"))
+    val runOnHostSection = appendedSection(Mount, "live", "fuse", resolution, Vector("sbt", "mill"))
     assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
     assert(
@@ -1259,21 +1262,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)
     val discoverable =
-      appendedSection("live", "fuse", resolution, Vector.empty, hostCommandsAvailable = true)
+      appendedSection(Mount, "live", "fuse", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host command can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
-    val rejectWithHostCommands = appendedSection("reject", "fuse", resolution, Vector("sbt"))
+    val rejectWithHostCommands = appendedSection(Mount, "reject", "fuse", resolution, Vector("sbt"))
     assert(rejectWithHostCommands.contains("session's own writes"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("sandbox-run-on-host"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("--write=live"), rejectWithHostCommands)
     // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
     // was chosen: the agent is not sent to ask for an allow line it already has.
     val publicDefault =
-      appendedSection("live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
+      appendedSection(Mount, "live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
     assert(publicDefault.contains("reachable for reading"), publicDefault)
     assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
@@ -1283,10 +1286,54 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
     // A session without git: the agent hears it before its first command, in the words naming
     // what the container lacks (SandboxProject.noGitInstruction).
-    val cause = "`/workspace/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
-    val noGit = appendedSection("live", "fuse", resolution, noGit = Some(cause))
+    val cause = s"`$Mount/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
+    val noGit = appendedSection(Mount, "live", "fuse", resolution, noGit = Some(cause))
     assert(noGit.contains(s"Git does not work in this session: $cause."), noGit)
     assert(!filtered.contains("Git does not work"), filtered)
+
+  test("the mount-path probe tells an image entry, an unreachable ancestor and a free path apart"):
+    assume(!System.getProperty("os.name").toLowerCase.contains("win"))
+    // The image's tree stands in: /usr/local/bin exists, /tmp exists, /root exists and cannot be entered.
+    val image = Files.createTempDirectory("mount-path-probe")
+    Files.createDirectories(image.resolve("usr/local/bin"))
+    Files.createDirectories(image.resolve("tmp"))
+    Files.createDirectories(image.resolve("root"))
+    Files.createSymbolicLink(image.resolve("etc"), Paths.get("usr"))
+    Files.createDirectories(image.resolve("opt/node/bin"))
+    Files.writeString(image.resolve("opt/node/bin/node"), "#!/bin/sh\n")
+    image.resolve("opt/node/bin/node").toFile.setExecutable(true)
+    def answer(mountPath: String): String =
+      val process = ProcessBuilder("sh", "-c", MountPathProbeScript, "sh", mountPath).redirectErrorStream(true).start()
+      val output = String(process.getInputStream.readAllBytes()).trim
+      assertEquals(process.waitFor(), 0, output)
+      output
+    assertEquals(answer(s"$image/usr/local/bin"), "entry")
+    assertEquals(answer(s"$image/tmp"), "entry")
+    assertEquals(answer(s"$image/etc"), "entry") // a symlink is an entry too
+    assertEquals(answer(s"$image/tmp/app"), "absent") // binds into an existing directory
+    assertEquals(answer(s"$image/opt/src/app"), "absent") // several missing components
+    // An executable file is no parent: podman would fail creating the mountpoint beneath it.
+    assertEquals(answer(s"$image/opt/node/bin/node/app"), s"file $image/opt/node/bin/node")
+    // The command runs as the image's user, whom `/root` refuses; root itself enters anywhere.
+    if !System.getProperty("user.name").equals("root") then
+      image.resolve("root").toFile.setExecutable(false, false)
+      try assertEquals(answer(s"$image/root/src/app"), s"unreachable $image/root")
+      finally image.resolve("root").toFile.setExecutable(true, true)
+    val project = Paths.get("/usr/local/bin")
+    assertEquals(mountPathRefusal("absent\n", project, "/usr/local/bin"), None)
+    val entry = mountPathRefusal("entry\n", project, "/usr/local/bin")
+    assert(entry.exists(_.contains("has an entry at /usr/local/bin")), entry.toString)
+    assert(entry.exists(_.contains("/tmp/app binds into /tmp")), entry.toString)
+    val underFile = "/opt/node/bin/node/app"
+    val file = mountPathRefusal("file /opt/node/bin/node\n", Paths.get(underFile), underFile)
+    assert(file.exists(_.contains("/opt/node/bin/node is a file")), file.toString)
+    val unreachable = mountPathRefusal("unreachable /root\n", Paths.get("/root/src/app"), "/root/src/app")
+    assert(unreachable.exists(_.contains("/root cannot be entered")), unreachable.toString)
+    assert(mountPathRefusal("", project, "/usr/local/bin").exists(_.contains("no answer")))
+    // The run: the image's own program and network are not the question, and nothing is left behind.
+    val command = mountPathProbeCommand("podman", "ko-agent-sandbox:latest", "/usr/local/bin")
+    assert(command.containsSlice(Vector("--rm", "--pull=never", "--network=none", "--entrypoint=")), command)
+    assertEquals(command.takeRight(2), Vector("sh", "/usr/local/bin"))
 
   test("the generated agent document cache varies with every input"):
     def stamp(

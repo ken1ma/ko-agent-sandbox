@@ -46,9 +46,6 @@ object RunOnHostChannel:
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/run-on-host"
 
-  /** What the project is mounted at inside the container: the spelling requests arrive in. */
-  val WorkspaceMount = "/workspace"
-
   /**
    * Set in the sandbox to the programs `--run-on-host` names: the shim's cue to wait for a `req`
    * the broker may not have made yet, and the agent's one variable saying the channel exists.
@@ -195,7 +192,9 @@ object RunOnHostChannel:
       * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
     canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
-    mount: String = WorkspaceMount,
+    /** What the project is mounted at inside the container — its own path
+      * (SandboxProject.mountPathOf): the spelling requests arrive in. */
+    mount: String,
     /** How long the broker waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
   )
@@ -530,6 +529,7 @@ object RunOnHostChannel:
     project: Path,
     programs: Seq[String],
     logFile: Path,
+    mount: String,
     // `--env` as launched: the names travel as arguments down to each command, the values through
     // this process's environment under inert carrier names (RunOnHostSandbox.carrierName), so no
     // argument below the launcher carries a value and an explicit one is read by no trusted
@@ -544,7 +544,7 @@ object RunOnHostChannel:
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
-            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name))*,
+            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name) :+ mount)*,
           ))*,
       )
       forwards.foreach: forward =>
@@ -558,13 +558,13 @@ object RunOnHostChannel:
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--env=<name>...] [mount]`: spawned by the launcher before it hands over to podman, detached
-    * like the reaper. The trailing mount override is the gate's, whose shim runs at the project's
-    * own path rather than /workspace. */
+    * [--env=<name>...] <mount>`: spawned by the launcher before it hands over to podman, detached
+    * like the reaper. The trailing mount is what the project is mounted at inside the container;
+    * the gate's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
-      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs <= 1 =>
+      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -663,7 +663,7 @@ object RunOnHostChannel:
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           ended = programName =>
             RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
-          mount = trailing.headOption.getOrElse(WorkspaceMount),
+          mount = trailing.head,
         )
         log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)

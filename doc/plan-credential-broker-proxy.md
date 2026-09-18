@@ -46,7 +46,7 @@ socket is the route of docker/sbx-releases #121.
 ## Guarantees
 
 1. The value reaches the proxy container only, never the sandbox's environment, the persistent
-   volume, `/workspace`, the launch banner, or the audit log.
+   volume, the project, the launch banner, or the audit log.
 1. An explicit `--env` binding names exactly one host, which must be inspected in the
    resolved profile. A `tunnel` host is opaque, where no substitution can
    happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
@@ -321,7 +321,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   owner-only under its own run directory and gone after `--reset`; never under another run's
   directory.
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
-  the persistent volume and `/workspace` contain neither the value nor the placeholder-to-value
+  the persistent volume and the project contain neither the value nor the placeholder-to-value
   mapping — the openai/codex #30971 check, population-level over every agent's state directory.
 
 ### Documentation

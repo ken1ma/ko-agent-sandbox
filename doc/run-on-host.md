@@ -86,8 +86,7 @@ Out of scope, deliberately:
 - any automatic expansion of permissions when a command fails, and any fallback to the container;
 - implicit access to `~/.m2`, `~/.ivy2`, user git credentials, SSH credentials or unrelated
   home-directory state;
-- stdin — `sbt console`, `sbt shell` and `sbtn`'s interactive modes;
-- mounting the container's workspace at its host path (`TODO.md`, "same-path mounting").
+- stdin — `sbt console`, `sbt shell` and `sbtn`'s interactive modes.
 
 The container keeps its toolchain: host commands are the fast path, not a replacement, and a
 session without `--run-on-host` builds in the container.

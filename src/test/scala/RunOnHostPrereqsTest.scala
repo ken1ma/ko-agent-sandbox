@@ -489,21 +489,23 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // The channel's working directory
   // --------------------------------------------------------------------------
 
+  // The project is mounted at its own path, so the mount is the project's spelling; the value
+  // still arrives from inside the container and is validated as such.
   private def cwd(requested: String, canonical: Path => Option[Path] = path => Some(path.normalize())) =
-    workingDirectory(requested, "/workspace", project, canonical, Os.Mac)
+    workingDirectory(requested, project.toString, project, canonical, Os.Mac)
 
   test("the mount root translates to the project root"):
-    assertEquals(cwd("/workspace"), Right(project))
+    assertEquals(cwd(project.toString), Right(project))
 
   test("a subdirectory translates beneath the project"):
-    assertEquals(cwd("/workspace/modules/a"), Right(project.resolve("modules/a")))
+    assertEquals(cwd(s"$project/modules/a"), Right(project.resolve("modules/a")))
 
   test("climbing out of the mount is refused, not clamped"):
-    for requested <- Seq("/workspace/../..", "/workspace/../../etc", "/workspace/a/../../..") do
+    for requested <- Seq(s"$project/../..", s"$project/../../etc", s"$project/a/../../..") do
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a path outside the mount is refused"):
-    for requested <- Seq("/etc", "/Users/kenichi", "/workspacex", "workspace/a", "") do
+    for requested <- Seq("/etc", "/Users/kenichi", s"${project}x", project.getFileName.toString + "/a", "") do
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a symlink inside the project that leaves it is refused"):
@@ -511,16 +513,16 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val escaping = project.resolve("link")
     val canonical: Path => Option[Path] =
       path => if path == escaping then Some(Paths.get("/etc")) else Some(path.normalize())
-    assert(cwd("/workspace/link", canonical).isLeft)
+    assert(cwd(s"$project/link", canonical).isLeft)
 
   test("a canonical case-different sibling is outside the project; a lexical one still folds"):
     // Canonical spellings are the volume's own: on a case-sensitive volume `Ko-Agent-Sandbox` is
     // another directory. The lexical check before canonicalization keeps folding, since a request
     // on a folding volume may arrive in either case.
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/sub")
-    assert(cwd("/workspace/sub", _ => Some(sibling)).isLeft)
+    assert(cwd(s"$project/sub", _ => Some(sibling)).isLeft)
     // Lexically a case-different spelling of the project itself, which the real filesystem folds.
-    val folded = cwd("/workspace/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
+    val folded = cwd(s"$project/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
     assertEquals(folded, Right(project.resolve("sub")))
 
   test("a canonical case-different sibling of the project is a safe cache root"):
@@ -528,7 +530,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(cacheRootOutsideProject(sibling, project, Os.Mac, Right(_)), Right(sibling))
 
   test("a working directory that does not exist is refused"):
-    assert(cwd("/workspace/gone", _ => None).isLeft)
+    assert(cwd(s"$project/gone", _ => None).isLeft)
 
   test("a refusal names what was requested, so the diagnostic can quote it"):
     assertEquals(cwd("/etc/passwd"), Left(Refusal.WorkingDirectoryOutsideProject("/etc/passwd")))

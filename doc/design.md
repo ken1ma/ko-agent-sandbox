@@ -454,6 +454,25 @@ are linked inline where that decision is recorded; these are the broader sources
 
 - Docker AI sandboxes — microVM isolation, direct-vs-clone workspace models:
   https://docs.docker.com/ai/sandboxes/ https://docs.docker.com/ai/sandboxes/security/isolation/
+- The project mounted at its own path (`SandboxProject.mountPathOf`) — what the two container
+  sandboxes doing the same ran into, read in September 2026. Gemini CLI mounts the unresolved
+  path while its tools resolve real paths, so a symlinked project (macOS's `/tmp`) fails its own
+  lookups and splits its sessions; this launcher mounts the real path only. Docker Sandboxes
+  spells a Windows drive `/c/…` and serves `\\wsl.localhost` workspaces, where `chmod` and
+  `symlink` fail; its users asked for a remapped path over the disclosure of the username and
+  layout, and a maintainer answered in May 2026 that the host path serves scripts expecting it
+  and the default may change. Antigravity confines commands on the host instead, paths the
+  host's by construction; hosted agents and VS Code dev containers use a fixed path. Open: a
+  second bind at the launch spelling for an IDE that opened a symbolic path, and `/mnt/<drive>`
+  against those tools' `/c/`.
+  https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
+  https://github.com/google-gemini/gemini-cli/issues/28416
+  https://github.com/google-gemini/gemini-cli/issues/27278
+  https://github.com/docker/sbx-releases/issues/598
+  https://github.com/docker/sbx-releases/issues/137
+  https://github.com/docker/desktop-feedback/issues/158
+  https://antigravity.google/docs/sandbox
+  https://code.visualstudio.com/remote/advancedcontainers/change-default-source-mount
 - Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
   model: https://www.anthropic.com/engineering/claude-code-sandboxing
   https://docs.anthropic.com/en/docs/claude-code/settings

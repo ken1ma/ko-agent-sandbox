@@ -19,8 +19,8 @@
 //
 //   Host
 //    |
-//    +-- current project -------------------> /workspace
-//    |     (--write selects the mount: live — the default — is the
+//    +-- current project -------------------> the same path (Windows: /mnt/<drive>/...)
+//    |     (SandboxProject.mountPathOf; --write selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with Git entries and launcher
 //    |      configuration protected (mountKoAgentFs; under guard=none the
 //    |      .git mounts of gitGuardVolumes stand in); reject is a
@@ -61,9 +61,10 @@
 //
 // The rest of /home/nonroot is an anonymous podman volume: build caches work, and disappear with the container.
 //
-// The image pre-accepts Claude Code's trust dialog for /workspace and marks it trusted for Codex and Copilot, so a
-// mounted project's own agent configuration — MCP servers included — takes effect unconfirmed. The container, not
-// those dialogs, is the boundary; whatever they name runs inside it, never in a host-side helper.
+// The entrypoint records the project's mount path as trusted for Claude Code, Codex, Antigravity and Copilot at
+// every launch (sandbox-entrypoint), so a mounted project's own agent configuration — MCP servers included — takes
+// effect without a trust dialog. The container, not that dialog, is the boundary; whatever the configuration names
+// runs inside it, never in a host-side helper.
 //
 // podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
@@ -1092,7 +1093,7 @@ object AgentSandboxLauncher:
     // stays fast.
     def finish(suiteExit: Int): Nothing =
       if suiteExit != 0 || filter.isDefined then sys.exit(suiteExit)
-      sys.exit(SelfTestShare.shareRows(podman, os, resolveProjectDir()))
+      sys.exit(SelfTestShare.shareRows(podman, os, resolveProjectDir(os)))
 
     val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
     echoCommand(unprivileged)
@@ -1120,7 +1121,7 @@ object AgentSandboxLauncher:
    * the running proxies, the live view of the same lines.
    */
   def proxyLog(os: Os, extra: List[String]): Nothing =
-    val projectDir = resolveProjectDir()
+    val projectDir = resolveProjectDir(os)
     requireStateRootOutside(os, projectDir)
     val id = projectIdOf(projectDir, os)
     val logDir = logStateRoot(os).resolve(id)
@@ -1163,7 +1164,7 @@ object AgentSandboxLauncher:
     val command = operands match
       case "--" :: rest => rest
       case rest         => rest
-    val projectDir = resolveProjectDir()
+    val projectDir = resolveProjectDir(os)
     requireStateRootOutside(os, projectDir)
     val projectId = projectIdOf(projectDir, os)
     val proxyImage = proxyImageChoice._1
@@ -1270,7 +1271,7 @@ object AgentSandboxLauncher:
    * before any failure is reported, so one project's failed step does not leave the next untouched.
    */
   def resetProject(os: Os, givenIds: Vector[String]): Nothing =
-    val projectDir = resolveProjectDir()
+    val projectDir = resolveProjectDir(os)
     // Before the deletions below: a state root overlapping the project directory must refuse here,
     // not aim `rm -rf` at it.
     requireStateRootOutside(os, projectDir)
@@ -1417,7 +1418,7 @@ object AgentSandboxLauncher:
   def resetAll(os: Os): Nothing =
     // The workstation-wide deletions below run wherever the state and cache roots point; both
     // roots are resolved and checked against the current directory before the first of them.
-    val project = resolveProjectDir()
+    val project = resolveProjectDir(os)
     requireStateRootOutside(os, project)
     // Every project's run-on-host caches as one tree (RunOnHostPrereqs.runOnHostCachesOf has why
     // not the cache root itself), removed after the podman resources and the per-project state;
@@ -1524,7 +1525,7 @@ object AgentSandboxLauncher:
    * session. `--reset` removes them with the rest.
    */
   def resetRunOnHost(os: Os): Nothing =
-    val project = resolveProjectDir()
+    val project = resolveProjectDir(os)
     requireStateRootOutside(os, project)
     val id = projectIdOf(project, os)
     val caches = runOnHostCacheRoot(os, project)
@@ -1601,6 +1602,66 @@ object AgentSandboxLauncher:
         "not reach and a reset removes; point XDG_STATE_HOME (or LOCALAPPDATA) at a directory\n" +
         "outside the project.",
     )
+
+  /**
+   * The question a run of the image answers about the project's mount path (mountPathRefusal):
+   * `entry` when the image has something at it, which the bind would cover — `/tmp`,
+   * `/usr/local/bin`, a directory the image gains later — `file <path>` when the nearest
+   * ancestor the image has is not a directory, `/opt/node/bin/node`, so nothing can be mounted
+   * beneath it, `unreachable <dir>` when it is a directory the sandbox user cannot enter, `/root`,
+   * so nothing mounted beneath it can be reached, and `absent` otherwise: podman creates the
+   * missing directories of a bind target inside the read-only root, so a path the image has
+   * nothing at needs no scaffolding. Asked of the image rather than of a list, so no list goes
+   * stale. Only a Linux host spells such a path; `/Users/…` and `/mnt/<drive>/…` sit beside the
+   * image's tree.
+   */
+  val MountPathProbeScript: String =
+    """p=$1
+      |if [ -e "$p" ] || [ -L "$p" ]; then echo entry; exit 0; fi
+      |while [ "$p" != / ]; do
+      |  p=${p%/*}; [ -n "$p" ] || p=/
+      |  if [ -e "$p" ] || [ -L "$p" ]; then
+      |    if [ ! -d "$p" ]; then echo "file $p"
+      |    elif [ -x "$p" ]; then echo absent
+      |    else echo "unreachable $p"; fi
+      |    exit 0
+      |  fi
+      |done
+      |echo absent""".stripMargin
+
+  /** `--entrypoint=` and `--network=none`: the image's own program and egress are not the question
+    * (the CA-bundle read in the launch has the same form). */
+  def mountPathProbeCommand(podman: String, image: String, mountPath: String): Vector[String] =
+    Vector(
+      podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", image,
+      "sh", "-c", MountPathProbeScript, "sh", mountPath,
+    )
+
+  /** Why the image cannot take the project at `mountPath`, read from the probe's answer, or None. */
+  def mountPathRefusal(answer: String, projectDir: Path, mountPath: String): Option[String] =
+    val refusing = s"error: refusing to mount $projectDir at $mountPath\n\n"
+    answer.trim match
+      case "absent" => None
+      case "entry" =>
+        Some(
+          refusing +
+            s"The sandbox image has an entry at $mountPath, which the project's mount would cover, and the\n" +
+            "container relies on what the image has there. Move the project to a path the image has nothing\n" +
+            "at (/tmp/app binds into /tmp; /tmp itself does not) and run this again.",
+        )
+      case s"file $path" =>
+        Some(
+          refusing +
+            s"In the sandbox image, $path is a file, so nothing can be mounted beneath it. Move the project\n" +
+            "elsewhere and run this again.",
+        )
+      case s"unreachable $dir" =>
+        Some(
+          refusing +
+            s"In the sandbox image, $dir cannot be entered by the sandbox user, so nothing mounted beneath\n" +
+            "it is reachable. Move the project elsewhere and run this again.",
+        )
+      case other => Some(s"error: the sandbox image gave no answer about $mountPath\n$other")
 
   /**
    * Whether a launch could accept `dir` as this project — the exemption the containment checks
@@ -1891,6 +1952,9 @@ object AgentSandboxLauncher:
    * instruction vocabulary to the proxy source.
    */
   def appendedSection(
+    /** Where the container has the project (SandboxProject.mountPathOf): the one place the
+      * instructions name it, since the image's own text says "the project directory". */
+    mountPath: String,
     writeMode: String,
     workspaceGuard: String,
     resolved: String,
@@ -1908,21 +1972,21 @@ object AgentSandboxLauncher:
       // The plain reject instruction would be false under --run-on-host: a host command writes the
       // project (SECURITY.md "Run on host", the --write=reject composition).
       case ("reject", _) if runOnHost.nonEmpty =>
-        """`/workspace` is read-only to this session's own writes; only commands through
+        s"""`$mountPath` is read-only to this session's own writes; only commands through
           |`sandbox-run-on-host` write the project, on the host. For anything a command does not
           |write, use `~` or `/tmp` for temporary work and return results in the conversation.
           |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
       case ("reject", _) =>
-        """`/workspace` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
+        s"""`$mountPath` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
           |for temporary work and return results in the conversation. Tell the user to relaunch
           |with `--write=live` when project files must be written.""".stripMargin
       case ("live", "fuse") =>
-        """`/workspace` is writable and shared live with the host project directory through the
+        s"""`$mountPath` is writable and shared live with the host project directory through the
           |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
           |`.ko-agent-sandbox` cannot be modified at any depth;
           |symlink targets must be relative and remain inside the workspace.""".stripMargin
       case ("live", "none") =>
-        s"""`/workspace` is a direct writable bind mount of the host project directory, without the
+        s"""`$mountPath` is a direct writable bind mount of the host project directory, without the
            |`ko-agent-fs` filter. $RawWorkspaceBoundary. Git configuration, hooks and other Git
            |entries in nested repositories remain writable. Symlinks can have absolute targets or
            |targets that resolve outside the project on the host.""".stripMargin
@@ -2272,7 +2336,7 @@ object AgentSandboxLauncher:
     if runOnHost.nonEmpty && os != Os.Mac then
       fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")
 
-    val projectDir = resolveProjectDir()
+    val projectDir = resolveProjectDir(os)
 
     // -----------------------------------------------------------------------
     // Refuse obviously wrong project directories
@@ -2280,8 +2344,12 @@ object AgentSandboxLauncher:
     val homeProtection = protectedHomeDirectories(os, env).fold(fail(_), identity)
     homeProtection.warnings.foreach(warn)
     forbiddenProjectDirReason(projectDir, homeProtection).foreach: reason =>
-      fail(s"error: refusing to mount $projectDir as /workspace\n\n$reason")
+      fail(s"error: refusing to mount $projectDir\n\n$reason")
     forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
+    // Where the container has the project: the same path, so nothing on either side translates
+    // (SandboxProject.mountPathOf). What the image has there is asked once the image is known,
+    // below, still before any per-project resource exists.
+    val mountPath = mountPathOf(os, projectDir).fold(fail(_), identity)
 
     // Detected this early because reject's refusal below must come before any resource exists;
     // the log-file and raw project mounts read it again further down. Enforcing specifically:
@@ -2359,6 +2427,15 @@ object AgentSandboxLauncher:
     bundleMismatch(image, bundledSourceId("ko-agent-sandbox"), imageLabel).foreach: mismatch =>
       if imageOverridden then warn(mismatch)
       else fail(s"error: $mismatch")
+
+    // A mount path the image has an entry at, or that the sandbox user cannot reach, is refused
+    // here: before the filter's preparation, the networks and the TLS state, so a refusal writes
+    // nothing (mountPathRefusal has the cases). One run of the image per launch, uncached: 0.2 s
+    // per run of the probe command on a macOS podman machine (2026-09-18).
+    val mountPathProbe = run(mountPathProbeCommand(podman, image, mountPath)*)
+    if !mountPathProbe.ok then
+      fail(s"error: could not ask $image about $mountPath\n${mountPathProbe.err}")
+    mountPathRefusal(mountPathProbe.text, projectDir, mountPath).foreach(fail(_))
 
     // -----------------------------------------------------------------------
     // This run's egress proxy
@@ -2555,14 +2632,14 @@ object AgentSandboxLauncher:
       if writeMode == "reject" || filteredWorkspace.isDefined then Vector.empty
       else
         val (emptyFile, emptyDir) = emptyMountSources(stateRoot(os))
-        gitGuardVolumes(projectDir.resolve(".git"), emptyFile, emptyDir).fold(fail(_), identity)
+        gitGuardVolumes(projectDir.resolve(".git"), mountPath, emptyFile, emptyDir).fold(fail(_), identity)
 
     // guard=none is the one arrangement needing the read-only mount-back of the boundary
     // directory: the raw tree is writable there, so without it a session could mkdir
     // .ko-agent-sandbox and write the configuration governing the next one (SECURITY.md). Reject's tree
     // is read-only whole; the filter refuses the reserved name at any depth.
     val boundaryGuardArgs =
-      if writeMode == "live" && guard == "none" then Vector(boundaryGuardVolume(boundaryDir))
+      if writeMode == "live" && guard == "none" then Vector(boundaryGuardVolume(boundaryDir, mountPath))
       else Vector.empty
 
     // -----------------------------------------------------------------------
@@ -2648,8 +2725,8 @@ object AgentSandboxLauncher:
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
     // The profile and provider need no stamp input of their own — the resolved text's first line
     // names both.
-    val noGit = SandboxProject.noGit(projectDir, homeProtection)
-    val gitInstruction = noGit.map(SandboxProject.noGitInstruction)
+    val noGit = SandboxProject.noGit(projectDir, homeProtection, os)
+    val gitInstruction = noGit.map(SandboxProject.noGitInstruction(_, mountPath))
     val agentDocStamp = agentDocumentStamp(
       imageId, writeMode, guard, rulesetText, agentInstructions, runOnHost, gitInstruction,
     )
@@ -2814,7 +2891,7 @@ object AgentSandboxLauncher:
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
             + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
             + appendedSection(
-              writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
+              mountPath, writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -2936,12 +3013,14 @@ object AgentSandboxLauncher:
     // included, so the one unfiltered bind mount arrangement that rewrites host metadata is never a
     // silent one. Each line tints the mode it states; a branch weaker than the default is tinted
     // whole instead, red (HostCommands.weakened), so no line ever has two colours.
+    // The path is said on every line: on Windows this is where the user learns the /mnt/<drive>
+    // spelling the agent will print.
     System.err.println((writeMode, filteredWorkspace) match
-      case ("reject", _) => s"workspace: ${chosen("reject")}; /workspace is read-only this session"
-      case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}"
+      case ("reject", _) => s"workspace: ${chosen("reject")}; $mountPath is read-only this session"
+      case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)} at $mountPath"
       case (_, None) =>
         weakened(
-          s"workspace: live; guard none by $WorkspaceGuardVariable — /workspace bound directly, " +
+          s"workspace: live; guard none by $WorkspaceGuardVariable — $mountPath bound directly, " +
             s"$RawWorkspaceBoundary; read-only bind mounts can lose protection when the host replaces " +
             "their source" +
             (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
@@ -3053,10 +3132,10 @@ object AgentSandboxLauncher:
     val projectVolume = (writeMode, filteredWorkspace) match
       // Never :Z: the reject gate above established the tree is already container-readable, and
       // relabeling is the host write the mode withholds.
-      case ("reject", _)                 => s"$projectDir:/workspace:ro"
-      case (_, Some(prepared))           => s"${prepared.mountpoint}:/workspace:rw"
-      case (_, None) if selinuxEnforcing => s"$projectDir:/workspace:rw,Z"
-      case (_, None)                     => s"$projectDir:/workspace:rw"
+      case ("reject", _)                 => s"$projectDir:$mountPath:ro"
+      case (_, Some(prepared))           => s"${prepared.mountpoint}:$mountPath:rw"
+      case (_, None) if selinuxEnforcing => s"$projectDir:$mountPath:rw,Z"
+      case (_, None)                     => s"$projectDir:$mountPath:rw"
 
     // -----------------------------------------------------------------------
     // Memory limit
@@ -3090,7 +3169,7 @@ object AgentSandboxLauncher:
       "--pull=never",
       "--init",
 
-      // Map the invoking rootless podman user to our fixed non-root user. Files created under /workspace consequently
+      // Map the invoking rootless podman user to our fixed non-root user. Files created in the project consequently
       // remain host-user-owned.
       s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
       s"--user=$ContainerUid:$ContainerGid",
@@ -3121,18 +3200,18 @@ object AgentSandboxLauncher:
       "--volume", projectVolume,
 
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
-      "--mount", "type=volume,dst=/home/nonroot",
+      "--mount", s"type=volume,dst=$ContainerHome",
 
       // Persist auth/config; ~/.claude, ~/.codex, ~/.gemini, ~/.kiro, ~/.copilot, ~/.local/share/kiro-cli and
       // opencode's XDG directories are symlinks into this volume. This is podman-owned storage, not a bind mount
       // into the host HOME.
-      "--mount", s"type=volume,src=$persistentVolume,dst=/home/nonroot/persistent-volume",
+      "--mount", s"type=volume,src=$persistentVolume,dst=$ContainerHome/persistent-volume",
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM
       // reservation.
       "--shm-size=512m",
     ) ++ memoryArgs ++ Vector(
-      "--workdir", "/workspace",
+      "--workdir", mountPath,
       image,
     ) ++ command.toVector
 
@@ -3192,7 +3271,7 @@ object AgentSandboxLauncher:
     // Said here, not on the workspace line above: the user should not have to infer "joined" from
     // silence, and which branch the mount took is known only now.
     filteredWorkspace.foreach: prepared =>
-      val joined = mountKoAgentFs(podman, os, prepared, projectId, projectDir, sandboxContainer)
+      val joined = mountKoAgentFs(podman, os, prepared, projectId, mountPath, sandboxContainer)
       System.err.println(
         if joined then "ko-agent-fs filter: joined the existing mount for this project directory"
         else "ko-agent-fs filter: mounted",
@@ -3203,7 +3282,7 @@ object AgentSandboxLauncher:
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
       if !RunOnHostChannel.spawnBroker(
-          podman, sandboxContainer, projectDir, runOnHost, channelLogFile,
+          podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
           forwards = parsed.env,
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")
