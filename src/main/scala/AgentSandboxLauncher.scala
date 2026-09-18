@@ -2384,10 +2384,9 @@ object AgentSandboxLauncher:
     // Per-project persistent volume
     // -----------------------------------------------------------------------
     //
-    // Per project: the volume is startup input, not just storage — agent settings and MCP definitions in it name
-    // commands to run, and a shared volume would let one hostile repository seed every later session (see the
-    // allowManagedHooksOnly note in the Containerfile). Costs one sign-in per project. KO_AGENT_SANDBOX_PERSISTENT_VOLUME
-    // deliberately shares one.
+    // Separate volumes keep settings and MCP commands written by one project out of another project's sessions
+    // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each project.
+    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across projects using the named volume.
     val persistentVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
       case Some(shared) =>
         sharedVolumeNameError(shared).foreach(reason => fail(s"error: $reason"))
