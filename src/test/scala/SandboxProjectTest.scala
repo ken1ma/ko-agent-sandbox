@@ -20,6 +20,9 @@ class SandboxProjectTest extends munit.FunSuite:
 
   private val isWindows = System.getProperty("os.name").toLowerCase.contains("win")
 
+  /** A project's mount path as the guards receive it: any absolute path, since they only spell it. */
+  private val Mount = "/Users/me/src/app"
+
   private def protectedHomes(os: Os, values: Map[String, String]): HomeProtection =
     protectedHomeDirectories(os, values.get).fold(message => fail(message), identity)
 
@@ -122,6 +125,35 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(forbiddenProjectDirReason(Paths.get("/home/user"), homes).exists(_.contains("home directory")))
     assert(forbiddenProjectDirReason(Paths.get("/work/.config/app"), homes).exists(_.contains("'.config'")))
     assertEquals(forbiddenProjectDirReason(Paths.get("/work/app"), homes), None)
+    // The container's own home, at any depth: mounted at its own path, the project would sit among
+    // the session's home, the persistent volume and the agents' state.
+    assert(forbiddenProjectDirReason(Paths.get("/home/nonroot/app"), homes).exists(_.contains("/home/nonroot")))
+    assert(forbiddenProjectDirReason(Paths.get("/home/nonroot/src/deep"), homes).exists(_.contains("/home/nonroot")))
+    assertEquals(forbiddenProjectDirReason(Paths.get("/home/nonroot-2/app"), homes), None)
+
+  test("the mount path is the project's own, spelled as the machine has it on Windows"):
+    def mount(os: Os, path: String): Either[String, String] = mountPathOf(os, Paths.get(path))
+    assertEquals(mount(Os.Windows, """C:\work\ko-agent-sandbox"""), Right("/mnt/c/work/ko-agent-sandbox"))
+    assertEquals(mount(Os.Windows, """D:\a b\proj"""), Right("/mnt/d/a b/proj"))
+    // A UNC path has no /mnt spelling: refused with the reason and the remedy, never guessed at.
+    val unc = mount(Os.Windows, """\\server\share\proj""")
+    assert(unc.left.exists(_.contains("fixed drive")), unc.toString)
+    // POSIX paths pass through as the runner's Path type spells them — a POSIX host is the only
+    // one that produces them for real, and a Windows runner respells them with its own separator.
+    assertEquals(mount(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
+    assertEquals(mount(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
+
+  test("a macOS launch from the data-volume alias is the same project as one from its own spelling"):
+    assume(!isWindows)
+    val alias = Paths.get("/System/Volumes/Data/Users/me/src/app")
+    assertEquals(canonicalProjectDir(alias, Os.Mac), Paths.get("/Users/me/src/app"))
+    assertEquals(canonicalProjectDir(Paths.get("/Users/me/src/app"), Os.Mac), Paths.get("/Users/me/src/app"))
+    // The prefix alone is a root, refused later; a name that merely begins like it is a directory.
+    assertEquals(canonicalProjectDir(Paths.get("/System/Volumes/Data"), Os.Mac), Paths.get("/System/Volumes/Data"))
+    val lookalike = Paths.get("/System/Volumes/DataX/app")
+    assertEquals(canonicalProjectDir(lookalike, Os.Mac), lookalike)
+    // Only macOS has the firmlink; a Linux directory of that name is itself.
+    assertEquals(canonicalProjectDir(alias, Os.Linux), alias)
 
   test("a dot-prefixed current or ancestor directory is refused"):
     assume(!isWindows)
@@ -208,11 +240,11 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createFile(git.resolve("config"))
     Files.createDirectory(git.resolve("hooks"))
     assertEquals(
-      gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
+      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
       Right(
         Vector(
-          s"--volume=${git.resolve("config")}:/workspace/.git/config:ro",
-          s"--volume=${git.resolve("hooks")}:/workspace/.git/hooks:ro",
+          s"--volume=${git.resolve("config")}:$Mount/.git/config:ro",
+          s"--volume=${git.resolve("hooks")}:$Mount/.git/hooks:ro",
         ),
       ),
     )
@@ -221,11 +253,11 @@ class SandboxProjectTest extends munit.FunSuite:
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     Files.createDirectory(git)
     assertEquals(
-      gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
+      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
       Right(
         Vector(
-          s"--volume=${emptyFixture.file}:/workspace/.git/config:ro",
-          s"--volume=${emptyFixture.dir}:/workspace/.git/hooks:ro",
+          s"--volume=${emptyFixture.file}:$Mount/.git/config:ro",
+          s"--volume=${emptyFixture.dir}:$Mount/.git/hooks:ro",
         ),
       ),
     )
@@ -238,15 +270,15 @@ class SandboxProjectTest extends munit.FunSuite:
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     Files.writeString(git, "gitdir: ../elsewhere/.git/worktrees/x\n")
     assertEquals(
-      gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=$git:/workspace/.git:ro")),
+      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
+      Right(Vector(s"--volume=$git:$Mount/.git:ro")),
     )
 
   test("an absent .git gets the launcher's empty directory mounted read-only, without creating it in the project"):
     val git = Files.createTempDirectory("git-guard").resolve(".git")
     assertEquals(
-      gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=${emptyFixture.dir}:/workspace/.git:ro")),
+      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
+      Right(Vector(s"--volume=${emptyFixture.dir}:$Mount/.git:ro")),
     )
     assert(!Files.exists(git), "the guard fabricated a .git in the project")
 
@@ -255,17 +287,17 @@ class SandboxProjectTest extends munit.FunSuite:
     val target = Files.createDirectory(project.resolve("target"))
 
     val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
-    assert(gitGuardVolumes(linkedGit, emptyFixture.file, emptyFixture.dir).isLeft)
+    assert(gitGuardVolumes(linkedGit, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
 
     val git = Files.createDirectory(project.resolve("repo.git"))
     Files.createSymbolicLink(git.resolve("config"), project.resolve("secret"))
     Files.createDirectory(git.resolve("hooks"))
-    assert(gitGuardVolumes(git, emptyFixture.file, emptyFixture.dir).isLeft)
+    assert(gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
 
     val git2 = Files.createDirectory(project.resolve("repo2.git"))
     Files.createFile(git2.resolve("config"))
     Files.createSymbolicLink(git2.resolve("hooks"), target)
-    assert(gitGuardVolumes(git2, emptyFixture.file, emptyFixture.dir).isLeft)
+    assert(gitGuardVolumes(git2, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
 
   test("a session without git is reported with the launch that would have it"):
     val root = Files.createTempDirectory("no-git").toRealPath()
@@ -273,7 +305,7 @@ class SandboxProjectTest extends munit.FunSuite:
     // cases meant to reach it do.
     val home = Files.createTempDirectory("no-git-home").toRealPath()
     val homes = protectedHomes(Os.Linux, Map("HOME" -> home.toString))
-    def noGit(dir: Path): Option[NoGit] = SandboxProject.noGit(dir, homes)
+    def noGit(dir: Path, os: Os = Os.Linux): Option[NoGit] = SandboxProject.noGit(dir, homes, os)
     def launchOf(dir: Path): Option[Option[Path]] = noGit(dir).map:
       case NoGit.Gitdir(_, _, launchFrom) => launchFrom
       case NoGit.Above(_, launchFrom) => launchFrom
@@ -300,32 +332,40 @@ class SandboxProjectTest extends munit.FunSuite:
       noGit(submodule),
       Some(NoGit.Gitdir("../.git/modules/lib", moduleGitdir, Some(superproject))),
     )
-    // A linked worktree names its gitdir absolutely, under the main worktree's .git — which is
-    // another checkout, not a tree holding this one, so there is no launch to offer.
+    // A linked worktree names its gitdir absolutely, under the main worktree's .git. The container
+    // spells the project as the host does, so the tree holding both checkouts is a launch with git;
+    // on Windows, where it spells drives under /mnt, an absolute pointer leads nowhere, and there
+    // is no launch to offer.
     val main = Files.createDirectories(root.resolve("main"))
     val mainGitdir = gitdirAt(main.resolve(".git"))
     val worktreeGitdir = worktreeGitdirAt(mainGitdir.resolve("worktrees/feature"), mainGitdir)
     val linked = Files.createDirectories(root.resolve("feature"))
     Files.writeString(linked.resolve(".git"), s"gitdir: $worktreeGitdir\n")
-    assertEquals(noGit(linked), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, None)))
-    // --separate-git-dir: no tree holds the project, so the warning has no launch to offer.
+    assertEquals(noGit(linked), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, Some(root))))
+    assertEquals(noGit(linked, Os.Windows), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, None)))
+    // --separate-git-dir, the same way.
     val separate = gitdirAt(root.resolve("repo.git"))
     val project = Files.createDirectories(root.resolve("project"))
     Files.writeString(project.resolve(".git"), s"gitdir: $separate\n")
-    assertEquals(noGit(project), Some(NoGit.Gitdir(separate.toString, separate, None)))
-    assert(noGitWarning(noGit(project).get).contains("stay on the host"))
-    // An absolute gitdir is a host path even where it resolves inside the project, which the
-    // container has at /workspace and not where the host keeps it.
+    assertEquals(noGit(project), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
+    assertEquals(noGit(project, Os.Windows), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    assert(noGitWarning(noGit(project).get).contains(s"launch from $root"))
+    assert(noGitWarning(noGit(project, Os.Windows).get).contains("stay on the host"))
+    // An absolute gitdir inside the project is reachable where the container spells the project as
+    // the host does, and is a host path the container lacks where it does not: on Windows, whose
+    // drive paths the container has under /mnt (this POSIX path has no /mnt spelling at all).
     val absolute = Files.createDirectories(root.resolve("absolute"))
     val ownGitdir = gitdirAt(absolute.resolve("real.git"))
     Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
-    assertEquals(noGit(absolute), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
+    assertEquals(noGit(absolute), None)
+    assertEquals(noGit(absolute, Os.Windows), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
     // A `.git` symlink is the same absence when it leads out of the project: only the read-only
     // bind mounts of WORKSPACE_GUARD=none refuse that form, and the filter serves it as the host
     // wrote it.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
-    assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
+    assertEquals(noGit(symlinked, Os.Windows), Some(NoGit.Gitdir(separate.toString, separate, None)))
     // Launched below the repository root: the host finds .git above, and the container has
     // neither it nor anything else above the project.
     val below = Files.createDirectories(superproject.resolve("src/main"))
@@ -338,10 +378,9 @@ class SandboxProjectTest extends munit.FunSuite:
       noGit(Files.createDirectories(submodule.resolve("src"))),
       Some(NoGit.Above(submodule, Some(superproject))),
     )
-    assertEquals(
-      noGit(Files.createDirectories(linked.resolve("src"))),
-      Some(NoGit.Above(linked, None)),
-    )
+    val belowLinked = Files.createDirectories(linked.resolve("src"))
+    assertEquals(noGit(belowLinked), Some(NoGit.Above(linked, Some(root))))
+    assertEquals(noGit(belowLinked, Os.Windows), Some(NoGit.Above(linked, None)))
     // An empty .git directory is no repository: the search passes it as git's does, and reaches the one
     // above, which is also the launch offered.
     val hollow = Files.createDirectories(superproject.resolve("hollow"))
@@ -374,11 +413,16 @@ class SandboxProjectTest extends munit.FunSuite:
     for rejected <- Vector(dangling, stray, prefixed) do
       assertEquals(noGit(Files.createDirectories(rejected.resolve("src"))), None, rejected.toString)
     // A nested repository whose pointer is absolute stays as absolute under its parent, so the
-    // parent's own good `.git` earns it no suggestion — from the nested root, or from below it.
+    // parent's own good `.git` earns it no suggestion — from the nested root, or from below it. The
+    // launch offered is the tree holding both the project and what the pointer names, where the
+    // container spells it as the host does; on Windows there is none.
     val nested = Files.createDirectories(superproject.resolve("nested"))
     Files.writeString(nested.resolve(".git"), s"gitdir: $separate\n")
-    assertEquals(noGit(nested), Some(NoGit.Gitdir(separate.toString, separate, None)))
-    assertEquals(noGit(Files.createDirectories(nested.resolve("src"))), Some(NoGit.Above(nested, None)))
+    assertEquals(noGit(nested), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
+    assertEquals(noGit(nested, Os.Windows), Some(NoGit.Gitdir(separate.toString, separate, None)))
+    val belowNested = Files.createDirectories(nested.resolve("src"))
+    assertEquals(noGit(belowNested), Some(NoGit.Above(nested, Some(root))))
+    assertEquals(noGit(belowNested, Os.Windows), Some(NoGit.Above(nested, None)))
     // A parent with no repository of its own is still the launch when the pointer stays inside it.
     val siblings = Files.createDirectories(root.resolve("siblings"))
     val sibling = gitdirAt(siblings.resolve("b/real.git"))
@@ -407,8 +451,8 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(oversized.resolve(".git"), "gitdir: " + "x" * (1 << 20))
     assertEquals(noGit(oversized), None)
     // A relative gitdir that climbs out and re-enters the project by its host name resolves inside on
-    // the host and nowhere in the container, whose base is /workspace — and one level up it climbs
-    // nowhere, so the parent is the launch.
+    // the host and nowhere in the container, which has nothing above the project — and one level
+    // up it climbs nowhere, so the parent is the launch.
     val reentrant = Files.createDirectories(root.resolve("reentrant"))
     val reentered = gitdirAt(reentrant.resolve("real.git"))
     Files.writeString(reentrant.resolve(".git"), "gitdir: ../reentrant/real.git\n")
@@ -429,8 +473,8 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(warning.contains("../.git/modules/lib"), warning)
     assert(warning.contains(moduleGitdir.toString), warning)
     assert(warning.contains(superproject.toString), warning)
-    assert(noGitInstruction(noGit(submodule).get).contains("`/workspace/.git`"))
-    assert(noGitInstruction(noGit(below).get).contains("above the project directory"))
+    assert(noGitInstruction(noGit(submodule).get, Mount).contains(s"`$Mount/.git`"))
+    assert(noGitInstruction(noGit(below).get, Mount).contains("above the project directory"))
     // Nothing said where git works: a relative pointer into the project, a symlink to one, a .git
     // directory, and a directory in no repository at all.
     val inside = Files.createDirectories(root.resolve("inside"))
@@ -453,7 +497,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val target = Files.createDirectory(project.resolve("target"))
 
     val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
-    assert(gitGuardVolumes(linkedGit, emptyFixture.file, emptyFixture.dir).isLeft)
+    assert(gitGuardVolumes(linkedGit, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
     assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the .git link")
 
     val linkedBoundary =
@@ -465,7 +509,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     assertEquals(boundaryDirError(dir), None)
     assert(!Files.exists(dir))
-    assertEquals(boundaryGuardVolume(dir), s"--volume=$dir:/workspace/.ko-agent-sandbox:ro")
+    assertEquals(boundaryGuardVolume(dir, Mount), s"--volume=$dir:$Mount/.ko-agent-sandbox:ro")
     assert(Files.isDirectory(dir))
     // The directory it just created passes the next launch unchanged.
     assertEquals(boundaryDirError(dir), None)

@@ -24,7 +24,7 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  │                               │     │  ~/.claude ~/.codex ~/.gemini │     │
     │  │                               │     │  ... point into it            │     │
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
-    │        │ mounted at /workspace: RW (--write=   │ at ~/persistent-volume, RW  │
+    │        │ mounted at its own path: RW (--write= │ at ~/persistent-volume, RW  │
     │        │ live, the default) with protected     │                             │
     │        │ Git entries (including hooks) frozen  │                             │
     │        │ at every depth                        │                             │
@@ -155,12 +155,12 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 #### `copilot`
 
-1. Run `/login` and choose "Sign in with a device code".
+1. Run `/login` and choose "Sign in with a device code"; open https://github.com/login/device
 
     1. Unlike the other sign-ins, the stored token grants access to your private repositories
        (SECURITY.md, "The web reached through the model provider").
 
-1. Prompts for paths outside `/workspace` and for URLs remain unless you run `copilot --yolo`.
+1. Prompts for paths outside the project and for URLs remain unless you run `copilot --yolo`.
 1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out; this requires
    `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
 
@@ -238,7 +238,8 @@ restore permission prompts and set the Claude Code status line.
 
     Run an AI agent inside the sandbox container.
 
-    Usage, from a project directory (which becomes /workspace):
+    Usage, from a project directory, mounted in the sandbox at the same path
+    (on Windows, at the path WSL gives it: /mnt/<drive>/...):
 
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
 
@@ -248,7 +249,7 @@ restore permission prompts and set the Claude Code status line.
 
     Session options, selected on every launch and never persisted:
       --write=reject|live
-                         reject makes /workspace read-only; live (default)
+                         reject makes the project read-only; live (default)
                          lets the agent edit the shared project files
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
@@ -340,7 +341,7 @@ restore permission prompts and set the Claude Code status line.
                                           and on Linux no more than was available at launch;
                                           at least 1 GiB, or the whole memory when that is
                                           less. The sandbox never swaps
-      KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps /workspace shared live and
+      KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps the project shared live and
                                           writable while protecting Git configuration,
                                           hooks, other protected Git entries and
                                           .ko-agent-sandbox at any depth; "none" replaces

@@ -315,7 +315,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   ("Test infrastructure").
 - **A supervisor watching the daemon.** A daemon that dies mid-session makes every access
   fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
-  directory or the raw one — scoped to `/workspace` alone, and even shells die at spawn
+  directory or the raw one — scoped to the project mount alone, and even shells die at spawn
   because their cwd is inside the dead mount. The failure is already total, loud and
   fail-closed, so an outside program would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.

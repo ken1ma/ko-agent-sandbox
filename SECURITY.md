@@ -197,7 +197,16 @@ launcher refuses:
   `/Users` and the Windows profiles root (`%SystemDrive%\Users`, `C:\Users` when `SystemDrive`
   is unset), plus their direct children — another account's home exposes that account exactly
   as this one's would — and POSIX root's own homes, `/root` and `/var/root`;
-- a path whose current or ancestor directory has a dot-prefixed name.
+- a path whose current or ancestor directory has a dot-prefixed name;
+- the container user's home, `/home/nonroot`, and anything beneath it: the project is mounted at
+  its own path, where it would sit among the session's home, the persistent volume and the
+  agents' state;
+- a path at which the sandbox image has an entry (`/tmp`, `/usr/local/bin`), or beneath a
+  directory of the image the sandbox user cannot enter (`/root`), asked of the image with a run of
+  it so that a directory the image gains later is refused without a list to update; `/tmp/app`
+  binds into `/tmp` and is accepted;
+- on Windows, a UNC path, in every write mode: the mount path is the one WSL gives a drive,
+  `/mnt/<drive>/...`, which a share has not.
 
 A project *inside* a home is not refused: `~/src/app` and `~/app` are both valid choices, and
 refusing them would leave nowhere obvious to work.
@@ -293,11 +302,15 @@ agy's Business sign-in stores a Google Cloud credential for the licensed project
 **Low-bandwidth channels.** The choice of allowed host, request timing and request order can all
 encode information. The proxy does not detect or bound these covert channels.
 
-**The project directory.** `/workspace` is writable on purpose: the sandbox protects the rest of the
-host, not the project. With the Git entries listed above protected, what an agent can still write
-there is data which your git then parses, so a memory-safety bug in git itself remains reachable,
-exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but can only
-invoke filter commands your host configuration already defines).
+**The project directory.** The project is mounted at the path the host has it at (on Windows, at
+the path WSL gives it, `/mnt/<drive>/...`), so a path the agent prints is one the user, an IDE and
+a host build all name alike, and none translates. The path itself — the home directory's name and
+the layout above the project — is therefore visible to the agent, and through its prompts to the
+model provider, in every session. The directory is writable on purpose: the sandbox protects the
+rest of the host, not the project. With the Git entries listed above protected, what an agent can
+still write there is data which your git then parses, so a memory-safety bug in git itself remains
+reachable, exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but
+can only invoke filter commands your host configuration already defines).
 
 Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
 is output from an untrusted execution environment: editing them is the job, and confining their
@@ -314,7 +327,7 @@ in both guard modes:
 Running host git *inside* a directory the agent created is running the agent's output.
 
 A symlink can expose files outside the project because its target is resolved in the reader's
-filesystem namespace. `/workspace/x -> /etc/passwd` written inside resolves to the *container's*
+filesystem namespace. A link `x -> /etc/passwd` written in the project resolves to the *container's*
 `/etc/passwd`, and a relative `../../..` clamps at the container root, so from in there it reaches
 nothing the sandbox did not already expose. On the host the identical link resolves to the host's
 file, outside the project directory. The exposure occurs when a later host process follows the link:
@@ -330,7 +343,7 @@ above the workspace root, including common links into external caches. Two gaps 
 
 The creation-time syntax check does not prevent deliberate construction of such links; they still
 require review. Direct hardlinks across the workspace mount boundary fail with `EXDEV`, because
-`/workspace` and the container root are different filesystems. Hardlinking a symlink within the
+the project mount and the container root are different filesystems. Hardlinking a symlink within the
 workspace can still change where its relative target resolves.
 
 The tree is also shared live with the host:
@@ -348,7 +361,7 @@ The tree is also shared live with the host:
 
 **The workspace filter, on the platforms where it is unverified.**
 
-- `/workspace` reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
+- The project reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
   enforcing the policy stated under "The host's git executing what the sandbox wrote".
 - Unlike root-level read-only bind mounts, the filter refuses new `.git` entries and protects the
   listed Git entries at any depth.
@@ -499,7 +512,7 @@ is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, no
 **Resource exhaustion.**
 
 - The PID limit and memory limit bound runaway process and memory use.
-- CPU, disk growth under `/workspace`, network bandwidth, and denial of service against the host
+- CPU, disk growth in the project, network bandwidth, and denial of service against the host
   generally are not comprehensively bounded.
 
 ## Egress proxy
@@ -760,7 +773,7 @@ response, then closes:
 - The launcher keeps the CA private key on the host under every profile except
   `allow-unless-denied`. That profile uses a separate per-run CA, described below.
 - Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
-  (`%LOCALAPPDATA%` on Windows) — outside `/workspace`, so the agent can neither read the key that
+  (`%LOCALAPPDATA%` on Windows) — outside the project, so the agent can neither read the key that
   signs what it is shown nor replace it for the next session. A CA created for one project cannot
   be used to read another's traffic.
 - The launcher reissues the CA a month before expiry. It reissues the leaf with the CA, a month
@@ -838,7 +851,7 @@ A single shared rule file would combine the access requirements of otherwise unr
 Per-project rules let a repository that only reads public documentation use different grants from
 one that holds credentials. The rules can be reviewed in a pull request alongside the project.
 
-Without separate protection, an agent with a writable `/workspace` could rewrite the rules for the
+Without separate protection, an agent with a writable project could rewrite the rules for the
 next session. The write-mode protections prevent this ("A project loosening its own confinement",
 above). The launcher also rejects:
 
@@ -1206,8 +1219,8 @@ provides the confinement for these commands; they execute outside the container.
     other's and starts its own, and the warm build the other left is lost with it.
 - **The payload that matters runs later, as you.** If a command could write an executable
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
-  sandbox. Preventing that write has two enforcement points — the workspace filter
-  for writes through `/workspace`, this profile's deny rules for writes by the command — both named
+  sandbox. Preventing that write has two enforcement points — the workspace filter for writes
+  through the project mount, this profile's deny rules for writes by the command — both named
   under "The host's git executing what the sandbox wrote", above.
 - **Cache poisoning stops at the project.** The command writes its own per-project caches, never
   yours:
@@ -1225,8 +1238,8 @@ provides the confinement for these commands; they execute outside the container.
   - The separation is by root, one directory holding them (`doc/run-on-host.md`, "The run-on-host
     cache"), because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches
     the same property for the container by a podman `:O` upper).
-- **The command's output can disclose host paths.** Compiler messages can include the project's
-  absolute path on the host.
+- **The command's output names host paths**, as every session's does: the project is mounted at
+  its own path ("The project directory", above).
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A host
   command can write `target/` and any other path allowed by the profile's project grant. Selecting
   both options authorizes those writes despite the container's read-only mount, and the launch

@@ -18,7 +18,9 @@ class SelfTestShareTest extends FunSuite:
     assert(command.contains("--entrypoint="))
     assert(command.contains("--userns=keep-id:uid=65532,gid=65532"))
     assert(command.contains("--user=65532:65532"))
-    assert(command.contains(s"--volume=$mountpoint:/workspace:rw"))
+    assert(command.contains(s"--volume=$mountpoint:$ProbeMount:rw"))
+    assert(PosixSessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
+    assert(WindowsSessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
     // No image build and no volume creation: the probe reuses the sandbox image as it is, so
     // a second run rebuilds nothing and leaves no second container or volume behind.
     assertEquals(command.takeRight(3), Vector("ko-agent-sandbox:latest", "python3", "-"))

@@ -1,4 +1,4 @@
-// The guard=none session binds `/workspace` directly. It mounts `.git/config` and `.git/hooks`
+// The guard=none session binds the project directly. It mounts `.git/config` and `.git/hooks`
 // read-only when `.git` is a directory, the whole `.git` file in a linked worktree, an empty `.git`
 // mount when no repository exists, and `.ko-agent-sandbox`. Every default session runs the filter
 // instead, so nothing else here can reach this path — the in-session probe skips its git rows
@@ -35,8 +35,8 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
 
   private val GuardOff = "KO_AGENT_SANDBOX_WORKSPACE_GUARD" -> "none"
 
-  private val Config = "/workspace/.git/config"
-  private val Hooks = "/workspace/.git/hooks"
+  private def configPath(session: Session) = s"${mountPath(session)}/.git/config"
+  private def hooksPath(session: Session) = s"${mountPath(session)}/.git/hooks"
 
   /** Whether a path is still a mount point in the sandbox's own namespace. Reported rather than
     * asserted: the mount table keeps its entry even where resolution has stopped honouring it, so
@@ -50,18 +50,19 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     exec(session, "sh", "-c", s"printf x >> $path").ok
 
   private def hookWritable(session: Session): Boolean =
-    exec(session, "sh", "-c", s"touch $Hooks/probe").ok
+    exec(session, "sh", "-c", s"touch ${hooksPath(session)}/probe").ok
 
   private def report(session: Session, what: String): Unit =
     println(
-      f"[guard-off] $what%-42s config mount=${mounted(session, Config)}%-5s " +
-        f"read=${exec(session, "cat", Config).ok}%-5s  " +
-        f"hooks mount=${mounted(session, Hooks)}%-5s list=${exec(session, "ls", Hooks).ok}%-5s",
+      f"[guard-off] $what%-42s config mount=${mounted(session, configPath(session))}%-5s " +
+        f"read=${exec(session, "cat", configPath(session)).ok}%-5s  " +
+        f"hooks mount=${mounted(session, hooksPath(session))}%-5s " +
+        f"list=${exec(session, "ls", hooksPath(session)).ok}%-5s",
     )
 
   /** The boundary, and so the only assertion. `what` names the host-side operation that ran. */
   private def assertGitReadOnly(session: Session, what: String): Unit =
-    val configWrite = writable(session, Config)
+    val configWrite = writable(session, configPath(session))
     val hooksWrite = hookWritable(session)
     report(session, what)
     assert(!configWrite, s"SECURITY: after $what the sandbox can write .git/config")
@@ -94,9 +95,9 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       assertGitReadOnly(session, "the launch")
 
       // The control: with the filter off, the rest of .git is ordinary writable workspace. Without
-      // it a session that had lost /workspace entirely would satisfy every assertion here.
+      // it a session that had lost the project entirely would satisfy every assertion here.
       assert(
-        writable(session, "/workspace/.git/HEAD"),
+        writable(session, s"${mountPath(session)}/.git/HEAD"),
         "all of .git is read-only; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
@@ -141,7 +142,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
     try
       val session = guardedSession(project)
       live = Some(session)
-      assert(!writable(session, Config), "the read-only mount does not prevent writes even at launch")
+      assert(!writable(session, configPath(session)), "the read-only mount does not prevent writes even at launch")
 
       val replacement = config.resolveSibling("config.replacement")
       Files.writeString(replacement, "[core]\n\trepositoryformatversion = 0\n")
@@ -152,9 +153,9 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       var fellThrough = false
       while !fellThrough && System.nanoTime() < deadline do
         val at = (System.nanoTime() - started) / 1000000000L
-        val isMounted = mounted(session, Config)
-        val readable = exec(session, "cat", Config).ok
-        fellThrough = writable(session, Config)
+        val isMounted = mounted(session, configPath(session))
+        val readable = exec(session, "cat", configPath(session)).ok
+        fellThrough = writable(session, configPath(session))
         println(f"[guard-off] t=$at%3ds  mount=$isMounted%-5s read=$readable%-5s write=$fellThrough")
         if !fellThrough then Thread.sleep(2000)
 
@@ -164,7 +165,7 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       else
         assert(fellThrough, "read-only protection survives a host-side inode replacement; SECURITY.md says it does not")
         assert(
-          exec(session, "sh", "-c", s"printf '$marker\\n' >> $Config").ok,
+          exec(session, "sh", "-c", s"printf '$marker\\n' >> ${configPath(session)}").ok,
           "the mount refuses a second write; the first one reached a different file",
         )
         assert(
@@ -201,26 +202,29 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       val session = guardedSession(project)
       live = Some(session)
 
-      assertEquals(exec(session, "cat", "/workspace/.git").text, pointer)
-      assert(!writable(session, "/workspace/.git"), "SECURITY: the pointer file accepts a write")
+      assertEquals(exec(session, "cat", s"${mountPath(session)}/.git").text, pointer)
+      assert(!writable(session, s"${mountPath(session)}/.git"), "SECURITY: the pointer file accepts a write")
       assert(
-        !exec(session, "sh", "-c", "rm -f /workspace/.git").ok,
+        !exec(session, "sh", "-c", s"rm -f ${mountPath(session)}/.git").ok,
         "SECURITY: the pointer file can be removed",
       )
       assert(
-        !exec(session, "sh", "-c", "mv /workspace/.git /workspace/.git-moved").ok,
+        !exec(session, "sh", "-c", s"mv ${mountPath(session)}/.git ${mountPath(session)}/.git-moved").ok,
         "SECURITY: the pointer file can be renamed away",
       )
       // The control, as in the first test: the rest of the workspace stays ordinary and writable.
       assert(
-        writable(session, "/workspace/ordinary"),
+        writable(session, s"${mountPath(session)}/ordinary"),
         "the workspace is not writable; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
       // An in-place host edit keeps the inode, so the mount still prevents writes; replacing the
       // inode is the second test's measurement, and this layout shares it.
       Files.writeString(project.resolve(".git"), "gitdir: /elsewhere/other/.git\n")
-      assert(!writable(session, "/workspace/.git"), "an in-place host edit defeated the read-only protection")
+      assert(
+        !writable(session, s"${mountPath(session)}/.git"),
+        "an in-place host edit defeated the read-only protection",
+      )
     finally
       live.foreach(stop)
       discard(project)
@@ -239,18 +243,21 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       val session = guardedSession(project)
       live = Some(session)
 
-      assert(exec(session, "sh", "-c", "test -d /workspace/.git").ok, "no read-only .git directory is mounted")
-      assertEquals(exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "")
       assert(
-        !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
+        exec(session, "sh", "-c", s"test -d ${mountPath(session)}/.git").ok,
+        "no read-only .git directory is mounted",
+      )
+      assertEquals(exec(session, "sh", "-c", s"ls -A ${mountPath(session)}/.git").text.trim, "")
+      assert(
+        !exec(session, "sh", "-c", s"touch ${mountPath(session)}/.git/config").ok,
         "SECURITY: the sandbox can write into the read-only .git mount",
       )
       assert(
-        !exec(session, "sh", "-c", "rmdir /workspace/.git").ok,
+        !exec(session, "sh", "-c", s"rmdir ${mountPath(session)}/.git").ok,
         "SECURITY: the sandbox can remove the read-only .git mount",
       )
       assert(
-        writable(session, "/workspace/ordinary"),
+        writable(session, s"${mountPath(session)}/ordinary"),
         "the workspace is not writable; cannot distinguish the guard's protection from a lost workspace mount",
       )
 
@@ -262,11 +269,11 @@ class WorkspaceGuardOffTest extends munit.FunSuite:
       Files.writeString(project.resolve(".git").resolve("probe"), "host\n")
       Thread.sleep(5000)
       assertEquals(
-        exec(session, "sh", "-c", "ls -A /workspace/.git").text.trim, "",
+        exec(session, "sh", "-c", s"ls -A ${mountPath(session)}/.git").text.trim, "",
         "a host-created repository became visible behind the empty mount",
       )
       assert(
-        !exec(session, "sh", "-c", "touch /workspace/.git/config").ok,
+        !exec(session, "sh", "-c", s"touch ${mountPath(session)}/.git/config").ok,
         "SECURITY: the read-only .git mount became writable after a host-side git init",
       )
     finally

@@ -8,6 +8,3 @@ sandbox_mode = "danger-full-access"
 # Each non-interactive `bash` reads this file and restores the PATH captured at image build time.
 # This keeps image-installed programs such as `sbt` visible to Codex subprocesses.
 BASH_ENV = "/etc/codex/bash-env"
-
-[projects."/workspace"]
-trust_level = "trusted"

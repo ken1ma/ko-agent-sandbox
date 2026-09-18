@@ -265,7 +265,7 @@ object KoAgentFs:
       Vector("fuse", "none"),
       "fuse",
       "Unset it (or set it to fuse) to keep the workspace filter; set it to none\nto bind " +
-        s"/workspace directly; $RawWorkspaceBoundary.",
+        s"the project directly; $RawWorkspaceBoundary.",
     )
 
   /**
@@ -476,30 +476,6 @@ object KoAgentFs:
           java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
         Vector(podman, "machine", "ssh", s"printf %s $encoded | base64 -d | sh")
 
-  /**
-   * The backing path as the daemon resolves it, in the filesystem the daemon runs in. This is the
-   * one host path that bypasses podman: every `--volume` source is translated by podman's own
-   * client, but the backing travels to the daemon in the mount script. On Linux the daemon is on
-   * this host, and the macOS machine mounts the host shares at their host paths — the Windows
-   * machine is a WSL distro, which serves host drives at `/mnt/<drive>`, the same translation
-   * podman's client applies to volume sources. A path with no drive letter (UNC) has no `/mnt`
-   * spelling and refuses the launch.
-   */
-  def koAgentFsBackingPath(os: Os, projectDir: Path): Either[String, String] =
-    val text = projectDir.toString
-    os match
-      case Os.Linux | Os.Mac => Right(text)
-      case Os.Windows =>
-        if text.length >= 3 && text(0).isLetter && text(1) == ':'
-          && (text(2) == '\\' || text(2) == '/')
-        then Right(s"/mnt/${text(0).toLower}/${text.drop(3).replace('\\', '/')}")
-        else
-          Left(
-            s"error: cannot map $text into the podman machine\n" +
-              "The workspace filter serves the project from inside the machine, which reaches " +
-              "host drives at /mnt/<drive>; only drive-letter paths (C:\\...) have that spelling.",
-          )
-
   /** The daemon user's home — the base every relative lifecycle path resolves against, and the
     * prefix that turns the mountpoint into an absolute `--volume` source. */
   def koAgentFsHome(podman: String, os: Os): String =
@@ -554,12 +530,13 @@ object KoAgentFs:
     KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(projectId)}/workspace")
 
   /** What prepareKoAgentFs proved and where: the installed build's source id, and the absolute
-    * mountpoint to bind at /workspace. */
+    * mountpoint to bind at the project's mount path. */
   final case class KoAgentFsPrepared(sourceId: String, mountpoint: String)
 
   /**
    * Mount the project, or join its mount, and say which: true when this session reused a mount
-   * another session holds. Run once `sandboxContainer` exists, so the marker the script writes
+   * another session holds. `backing` is the project as the daemon's filesystem spells it
+   * (SandboxProject.mountPathOf). Run once `sandboxContainer` exists, so the marker the script writes
    * first is never found without its container (koAgentFsReapScript). Under the image-build lock,
    * which installKoAgentFs holds while it replaces the binary: the script's build check and its
    * daemon start are then one step against a concurrent --build, and a build in progress makes
@@ -570,10 +547,9 @@ object KoAgentFs:
     os: Os,
     prepared: KoAgentFsPrepared,
     projectId: String,
-    projectDir: Path,
+    backing: String,
     sandboxContainer: String,
   ): Boolean =
-    val backing = koAgentFsBackingPath(os, projectDir).fold(fail(_), identity)
     val script = koAgentFsMountScript(backing, projectId, prepared.sourceId, sandboxContainer)
     val mount = withFileLock(AgentSandboxLauncher.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
@@ -587,9 +563,9 @@ object KoAgentFs:
     podman: String,
     os: Os,
     projectId: String,
-    projectDir: Path,
+    backing: String,
     sandboxContainer: String,
   ): String =
     val prepared = prepareKoAgentFs(podman, os, projectId)
-    mountKoAgentFs(podman, os, prepared, projectId, projectDir, sandboxContainer)
+    mountKoAgentFs(podman, os, prepared, projectId, backing, sandboxContainer)
     prepared.mountpoint

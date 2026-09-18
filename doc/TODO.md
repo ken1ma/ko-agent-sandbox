@@ -291,18 +291,24 @@ dispatch, fenced thus:
 Its tests: a request arriving as the timer fires, that late callback, and a stale timer after
 replacement, each leaving one consistent runtime.
 
-## Deferred — same-path workspace mounting under `--run-on-host`
+## The project mounted at its own path
 
-Its own launch option, when it arrives. It aligns source paths and nothing else — the host command's
-JVM is a macOS binary and the container's is Linux, and their Coursier cache roots differ — so it
-does not establish compatibility between the two builds' state. That leaves readable paths in
-build output as the benefit, which did not justify the change. The host path is already in
-the container: the command's streamed output names it (`SECURITY.md`, "Run on host"). Prior
-art, both mounting the project at its host path for path legibility rather than shared state:
+- [ ] `sbt "testWithPodman *MountPathTest"` on Linux (on macOS, 2026-09-18: it passes, as do
+  `WorkspaceGuardOffTest`, `MountLifecycleTest` and the run-on-host gate; `sbt testFull` inside
+  a session passes except the two clipboard-broker tests below; the four agents started without
+  a trust prompt on a fresh and a used volume; a host build's error named a path the session
+  has); a Windows launch from PowerShell in `C:\Users\<me>\src\app` and one from a WSL shell
+  in `/mnt/c/Users/<me>/src/app` both print that path from `bash -c pwd`, and one from
+  `\\wsl.localhost\...` is refused.
 
-- Gemini CLI sandboxing: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
-- Docker Sandboxes, whose parent directories are empty scaffolding so only the workspace is real:
-  https://www.docker.com/blog/building-ai-teams-docker-sandboxes-agent/
+## Clipboard broker: two tests fail on Linux
+
+- [ ] `SandboxLifecycleTest` asserts the reaper script contains
+  `else head -c "$arg" >/dev/null; fi`, and `ClipboardBrokerTest` expects `ok` for
+  `set 3\nabcdef` and reads nothing. Both are in the `set` reply commit fb67043 added, and both
+  run only where `setsid` and the Linux tools exist, so a macOS `testFull` skips them and
+  `sbt testFull` inside a session is where they fail. Trace the reply and the raw reader, and
+  bring the assertion up to the script.
 
 ## Deferred — readable session directory names under `--run-on-host`
 

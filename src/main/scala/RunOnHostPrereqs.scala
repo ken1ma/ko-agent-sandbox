@@ -841,8 +841,10 @@ object RunOnHostPrereqs:
    * anyway is what turns a request naming somewhere else into one answer instead of a wall of
    * denials.
    *
-   * `mount` is what the project is mounted at inside the container, `/workspace` today. A request
-   * that is not under it, that climbs out with `..`, or whose canonical form leaves the project, is
+   * `mount` is what the project is mounted at inside the container: its own path
+   * (SandboxProject.mountPathOf), so the requested directory and the host directory are one
+   * string, and the validation stays because the value still arrives from inside. A request that
+   * is not under it, that climbs out with `..`, or whose canonical form leaves the project, is
    * refused; nothing is clamped back to the root.
    */
   def workingDirectory(

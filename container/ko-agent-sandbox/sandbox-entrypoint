@@ -9,6 +9,13 @@
 # either nothing or the whole seed; the loser's rename fails on the winner's directory, which is
 # the outcome wanted, and its staging directory is removed.
 #
+# Then each agent's trust entry for the project, keyed by the path it is mounted at: the working
+# directory, which the launcher sets to the project's own path. Per launch rather than seeded,
+# because the entry is per project while a seeded directory is never touched again and the volume
+# may be shared (KO_AGENT_SANDBOX_PERSISTENT_VOLUME). Merged into the agent's own file, which the
+# agent rewrites: user state, in the volume. The keys are the agents' internals and may change
+# between releases; an entry that cannot be written is said, and the agent then asks.
+#
 # Then the machine's health, read from here rather than by the launcher: /proc/meminfo and
 # /proc/pressure are the VM's own, not the container's, and the same read serves a podman machine
 # and a native Linux host. It is a warning at the last moment the terminal is still this script's,
@@ -37,6 +44,98 @@ if [ -d "$volume" ]; then
         cp -R "$entry/." "$staging/"
         mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
     done
+fi
+
+# A container run by hand starts at /, which is no project.
+project=$PWD
+trust_warning() { echo "warning: could not record $project as trusted in $1; $2 may ask" >&2; }
+# Rewrite a JSON file through a jq filter over $project, creating an empty object where the agent
+# has written none yet. Replaced whole by rename, so a session or agent reading it sees one
+# version or the other. Copilot writes two `//` comment lines above its JSON, which jq does not
+# read; whole-line comments are dropped before the merge, and Copilot restores its own on its next
+# write. Any failure — a directory that cannot be written, a file that cannot be read or is not
+# JSON — costs the entry, never the session: each step stands alone, since jq answers an empty
+# input with no output and no error, which a pipeline would take for a merge.
+merge_json() {
+    file=$1
+    filter=$2
+    agent=$3
+    stripped=
+    staging=
+    {
+        mkdir -p "${file%/*}" \
+            && { [ -s "$file" ] || printf '{}\n' > "$file"; } \
+            && stripped=$(mktemp "$file.XXXXXX") \
+            && staging=$(mktemp "$file.XXXXXX") \
+            && sed '/^[[:space:]]*\/\//d' "$file" > "$stripped" \
+            && jq --arg project "$project" "$filter" "$stripped" > "$staging" \
+            && [ -s "$staging" ] \
+            && mv -f "$staging" "$file"
+    } 2>/dev/null || trust_warning "$file" "$agent"
+    [ -n "$stripped" ] && rm -f "$stripped"
+    [ -n "$staging" ] && rm -f "$staging"
+    return 0
+}
+# Codex's user layer over the image's /etc/codex/config.toml. The file is read, judged and
+# extended by a TOML parser, since the project's key has several spellings ([projects."/p"],
+# [projects.'/p'], an inline table under [projects]) and a second definition makes the file
+# invalid; a table Codex or the user wrote with another trust level is left as it is. The table
+# is appended only after the document it would make has parsed: an inline `projects = {…}` cannot
+# take a table outside its braces, and is left as written.
+record_codex() {
+    config=$volume/codex/config.toml
+    state=$(mkdir -p "$volume/codex" && python3 - "$config" "$project" 2>/dev/null <<'PY'
+import sys, tomllib
+path, project = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as file:
+        text = file.read().decode()
+except FileNotFoundError:
+    text = ""
+entry = tomllib.loads(text).get("projects", {}).get(project)
+if entry is not None:
+    print(entry.get("trust_level", "unset"))
+    sys.exit()
+key = project.replace("\\", "\\\\").replace('"', '\\"')
+table = f'\n[projects."{key}"]\ntrust_level = "trusted"\n'
+try:
+    tomllib.loads(text + table)
+except tomllib.TOMLDecodeError:
+    print("unextendable")
+    sys.exit()
+with open(path, "a") as file:
+    file.write(table)
+print("recorded")
+PY
+    ) || state=unreadable
+    case "$state" in
+        trusted | recorded) ;;
+        unreadable) trust_warning "$config" codex ;;
+        unextendable)
+            echo "warning: $config defines projects as an inline table, which cannot take" \
+                "$project; codex may ask" >&2 ;;
+        *) echo "warning: $config marks $project $state; codex may ask" >&2 ;;
+    esac
+}
+# Under a lock on the volume, since launches of one project, and of several projects sharing a
+# volume, record entries into the same files at once: unserialized, a read-modify-rename loses
+# the other's entry and two appends leave Codex two tables.
+if [ -d "$volume" ] && [ "$project" != / ]; then
+    if exec 9<"$volume" && flock 9; then
+        merge_json "$volume/claude/.claude.json" \
+            '.projects[$project] |= ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
+            claude
+        merge_json "$volume/antigravity/antigravity-cli/settings.json" \
+            '.trustedWorkspaces |= ((. // []) | if index($project) then . else . + [$project] end)' \
+            agy
+        merge_json "$volume/copilot/config.json" \
+            '.trustedFolders |= ((. // []) | if index($project) then . else . + [$project] end)' \
+            copilot
+        record_codex
+        exec 9<&-
+    else
+        echo "warning: could not lock $volume to record $project as trusted; the agents may ask" >&2
+    fi
 fi
 
 # kB, as /proc/meminfo counts; empty when the field is absent.
