@@ -67,6 +67,10 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "FAIL: host-side git discovered a repository at $project" >&2
     exit 1
 fi
+if ls .ko-agent-sandbox >/dev/null 2>&1; then
+    echo "FAIL: host-side ls resolves a .ko-agent-sandbox in $project" >&2
+    exit 1
+fi
 
 echo
 echo "PASS. Record in doc/verification-log.md (\"The .git name rule on real filesystems\"):"

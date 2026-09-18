@@ -139,12 +139,16 @@ The filesystem rules define what a host command can access:
   way a container image would. The profile denies it instead: a command cannot create
   `$HOME/.netrc`, a Coursier mirror file, or any other configuration a later step would read,
   because the write is denied rather than because the directory is bare.
-- **Seatbelt matches the path after resolving it, and the pattern does not fold case.**
-  - On a case-insensitive volume an access through `.GIT` to an existing `.git` resolves to the
-    lowercase path and is denied (`src/probe/seatbelt-semantics.sh`, E5).
-  - A `.GIT` the command creates where no `.git` exists keeps that spelling and is not denied,
-    though host `git` run in that directory would open it as `.git`; the workspace filter refuses
-    the name. `TODO.md` records the planned fix.
+- **Seatbelt matches the path after resolving it, and on a case-insensitive volume the lowercase
+  pattern matches the other spellings measured** (`src/probe/seatbelt-semantics.sh`, macOS 26.4.1).
+  - An access through `.GIT` to an existing `.git` resolves to the lowercase path and is denied
+    (E5).
+  - A `.GIT` the command creates where no `.git` exists is denied too (E9).
+  - The volume resolves `.ko-agent-sandbox` spelled with U+212A KELVIN SIGN or U+017F LONG S to
+    the name (E11), and the lowercase pattern denies creating either (E12). The gate creates
+    those spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each command profile, and each is
+    denied.
+  - A spelling the volume resolves to the name and no row creates is unmeasured.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
   a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
   `.git/config`.
@@ -1094,16 +1098,30 @@ authoritative here:
 rest, measured:
 
 - What the guard depends on (`src/probe/seatbelt-semantics.sh`): the accessed path is resolved —
-  a write through `link -> .git` is denied, as is the case alias described in the filesystem rules;
-  rules are evaluated at access time, so a `.git` created *during* the command is covered; one regex
-  spans every depth; and `file-write*` already refuses a hardlink to a denied target, so the
-  explicit link clause is redundancy — kept, because the membership of a wildcard operation family
-  is Apple's to change.
+  a write through `link -> .git` is denied, as are the folded spellings described in the filesystem
+  rules; rules are evaluated at access time, so a `.git` created *during* the command is covered;
+  one regex spans every depth; and `file-write*` already refuses a hardlink to a denied target, so
+  the explicit link clause is redundancy — kept, because the membership of a wildcard operation
+  family is Apple's to change.
 - `/dev/tty` is the terminal, whatever stdin is: closing the child's stdin does not detach its
   controlling terminal. The profile grants `/dev/null` and the random devices only.
 - An invalid profile fails exactly like a denial: `sandbox-exec` aborts the child either way, the
   difference only on its own stderr — a search that discards it looks for grants that were never
   missing.
+- `mach-lookup` names its services (`SeatbeltProfile.MachServices`), in the command's profile and
+  the proxy's: unfiltered it reaches every Mach service of the host, and a service may act for its
+  caller outside the profile.
+  - The one name is `com.apple.system.opendirectoryd.libinfo`, the service the system's resolver
+    library asks. Without it the serving proxy dies of a segmentation fault; with it alone it
+    serves a fetch. `java -version` and `sbt about` run with no name granted
+    (`src/probe/run-on-host-profile-iterate.sh mach`, `mach-proxy`, macOS 26.4.1).
+  - A command gets the same name unmeasured: which call of the proxy's JVM needs it is not
+    known, a build's JVM may make the same call, and the failure is a crash, not an error a
+    build could report.
+  - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
+    (`mach-route`): `open -a` found no application, and a `.command` file the command wrote had
+    no application claiming it. Under the named service the gate has a row for `open -a`, and
+    one for a JVM asking the resolver.
 - What this toolchain needs, per layer: the JDK needs `sysctl-read`, its home, and
   `/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's
@@ -1206,7 +1224,8 @@ launcher starts on the host, since one `startProxy` starts them all. The profile
   `/var` its client spells the path through (measured: without that one link every lookup fails);
   and a listener of the `localhost` class for its port;
 - nothing of the user's: no project, no cache, no write anywhere;
-- of the operation families, `sysctl-read` and `mach-lookup` alone, measured with
+- of the operation families, `sysctl-read` and `mach-lookup` of the resolver's service alone
+  ("The Seatbelt profile", the measured findings), measured with
   `src/probe/run-on-host-profile-iterate.sh ops` and the proxy under its profile with each family
   added in turn — no `process-fork`, since it forks nothing.
 

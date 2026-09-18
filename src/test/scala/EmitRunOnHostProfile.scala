@@ -6,10 +6,13 @@
 //
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [authority-file] [<program>] [project]"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <authority-file> proxy-image <binary>"
 //
 // The project defaults to the working directory; the gate's mill rows name src/probe/mill-fixture.
 // The authority-file grammar is RunOnHostSandbox.readRuntimeAuthority's. The proxy form renders
-// the host proxy's own profile for the java and class path the gate runs its proxy rows with.
+// the host proxy's own profile for the java and class path the gate runs its proxy rows with; the
+// proxy-image form renders it for a native image, whose inputs RunOnHostSandbox.proxyInputs builds
+// only when it runs as one.
 
 package agentsandbox.launcher
 
@@ -23,6 +26,7 @@ object EmitRunOnHostProfile:
     if args.isEmpty then
       Console.err.println("usage: EmitRunOnHostProfile <out.sb> [authority-file] [sbt|mill|gradle|mvn] [project]")
       Console.err.println("       EmitRunOnHostProfile <out.sb> <authority-file> proxy <jdk> <classpath>")
+      Console.err.println("       EmitRunOnHostProfile <out.sb> <authority-file> proxy-image <binary>")
       sys.exit(2)
 
     def fail(reason: Any): Nothing =
@@ -34,6 +38,16 @@ object EmitRunOnHostProfile:
       val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
       val profile = RunOnHostSandbox.proxyInputs(runtime, javaHome = args(3), classPath = args(4))
         .flatMap(SeatbeltProfile.renderProxy).fold(fail, identity)
+      Files.writeString(Paths.get(args(0)), profile)
+      Console.err.println(s"profile: ${args(0)}")
+      sys.exit(0)
+
+    if args.lift(2).contains("proxy-image") then
+      if args.length != 4 then fail("the proxy-image form takes <out.sb> <authority-file> proxy-image <binary>")
+      val runtime = RunOnHostSandbox.readRuntimeAuthority(args.lift(1).map(Paths.get(_)))
+      val binary = Paths.get(args(3)).toRealPath()
+      val profile =
+        SeatbeltProfile.renderProxy(SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, runtime)).fold(fail, identity)
       Files.writeString(Paths.get(args(0)), profile)
       Console.err.println(s"profile: ${args(0)}")
       sys.exit(0)

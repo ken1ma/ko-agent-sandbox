@@ -36,19 +36,25 @@ cleanup). The corpus:
 - Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
 - A Windows 8.3 short name, `GIT~1`, on NTFS — to **confirm rather than assume** that an 8.3 name
   cannot alias a dot-leading long name.
+- `.ko-agent-sandbox`, matched through the same fold: the name itself, `.KO-AGENT-SANDBOX`,
+  `.Ko-Agent-Sandbox`, `.<U+212A>o-agent-sandbox` (KELVIN SIGN), `.ko-agent-<U+017F>andbox`
+  (LONG S), `.ko-agent<U+00AD>-sandbox`, `.ko-agent-sandbox.`; allowed,
+  `.ko-agent-sandbox-notes`.
 - Names that must stay **allowed**, so the superset has not over-reached into ordinary use:
   `.gitignore`, `.gitattributes`, `.gitmodules`, `.github`, and an accented non-ASCII name in both
   NFC and NFD (the normalization control — it must remain creatable).
 
 Pass criterion: for every denied spelling the create fails with `EPERM`; for every allowed spelling
-it succeeds *and* host `lstat` of `.git` still finds nothing. A failure on any row means the fold
-rule needs widening in `policy::is_dotgit_name` — fix the code, not the test. Fold tables are
-version-specific, which is why the recorded versions matter here.
+it succeeds *and* host `lstat` of `.git` and of `.ko-agent-sandbox` still finds nothing. A failure
+on any row means the fold rule needs widening in `policy::folds_to` — fix the code, not the test.
+Fold tables are version-specific, which is why the recorded versions matter here.
 
-APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3 row included) pass —
-`verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS
-one end to end. What is left:
+The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3
+row included) — `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the
+case-sensitive APFS one end to end. What is left:
 
+- [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS and NTFS; case-insensitive APFS passes
+  (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
 - [ ] ext4, the control.
 
 ### End-to-end coherency through the real host share
