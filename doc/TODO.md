@@ -228,23 +228,6 @@ channel — however narrow — should exist for a convenience. One constraint on
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
 
-## Deferred — extra hardening, low value
-
-- [ ] Fold case in the host command profile's guard pattern (`SeatbeltProfile.anyDepth`), so a
-  `.GIT` or `.KO-AGENT-SANDBOX` the command creates where no lowercase entry exists is denied on a
-  case-insensitive volume (`run-on-host.md`, "The host command's filesystem rules"), with a gate
-  row creating one. Until then the workspace filter is the stricter of the two guards there.
-
-- [ ] Filter `mach-lookup` in the host command profile, and in the proxy's, which needs it too
-  (`SeatbeltProfile.renderProxy`).
-  - It is granted unfiltered, and the system program directories are executable (a command's
-    scripts need `find`, `mount` and whatever else; `runtime-authority.txt`); together those let a
-    command reach any Mach service — `open` through LaunchServices would start an application
-    outside the profile.
-  - Measure the services a command actually needs, as `ops` measures operation families, and
-    filter to them (`(allow mach-lookup (global-name …))`, the pattern Apple's profiles use); the
-    gate's forked-process rows are where the answer is checked.
-
 ## Deferred — a bound on a silent host command
 
 An sbt server's and a mill daemon's start are bounded by the broker's progress bound
@@ -346,10 +329,15 @@ A GraalVM (JDK 25) native image, with `native-image` and a C toolchain, starts i
 milliseconds where `java -jar` takes ~350 ms. The launcher branches on running as an image
 (`RunOnHostSandbox.isNativeImage`: the wrapper's self-invocation, its launch file, the Seatbelt
 proxy inputs) and stays resident when GraalVM refuses the FFM execvp (`SandboxLifecycle.handOver`).
-No build or test exercises any of it.
+No build or test exercises any of it, and the proxy as an image does not start under its profile
+(macOS 26.4.1, GraalVM CE 25.0.2, `run-on-host-profile-iterate.sh mach-proxy <binary>`):
+`Fatal error: CSunMiscSignal.open() failed`. What the profile lacks for it is unmeasured, and so
+are the image's Mach services, which the same mode measures once it starts.
 
     sbt dist
     cd target/dist
+    eval $(cs java --jvm graalvm-community:25 --env)
+    export PATH="$JAVA_HOME/bin:$PATH"
     native-image --enable-native-access=ALL-UNNAMED \
       --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
       --add-exports=java.base/sun.security.util=ALL-UNNAMED \

@@ -90,11 +90,21 @@ const IGNORABLE: &[&[u8]] = &[
     b"\xef\xbb\xbf", // U+FEFF zero width no-break space
 ];
 
+/// UTF-8 encodings of the letters outside ASCII that a filesystem may compare equal to an ASCII
+/// letter, with that letter. APFS resolves the last two to `k` and `s`, which `.ko-agent-sandbox`
+/// has and `.git` has not (`doc/git-metadata.md`, "The name rule").
+const FOLDS_TO_ASCII: &[(&[u8], u8)] = &[
+    (b"\xc4\xb0", b'i'),     // U+0130 latin capital letter i with dot above
+    (b"\xc4\xb1", b'i'),     // U+0131 latin small letter dotless i
+    (b"\xe2\x84\xaa", b'k'), // U+212A kelvin sign
+    (b"\xc5\xbf", b's'),     // U+017F latin small letter long s
+];
+
 /// Whether `name` (a raw basename, no slashes) must be refused as a new `.git` entry.
 ///
-/// The rule as executed: strip trailing `.` and space, drop [`IGNORABLE`], fold U+0130/U+0131 to
-/// `i`, ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to match
-/// and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
+/// The rule as executed: strip trailing `.` and space, drop [`IGNORABLE`], fold
+/// [`FOLDS_TO_ASCII`], ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to
+/// match and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
 pub fn is_dotgit_name(name: &[u8]) -> bool {
     folds_to(name, b".git")
 }
@@ -120,7 +130,6 @@ pub fn is_sandbox_config_name(name: &[u8]) -> bool {
 /// The single fold behind every reserved-name rule, so no two of them can disagree about what a
 /// backing filesystem might treat as the same name. `target` is ASCII.
 fn folds_to(name: &[u8], target: &[u8]) -> bool {
-    // The i-family folds to ASCII 'i' (U+0130 is C4 B0, U+0131 is C4 B1) and ignorables are dropped.
     let mut folded: Vec<u8> = Vec::with_capacity(name.len());
     let mut i = 0;
     'outer: while i < name.len() {
@@ -130,13 +139,15 @@ fn folds_to(name: &[u8], target: &[u8]) -> bool {
                 continue 'outer;
             }
         }
-        if i + 1 < name.len() && name[i] == 0xC4 && (name[i + 1] == 0xB0 || name[i + 1] == 0xB1) {
-            folded.push(b'i');
-            i += 2;
-        } else {
-            folded.push(name[i]);
-            i += 1;
+        for (letter, ascii) in FOLDS_TO_ASCII {
+            if name[i..].starts_with(letter) {
+                folded.push(*ascii);
+                i += letter.len();
+                continue 'outer;
+            }
         }
+        folded.push(name[i]);
+        i += 1;
     }
 
     let mut end = folded.len();
@@ -467,6 +478,32 @@ mod tests {
             "\u{200b}.ko-agent-sandbox".as_bytes()
         ));
         assert!(is_sandbox_config_name(".ko-agent\u{ad}-sandbox".as_bytes()));
+    }
+
+    #[test]
+    fn letters_apfs_resolves_to_k_and_s_are_the_launcher_configuration_name() {
+        // Measured on APFS (`doc/verification-log.md`): each spelling resolves to an existing
+        // `.ko-agent-sandbox`. Looked up as well as created: an access through the spelling
+        // reaches a directory the host made, which only its classification protects.
+        for name in [
+            ".\u{212a}o-agent-sandbox",
+            ".ko-agent-\u{17f}andbox",
+            ".\u{212a}O-AGENT-\u{17f}ANDBOX",
+        ] {
+            assert!(is_sandbox_config_name(name.as_bytes()), "{name:?}");
+            assert_eq!(
+                classify_relative_path(format!("apps/{name}/egress/rule").as_bytes(), &[]),
+                GitPathClass::Protected,
+                "{name:?}"
+            );
+            assert!(matches!(
+                authorize_create(&GitContext::NotGit, name.as_bytes()),
+                Decision::Deny(_)
+            ));
+        }
+        // A lone lead byte of either sequence is not the letter.
+        assert!(!is_sandbox_config_name(b".\xe2\x84o-agent-sandbox"));
+        assert!(!is_sandbox_config_name(b".ko-agent-\xc5andbox"));
     }
 
     #[test]

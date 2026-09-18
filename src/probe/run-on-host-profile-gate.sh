@@ -30,7 +30,8 @@
 # The negative rows never write anything real: a "write" is `: >> file`, which opens for append
 # and writes nothing, and every created marker is in a scratch tree this script makes and
 # removes. A denied row prints the denial on stderr; a wrongly permitted one leaves a marker the
-# cleanup removes, and the row reports FAIL.
+# cleanup removes, and the row reports FAIL. The `open` row, wrongly permitted, starts Calculator,
+# which the row ends unless it was running before.
 set -u
 . "$(dirname "$0")/run-on-host-gate-setup.sh"
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
@@ -107,8 +108,8 @@ else machine "podman: absent"; fi
 # The .GIT probe reaches the existing .git only on a case-insensitive volume.
 case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
 : > "$case_probe/a"
-if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"
-else machine "project filesystem: case-sensitive"; fi
+if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"; folding=1
+else machine "project filesystem: case-sensitive"; folding=0; fi
 rm -rf "$case_probe"
 
 emit() { # program
@@ -695,6 +696,16 @@ for p in $profiles; do
     expect_denied "$p" "write PROJECT/sub/nested/.git/hooks/x" ": > '$scratch/sub/nested/.git/hooks/x'"
     expect_denied "$p" "write existing .git/config through .GIT" ": >> '$scratch/sub/nested/.GIT/config'"
     expect_denied "$p" "create PROJECT/.git during the command" "mkdir '$scratch/.git'"
+    # A spelling the volume folds to a guarded name, created where no entry exists for the access
+    # to resolve to: host git and the launcher would open it as the name (seatbelt-semantics.sh
+    # E9-E12). U+212A KELVIN SIGN and U+017F LONG S fold to k and s; .git has no such letter.
+    mkdir "$scratch/fresh"
+    for spelling in .GIT .KO-AGENT-SANDBOX "$(printf '.\342\204\252o-agent-sandbox')" \
+        "$(printf '.ko-agent-\305\277andbox')"; do
+        if [ "$folding" = 1 ]
+        then expect_denied "$p" "create PROJECT/$spelling where no such entry exists" "mkdir '$scratch/fresh/$spelling'"
+        else report SKIP "create PROJECT/$spelling where no such entry exists" "the project volume folds no case"; fi
+    done
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
     expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/rule'"
@@ -728,6 +739,27 @@ for p in $profiles; do
         else report FAIL "read and execute the mill launcher" "$(first_error)"; fi
         expect_denied mill "list the mill download folder" "ls '$mill_downloads'"
     fi
+
+    echo
+    echo "Mach services, under the $p profile"
+    calculator_before=$(pgrep -x Calculator)
+    expect_denied "$p" "start an application through open" "/usr/bin/open -g -a Calculator"
+    [ -n "$calculator_before" ] || pkill -x Calculator
+    # The proxy's JVM dies of a segmentation fault without the service SeatbeltProfile.MachServices
+    # names; a command's JVM asking the system's resolver must not. Whether the name resolves is
+    # not this row's question.
+    cat > "$SESSION_TMP/Resolve.java" <<'EOF'
+class Resolve {
+    public static void main(String[] arguments) {
+        try { System.out.println(java.net.InetAddress.getByName("localhost")); }
+        catch (java.net.UnknownHostException ex) { System.out.println(ex); }
+    }
+}
+EOF
+    # From the profile's own project: a JVM asks for its working directory at start, and the
+    # gate's is the sbt profile's project alone.
+    expect_allowed "$p" "a JVM resolving a name survives it" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java'"
 
     echo
     echo "allowed writes, under the $p profile"

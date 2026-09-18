@@ -62,6 +62,13 @@ Findings the rule rests on:
   only relate composed and decomposed forms of one character, never yielding an ASCII `g`, `i` or
   `t`. `.git` is pure ASCII, so normalization creates no collision: the audited core needs **no**
   Unicode normalization dependency. Stated in `git-metadata.md` and covered by a test.
+  - This holds for `.git`'s letters, not for every ASCII letter: U+212A KELVIN SIGN decomposes
+    canonically to `K`, so normalization and case folding together make it `.ko-agent-sandbox`'s
+    `k`, and case folding makes U+017F LONG S its `s`. The name rule folds both by name; no
+    library is needed.
+  - In Unicode 16 those two are the code points outside ASCII that fold to a letter of either
+    name. The other folds into the names' characters are to `ss` (U+00DF, U+1E9E) and `st`
+    (U+FB05, U+FB06), sequences neither name has.
 - **Invisible/ignorable code points are a real collapse vector**, so the rule drops U+00AD,
   U+200B–U+200D, U+2060 and U+FEFF before comparing. This is the HFS+ half of CVE-2014-9390; whether
   APFS still ignores them is exactly the sort of table detail we should not have to know.

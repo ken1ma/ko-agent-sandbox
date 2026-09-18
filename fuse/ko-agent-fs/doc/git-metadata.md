@@ -167,6 +167,9 @@ Deny creation of any basename that equals `.git` after all of:
   CVE-2014-9390);
 - folding the Turkish i-family (U+0130, U+0131) to `i` — some Windows upcase tables map dotless and
   dotted i to `I`;
+- folding U+212A KELVIN SIGN to `k` and U+017F LATIN SMALL LETTER LONG S to `s` — APFS resolves
+  both to the ASCII letter (`verification-log.md`). `.git` has neither letter;
+  `.ko-agent-sandbox`, matched through the same fold (`policy::is_sandbox_config_name`), has both;
 - ASCII case-folding;
 - stripping trailing `.` and space characters (Win32 ignores them).
 
@@ -175,9 +178,10 @@ sequences and a non-UTF-8 name must not panic, bypass, or normalize into a surpr
 no one can create a file named `.GIT` or `.gi<U+200C>t`, which nothing needs.
 
 **A superset, not the exact fold set**, because the exact set is not statically knowable — NTFS
-folds through a per-volume `$UpCase` table. Unicode normalization needs no handling at all, `.git`
-being pure ASCII. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the research
-`security-research.md` records.
+folds through a per-volume `$UpCase` table. Unicode normalization needs no library: in Unicode 16
+the one code point that normalizes to an ASCII letter is U+212A, to `K`, and the fold above names
+it. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the research `security-research.md`
+records.
 
 **The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it. On
 each supported backing, create every candidate name through the mount and assert host

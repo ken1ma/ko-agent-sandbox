@@ -29,9 +29,9 @@ object SeatbeltProfile:
    * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
    *
-   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern matches
-   * Seatbelt's resolved path without folding case; run-on-host.md, "The host command's filesystem
-   * rules", states what the case-alias probe establishes.
+   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is
+   * lowercase alone: on a case-insensitive volume it matches the other spellings measured
+   * (run-on-host.md, "The host command's filesystem rules").
    */
   val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
@@ -82,6 +82,19 @@ object SeatbeltProfile:
   val Devices: String =
     """(allow file-read* file-write-data (literal "/dev/null"))""" + "\n" +
       """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))"""
+
+  /**
+   * The Mach services both profiles may look up, by name: an unfiltered `mach-lookup` reaches
+   * every service of the host, and a service may act for its caller outside the profile.
+   * Measured by src/probe/run-on-host-profile-iterate.sh `mach-proxy` and `mach`: without this
+   * name the serving proxy dies of a segmentation fault, where `java -version` and `sbt about`
+   * run with no name at all. A command gets it unmeasured (run-on-host.md, "The Seatbelt
+   * profile", has the reason).
+   */
+  val MachServices: Seq[String] = Seq("com.apple.system.opendirectoryd.libinfo")
+
+  private val MachLookup: String =
+    s"(allow mach-lookup ${MachServices.map(name => s"(global-name ${sbpl(name)})").mkString(" ")})"
 
   /** What the command may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
     * running a real build under this profile and reading the denials, never guessed: the contract allows a
@@ -202,7 +215,8 @@ object SeatbeltProfile:
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
         lines += ";; A process at all: not filesystem authority, and none of it reaches user data."
-        lines += "(allow process-fork sysctl-read mach-lookup)"
+        lines += "(allow process-fork sysctl-read)"
+        lines += MachLookup
         lines += Devices
         lines += ""
         lines += ";; Runtime authority: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
@@ -307,11 +321,11 @@ object SeatbeltProfile:
         lines += s"(allow file-read-metadata file-test-existence ${literal(ResolverSocketLink)})"
         lines += ""
         // Measured (src/probe/run-on-host-profile-iterate.sh ops on the JDK, then the proxy
-        // itself with each family added in turn): sysctl-read for the JVM, and mach-lookup, without
-        // which a system library dies of a segmentation fault before the proxy's first line. No
-        // process-fork: the proxy forks nothing.
+        // itself with each family added in turn): sysctl-read for the JVM, and mach-lookup
+        // (MachServices). No process-fork: the proxy forks nothing.
         lines += ";; A process at all."
-        lines += "(allow sysctl-read mach-lookup)"
+        lines += "(allow sysctl-read)"
+        lines += MachLookup
         lines += Devices
         lines += ""
         lines += ";; The runtime authority as reads alone: the proxy executes nothing but itself."

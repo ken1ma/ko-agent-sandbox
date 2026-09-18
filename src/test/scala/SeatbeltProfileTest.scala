@@ -321,7 +321,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow file-read-metadata file-test-existence (literal "/private/var"))""",
         """(allow file-read-metadata file-test-existence (literal "/private/var/run"))""",
         """(allow file-read-metadata file-test-existence (literal "/var"))""",
-        "(allow sysctl-read mach-lookup)",
+        "(allow sysctl-read)",
+        """(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))""",
         """(allow file-read* file-write-data (literal "/dev/null"))""",
         """(allow file-read* (literal "/dev/random") (literal "/dev/urandom"))""",
         """(allow file-read* (subpath "/System/Library/CoreServices/SystemVersion.plist"))""",
@@ -331,6 +332,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
         s"""(allow file-read* (subpath "$home/.cache/ko-agent-sandbox/launcher/ko-agent-sandbox.jar"))""",
       ),
     )
+
+  test("neither profile looks up a Mach service it does not name"):
+    for text <- Seq(rendered(), renderedProxy()) do
+      val lookups = text.linesIterator.filter(_.contains("mach-lookup")).toSeq
+      assertEquals(
+        lookups,
+        Seq("""(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))"""),
+      )
 
   test("the proxy profile's network is every remote, the resolver's socket, and a listener of the localhost class"):
     val network = renderedProxy().linesIterator.filter(_.startsWith("(allow network")).toSeq

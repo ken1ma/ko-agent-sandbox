@@ -50,6 +50,27 @@ found nothing afterwards.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
   collapsed them — and neither resolves anywhere near `.git` on either backing.
 
+### Measured: two letters APFS resolves to `.ko-agent-sandbox`'s (macOS 26.4.1; 2026-09-19)
+
+On the case-insensitive project volume, beside an existing `.ko-agent-sandbox`, the spellings
+`.<U+212A>o-agent-sandbox` (KELVIN SIGN) and `.ko-agent-<U+017F>andbox` (LONG S) resolve to it
+(`src/probe/seatbelt-semantics.sh` E11, the launcher's probe). Through a filtered session whose
+filter folds neither letter, `mkdir` of each spelling succeeds and `.ko-agent-sandbox` then
+resolves to the new directory, while `.KO-AGENT-SANDBOX` meets `EPERM`.
+
+### Verified: the `.ko-agent-sandbox` rows, APFS case-insensitive (macOS 26.4.1; 2026-09-19)
+
+`probe/apfs-name-rule-probe.py` through the production stack — filtered session → FUSE filter →
+virtiofs → APFS — in a subdirectory of a project, the rule holding at any depth:
+
+- All 21 denied spellings failed with exactly `EPERM`: the 14 `.git` rows, and
+  `.ko-agent-sandbox` itself, its two ASCII case variants, the KELVIN SIGN and LONG S spellings,
+  the soft-hyphen form and the trailing dot.
+- All seven allowed names were created, `.ko-agent-sandbox-notes` among them, and afterwards the
+  host's `ls .git` and `ls .ko-agent-sandbox` found nothing there and git discovered only the
+  enclosing project's repository.
+- The mounted suite's rows for both letters pass (`--self-test`, `probe/rig.sh`).
+
 ## End-to-end coherency through the host share
 
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)

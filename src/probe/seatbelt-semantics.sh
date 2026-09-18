@@ -3,7 +3,7 @@
 # run-on-host.md "The Seatbelt profile" and encoded in SeatbeltProfile.scala;
 # this is what measured them, and what re-measures them.
 #
-# Run it on each new macOS release. If E3, E4 or E5 stops answering DENIED, the guard has
+# Run it on each new macOS release. If E3, E4, E5, E9 or E12 stops answering DENIED, the guard has
 # silently weakened and the profile no longer enforces what SECURITY.md claims — a release blocker,
 # not a test to update.
 #
@@ -127,11 +127,68 @@ report "E8 a rule naming a non-canonical path" \
     "does a rule spelled /tmp/... cover an access that resolves to /private/tmp/...?" "$r" \
     "ALLOWED: rules are matched as written, so a non-canonical rule fails OPEN. DENIED: rules canonicalize too."
 
+# ---------------------------------------------------------------------------
+# E9-E12: a guarded name the command creates under another spelling, where no entry of the
+# guard's own spelling exists for the access to resolve to (E5's case). A DENIED here may be a
+# pattern sandbox-exec did not compile, so these rows print its first stderr line.
+mkdir -p "$proj/fresh9" "$proj/fresh10" "$proj/fresh12" "$proj/fold"
+spelled() { printf '%s (%s)' "$1" "$(sed -n 1p "$root/err")"; }
+
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write* (regex #"/\.git(/|$)"))
+SB
+r=$(attempt "" "mkdir '$proj/fresh9/.GIT'")
+report "E9 a new .GIT under the lowercase pattern" \
+    "is a .GIT created where no .git exists matched by /\\.git(/|\$)?" "$(spelled "$r")" \
+    "DENIED: the lowercase pattern folds. ALLOWED: host git opens that .GIT as .git, and the guard needs E10."
+
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write* (regex #"/\.[gG][iI][tT](/|$)"))
+SB
+r=$(attempt "" "mkdir '$proj/fresh10/.GIT'")
+report "E10 a new .GIT under character classes" \
+    "does /\\.[gG][iI][tT](/|\$) compile, and deny the new .GIT?" "$(spelled "$r")" \
+    "DENIED with no compile error: classes are the spelling that folds. Otherwise it needs another."
+r=$(attempt "" "mkdir '$proj/fresh10/.GITignore'")
+report "E10b the anchor under character classes" \
+    "does .GITignore stay outside the class pattern?" "$(spelled "$r")" \
+    "ALLOWED: the (/|\$) anchor holds. DENIED: the pattern is wider than the name."
+
+# U+212A KELVIN SIGN and U+017F LATIN SMALL LETTER LONG S case-fold to k and s; .git has no such
+# letter. No profile: this is the volume's own answer.
+mkdir "$proj/fold/.ko-agent-sandbox"
+kelvin=$(printf '.\342\204\252o-agent-sandbox')
+long_s=$(printf '.ko-agent-\305\277andbox')
+for spelling in "$kelvin" "$long_s"; do
+    if [ -e "$proj/fold/$spelling" ]; then r="ALIAS"; else r="DISTINCT"; fi
+    report "E11 $spelling beside .ko-agent-sandbox" \
+        "does this volume resolve the spelling to the existing .ko-agent-sandbox?" "$r" \
+        "ALIAS: an entry so spelled is the guarded name to the launcher; see E12. DISTINCT: it is another name."
+done
+
+# The guard's own pattern for the name (SeatbeltProfile.anyDepth).
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write* (regex #"/\.ko-agent-sandbox(/|$)"))
+SB
+for spelling in "$kelvin" "$long_s"; do
+    r=$(attempt "" "mkdir '$proj/fresh12/$spelling'")
+    rmdir "$proj/fresh12/$spelling" 2>/dev/null
+    report "E12 a new $spelling under the lowercase pattern" \
+        "does /\\.ko-agent-sandbox(/|\$) match the spelling?" "$(spelled "$r")" \
+        "DENIED: the pattern covers it. ALLOWED where E11 says ALIAS: the guard misses a name the launcher reads."
+done
+
 printf '\n=== machine ===\n'
 printf '%-20s %s\n' "macOS" "$(sw_vers -productVersion)"
 printf '%-20s %s\n' "arch" "$(uname -m)"
 printf '%-20s %s\n' "scratch volume" "$(df -h /tmp | tail -1 | awk '{print $1}')"
 : > "$root/casetest"; [ -e "$root/CASETEST" ] && c=INSENSITIVE || c=sensitive
 printf '%-20s %s\n' "scratch case" "$c"
-printf '\nNote: /tmp and the project volume may differ in case sensitivity; E5 is only\n'
+printf '\nNote: /tmp and the project volume may differ in case sensitivity; E5 and E9-E12 are only\n'
 printf 'conclusive when the scratch volume above is INSENSITIVE, as the project volume is.\n'

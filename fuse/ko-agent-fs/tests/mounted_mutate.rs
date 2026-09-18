@@ -198,6 +198,14 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         "case-folded spelling",
         fs::create_dir(mount.at(".KO-AGENT-SANDBOX")),
     );
+    denied(
+        "kelvin sign for k",
+        fs::create_dir(mount.at(".\u{212a}o-agent-sandbox")),
+    );
+    denied(
+        "long s for s",
+        fs::create_dir(mount.at(".ko-agent-\u{17f}andbox")),
+    );
     // A launch takes its boundary configuration from the directory it starts in, so a subdirectory's copy is
     // boundary configuration too.
     denied(
