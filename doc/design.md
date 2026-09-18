@@ -185,26 +185,23 @@ A browser callback to 127.0.0.1 reaches the host, while the agent listens inside
 The supported device-code and pasted-code sign-ins need no callback listener exposed to the
 host. [README.md](../README.md#running-command) gives each agent’s sign-in steps.
 
-### The agent-instruction override replaces only the conventions
+### The image carries no working conventions
 
-`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` replaces the image's `AGENTS-CUSTOM.md` and nothing
-else: `AGENTS-SANDBOX.md` is what a project cannot know about itself, and "What this session may
-do" is what it must not be trusted to declare. It is not an agent's own project-level instructions,
-which that agent reads with no launcher help, for two reasons:
+The agent instructions a session receives are the image's `AGENTS-SANDBOX.md`, which says what a
+project cannot know about itself, and the launcher's "What this session may do", which a project
+must not be trusted to declare. How an agent writes, codes and uses git is each project's choice
+and goes in the project's own instruction files, which each installed agent reads with no launcher
+help ([agent-settings.md](agent-settings.md#adding-project-instructions)). The image's file loads
+unconditionally, for `claude` from the managed-policy location: a project could add to
+conventions placed there but never drop them.
 
-- The managed-policy location loads unconditionally: a project file can add to the image's
-  conventions but never drop them.
-- `.ko-agent-sandbox` is read on the host and unwritable in every write mode, so a session cannot
-  rewrite the instructions governing the next one, as it could any file in the project directory.
-
-The instruction file changes no enforcement; it is in the boundary directory for that
-read-before-launch property alone.
+A session can edit the project's instruction files, and a later session reads the edit. The
+launcher does not prevent that: instruction files change no enforcement.
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress`, `agent` or a file
-inside them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`,
-`readAgentInstructions`, tested).
+A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress` or a file inside
+them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`, tested).
 
 - podman resolves mount sources on the host, so mounting through a repository-controlled link
   would expose its target into the sandbox.

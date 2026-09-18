@@ -78,8 +78,7 @@ costs are described below.
 - Claude Code's managed settings are stored in the read-only image and take precedence over
   repository settings. An organization's remote managed settings can supersede the image's settings
   (the sandbox Containerfile's managed-settings note explains the consequences).
-- The egress rules and the project's agent instructions in `.ko-agent-sandbox` are read on the host
-  before the container starts.
+- The egress rules in `.ko-agent-sandbox` are read on the host before the container starts.
 - The session's write mode keeps a session from writing the configuration governing the next
   launch:
   - under `--write=reject` the whole tree is read-only;

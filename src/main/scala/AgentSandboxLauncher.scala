@@ -2081,12 +2081,10 @@ object AgentSandboxLauncher:
     writeMode: String,
     workspaceGuard: String,
     rulesetText: String,
-    agentInstructions: Option[String],
     runOnHost: Vector[String] = Vector.empty,
     noGit: Option[String] = None,
   ): String =
-    s"$imageId $writeMode $workspaceGuard ${sha256Hex(rulesetText)} "
-      + agentInstructions.fold("image")(sha256Hex)
+    s"$imageId $writeMode $workspaceGuard ${sha256Hex(rulesetText)}"
       + (if runOnHost.isEmpty then "" else s" ${runOnHost.mkString(",")}")
       + noGit.fold("")(cause => s" no-git:${sha256Hex(cause)}")
 
@@ -2494,13 +2492,6 @@ object AgentSandboxLauncher:
     boundaryDirError(boundaryDir).foreach(fail(_))
 
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
-    // The project's replacement for the image's AGENTS-CUSTOM.md, read here for the same reason
-    // the rules are: a session must not rewrite the instructions governing the next one.
-    val agentInstructions = readAgentInstructions(boundaryDir.resolve("agent")).fold(fail(_), identity)
-    agentInstructions.foreach: _ =>
-      System.err.println(
-        s"agent instructions: .ko-agent-sandbox/agent/$AgentInstructionsFile replaces the image's",
-      )
 
     // The provider the launched command selects, and the one warning that is the launcher's to
     // print: the proxy never sees the command, so "this command selects no provider" cannot come
@@ -2718,8 +2709,7 @@ object AgentSandboxLauncher:
     // Session-specific instructions point to the ruleset environment variable rather than embed
     // the host list in every prompt. Read the image's file, append the session's instructions, and
     // mount the result over it. All installed agents' instruction files link to this path, so one
-    // mount reaches all of them. A project's AGENTS-CUSTOM.md replaces the image's conventions;
-    // AGENTS-SANDBOX.md still comes from the image. agentDocumentStamp keys the cached assembly.
+    // mount reaches all of them. agentDocumentStamp keys the cached assembly.
     val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = rulesetCacheDir.resolve("agents.md")
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
@@ -2728,7 +2718,7 @@ object AgentSandboxLauncher:
     val noGit = SandboxProject.noGit(projectDir, homeProtection, os)
     val gitInstruction = noGit.map(SandboxProject.noGitInstruction(_, mountPath))
     val agentDocStamp = agentDocumentStamp(
-      imageId, writeMode, guard, rulesetText, agentInstructions, runOnHost, gitInstruction,
+      imageId, writeMode, guard, rulesetText, runOnHost, gitInstruction,
     )
 
     val (sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
@@ -2877,19 +2867,16 @@ object AgentSandboxLauncher:
       if readIfPresent(agentDocFile).forall(_.isEmpty)
         || firstLine(agentDocStampFile) != agentDocStamp
       then
-        val imagePart =
-          if agentInstructions.isDefined then "/etc/ko-agent-sandbox/AGENTS-SANDBOX.md" else agentDocPath
         // --entrypoint= for the same reason as the bundle read above.
         val imageDoc = run(
           podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          image, "cat", imagePart,
+          image, "cat", agentDocPath,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
         writeReadable(
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
-            + agentInstructions.fold("")(text => "\n\n" + text.stripLineEnd)
             + appendedSection(
               mountPath, writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),
