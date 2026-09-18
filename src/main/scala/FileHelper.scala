@@ -209,5 +209,19 @@ object FileHelper:
     if Files.exists(path) then
       try
         Using.resource(Files.walk(path)): entries =>
-          entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(Files.delete)
+          entries.sorted(java.util.Comparator.reverseOrder()).iterator().asScala.foreach(deleteEntry)
       catch case ex: UncheckedIOException => throw ex.getCause
+
+  /** Windows refuses to delete an entry with the read-only attribute, where POSIX asks the
+    * directory alone. A run's copy of `cacerts` met that refusal: the prepared store has no write
+    * bit (JdkTrust), and attributes travel with the copy (AgentSandboxLauncher, `carried`). */
+  private def deleteEntry(path: Path): Unit =
+    try Files.delete(path)
+    catch
+      case ex: java.nio.file.AccessDeniedException =>
+        val dos = Files.getFileAttributeView(
+          path, classOf[java.nio.file.attribute.DosFileAttributeView], java.nio.file.LinkOption.NOFOLLOW_LINKS,
+        )
+        if dos == null || !dos.readAttributes().isReadOnly then throw ex
+        dos.setReadOnly(false)
+        Files.delete(path)

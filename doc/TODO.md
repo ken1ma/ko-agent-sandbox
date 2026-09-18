@@ -277,9 +277,9 @@ replacement, each leaving one consistent runtime.
 ## The project mounted at its own path
 
 - [ ] Run `sbt "testWithPodman *MountPathTest"` on Linux; all Linux cases must pass.
-- [ ] On Windows, launch from PowerShell in `C:\Users\<me>\src\app` and from a WSL shell
-  in `/mnt/c/Users/<me>/src/app`. In both sessions, `bash -c pwd` must print
-  `/mnt/c/Users/<me>/src/app`. A launch from `\\wsl.localhost\...` must be refused.
+- [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
+  rootless podman installed there — from `/mnt/c/Users/<me>/src/app`: `bash -c pwd` must print
+  that path, the one a PowerShell launch of the same directory prints.
 
 Recorded macOS results (2026-09-18):
 
@@ -288,6 +288,17 @@ Recorded macOS results (2026-09-18):
   `SandboxLifecycleTest`; those two pass when run alone on Linux.
 - The four agents start without a trust prompt on fresh and used volumes.
 - A host build's error reports a path accessible inside the session.
+
+Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2026-09-19):
+
+- A launch from PowerShell in `C:\Users\<me>\src\app` mounts the filter at
+  `/mnt/c/Users/<me>/src/app`, and `bash -c pwd` prints that path.
+- A launch from PowerShell in `\\wsl.localhost\podman-machine-default\home\user\<dir>` is
+  refused with `error: cannot map ... into the podman machine`, before any `workspace:` line.
+- A first launch of a new project prepares the image's JDK (`JdkTrust.prepareScript` through
+  `HostCommands.quoteFreeSh`) and reaches a shell.
+- Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
+  session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
 
 ## Deferred — readable session directory names under `--run-on-host`
 

@@ -1302,8 +1302,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Files.createDirectories(image.resolve("opt/node/bin"))
     Files.writeString(image.resolve("opt/node/bin/node"), "#!/bin/sh\n")
     image.resolve("opt/node/bin/node").toFile.setExecutable(true)
+    // The words podman is given after the image, run here as the image's shell would run them.
     def answer(mountPath: String): String =
-      val process = ProcessBuilder("sh", "-c", MountPathProbeScript, "sh", mountPath).redirectErrorStream(true).start()
+      val words = mountPathProbeCommand("podman", "ko-agent-sandbox:latest", mountPath).dropWhile(_ != "sh")
+      val process = ProcessBuilder(words*).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes()).trim
       assertEquals(process.waitFor(), 0, output)
       output
@@ -1312,6 +1314,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(answer(s"$image/etc"), "entry") // a symlink is an entry too
     assertEquals(answer(s"$image/tmp/app"), "absent") // binds into an existing directory
     assertEquals(answer(s"$image/opt/src/app"), "absent") // several missing components
+    // One word through the wrapper's unquoted expansion: a space, a glob character, a quote.
+    assertEquals(answer(s"$image/tmp/my app/*/it's"), "absent")
+    Files.createDirectories(image.resolve("tmp/my app"))
+    assertEquals(answer(s"$image/tmp/my app"), "entry")
     // An executable file is no parent: podman would fail creating the mountpoint beneath it.
     assertEquals(answer(s"$image/opt/node/bin/node/app"), s"file $image/opt/node/bin/node")
     // The command runs as the image's user, whom `/root` refuses; root itself enters anywhere.
@@ -1333,7 +1339,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The run: the image's own program and network are not the question, and nothing is left behind.
     val command = mountPathProbeCommand("podman", "ko-agent-sandbox:latest", "/usr/local/bin")
     assert(command.containsSlice(Vector("--rm", "--pull=never", "--network=none", "--entrypoint=")), command)
-    assertEquals(command.takeRight(2), Vector("sh", "/usr/local/bin"))
+    assertEquals(command.last, "/usr/local/bin")
+    // Windows argument encoding passes a double quote through unescaped (HostCommands.quoteFreeSh).
+    assert(command.forall(word => !word.contains('"') && !word.contains('\n')), command)
 
   test("the generated agent document cache varies with every input"):
     def stamp(

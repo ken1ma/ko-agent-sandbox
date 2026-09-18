@@ -27,6 +27,32 @@ class JdkTrustTest extends munit.FunSuite:
       properties.map((key, value) => s"-D$key=$value") :+ "-Djavax.net.ssl.trustStore=/opt/jdk/lib/security/cacerts",
     )
 
+  test("a failed sandbox-jdk-use-proxy copies nothing, even into a destination the image already has"):
+    assume(!scala.util.Properties.isWin, "runs the receiving shell, which a POSIX host has")
+    val work = Files.createTempDirectory("jdk-prepare")
+    val jdk = work.resolve("jdk")
+    Files.createDirectories(jdk.resolve("lib/security"))
+    Files.createDirectories(jdk.resolve("conf"))
+    Files.writeString(jdk.resolve("lib/security/cacerts"), "unprepared")
+    Files.writeString(jdk.resolve("conf/net.properties"), "unprepared")
+    // The words podman is given after the image, with sandbox-jdk-use-proxy a stub first on PATH.
+    def prepare(stubExit: Int, prepared: java.nio.file.Path): Int =
+      val bin = Files.createTempDirectory(work, "bin")
+      val stub = Files.writeString(bin.resolve("sandbox-jdk-use-proxy"), s"#!/bin/sh\nexit $stubExit\n")
+      stub.toFile.setExecutable(true)
+      val builder = ProcessBuilder(HostCommands.quoteFreeSh(prepareScript(prepared.toString), jdk.toString)*)
+      builder.environment.put("PATH", s"$bin:${System.getenv("PATH")}")
+      builder.redirectErrorStream(true).start().waitFor()
+    val existing = Files.createDirectories(work.resolve("existing"))
+    assertNotEquals(prepare(stubExit = 1, existing), 0)
+    assertEquals(FileHelper.directoryEntries(existing), Vector.empty)
+    val fresh = work.resolve("fresh")
+    assertEquals(prepare(stubExit = 0, fresh), 0)
+    assertEquals(
+      FileHelper.directoryEntries(fresh).map(_.getFileName.toString).sorted,
+      Vector("cacerts", "net.properties"),
+    )
+
   test("the JDK's home comes from the image's own declaration, or is absent"):
     // SECURITY.md, "Who holds the CA key", has why the store is merged and why JAVA_HOME comes
     // from the image. podman image inspect prints Config.Env one entry per line.

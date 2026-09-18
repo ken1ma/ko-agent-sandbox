@@ -8,7 +8,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{Os, findOnPath, run}
+import HostCommands.{Os, findOnPath, quoteFreeSh, run}
 
 object ClipboardBroker:
 
@@ -294,7 +294,7 @@ object ClipboardBroker:
   /** One exec's stream, its requests served in order: whether there was one. A stream that
     * reaches the cap is cut there, the exec ended under it. */
   private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Boolean =
-    val reader = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", sandboxRequestReader())
+    val reader = ProcessBuilder((Seq(podman, "exec", "-i", sandboxContainer) ++ quoteFreeSh(sandboxRequestReader()))*)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()
@@ -327,7 +327,7 @@ object ClipboardBroker:
     (out, process.waitFor())
 
   private def respond(podman: String, sandboxContainer: String, body: Array[Byte]): Unit =
-    val writer = ProcessBuilder(podman, "exec", "-i", sandboxContainer, "sh", "-c", sandboxResponseWriter())
+    val writer = ProcessBuilder((Seq(podman, "exec", "-i", sandboxContainer) ++ quoteFreeSh(sandboxResponseWriter()))*)
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()

@@ -13,6 +13,17 @@ import FileHelper.*
 object JdkTrust:
 
   /**
+   * The JDK at `$1` made to use the proxy, then its two files copied into `prepared`. One `&&`
+   * chain, since `set -e` does not end a script at a failing left side of `&&`: a copy placed after
+   * the chain would run behind a failed sandbox-jdk-use-proxy, and where `prepared` exists —
+   * an image may ship one — hand the launcher an unprepared store to stamp as prepared.
+   */
+  def prepareScript(prepared: String): String =
+    s"""set -eu
+       |sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared \\
+       |  && cp -L "$$1/lib/security/cacerts" "$$1/conf/net.properties" $prepared""".stripMargin
+
+  /**
    * The JDK's home as the image itself declares it, out of `podman image inspect`'s `Config.Env`.
    * Read rather than agreed: the launcher needs somewhere to mount a merged trust store, and the
    * image already says where its JDK is. An image of the user's own (KO_AGENT_SANDBOX_IMAGE) that
@@ -75,15 +86,14 @@ object JdkTrust:
         // KO_AGENT_SANDBOX_IMAGE promises only to ship sandbox-jdk-use-proxy, not an ENTRYPOINT
         // that tolerates this container or execs its arguments at all. Nothing an entrypoint does
         // is for this container anyway.
-        val created = run(
-          podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-          s"--volume=$caCertFile:$SandboxEgressProxyCaPath:ro",
-          s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
-          image, "sh", "-euc",
-          s"""sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared"""
-            + s""" && cp -L "$$1/lib/security/cacerts" "$$1/conf/net.properties" $prepared""",
-          "sh", javaHome,
-        )
+        val created = run((
+          Vector(
+            podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
+            s"--volume=$caCertFile:$SandboxEgressProxyCaPath:ro",
+            s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
+            image,
+          ) ++ quoteFreeSh(prepareScript(prepared), javaHome)
+        )*)
         if !created.ok then fail(s"error: could not create a container of $image to prepare its JDK\n${created.err}")
         val container = created.text
         // The failure is raised after the container is removed: `fail` exits the JVM, which skips
