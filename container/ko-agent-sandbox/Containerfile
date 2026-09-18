@@ -557,13 +557,11 @@ RUN set -euxo pipefail; \
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
-# AGENTS-SANDBOX.md tells the running agent what this container is;
-# AGENTS-CUSTOM.md how to work. They concatenate into AGENTS.md, the target of
-# every link below. The launcher mounts its own assembly over AGENTS.md — the
-# session's permissions and ruleset lookup instructions appended, and a project's
-# .ko-agent-sandbox/agent/AGENTS-CUSTOM.md in place of the image's — which is
-# why the parts ship beside the whole.
-# Without them an agent reads `Read-only file system` as breakage, or writes
+# AGENTS-SANDBOX.md tells the running agent what this container is. It ships
+# as AGENTS.md, the target of every link below. The launcher mounts a copy over
+# AGENTS.md with the session's permissions and ruleset lookup instructions
+# appended.
+# Without it an agent reads `Read-only file system` as breakage, or writes
 # deliverables somewhere discarded on exit.
 #
 #   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
@@ -589,12 +587,9 @@ COPY --chmod=0755 \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
 
-COPY AGENTS-SANDBOX.md AGENTS-CUSTOM.md /etc/ko-agent-sandbox/
+COPY AGENTS-SANDBOX.md /etc/ko-agent-sandbox/AGENTS.md
 
 RUN set -euxo pipefail; \
-    { cat /etc/ko-agent-sandbox/AGENTS-SANDBOX.md; echo; \
-      cat /etc/ko-agent-sandbox/AGENTS-CUSTOM.md; } \
-        > /etc/ko-agent-sandbox/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md /etc/claude-code/CLAUDE.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/codex/AGENTS.md; \
     ln -s /etc/ko-agent-sandbox/AGENTS.md $SANDBOX_VOLUME_SEED/antigravity/GEMINI.md; \

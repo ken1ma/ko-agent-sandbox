@@ -533,19 +533,19 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The other entries are allowed by name, and a symlink of one refused like egress.
-    Files.createDirectory(dir.resolve("agent"))
+    // The other entry is allowed by name, and a symlink of it refused like egress.
     Files.createDirectory(dir.resolve("run-on-host"))
     assertEquals(boundaryDirError(dir), None)
     Files.delete(dir.resolve("run-on-host"))
     Files.createSymbolicLink(dir.resolve("run-on-host"), dir.resolve("egress"))
-    val linkedTenant = boundaryDirError(dir)
-    assert(linkedTenant.exists(_.contains("run-on-host")), linkedTenant.toString)
-    Files.delete(dir.resolve("run-on-host"))
-    Files.delete(dir.resolve("agent"))
-    Files.createSymbolicLink(dir.resolve("agent"), dir.resolve("egress"))
     val linked = boundaryDirError(dir)
-    assert(linked.exists(_.contains("agent")), linked.toString)
+    assert(linked.exists(_.contains("run-on-host")), linked.toString)
+
+  test("doc/egress-proxy.md names the boundary directory's accepted entries"):
+    val names = BoundaryDirEntries.toVector.sorted.map(name => s"`$name`")
+    val sentence = s"`.ko-agent-sandbox/` accepts ${names.init.mkString(", ")} and ${names.last}."
+    val document = Files.readString(Paths.get("doc/egress-proxy.md")).replaceAll("\\s+", " ")
+    assert(document.contains(sentence), sentence)
 
   test("a stray entry's refusal says it may be a newer launcher's file, not only a typo"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
@@ -553,38 +553,6 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createDirectory(dir.resolve("future-config"))
     val refused = boundaryDirError(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
-
-  test("agent/ accepts empty overrides and refuses stray names, symlinks and non-regular files"):
-    val parent = Files.createTempDirectory("agent-forms")
-    assertEquals(readAgentInstructions(parent.resolve("agent")), Right(None))
-
-    val asFile = parent.resolve("agent")
-    Files.writeString(asFile, "# Priorities\n")
-    assert(readAgentInstructions(asFile).swap.exists(_.contains("is a file")))
-    Files.delete(asFile)
-
-    val dir = Files.createDirectory(asFile)
-    Files.createFile(dir.resolve(".DS_Store"))
-    assertEquals(readAgentInstructions(dir), Right(None))
-
-    Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), "# Priorities\n\nBe brief.\n")
-    assertEquals(readAgentInstructions(dir), Right(Some("# Priorities\n\nBe brief.\n")))
-
-    // The typo differs by more than case, which macOS and Windows would fold into the real file.
-    Files.writeString(dir.resolve("AGENT-CUSTOM.md"), "x")
-    assert(readAgentInstructions(dir).swap.exists(_.contains("not agent instructions")))
-    Files.delete(dir.resolve("AGENT-CUSTOM.md"))
-    Vector("", "\n", " \t\r\n").foreach: text =>
-      Files.writeString(dir.resolve("AGENTS-CUSTOM.md"), text)
-      assertEquals(readAgentInstructions(dir), Right(Some(text)))
-
-    Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
-    assertEquals(readAgentInstructions(dir), Right(None))
-    Files.createDirectory(dir.resolve("AGENTS-CUSTOM.md"))
-    assert(readAgentInstructions(dir).swap.exists(_.contains("not a regular file")))
-    Files.delete(dir.resolve("AGENTS-CUSTOM.md"))
-    Files.createSymbolicLink(dir.resolve("AGENTS-CUSTOM.md"), parent.resolve("elsewhere"))
-    assert(readAgentInstructions(dir).swap.exists(_.contains("symlink")))
 
   test("a symlinked boundary directory or egress refuses the launch"):
     val project = Files.createTempDirectory("boundary-guard")

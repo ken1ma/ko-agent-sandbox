@@ -589,10 +589,10 @@ object SandboxProject:
    * and the rule read must see the bytes a mounted-back directory would show); anything that is not
    * a directory; or an entry that is no configuration of this launcher's — only recognized
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
-   * config, the same rule each entry applies inside itself. The files inside egress/ and agent/ are
-   * vetted where they are read (EgressRules.readRuleFiles, readAgentInstructions), and
-   * run-on-host/ where the host command wrapper reads it (RunOnHostPrereqs.programRuleHosts). An
-   * absent directory is empty configuration, never a directory to materialize.
+   * config, the same rule each entry applies inside itself. The files inside egress/ are vetted
+   * where they are read (EgressRules.readRuleFiles), and run-on-host/ where the host command
+   * wrapper reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
+   * configuration, never a directory to materialize.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
@@ -632,44 +632,7 @@ object SandboxProject:
     if !Files.exists(boundaryDir) then Files.createDirectory(boundaryDir)
     s"--volume=$boundaryDir:$mountPath/.ko-agent-sandbox:ro"
 
-  val BoundaryDirEntries: Set[String] = Set("egress", "agent", "run-on-host")
-
-  /** The one file agent/ holds: the project's replacement for the image's AGENTS-CUSTOM.md. */
-  val AgentInstructionsFile: String = "AGENTS-CUSTOM.md"
-
-  /**
-   * The project's agent instructions under .ko-agent-sandbox/agent, or None when it ships none.
-   * Read on the host; refuse a stray name, a symlink or a non-regular file rather than silently
-   * ignoring configuration or following a project-controlled link. An empty file removes the
-   * image's working conventions. Not normalized — it is text, mounted as written.
-   */
-  def readAgentInstructions(agentDir: Path): Either[String, Option[String]] =
-    def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's agent instructions through one."
-
-    val file = agentDir.resolve(AgentInstructionsFile)
-    if Files.isSymbolicLink(agentDir) then Left(symlinkRefusal(agentDir))
-    else if !Files.exists(agentDir) then Right(None)
-    else if !Files.isDirectory(agentDir) then
-      Left(
-        s"""error: $agentDir is a file
-           |agent is a directory holding $AgentInstructionsFile; move the file there.""".stripMargin
-      )
-    else
-      val entries = directoryEntries(agentDir)
-        .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
-        .sortBy(_.getFileName.toString)
-
-      val refusal = entries
-        .collectFirst:
-          case entry if entry.getFileName.toString != AgentInstructionsFile =>
-            s"error: $entry is not agent instructions\nagent/ holds only $AgentInstructionsFile; " +
-              "a stray name would be ignored config."
-          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\nagent/$AgentInstructionsFile is a text file; " +
-              "anything else would leave it silently unread."
-      refusal.toLeft(readIfPresent(file))
+  val BoundaryDirEntries: Set[String] = Set("egress", "run-on-host")
 
   /**
    * Dot-named entries are reserved for editor and OS metadata (.DS_Store, .gitkeep), never

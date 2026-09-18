@@ -186,7 +186,7 @@ and trim.
 Every ambiguity is a failed launch with the reason and the line printed:
 
 - an unrecognized configuration entry: `egress/` accepts only `rule`, and `.ko-agent-sandbox/`
-  accepts `egress`, `agent` and `run-on-host`. Dot-prefixed metadata entries are ignored;
+  accepts `egress` and `run-on-host`. Dot-prefixed metadata entries are ignored;
 - a token outside the grammar, an unknown profile, provider, grant word or method, a `#` inside a
   token, a host that is an IP literal or is not a hostname;
 - a path outside canonical form; a `deny` or a `tunnel` with a path; `https://HOST` without its

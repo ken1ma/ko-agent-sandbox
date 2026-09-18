@@ -1,17 +1,13 @@
 # Agent settings
 
-## Overriding the agent instructions
+## Adding project instructions
 
-To replace the working conventions for a project, put yours in
-`.ko-agent-sandbox/agent/AGENTS-CUSTOM.md` on the host; the next launch reads it. Start from the
-image’s [AGENTS-CUSTOM.md](../container/ko-agent-sandbox/AGENTS-CUSTOM.md). Leave the file empty
-to remove the image’s conventions; delete it to restore them. Sandbox facts and session
-permissions remain in force.
-[design.md](design.md#the-agent-instruction-override-replaces-only-the-conventions) explains the
-scope of the override.
+Put a project's working conventions in `AGENTS.md` at the project root: `codex`, `agy`,
+`kiro-cli`, `copilot` and `opencode` read it. `claude` reads `CLAUDE.md` instead; give it one
+whose content is `@AGENTS.md`, as this repository's [CLAUDE.md](../CLAUDE.md) is.
 
-To add instructions, use the agent’s project-level file, such as `CLAUDE.md`, `AGENTS.md`, or
-`GEMINI.md`.
+The sandbox's own instructions describe the container and the session's permissions, not how to
+work ([design.md](design.md#the-image-carries-no-working-conventions)).
 
 ## Restoring permission prompts
 

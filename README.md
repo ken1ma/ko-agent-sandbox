@@ -230,7 +230,7 @@ upstream-proxy requirements.
 
 ### Agent settings
 
-[doc/agent-settings.md](doc/agent-settings.md) explains how to override the agent instructions,
+[doc/agent-settings.md](doc/agent-settings.md) explains how to add project instructions,
 restore permission prompts and set the Claude Code status line.
 
 
@@ -371,8 +371,7 @@ restore permission prompts and set the Claude Code status line.
 
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
-    (doc/egress-proxy.md). .ko-agent-sandbox/agent/AGENTS-CUSTOM.md replaces the image's
-    conventions in the agent instructions (doc/agent-settings.md).
+    (doc/egress-proxy.md).
 
 
 ### `--build`

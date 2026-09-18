@@ -1341,10 +1341,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       writeMode: String = "live",
       guard: String = "fuse",
       ruleset: String = "ruleset-a",
-      instructions: Option[String] = None,
       runOnHost: Vector[String] = Vector.empty,
       noGit: Option[String] = None,
-    ) = agentDocumentStamp(imageId, writeMode, guard, ruleset, instructions, runOnHost, noGit)
+    ) = agentDocumentStamp(imageId, writeMode, guard, ruleset, runOnHost, noGit)
 
     val variants = Vector(
       stamp(),
@@ -1352,9 +1351,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(writeMode = "reject"),
       stamp(guard = "none"),
       stamp(ruleset = "ruleset-b"),
-      stamp(instructions = Some("")),
-      stamp(instructions = Some("\n")),
-      stamp(instructions = Some("project instructions")),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),
       stamp(noGit = Some("no git in this session")),

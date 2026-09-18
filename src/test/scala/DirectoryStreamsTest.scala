@@ -40,7 +40,6 @@ class DirectoryStreamsTest extends munit.FunSuite:
       withDirectory: root =>
         val boundary = Files.createDirectory(root.resolve("boundary"))
         val rules = Files.createDirectory(boundary.resolve("egress"))
-        val agent = Files.createDirectory(boundary.resolve("agent"))
         val logs = Files.createDirectory(root.resolve("logs"))
         val tls = Files.createDirectory(root.resolve("tls"))
         val session = Files.createDirectory(root.resolve("session"))
@@ -48,19 +47,17 @@ class DirectoryStreamsTest extends munit.FunSuite:
         val channelLog = root.resolve("channel.log")
         if contents != "empty" then
           Files.writeString(rules.resolve("rule"), "deny defaults\n")
-          Files.writeString(agent.resolve(SandboxProject.AgentInstructionsFile), "Project instructions\n")
           Files.writeString(logs.resolve("proxy-run.log"), "proxy log\n")
           Files.writeString(logs.resolve("run-on-host-run.log"), "channel log\n")
           Files.createDirectory(tls.resolve("run"))
           Files.writeString(session.resolve("proxy.log"), "session proxy log\n")
           Files.writeString(temporary.resolve("sbt-server-err1.log"), "client log\n")
         if contents == "stray" then
-          Vector(boundary, rules, agent, logs, tls, session, temporary).foreach: directory =>
+          Vector(boundary, rules, logs, tls, session, temporary).foreach: directory =>
             Files.writeString(directory.resolve("unknown"), "stray entry\n")
 
         val scans: Vector[(String, () => Unit)] = Vector(
           "egress rules" -> (() => { EgressRules.readRuleFiles(rules); () }),
-          "agent instructions" -> (() => { SandboxProject.readAgentInstructions(agent); () }),
           "boundary entries" -> (() => { SandboxProject.boundaryDirError(boundary); () }),
           "proxy logs" -> (() => { EgressRules.retainedLogs(logs); () }),
           "channel logs" -> (() => { EgressRules.retainedLogs(logs, "run-on-host-"); () }),
