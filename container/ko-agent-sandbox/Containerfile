@@ -266,36 +266,39 @@ ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
 
 # Skip permission prompts (README.md explains why).
 #
-# Managed settings is the highest-precedence scope a project can reach, in
-# the read-only image: a mounted project cannot weaken it (the trust dialog
-# is pre-accepted by sandbox-entrypoint, so project settings take effect unreviewed),
-# removing the volume cannot drop it, and it does not depend on launcher
-# flags. An organization's remote managed settings can supersede the image's
-# permission, hook and sandbox settings, including requiring the sandbox
-# installed in the apt step above. By default Claude Code selects one managed
-# source for most keys; administrators can enable merging across sources.
+# Managed settings in the read-only image take precedence over user and
+# project settings, survive removal of the persistent volume, and apply
+# without launcher flags. An organization's remote managed settings can
+# supersede the image's permission, hook and sandbox settings, including
+# requiring the sandbox installed in the apt step above. By default Claude
+# Code selects one managed source for most keys; administrators can enable
+# merging across sources.
 # `/status` identifies the active sources. Precedence and exceptions:
 # https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources
 #
 # `bypassPermissions` refuses to start as root; USER below is nonroot.
 # `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time
-# dialog. None of this touches prompt injection (SECURITY.md); consider
-# `"defaultMode": "auto"` where that matters.
+# dialog. These settings do not prevent prompt injection (SECURITY.md).
+# Consider `"defaultMode": "auto"` to screen tool calls induced by prompt
+# injection.
 #
-# `allowManagedHooksOnly` is about persistence: a project's hooks would run
-# unreviewed and could write ~/.claude/settings.json — startup input for
-# later sessions of that project. The volume remains trusted input
-# (SECURITY.md); per-project volumes limit that persistence to one project.
+# Hook commands run without the model choosing them as tool calls, so
+# restoring permission prompts or enabling auto mode does not review those
+# commands. `allowManagedHooksOnly` blocks this automatic execution path
+# from project settings and writable user settings in the persistent volume.
+# sandbox-entrypoint pre-accepts workspace trust, so the trust dialog
+# reviews neither source. Sandbox commands can still modify persistent
+# state (SECURITY.md, "What the persistent volume holds").
 # Managed hooks, SDK hooks and hooks from plugins force-enabled by managed
 # settings remain allowed:
 # https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
 #
-# Its effect is verified on the host, with Claude Code 2.1.274: a project's
-# SessionStart hook does not run under this image, and runs under a variant
-# image with the key removed. A session cannot vary the managed file (a
-# writable /etc is needed, and that version ships
-# CLAUDE_CODE_MANAGED_SETTINGS_PATH as a stub that returns nothing), which is
-# itself evidence that a mounted project cannot weaken managed settings.
+# Host verification with Claude Code 2.1.274 shows that a project's
+# SessionStart hook is blocked under this image and runs under a variant
+# image without the key. The comparison uses a variant image because /etc
+# is read-only in a session. A project cannot instead redirect the managed
+# settings through its settings env: that version's
+# CLAUDE_CODE_MANAGED_SETTINGS_PATH is a stub that returns nothing.
 #
 # `sandbox` off: this container is the boundary, and Claude Code's own
 # bubblewrap sandbox would be a second one inside it, which a project's
@@ -319,7 +322,9 @@ RUN set -euxo pipefail; \
         '}' \
         > /etc/claude-code/managed-settings.json
 
-# Project settings supply the status-line template; managed settings fix the command.
+# allowManagedHooksOnly also blocks user and project status-line commands.
+# The managed command accepts a data-only project template so display
+# customization does not require a project-supplied command.
 # Usage: doc/agent-settings.md, "Claude Code status line".
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/

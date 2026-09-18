@@ -66,12 +66,19 @@ costs are described below.
 
 - Agent state is a per-project volume and deliberately affects later sessions of that project
   ("What the persistent volume holds", below); the rest of the sandbox home is discarded on exit.
-- Claude Code's user and project hooks are blocked (the sandbox Containerfile's
-  `allowManagedHooksOnly` note has the reasoning and exceptions).
-  The image's [status-line command](doc/agent-settings.md#claude-code-status-line) accepts a
-  data-only project template; that section defines its input and output limits.
 - The networks and proxy are per run and removed with it, so concurrent sessions cannot reach one
   another through those networks and no network object is reused.
+
+**Claude Code running commands from user or project hooks, status lines and file suggestions.**
+
+- Claude Code's user and project hooks are blocked (the sandbox Containerfile's
+  `allowManagedHooksOnly` note has the reasoning and exceptions).
+- `allowManagedHooksOnly` also restricts `statusLine`, `subagentStatusLine` and `fileSuggestion`
+  to managed settings, so refreshing a display or suggesting a file cannot run a command from
+  user or project settings.
+- The image's [status-line command](doc/agent-settings.md#claude-code-status-line) lets a project
+  customize the display through a template. It substitutes field values without executing the
+  template or evaluating the inserted values; that section defines its input and output limits.
 
 **A project loosening its own confinement.**
 
