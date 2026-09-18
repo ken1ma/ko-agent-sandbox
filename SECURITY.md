@@ -106,6 +106,12 @@ user's next host `git` invocation:
   operational state stays writable, so the agent's own git keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
+- **Open on Windows:** where a host-created `.git` or `.ko-agent-sandbox` has an 8.3 short name
+  (`GIT~1`, `KO-AGE~1`) — which generation gives it, as on the measured `C:`, and turning
+  generation off leaves in place — a session reaches the directory through that name, which the
+  filter treats as an ordinary entry, and can write `.git/config` and the egress rules through it
+  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names"). Until that is closed,
+  the filter does not hold this claim on Windows.
 
 Every path through which host git reaches these entries must also be protected. The mount-time guard
 checks the repository host git discovers from the project directory, and refuses:

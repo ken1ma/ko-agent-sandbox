@@ -34,8 +34,9 @@ cleanup). The corpus:
 - Turkish i-family: `.gıt` (U+0131), `.gİt` (U+0130).
 - Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
 - Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
-- A Windows 8.3 short name, `GIT~1`, on NTFS — to **confirm rather than assume** that an 8.3 name
-  cannot alias a dot-leading long name.
+- A Windows 8.3 short name, `GIT~1`, on NTFS: creating it where no `.git` exists must not make
+  one. The recorded run met `EEXIST`, another entry having that short name, so this is
+  unverified; the short name of an *existing* `.git` is the open row below.
 - `.ko-agent-sandbox`, matched through the same fold: the name itself, `.KO-AGENT-SANDBOX`,
   `.Ko-Agent-Sandbox`, `.<U+212A>o-agent-sandbox` (KELVIN SIGN), `.ko-agent-<U+017F>andbox`
   (LONG S), `.ko-agent<U+00AD>-sandbox`, `.ko-agent-sandbox.`; allowed,
@@ -49,13 +50,21 @@ it succeeds *and* host `lstat` of `.git` and of `.ko-agent-sandbox` still finds 
 on any row means the fold rule needs widening in `policy::folds_to` — fix the code, not the test.
 Fold tables are version-specific, which is why the recorded versions matter here.
 
-The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2, the 8.3
-row included) — `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh` drives the
-case-sensitive APFS one end to end. What is left:
+The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2), the
+8.3 creation row excepted — `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh`
+drives the case-sensitive APFS one end to end. What is left:
 
-- [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS and NTFS; case-insensitive APFS passes
+- [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS; case-insensitive APFS and NTFS pass
   (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
 - [ ] ext4, the control.
+- [ ] **NTFS 8.3 short names reach a guarded directory** (`security-research.md`, "Windows 8.3
+  short names"): a session writes `.git/config` and `.ko-agent-sandbox/egress/rule` through
+  `GIT~1` and `KO-AGE~1`. A fix by name cannot enumerate generated names; the candidates are a
+  by-identity check of the backing object at lookup, a launcher-side refusal of a project whose
+  guarded directories have a short name — turning generation off leaves existing ones — or a
+  mount that does not resolve short names, if one exists. Decide the layer,
+  then add the two short names to the corpus as rows that must be refused for writes and
+  creates, and rerun on NTFS.
 
 ### End-to-end coherency through the real host share
 
@@ -139,8 +148,8 @@ What is left:
 
 Windows stays **experimental**: the name rule and coherency rows are measured
 (`verification-log.md` — fold tables are per-volume, so the name-rule run verifies the volume it
-ran on, and coherency comes with the share-lock cost recorded there), while the performance row is
-still unmeasured.
+ran on, and coherency comes with the share-lock cost recorded there), the 8.3 short-name row
+above is an open hole, and the performance row is unmeasured.
 
 
 ## Test infrastructure

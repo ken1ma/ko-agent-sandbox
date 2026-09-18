@@ -231,6 +231,22 @@ object HostCommands:
       case other if other.isControl => f"\\x${other.toInt}%02x"
       case other => other.toString
 
+  /**
+   * `sh -c <script> sh <arguments>` for a script the launcher passes to podman, as words holding
+   * no double quote and no newline, which a Windows launcher cannot pass
+   * (LauncherImages.BundleLabelTemplate has why; KoAgentFs.koAgentFsScriptCommand crosses the
+   * machine's ssh the same way). The script crosses base64-encoded and is evaluated in the
+   * receiving shell itself, never piped to a second one, so its stdin stays the caller's. An
+   * empty IFS and `set -f` keep the unquoted expansion one word, newlines included, and the
+   * script's own first line restores both. Every platform uses it, so macOS and Linux runs
+   * detect a broken wrapper before Windows does.
+   */
+  def quoteFreeSh(script: String, arguments: String*): Vector[String] =
+    val encoded = java.util.Base64.getEncoder
+      .encodeToString(s"unset IFS; set +f\n$script".getBytes(StandardCharsets.UTF_8))
+    val wrapper = "IFS=; set -f; script=$(printf %s $1 | base64 -d); shift; eval $script"
+    Vector("sh", "-c", wrapper, "sh", encoded) ++ arguments
+
   def run(command: String*): Run =
     val process = ProcessBuilder(command*).start()
     // stdin is closed at once, so a child that unexpectedly prompts reads EOF and fails loudly

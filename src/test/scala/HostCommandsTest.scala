@@ -314,6 +314,25 @@ class HostCommandsTest extends munit.FunSuite:
       ScriptPath,
     )
 
+  test("a quote-free script keeps its quotes, its newlines, its arguments and the caller's stdin"):
+    assume(!isWindows, "runs the receiving shell, which a POSIX host has")
+    // The clipboard's response writer reads the exec's stdin, so the script must not arrive on it.
+    val script = """printf '%s|%s|' "$1" "$2"
+                   |for word in *; do :; done
+                   |cat""".stripMargin
+    val words = quoteFreeSh(script, "my app/*", "it's \"quoted\"")
+    // The wrapper's own words; the arguments after them are the caller's.
+    assert(words.take(5).forall(word => !word.contains('"') && !word.contains('\n')), words)
+    val process = ProcessBuilder(words*).redirectErrorStream(true).start()
+    process.getOutputStream.write("from stdin".getBytes)
+    process.getOutputStream.close()
+    val output = String(process.getInputStream.readAllBytes())
+    assertEquals(process.waitFor(), 0, output)
+    assertEquals(output, "my app/*|it's \"quoted\"|from stdin")
+    // The clipboard scripts, which a Windows launcher passes the same way, take no argument.
+    for clipboard <- Seq(ClipboardBroker.sandboxRequestReader(), ClipboardBroker.sandboxResponseWriter()) do
+      assert(quoteFreeSh(clipboard).forall(word => !word.contains('"') && !word.contains('\n')))
+
 object PodmanResolutionProbe:
   def main(args: Array[String]): Unit =
     println(podmanRuns)

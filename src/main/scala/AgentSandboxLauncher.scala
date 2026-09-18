@@ -1632,10 +1632,8 @@ object AgentSandboxLauncher:
   /** `--entrypoint=` and `--network=none`: the image's own program and egress are not the question
     * (the CA-bundle read in the launch has the same form). */
   def mountPathProbeCommand(podman: String, image: String, mountPath: String): Vector[String] =
-    Vector(
-      podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", image,
-      "sh", "-c", MountPathProbeScript, "sh", mountPath,
-    )
+    Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", image) ++
+      quoteFreeSh(MountPathProbeScript, mountPath)
 
   /** Why the image cannot take the project at `mountPath`, read from the probe's answer, or None. */
   def mountPathRefusal(answer: String, projectDir: Path, mountPath: String): Option[String] =

@@ -43,10 +43,10 @@ podman machine → the host's `C:` NTFS volume served at `/mnt/c`: every denied 
 exactly `EPERM`, every allowed name was created, and the host-side `dir .git` and git discovery
 found nothing afterwards.
 
-- The 8.3 row answered on a live table: short-name generation is active on the volume — creating
-  `GIT~1` through the mount met `EEXIST`, an existing allowed name having already generated it as
-  its short name — and host git still discovered no repository, which is the aliasing question
-  confirmed rather than assumed.
+- The 8.3 row met `EEXIST`: short-name generation is active on the volume, and an existing
+  allowed name had already been given `GIT~1` as its short name, so nothing was created and the
+  row answers nothing about what a created `GIT~1` would become. Host git discovered no
+  repository afterwards.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
   collapsed them — and neither resolves anywhere near `.git` on either backing.
 
@@ -70,6 +70,36 @@ virtiofs → APFS — in a subdirectory of a project, the rule holding at any de
   host's `ls .git` and `ls .ko-agent-sandbox` found nothing there and git discovered only the
   enclosing project's repository.
 - The mounted suite's rows for both letters pass (`--self-test`, `probe/rig.sh`).
+
+### Verified: the `.ko-agent-sandbox` rows, NTFS (Windows Server 2025, 10.0.26100.32522; 2026-09-19)
+
+The same probe through the Windows production stack — filtered session → FUSE filter in the WSL2
+podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0:
+
+- All 21 denied spellings failed with exactly `EPERM`, and all seven allowed names were created.
+- Afterwards the host's `dir /a .git` and `dir /a .ko-agent-sandbox` found nothing, and
+  `git rev-parse --git-dir` found no repository.
+- NTFS kept the NFC and NFD spellings of `.gít` as two files, as in the `.git` run above.
+- Whether NTFS resolves the KELVIN SIGN or LONG S spelling to the name is not measured: the filter
+  refuses both, so neither reached the volume.
+
+### Measured: an 8.3 short name reaches a guarded directory (Windows Server 2025; 2026-09-19)
+
+On a `C:` volume with 8.3 name generation on (`fsutil 8dot3name query C:`), a scratch project
+whose `.git` (`git init`) and `.ko-agent-sandbox/egress/rule` the host created shows, in
+`cmd /c dir /x /a`, the short names `GIT~1` and `KO-AGE~1`. Inside a filtered session over that
+project, `bash -c` through the launcher:
+
+- `ls -la GIT~1 KO-AGE~1` lists both directories' contents;
+- `echo x >> GIT~1/config`, `echo x >> KO-AGE~1/egress/rule` and
+  `echo y > KO-AGE~1/egress/planted` all exit 0, and the host's `Get-Content` afterwards shows
+  the appended lines and the new file.
+
+The WSL drive mount resolves the short name to the directory, and the filter classifies the name
+the session used, `GIT~1`, as an ordinary entry. The access side is the gap `security-research.md`
+("Windows 8.3 short names") and `TODO.md` ("Platform verification") record; the create side —
+whether a `GIT~1` created where no `.git` exists becomes one — is unverified, since the NTFS run
+above met `EEXIST` on that row.
 
 ## End-to-end coherency through the host share
 
@@ -133,8 +163,9 @@ file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not
-git's, and an 8.3 short name should not be able to alias a dot-leading name like `.git` — which the
-NTFS run above confirmed on a volume with generation active.
+git's. The NTFS run above met `EEXIST` creating `GIT~1`, so that creation stays unverified; the
+later run under "The `.git` name rule on real filesystems" shows the other direction, an existing
+`.git` reached and written through its generated short name.
 
 
 ## The cost of a path walk

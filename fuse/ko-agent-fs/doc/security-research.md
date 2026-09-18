@@ -37,7 +37,8 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
 
 - **CVE-2014-9390** — `.Git`/`.GIT` writing into `.git/hooks` on case-insensitive filesystems, plus
   HFS+ ignorable codepoints and Windows 8.3 names. *Validated* (the case-fold name rule) and
-  *test-vector* (`.gi<U+200C>t`, `GIT~1`).
+  *test-vector* (`.gi<U+200C>t`, `GIT~1`); the short name of an existing `.git` is the open gap
+  under "Windows 8.3 short names".
 - **CVE-2021-21300** — symlink + case-insensitive checkout writes into `.git`. *Backstopped* by the
   resolved-destination gate.
 - **CVE-2024-32002** — recursive clone: symlink + case-insensitivity + submodule writes a hook into
@@ -76,6 +77,37 @@ Findings the rule rests on:
   exact fold set is *not statically knowable*, and a crafted volume can even remap ASCII (out of our
   threat model, but it shows the mechanism). This is the strongest argument for the
   conservative superset checked by an empirical test, rather than trying to mirror a fold table.
+
+## Windows 8.3 short names (measured 2026-09-19)
+
+NTFS with 8.3 name generation on gives every long name a second name — `.git` becomes `GIT~1`,
+`.ko-agent-sandbox` becomes `KO-AGE~1` — and WSL's drive mount resolves it, so a session reaches
+a host-created guarded directory under a name the policy classifies as ordinary
+(`verification-log.md`, "an 8.3 short name reaches a guarded directory"). Measured: appends to
+`.git/config` and to `.ko-agent-sandbox/egress/rule`, and a file created under `egress/`, all
+through the short name, all landing on the host. That is a write host git executes and a rule
+the next launch reads. Facts that bound the fix:
+
+- The name rule cannot enumerate short names: `GIT~1` is the first form, `GIT~2` and a hashed
+  `GI1234~1` follow when it is taken, and which one a directory got is known only to the volume.
+- The policy classifies by the name the session used and never by the backing object's identity:
+  `fs.rs`'s `allow_create`, `allow_child` and `lookup` hand `policy::child_context` the name as
+  the session spelled it, and the mount has already resolved `GIT~1` to `.git` by the time the
+  backing is opened (`TODO.md`, Non-TODOs, "inode-number reuse for classification", has why
+  identity plays no part today). An alias by any spelling — case, a fold, a short name — is the
+  same backing object as the guarded entry, which is what a by-identity check at lookup would
+  see: an `fstatat` of `.git` and of `.ko-agent-sandbox` in the parent, compared with the child's
+  device and inode. That is the one candidate that closes every alias on every volume at once;
+  what it costs per lookup, and how it sits with the Non-TODO, is the open design question.
+- Generation and presence are separate: `fsutil 8dot3name set C: 1` stops new short names and
+  leaves existing ones, which only `fsutil 8dot3name strip` removes. A launcher-side refusal or
+  warning, as a stopgap, would have to look for a short name on the guarded directories
+  themselves, not at the generation setting (`fsutil 8dot3name query C:`), which was on for the
+  measured box's `C:`; what other volumes and installs have is unmeasured.
+- Whether WSL's drive mount can be told not to resolve short names is not known.
+
+Until this is closed, a session over NTFS can rewrite the two files the workspace filter exists
+to protect; `SECURITY.md` says so, and Windows stays experimental (`TODO.md`).
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)
 
