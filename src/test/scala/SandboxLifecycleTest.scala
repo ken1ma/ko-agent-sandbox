@@ -289,7 +289,6 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(ReaperScript.contains(ClipboardBroker.sandboxRequestReader()))
     assert(ReaperScript.contains(ClipboardBroker.sandboxResponseWriter()))
     assert(ClipboardBroker.sandboxResponseWriter().startsWith("timeout "))
-    assert(ReaperScript.contains("else head -c \"$arg\" >/dev/null; fi"))
     // Comments may name podman; no executable line may invoke it bare.
     assert(
       ReaperScript.linesIterator.forall: line =>

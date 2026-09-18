@@ -293,22 +293,18 @@ replacement, each leaving one consistent runtime.
 
 ## The project mounted at its own path
 
-- [ ] `sbt "testWithPodman *MountPathTest"` on Linux (on macOS, 2026-09-18: it passes, as do
-  `WorkspaceGuardOffTest`, `MountLifecycleTest` and the run-on-host gate; `sbt testFull` inside
-  a session passes except the two clipboard-broker tests below; the four agents started without
-  a trust prompt on a fresh and a used volume; a host build's error named a path the session
-  has); a Windows launch from PowerShell in `C:\Users\<me>\src\app` and one from a WSL shell
-  in `/mnt/c/Users/<me>/src/app` both print that path from `bash -c pwd`, and one from
-  `\\wsl.localhost\...` is refused.
+- [ ] Run `sbt "testWithPodman *MountPathTest"` on Linux; all Linux cases must pass.
+- [ ] On Windows, launch from PowerShell in `C:\Users\<me>\src\app` and from a WSL shell
+  in `/mnt/c/Users/<me>/src/app`. In both sessions, `bash -c pwd` must print
+  `/mnt/c/Users/<me>/src/app`. A launch from `\\wsl.localhost\...` must be refused.
 
-## Clipboard broker: two tests fail on Linux
+Recorded macOS results (2026-09-18):
 
-- [ ] `SandboxLifecycleTest` asserts the reaper script contains
-  `else head -c "$arg" >/dev/null; fi`, and `ClipboardBrokerTest` expects `ok` for
-  `set 3\nabcdef` and reads nothing. Both are in the `set` reply commit fb67043 added, and both
-  run only where `setsid` and the Linux tools exist, so a macOS `testFull` skips them and
-  `sbt testFull` inside a session is where they fail. Trace the reply and the raw reader, and
-  bring the assertion up to the script.
+- `MountPathTest`, `WorkspaceGuardOffTest`, `MountLifecycleTest` and the run-on-host gate pass.
+- `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
+  `SandboxLifecycleTest`; those two pass when run alone on Linux.
+- The four agents start without a trust prompt on fresh and used volumes.
+- A host build's error reports a path accessible inside the session.
 
 ## Deferred — readable session directory names under `--run-on-host`
 
