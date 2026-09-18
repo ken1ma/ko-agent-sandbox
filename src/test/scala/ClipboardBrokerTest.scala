@@ -157,7 +157,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       val (_, png) = sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
       assertEquals(png.toVector, Image.toVector)
       assertEquals(sandboxCall(sandboxBin, Array.empty, "wl-paste", "--type", "image/png")._2.toVector, Image.toVector)
-      // Answered in order after a drop: the paste-mode broker drained the body it refused.
+      // Paste mode acknowledges the drop without changing the host clipboard.
       assertEquals(sandboxCall(sandboxBin, "secret".getBytes(UTF_8), "wl-copy")._1, 0)
       Thread.sleep(300)
       assert(!Files.exists(host.resolve("copied.txt")), "paste mode set the host clipboard")
@@ -194,12 +194,29 @@ class ClipboardBrokerTest extends munit.FunSuite:
     writer.getOutputStream.close()
     writer.waitFor()
 
-  /** One response, read as the shim reads it. */
+  /** One response read to EOF, retaining the newline the shim's command substitution removes. */
   private def rawResponse(): Array[Byte] =
     val reader = ProcessBuilder("timeout", "10", "cat", s"$FifoDir/rsp").start()
     val out = reader.getInputStream.readAllBytes()
-    reader.waitFor()
+    assertEquals(reader.waitFor(), 0, "the response reader failed or timed out")
     out
+
+  for
+    mode <- Vector("paste", "bidirectional")
+    wayland <- Vector(false, true)
+  do
+    test(s"$mode consumes a set body before the next request in the same stream (wayland=$wayland)"):
+      exchange(mode, wayland = wayland): (sandboxBin, host) =>
+        // An undrained body is an invalid request line, so the following types request goes unanswered.
+        for body <- Vector("junk\n", "") do
+          assertEquals(rawRequest(s"set ${body.getBytes(UTF_8).length}\n${body}types\n".getBytes(UTF_8)), 0)
+          assertEquals(String(rawResponse(), UTF_8), "ok\n")
+          assertEquals(String(rawResponse(), UTF_8), "image/png\n")
+          if mode == "bidirectional" then assertEquals(Files.readString(host.resolve("copied.txt")), body)
+          else assert(!Files.exists(host.resolve("copied.txt")), "paste mode set the host clipboard")
+          val (status, types) = sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")
+          assertEquals(status, 0)
+          assertEquals(String(types, UTF_8), "image/png\n")
 
   test("a request the grammar or the cap refuses is dropped whole, and the next is served"):
     exchange("bidirectional"): (sandboxBin, host) =>
@@ -225,11 +242,10 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(rawRequest("set 6\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 03\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
-      // The count's bytes and no more, as the Windows twin reads them (`requests`). A whole body is
-      // copied and answered `ok`; this raw writer must read that answer, or the broker holds the
-      // FIFO for the response writer's timeout as it would for an unread `get`.
+      // The count's bytes and no more, as the Windows twin reads them (`requests`). Without a
+      // response reader, the broker waits for the response writer's timeout before serving the next request.
       assertEquals(rawRequest("set 3\nabcdef".getBytes(UTF_8)), 0)
-      assertEquals(String(rawResponse(), UTF_8), "ok")
+      assertEquals(String(rawResponse(), UTF_8), "ok\n")
       assertEquals(copied(), Some("abc"))
       assertEquals(sandboxCall(sandboxBin, "after".getBytes(UTF_8), "wl-copy")._1, 0)
       assertEquals(copied(), Some("after"))
@@ -242,7 +258,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       call.setDaemon(true)
       call.start()
       Thread.sleep(500)
-      // The broker is inside the copy now, which the session's end will KILL: the body has no name.
+      // The body must have no name while copy is blocked: a session ending here KILLs the broker's tree.
       assertEquals(Files.list(host.resolve("tmp")).count(), 0L)
 
   test("a copy the host program fails is reported to the caller, not answered ok"):
