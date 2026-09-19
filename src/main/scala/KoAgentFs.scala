@@ -3,7 +3,7 @@
 // the per-project mount lifecycle every session that mounts it runs through.
 //
 // It is a separate program with its own source tree, docs, tests and version check
-// (fuse/ko-agent-fs/), and it reaches the launch through workspaceGuard, prepareKoAgentFs and
+// (fuse/ko-agent-fs/), and it reaches the launch through prepareKoAgentFs and
 // mountKoAgentFs. That is why it is a file rather than a section.
 
 package agentsandbox.launcher
@@ -230,7 +230,7 @@ object KoAgentFs:
     System.err.println(selfTest.text)
 
   // ---------------------------------------------------------------------------
-  // The workspace FUSE filter's mount lifecycle (every live session's under guard=fuse)
+  // The workspace FUSE filter's mount lifecycle (every live session's)
   //
   // One daemon per project, alive while the project has sessions: started on
   // demand, reused by concurrent sessions, restarted when the
@@ -246,27 +246,6 @@ object KoAgentFs:
   // the container's bind on a dead FUSE superblock — every access fails
   // ENOTCONN, never a fallthrough to the unfiltered tree.
   // ---------------------------------------------------------------------------
-
-  /**
-   * `fuse` protects Git entries throughout the workspace; `none` relies on read-only bind mounts
-   * at the workspace root. Reject unknown values so a typo cannot disable the filter
-   * (doc/design.md, "Principles").
-   */
-  val WorkspaceGuardVariable = "KO_AGENT_SANDBOX_WORKSPACE_GUARD"
-  val RawWorkspaceBoundary =
-    "workspace-root .git/config and .git/hooks are mounted read-only when .git is a directory; the whole " +
-      ".git file is mounted read-only in a linked worktree; an empty directory is mounted read-only at .git " +
-      "when no repository exists; the workspace-root .ko-agent-sandbox is also mounted read-only"
-
-  def workspaceGuard(value: Option[String]): Either[String, String] =
-    closedChoice(
-      WorkspaceGuardVariable,
-      value,
-      Vector("fuse", "none"),
-      "fuse",
-      "Unset it (or set it to fuse) to keep the workspace filter; set it to none\nto bind " +
-        s"the project directly; $RawWorkspaceBoundary.",
-    )
 
   /**
    * The digest of one bundle directory as this jar bundles it — the same

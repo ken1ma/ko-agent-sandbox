@@ -327,7 +327,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
     // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
-    // included; guard=none's read-only mount-back answers EROFS. Either way the write must
+    // included; --write=reject's read-only tree answers EROFS. Either way the write must
     // fail — a session able to create or edit the directory writes the rules governing the
     // *next* session (SECURITY.md).
     val boundaryDir = workspace.resolve(".ko-agent-sandbox")
@@ -342,14 +342,6 @@ class SessionBoundaryTest extends munit.FunSuite:
         || refused.getMessage.contains("Read-only file system"),
       s"the boundary write was refused with '${refused.getMessage}', not by a boundary mechanism",
     )
-
-    // guard=none's mount, where present, must be read-only; under the filter there is no
-    // mount to check — the filesystem itself enforces the rule.
-    mountOptions(boundaryDir.toString).foreach: options =>
-      assert(
-        options.split(",").contains("ro"),
-        s"the boundary mount is not read-only: $options",
-      )
 
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()

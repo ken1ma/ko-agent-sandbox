@@ -9,8 +9,8 @@ unfiltered one, and compare. The unfiltered run is the control, exactly as the p
 column is:
 
     cp .../xattr-probe.py <scratch-project>/
-    java -jar ko-agent-sandbox.jar bash          # then again with KO_AGENT_SANDBOX_WORKSPACE_GUARD=none
-    python3 xattr-probe.py
+    java -jar ko-agent-sandbox.jar python3 xattr-probe.py
+    .../probe/unfiltered.sh python3 xattr-probe.py      # the control
 
 Rows that differ between the two runs are what implementing xattrs would enable. Rows that fail in both
 are the environment's, not the filter's. Record the result in doc/TODO.md with the OS and podman
@@ -30,12 +30,9 @@ MARKER = "user.ko-agent-fs-probe"
 
 
 def stack() -> str:
-    """Filtered or not, decided by the one property that separates the filter from the launcher's
-    read-only bind mount: `.git` is refused at *any* depth, not only at the workspace root. Probing inside a
-    fresh subdirectory rather than at the root is what makes that work in a project that already
-    has a `.git` — including the empty one an unfiltered launch leaves behind in a project that had
-    none (`SECURITY.md`, "Silent changes to what you own"), which is every scratch project that has
-    been launched once."""
+    """Filtered or not, decided by a property a bind mount does not have: `.git` is refused at
+    *any* depth. Probing inside a fresh subdirectory rather than at the root is what makes that
+    work in a project that already has a `.git`."""
     probe = tempfile.mkdtemp(prefix=".ko-agent-fs-stack-", dir=".")
     try:
         os.mkdir(os.path.join(probe, ".git"))
@@ -91,7 +88,7 @@ def carrying_programs(work: str) -> None:
     """What a program that *preserves* xattrs does when the destination refuses them. The source is
     outside the mount, because inside it there may be no way to attach an xattr in the first
     place — which is exactly what extracting an archive or copying a tree into
-    /workspace does."""
+    the project does."""
     source = tempfile.mkdtemp(prefix="ko-agent-fs-xattr-src-")
     try:
         origin = os.path.join(source, "file")
@@ -124,14 +121,14 @@ def carrying_programs(work: str) -> None:
 
 
 def main() -> int:
-    if not os.path.isdir("/workspace"):
-        print("abort: no /workspace — run this inside the sandbox, not on the host")
+    # podman's marker in every container it runs.
+    if not os.path.exists("/run/.containerenv"):
+        print("abort: not in a container — run this inside the sandbox, not on the host")
         return 2
-    os.chdir("/workspace")
     print(f"stack under test: {stack()}")
     print()
 
-    work = tempfile.mkdtemp(prefix=".ko-agent-fs-xattr-", dir="/workspace")
+    work = tempfile.mkdtemp(prefix=".ko-agent-fs-xattr-", dir=os.getcwd())
     try:
         direct_ops(work)
         carrying_programs(work)

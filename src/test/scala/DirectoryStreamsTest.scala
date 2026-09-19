@@ -67,15 +67,6 @@ class DirectoryStreamsTest extends munit.FunSuite:
         scans.foreach: (label, scan) =>
           assertNoDescriptorGrowth(label)(scan())
 
-  test("empty mount cleanup closes its listing and removes nested contents"):
-    withDirectory: root =>
-      assertNoDescriptorGrowth("empty mount cleanup"):
-        val child = Files.createDirectories(root.resolve("empty/dir/nested/child"))
-        Files.writeString(child.resolve("file"), "discarded")
-        val (file, directory) = SandboxProject.emptyMountSources(root)
-        assertEquals(Files.size(file), 0L)
-        assertEquals(directoryEntries(directory), Vector.empty)
-
   test("source hashing closes its walk after success and after a file read fails"):
     withDirectory: root =>
       val source = Files.createDirectories(root.resolve("context/nested"))

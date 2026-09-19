@@ -1,8 +1,7 @@
 // The project directory as the launcher judges it: identity, the refused directories, and the
-// .git / .ko-agent-sandbox mount guards — where a wrong answer either exposes the host or lets a
-// session write the configuration governing the next one. The .git read-only mount tests cover
-// KO_AGENT_SANDBOX_WORKSPACE_GUARD=none; default sessions get the FUSE filter, whose policy is
-// tested in fuse/ko-agent-fs.
+// .ko-agent-sandbox forms — where a wrong answer either exposes the host or lets a session write
+// the configuration governing the next one. What a session may write under .git is the FUSE
+// filter's policy, tested in fuse/ko-agent-fs.
 
 package agentsandbox.launcher
 
@@ -13,14 +12,9 @@ import SandboxProject.*
 
 class SandboxProjectTest extends munit.FunSuite:
 
-  /** Stand-ins for the launcher-owned empty bind sources (emptyMountSources), outside any project. */
-  private object emptyFixture:
-    val dir = Files.createTempDirectory("git-guard-empty-dir")
-    val file = Files.createTempFile("git-guard-empty", "file")
-
   private val isWindows = System.getProperty("os.name").toLowerCase.contains("win")
 
-  /** A project's mount path as the guards receive it: any absolute path, since they only spell it. */
+  /** A project's mount path as noGitInstruction receives it: any absolute path, since it only spells it. */
   private val Mount = "/Users/me/src/app"
 
   private def protectedHomes(os: Os, values: Map[String, String]): HomeProtection =
@@ -234,71 +228,6 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(isForbiddenProjectDir(Paths.get("\\\\server\\share\\"), homes))
     assert(!isForbiddenProjectDir(Paths.get("C:\\src\\app"), homes))
 
-  test("the git guard mounts a real repository's config and hooks read-only"):
-    val git = Files.createTempDirectory("git-guard").resolve(".git")
-    Files.createDirectory(git)
-    Files.createFile(git.resolve("config"))
-    Files.createDirectory(git.resolve("hooks"))
-    assertEquals(
-      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
-      Right(
-        Vector(
-          s"--volume=${git.resolve("config")}:$Mount/.git/config:ro",
-          s"--volume=${git.resolve("hooks")}:$Mount/.git/hooks:ro",
-        ),
-      ),
-    )
-
-  test("missing config and hooks are mounted read-only from the launcher's empty sources, the project untouched"):
-    val git = Files.createTempDirectory("git-guard").resolve(".git")
-    Files.createDirectory(git)
-    assertEquals(
-      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
-      Right(
-        Vector(
-          s"--volume=${emptyFixture.file}:$Mount/.git/config:ro",
-          s"--volume=${emptyFixture.dir}:$Mount/.git/hooks:ro",
-        ),
-      ),
-    )
-    // The guard must never write into the user's repository (SECURITY.md, "Silent changes to what
-    // you own").
-    assert(!Files.exists(git.resolve("config")))
-    assert(!Files.exists(git.resolve("hooks")))
-
-  test("a pointer-file .git is mounted read-only in full"):
-    val git = Files.createTempDirectory("git-guard").resolve(".git")
-    Files.writeString(git, "gitdir: ../elsewhere/.git/worktrees/x\n")
-    assertEquals(
-      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=$git:$Mount/.git:ro")),
-    )
-
-  test("an absent .git gets the launcher's empty directory mounted read-only, without creating it in the project"):
-    val git = Files.createTempDirectory("git-guard").resolve(".git")
-    assertEquals(
-      gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir),
-      Right(Vector(s"--volume=${emptyFixture.dir}:$Mount/.git:ro")),
-    )
-    assert(!Files.exists(git), "the guard fabricated a .git in the project")
-
-  test("a symlinked .git, config or hooks refuses the launch"):
-    val project = Files.createTempDirectory("git-guard")
-    val target = Files.createDirectory(project.resolve("target"))
-
-    val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
-    assert(gitGuardVolumes(linkedGit, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
-
-    val git = Files.createDirectory(project.resolve("repo.git"))
-    Files.createSymbolicLink(git.resolve("config"), project.resolve("secret"))
-    Files.createDirectory(git.resolve("hooks"))
-    assert(gitGuardVolumes(git, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
-
-    val git2 = Files.createDirectory(project.resolve("repo2.git"))
-    Files.createFile(git2.resolve("config"))
-    Files.createSymbolicLink(git2.resolve("hooks"), target)
-    assert(gitGuardVolumes(git2, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
-
   test("a session without git is reported with the launch that would have it"):
     val root = Files.createTempDirectory("no-git").toRealPath()
     // A home of this test's own, beside the fixtures rather than above them, so that only the
@@ -359,9 +288,8 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
     assertEquals(noGit(absolute), None)
     assertEquals(noGit(absolute, Os.Windows), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
-    // A `.git` symlink is the same absence when it leads out of the project: only the read-only
-    // bind mounts of WORKSPACE_GUARD=none refuse that form, and the filter serves it as the host
-    // wrote it.
+    // A `.git` symlink is the same absence when it leads out of the project. A live session never
+    // starts on that form (the filter's guard refuses it, guard.rs); a reject session does.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
     assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
@@ -496,10 +424,6 @@ class SandboxProjectTest extends munit.FunSuite:
     val project = Files.createTempDirectory("git-guard-no-write")
     val target = Files.createDirectory(project.resolve("target"))
 
-    val linkedGit = Files.createSymbolicLink(project.resolve(".git"), target)
-    assert(gitGuardVolumes(linkedGit, Mount, emptyFixture.file, emptyFixture.dir).isLeft)
-    assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the .git link")
-
     val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
     assert(boundaryDirError(linkedBoundary).isDefined)
@@ -509,10 +433,6 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     assertEquals(boundaryDirError(dir), None)
     assert(!Files.exists(dir))
-    assertEquals(boundaryGuardVolume(dir, Mount), s"--volume=$dir:$Mount/.ko-agent-sandbox:ro")
-    assert(Files.isDirectory(dir))
-    // The directory it just created passes the next launch unchanged.
-    assertEquals(boundaryDirError(dir), None)
 
   test("a file where the boundary directory belongs refuses the launch"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")

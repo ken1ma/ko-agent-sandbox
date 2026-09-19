@@ -244,7 +244,7 @@ fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn the_launcher_configuration_directory_cannot_be_created_or_written() {
-    // The second line behind the launcher's read-only mount: `policy::is_sandbox_config_name`.
+    // `policy::is_sandbox_config_name`, the one protection this directory has in a writable session.
     let mount = TestMount::new(repository);
 
     denied(
@@ -284,8 +284,7 @@ fn the_launcher_configuration_directory_cannot_be_created_or_written() {
         fs::rename(mount.at("decoy"), mount.at(".ko-agent-sandbox")),
     );
 
-    // Nothing under a host-created one is writable either — the case where the host replaced the
-    // directory, so it exists in the backing while its read-only mount does not.
+    // Nothing under a host-created one is writable either.
     let mount = TestMount::new(|backing| {
         repository(backing);
         fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();

@@ -337,21 +337,6 @@ class KoAgentFsTest extends munit.FunSuite:
       )
     finally deleteRecursively(context)
 
-  test("the workspace guard fails closed on anything it does not recognize"):
-    // Exactly fuse and none, case-sensitive: every accepted value must be handled consistently
-    // everywhere it is parsed.
-    assertEquals(workspaceGuard(None), Right("fuse"))
-    assertEquals(workspaceGuard(Some("")), Right("fuse"))
-    assertEquals(workspaceGuard(Some("fuse")), Right("fuse"))
-    assertEquals(workspaceGuard(Some("none")), Right("none"))
-    Vector("on", "off", "1", "0", "None", "Fuse", "FUSE", "true", "no", " none ").foreach: value =>
-      assert(workspaceGuard(Some(value)).isLeft, s"'$value' was not refused")
-    // The refusal says what to do instead.
-    val refused = workspaceGuard(Some("on")).swap.getOrElse("")
-    assert(refused.contains("the only values are fuse and none, exactly"), refused)
-    assert(refused.contains("Unset it (or set it to fuse) to keep the workspace filter"), refused)
-    assert(refused.contains(RawWorkspaceBoundary), refused)
-
   test("the setup exit code matches in the filter and launcher"):
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a
     // setup failure as a bug.

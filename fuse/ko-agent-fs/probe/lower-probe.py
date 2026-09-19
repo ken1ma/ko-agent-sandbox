@@ -11,8 +11,8 @@ The two rendezvous through files under lower-probe-work/.
 Run in a SCRATCH project; it creates and deletes files:
 
     cp .../lower-probe.py .../lower-probe-host.py <scratch-project>/
-    java -jar ko-agent-sandbox.jar bash          # add KO_AGENT_SANDBOX_WORKSPACE_GUARD=none to compare
-    python3 lower-probe.py             # here, in the session
+    java -jar ko-agent-sandbox.jar python3 lower-probe.py
+    .../probe/unfiltered.sh python3 lower-probe.py      # the control, a second run
 
     python3 lower-probe-host.py        # in a HOST terminal, same directory
 
@@ -53,9 +53,9 @@ def record(name: str, *observations: str) -> None:
 
 
 def stack() -> str:
-    """Filtered or not, by the property that separates the filter from the launcher's read-only bind mount:
-    `.git` is refused at any depth — probing inside a fresh subdirectory is what makes that answer
-    in a tree that already has a `.git`."""
+    """Filtered or not, by a property a bind mount does not have: `.git` is refused at any depth —
+    probing inside a fresh subdirectory is what makes that answer in a tree that already has a
+    `.git`."""
     probe = tempfile.mkdtemp(prefix=".lower-probe-stack-", dir=".")
     try:
         os.mkdir(os.path.join(probe, ".git"))
@@ -255,10 +255,10 @@ def open_file_hold() -> None:
 
 
 def main() -> int:
-    if not os.path.isdir("/workspace"):
-        print("abort: no /workspace — run this inside the sandbox, not on the host")
+    # podman's marker in every container it runs.
+    if not os.path.exists("/run/.containerenv"):
+        print("abort: not in a container — run this inside the sandbox, not on the host")
         return 2
-    os.chdir("/workspace")
     shutil.rmtree(WORK, ignore_errors=True)
     os.mkdir(WORK)
 

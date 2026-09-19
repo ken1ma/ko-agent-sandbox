@@ -276,8 +276,8 @@ symlink path closes nothing. Any real fix has to protect the *target*.
 **Why refusing rather than resolving.** Resolving the hook location and classifying that subtree as
 protected would keep those repositories working, but buys a conditional guarantee with a git-config
 parser and a second protected root in the audited core, and the snapshot it rests on is one the host
-can invalidate mid-session. Refusing is the same answer the launcher already gives a symlinked
-`.git/hooks` (`SandboxProject.gitGuardVolumes`), and it is accurate: the filter declines to
+can invalidate mid-session. Refusing is the same answer the launcher gives a symlinked
+`.ko-agent-sandbox` (`SandboxProject.boundaryDirError`), and it is accurate: the filter declines to
 imply cover it cannot deliver.
 
 **The binding rule.** Relocated hooks are one instance of a class the guard closes whole: Git
@@ -326,16 +326,16 @@ unterminated quote, and a bare `path` key, which under `include` or `includeIf` 
 scanner never opens. All are rare in a *repository-local* config, and the message tells the operator
 what to change.
 
-Scope: the repository at the workspace root, matching the launcher's read-only mounts at that root,
-plus the bare-root check above. What lies below the root is unchecked, recorded in `TODO.md` and
-named in `SECURITY.md`: a repository the **host** nested deeper — its protected entries under `.git`
-names are frozen like any other's, but Git metadata the host routed into the worktree (relocated
-hooks, a redirected gitdir) are served writable; the sandbox cannot create this layout. And a **bare
-layout**, which the sandbox *can* create — `git init --bare` and `git clone --bare|--mirror` write
-only ordinary names, and no per-name rule can refuse `HEAD`, `objects` and `refs` individually
-without refusing legitimate projects ("Consequences", below) — anywhere below the root, or at the
-root itself once the mount-time check has passed: a session starting in a repository-less workspace
-can lay the triple at the root mid-session.
+Scope: the repository at the workspace root, plus the bare-root check above. What lies below the
+root is unchecked, recorded in `TODO.md` and named in `SECURITY.md`: a repository the **host**
+nested deeper — its protected entries under `.git` names are frozen like any other's, but Git
+metadata the host routed into the worktree (relocated hooks, a redirected gitdir) are served
+writable; the sandbox cannot create this layout. And a **bare layout**, which the sandbox *can*
+create — `git init --bare` and `git clone --bare|--mirror` write only ordinary names, and no
+per-name rule can refuse `HEAD`, `objects` and `refs` individually without refusing legitimate
+projects ("Consequences", below) — anywhere below the root, or at the root itself once the
+mount-time check has passed: a session starting in a repository-less workspace can lay the triple at
+the root mid-session.
 
 The check is also a snapshot, taken before the mount and not repeated. A host that relocates its
 hooks into the worktree *after* a session is serving gets no second refusal. Polling for it would

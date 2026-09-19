@@ -71,8 +71,8 @@ def main() -> int:
     try:
         os.mkdir(".git")
         os.rmdir(".git")
-        print("abort: created .git — this session is NOT filtered;")
-        print("       unset KO_AGENT_SANDBOX_WORKSPACE_GUARD and relaunch")
+        print("abort: created .git — this is NOT a filtered session;")
+        print("       run it through the launcher, under --write=live")
         return 2
     except PermissionError:
         print("ok denied  '.git' (the canary: this session is filtered)")
