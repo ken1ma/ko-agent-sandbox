@@ -218,7 +218,7 @@ The exact ordering and nested-mount behavior must be proven with the full mount 
 small home copy-up includes `.cache/coursier`; podman creates only the nested `v1` mountpoint. The
 copy-up must also provide everything the image's home seed does — the agents' links into
 `persistent-volume` and their parents (`container/ko-agent-sandbox/Containerfile`), and the volume
-`sandbox-entrypoint` seeds — plus a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and
+`ko-sandbox-entrypoint` seeds — plus a writable `.local`, `.cache`, `.sbt`, `.ivy2`, `.cargo` and
 other session-created paths.
 
 Construct the overlay as exactly one `--volume` value ending in `:O`. Do not combine `O` with `U`,

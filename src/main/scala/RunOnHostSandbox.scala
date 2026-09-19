@@ -301,10 +301,11 @@ object RunOnHostSandbox:
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
-   * The runtime-authority grammar: one absolute path per line, `#` comments, `x ` prefix for a
-   * path that must also be executable. A runtime path is allowed only where testing proves the
-   * read is stable; the resource agentsandbox/runtime-authority.txt is the measured set, and
-   * src/probe/run-on-host-profile-iterate.sh is how candidate entries are measured.
+   * The grammar of SeatbeltProfile.RuntimeAuthority.txt: one absolute path per line, `#` comments,
+   * `x ` prefix for a path that must also be executable. A runtime path is allowed only where
+   * testing proves the read is stable; the resource agentsandbox/SeatbeltProfile.RuntimeAuthority.txt
+   * is the measured set, and src/probe/run-on-host-profile-iterate.sh is how candidate entries are
+   * measured.
    */
   def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
@@ -319,9 +320,9 @@ object RunOnHostSandbox:
         parseRuntimeAuthority(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
 
   def bundledRuntimeAuthority(): SeatbeltProfile.RuntimeAuthority =
-    val stream = getClass.getResourceAsStream("/agentsandbox/runtime-authority.txt")
+    val stream = getClass.getResourceAsStream("/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt")
     if stream == null then
-      throw IllegalStateException("this jar bundles no runtime-authority.txt; rebuild it")
+      throw IllegalStateException("this jar bundles no SeatbeltProfile.RuntimeAuthority.txt; rebuild it")
     val text =
       try String(stream.readAllBytes(), UTF_8)
       finally stream.close()
@@ -567,7 +568,7 @@ object RunOnHostSandbox:
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
     * stderr, so the line is written where this polls. */
   def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
-    val Ready = raw""".*agent-egress-proxy listening on :(\d+).*""".r
+    val Ready = raw""".*ko-agent-egress-proxy listening on :(\d+).*""".r
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
     // Decoded leniently: the log carries what the proxy's clients asked for.
     def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
@@ -1961,7 +1962,7 @@ object RunOnHostSandbox:
     )).mkString(" ")
     val own = Map(
       // The JDK, then the system directories the runtime authority lets a command execute from
-      // (runtime-authority.txt) — never the host's PATH: an entry of it the confinement refuses,
+      // (SeatbeltProfile.RuntimeAuthority.txt) — never the host's PATH: an entry of it the confinement refuses,
       // a version manager's shim or a Homebrew program ahead of the system one, fails the lookup
       // with EPERM at that entry, and the shell tries no further, so a command the system PATH
       // serves would break on the shell's.

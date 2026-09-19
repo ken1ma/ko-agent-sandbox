@@ -535,7 +535,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("awaitProxyPort reads the bound port from the ready line, stamped or not"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
-    Files.writeString(log, "2026-08-31T01:08:25Z agent-egress-proxy listening on :51234\n", UTF_8)
+    Files.writeString(log, "2026-08-31T01:08:25Z ko-agent-egress-proxy listening on :51234\n", UTF_8)
     assertEquals(awaitProxyPort(log, deadlineMillis = 1_000), Right(51234))
 
   test("awaitProxyPort is a bounded Left with what the proxy said"):
@@ -1646,7 +1646,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
     Files.writeString(
       log,
-      """2026-08-31T01:08:25Z agent-egress-proxy listening on :51234
+      """2026-08-31T01:08:25Z ko-agent-egress-proxy listening on :51234
         |2026-08-31T01:08:25Z deny example.com CONNECT host not allowed
         |2026-08-31T01:08:26Z allow repo1.maven.org CONNECT -> 151.101.0.209
         |2026-08-31T01:08:27Z deny example.com CONNECT host not allowed
@@ -1720,7 +1720,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(Files.isSymbolicLink(git.resolve("untouchable")))
 
   // --------------------------------------------------------------------------
-  // The runtime-authority file
+  // SeatbeltProfile.RuntimeAuthority.txt
   // --------------------------------------------------------------------------
 
   test("readRuntimeAuthority splits reads from executables and drops what does not resolve"):

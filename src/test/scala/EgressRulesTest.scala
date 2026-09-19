@@ -43,7 +43,7 @@ class EgressRulesTest extends munit.FunSuite:
 
   test("the transport line is read back from the proxy's stamped log"):
     val line = "egress transport: upstream proxy http://proxy.corp.example:3128 -> 10.1.2.3 (HTTPS_PROXY)"
-    val ready = "2026-08-26T11:59:38Z agent-egress-proxy listening on :3128\n"
+    val ready = "2026-08-26T11:59:38Z ko-agent-egress-proxy listening on :3128\n"
     assertEquals(transportLineOf(s"2026-08-26T11:59:38Z $line\n$ready"), Some(line))
     assertEquals(transportLineOf(ready), None)
 

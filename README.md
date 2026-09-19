@@ -264,7 +264,7 @@ restore permission prompts and set the Claude Code status line.
                          Each profile: doc/egress-proxy.md
       --run-on-host=<programs>
                          macOS only: select sbt / mill / gradle / mvn, separated by commas.
-                         Adds the sandbox-run-on-host command inside the sandbox, to run
+                         Adds the ko-sandbox-run-on-host command inside the sandbox, to run
                          those programs on the host under Seatbelt. Host commands can write
                          the project even under --write=reject; access is
                          confined to the project (excluding .git and .ko-agent-sandbox),
@@ -318,7 +318,7 @@ restore permission prompts and set the Claude Code status line.
                          print the host's rule decision and DNS result using the proxy's
                          resolver; with HTTPS_PROXY, also check the upstream proxy's tunnel.
                          Starts a temporary proxy container.
-                         Inside a session, sandbox-egress-check <host>
+                         Inside a session, ko-sandbox-egress-check <host>
                          checks through the running proxy
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the

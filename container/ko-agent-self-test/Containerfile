@@ -79,7 +79,7 @@ RUN set -eux; \
     echo user_allow_other >> /etc/fuse.conf
 
 COPY --from=build /suite /opt/ko-agent-fs-suite
-COPY ko-agent-self-test/run-suite /usr/local/bin/ko-agent-fs-suite
+COPY ko-agent-self-test/ko-agent-fs-suite /usr/local/bin/ko-agent-fs-suite
 RUN chmod 0755 /usr/local/bin/ko-agent-fs-suite
 
 USER nonroot

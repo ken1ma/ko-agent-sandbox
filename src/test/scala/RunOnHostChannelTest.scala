@@ -42,12 +42,12 @@ class RunOnHostChannelTest extends munit.FunSuite:
     * cleanup either, which is why the copy is tracked rather than the value forced. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
-    val source = Paths.get("container/ko-agent-sandbox/sandbox-run-on-host").toAbsolutePath
+    val source = Paths.get("container/ko-agent-sandbox/ko-sandbox-run-on-host").toAbsolutePath
     val text = Files.readString(source)
     val rewritten = Map(s"dir=${RunOnHostChannel.SandboxDir}" -> s"dir=$FifoDir", "bound=30" -> s"bound=$ShimBound")
     rewritten.keys.foreach: line =>
       require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
-    val copy = Files.createTempFile("sandbox-run-on-host", "")
+    val copy = Files.createTempFile("ko-sandbox-run-on-host", "")
     Files.writeString(copy, rewritten.foldLeft(text)((text, entry) => text.replace(entry._1, entry._2)))
     Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
     shimCopy = Some(copy)

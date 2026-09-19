@@ -1,5 +1,5 @@
 // The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side broker
-// that serves it. The sandbox side is the image's sandbox-run-on-host
+// that serves it. The sandbox side is the image's ko-sandbox-run-on-host
 // shim; the broker is a detached process of the launcher's own executable — the jar or native
 // binary — spawned per session under --run-on-host. SECURITY.md "Run on host" has what the
 // channel grants and withholds.

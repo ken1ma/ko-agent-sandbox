@@ -116,7 +116,8 @@ emit() { # program
     rm -f "$work/gate-$1.env"
     # Each path quoted for sbt's own command parser: a checkout with a space in its path would
     # otherwise split into two arguments.
-    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/runtime-authority.txt $1 \"$(project_of "$1")\""
+    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt $1"
+    args="$args \"$(project_of "$1")\""
     sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile $args" >"$work/emit-$1.log" 2>&1 \
         || { echo "emit failed for $1:"; tail -20 "$work/emit-$1.log"; return 1; }
     mv "$work/gate-$1.sb.env" "$work/gate-$1.env"
@@ -188,7 +189,7 @@ locked_wrapper() { # program project command...
     # subshell whose kill would miss them (victim_wrapper's own reason).
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
-        src/main/resources/agentsandbox/runtime-authority.txt -- "$@"
+        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- "$@"
 }
 wrapper() { # program project command...
     wrapper_program=$1; wrapper_project=$2; shift 2
@@ -380,7 +381,7 @@ test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
 # The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
 echo "emitting the proxy profile"
 sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/gate-proxy.sb\" \
-        src/main/resources/agentsandbox/runtime-authority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
+        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
         >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
 # `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
@@ -905,7 +906,7 @@ victim_wrapper() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost \
-        sbt "$project" src/main/resources/agentsandbox/runtime-authority.txt -- compile >"$work/$1" 2>&1
+        sbt "$project" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- compile >"$work/$1" 2>&1
 }
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
@@ -1109,7 +1110,7 @@ kill_channel_execs() {
 channel_shim() { # log cwd args...
     chan_log=$1; chan_cwd=$2; shift 2
     cd "$chan_cwd" || exit 1
-    PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/sandbox-run-on-host" "$@" \
+    PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" "$@" \
         >"$work/$chan_log" 2>"$work/$chan_log.err"
 }
 channel_settled() { # await the broker between rows: no command directory, command server or command proxy
@@ -1332,7 +1333,7 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         # sed delimiter; the cleanup removes it.
         channel_dir2=$(mktemp -d /tmp/ko-agent-gate-channel.XXXXXX) || exit 1
         sed "s|^dir=/tmp/ko-agent-sandbox/run-on-host\$|dir=$channel_dir2|" \
-            "$project/container/ko-agent-sandbox/sandbox-run-on-host" > "$work/shim2"
+            "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" > "$work/shim2"
         chmod +x "$work/shim2"
         cat > "$work/podman2" <<EOF
 #!/bin/sh

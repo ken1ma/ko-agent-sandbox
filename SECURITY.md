@@ -536,7 +536,7 @@ the same address. These checks follow the `200`, so a failure closes the connect
 - DNS or connection failures receive `502`.
 
 Clients often hide failed-CONNECT response bodies, so the sandbox image provides
-`sandbox-egress-check <host>` to read them ([README.md](README.md#reference), `--egress-check`).
+`ko-sandbox-egress-check <host>` to read them ([README.md](README.md#reference), `--egress-check`).
 
 With `HTTPS_PROXY` set where the launcher runs (`doc/egress-proxy.md`, "Through an upstream proxy"),
 step 6 connects through the upstream proxy with a `CONNECT` naming the validated numeric address:
@@ -796,7 +796,7 @@ The sandbox trusts that CA — the project's, or under `allow-unless-denied` the
 The image's JDK is covered by the same technique one layer over, because it reads none of the
 above: a JVM consults a `cacerts` keystore and a `net.properties` file.
 
-- The image ships `sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that
+- The image ships `ko-sandbox-jdk-use-proxy`, which imports the CA into one JDK's store with that
   JDK's own `keytool` and appends the proxy to its `net.properties`.
 - The launcher runs it on the image's own JDK in a throwaway container with no network, copies the
   files out, and mounts them read-only over the originals.
@@ -811,7 +811,7 @@ above: a JVM consults a `cacerts` keystore and a `net.properties` file.
 Programs not covered by the launcher's prepared trust stores need separate handling:
 
 - A JVM the agent installs itself (`cs java --jvm ...`) brings its own untouched store.
-  `sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
+  `ko-sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
   certificate it reads is mounted beside the agent instructions, and is the same public one already
   inside the bundle.
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
@@ -982,7 +982,7 @@ Clipboard access is off by default because the host clipboard may contain sensit
     reads requests through a `podman exec` on the FIFO `/tmp/ko-agent-sandbox/clipboard/req` in
     the sandbox, and answers each through another on `rsp` beside it.
   - No host listener, no port, no proxy rule, no file in the project, and nothing moves until a
-    clipboard call from inside (`ClipboardBroker`, the image's `sandbox-clipboard` shim).
+    clipboard call from inside (`ClipboardBroker`, the image's `ko-sandbox-clipboard` shim).
 - **A request is read to a fixed size and no further.** Anything in the sandbox can write the
   FIFO.
   - What the host reads of one exec's stream is cut at `ClipboardBroker.MaxRequestBytes` whatever
@@ -1028,7 +1028,7 @@ provides the confinement for these commands; they execute outside the container.
 - **The sandbox asks; the host answers.** A host-side broker uses a FIFO channel like the clipboard
   broker's. It starts each command as its child, streams output back, and returns the exit code.
   There is no host listener or port; the host broker initiates execution (`RunOnHostChannel`, the
-  image's `sandbox-run-on-host` shim).
+  image's `ko-sandbox-run-on-host` shim).
 - **The profile is the boundary; the request is not.** A request names a program, a working
   directory and arguments.
   - The program must be among those `--run-on-host` named.
@@ -1314,7 +1314,7 @@ The remaining controls bound nested execution:
   namespace, their only route out is still the proxy, and an image pull is an ordinary logged
   CONNECT to a registry the ruleset allows — Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and ECR
   Public are built in, any other registry is the project's `egress/rule` to add.
-- No runtime is preinstalled. The image's `sandbox-install-podman` refuses to run outside this
+- No runtime is preinstalled. The image's `ko-sandbox-install-podman` refuses to run outside this
   mode; within it, the script unpacks Podman under `$HOME` without acquiring additional privileges.
   Its storage is discarded with the session.
 - The next launch without the opt-in uses the default process masks and security options.

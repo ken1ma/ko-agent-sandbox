@@ -64,7 +64,7 @@ The words the documents share, each defined where it binds and listed here once:
   - the run-on-host broker, one per session, which relays each host command and owns the processes
     it starts (`run-on-host.md`).
 - **shim, wrapper, command** — under `--run-on-host`:
-  - the shim is `sandbox-run-on-host` inside the sandbox, which sends one command to the broker;
+  - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the broker;
   - the wrapper is the launcher process the broker spawns for it on the host, which runs the
     program under its Seatbelt profile;
   - a command session is the wrapper's own record of that one invocation, beside the broker's

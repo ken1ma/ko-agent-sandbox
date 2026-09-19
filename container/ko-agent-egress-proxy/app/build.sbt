@@ -1,4 +1,4 @@
-name := "agent-egress-proxy"
+name := "ko-agent-egress-proxy"
 version := "0.1.0"
 scalaVersion := "3.9.0"
 
@@ -50,7 +50,7 @@ dist := {
 
   IO.copyFile(
     converter.toPath((Compile / packageBin).value).toFile,
-    directory / "agent-egress-proxy.jar",
+    directory / "ko-agent-egress-proxy.jar",
   )
 
   IO.copy(

@@ -26,7 +26,7 @@ public class F {
 }
 EOF
 
-dist=container/ko-agent-egress-proxy/app/target/dist/agent-egress-proxy.jar
+dist=container/ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
 proxy_src=container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
 if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
     echo "building the proxy dist (sources are newer)"

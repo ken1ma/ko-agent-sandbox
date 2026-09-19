@@ -4,8 +4,8 @@
 # dependencies resolved, because real `apt-get install` can never work on a read-only rootfs as
 # uid 65532, which is why this exists.
 #
-#   sandbox-apt-get update           # fetch the package lists — explicit, exactly as apt-get's
-#   sandbox-apt-get install podman   # dependencies arrive too; `podman` is then on PATH
+#   ko-sandbox-apt-get update           # fetch the package lists — explicit, exactly as apt-get's
+#   ko-sandbox-apt-get install podman   # dependencies arrive too; `podman` is then on PATH
 #
 # What install does: apt-get with its directories under ~/.local/deb — the image's real dpkg
 # status stays apt's baseline, so only what the image lacks is fetched, and Release signatures are

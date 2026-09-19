@@ -2662,7 +2662,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assert(ex.getMessage.contains(BindVariable), clue = ex.getMessage)
 
   test("the ready line spells the bound port, and the fixed-port form is the launcher's"):
-    assertEquals(readyLine(51234), "agent-egress-proxy listening on :51234")
+    assertEquals(readyLine(51234), "ko-agent-egress-proxy listening on :51234")
     assertEquals(ReadyLine, readyLine(ListenPort))
 
   // ---------------------------------------------------------------------------

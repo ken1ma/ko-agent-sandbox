@@ -1,4 +1,4 @@
-// Making the image's JVM usable: the launcher runs the image's `sandbox-jdk-use-proxy` on the
+// Making the image's JVM usable: the launcher runs the image's `ko-sandbox-jdk-use-proxy` on the
 // image's own JDK in a throwaway container and mounts the two files it wrote back. That script's
 // header has why a JVM needs this and which JVMs it is for; jdkJavaOpts covers the ones that read
 // no file.
@@ -15,19 +15,19 @@ object JdkTrust:
   /**
    * The JDK at `$1` made to use the proxy, then its two files copied into `prepared`. One `&&`
    * chain, since `set -e` does not end a script at a failing left side of `&&`: a copy placed after
-   * the chain would run behind a failed sandbox-jdk-use-proxy, and where `prepared` exists —
+   * the chain would run behind a failed ko-sandbox-jdk-use-proxy, and where `prepared` exists —
    * an image may ship one — hand the launcher an unprepared store to stamp as prepared.
    */
   def prepareScript(prepared: String): String =
     s"""set -eu
-       |sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared \\
+       |ko-sandbox-jdk-use-proxy "$$1" >&2 && mkdir $prepared \\
        |  && cp -L "$$1/lib/security/cacerts" "$$1/conf/net.properties" $prepared""".stripMargin
 
   /**
    * The JDK's home as the image itself declares it, out of `podman image inspect`'s `Config.Env`.
    * Read rather than agreed: the launcher needs somewhere to mount a merged trust store, and the
    * image already says where its JDK is. An image of the user's own (KO_AGENT_SANDBOX_IMAGE) that
-   * declares a JDK must also ship sandbox-jdk-use-proxy, which prepares it; the launch fails saying
+   * declares a JDK must also ship ko-sandbox-jdk-use-proxy, which prepares it; the launch fails saying
    * so rather than mounting nothing over a JDK that then cannot reach the proxy.
    *
    * A symlink at a fixed path would work too, and would be a second name to keep in step.
@@ -42,7 +42,7 @@ object JdkTrust:
         case line if line.startsWith("JAVA_HOME=") => line.stripPrefix("JAVA_HOME=")
       .filter(_.nonEmpty)
 
-  /** The CA's path inside a container: sandbox-jdk-use-proxy reads it there, in a session and in
+  /** The CA's path inside a container: ko-sandbox-jdk-use-proxy reads it there, in a session and in
     * the launcher's throwaway run alike. Use .crt for the Linux/BSD convention; keytool accepts it
     * despite its usual .cer examples. */
   val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
@@ -50,7 +50,7 @@ object JdkTrust:
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
    * bundle's technique one layer over: take the image's own files, add this session's part, mount
-   * the results back over them. The adding is `sandbox-jdk-use-proxy`'s, run in a throwaway
+   * the results back over them. The adding is `ko-sandbox-jdk-use-proxy`'s, run in a throwaway
    * container of the image as root so the image's files are writable.
    *
    * Keyed on everything the script consumes: the image, the CA, and the address. Returned as
@@ -81,9 +81,9 @@ object JdkTrust:
         // out of the container must contain the store, not the link.
         val prepared = "/prepared-jdk"
         // --entrypoint=: this container depends on nothing but sh and the script. The stock
-        // sandbox-entrypoint would come through — it skips seeding when the root this runs as has
+        // ko-sandbox-entrypoint would come through — it skips seeding when the root this runs as has
         // no $HOME/persistent-volume — but that guard is the stock image's, and a
-        // KO_AGENT_SANDBOX_IMAGE promises only to ship sandbox-jdk-use-proxy, not an ENTRYPOINT
+        // KO_AGENT_SANDBOX_IMAGE promises only to ship ko-sandbox-jdk-use-proxy, not an ENTRYPOINT
         // that tolerates this container or execs its arguments at all. Nothing an entrypoint does
         // is for this container anyway.
         val created = run((
@@ -101,7 +101,7 @@ object JdkTrust:
         val failure =
           try
             val ran = run(podman, "start", "--attach", container)
-            if !ran.ok then Some(s"error: sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
+            if !ran.ok then Some(s"error: ko-sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
             else
               files.iterator.map: (file, at) =>
                 val copied = run(podman, "cp", s"$container:$prepared/${file.getFileName}", file.toString)

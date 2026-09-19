@@ -2,7 +2,7 @@
 #
 # Install a rootless podman in this session, configured the one way that works here.
 #
-#     sandbox-install-podman
+#     ko-sandbox-install-podman
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 #     podman run --rm docker.io/library/alpine:latest echo hello
 #
@@ -22,9 +22,9 @@ if [ "$nesting" != same-uid ]; then
     exit 1
 fi
 
-sandbox-apt-get update
+ko-sandbox-apt-get update
 # netavark is unused under host networking, but podman refuses to start without the binary.
-sandbox-apt-get install podman
+ko-sandbox-apt-get install podman
 
 mkdir -p /tmp/xdg "$HOME/.config/containers"
 

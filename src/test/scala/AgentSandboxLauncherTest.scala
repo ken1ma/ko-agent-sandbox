@@ -30,6 +30,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
     assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
+    assertEquals(
+      unknownSandboxVariables(Seq("KO_SANDBOX_MEMORY", "KO_SANDBOX_VOLUME_SEED", "KO_SANDBOX_TOOLCHAIN_PATH")),
+      Vector("KO_SANDBOX_MEMORY"),
+    )
 
   test("the sandbox gets a memory limit below the machine's total, and never swaps"):
     assertEquals(memoryLimit(8L << 30, None), 7L << 30)
@@ -101,7 +105,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("the run-on-host lines name the programs in orange, and under --write=reject say a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
-      "sandbox-run-on-host: sbt, mill on host",
+      "ko-sandbox-run-on-host: sbt, mill on host",
       "your own sbt server or mill daemon in the build directory is stopped when the agent runs that program",
     ))
     for
@@ -109,14 +113,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       writeMode <- Seq("live", "reject")
     do
       val lines = runOnHostLines(selected, writeMode, color = false)
-      assertEquals(lines.head, s"sandbox-run-on-host: ${selected.mkString(", ")} on host")
+      assertEquals(lines.head, s"ko-sandbox-run-on-host: ${selected.mkString(", ")} on host")
       val shutdown = lines.find(_.startsWith("your own"))
       assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
       assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
       assertEquals(lines.exists(_.contains("--write=reject")), writeMode == "reject")
     assertEquals(
       runOnHostLines(Seq("sbt"), "live", color = true).head,
-      "\u001b[38;5;208msandbox-run-on-host: sbt on host\u001b[0m",
+      "\u001b[38;5;208mko-sandbox-run-on-host: sbt on host\u001b[0m",
     )
     val reject = runOnHostLines(Seq("gradle"), "reject", color = false)
     assertEquals(reject.size, 2)
@@ -1105,28 +1109,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // The only way an agent-installed JVM reaches an inspected forge host at all — it needs both
     // the CA and the proxy — so a bundle without it is a silently degraded sandbox.
-    assert(index.contains("ko-agent-sandbox/sandbox-jdk-use-proxy"), "sandbox-jdk-use-proxy script missing")
-    val useProxy = BundledBuildContext.resource("ko-agent-sandbox/sandbox-jdk-use-proxy")
-    assert(useProxy.contains("-importcert"), "sandbox-jdk-use-proxy imports no certificate")
-    assert(useProxy.contains("net.properties"), "sandbox-jdk-use-proxy sets no proxy")
+    assert(index.contains("ko-agent-sandbox/ko-sandbox-jdk-use-proxy"), "ko-sandbox-jdk-use-proxy script missing")
+    val useProxy = BundledBuildContext.resource("ko-agent-sandbox/ko-sandbox-jdk-use-proxy")
+    assert(useProxy.contains("-importcert"), "ko-sandbox-jdk-use-proxy imports no certificate")
+    assert(useProxy.contains("net.properties"), "ko-sandbox-jdk-use-proxy sets no proxy")
     // The one way a CONNECT refusal's reason reaches the sandbox: no client shows that body.
-    assert(index.contains("ko-agent-sandbox/sandbox-egress-check"), "sandbox-egress-check script missing")
+    assert(index.contains("ko-agent-sandbox/ko-sandbox-egress-check"), "ko-sandbox-egress-check script missing")
     assert(
-      BundledBuildContext.resource("ko-agent-sandbox/sandbox-egress-check").contains("CONNECT {host}:443"),
-      "sandbox-egress-check sends no CONNECT",
+      BundledBuildContext.resource("ko-agent-sandbox/ko-sandbox-egress-check").contains("CONNECT {host}:443"),
+      "ko-sandbox-egress-check sends no CONNECT",
     )
-    assert(index.contains("ko-agent-sandbox/sandbox-apt-get"), "sandbox-apt-get script missing")
+    assert(index.contains("ko-agent-sandbox/ko-sandbox-apt-get"), "ko-sandbox-apt-get script missing")
     assert(
-      BundledBuildContext.resource("ko-agent-sandbox/sandbox-apt-get").contains("--download-only"),
-      "sandbox-apt-get does not resolve dependencies",
-    )
-    assert(
-      index.contains("ko-agent-sandbox/sandbox-install-podman"),
-      "sandbox-install-podman script missing",
+      BundledBuildContext.resource("ko-agent-sandbox/ko-sandbox-apt-get").contains("--download-only"),
+      "ko-sandbox-apt-get does not resolve dependencies",
     )
     assert(
-      BundledBuildContext.resource("ko-agent-sandbox/sandbox-install-podman").contains("same-uid"),
-      "sandbox-install-podman does not gate on the nesting opt-in",
+      index.contains("ko-agent-sandbox/ko-sandbox-install-podman"),
+      "ko-sandbox-install-podman script missing",
+    )
+    assert(
+      BundledBuildContext.resource("ko-agent-sandbox/ko-sandbox-install-podman").contains("same-uid"),
+      "ko-sandbox-install-podman does not gate on the nesting opt-in",
     )
 
     // ko-agent-fs is compiled from source on the user's machine rather than shipped as a binary, so its sources —
@@ -1271,8 +1275,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // option, a macOS session gets one discovery line — only the launcher knows the platform —
     // and other platforms hear nothing about a command they can never have.
     val runOnHostSection = appendedSection(Mount, "live", resolution, Vector("sbt", "mill"))
-    assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
-    assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
+    assert(runOnHostSection.contains("ko-sandbox-run-on-host sbt"), runOnHostSection)
+    assert(runOnHostSection.contains("ko-sandbox-run-on-host mill"), runOnHostSection)
     assert(
       runOnHostSection.contains("The daemons of sbt, mill and gradle stay warm across invocations"),
       runOnHostSection,
@@ -1281,7 +1285,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // command line, so `compile test` is a parse error and `'compile; test'` is two commands
     // (measured on sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening
     // test suite — is named, with the container as where it runs instead.
-    assert(runOnHostSection.contains("sandbox-run-on-host sbt 'compile; test'"), runOnHostSection)
+    assert(runOnHostSection.contains("ko-sandbox-run-on-host sbt 'compile; test'"), runOnHostSection)
     assert(!runOnHostSection.contains("sbt compile test"), runOnHostSection)
     assert(runOnHostSection.contains("Operation not permitted"), runOnHostSection)
     assert(runOnHostSection.replace('\n', ' ').contains("the last resort, not an alternative"), runOnHostSection)
@@ -1292,18 +1296,18 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(runOnHostSection.contains("never re-run in the container"), runOnHostSection)
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
-    assert(!filtered.contains("sandbox-run-on-host"), filtered)
+    assert(!filtered.contains("ko-sandbox-run-on-host"), filtered)
     val discoverable =
       appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
-    assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
+    assert(!discoverable.contains("ko-sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host command can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
     val rejectWithHostCommands = appendedSection(Mount, "reject", resolution, Vector("sbt"))
     assert(rejectWithHostCommands.contains("session's own writes"), rejectWithHostCommands)
-    assert(rejectWithHostCommands.contains("sandbox-run-on-host"), rejectWithHostCommands)
+    assert(rejectWithHostCommands.contains("ko-sandbox-run-on-host"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("--write=live"), rejectWithHostCommands)
     // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
     // was chosen: the agent is not sent to ask for an allow line it already has.

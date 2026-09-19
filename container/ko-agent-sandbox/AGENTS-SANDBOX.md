@@ -110,8 +110,8 @@ curl -fsSL URL -o ~/.local/bin/PROGRAM && chmod +x ~/.local/bin/PROGRAM
 Last resort, when only a Debian package will do:
 
 ```sh
-sandbox-apt-get update
-sandbox-apt-get install shellcheck   # shellcheck is then on PATH
+ko-sandbox-apt-get update
+ko-sandbox-apt-get install shellcheck   # shellcheck is then on PATH
 ```
 
 It unpacks rather than installs, so a package expecting users, services or setuid bits will not
@@ -128,7 +128,7 @@ The appended section gives the egress profile and how to consult its rules.
 
 On a TLS-inspected host a write — `git push`, a `POST` or `PUT` no line grants at its path — is
 refused, and the `403` body says what to do next. If a host will not connect, run
-`sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
+`ko-sandbox-egress-check <host>` and report its lines to the user; do not look for another route.
 For TLS errors on allowed hosts, check the trust store (below). Connections without SNI or with
 Encrypted ClientHello, including browser GREASE, are closed. Inspected hosts require HTTP/1.1;
 HTTP/2-only clients fail. Plain `curl` and `git` have none of these incompatibilities.
@@ -140,7 +140,7 @@ Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -co
 
 A program with its own trust store needs the proxy's CA:
 `/etc/ko-agent-sandbox/egress-proxy-ca.crt`, or the whole bundle in `$SSL_CERT_FILE`. A JVM needs
-the proxy as well, and ignores `HTTPS_PROXY`: run `sandbox-jdk-use-proxy <jdk-home>` on one you
+the proxy as well, and ignores `HTTPS_PROXY`: run `ko-sandbox-jdk-use-proxy <jdk-home>` on one you
 installed yourself. The native-image `scala` and `cs` launchers need the proxy and CA options on
 their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
 `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs no additional setup.
@@ -164,13 +164,13 @@ At `same-uid` a runtime runs, within four limits:
 - **Most registries need a rule.** Docker Hub, `ghcr.io`, `quay.io`, `gcr.io` and
   `public.ecr.aws` are in the defaults; for any other, ask the user to add
   `allow https://<registry>/ read` to `.ko-agent-sandbox/egress/rule`. If a pull stalls, run
-  `sandbox-egress-check <registry>` and report its output to the user.
+  `ko-sandbox-egress-check <registry>` and report its output to the user.
 - **Storage dies with the session**, and inner containers have no cgroups, so no resource limits.
 
-podman is not preinstalled. `sandbox-install-podman` fetches and configures it:
+podman is not preinstalled. `ko-sandbox-install-podman` fetches and configures it:
 
 ```sh
-sandbox-install-podman
+ko-sandbox-install-podman
 export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 podman run --rm docker.io/library/alpine:latest echo hello
 ```
