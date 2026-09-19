@@ -139,6 +139,8 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    code back.
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
+1. A prompt remains for some `rm` commands
+   ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 
 #### `codex`
 
