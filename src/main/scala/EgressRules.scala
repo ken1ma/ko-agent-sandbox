@@ -63,8 +63,8 @@ object EgressRules:
    * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
    * On parse failure, show only the first line to avoid dumping the resolved host list.
    *
-   * @param color tints the profile, except under the permissive one, where the caller tints the
-   *              whole line.
+   * @param color tints the profile, except under the permissive one, whose line is tinted whole
+   *              (HostCommands.weakenedByUser).
    */
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
@@ -88,10 +88,9 @@ object EgressRules:
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
         profile match
           case "allow-unless-denied" =>
-            // Plain: the caller tints this line whole, and a word tinted inside it would end that
-            // colour at its own reset. The tunnel hosts are the exception set; the inspected count
-            // says nothing where every unlisted host is inspected too.
-            s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied"
+            // The tunnel hosts are the exception set; the inspected count says nothing where
+            // every unlisted host is inspected too.
+            weakenedByUser(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -110,7 +109,7 @@ object EgressRules:
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /** The one profile weaker than the launcher's default — public HTTPS to whatever is not
-    * denied — and so the one banner line a terminal has reason to tint. */
+    * denied. */
   def permissiveProfile(resolved: String): Boolean =
     resolved.linesIterator.nextOption().exists(_.startsWith("egress profile: allow-unless-denied"))
 

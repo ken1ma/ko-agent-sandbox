@@ -98,7 +98,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
     assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
 
-  test("the run-on-host lines name the programs, and under --write=reject a red line says a host command writes"):
+  test("the run-on-host lines name the programs in orange, and under --write=reject say a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
       "sandbox-run-on-host: sbt, mill on host",
@@ -114,7 +114,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
       assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
       assertEquals(lines.exists(_.contains("--write=reject")), writeMode == "reject")
-    assert(runOnHostLines(Seq("sbt"), "live", color = true).head.contains("\u001b[38;5;207msbt\u001b[0m"))
+    assertEquals(
+      runOnHostLines(Seq("sbt"), "live", color = true).head,
+      "\u001b[38;5;208msandbox-run-on-host: sbt on host\u001b[0m",
+    )
     val reject = runOnHostLines(Seq("gradle"), "reject", color = false)
     assertEquals(reject.size, 2)
     assert(!reject.head.contains("your own"), reject.head)
@@ -123,7 +126,44 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
         " project as its program does",
     )
-    assert(runOnHostLines(Seq("gradle"), "reject", color = true)(1).startsWith("\u001b[31m"))
+    assert(runOnHostLines(Seq("gradle"), "reject", color = true)(1).startsWith("\u001b[38;5;208m"))
+
+  test("a boundary an environment variable weakens is an orange line naming the variable"):
+    assertEquals(
+      nestingLine("same-uid", color = false),
+      "nested containers: same-uid by KO_AGENT_SANDBOX_NESTING; /proc unmasked, SELinux label disabled and " +
+        "CAP_SYS_CHROOT added, for the whole session",
+    )
+    assertEquals(
+      clipboardLine("paste", color = false),
+      "clipboard: paste by KO_AGENT_SANDBOX_CLIPBOARD; the agent can read an image you copy",
+    )
+    assert(clipboardLine("bidirectional", color = false).endsWith("you copy and set your clipboard"))
+    for line <- Seq(nestingLine("same-uid", color = true), clipboardLine("paste", color = true)) do
+      assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
+      assertEquals(line.count(_ == '\u001b'), 2, line)
+
+  test("a program's rule file naming hosts is a red line of its own, and a control character in it is shown"):
+    val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)
+    assertEquals(runOnHostWideningLines(silent, color = false), Vector.empty)
+    assertEquals(
+      runOnHostWideningLines(
+        Seq("sbt" -> Vector("repo.example", "plugins.example"), "mvn" -> Vector.empty),
+        color = false,
+      ),
+      Vector(
+        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen: " +
+          "allow https://repo.example/ read; allow https://plugins.example/ read",
+      ),
+    )
+    val hostile = runOnHostWideningLines(Seq("gradle" -> Vector("x.example\u001b[2K")), color = true)
+    assertEquals(
+      hostile,
+      Vector(
+        "\u001b[31mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen: " +
+          "allow https://x.example\\x1b[2K/ read\u001b[0m",
+      ),
+    )
 
   test("the memory figure's scale is the action's: the session floor at a launch, the build gate before a build"):
     import HostCommands.Headroom

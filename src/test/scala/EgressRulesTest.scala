@@ -150,16 +150,16 @@ class EgressRulesTest extends munit.FunSuite:
       ),
       "egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 tunnel",
     )
-    // The permissive line is tinted whole by the caller, so nothing inside it ends that colour.
+    // The permissive line is tinted whole, as the user's own weakening, so nothing inside it ends that colour.
     assertEquals(
       egressBanner(
         "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),
         color = true,
       ),
-      "egress: allow-unless-denied; public HTTPS read; 0 tunnel, 0 denied",
+      "\u001b[38;5;208megress: allow-unless-denied; public HTTPS read; 0 tunnel, 0 denied\u001b[0m",
     )
 
-  test("the permissive profile is the one the banner tints, whatever follows it on the line"):
+  test("the permissive profile is read from the head line, whatever follows it on the line"):
     assert(
       permissiveProfile(
         "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),

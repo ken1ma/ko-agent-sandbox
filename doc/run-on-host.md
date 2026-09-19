@@ -1260,6 +1260,9 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
   rather than passed through. The full grammar would let one `allow model-provider` line expand
   into endpoints that are no artifact repository, and a `tunnel` word means nothing to a proxy
   running without inspection.
+- A launch selecting the program prints the file's hosts on a line of their own,
+  `run-on-host egress rules (<file>) widen:`, and refuses a file outside the grammar, so a host
+  that arrived with the repository is seen by you before the agent's first command.
 - The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 

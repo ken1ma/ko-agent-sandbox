@@ -104,30 +104,39 @@ object HostCommands:
   /**
    * Case is not emphasis: a value is printed as it is configured — `live`, `deny-unless-allowed` —
    * so the banner, `--egress-effective` and the rule file read and grep
-   * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
-   * severity label, a boundary weaker than the default, or the mode the workspace or egress line
-   * states, and colour is what marks those; sbt and mill tint their `[warn]` label and leave the
-   * message alone, and this follows them. The hues rank by consequence, not by convention: a warning and
-   * a refusal are both orange, since nothing has run and nothing is harmed — the label tells them
-   * apart; red is a boundary weaker than the default, in force for the session; what the user
-   * chose — a mode, the programs run on host — takes a hue of its own, purple, so it is never read as
-   * a severity. A headroom figure is outside the ranking: it is a measurement, and green, orange
-   * and red are its scale (Headroom).
+   * alike, and the reader is not shouted at for the mode they selected. Colour is the emphasis, and
+   * each hue has one meaning:
+   *
+   *   - red: what the user did not ask for. On the `error:` label, the launch stopped (stopped);
+   *     on a whole line, a file of the project directory widens a boundary (weakenedByProject) —
+   *     a file that arrives with the repository, written by whoever can write there.
+   *   - orange: the launch goes on, and there is something to know. On the `warning:` label
+   *     (caution); on a whole line, an option or environment variable of this launch weakens a
+   *     boundary (weakenedByUser) — the user's own, so a reminder and not an alarm.
+   *   - purple: what the user chose where it weakens nothing — the workspace mode, the egress
+   *     profile, an upstream proxy (chosen) — a hue of its own so it is never read as a severity.
+   *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
+   *     (Headroom).
+   *
+   * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message; a
+   * weakened boundary is tinted as a whole line and holds no tinted word, since a word's reset
+   * would end the line's colour. So no line has two colours.
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the workspace and egress lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
-  def caution(text: String, color: Boolean = colorStderr): String = tinted("38;5;208", text, color)
+  def caution(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
-  /** A boundary weaker than the default, in force: the raw workspace bind, the permissive egress
-    * profile, a rule file granting beyond the defaults. The whole line, so no line ever has
-    * two colours. */
-  def weakened(text: String, color: Boolean = colorStderr): String = tinted("31", text, color)
+  def stopped(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
 
-  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`,
-    * `sbt, mill`. Purple, and orange above, are not among the theme's sixteen — its magenta is as
-    * often pink, its yellow as often olive — so both are the 256-colour cube's. */
+  def weakenedByUser(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
+
+  def weakenedByProject(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
+
+  /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
+    * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
+    * yellow as often olive — so both are the 256-colour cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
   /** The scale of a headroom figure: green while what the action is about fits, orange where it is
@@ -136,8 +145,8 @@ object HostCommands:
     * words hold where the escape does not. */
   enum Headroom(val code: String):
     case Ample extends Headroom("32")
-    case Warned extends Headroom("38;5;208")
-    case Short extends Headroom("31")
+    case Warned extends Headroom(Orange)
+    case Short extends Headroom(Red)
 
   def gauged(text: String, headroom: Headroom, color: Boolean = colorStderr): String =
     tinted(headroom.code, text, color)
@@ -147,7 +156,7 @@ object HostCommands:
   def emphasized(text: String, color: Boolean = colorStderr): String =
     text.linesIterator
       .map: line =>
-        if line.startsWith(ErrorLabel) then caution(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
+        if line.startsWith(ErrorLabel) then stopped(ErrorLabel, color) + line.stripPrefix(ErrorLabel)
         else if line.startsWith(WarningLabel) then caution(WarningLabel, color) + line.stripPrefix(WarningLabel)
         else line
       .mkString("\n")
@@ -163,28 +172,32 @@ object HostCommands:
   private val WarningLabel = "warning:"
   private val ErrorLabel = "error:"
   private val Esc = 27.toChar
+  private final val Red = "31"
+  private final val Orange = "38;5;208"
 
   private def tinted(code: String, text: String, color: Boolean): String =
     if color then s"$Esc[${code}m$text$Esc[0m" else text
 
   /**
    * `isatty(2)` and not `System.console()`, which answers for stdin: stderr is where these lines
-   * go, and the stream a reader redirects to keep them. Windows stays plain — `fail` has why its
-   * console text is ASCII, and a console without virtual-terminal processing prints the escape
-   * itself.
+   * go, and the stream a reader redirects to keep them.
    */
-  lazy val colorStderr: Boolean =
-    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(2)
+  lazy val colorStderr: Boolean = colorAllowed(env("NO_COLOR"), env("TERM")) && rendersEscapes(2)
 
   /** For the `--stats` report, the one output the launcher writes to stdout: the stream a reader
     * pipes as readily as watches, so it is asked for itself. */
-  lazy val colorStdout: Boolean =
-    colorAllowed(currentOs, env("NO_COLOR"), env("TERM")) && FFMHelper.libc.isatty(1)
+  lazy val colorStdout: Boolean = colorAllowed(env("NO_COLOR"), env("TERM")) && rendersEscapes(1)
 
   /** `NO_COLOR` and `TERM=dumb` are what a program is expected to honour; the launcher adds no
     * variable of its own. */
-  def colorAllowed(os: Os, noColor: Option[String], term: Option[String]): Boolean =
-    os != Os.Windows && noColor.isEmpty && !term.contains("dumb")
+  def colorAllowed(noColor: Option[String], term: Option[String]): Boolean =
+    noColor.isEmpty && !term.contains("dumb")
+
+  /** A Windows console prints an escape as text unless it is asked to interpret it, so there the
+    * question includes the asking. */
+  private def rendersEscapes(fd: Int): Boolean =
+    if currentOs == Os.Windows then FFMHelper.kernel32.enableVirtualTerminalProcessing(fd)
+    else FFMHelper.libc.isatty(fd)
 
   // -------------------------------------------------------------------------
   // Subprocesses
@@ -223,6 +236,9 @@ object HostCommands:
   def shellWord(word: String): String =
     if BareWord.matches(word) then word
     else "'" + word.replace("\\", "\\\\").flatMap(visible).replace("'", "'\\''") + "'"
+
+  /** Text a project file supplied, safe on a terminal: a control character is shown, never sent. */
+  def printable(text: String): String = text.flatMap(visible)
 
   private def visible(char: Char): String =
     char match
