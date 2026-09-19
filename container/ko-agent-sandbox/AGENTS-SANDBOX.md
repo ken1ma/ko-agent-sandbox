@@ -18,6 +18,10 @@ is the user's project, and the only place deliverables belong.
 it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`, `~/.local/share/kiro-cli` and
 opencode's `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`.
 
+Permission prompts are off, but a removal may still prompt the user, who then reads the whole
+command. Give `rm -rf` the literal absolute path of the directory itself, with no glob, variable
+or preceding `cd`, in a short command.
+
 When `$KO_AGENT_SANDBOX_CLIPBOARD` is `paste`, read a copied image with Ctrl-V in claude or
 `xclip -selection clipboard -t image/png -o`; `bidirectional` also accepts text on `wl-copy`'s
 stdin. Without clipboard access, paste reports no image; tell the user to save it under the
