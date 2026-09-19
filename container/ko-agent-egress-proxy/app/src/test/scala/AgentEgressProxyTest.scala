@@ -1113,6 +1113,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!isPublicDestination(InetAddress.getByName("fc00::1")))
     assert(!isPublicDestination(InetAddress.getByName("fe80::1")))
     assert(!isPublicDestination(InetAddress.getByName("2001:db8::1")))
+    // Globally reachable per IANA and refused all the same: isPublicDestination has why.
+    Vector("192.0.0.9", "2001:3::1", "2001:20::1", "64:ff9b::808:808").foreach: address =>
+      assert(!isPublicDestination(InetAddress.getByName(address)), address)
+    // Registry entries outside the listed blocks.
+    Vector("192.31.196.1", "192.52.193.1", "192.175.48.1", "2620:4f:8000::1").foreach: address =>
+      assert(isPublicDestination(InetAddress.getByName(address)), address)
 
   test("CIDR handles non-byte-aligned prefixes"):
     val cgnat = Cidr("100.64.0.0", 10)
@@ -1156,6 +1162,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Origin-side malformations are IOExceptions — the 502 attributes the failure to the origin, never to the client.
     intercept[IOException](HttpResponseHead.parse(ascii("ICY 200 OK\r\n\r\n")))
     intercept[IOException](HttpResponseHead.parse(ascii("HTTP/1.1 abc OK\r\n\r\n")))
+    // toClientBytes writes the parsed number: a status it accepted loosely would reach the client repaired.
+    Vector("+200", "0200", "20", "099", "600", "").foreach: status =>
+      intercept[IOException](HttpResponseHead.parse(ascii(s"HTTP/1.1 $status OK\r\n\r\n")))
+    Vector('\u0000', '\u0007', '\u001b', '\u007f').foreach: control =>
+      intercept[IOException](HttpResponseHead.parse(ascii(s"HTTP/1.1 200 O${control}K\r\n\r\n")))
+    assertEquals(HttpResponseHead.parse(ascii("HTTP/1.1 200 O\tK\r\n\r\n")).reason, "O\tK")
     // The version is one digit each side of the dot: what would pass a prefix check is refused.
     Vector("HTTP/1.x", "HTTP/1.10", "HTTP/1.", "HTTP/1", "HTTP/2.0", "http/1.1").foreach: version =>
       intercept[IOException](HttpResponseHead.parse(ascii(s"$version 200 OK\r\n\r\n")))
@@ -2493,6 +2505,39 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ).bodyFraming,
       BodyFraming.Chunked,
     )
+
+  test("a Content-Length, a CONNECT port and a chunked body are refused unless each matches its grammar"):
+    // `Content-Length: +1` is forwarded as written, to an origin free to read another length.
+    val refusedLengths = Vector("+1", "-0", "-1", "1 1", "0x1", "1.0", "", "99999999999999999999")
+    refusedLengths.foreach: length =>
+      val headers = s"Host: github.com\r\nContent-Length: $length\r\n\r\n"
+      intercept[BadRequest](head(s"POST /x HTTP/1.1\r\n$headers").bodyFraming)
+      intercept[IOException](HttpResponseHead.parse(ascii(s"HTTP/1.1 200 OK\r\n$headers")).bodyFraming("GET"))
+    Vector(" 1", "1 \t", "01").foreach: length =>
+      val headers = s"Host: github.com\r\nContent-Length:$length\r\n\r\n"
+      assertEquals(head(s"POST /x HTTP/1.1\r\n$headers").bodyFraming, BodyFraming.Length(1))
+      assertEquals(
+        HttpResponseHead.parse(ascii(s"HTTP/1.1 200 OK\r\n$headers")).bodyFraming("GET"),
+        BodyFraming.Length(1),
+      )
+
+    Vector("+443", "-443", "0", "65536", "4 43", "").foreach: port =>
+      intercept[BadRequest](ConnectRequest.parsePort(port))
+    assertEquals(ConnectRequest.parsePort("0443"), 443)
+
+    Vector("+1", "-1", " 1", "1 ", "0x1", "", "1;", "1;(", "1;a=", "1;a=\"b", "1;a=\"\u0007\"", "ffffffffffffffff")
+      .foreach: line =>
+        intercept[BadRequest](parseChunkHeader(line))
+    Vector("1A", "1a;ext", "1a \t; ext = value;other=\"quo\\\"ted \u00e9\"").foreach: line =>
+      assertEquals(parseChunkHeader(line), 26L, line)
+
+    def rechunked(body: String): String =
+      val out = java.io.ByteArrayOutputStream()
+      copyChunked(ByteArrayInputStream(body.getBytes(StandardCharsets.ISO_8859_1)), out)
+      out.toString(StandardCharsets.ISO_8859_1)
+    assertEquals(rechunked("3;ext\r\none\r\n0\r\nX-Trailer: \u00e9\r\n\r\n"), "3\r\none\r\n0\r\n\r\n")
+    Vector("no colon", " folded: v", "bad name: v", "X-Trailer: \u0007").foreach: trailer =>
+      intercept[BadRequest](rechunked(s"0\r\n$trailer\r\n\r\n"))
 
   test("the forwarded request is HTTP/1.1, closes, and drops hop-by-hop headers"):
     val forwarded =

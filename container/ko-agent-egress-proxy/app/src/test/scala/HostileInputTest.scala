@@ -86,6 +86,7 @@ class HostileInputTest extends munit.FunSuite:
     "github.com:65536",
     "github.com:0",
     "github.com:-1",
+    "github.com:+443",
     "github.com:44 3",
 
     // Canonicalization: normalizeHost strips one trailing dot, so a doubled one leaves a name the
@@ -102,13 +103,12 @@ class HostileInputTest extends munit.FunSuite:
     "0x7f.0.0.1:443",
   )
 
-  /** Forms one parser accepts and another would not, which reach an allowed host all the same:
-    * Java takes a leading `+` and leading zeros in a port, so both spell 443. Tested because they
-    * are surprising, not because they are dangerous — the proxy dials the port it parsed. */
+  /** A form one parser accepts and another would not, which reaches an allowed host all the same:
+    * RFC 3986's port is `*DIGIT`, so leading zeros spell 443. Tested because it is surprising, not
+    * because it is dangerous — the proxy dials the port it parsed. */
   private val ReachingAuthorities = Vector(
     "github.com:443" -> "github.com",
     "github.com:0443" -> "github.com",
-    "github.com:+443" -> "github.com",
   )
 
   test("no authority in the hostile corpus reaches a host"):
