@@ -78,6 +78,7 @@ without reading. The sandbox enforces the boundary.
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. On macOS and Windows, run `podman machine init` after a new installation;
            on native Linux, podman runs rootless without a machine.
+        1. `podman machine start` is not needed: the launcher starts a stopped machine.
     1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
         1. `wsl --version` shows the versions if WSL is installed.
@@ -293,16 +294,19 @@ restore permission prompts and set the Claude Code status line.
       --update           update the agents: rebuild only the sandbox container
                          image, without cache
 
-      --reset [<id>...]  remove this project's containers (ending any live
-                         session), volume (signing its agents out), networks,
-                         TLS inspection CA, cached ruleset resolution, logs,
-                         workspace-filter mount and run-on-host caches;
+      --stats            show the resource use of the machine, the live sessions and each project.
+                         Flags caches worth clearing with --reset-run-on-host
+
+      --reset-run-on-host
+                         clear this project's host build caches; keep its sessions
+                         and other state
+      --reset [<id>...]  in addition to --reset-run-on-host, remove this project's
+                         containers (ending any live session), volume (signing its
+                         agents out), networks, TLS inspection CA, cached ruleset
+                         resolution, logs and workspace-filter mount;
                          images and any shared volume are left untouched.
                          Ids, as --stats prints them, name projects whose
                          directories are gone instead of the current one
-      --reset-run-on-host
-                         clear this project's host build caches; keep its sessions
-                         and other state. Needs no podman
       --reset-all        the same as --reset, for every project
 
       --egress-effective [--] [<command> [args...]]
@@ -319,12 +323,6 @@ restore permission prompts and set the Claude Code status line.
       --proxy-log        print this project's retained proxy audit logs;
                          with extra args (-f, --tail 50), run podman logs on the
                          running proxies instead
-      --stats            show the machine's memory/storage headroom, live sessions, host build
-                         directories and their retained programs, plus per-project disk use
-                         for state, caches and agent volumes. Last-write dates cover state
-                         and caches. Flags caches worth clearing with --reset-run-on-host.
-                         Projects appear by directory; missing directories appear as ids usable
-                         with --reset. Read-only; does not start a stopped podman machine
 
       --self-test [<filter>]
                          run the workspace filter's own suites; <filter> selects one
@@ -336,16 +334,14 @@ restore permission prompts and set the Claude Code status line.
       --help             this text
 
     Environment variables:
-      KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
-      KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
-      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every project launched with it
-                                          shares that volume as its agent state, and --reset
-                                          leaves it alone
-      KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
-                                          machine's memory (on Linux, the host's) minus 1 GiB,
-                                          and on Linux no more than was available at launch;
-                                          at least 1 GiB, or all memory if less than 1 GiB.
-                                          The sandbox never swaps
+      HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
+                                          http[s]://[user:password@]host:port; the lowercase
+                                          name is read when the uppercase is unset or empty.
+                                          NO_PROXY is ignored (doc/egress-proxy.md)
+      KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
+                                          lets the agent read a copied image; "bidirectional"
+                                          also lets it set your clipboard (SECURITY.md). A
+                                          Linux host needs xclip or wl-clipboard
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking
                                           and session-only storage, but unmasks /proc, disables
@@ -355,14 +351,16 @@ restore permission prompts and set the Claude Code status line.
                                           screen, because the agent TUIs clear it: Enter or y
                                           starts, n or EOF at the prompt exits without starting;
                                           "immediate" starts the agent at once
-      KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
-                                          lets the agent read a copied image; "bidirectional"
-                                          also lets it set your clipboard (SECURITY.md). A
-                                          Linux host needs xclip or wl-clipboard
-      HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
-                                          http[s]://[user:password@]host:port; the lowercase
-                                          name is read when the uppercase is unset or empty.
-                                          NO_PROXY is ignored (doc/egress-proxy.md)
+      KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
+                                          machine's memory (on Linux, the host's) minus 1 GiB,
+                                          and on Linux no more than was available at launch;
+                                          at least 1 GiB, or all memory if less than 1 GiB.
+                                          The sandbox never swaps
+      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every project launched with it
+                                          shares that volume as its agent state, and --reset
+                                          leaves it alone
+      KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
+      KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
 
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
