@@ -5,6 +5,20 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
+## Remove `KO_AGENT_SANDBOX_WORKSPACE_GUARD`
+
+- [ ] Remove the variable and the read-only mounts of its `none` mode, so that the workspace
+  filter is the one guard of a `--write=live` session.
+  - The mounts protect the paths they are mounted at, and that is not enough: on a Windows volume
+    with 8.3 short names a session goes around every one of them, a host-side replacement defeats
+    them on macOS, and they cover the workspace root alone (SECURITY.md, "The read-only `.git`
+    mounts under `WORKSPACE_GUARD=none`").
+  - `plan-staged.md`, step 5, lists what the removal takes out and which documents change with
+    it, and schedules it after staged mode. This row does not wait for that plan.
+  - The mode is still the unfiltered control of `probe/perf-probe.py`, and the Windows
+    performance row is unmeasured (`../fuse/ko-agent-fs/doc/TODO.md`, "Performance"): run that
+    row first, or give the probe a control that needs no launcher mode.
+
 ## Credential brokering — its two plans, in order
 
 - [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.

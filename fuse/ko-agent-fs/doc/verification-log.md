@@ -45,8 +45,8 @@ found nothing afterwards.
 
 - The 8.3 row met `EEXIST`: short-name generation is active on the volume, and an existing
   allowed name had already been given `GIT~1` as its short name, so nothing was created and the
-  row answers nothing about what a created `GIT~1` would become. Host git discovered no
-  repository afterwards.
+  row answers nothing about what a created `GIT~1` would become ("Verified: NTFS 8.3 short
+  names", below, does). Host git discovered no repository afterwards.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files — normalization-sensitive where APFS
   collapsed them — and neither resolves anywhere near `.git` on either backing.
 
@@ -83,23 +83,35 @@ podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0:
 - Whether NTFS resolves the KELVIN SIGN or LONG S spelling to the name is not measured: the filter
   refuses both, so neither reached the volume.
 
-### Measured: an 8.3 short name reaches a guarded directory (Windows Server 2025; 2026-09-19)
+### Verified: NTFS 8.3 short names (Windows Server 2025, podman 6.1.0; 2026-09-19)
 
 On a `C:` volume with 8.3 name generation on (`fsutil 8dot3name query C:`), a scratch project
 whose `.git` (`git init`) and `.ko-agent-sandbox/egress/rule` the host created shows, in
-`cmd /c dir /x /a`, the short names `GIT~1` and `KO-AGE~1`. Inside a filtered session over that
-project, `bash -c` through the launcher:
+`cmd /c dir /x /a`, the short names `GIT~1` and `KO-AGE~1`.
 
-- `ls -la GIT~1 KO-AGE~1` lists both directories' contents;
+The WSL drive mount resolves a short name to the entry and gives it the long name's identity: in
+the podman machine, `stat -c '%d:%i'` at `/mnt/c/<project>` prints one pair for `.git` and
+`GIT~1` (`69:5910974511087336`), one for `.ko-agent-sandbox` and `KO-AGE~1`, and one for
+`.git/config` and `GIT~1/config`. 1000 `stat` processes over `.git` and `.ko-agent-sandbox` took
+6.7 s where both exist and 2.6 s in a directory with neither.
+
+Inside a filtered session over that project (`security-research.md`, "Windows 8.3 short names",
+has the check):
+
 - `echo x >> GIT~1/config`, `echo x >> KO-AGE~1/egress/rule` and
-  `echo y > KO-AGE~1/egress/planted` all exit 0, and the host's `Get-Content` afterwards shows
-  the appended lines and the new file.
+  `echo y > KO-AGE~1/egress/planted` each fail with `Operation not permitted`;
+- `mv GIT~1 moved` and `mv KO-AGE~1 moved2` fail with `Operation not permitted`;
+- `ls GIT~1` succeeds: reads through the short name work, as they do through `.git`;
+- `echo one > scratch-file; echo two >> scratch-file; cat scratch-file` prints both lines: a
+  create through the backing `O_EXCL` (`fs.rs`, `create`) and a reopen of the file it made. The
+  run holds no host create between a lookup and the backing open, so it does not reach the
+  `ESTALE` retry; `tests/mounted_races.rs` does, on the rig's kernel.
+- Afterwards the host's `Get-Content` shows `.git\config` and `egress\rule` as the host wrote
+  them, and `cmd /c dir /x /a .ko-agent-sandbox\egress` lists `rule` alone.
 
-The WSL drive mount resolves the short name to the directory, and the filter classifies the name
-the session used, `GIT~1`, as an ordinary entry. The access side is the gap `security-research.md`
-("Windows 8.3 short names") and `TODO.md` ("Platform verification") record; the create side —
-whether a `GIT~1` created where no `.git` exists becomes one — is unverified, since the NTFS run
-above met `EEXIST` on that row.
+The create side, in a filtered session over a new, empty project: `mkdir GIT~1` exits 0, and the
+host's `cmd /c dir /x /a` afterwards lists one directory, long name `GIT~1`, no short name, and
+no `.git`.
 
 ## End-to-end coherency through the host share
 
@@ -163,9 +175,8 @@ file open.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not
-git's. The NTFS run above met `EEXIST` creating `GIT~1`, so that creation stays unverified; the
-later run under "The `.git` name rule on real filesystems" shows the other direction, an existing
-`.git` reached and written through its generated short name.
+git's. The Windows Server 24H2 run met `EEXIST` creating `GIT~1`; "Verified: NTFS 8.3 short
+names" has the creation, and the short names of an existing `.git` and `.ko-agent-sandbox`.
 
 
 ## The cost of a path walk

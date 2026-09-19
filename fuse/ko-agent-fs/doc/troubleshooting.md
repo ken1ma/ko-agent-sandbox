@@ -61,6 +61,12 @@ Reopen the path. A handle held across a rename can refer to names that no longer
 original directories. The resolver refuses that stale path without a DENY line (`fs.rs`,
 `open_ino`).
 
+## "Stale file handle" (ESTALE) in a directory that was renamed or replaced
+
+Reopen the path, or `cd` to it again. The names a held handle or a working directory was opened
+under now lead to another object, and the resolver serves a handle only the object it was
+classified as (`fs.rs`, `open_ino`). There is no DENY line.
+
 ## "Transport endpoint is not connected" (ENOTCONN)
 
 The daemon died; only the project mount is inaccessible, including to a shell whose current

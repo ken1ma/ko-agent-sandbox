@@ -106,7 +106,7 @@ const FOLDS_TO_ASCII: &[(&[u8], u8)] = &[
 /// [`FOLDS_TO_ASCII`], ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to
 /// match and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
 pub fn is_dotgit_name(name: &[u8]) -> bool {
-    folds_to(name, b".git")
+    folds_to(name, GUARDED_NAMES[0])
 }
 
 /// Whether `name` must be refused as a new `.ko-agent-sandbox` entry — the launcher's own
@@ -124,8 +124,13 @@ pub fn is_dotgit_name(name: &[u8]) -> bool {
 /// Folded exactly like `.git` and for the same reason: the launcher resolves the name on the host,
 /// so a case-insensitive backing would find `.KO-AGENT-SANDBOX` under it.
 pub fn is_sandbox_config_name(name: &[u8]) -> bool {
-    folds_to(name, b".ko-agent-sandbox")
+    folds_to(name, GUARDED_NAMES[1])
 }
+
+/// The names [`child_context`] gives a context of their own under an ordinary directory. The FUSE
+/// layer stats these beside an ordinarily named entry, because a backing filesystem can give a
+/// guarded entry a second name no fold predicts (`fs.rs`, `policy_name`).
+pub const GUARDED_NAMES: [&[u8]; 2] = [b".git", b".ko-agent-sandbox"];
 
 /// The single fold behind every reserved-name rule, so no two of them can disagree about what a
 /// backing filesystem might treat as the same name. `target` is ASCII.

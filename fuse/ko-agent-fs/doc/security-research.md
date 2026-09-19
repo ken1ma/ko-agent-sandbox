@@ -37,8 +37,8 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
 
 - **CVE-2014-9390** — `.Git`/`.GIT` writing into `.git/hooks` on case-insensitive filesystems, plus
   HFS+ ignorable codepoints and Windows 8.3 names. *Validated* (the case-fold name rule) and
-  *test-vector* (`.gi<U+200C>t`, `GIT~1`); the short name of an existing `.git` is the open gap
-  under "Windows 8.3 short names".
+  *test-vector* (`.gi<U+200C>t`, `GIT~1`); the short name of an existing `.git` is under
+  "Windows 8.3 short names".
 - **CVE-2021-21300** — symlink + case-insensitive checkout writes into `.git`. *Backstopped* by the
   resolved-destination gate.
 - **CVE-2024-32002** — recursive clone: symlink + case-insensitivity + submodule writes a hook into
@@ -82,32 +82,62 @@ Findings the rule rests on:
 
 NTFS with 8.3 name generation on gives every long name a second name — `.git` becomes `GIT~1`,
 `.ko-agent-sandbox` becomes `KO-AGE~1` — and WSL's drive mount resolves it, so a session reaches
-a host-created guarded directory under a name the policy classifies as ordinary
-(`verification-log.md`, "an 8.3 short name reaches a guarded directory"). Measured: appends to
-`.git/config` and to `.ko-agent-sandbox/egress/rule`, and a file created under `egress/`, all
-through the short name, all landing on the host. That is a write host git executes and a rule
-the next launch reads. Facts that bound the fix:
+a host-created guarded directory under a name no spelling rule matches. The filter guards such
+an entry by its identity (`verification-log.md`, "Verified: NTFS 8.3 short names", has the
+run). Findings the check rests on:
 
 - The name rule cannot enumerate short names: `GIT~1` is the first form, `GIT~2` and a hashed
   `GI1234~1` follow when it is taken, and which one a directory got is known only to the volume.
-- The policy classifies by the name the session used and never by the backing object's identity:
-  `fs.rs`'s `allow_create`, `allow_child` and `lookup` hand `policy::child_context` the name as
-  the session spelled it, and the mount has already resolved `GIT~1` to `.git` by the time the
-  backing is opened (`TODO.md`, Non-TODOs, "inode-number reuse for classification", has why
-  identity plays no part today). An alias by any spelling — case, a fold, a short name — is the
-  same backing object as the guarded entry, which is what a by-identity check at lookup would
-  see: an `fstatat` of `.git` and of `.ko-agent-sandbox` in the parent, compared with the child's
-  device and inode. That is the one candidate that closes every alias on every volume at once;
-  what it costs per lookup, and how it sits with the Non-TODO, is the open design question.
-- Generation and presence are separate: `fsutil 8dot3name set C: 1` stops new short names and
-  leaves existing ones, which only `fsutil 8dot3name strip` removes. A launcher-side refusal or
-  warning, as a stopgap, would have to look for a short name on the guarded directories
-  themselves, not at the generation setting (`fsutil 8dot3name query C:`), which was on for the
-  measured box's `C:`; what other volumes and installs have is unmeasured.
-- Whether WSL's drive mount can be told not to resolve short names is not known.
+- The drive mount reports one `(st_dev, st_ino)` for an entry under its long and its short name, for
+  the two directories and for `config` beneath. An alias by any spelling is the same backing object
+  as the guarded entry, so `fs.rs`'s `policy_name` compares an ordinarily named entry's identity
+  with what `.git` and `.ko-agent-sandbox` resolve to in the same directory, and on a match the
+  policy classifies the entry by the guarded name. `lookup` does this, and so do the operations that
+  take a parent and a name — `allow_child` for unlink, rmdir and rename-from, `allow_create` for an
+  existing destination. Everything below the alias inherits its context, as below the name itself.
+- `create` cannot make the check: the kernel sends `CREATE` after a lookup that found nothing, and a
+  `.git` pointer file the host creates after that lookup — `git worktree add` writes one into a
+  directory the session can watch — would be reopened for writing under its short name,
+  unclassified. The backing open therefore carries `O_EXCL`. A caller that did not ask for `O_EXCL`
+  gets `ESTALE` in place of `EEXIST`, on which Linux walks the path once more (`fs/namei.c`,
+  `do_filp_open`, read at v6.18): the new lookup classifies the entry and an `OPEN` follows, refused
+  for an alias and granted for an ordinary file (`tests/mounted_races.rs` has both).
+- A node keeps the context of its first lookup, and the kernel addresses a held directory by its
+  node, so the names of an ordinary chain can come to lead through a second name after the tree
+  moves. `open_ino` therefore serves a node only the object recorded for it and answers `ESTALE`
+  otherwise, truncating only after that comparison (`tests/mounted_mutate.rs` makes the second names
+  with bind mounts).
+- The same holds for a node's own name while its parent stays what it was: the file a descriptor was
+  opened on is renamed away, and its name becomes a second name of a guarded file. A change of mode,
+  owner or times and a hard link reach the daemon as the node, with no handle, so `apply_setattr`
+  and `link` act on the descriptor `open_ino` compared, never on the name.
+- Only the two guarded names need the check. Inside a gitdir a name the layout does not know
+  classifies as protected, which covers `CONFIG~1.WOR` for `config.worktree` and `REBASE~1`;
+  `config` and `hooks` are 8.3 names already and have no second one.
+- Created where no `.git` exists, `GIT~1` is an ordinary directory whose long name is `GIT~1`, so
+  the create side needs no rule.
+- Generation and presence are separate: `fsutil 8dot3name set C: 1` stops new short names and leaves
+  existing ones, which only `fsutil 8dot3name strip` removes. The check therefore does not depend on
+  the volume's setting.
+- The checks add syscalls to every operation outside a gitdir. `TODO.md` ("Performance") lists them
+  and keeps their measurement open; `verification-log.md` has what two `stat` calls take on the
+  drive mount.
 
-Until this is closed, a session over NTFS can rewrite the two files the workspace filter exists
-to protect; `SECURITY.md` says so, and Windows stays experimental (`TODO.md`).
+What the check does not cover:
+
+- **Open:** `rename`, `unlink` and `rmdir` exist by name only, so `allow_child` and `allow_create`
+  decide about a name and the backing syscall then resolves that name again. A host change between
+  the two — the ordinary entry moved away and a second name of a guarded entry in its place, or a
+  guarded second name arriving at a rename's destination — makes the syscall act on the guarded
+  entry: it is moved to an ordinary name, under which its contents are writable, or replaced, or
+  removed. A second check before the syscall would shorten the interval and not close it. The daemon
+  serves one request at a time (`fs.rs`, `mount_config`), so a session cannot place an operation of
+  its own inside the interval; it can repeat the mutation while the host works. How long the
+  interval lasts is not measured. `TODO.md` ("A second name arriving during a name-based mutation")
+  has what a fix has to achieve.
+- The check asks the two canonical spellings, so it relies on the backing resolving `.git` to a
+  guarded entry spelled `.GIT`. A directory that resolves short names and is case-sensitive — an
+  NTFS directory with the per-directory case-sensitive flag — holding `.GIT` is not covered.
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)
 

@@ -90,7 +90,9 @@ costs are described below.
   launch:
   - under `--write=reject` the whole tree is read-only;
   - under the filter `.ko-agent-sandbox` is protected: the name cannot be created at any depth,
-    under the same name-matching rules as `.git`, and nothing under an existing one can be written;
+    under the same name-matching rules as `.git`, and nothing under an existing one can be
+    written, with the exception "The host's git executing what the sandbox wrote" states for a
+    concurrent host change;
   - only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is writable, still needs the
     directory mounted back over itself read-only.
 
@@ -106,12 +108,24 @@ user's next host `git` invocation:
   operational state stays writable, so the agent's own git keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
-- **Open on Windows:** where a host-created `.git` or `.ko-agent-sandbox` has an 8.3 short name
-  (`GIT~1`, `KO-AGE~1`) — which generation gives it, as on the measured `C:`, and turning
-  generation off leaves in place — a session reaches the directory through that name, which the
-  filter treats as an ordinary entry, and can write `.git/config` and the egress rules through it
-  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names"). Until that is closed,
-  the filter does not hold this claim on Windows.
+- It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
+  8.3 short name (`GIT~1`, `KO-AGE~1`) or a hard link is the same object on the host filesystem,
+  and the filter compares objects where spellings cannot be listed
+  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names", has the cases it
+  does not cover).
+
+An additional open exception affects these claims, a change the host makes to the project tree
+while a session mutates it:
+
+- Linux offers `rename`, `unlink` and `rmdir` by name only, so the filter decides about a name
+  and then performs the operation on that name. A second name of a guarded entry that takes an
+  ordinary name's place between the two is moved, replaced or removed as the ordinary entry
+  would have been.
+- A guarded entry moved to an ordinary name is an ordinary entry there: its Git configuration and
+  hooks, or its egress rules, are writable under the new name.
+- This exception affects the claims above, including protection of repositories created
+  mid-session and `.ko-agent-sandbox` (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3
+  short names"; `fuse/ko-agent-fs/doc/TODO.md` keeps it open).
 
 Every path through which host git reaches these entries must also be protected. The mount-time guard
 checks the repository host git discovers from the project directory, and refuses:
@@ -460,10 +474,30 @@ Replacing a file on the host can defeat its read-only mount's protection:
 - Native Linux remains unmeasured. `WorkspaceGuardOffTest` expects the macOS fall-through there
   until a Linux run supplies evidence, so this mode makes no stronger claim on that platform.
 
+On Windows an NTFS 8.3 short name leads around the mounts:
+
+- A read-only bind mount protects the path it is mounted at. Where 8.3 name generation gave the
+  host-created `.git` the second name `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, a session's path
+  through the short name does not pass the mount.
+- Measured on Windows Server 2025 with podman 6.1.0: appends to `.git/config` and
+  `.ko-agent-sandbox/egress/rule` and a `touch` under `.git/hooks` fail with
+  `Read-only file system`, and the same three through `GIT~1` and `KO-AGE~1` succeed and reach the
+  host's files.
+- The empty directory mounted at `.git` in a project with no repository fails the same way. Its
+  mount target is a real, empty `.git` in the project, which has the short name `GIT~1`. Measured
+  on the same box: `mkdir .git/hooks` fails with `Read-only file system`, `mkdir GIT~1/hooks` and
+  `echo x > GIT~1/HEAD` succeed, and the host's `.git` holds `hooks` and `HEAD` afterwards. A
+  session can therefore lay out a repository for host git to discover.
+- The filter guards such a name by the object behind it
+  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names"); this mode has no
+  counterpart. On a Windows volume where these entries have short names, it protects neither the
+  Git entries nor `.ko-agent-sandbox`.
+
 The protection survives mutations that preserve the inode: in-place file edits, and creation or
 deletion of entries inside the read-only `.git/hooks` mount. This mode cannot guarantee protection
-while host programs replace the mounted files or directories. `WorkspaceGuardOffTest` records the
-measurements.
+while host programs replace the mounted files or directories, or on a Windows volume where the
+guarded directories have short names. `WorkspaceGuardOffTest` records the replacement
+measurements; the short-name ones were made by hand.
 
 **What is inside TLS, for the hosts that stay opaque.**
 

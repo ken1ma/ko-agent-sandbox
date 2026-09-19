@@ -105,6 +105,71 @@ fn stale<T>(what: &str, result: nix::Result<T>) {
     }
 }
 
+/// `openat(2)` with `O_CREAT` on a held directory handle: [`openat_write`]'s question asked of a
+/// name that does not exist yet.
+fn openat_create(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
+    let path = CString::new(relative).expect("a relative path without a NUL");
+    let raw = unsafe {
+        libc::openat(
+            dirfd.as_raw_fd(),
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT,
+            0o644,
+        )
+    };
+    if raw < 0 {
+        Err(Errno::last())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+    }
+}
+
+/// The refusal of a held handle whose names now resolve to another object than the one it was
+/// classified as: `ESTALE` from the resolver's identity comparison (`src/fs.rs`, `open_ino`).
+#[track_caller]
+fn replaced<T>(what: &str, result: nix::Result<T>) {
+    match result {
+        Ok(_) => panic!("SECURITY: {what} succeeded"),
+        Err(errno) => assert_eq!(
+            errno,
+            Errno::ESTALE,
+            "{what} failed with {errno}, but not as a replaced object (ESTALE)"
+        ),
+    }
+}
+
+/// A second name for a directory, as NTFS gives one with an 8.3 short name: a bind mount shows the
+/// same `(st_dev, st_ino)` under both names. Unmounted on drop, before the harness removes the tree.
+struct SecondNames(Vec<std::path::PathBuf>);
+
+impl SecondNames {
+    fn bind(&mut self, directory: &Path, second_name: &Path) {
+        fs::create_dir(second_name).unwrap();
+        let source = CString::new(directory.as_os_str().as_encoded_bytes()).unwrap();
+        let target = CString::new(second_name.as_os_str().as_encoded_bytes()).unwrap();
+        let result = unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(result, 0, "bind mount: {}", Errno::last());
+        self.0.push(second_name.to_path_buf());
+    }
+}
+
+impl Drop for SecondNames {
+    fn drop(&mut self) {
+        for mounted in &self.0 {
+            let target = CString::new(mounted.as_os_str().as_encoded_bytes()).unwrap();
+            unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) };
+        }
+    }
+}
+
 /// A host repository plus an ordinary source tree — the realistic starting state.
 fn repository(backing: &Path) {
     fs::create_dir_all(backing.join(".git/hooks")).unwrap();
@@ -492,6 +557,55 @@ fn hardlink_aliasing_cannot_smuggle_protected_entries_out() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_second_name_of_a_guarded_entry_is_guarded_like_it() {
+    // What an NTFS 8.3 short name is to a guarded directory (`doc/security-research.md`, "Windows
+    // 8.3 short names"), a host hard link is to a guarded file, and Linux can make the link.
+    const POINTER: &str = "gitdir: /host/real/.git\n";
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join(".git"), POINTER).unwrap();
+        fs::hard_link(backing.join(".git"), backing.join("GIT~1")).unwrap();
+        fs::write(backing.join(".ko-agent-sandbox"), b"rule\n").unwrap();
+        fs::hard_link(backing.join(".ko-agent-sandbox"), backing.join("KO-AGE~1")).unwrap();
+        fs::write(backing.join("ordinary"), b"data\n").unwrap();
+    });
+
+    for alias in ["GIT~1", "KO-AGE~1"] {
+        denied(
+            "append through an alias",
+            OpenOptions::new().append(true).open(mount.at(alias)),
+        );
+        // `File::create` sends no `O_EXCL`, which is the form that would reopen the entry.
+        denied("create over an alias", File::create(mount.at(alias)));
+        denied("delete an alias", fs::remove_file(mount.at(alias)));
+        denied(
+            "rename an alias away",
+            fs::rename(mount.at(alias), mount.at("moved")),
+        );
+        denied(
+            "rename onto an alias",
+            fs::rename(mount.at("ordinary"), mount.at(alias)),
+        );
+        denied(
+            "hardlink an alias out",
+            fs::hard_link(mount.at(alias), mount.at("linked")),
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(".git")).unwrap(),
+        POINTER
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(".ko-agent-sandbox")).unwrap(),
+        "rule\n"
+    );
+    allowed(
+        "write an ordinary neighbour",
+        fs::write(mount.at("ordinary"), b"changed\n"),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn rename_exchange_is_refused_on_a_protected_operand() {
     // RENAME_EXCHANGE mutates both operands, so each is checked as both source and destination —
     // swapping an ordinary file with a hook would install the file as the hook.
@@ -584,6 +698,173 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
         !mount.backing_at("hooklink").exists(),
         "a hook was aliased out through a handle held across a rename"
     );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_handle_held_across_a_rename_cannot_reach_a_guarded_directory_by_its_second_name() {
+    // A second name carries no guarded spelling, so a held handle's chain of ordinary names can
+    // come to resolve through one after two ordinary renames. The handle was classified as the
+    // ordinary directory it opened; the resolver must refuse it once it is another object.
+    let mount = TestMount::new(|backing| {
+        fs::create_dir_all(backing.join("scratch/GIT~1/hooks")).unwrap();
+        fs::create_dir_all(backing.join("scratch/KO-AGE~1/egress")).unwrap();
+        fs::create_dir_all(backing.join("repo/.git/hooks")).unwrap();
+        fs::write(backing.join("repo/.git/hooks/pre-commit"), HOOK_BODY).unwrap();
+        fs::create_dir_all(backing.join("repo/.ko-agent-sandbox/egress")).unwrap();
+        fs::write(
+            backing.join("repo/.ko-agent-sandbox/egress/rule"),
+            b"rule\n",
+        )
+        .unwrap();
+    });
+    // Declared after `mount`, so a panic unmounts before the harness removes the tree.
+    let mut second_names = SecondNames(Vec::new());
+    second_names.bind(
+        &mount.backing_at("repo/.git"),
+        &mount.backing_at("repo/GIT~1"),
+    );
+    second_names.bind(
+        &mount.backing_at("repo/.ko-agent-sandbox"),
+        &mount.backing_at("repo/KO-AGE~1"),
+    );
+    // The bind mounts move with `repo`, so the unmount also tries their paths after the rename.
+    second_names.0.extend([
+        mount.backing_at("scratch/GIT~1"),
+        mount.backing_at("scratch/KO-AGE~1"),
+    ]);
+
+    // The control: a fresh lookup knows the second names for what they are.
+    denied(
+        "write a hook through the second name",
+        fs::write(mount.at("repo/GIT~1/hooks/pre-commit"), b"evil"),
+    );
+    denied(
+        "write a rule through the second name",
+        fs::write(mount.at("repo/KO-AGE~1/egress/rule"), b"evil"),
+    );
+
+    let held_hooks = File::open(mount.at("scratch/GIT~1/hooks")).expect("open the ordinary hooks");
+    let held_egress =
+        File::open(mount.at("scratch/KO-AGE~1/egress")).expect("open the ordinary egress");
+
+    allowed(
+        "rename the ordinary tree away",
+        fs::rename(mount.at("scratch"), mount.at("parked")),
+    );
+    allowed(
+        "rename the repository to the vacated name",
+        fs::rename(mount.at("repo"), mount.at("scratch")),
+    );
+
+    replaced(
+        "write a hook through the held handle",
+        openat_write(&held_hooks, "pre-commit"),
+    );
+    replaced(
+        "create a hook through the held handle",
+        openat_create(&held_hooks, "post-checkout"),
+    );
+    replaced(
+        "write a rule through the held handle",
+        openat_write(&held_egress, "rule"),
+    );
+    replaced(
+        "create a rule file through the held handle",
+        openat_create(&held_egress, "planted"),
+    );
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("scratch/.git/hooks/pre-commit")).unwrap(),
+        HOOK_BODY,
+    );
+    assert!(
+        !mount
+            .backing_at("scratch/.git/hooks/post-checkout")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("scratch/.ko-agent-sandbox/egress/rule")).unwrap(),
+        "rule\n",
+    );
+    assert!(
+        !mount
+            .backing_at("scratch/.ko-agent-sandbox/egress/planted")
+            .exists()
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_descriptor_held_on_a_file_cannot_change_or_alias_a_guarded_file_that_takes_its_name() {
+    // The directory stays what it was and only the file's name changes hands: the sandbox opens an
+    // ordinary `GIT~1`, and the host moves that file away and makes `GIT~1` a second name of its
+    // `.git` pointer file. `fchmod`, `futimens` and a link through the descriptor reach the daemon
+    // as the node, with no handle, and must not act on what the node's name leads to by then.
+    const POINTER: &str = "gitdir: /host/real/.git\n";
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join(".git"), POINTER).unwrap();
+        fs::write(backing.join(".ko-agent-sandbox"), b"rule\n").unwrap();
+        fs::write(backing.join("GIT~1"), b"ordinary\n").unwrap();
+        fs::write(backing.join("KO-AGE~1"), b"ordinary\n").unwrap();
+        fs::create_dir(backing.join("out")).unwrap();
+    });
+
+    for (guarded, second_name) in [(".git", "GIT~1"), (".ko-agent-sandbox", "KO-AGE~1")] {
+        let held = File::open(mount.at(second_name)).expect("open the ordinary file");
+        fs::rename(
+            mount.backing_at(second_name),
+            mount.backing_at(&format!("{second_name}.moved")),
+        )
+        .unwrap();
+        fs::hard_link(mount.backing_at(guarded), mount.backing_at(second_name)).unwrap();
+        let before = fs::metadata(mount.backing_at(guarded)).unwrap();
+
+        replaced(
+            "chmod the guarded file through the held descriptor",
+            nix::sys::stat::fchmod(&held, Mode::from_bits_truncate(0o777)),
+        );
+        replaced(
+            "set the guarded file's times through the held descriptor",
+            nix::sys::stat::futimens(
+                &held,
+                &nix::sys::time::TimeSpec::new(1, 0),
+                &nix::sys::time::TimeSpec::new(1, 0),
+            ),
+        );
+        // The answer does not decide it: a change made by name lands first and meets the `ESTALE`
+        // of the reply's own stat afterwards.
+        let after = fs::metadata(mount.backing_at(guarded)).unwrap();
+        assert_eq!(
+            after.permissions(),
+            before.permissions(),
+            "SECURITY: {guarded}: mode"
+        );
+        assert_eq!(
+            after.modified().unwrap(),
+            before.modified().unwrap(),
+            "SECURITY: {guarded}: mtime"
+        );
+
+        let leaked = format!("out/leaked-{second_name}");
+        let through_descriptor =
+            CString::new(format!("/proc/self/fd/{}", held.as_raw_fd())).unwrap();
+        replaced(
+            "alias the guarded file out through the held descriptor",
+            nix::unistd::linkat(
+                nix::fcntl::AT_FDCWD,
+                through_descriptor.as_c_str(),
+                mount.mount_dirfd(),
+                leaked.as_str(),
+                nix::fcntl::AtFlags::AT_SYMLINK_FOLLOW,
+            ),
+        );
+
+        assert!(
+            !mount.backing_at(&leaked).exists(),
+            "{guarded} was aliased out"
+        );
+    }
 }
 
 #[test]
