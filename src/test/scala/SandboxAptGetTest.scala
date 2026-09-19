@@ -1,10 +1,11 @@
-// sandbox-apt-get's unpack loop, run as the shell script it is: what a package upgrade leaves in
-// $HOME/.local/deb and the wrappers beside it. apt is stubbed — the archives placed in the cache
-// stand in for what it would download — so the test exercises the unpack, not the fetch.
+// sandbox-apt-get's unpack loop, run as the shell script it is: which cached archives an install
+// unpacks, and what a package upgrade leaves in $HOME/.local/deb and the wrappers beside it. apt is
+// stubbed — the archives placed in the cache stand in for what it would download, and the stub's
+// simulation names them as apt's would — so the test exercises the unpack, not the fetch.
 
 package agentsandbox.launcher
 
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, Path, StandardCopyOption}
 import java.nio.file.attribute.PosixFilePermissions
 
 import scala.jdk.CollectionConverters.*
@@ -28,14 +29,14 @@ class SandboxAptGetTest extends munit.FunSuite:
 
   /** A .deb of `pkg` at `version` holding the given paths, each a script printing its package and
     * version; those under usr/bin are the commands the script wraps. */
-  private def buildDeb(into: Path, pkg: String, version: String, paths: String*): Path =
-    val stage = Files.createDirectories(into.resolve(s"stage-$pkg-$version"))
+  private def buildDeb(into: Path, pkg: String, version: String, architecture: String, paths: String*): Path =
+    val stage = Files.createDirectories(into.resolve(s"stage-$pkg-$version-$architecture"))
     Files.createDirectories(stage.resolve("DEBIAN"))
     Files.writeString(
       stage.resolve("DEBIAN/control"),
       s"""Package: $pkg
          |Version: $version
-         |Architecture: all
+         |Architecture: $architecture
          |Maintainer: fixture <fixture@example.invalid>
          |Description: sandbox-apt-get fixture
          |""".stripMargin,
@@ -44,7 +45,7 @@ class SandboxAptGetTest extends munit.FunSuite:
       val file = stage.resolve(path)
       Files.createDirectories(file.getParent)
       executable(file, s"#!/bin/sh\necho $pkg ${file.getFileName} $version\n")
-    val deb = into.resolve(s"${pkg}_${version}_all.deb")
+    val deb = into.resolve(s"${pkg}_${version}_$architecture.deb")
     val build = ProcessBuilder("dpkg-deb", "--build", "--root-owner-group", stage.toString, deb.toString)
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -52,8 +53,8 @@ class SandboxAptGetTest extends munit.FunSuite:
     assertEquals(build.waitFor(), 0, s"dpkg-deb built $pkg $version")
     deb
 
-  private def run(program: Path): String =
-    val process = ProcessBuilder(program.toString).redirectErrorStream(true).start()
+  private def run(program: Path, args: String*): String =
+    val process = ProcessBuilder((program.toString +: args)*).redirectErrorStream(true).start()
     val out = String(process.getInputStream.readAllBytes())
     process.waitFor()
     out
@@ -65,7 +66,8 @@ class SandboxAptGetTest extends munit.FunSuite:
   /**
    * A HOME with the package lists an install requires, a cache to place archives in, and the
    * script bound to them. apt is not on the path: the stub's `update` seeds the list, its
-   * `install` downloads nothing.
+   * `install` downloads nothing and fails while `apt-get.failing` exists, and its `install -s`
+   * prints the `Inst` lines in `apt-get.resolved` and fails while `apt-get.failing-simulation` exists.
    */
   private final class Fixture(root: Path):
     val home: Path = Files.createDirectories(root.resolve("home"))
@@ -73,14 +75,27 @@ class SandboxAptGetTest extends munit.FunSuite:
     val usrBin: Path = home.resolve(".local/deb/usr/bin")
     val localBin: Path = Files.createDirectories(home.resolve(".local/bin"))
     private val stubBin = Files.createDirectories(root.resolve("stub"))
+    private val failing = stubBin.resolve("apt-get.failing")
+    private val failingSimulation = stubBin.resolve("apt-get.failing-simulation")
+    /** An architecture apt qualifies the package name with: neither dpkg's native one nor `all`. */
+    private val foreign = if run(Path.of("dpkg"), "--print-architecture").trim == "amd64" then "arm64" else "amd64"
+    private val resolved = Files.createFile(stubBin.resolve("apt-get.resolved"))
+    private var resolvedVersions = Map.empty[String, String]
     executable(
       stubBin.resolve("apt-get"),
       """#!/bin/sh
-        |lists=
-        |for a in "$@"; do case "$a" in Dir::State::Lists=*) lists=${a#*=} ;; esac; done
+        |lists= simulate=
+        |for a in "$@"; do case "$a" in
+        |  Dir::State::Lists=*) lists=${a#*=} ;;
+        |  -s) simulate=yes ;;
+        |esac; done
         |for a in "$@"; do case "$a" in
         |  update) mkdir -p "$lists"; : > "$lists/deb_Packages"; exit 0 ;;
-        |  install) echo "1 newly installed"; exit 0 ;;
+        |  install)
+        |    [ ! -e "$0.failing" ] || { echo "E: Failed to fetch"; exit 100; }
+        |    [ -z "$simulate" ] || [ ! -e "$0.failing-simulation" ] || { echo "E: Broken packages"; exit 100; }
+        |    if [ -n "$simulate" ]; then cat "$0.resolved"; else echo "1 newly installed"; fi
+        |    exit 0 ;;
         |esac; done
         |exit 0
         |""".stripMargin,
@@ -88,19 +103,58 @@ class SandboxAptGetTest extends munit.FunSuite:
     assertEquals(sandboxAptGet("update"), 0)
     private val cache = Files.createDirectories(home.resolve(".local/deb/apt/cache/archives"))
 
-    def sandboxAptGet(args: String*): Int =
-      val builder = ProcessBuilder((sh.toString +: script.toString +: args)*)
-        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-        .redirectError(ProcessBuilder.Redirect.DISCARD)
+    def sandboxAptGet(args: String*): Int = sandboxAptGetOutput(args*)(0)
+
+    /** The exit status, and stdout and stderr together. */
+    def sandboxAptGetOutput(args: String*): (Int, String) =
+      val builder = ProcessBuilder((sh.toString +: script.toString +: args)*).redirectErrorStream(true)
       builder.environment().put("HOME", home.toString)
       builder.environment().put("PATH", s"$stubBin:${sys.env.getOrElse("PATH", "")}")
-      builder.start().waitFor()
+      val process = builder.start()
+      val out = String(process.getInputStream.readAllBytes())
+      (process.waitFor(), out)
 
-    /** Places the archive in the cache as apt would have after a download. */
+    /** Places the archive in the cache as apt would have after a download, and has the following
+      * installs resolve `pkg` to it — in apt's upgrade form when they resolved to a version before. */
     def place(pkg: String, version: String, paths: String*): Unit =
-      val deb = buildDeb(debs, pkg, version, paths*)
-      Files.copy(deb, cache.resolve(deb.getFileName))
+      cached(pkg, version, "all", paths*)
+      resolvesTo(pkg, version)
+
+    /** As `place`, for an archive of the foreign architecture, which apt names `pkg:architecture`. */
+    def placeForeign(pkg: String, version: String, paths: String*): Unit =
+      cached(pkg, version, foreign, paths*)
+      resolvesTo(s"$pkg:$foreign", version)
+
+    /** A foreign-architecture archive in the cache that no install resolves to. */
+    def strandForeign(pkg: String, version: String, paths: String*): Unit =
+      cached(pkg, version, foreign, paths*)
+
+    private def resolvesTo(name: String, version: String): Unit =
+      val upgrade = resolvedVersions.contains(name)
+      resolvedVersions = resolvedVersions.updated(name, version)
+      val lines = resolvedVersions.toVector.sorted.map: (resolvedName, resolvedVersion) =>
+        val upgraded = if resolvedName == name && upgrade then "[0] " else ""
+        s"Inst $resolvedName $upgraded($resolvedVersion Debian:13/stable [arch])\n"
+      Files.writeString(resolved, lines.mkString)
       ()
+
+    private def cached(pkg: String, version: String, architecture: String, paths: String*): Unit =
+      val deb = buildDeb(debs, pkg, version, architecture, paths*)
+      Files.copy(deb, cache.resolve(deb.getFileName), StandardCopyOption.REPLACE_EXISTING)
+      ()
+
+    /** An install whose download fails after this archive reached the cache. */
+    def failedInstall(pkg: String, version: String, paths: String*): Unit =
+      cached(pkg, version, "all", paths*)
+      Files.createFile(failing)
+      try assertNotEquals(sandboxAptGet("install", pkg), 0, s"failed install of $pkg $version")
+      finally Files.delete(failing)
+
+    /** An install whose download succeeds and whose simulation then fails. */
+    def installFailingSimulation(pkg: String): (Int, String) =
+      Files.createFile(failingSimulation)
+      try sandboxAptGetOutput("install", pkg)
+      finally Files.delete(failingSimulation)
 
     def install(pkg: String, version: String, paths: String*): Unit =
       place(pkg, version, paths*)
@@ -159,3 +213,36 @@ class SandboxAptGetTest extends munit.FunSuite:
       assertEquals(f.sandboxAptGet("install", "demo"), 0, "the retry")
       assert(!Files.exists(obsolete.resolve("old-only")), "the retry removed old-only")
       assert(!Files.exists(f.home.resolve(".local/deb/.unpacked/demo.new")), "the manifest is committed")
+
+  test("an archive a failed download left in the cache is not unpacked by a later install"):
+    fixture: f =>
+      f.failedInstall("stale", "1.0", "usr/bin/stale-cmd")
+      assert(!Files.exists(f.usrBin.resolve("stale-cmd")), "the failed install unpacked nothing")
+      f.install("wanted", "1.0", "usr/bin/wanted-cmd")
+      assert(Files.exists(f.localBin.resolve("wanted-cmd")), "the requested package is unpacked")
+      assert(!Files.exists(f.usrBin.resolve("stale-cmd")), "the stranded archive stays unopened")
+      assert(!Files.exists(f.localBin.resolve("stale-cmd")), "and gets no wrapper")
+      // The install that does resolve to it unpacks it from the cache.
+      f.install("stale", "1.0", "usr/bin/stale-cmd")
+      assert(Files.exists(f.localBin.resolve("stale-cmd")), "a successful install of it unpacks it")
+
+  test("an archive of a foreign architecture is unpacked under the qualified name apt resolves to"):
+    fixture: f =>
+      // The same package and version as the native install resolves to, stranded in the cache.
+      f.strandForeign("demo", "1.0", "usr/bin/foreign-only")
+      f.install("demo", "1.0", "usr/bin/native-only")
+      assert(Files.exists(f.usrBin.resolve("native-only")), "the native archive is unpacked")
+      assert(!Files.exists(f.usrBin.resolve("foreign-only")), "the bare name does not match the foreign archive")
+      f.placeForeign("demo", "1.0", "usr/bin/foreign-only")
+      assertEquals(f.sandboxAptGet("install", "demo"), 0)
+      assert(Files.exists(f.usrBin.resolve("foreign-only")), "the qualified name does")
+      assert(Files.exists(f.usrBin.resolve("native-only")), "and the native package keeps its own manifest")
+
+  test("a failed simulation fails the install, saying why and where apt's output is"):
+    fixture: f =>
+      f.place("demo", "1.0", "usr/bin/demo-cmd")
+      val (status, output) = f.installFailingSimulation("demo")
+      assertNotEquals(status, 0)
+      assert(output.contains("E: Broken packages"), output)
+      assert(output.contains(".local/deb/apt/simulate.log"), output)
+      assert(!Files.exists(f.usrBin.resolve("demo-cmd")), "nothing is unpacked")

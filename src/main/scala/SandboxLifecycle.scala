@@ -162,7 +162,7 @@ object SandboxLifecycle:
    * clipboard command delays nothing; killed after the wait, so it never
    * outlives the container it serves. ClipboardBroker has the protocol it
    * speaks and the Windows twin; the sandbox side is the image's
-   * ko-agent-clipboard shim.
+   * sandbox-clipboard shim.
    */
   val ReaperScript: String =
     withScriptPath(
