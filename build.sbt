@@ -5,8 +5,6 @@ scalaVersion := "3.9.0"
 Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher")
 
 libraryDependencies ++= Seq(
-  "org.bouncycastle" % "bcpkix-jdk18on" % "1.86",  // JCA cannot build X.509 certificates
-
   "org.scalameta" %% "munit" % "1.3.6" % Test,
 )
 
@@ -53,9 +51,9 @@ Compile / unmanagedResourceDirectories +=
   baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "resources"
 
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
-// The exports open the JDK's internal certificate builder to the proxy sources compiled in below
-// (X509Helper.scala has why); the assembly manifest carries both for `java -jar`, the native-image
-// command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in sbt's own JVM —
+// The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
+// assembly manifest carries both for `java -jar`, the native-image command in doc/TODO.md for the
+// binary, and .jvmopts for the tests, which run in sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
@@ -169,25 +167,9 @@ assembly / assemblyJarName := "ko-agent-sandbox.jar"
 assembly / assemblyOutputPath :=
   baseDirectory.value / "target" / "dist" / "ko-agent-sandbox.jar"
 
-// BouncyCastle drops: colliding module-info copies, and per-jar OSGi manifests. Signature files are already
-// sbt-assembly's default discard.
-assembly / assemblyMergeStrategy := {
-  case path if path.endsWith("module-info.class")     => MergeStrategy.discard
-  case path if path.endsWith("OSGI-INF/MANIFEST.MF")  => MergeStrategy.discard
-  case path =>
-    val default = (assembly / assemblyMergeStrategy).value
-    default(path)
-}
-
-// Multi-Release is required, not an optimization: the assembled jar carries BouncyCastle's versioned
-// trees, and 49 of those classes — the X25519 and Ed25519 key implementations among them — exist
-// *only* under META-INF/versions, so without the attribute the JVM never looks there and they are
-// missing rather than merely older. sbt-assembly copies the entries but does not set the flag; a fat
-// jar built from multi-release inputs is not itself multi-release.
 assembly / packageOptions += Package.ManifestAttributes(
   "Enable-Native-Access" -> "ALL-UNNAMED",
   "Add-Exports" -> "java.base/sun.security.x509 java.base/sun.security.util",
-  "Multi-Release" -> "true",
 )
 
 lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist")
