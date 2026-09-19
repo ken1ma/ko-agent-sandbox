@@ -212,8 +212,6 @@ A line restating a defaults line at its path is silent: that is how a file stays
 image adopts its hosts.
 
 1. Without a rule file, the selected profile applies without project overrides.
-   - `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` may create an empty `.ko-agent-sandbox` directory in
-     the project (SECURITY.md, "Silent changes to what you own").
    - An empty ruleset is valid and reported as such — `deny-all` resolves empty by design, as
      does `deny-unless-model` under `bash`.
 1. Editing the file takes effect on the next launch; a running session keeps its original ruleset.

@@ -127,9 +127,9 @@ object FileHelper:
    * A write that would change neither the content nor the mode is skipped: a cache stamp that
    * misses on identical output must not replace the shared source's inode during another launch's
    * copy. A real change replaces the inode and reaches only the runs that copy after it — a mount
-   * cannot follow a file out from under it (SECURITY.md, "The read-only `.git` mounts under
-   * `WORKSPACE_GUARD=none`", has the measurement), which is why containers mount per-run copies
-   * rather than these files.
+   * cannot follow a file out from under it (measured on a macOS podman machine: a replaced source
+   * is stale in the container for about two seconds, then served without the mount's read-only
+   * option), which is why containers mount per-run copies rather than these files.
    *
    * The mode is requested at creation and set again after the write, and both halves earn their
    * place. Creating with it is what leaves no window: a file created under the umask and chmodded

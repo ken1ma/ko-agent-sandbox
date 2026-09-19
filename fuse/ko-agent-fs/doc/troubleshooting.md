@@ -104,16 +104,17 @@ and cleanup races are described beside `KoAgentFs.koAgentFsReapScript`.
 ## Everything works but slowly
 
 Compare your timings with `verification-log.md`, "The cost of a path walk". The measured metadata
-operations took about 5–12 times as long through the filter as through an unfiltered bind mount.
-If your slowdown is much greater, check the machine as described in the next section.
+operations took about 6–18 times as long through the filter as through an unfiltered bind mount on
+macOS, and 5–30 times on Windows. If your slowdown is much greater, check the machine as described
+in the next section.
 
 `git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
 appears as a long silence before its first word. git stats every tracked file by its full path and
-each path component is a round trip, so the cost is tracked files × depth: ~4.7 ms per file at
-depth 6–7, 18 s for 3,200 files. What shortens it, set on the host (a session cannot write
-`.git/config`):
+each path component is a round trip, so the cost is tracked files × depth: ~9 ms per file at
+depth 7 and nearly as much again for the untracked walk, 72 s for 4,200 files. What shortens it,
+set on the host (a session cannot write `.git/config`):
 
-- `git config core.untrackedCache true` — drops the untracked walk, about a sixth of the total.
+- `git config core.untrackedCache true` — drops the untracked walk, nearly half of the total.
 - Ignore whole directories (`target/`, `node_modules/`), not file patterns (`*.class`): git prunes
   an ignored directory without entering it, and walks every entry of one it must enter.
 - The tracked-file pass itself shortens only with fewer or shallower tracked files; the rest is

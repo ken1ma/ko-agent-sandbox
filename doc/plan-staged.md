@@ -237,17 +237,11 @@ its private Git metadata cannot be applied.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-5. Make `reject` the default only after step 4. Remove the writable mode without the filter and
-   make any present `KO_AGENT_SANDBOX_WORKSPACE_GUARD` refuse launch with a direct migration
-   message: `fuse` needs no replacement — the filter is `--write=live`'s only guard then — and the
-   weaker `none` mode has no equivalent. Remove that mode's launcher branch, Git
-   mount construction, `WorkspaceGuardOffTest` and its boundary mount-back; retain launcher-owned
-   empty mount sources only where another mount still needs one; and update the documents that
-   describe that mode and the writable default — README, SECURITY.md ("Silent changes to what you
-   own", "The read-only `.git` mounts under `WORKSPACE_GUARD=none`"), `doc/design.md` — in the same
-   change. Persistent stages narrow the meaning of reset: `--reset` and `--reset-all` no longer mean
-   the project was never opened; launcher comments, help, README and SECURITY must point to explicit
-   stage discard. Remove completed TODO rows rather than retaining a change history.
+5. Make `reject` the default only after step 4, and update the documents that describe the
+   writable default — README, SECURITY.md, `doc/design.md` — in the same change. Persistent stages
+   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
+   opened; launcher comments, help, README and SECURITY must point to explicit stage discard.
+   Remove completed TODO rows rather than retaining a change history.
 
 ## Verification
 

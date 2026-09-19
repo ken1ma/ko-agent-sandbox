@@ -150,7 +150,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
-    // The same fail-closed contract as the workspace guard, through the same closedChoice.
     assertEquals(nestingMode(None), Right("none"))
     assertEquals(nestingMode(Some("")), Right("none"))
     assertEquals(nestingMode(Some("none")), Right("none"))
@@ -1165,13 +1164,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // A ruleset with no lines of its own, so every grant word found is the text's own.
     val emptyResolution = "egress profile: deny-all"
-    val section = appendedSection(Mount, "live", "fuse", emptyResolution)
+    val section = appendedSection(Mount, "live", emptyResolution)
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
     // Neither project-file metadata nor its hostnames belong in the instructions.
     val widened = appendedSection(Mount, 
-      "live", "fuse",
+      "live",
       emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 0 denial patterns; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
     )
@@ -1200,45 +1199,38 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assertEquals(EgressRules.rulesetLinesOf(output), lines.mkString("\n"))
       for
         mode <- WriteModes
-        guard <- Vector("fuse", "none")
         programs <- Vector(Vector.empty[String], RunOnHostPrograms)
       do
-        val section = appendedSection(Mount, mode, guard, output, programs)
+        val section = appendedSection(Mount, mode, output, programs)
         assert(section.contains(lines.head), section)
         assert(section.contains("consult `$KO_AGENT_SANDBOX_EGRESS_RULESET`"), section)
-        assertEquals(section, appendedSection(Mount, mode, guard, lines.head, programs))
+        assertEquals(section, appendedSection(Mount, mode, lines.head, programs))
         assert(!section.linesIterator.exists(_.trim.matches("(?:allow|deny) https://.*")), section)
         assert(!section.contains("ruleset summary:") && !section.contains("widening lines"), section)
         assert(!section.contains("lines below") && !section.contains("allowed below"), section)
 
   test("the appended section directs the agent by write mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all"
-    val readOnly = appendedSection(Mount, "reject", "fuse", resolution)
+    val readOnly = appendedSection(Mount, "reject", resolution)
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--write=live"), readOnly)
     Vector(Vector.empty[String], RunOnHostPrograms).foreach: programs =>
-      val section = appendedSection(Mount, "reject", "fuse", resolution, programs)
+      val section = appendedSection(Mount, "reject", resolution, programs)
       assert(section.contains("temporary work"), section)
       assert(section.contains("return results in the conversation"), section)
       assert(section.contains("--write=live"), section)
-    val filtered = appendedSection(Mount, "live", "fuse", resolution)
+    val filtered = appendedSection(Mount, "live", resolution)
     assert(filtered.contains("ko-agent-fs"), filtered)
     assert(filtered.contains("at any depth"), filtered)
     assert(filtered.contains("symlink targets"), filtered)
-    val raw = appendedSection(Mount, "live", "none", resolution)
-    assert(raw.contains("direct writable bind mount"), raw)
-    assert(raw.contains(KoAgentFs.RawWorkspaceBoundary), raw)
-    assert(raw.contains("entries in nested repositories remain writable"), raw)
-    assert(raw.contains("Symlinks can have absolute targets"), raw)
-    assert(raw.contains("targets that resolve outside the project on the host"), raw)
     // Both name the relaunch path for a host the ruleset does not allow.
-    Vector(readOnly, filtered, raw).foreach: section =>
+    Vector(readOnly, filtered).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
     // --run-on-host adds the run-on-host instruction, naming each served program's command. Without the
     // option, a macOS session gets one discovery line — only the launcher knows the platform —
     // and other platforms hear nothing about a command they can never have.
-    val runOnHostSection = appendedSection(Mount, "live", "fuse", resolution, Vector("sbt", "mill"))
+    val runOnHostSection = appendedSection(Mount, "live", resolution, Vector("sbt", "mill"))
     assert(runOnHostSection.contains("sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("sandbox-run-on-host mill"), runOnHostSection)
     assert(
@@ -1262,21 +1254,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!filtered.contains("sandbox-run-on-host"), filtered)
     val discoverable =
-      appendedSection(Mount, "live", "fuse", resolution, Vector.empty, hostCommandsAvailable = true)
+      appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
     assert(!discoverable.contains("sandbox-run-on-host sbt …"), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // reject's instruction flips when a host command can write the project (the --run-on-host composition):
     // the blanket "do not attempt writes" would be false.
-    val rejectWithHostCommands = appendedSection(Mount, "reject", "fuse", resolution, Vector("sbt"))
+    val rejectWithHostCommands = appendedSection(Mount, "reject", resolution, Vector("sbt"))
     assert(rejectWithHostCommands.contains("session's own writes"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("sandbox-run-on-host"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("--write=live"), rejectWithHostCommands)
     // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
     // was chosen: the agent is not sent to ask for an allow line it already has.
     val publicDefault =
-      appendedSection(Mount, "live", "fuse", "egress profile: allow-unless-denied; default: public HTTPS read")
+      appendedSection(Mount, "live", "egress profile: allow-unless-denied; default: public HTTPS read")
     assert(publicDefault.contains("reachable for reading"), publicDefault)
     assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
     assert(publicDefault.contains("denied on purpose"), publicDefault)
@@ -1287,7 +1279,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // A session without git: the agent hears it before its first command, in the words naming
     // what the container lacks (SandboxProject.noGitInstruction).
     val cause = s"`$Mount/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
-    val noGit = appendedSection(Mount, "live", "fuse", resolution, noGit = Some(cause))
+    val noGit = appendedSection(Mount, "live", resolution, noGit = Some(cause))
     assert(noGit.contains(s"Git does not work in this session: $cause."), noGit)
     assert(!filtered.contains("Git does not work"), filtered)
 
@@ -1347,17 +1339,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     def stamp(
       imageId: String = "image-a",
       writeMode: String = "live",
-      guard: String = "fuse",
       ruleset: String = "ruleset-a",
       runOnHost: Vector[String] = Vector.empty,
       noGit: Option[String] = None,
-    ) = agentDocumentStamp(imageId, writeMode, guard, ruleset, runOnHost, noGit)
+    ) = agentDocumentStamp(imageId, writeMode, ruleset, runOnHost, noGit)
 
     val variants = Vector(
       stamp(),
       stamp(imageId = "image-b"),
       stamp(writeMode = "reject"),
-      stamp(guard = "none"),
       stamp(ruleset = "ruleset-b"),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),

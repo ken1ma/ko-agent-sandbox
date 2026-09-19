@@ -19,22 +19,15 @@ class MountPathTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(15, "min")
 
-  /** Every arrangement a session runs under: the write mode as a launch option, the guard as the
-    * environment variable that selects it. */
-  private val Modes = Vector(
-    ("live-fuse", Vector("--write=live"), Vector.empty[(String, String)]),
-    ("live-none", Vector("--write=live"), Vector("KO_AGENT_SANDBOX_WORKSPACE_GUARD" -> "none")),
-    ("reject", Vector("--write=reject"), Vector.empty[(String, String)]),
-  )
+  private val Modes = Vector("live", "reject")
 
   private def repository(): Path =
     val project = scratchProject()
     assert(run("git", "init", "--quiet", project.toString).ok, "could not create a scratch repository")
     project
 
-  private def sessionFrom(from: Path, log: Path, mode: (String, Vector[String], Vector[(String, String)])): Session =
-    val (_, options, env) = mode
-    launchWith(from, log, options :+ "--egress=deny-unless-allowed", env*)
+  private def sessionFrom(from: Path, log: Path, mode: String): Session =
+    launchWith(from, log, Vector(s"--write=$mode", "--egress=deny-unless-allowed"))
 
   /** Where the session is, and that the protection is there too: the launch line names the path,
     * `pwd` answers it, and the two protected writes are refused at it. Appending nothing to
@@ -53,8 +46,8 @@ class MountPathTest extends munit.FunSuite:
     val project = repository()
     try
       for mode <- Modes do
-        val session = sessionFrom(project, project.resolve(s"${mode._1}.log"), mode)
-        try assertAtOwnPath(session, mountPath(session), mode._1)
+        val session = sessionFrom(project, project.resolve(s"$mode.log"), mode)
+        try assertAtOwnPath(session, mountPath(session), mode)
         finally stop(session)
     finally discard(project)
 
@@ -66,8 +59,8 @@ class MountPathTest extends munit.FunSuite:
     assume(Files.isDirectory(alias), s"$alias does not reach the project on this machine")
     try
       for mode <- Modes do
-        val session = sessionFrom(alias, project.resolve(s"alias-${mode._1}.log"), mode)
-        try assertAtOwnPath(session, project.toString, mode._1)
+        val session = sessionFrom(alias, project.resolve(s"alias-$mode.log"), mode)
+        try assertAtOwnPath(session, project.toString, mode)
         finally stop(session)
     finally discard(project)
 

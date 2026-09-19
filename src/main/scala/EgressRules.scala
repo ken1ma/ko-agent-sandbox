@@ -134,7 +134,7 @@ object EgressRules:
 
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
-  /** Retired rule filenames are refused with migration advice: the workspace guard prevents
+  /** Retired rule filenames are refused with migration advice: the write mode prevents
     * a session from correcting them, so the launcher must report that their rules are unread. */
   val RetiredRuleFiles: Vector[String] = Vector("allowed", "denied")
 

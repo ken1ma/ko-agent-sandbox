@@ -200,16 +200,19 @@ launcher does not prevent that: instruction files change no enforcement.
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.git`, `.git/config`, `.git/hooks`, `.ko-agent-sandbox`, `egress` or a file inside
-them refuses the launch (`gitGuardVolumes`, `boundaryDirError`, `readRuleFiles`, tested).
+A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
+(`boundaryDirError`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
+whose `.git` is a symlink, or whose `.git/hooks` is a symlink to a directory inside the project
+(`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
-- podman resolves mount sources on the host, so mounting through a repository-controlled link
-  would expose its target into the sandbox.
-- Following the link to mount its resolved target read-only would make the protected paths depend
-  on where the link points at launch time.
-- The refusal is loud, names the path, and comes before the launcher creates anything, so setup
-  writes nothing through a pre-seeded link (tested: "a refused symlink form leaves no artifact
-  through the link"); the project directory itself is `toRealPath()`-canonical before any of this.
+- The launcher reads the rules on the host, so a repository-controlled link would choose which
+  host file it reads as this project's rules.
+- Following the link would make the protected paths depend on where the link points at launch
+  time.
+- The launcher's refusal is loud, names the path, and comes before the launcher creates anything,
+  so setup writes nothing through a pre-seeded link (tested: "a refused symlink form leaves no
+  artifact through the link"); the project directory itself is `toRealPath()`-canonical before
+  any of this.
 
 Prior art for both failure cases — a sandbox that crashed mid-setup on a symlink, and setup code
 whose mount-target creation wrote through one to paths outside its root:
@@ -217,9 +220,9 @@ whose mount-target creation wrote through one to paths outside its root:
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/221
 - https://github.com/bazelbuild/bazel/issues/28515
 
-The cost is that a repository sharing hooks through a symlinked `.git/hooks` cannot be sandboxed
-as-is; its user replaces the link with a real directory first. Accept that cost rather than
-following links.
+The cost is that a repository sharing hooks through a `.git/hooks` symlinked into the project
+cannot be sandboxed writable as-is; its user replaces the link with a real directory first.
+Accept that cost rather than following links.
 
 ### No repository-controlled host executable resolution
 
@@ -272,6 +275,40 @@ Keep the rule procedural: a credential in the project directory violates the ope
 it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
 forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
+
+### No writable session without the workspace filter
+
+A faster `--write=live` would bind the project directly and mount `.git/config`, `.git/hooks` and
+`.ko-agent-sandbox` back over themselves read-only; the filter costs 6–18× on metadata operations
+(`../fuse/ko-agent-fs/doc/verification-log.md`, "The cost of a path walk"). A read-only bind mount
+protects the path it is mounted at, from the moment of the launch, which leaves:
+
+- A host program that replaces a mounted file — a rename over it, which is how `git config` and
+  most editors write — takes the protection with it. Measured on a macOS podman machine: about two
+  seconds later the session writes the host's new file through the writable parent, while the
+  mount stays listed in the session's mount table. No mount prevents this.
+- The mounts are chosen at launch, for the repository at the workspace root. A repository nested
+  deeper, by the host or by the session, has none, and one the session creates mid-session cannot
+  get one. The filter refuses the names at any depth.
+- On an NTFS volume with 8.3 names, `.git` is also `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, and
+  a path through the short name does not pass the mount. Measured on Windows Server 2025 with
+  podman 6.1.0: appends to `.git/config` and `.ko-agent-sandbox/egress/rule` and a `touch` under
+  `.git/hooks` fail with `Read-only file system`, and the same three through `GIT~1` and
+  `KO-AGE~1` succeed and reach the host's files. Closing it takes a second mount per guarded
+  entry at a name the volume generated, read from the host at launch, and the first two items
+  apply to that mount too.
+- A project with no repository needs an empty directory mounted at `.git`, and an absent
+  `.ko-agent-sandbox` one as well, so that the session cannot create either. The container runtime
+  creates those mount targets in the project, a change to the user's tree no launch otherwise makes
+  (SECURITY.md, "Silent changes to what you own"), and on Windows the created `.git` has a short
+  name of its own, through which the session lays out the repository the mount was there to prevent.
+- On an SELinux-enforcing host the container reads a bind mount only under `:Z`, which relabels
+  the project tree recursively.
+
+`--write=reject` is the session without the filter, read-only. The probes that need an
+unfiltered writable control run one outside the launcher
+(`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is reduced in the filter
+(`../fuse/ko-agent-fs/doc/TODO.md`, "Performance").
 
 ### No DLP/entropy/LLM firewall
 

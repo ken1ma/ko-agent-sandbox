@@ -53,7 +53,7 @@ cp "$here/apfs-name-rule-probe.py" "$project/"
 # the mounted volume — `podman machine ssh ls "$project"` shows what the VM sees.
 (
     cd "$project"
-    env -u KO_AGENT_SANDBOX_WORKSPACE_GUARD KO_AGENT_SANDBOX_SESSION_START=immediate \
+    KO_AGENT_SANDBOX_SESSION_START=immediate \
         java -jar "$jar" python3 apfs-name-rule-probe.py
 )
 

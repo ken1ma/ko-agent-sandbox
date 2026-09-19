@@ -92,9 +92,7 @@ costs are described below.
   - under the filter `.ko-agent-sandbox` is protected: the name cannot be created at any depth,
     under the same name-matching rules as `.git`, and nothing under an existing one can be
     written, with the exception "The host's git executing what the sandbox wrote" states for a
-    concurrent host change;
-  - only `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none`, whose raw tree is writable, still needs the
-    directory mounted back over itself read-only.
+    concurrent host change.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the
@@ -154,8 +152,6 @@ hooks.
 
 These are the default protections, with qualifications under "Not defended":
 
-- A launch that sets `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` gets read-only bind mounts instead,
-  for which the claim does not hold ("The read-only `.git` mounts under `WORKSPACE_GUARD=none`").
 - On some platforms the filter has no measured evidence ("The workspace filter, on the platforms
   where it is unverified").
 - Under `--run-on-host`, host commands write directly to the host tree without passing through the
@@ -173,24 +169,16 @@ are:
   yourself;
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
-- during **session setup**, the project tree is unchanged except for the empty directories that
-  the read-only guard mounts of `WORKSPACE_GUARD=none` require and confine to that mode:
-  - an empty `.ko-agent-sandbox` when absent, because the read-only bind mount needs a target ("A
-    project loosening its own confinement", above);
-  - in a project with no repository, an empty `.git`: the launcher binds its own empty directory
-    read-only over that name so the sandbox cannot fabricate a repository for host git to discover.
-    The container runtime creates that mount target in the project.
-
-  The filter denies creation of either name and needs no mount target; `--write=reject` makes the
-  entire tree read-only. Those modes therefore require no project-directory creation;
+- during **session setup**, the project tree is unchanged: the filter denies creation of `.git`
+  and `.ko-agent-sandbox` by name and needs no mount target in the project, and `--write=reject`
+  makes the entire tree read-only;
 - **`--self-test` without a case filter** writes to its own scratch directory in the project
   ([testing.md](fuse/ko-agent-fs/doc/testing.md));
-- the **project tree's SELinux labels**: on an enforcing host, the unfiltered bind mount of
-  `WORKSPACE_GUARD=none` is readable to the container only under `:Z`, which relabels the project
-  directory recursively. Each affected launch reports this host-metadata change in its `workspace:`
-  line.
+- the **project tree's SELinux labels** are never changed. On an enforcing host a container reads
+  an unfiltered bind mount only under `:Z`, which relabels the directory recursively, and no
+  launch passes it:
   - The filter's mountpoint needs no relabel.
-  - A permissive or disabled host reads unrelabeled and is never relabeled.
+  - A permissive or disabled host reads unrelabeled.
   - `--write=reject` refuses on an enforcing host rather than relabeling, unless the tree already
     has a shared container-accessible context — a container type with no MCS categories, since
     categories from a previous `:Z` are private to the container they were assigned to.
@@ -341,14 +329,11 @@ can only invoke filter commands your host configuration already defines).
 Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
 is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. That includes a repository the agent created deeper in the tree,
-in both guard modes:
-
-- under `WORKSPACE_GUARD=none` any nested layout is outside those mounts' protection;
-- the filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
-  ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks
-  are served as writable data anywhere in the writable workspace, and git's ascending discovery
-  adopts it for a host command run at or beneath it.
+for a contribution from a stranger. That includes a repository the agent created deeper in the
+tree: the filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
+ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks
+are served as writable data anywhere in the writable workspace, and git's ascending discovery
+adopts it for a host command run at or beneath it.
 
 Running host git *inside* a directory the agent created is running the agent's output.
 
@@ -389,8 +374,9 @@ The tree is also shared live with the host:
 
 - The project reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
   enforcing the policy stated under "The host's git executing what the sandbox wrote".
-- Unlike root-level read-only bind mounts, the filter refuses new `.git` entries and protects the
-  listed Git entries at any depth.
+- The filter refuses new `.git` entries and protects the listed Git entries at any depth;
+  `doc/design.md`, "No writable session without the workspace filter", has why read-only bind
+  mounts cannot.
 - The design uses FUSE to mediate the VM's filesystem view across host platforms;
   `fuse/ko-agent-fs/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
 
@@ -434,70 +420,12 @@ What is measured, each through the whole production stack
 - coherency, on macOS and — with the share-lock cost "The project directory" notes — on Windows.
 
 The rest is what the README's status line means: on Linux the guarantees are reasoned rather than
-measured, while the filter is the enforcement of every `--write=live` session under
-`WORKSPACE_GUARD=fuse`, on every platform.
+measured, while the filter is the enforcement of every `--write=live` session, on every platform.
 
-`KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` selects the read-only bind mounts instead, the next entry.
-
-- They are alternatives, never a stack: the filter's policy is a strict superset of the mounts'
-  protection, and preparing their bind targets would mean creating `.git` entries through the
-  filter, which the filter denies.
-- Every gate on the filtered path fails closed: a version mismatch, a failed self-test or a failed
-  mount aborts the launch, never falling back to an unfiltered bind.
+Every gate on the filtered path fails closed: a version mismatch, a failed self-test or a failed
+mount aborts the launch, never falling back to an unfiltered bind.
 
 Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
-
-**The read-only `.git` mounts under `WORKSPACE_GUARD=none`.**
-
-- `KO_AGENT_SANDBOX_WORKSPACE_GUARD=none` replaces the filter with mounts: `.git/config` and
-  `.git/hooks` remounted read-only (a pointer-file `.git` mounted read-only in full, and the bare
-  name when no repository exists).
-- A session that takes it says so on its `workspace:` line.
-- The set of mounts is fixed at launch, and they cover only the workspace root:
-  - a host-created repository appears behind the whole-directory mount, read-only until the next
-    launch;
-  - a repository the agent creates deeper in the tree is outside their protection, the gap "The
-    project directory" describes.
-
-Replacing a file on the host can defeat its read-only mount's protection:
-
-- On a macOS podman machine, once the host gives `.git/config` or `.git/hooks` a new inode while the
-  session runs — a rename over it, or a rename away and a fresh object at the path, which is how
-  `git config` and most editors write — the sandbox is writing the host's current file within about
-  two seconds, through the writable parent.
-  - It is stale in between.
-  - The mount stays listed in the sandbox's mount table throughout, so neither that table nor a
-    check made immediately after the write shows anything wrong.
-- On the Windows machine the same replacement left the mount refusing writes for the whole
-  two-minute observation — measured, not designed, so the macOS behavior stays the one to plan
-  around.
-- Native Linux remains unmeasured. `WorkspaceGuardOffTest` expects the macOS fall-through there
-  until a Linux run supplies evidence, so this mode makes no stronger claim on that platform.
-
-On Windows an NTFS 8.3 short name leads around the mounts:
-
-- A read-only bind mount protects the path it is mounted at. Where 8.3 name generation gave the
-  host-created `.git` the second name `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, a session's path
-  through the short name does not pass the mount.
-- Measured on Windows Server 2025 with podman 6.1.0: appends to `.git/config` and
-  `.ko-agent-sandbox/egress/rule` and a `touch` under `.git/hooks` fail with
-  `Read-only file system`, and the same three through `GIT~1` and `KO-AGE~1` succeed and reach the
-  host's files.
-- The empty directory mounted at `.git` in a project with no repository fails the same way. Its
-  mount target is a real, empty `.git` in the project, which has the short name `GIT~1`. Measured
-  on the same box: `mkdir .git/hooks` fails with `Read-only file system`, `mkdir GIT~1/hooks` and
-  `echo x > GIT~1/HEAD` succeed, and the host's `.git` holds `hooks` and `HEAD` afterwards. A
-  session can therefore lay out a repository for host git to discover.
-- The filter guards such a name by the object behind it
-  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names"); this mode has no
-  counterpart. On a Windows volume where these entries have short names, it protects neither the
-  Git entries nor `.ko-agent-sandbox`.
-
-The protection survives mutations that preserve the inode: in-place file edits, and creation or
-deletion of entries inside the read-only `.git/hooks` mount. This mode cannot guarantee protection
-while host programs replace the mounted files or directories, or on a Windows volume where the
-guarded directories have short names. `WorkspaceGuardOffTest` records the replacement
-measurements; the short-name ones were made by hand.
 
 **What is inside TLS, for the hosts that stay opaque.**
 

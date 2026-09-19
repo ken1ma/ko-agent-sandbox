@@ -253,7 +253,9 @@ restore permission prompts and set the Claude Code status line.
     Session options, selected on every launch and never persisted:
       --write=reject|live
                          reject makes the project read-only; live (default)
-                         lets the agent edit the shared project files
+                         lets the agent edit the shared project files, except
+                         Git configuration, hooks, other protected Git entries
+                         and .ko-agent-sandbox at any depth (SECURITY.md)
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -344,16 +346,6 @@ restore permission prompts and set the Claude Code status line.
                                           and on Linux no more than was available at launch;
                                           at least 1 GiB, or all memory if less than 1 GiB.
                                           The sandbox never swaps
-      KO_AGENT_SANDBOX_WORKSPACE_GUARD    "fuse" (default) keeps the project shared live and
-                                          writable while protecting Git configuration,
-                                          hooks, other protected Git entries and
-                                          .ko-agent-sandbox at any depth; "none" replaces
-                                          the filter with read-only bind mounts at the
-                                          workspace root only: .git/config and .git/hooks
-                                          (the whole .git when it is a pointer file or
-                                          absent) and .ko-agent-sandbox; the rest stays
-                                          writable (SECURITY.md).
-                                          Applies to --write=live sessions only
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking
                                           and session-only storage, but unmasks /proc, disables

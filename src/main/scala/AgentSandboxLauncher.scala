@@ -22,14 +22,12 @@
 //    +-- current project -------------------> the same path (Windows: /mnt/<drive>/...)
 //    |     (SandboxProject.mountPathOf; --write selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with Git entries and launcher
-//    |      configuration protected (mountKoAgentFs; under guard=none the
-//    |      .git mounts of gitGuardVolumes stand in); reject is a
+//    |      configuration protected (mountKoAgentFs); reject is a
 //    |      read-only bind of the raw tree)
 //    |
 //    +-- .ko-agent-sandbox: the egress rules and the project's agent
 //    |      instructions, read on the host; the write mode is what keeps
-//    |      a session from writing the next one's — only guard=none
-//    |      mounts it back RO (boundaryGuardVolume)
+//    |      a session from writing the next one's
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
@@ -214,7 +212,7 @@ object AgentSandboxLauncher:
     outcome.get
 
   /**
-   * Everything a launch prints — which guard this session runs under, the egress rules, every
+   * Everything a launch prints — the workspace mode, the egress rules, every
    * warning — is on screen for as long as it takes the agent to start, and claude's fullscreen TUI
    * and codex both clear the screen as they do. So the launcher waits for input after printing the
    * launch information and before starting the agent. `immediate` skips that wait, for whoever has
@@ -489,7 +487,6 @@ object AgentSandboxLauncher:
     "KO_AGENT_SANDBOX_PROXY_IMAGE",
     "KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
     "KO_AGENT_SANDBOX_MEMORY",
-    WorkspaceGuardVariable,
     NestingVariable,
     SessionStartVariable,
     ClipboardVariable,
@@ -1954,7 +1951,6 @@ object AgentSandboxLauncher:
       * instructions name it, since the image's own text says "the project directory". */
     mountPath: String,
     writeMode: String,
-    workspaceGuard: String,
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
     // Whether this host could serve --run-on-host at all (macOS): decides the discovery line
@@ -1966,30 +1962,25 @@ object AgentSandboxLauncher:
     noGit: Option[String] = None,
   ): String =
     val profileLine = resolved.linesIterator.next()
-    val workspace = (writeMode, workspaceGuard) match
+    val workspace = writeMode match
       // The plain reject instruction would be false under --run-on-host: a host command writes the
       // project (SECURITY.md "Run on host", the --write=reject composition).
-      case ("reject", _) if runOnHost.nonEmpty =>
+      case "reject" if runOnHost.nonEmpty =>
         s"""`$mountPath` is read-only to this session's own writes; only commands through
           |`sandbox-run-on-host` write the project, on the host. For anything a command does not
           |write, use `~` or `/tmp` for temporary work and return results in the conversation.
           |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
-      case ("reject", _) =>
+      case "reject" =>
         s"""`$mountPath` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
           |for temporary work and return results in the conversation. Tell the user to relaunch
           |with `--write=live` when project files must be written.""".stripMargin
-      case ("live", "fuse") =>
+      case "live" =>
         s"""`$mountPath` is writable and shared live with the host project directory through the
           |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
           |`.ko-agent-sandbox` cannot be modified at any depth;
           |symlink targets must be relative and remain inside the workspace.""".stripMargin
-      case ("live", "none") =>
-        s"""`$mountPath` is a direct writable bind mount of the host project directory, without the
-           |`ko-agent-fs` filter. $RawWorkspaceBoundary. Git configuration, hooks and other Git
-           |entries in nested repositories remain writable. Symlinks can have absolute targets or
-           |targets that resolve outside the project on the host.""".stripMargin
       case _ =>
-        throw IllegalArgumentException(s"unknown workspace mode: $writeMode/$workspaceGuard")
+        throw IllegalArgumentException(s"unknown write mode: $writeMode")
     val git = noGit.fold("")(cause =>
       s"""
          |
@@ -2077,12 +2068,11 @@ object AgentSandboxLauncher:
   def agentDocumentStamp(
     imageId: String,
     writeMode: String,
-    workspaceGuard: String,
     rulesetText: String,
     runOnHost: Vector[String] = Vector.empty,
     noGit: Option[String] = None,
   ): String =
-    s"$imageId $writeMode $workspaceGuard ${sha256Hex(rulesetText)}"
+    s"$imageId $writeMode ${sha256Hex(rulesetText)}"
       + (if runOnHost.isEmpty then "" else s" ${runOnHost.mkString(",")}")
       + noGit.fold("")(cause => s" no-git:${sha256Hex(cause)}")
 
@@ -2314,9 +2304,6 @@ object AgentSandboxLauncher:
 
     // Read before anything is created, like the egress rules below: a variable that would weaken
     // the boundary must not be discovered halfway through a launch that has already made resources.
-    // It selects among live mode's guards only; reject binds the tree read-only and has nothing
-    // for either guard to protect.
-    val guard = workspaceGuard(env(WorkspaceGuardVariable)).fold(fail(_), identity)
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
     val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
@@ -2348,7 +2335,7 @@ object AgentSandboxLauncher:
     val mountPath = mountPathOf(os, projectDir).fold(fail(_), identity)
 
     // Detected this early because reject's refusal below must come before any resource exists;
-    // the log-file and raw project mounts read it again further down. Enforcing specifically:
+    // the log-file mount reads it again further down. Enforcing specifically:
     // permissive and disabled hosts read every mount unrelabeled, so relabeling there would be
     // a host-metadata write with no benefit.
     val selinuxEnforcing = os == Os.Linux &&
@@ -2483,8 +2470,7 @@ object AgentSandboxLauncher:
     // The project's egress/ is read here on the host and handed to the proxy at startup.
     // boundaryDirError and readRuleFiles have the forms, SECURITY.md the why. What keeps a
     // session from writing the next one's rules is the write mode itself: reject's read-only
-    // tree, or live's FUSE reserved-name rule; only guard=none needs the read-only mount-back
-    // (boundaryGuardArgs below).
+    // tree, or live's FUSE reserved-name rule.
     val boundaryDir = projectDir.resolve(".ko-agent-sandbox")
     boundaryDirError(boundaryDir).foreach(fail(_))
 
@@ -2551,18 +2537,14 @@ object AgentSandboxLauncher:
 
     // The workspace FUSE filter, checked before any volume is assembled and mounted once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
-    // Every live session's enforcement, on every platform; the read-only .git mounts below are what
-    // a guard=none session gets instead. The two are alternatives rather than a stack: the filter's
-    // policy is a strict superset of the mounts' protection, and preparing a bind target means
-    // creating `.git` entries *through* the filter, which the filter denies (observed as a
-    // container-start failure, not deduced).
+    // Every live session's enforcement, on every platform.
     val sandboxContainer = sandboxRunContainer(projectId, runSuffix)
 
     // Derived from the mode rather than from the mount, so it exists before the mount does: the
     // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript),
     // and a failure after that would otherwise leave the marker to a later reap. Only live
-    // sessions behind the filter have a mount to reap.
-    val filterReap = Option.when(writeMode == "live" && guard != "none")(
+    // sessions have a mount to reap.
+    val filterReap = Option.when(writeMode == "live")(
       koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer),
     )
 
@@ -2609,26 +2591,7 @@ object AgentSandboxLauncher:
 
     // The filter's gate and its mountpoint now; the mount itself once the sandbox container
     // exists (mountKoAgentFs has why), which is after the proxy and the hold.
-    val filteredWorkspace = (writeMode, guard) match
-      case ("reject", _) => None
-      case (_, "none") => None
-      case _ => Some(prepareKoAgentFs(podman, os, projectId))
-
-    // gitGuardVolumes has the threat and the layouts. Reject mode needs no additional mount: the
-    // whole tree is bound read-only, Git metadata included.
-    val gitGuardArgs =
-      if writeMode == "reject" || filteredWorkspace.isDefined then Vector.empty
-      else
-        val (emptyFile, emptyDir) = emptyMountSources(stateRoot(os))
-        gitGuardVolumes(projectDir.resolve(".git"), mountPath, emptyFile, emptyDir).fold(fail(_), identity)
-
-    // guard=none is the one arrangement needing the read-only mount-back of the boundary
-    // directory: the raw tree is writable there, so without it a session could mkdir
-    // .ko-agent-sandbox and write the configuration governing the next one (SECURITY.md). Reject's tree
-    // is read-only whole; the filter refuses the reserved name at any depth.
-    val boundaryGuardArgs =
-      if writeMode == "live" && guard == "none" then Vector(boundaryGuardVolume(boundaryDir, mountPath))
-      else Vector.empty
+    val filteredWorkspace = Option.when(writeMode == "live")(prepareKoAgentFs(podman, os, projectId))
 
     // -----------------------------------------------------------------------
     // Networks
@@ -2715,7 +2678,7 @@ object AgentSandboxLauncher:
     val noGit = SandboxProject.noGit(projectDir, homeProtection, os)
     val gitInstruction = noGit.map(SandboxProject.noGitInstruction(_, mountPath))
     val agentDocStamp = agentDocumentStamp(
-      imageId, writeMode, guard, rulesetText, runOnHost, gitInstruction,
+      imageId, writeMode, rulesetText, runOnHost, gitInstruction,
     )
 
     val (sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
@@ -2875,7 +2838,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
             + appendedSection(
-              mountPath, writeMode, guard, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
+              mountPath, writeMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -2991,25 +2954,14 @@ object AgentSandboxLauncher:
 
     // The workspace mode and the egress profile with their relevant state, said every launch — and
     // rules that arrived with the repository never take effect unseen: the files as written, then
-    // the dry run's counts, the proxy's own answers to exactly what is enforced. The workspace line
-    // is also where guard=none is said every session it happens: it is the weaker boundary, and
-    // silence about it is how a user forgets which one they are running under — the relabel notice
-    // included, so the one unfiltered bind mount arrangement that rewrites host metadata is never a
-    // silent one. Each line tints the mode it states; a branch weaker than the default is tinted
-    // whole instead, red (HostCommands.weakened), so no line ever has two colours.
+    // the dry run's counts, the proxy's own answers to exactly what is enforced. Each line tints
+    // the mode it states; a branch weaker than the default is tinted whole instead, red
+    // (HostCommands.weakened), so no line ever has two colours.
     // The path is said on every line: on Windows this is where the user learns the /mnt/<drive>
     // spelling the agent will print.
-    System.err.println((writeMode, filteredWorkspace) match
-      case ("reject", _) => s"workspace: ${chosen("reject")}; $mountPath is read-only this session"
-      case (_, Some(_)) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)} at $mountPath"
-      case (_, None) =>
-        weakened(
-          s"workspace: live; guard none by $WorkspaceGuardVariable — $mountPath bound directly, " +
-            s"$RawWorkspaceBoundary; read-only bind mounts can lose protection when the host replaces " +
-            "their source" +
-            (if selinuxEnforcing then "; the project directory is relabeled for container access (:Z)"
-             else ""),
-        ))
+    System.err.println(filteredWorkspace match
+      case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)} at $mountPath"
+      case None    => s"workspace: ${chosen("reject")}; $mountPath is read-only this session")
     // Qualifies the line above: the mount is sound, and git is not there. Every mode, since what
     // git needs is absent from the container under each.
     noGit.foreach(cause => warn(noGitWarning(cause)))
@@ -3072,7 +3024,7 @@ object AgentSandboxLauncher:
       // The entrypoint holds its machine-health warning on screen under the same setting as
       // holdForReader, for the same reason: the TUI clears it otherwise.
       s"--env=$SessionStartVariable=$sessionStartMode",
-    ) ++ sandboxTlsArgs ++ agentDocArgs ++ boundaryGuardArgs ++ gitGuardArgs
+    ) ++ sandboxTlsArgs ++ agentDocArgs
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
     // they apply: the weaker boundary must never be the silent one.
@@ -3111,15 +3063,11 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     // Project bind mount
     // -----------------------------------------------------------------------
-    //  :Z only on native SELinux-enforcing Linux, and only on the unfiltered bind mount;
-    //podman-machine sources  must not be relabelled, and neither must a FUSE mountpoint.
-    val projectVolume = (writeMode, filteredWorkspace) match
-      // Never :Z: the reject gate above established the tree is already container-readable, and
-      // relabeling is the host write the mode withholds.
-      case ("reject", _)                 => s"$projectDir:$mountPath:ro"
-      case (_, Some(prepared))           => s"${prepared.mountpoint}:$mountPath:rw"
-      case (_, None) if selinuxEnforcing => s"$projectDir:$mountPath:rw,Z"
-      case (_, None)                     => s"$projectDir:$mountPath:rw"
+    // Never :Z: a FUSE mountpoint must not be relabelled, the reject gate above established the
+    // tree is already container-readable, and relabeling is the host write that mode withholds.
+    val projectVolume = filteredWorkspace match
+      case Some(prepared) => s"${prepared.mountpoint}:$mountPath:rw"
+      case None           => s"$projectDir:$mountPath:ro"
 
     // -----------------------------------------------------------------------
     // Memory limit

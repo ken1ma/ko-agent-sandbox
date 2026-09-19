@@ -323,68 +323,6 @@ object SandboxProject:
   def isProjectId(name: String): Boolean = name.matches(ProjectIdPattern)
 
   /**
-   * Enforcement under guard=none: default sessions get the workspace
-   * FUSE filter instead, whose policy is a strict superset of these mounts' protection
-   * (AgentSandboxLauncher's header map has the split).
-   *
-   * Host git executes what .git configures — hooks, and commands named in
-   * .git/config (core.hooksPath, core.fsmonitor, filters, pagers) — so
-   * writing either from inside would turn the user's next `git status` into
-   * execution outside the boundary. A read-only bind mount cannot be written,
-   * deleted or replaced from inside; mounting these two read-only protects what git
-   * executes while the rest of .git stays writable data (SECURITY.md, "The
-   * project directory").
-   *
-   * Forms:
-   *   - directory: mount config and hooks read-only; an absent one uses the
-   *     launcher's own empty source (below) — never created in the project,
-   *     and never left to podman, which would manufacture a *directory*
-   *     named config on Linux and refuse the missing source on podman
-   *     machine;
-   *   - pointer file (linked worktree): mount the file itself read-only, so a rewritten
-   *     relative gitdir cannot redirect host git into the writable tree;
-   *   - absent: mount the launcher's empty directory read-only at that name, so a
-   *     sandbox cannot fabricate a repository for host git to discover;
-   *   - a symlink anywhere refuses the launch: podman resolves mount
-   *     sources on the host.
-   *
-   * The empty sources are under the launcher's state root. The runtime may create their mount
-   * targets in the project (SECURITY.md, "Silent changes to what you own").
-   *
-   * The layout is read once, at launch. If no repository exists then, the empty directory mount
-   * hides any repository the host later creates there. Replacing an existing config or hooks
-   * inode on the host can defeat its read-only protection; SECURITY.md records the measurements.
-   */
-  def gitGuardVolumes(
-    gitDir: Path,
-    mountPath: String,
-    emptyFile: Path,
-    emptyDir: Path,
-  ): Either[String, Vector[String]] =
-    def refuse(path: Path): Either[String, Vector[String]] =
-      Left(
-        s"error: $path must not be a symlink\nRefusing to mount the sandbox through one.",
-      )
-
-    if Files.isSymbolicLink(gitDir) then refuse(gitDir)
-    else if Files.isDirectory(gitDir) then
-      val config = gitDir.resolve("config")
-      val hooks = gitDir.resolve("hooks")
-      if Files.isSymbolicLink(config) then refuse(config)
-      else if Files.isSymbolicLink(hooks) then refuse(hooks)
-      else
-        val configSource = if Files.exists(config) then config else emptyFile
-        val hooksSource = if Files.exists(hooks) then hooks else emptyDir
-        Right(
-          Vector(
-            s"--volume=$configSource:$mountPath/.git/config:ro",
-            s"--volume=$hooksSource:$mountPath/.git/hooks:ro",
-          ),
-        )
-    else if Files.exists(gitDir) then Right(Vector(s"--volume=$gitDir:$mountPath/.git:ro"))
-    else Right(Vector(s"--volume=$emptyDir:$mountPath/.git:ro"))
-
-  /**
    * Why git does not work in a session on this project directory, while the host directory the user
    * launched from is part of a repository. The container has the project directory and nothing
    * above or beside it, so git works there only when the repository's Git directory is inside the
@@ -411,7 +349,7 @@ object SandboxProject:
    *
    * Nothing is said where host git fails too: a `.git` naming a gitdir git rejects ends its search
    * where it ends this one, and a `.git` that cannot be read or parsed is another check's to refuse
-   * (gitGuardVolumes, the filter's own guard). This one never fails a launch.
+   * (the filter's own guard, `guard.rs`). This one never fails a launch.
    */
   enum NoGit:
     case Gitdir(named: String, resolved: Path, launchFrom: Option[Path])
@@ -567,26 +505,10 @@ object SandboxProject:
       "the repository's `.git` lies above the project directory, which is all the sandbox has"
 
   /**
-   * The launcher-owned empty bind sources gitGuardVolumes mounts read-only. Kept
-   * outside the project and re-emptied at every launch *in place*: never
-   * delete-and-recreate, for the reason in FileHelper.writeWithMode, and
-   * not rename-and-replace either — a concurrent session's running bind
-   * keeps this very inode, and its emptiness with it.
-   */
-  def emptyMountSources(launcherStateRoot: Path): (Path, Path) =
-    val root = launcherStateRoot.resolve("empty")
-    val dir = root.resolve("dir")
-    Files.createDirectories(dir)
-    directoryEntries(dir).foreach(deleteRecursively)
-    val file = root.resolve("file")
-    Files.write(file, Array.emptyByteArray)
-    (file, dir)
-
-  /**
    * Why .ko-agent-sandbox cannot serve as this project's boundary directory, or None. Checked in
    * every write mode before the rules are read — the read is a host-side read either way. Refused
-   * forms: a symlink of the directory or of an entry (podman resolves mount sources on the host,
-   * and the rule read must see the bytes a mounted-back directory would show); anything that is not
+   * forms: a symlink of the directory or of an entry (the host read would follow a link the
+   * repository controls to rules outside the project); anything that is not
    * a directory; or an entry that is no configuration of this launcher's — only recognized
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
    * config, the same rule each entry applies inside itself. The files inside egress/ are vetted
@@ -618,19 +540,6 @@ object SandboxProject:
                |launch, never remain as ignored config — and it is either a typo or a boundary file a
                |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
           )
-
-  /**
-   * guard=none's mount at the project's .ko-agent-sandbox, which must exist even with no
-   * configuration shipped so that session cannot fabricate the configuration governing the next
-   * one (SECURITY.md): with the raw tree bound writable, the read-only mount-back is the only barrier
-   * between the session and the boundary files. Created here when absent, not by podman,
-   * whose machine path refuses a missing bind source — needed under guard=none alone: the
-   * FUSE filter enforces the same rule by name (protected-sandbox-config) with no mount and no
-   * created path, and reject mode's read-only tree needs neither. Call after boundaryDirError.
-   */
-  def boundaryGuardVolume(boundaryDir: Path, mountPath: String): String =
-    if !Files.exists(boundaryDir) then Files.createDirectory(boundaryDir)
-    s"--volume=$boundaryDir:$mountPath/.ko-agent-sandbox:ro"
 
   val BoundaryDirEntries: Set[String] = Set("egress", "run-on-host")
 

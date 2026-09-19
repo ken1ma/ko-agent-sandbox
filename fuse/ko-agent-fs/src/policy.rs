@@ -111,10 +111,8 @@ pub fn is_dotgit_name(name: &[u8]) -> bool {
 
 /// Whether `name` must be refused as a new `.ko-agent-sandbox` entry — the launcher's own
 /// boundary configuration, which a session must never write because the *next* launch reads it
-/// (`SECURITY.md`, "A project loosening its own confinement"). The launcher mounts that directory
-/// back over itself read-only, and this rule is what holds when that mount is not there: a mount
-/// cannot follow its source, so a host that removes or replaces the directory takes the mount with
-/// it and leaves the path writable inside an otherwise writable workspace.
+/// (`SECURITY.md`, "A project loosening its own confinement"). This rule is the whole protection
+/// in a writable session: the launcher mounts nothing over the directory.
 ///
 /// At any depth, not only the workspace root, because a launch takes its policy from whatever
 /// directory it starts in: a session at the repository root planting `apps/web/.ko-agent-sandbox`
@@ -529,8 +527,7 @@ mod tests {
 
     #[test]
     fn the_launcher_configuration_is_protected_at_every_depth() {
-        // The second line behind the launcher's read-only mount (`is_sandbox_config_name`). Unlike
-        // a gitdir it has no operational half, so depth changes nothing.
+        // Unlike a gitdir it has no operational half, so depth changes nothing.
         assert_eq!(
             classify_relative_path(b".ko-agent-sandbox", &[]),
             GitPathClass::Protected

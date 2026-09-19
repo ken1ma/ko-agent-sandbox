@@ -102,8 +102,8 @@ object HostCommands:
   // -------------------------------------------------------------------------
 
   /**
-   * Case is not emphasis: a value is printed as it is configured — `live`, `guard none`,
-   * `deny-unless-allowed` — so the banner, `--egress-effective` and the rule file read and grep
+   * Case is not emphasis: a value is printed as it is configured — `live`, `deny-unless-allowed` —
+   * so the banner, `--egress-effective` and the rule file read and grep
    * alike, and the reader is not shouted at for the mode they selected. What earns their eye is a
    * severity label, a boundary weaker than the default, or the mode the workspace or egress line
    * states, and colour is what marks those; sbt and mill tint their `[warn]` label and leave the

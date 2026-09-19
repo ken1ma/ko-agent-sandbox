@@ -3,20 +3,20 @@
 "Performance"). It builds its own corpus, so two runs are comparable even on different machines,
 and reports microseconds per entry for the workloads the table there is built from.
 
-Run it INSIDE a sandbox session, twice, and compare the columns — the second run is the control:
+Run it in a scratch project, twice, and compare the columns — the second run is the control
+(unfiltered.sh has what it is):
 
-    cp .../perf-probe.py <scratch-project>/
-    java -jar ko-agent-sandbox.jar bash                          # filtered
-    python3 perf-probe.py
-    KO_AGENT_SANDBOX_WORKSPACE_GUARD=none java -jar ko-agent-sandbox.jar bash
-    python3 perf-probe.py
+    cp .../perf-probe.py <scratch-project>/ && cd <scratch-project>
+    java -jar ko-agent-sandbox.jar python3 perf-probe.py         # filtered
+    .../probe/unfiltered.sh python3 perf-probe.py
 
 The control matters more than the absolute numbers: on the measured macOS stack the hypervisor
 answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
 resolution. What the ratio measures is the filter's cost, not the backing share's (doc/architecture.md).
 
-Everything is written under a temporary directory in /workspace — which is the point, /tmp is not
-the filesystem under test — and removed afterwards. FILES=n varies the corpus size.
+Everything is written under a temporary directory in the project, the working directory — which
+is the point, /tmp is not the filesystem under test — and removed afterwards. FILES=n varies the
+corpus size.
 """
 
 import os
@@ -30,9 +30,9 @@ FILES = int(os.environ.get("FILES", "1800"))
 
 
 def stack() -> str:
-    """Filtered or not, decided by the one property that separates the filter from the launcher's
-    read-only bind mount: `.git` is refused at any depth, not only at the workspace root."""
-    probe = tempfile.mkdtemp(prefix=".perf-probe-stack-", dir="/workspace")
+    """Filtered or not, decided by a property a bind mount does not have: `.git` is refused at
+    any depth."""
+    probe = tempfile.mkdtemp(prefix=".perf-probe-stack-", dir=".")
     try:
         os.mkdir(os.path.join(probe, ".git"))
     except PermissionError:
@@ -68,13 +68,13 @@ def timed(label: str, entries: int, *command: str) -> None:
 
 
 def main() -> int:
-    if not os.path.isdir("/workspace"):
-        print("abort: no /workspace — run this inside the sandbox, not on the host")
+    # podman's marker in every container it runs.
+    if not os.path.exists("/run/.containerenv"):
+        print("abort: not in a container — run this inside the sandbox, not on the host")
         return 2
-    os.chdir("/workspace")
 
     under_test = stack()
-    work = tempfile.mkdtemp(prefix=".perf-probe-", dir="/workspace")
+    work = tempfile.mkdtemp(prefix=".perf-probe-", dir=os.getcwd())
     try:
         print("building a %d-entry corpus ..." % FILES)
         entries = build(work)
@@ -89,8 +89,8 @@ def main() -> int:
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    print("\nRun this again in the other stack; the ratio between the two columns is what")
-    print('coherency costs (doc/TODO.md, "Performance").')
+    print("\nRun this again in the other stack; the ratio between the two columns is the")
+    print('filter\'s own cost (doc/TODO.md, "Performance").')
     return 0
 
 
