@@ -736,8 +736,9 @@ response, then closes:
 - The proxy sends `Connection: close` to the origin and validates the response's framing to detect
   truncation. This removes connection reuse as a request-smuggling path without assuming that the
   origin parses every byte identically.
-- Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, or conflicting
-  `Content-Length` values — are refused rather than resolved.
+- Ambiguous framings — a `Content-Length` beside a `Transfer-Encoding`, conflicting
+  `Content-Length` values, or a `Content-Length` with anything but digits in it, which the origin
+  receives as written — are refused rather than resolved.
 - ALPN is restricted to `http/1.1` so the proxy can parse the request.
 - `Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the one inspected request into
   a stream the proxy no longer reads.

@@ -135,8 +135,9 @@ object HTTPHelper:
         )
 
     def parsePort(value: String): Int =
-      value.toIntOption
+      parseDecimal(value)
         .filter(port => port >= 1 && port <= 65535)
+        .map(_.toInt)
         .getOrElse(throw BadRequest("invalid CONNECT port"))
 
     def validateHeaders(lines: Vector[String]): Unit =
@@ -203,9 +204,7 @@ object HTTPHelper:
       else if lengths.nonEmpty then
         val declared =
           lengths.map: value =>
-            value.trim.toLongOption
-              .filter(_ >= 0)
-              .getOrElse(throw BadRequest("invalid Content-Length"))
+            parseDecimal(value).getOrElse(throw BadRequest("invalid Content-Length"))
 
         if declared.distinct.size != 1 then
           throw BadRequest("conflicting Content-Length headers")
@@ -390,9 +389,7 @@ object HTTPHelper:
         else if lengths.nonEmpty then
           val declared =
             lengths.map: value =>
-              value.trim.toLongOption
-                .filter(_ >= 0)
-                .getOrElse(throw IOException("origin sent an invalid Content-Length"))
+              parseDecimal(value).getOrElse(throw IOException("origin sent an invalid Content-Length"))
 
           if declared.distinct.size != 1 then
             throw IOException("origin sent conflicting Content-Length headers")
@@ -417,18 +414,32 @@ object HTTPHelper:
 
       statusLine.split(" ", 3).toList match
         case version :: statusText :: rest if isHttp1Version(version) =>
+          // Three digits exactly (RFC 9112 §4): toClientBytes writes the parsed number, and the
+          // client must not receive a status line the origin did not send.
           val status =
-            statusText.toIntOption
+            Option.when(statusText.length == 3)(statusText).flatMap(parseDecimal)
               .filter(value => value >= 100 && value <= 599)
+              .map(_.toInt)
               .getOrElse(malformed(s"status '$statusText'"))
+
+          val reason = rest.headOption.getOrElse("")
+          if reason.exists(ch => isForbiddenControl(ch) && ch != '\t') then
+            malformed("control character in reason phrase")
 
           val headers =
             try HttpRequestHead.parseHeaders(lines.drop(1))
             catch case ex: BadRequest => malformed(ex.getMessage)
 
-          HttpResponseHead(status, rest.headOption.getOrElse(""), headers)
+          HttpResponseHead(status, reason, headers)
 
         case _ => malformed(s"status line '$statusLine'")
+
+  /** ASCII digits and nothing else, which is all that the grammars of Content-Length, a port and
+    * a status code allow. `toLongOption` alone also accepts a sign, and a forwarded
+    * `Content-Length: +1` leaves the origin free to read a length other than the one this proxy
+    * framed the body by. */
+  def parseDecimal(text: String): Option[Long] =
+    Option.when(text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9'))(text.toLongOption).flatten
 
   /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3; every minor version, since the framing
     * rules cover them all. */
@@ -542,26 +553,22 @@ object HTTPHelper:
 
     loop(count)
 
-  /** Re-emitted canonically — extensions and trailers dropped — so nothing
-    * in it reads differently at the two ends. */
+  /** Re-emitted canonically — extensions and trailers dropped, after each is checked against its
+    * grammar — so nothing in it reads differently at the two ends. */
   def copyChunked(in: InputStream, out: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
 
     @tailrec
     def loop(): Unit =
-      val header = readCrLfLine(in, MaxChunkLineBytes)
-      val size =
-        try java.lang.Long.parseLong(header.takeWhile(_ != ';').trim, 16)
-        catch
-          case _: NumberFormatException =>
-            throw BadRequest("invalid chunk size")
-
-      if size < 0 then throw BadRequest("negative chunk size")
+      val size = parseChunkHeader(readCrLfLine(in, MaxChunkLineBytes))
 
       if size == 0 then
         @tailrec
         def skipTrailers(): Unit =
-          if readCrLfLine(in, MaxChunkLineBytes).nonEmpty then skipTrailers()
+          val trailer = readCrLfLine(in, MaxChunkLineBytes)
+          if trailer.nonEmpty then
+            HttpRequestHead.parseHeaders(Vector(trailer))
+            skipTrailers()
 
         skipTrailers()
         out.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII))
@@ -578,6 +585,20 @@ object HTTPHelper:
         loop()
 
     loop()
+
+  private val ChunkHeader =
+    val token = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+    val quotedString = "\"(?:[\t \\x21\\x23-\\x5B\\x5D-\\x7E\\x80-\\xFF]|\\\\[\t \\x21-\\x7E\\x80-\\xFF])*\""
+    val extension = s"[ \t]*;[ \t]*$token(?:[ \t]*=[ \t]*(?:$token|$quotedString))?"
+    s"([0-9A-Fa-f]+)(?:$extension)*".r
+
+  /** The size of a `chunk-size [ chunk-ext ]` line (RFC 9112 §7.1). */
+  def parseChunkHeader(line: String): Long =
+    line match
+      case ChunkHeader(size) =>
+        try java.lang.Long.parseLong(size, 16)
+        catch case _: NumberFormatException => throw BadRequest("invalid chunk size")
+      case _ => throw BadRequest("invalid chunk size")
 
   def copyUntilEof(in: InputStream, out: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
@@ -603,7 +624,7 @@ object HTTPHelper:
 
       if value == '\n' then
         if !previousWasCr then throw BadRequest("bare LF in chunked body")
-        String(out.toByteArray, StandardCharsets.US_ASCII).dropRight(1)
+        String(out.toByteArray, StandardCharsets.ISO_8859_1).dropRight(1)
       else
         out.write(value)
         loop(value == '\r')

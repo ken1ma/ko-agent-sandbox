@@ -70,9 +70,13 @@ object IPAddrHelper:
         )
 
   /**
-   * Only ordinary globally-routable destinations, per the IANA
-   * special-purpose registries; IPv6 must be within 2000::/3 minus the
-   * listed subranges. Review when IANA updates the registries.
+   * Ordinary unicast destinations. The listed blocks come from the IANA special-purpose
+   * registries, with IPv4 multicast added, and each is refused whole, including the more
+   * specific entries IANA marks globally reachable inside one (192.0.0.9, 2001:3::/32 AMT,
+   * 2001:20::/28 ORCHIDv2) — protocol anycast and overlay addresses, which no package registry
+   * or clone host is served from. A globally reachable entry outside the listed blocks
+   * (192.31.196.0/24, 2620:4f:8000::/48) is accepted. IPv6 must also be within 2000::/3, which
+   * leaves out 64:ff9b::/96. Review when IANA updates the registries.
    */
   def isPublicDestination(address: InetAddress): Boolean =
     address match
