@@ -208,13 +208,6 @@ class EgressRulesTest extends munit.FunSuite:
     assert(readRuleFiles(dir).swap.exists(_.contains("not a rule file")))
     Files.delete(dir.resolve("rules"))
 
-    // The retired grammar's files are named as such, with the pointer.
-    Vector("allowed", "denied").foreach: retired =>
-      Files.writeString(dir.resolve(retired), "+host ghcr.io\n")
-      val refusal = readRuleFiles(dir).swap.getOrElse(fail(s"$retired was read"))
-      assert(refusal.contains("retired grammar") && refusal.contains("egress/rule"), refusal)
-      Files.delete(dir.resolve(retired))
-
     Files.createDirectory(dir.resolve("rule"))
     assert(readRuleFiles(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("rule"))

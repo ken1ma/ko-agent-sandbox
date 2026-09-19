@@ -211,13 +211,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[IllegalArgumentException](rulesetOf(profile = "allow-all"))
     intercept[IllegalArgumentException](rulesetOf(profile = "deny-unless-model", provider = "meta"))
 
-  test("a retired variable refuses the start naming the one variable the proxy reads"):
-    assertEquals(RetiredVariables, Vector("EGRESS_ALLOWED", "EGRESS_DENIED"))
-    RetiredVariables.foreach: retired =>
-      val ex = intercept[IllegalArgumentException](
-        configuredRuleset(name => Option.when(name == retired)("+host x.example")),
-      )
-      assert(ex.getMessage.contains(RuleVariable), ex.getMessage)
+  test("the configured ruleset is the defaults, changed by the rule variable's lines"):
     assertEquals(configuredRuleset(_ => None).hosts, DefaultHosts)
     assert(
       !configuredRuleset(name => Option.when(name == RuleVariable)("deny https://pypi.org/")).hosts

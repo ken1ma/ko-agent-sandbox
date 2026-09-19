@@ -1404,13 +1404,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--run-on-host=sbt")).map(_.runOnHost), Right(None))
 
-  test("option parsing: the retired --auto-shutdown-foreign-sbt-on-host is refused by name"):
-    val option = RetiredAutoShutdownOption
-    val refused = parseCommandLine(List("--run-on-host=sbt", option, "claude"))
-    assert(refused.swap.exists(reason => reason.contains(option) && reason.contains("by default")), refused.toString)
-    // After the command, it is the command's.
-    assertEquals(parseCommandLine(List("claude", option)).map(_.command), Right(List("claude", option)))
-
   test("option parsing: --env forwards a host variable or sets one, repeatable, each name once"):
     assertEquals(
       parseCommandLine(List("--env=SBT_OPTS", "--env=FOO=a=b", "--env=EMPTY=", "claude")).map(_.env),

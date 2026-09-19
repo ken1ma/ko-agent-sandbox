@@ -134,10 +134,6 @@ object EgressRules:
 
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
-  /** Retired rule filenames are refused with migration advice: the write mode prevents
-    * a session from correcting them, so the launcher must report that their rules are unread. */
-  val RetiredRuleFiles: Vector[String] = Vector("allowed", "denied")
-
   /**
    * Present egress rule files as (name, normalized text). Refuse forms that could hide or
    * misread configuration:
@@ -169,9 +165,6 @@ object EgressRules:
 
       val refusal = entries
         .collectFirst:
-          case entry if RetiredRuleFiles.contains(entry.getFileName.toString) =>
-            s"error: $entry is a file of the retired grammar\nThe rules are one file, egress/rule, " +
-              "in the rule grammar; doc/egress-proxy.md has it. Rewrite the lines there and delete this file."
           case entry if !RuleFiles.exists(_(0) == entry.getFileName.toString) =>
             s"error: $entry is not a rule file\negress/ holds only " +
               s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
