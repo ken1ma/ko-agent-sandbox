@@ -171,10 +171,6 @@ object AgentEgressProxy:
         catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
   def configuredRuleset(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
-    RetiredVariables.filter(variable => read(variable).nonEmpty).foreach: variable =>
-      throw IllegalArgumentException(
-        s"$variable is set, which this proxy no longer reads; the rules are one file, in $RuleVariable",
-      )
     resolveRuleset(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
 
   /**

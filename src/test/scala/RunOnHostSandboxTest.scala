@@ -484,9 +484,6 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
     )
     assertEquals(hostCommandStray(metadata), None)
-    // The retired grammar's file is named as such, with the pointer.
-    val retired = hostCommandStray(projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/allowed"))
-    assert(retired.exists(r => r.contains("retired grammar") && r.contains("egress/rule")), retired.toString)
 
   test("a symlinked component refuses by name"):
     val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")

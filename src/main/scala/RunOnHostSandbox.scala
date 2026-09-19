@@ -253,10 +253,10 @@ object RunOnHostSandbox:
   /**
    * run-on-host/ accepts only recognized configuration entries, as does its parent directory
    * (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each, rule
-   * inside that — a stray name, the retired grammar's file among them, a symlinked component, or a
-   * component of the wrong type refuses the command, never remains as ignored config. The type rule
-   * prevents real failures: a file where a directory belongs would read as absent configuration,
-   * and a FIFO where the file belongs would block the read forever.
+   * inside that — a stray name, a symlinked component, or a component of the wrong type refuses the
+   * command, never remains as ignored config. The type rule prevents real failures: a file where a
+   * directory belongs would read as absent configuration, and a FIFO where the file belongs would
+   * block the read forever.
    */
   def hostCommandStray(project: Path): Option[String] =
     val dir = project.resolve(".ko-agent-sandbox").resolve("run-on-host")
@@ -272,7 +272,6 @@ object RunOnHostSandbox:
       val directories = dir +: programs.flatMap: name =>
         Vector(dir.resolve(name), dir.resolve(name).resolve("egress"))
       val ruleFiles = programs.map(name => dir.resolve(name).resolve("egress").resolve("rule"))
-      val retiredFiles = programs.map(name => dir.resolve(name).resolve("egress").resolve("allowed"))
       def wrongType(path: Path, directory: Boolean): Boolean =
         Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
           (if directory then !Files.isDirectory(path) else !Files.isRegularFile(path))
@@ -282,9 +281,6 @@ object RunOnHostSandbox:
           .map(p => s"$p is not a directory; boundary configuration is read plainly or not at all"))
         .orElse(ruleFiles.find(wrongType(_, directory = false))
           .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
-        .orElse(retiredFiles.find(Files.exists(_, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-          .map(p => s"$p is a file of the retired grammar; the program's rules are egress/rule, one " +
-            s"`$ProgramRuleForm` per line — rewrite the lines there and delete this file"))
         .orElse:
           val stray = strays(dir, programs.toSet) ++ programs.flatMap: name =>
             strays(dir.resolve(name), Set("egress")) ++

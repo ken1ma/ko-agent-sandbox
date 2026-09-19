@@ -100,10 +100,6 @@ object RulesetHelper:
   val RuleFile = "rule"
   val RuleVariable = "EGRESS_RULE"
 
-  /** The variables of the grammar this one replaced: set, a refused start naming RuleVariable, so a
-    * wrapper composing the old grammar fails rather than starting on the defaults alone. */
-  val RetiredVariables: Vector[String] = Vector("EGRESS_ALLOWED", "EGRESS_DENIED")
-
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
 
