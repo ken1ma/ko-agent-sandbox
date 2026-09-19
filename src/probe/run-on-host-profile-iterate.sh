@@ -24,9 +24,10 @@
 #
 # Whether the current grant set builds is src/probe/run-on-host-profile-gate.sh's question, not this one's.
 #
-# Runtime authority accumulates in src/main/resources/agentsandbox/runtime-authority.txt, which you edit by hand: a line
-# added because a command failed once is a grant that outlives every later command, so each belongs
-# there only if it is a stable runtime read and not a path into user data.
+# Runtime authority accumulates in src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt,
+# which you edit by hand: a line added because a command failed once is a grant that outlives every
+# later command, so each belongs there only if it is a stable runtime read and not a path into user
+# data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 . "$(dirname "$0")/run-on-host-gate-setup.sh"
@@ -35,7 +36,7 @@ gate_require_idle "/private/tmp/ko-agent-$(id -u)" "$(pwd -P)" || exit 1
 mode=${1:-checks}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-run-on-host-profile
-authority=src/main/resources/agentsandbox/runtime-authority.txt
+authority=src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt
 mkdir -p "$work"
 [ -f "$authority" ] ||
     printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
@@ -294,8 +295,8 @@ ops)
     echo
     dump_profile "$work/ops.sb"
     echo "the operations it needs: $keep"
-    printf '%s\n' "$keep" > src/probe/runtime-operations.txt
-    echo "written to src/probe/runtime-operations.txt, which 'paths' uses as its base"
+    printf '%s\n' "$keep" > src/probe/seatbelt-runtime-operations.txt
+    echo "written to src/probe/seatbelt-runtime-operations.txt, which 'paths' uses as its base"
     ;;
 paths)
     # The minimal set of trees /bin/sh needs, by cumulative removal.
@@ -307,8 +308,8 @@ paths)
     base='(deny default)'
     # The families `ops` measured, so a path search is not defeated by a missing operation. Without
     # this the JDK reports "not a path" when the truth is "not only a path".
-    if [ -f src/probe/runtime-operations.txt ]; then
-        ops=$(cat src/probe/runtime-operations.txt)
+    if [ -f src/probe/seatbelt-runtime-operations.txt ]; then
+        ops=$(cat src/probe/seatbelt-runtime-operations.txt)
     else
         ops='file-read* process-exec*'
     fi
@@ -623,7 +624,7 @@ mach-proxy)
     }
     # Started as RunOnHostSandbox.startProxy starts it, then one fetch through it, which makes it
     # resolve a name and connect.
-    proxy_ready() { grep -q 'agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
+    proxy_ready() { grep -q 'ko-agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
     # Not exec'd: the subshell then reports a JVM that a denied lookup ends with a segmentation
     # fault into the log, where this shell would report it on the terminal at every attempt.
     serve_under() { # profile
@@ -647,7 +648,8 @@ allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:0 \
             tries=$((tries - 1)); sleep 0.5
         done
         if proxy_ready; then
-            port=$(sed -n 's/.*agent-egress-proxy listening on :\([0-9]*\).*/\1/p' "$work/mach-proxy.log" | sed -n 1p)
+            port=$(sed -n 's/.*ko-agent-egress-proxy listening on :\([0-9]*\).*/\1/p' "$work/mach-proxy.log" |
+                sed -n 1p)
             curl -fsS -o /dev/null --max-time 30 --proxy "http://127.0.0.1:$port" \
                 https://repo1.maven.org/maven2/ 2>"$work/mach-curl.err" && result=0
         fi

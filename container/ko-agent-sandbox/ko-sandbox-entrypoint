@@ -23,10 +23,10 @@
 # honoured, and a launch with no terminal is never held.
 set -eu
 
-seed=$SANDBOX_VOLUME_SEED
+seed=$KO_SANDBOX_VOLUME_SEED
 volume=$HOME/persistent-volume
 # The tests substitute a fixture for /proc; nothing else sets it.
-proc=${SANDBOX_PROC:-/proc}
+proc=${KO_SANDBOX_PROC:-/proc}
 
 # No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the
 # launcher mounts the named volume over it — so its absence means a container run by hand, likely

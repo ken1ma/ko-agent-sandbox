@@ -1,5 +1,5 @@
 // Making JVMs reach the proxy: locating the image's JDK, and the -D spelling of what
-// sandbox-jdk-use-proxy writes into a JDK's files. That script itself is exercised by
+// ko-sandbox-jdk-use-proxy writes into a JDK's files. That script itself is exercised by
 // SessionBoundaryTest, on the image's JDK it prepared.
 
 package agentsandbox.launcher
@@ -10,13 +10,13 @@ import JdkTrust.*
 
 class JdkTrustTest extends munit.FunSuite:
 
-  test("the -D words state every fact sandbox-jdk-use-proxy writes, plus the trust store"):
+  test("the -D words state every fact ko-sandbox-jdk-use-proxy writes, plus the trust store"):
     // Two spellings of one route, for the JVMs that read the file and the ones that read none; a
     // key in one and not the other is a JVM that reaches the proxy and one that does not. The
     // script's spelling is read from its source: the properties block it appends is the one
     // consumed by the JDK's ProxySelector.
     val properties = proxyProperties("egress-proxy", 3128)
-    val script = Files.readString(Paths.get("container/ko-agent-sandbox/sandbox-jdk-use-proxy"))
+    val script = Files.readString(Paths.get("container/ko-agent-sandbox/ko-sandbox-jdk-use-proxy"))
     val appended = script.linesIterator
       .filter(line => line.matches("""https?\.proxy(Host|Port)=.*"""))
       .map(_.replace("$PROXY_HOST", "egress-proxy").replace("$PROXY_PORT", "3128"))
@@ -27,7 +27,7 @@ class JdkTrustTest extends munit.FunSuite:
       properties.map((key, value) => s"-D$key=$value") :+ "-Djavax.net.ssl.trustStore=/opt/jdk/lib/security/cacerts",
     )
 
-  test("a failed sandbox-jdk-use-proxy copies nothing, even into a destination the image already has"):
+  test("a failed ko-sandbox-jdk-use-proxy copies nothing, even into a destination the image already has"):
     assume(!scala.util.Properties.isWin, "runs the receiving shell, which a POSIX host has")
     val work = Files.createTempDirectory("jdk-prepare")
     val jdk = work.resolve("jdk")
@@ -35,10 +35,10 @@ class JdkTrustTest extends munit.FunSuite:
     Files.createDirectories(jdk.resolve("conf"))
     Files.writeString(jdk.resolve("lib/security/cacerts"), "unprepared")
     Files.writeString(jdk.resolve("conf/net.properties"), "unprepared")
-    // The words podman is given after the image, with sandbox-jdk-use-proxy a stub first on PATH.
+    // The words podman is given after the image, with ko-sandbox-jdk-use-proxy a stub first on PATH.
     def prepare(stubExit: Int, prepared: java.nio.file.Path): Int =
       val bin = Files.createTempDirectory(work, "bin")
-      val stub = Files.writeString(bin.resolve("sandbox-jdk-use-proxy"), s"#!/bin/sh\nexit $stubExit\n")
+      val stub = Files.writeString(bin.resolve("ko-sandbox-jdk-use-proxy"), s"#!/bin/sh\nexit $stubExit\n")
       stub.toFile.setExecutable(true)
       val builder = ProcessBuilder(HostCommands.quoteFreeSh(prepareScript(prepared.toString), jdk.toString)*)
       builder.environment.put("PATH", s"$bin:${System.getenv("PATH")}")

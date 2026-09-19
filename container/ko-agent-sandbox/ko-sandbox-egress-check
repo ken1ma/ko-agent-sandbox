@@ -3,7 +3,7 @@
 Ask this session's egress proxy about one host, from inside the sandbox: the in-session twin of
 the launcher's --egress-check=<host>, answering the running proxy instead of a one-shot one.
 
-    sandbox-egress-check <host>
+    ko-sandbox-egress-check <host>
 
 One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the
 next step, and every client discards a failed CONNECT's body, which is why this exists: it prints
@@ -21,7 +21,7 @@ import socket
 import ssl
 import sys
 
-NAME = "sandbox-egress-check"
+NAME = "ko-sandbox-egress-check"
 MAX_HEAD_BYTES = 16 * 1024
 
 

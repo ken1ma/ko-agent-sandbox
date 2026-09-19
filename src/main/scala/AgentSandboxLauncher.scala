@@ -35,7 +35,7 @@
 //    |                                        opencode's XDG directories are symlinks
 //    |                                        into it)
 //    |
-//    +-- --run-on-host (macOS only): sandbox-run-on-host relays a command
+//    +-- --run-on-host (macOS only): ko-sandbox-run-on-host relays a command
 //    |      request to a host-side wrapper that runs sbt/mill under a
 //    |      Seatbelt profile — the project (`.git` and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
@@ -60,9 +60,9 @@
 // The rest of /home/nonroot is an anonymous podman volume: build caches work, and disappear with the container.
 //
 // The entrypoint records the project's mount path as trusted for Claude Code, Codex, Antigravity and Copilot at
-// every launch (sandbox-entrypoint), so a mounted project's own agent configuration — MCP servers included — takes
-// effect without a trust dialog. The container, not that dialog, is the boundary; whatever the configuration names
-// runs inside it, never in a host-side helper.
+// every launch (ko-sandbox-entrypoint), so a mounted project's own agent configuration — MCP servers included —
+// takes effect without a trust dialog. The container, not that dialog, is the boundary; whatever the configuration
+// names runs inside it, never in a host-side helper.
 //
 // podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
@@ -160,7 +160,7 @@ object AgentSandboxLauncher:
   val EgressProxyPort = 3128
 
   /** The proxy's own spelling (AgentEgressProxy.ReadyLine): printed once its socket is bound. */
-  val EgressProxyReadyLine = s"agent-egress-proxy listening on :$EgressProxyPort"
+  val EgressProxyReadyLine = s"ko-agent-egress-proxy listening on :$EgressProxyPort"
 
   /** The proxy stamps every line it writes with an instant and a space; the spelling follows. */
   def isProxyReadyLine(line: String): Boolean =
@@ -495,15 +495,33 @@ object AgentSandboxLauncher:
   )
 
   /**
+   * The prefix of the variables the user gives this launcher and of those it sets inside the
+   * sandbox to say what is in force (RefusedForwardPrefix). A variable the launcher sets for one
+   * of its own components has another: `KO_AGENT_<component>_`, as KO_AGENT_FS_SOURCE_ID and
+   * RunOnHostSandbox.carrierName have.
+   */
+  val LauncherVariablePrefix = "KO_AGENT_SANDBOX_"
+
+  /** The prefix of the variables the sandbox image sets for its own scripts
+    * (container/ko-agent-sandbox/Containerfile). */
+  private val ImageVariablePrefix = "KO_SANDBOX_"
+
+  /**
    * Environment names that look like this launcher's but are not: almost certainly a misspelling
    * of one above, and a misspelled variable silently configuring nothing — no memory limit, the
    * wrong volume — is the failure mode the warning in main closes. A warning rather than a refused
    * launch, because a shell profile legitimately sets variables for a newer or older launcher.
+   *
+   * A known variable's name under the image's prefix is such a misspelling. The image's other
+   * variables are not reported: a launcher run inside a session inherits them.
    */
   def unknownSandboxVariables(names: Iterable[String]): Vector[String] =
     names.toVector
-      .filter(_.startsWith("KO_AGENT_SANDBOX_"))
-      .filterNot(KnownSandboxVariables)
+      .filter: name =>
+        if name.startsWith(LauncherVariablePrefix) then !KnownSandboxVariables(name)
+        else
+          name.startsWith(ImageVariablePrefix)
+          && KnownSandboxVariables(LauncherVariablePrefix + name.stripPrefix(ImageVariablePrefix))
       .sorted
 
   /**
@@ -819,8 +837,8 @@ object AgentSandboxLauncher:
   /**
    * The exit code for a self-test that failed before its behavioral checks began, as against one
    * of those checks failing. The filter's own `--self-test` decides which, being the only party
-   * that knows the stage it reached, and run-suite passes the verdict up; its message says what it
-   * can about the cause, which this launcher repeats without adding detail
+   * that knows the stage it reached, and ko-agent-fs-suite passes the verdict up; its message says
+   * what it can about the cause, which this launcher repeats without adding detail
    * (fuse/ko-agent-fs/src/main.rs, SelfTestFailure). Spelled there as SELF_TEST_SETUP_EXIT, and a
    * test holds the two together.
    */
@@ -1768,7 +1786,7 @@ object AgentSandboxLauncher:
    * route but the proxy whatever the environment says, so an override can only fail, visibly,
    * under a name the launch printed — and overriding a default is what a forward is for.
    */
-  val RefusedForwardPrefix = "KO_AGENT_SANDBOX_"
+  val RefusedForwardPrefix = LauncherVariablePrefix
 
   /**
    * The `--env=NAME=VALUE` arguments for the forwards, or why one cannot be made. A name unset
@@ -1901,7 +1919,7 @@ object AgentSandboxLauncher:
     * as a boundary weaker than the option says, since a host command writes the project as its
     * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
   def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
-    val programs = weakenedByUser(s"sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
+    val programs = weakenedByUser(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
@@ -1986,7 +2004,7 @@ object AgentSandboxLauncher:
       // project (SECURITY.md "Run on host", the --write=reject composition).
       case "reject" if runOnHost.nonEmpty =>
         s"""`$mountPath` is read-only to this session's own writes; only commands through
-          |`sandbox-run-on-host` write the project, on the host. For anything a command does not
+          |`ko-sandbox-run-on-host` write the project, on the host. For anything a command does not
           |write, use `~` or `/tmp` for temporary work and return results in the conversation.
           |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
       case "reject" =>
@@ -2009,7 +2027,7 @@ object AgentSandboxLauncher:
     val runOnHostSection =
       if runOnHost.nonEmpty then
         val names = runOnHost.mkString(", ")
-        val commands = runOnHost.map(program => s"`sandbox-run-on-host $program …`").mkString(" or ")
+        val commands = runOnHost.map(program => s"`ko-sandbox-run-on-host $program …`").mkString(" or ")
         s"""
            |## Run on host
            |
@@ -2017,7 +2035,7 @@ object AgentSandboxLauncher:
            |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
            |and they may write the project except `.git` and `.ko-agent-sandbox`.
            |The daemons of sbt, mill and gradle stay warm across invocations. To run several
-           |commands in one, quote them: `sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
+           |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
            |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
            |resort, not an alternative: host and container builds compile with different JVMs
            |against different caches over the same `target/`, so a container build costs the host a
@@ -2033,7 +2051,7 @@ object AgentSandboxLauncher:
         s"""
            |## Run on host
            |
-           |`sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
+           |`ko-sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
            |builds here are slow, or the machine is short on memory, tell the user: relaunching with
            |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host — memory reclaimed on exit
            |rather than left with the podman machine, at host speed, and without the symlink cleanup
@@ -2642,7 +2660,7 @@ object AgentSandboxLauncher:
 
     // :Z relabels privately, right for a file only this run's proxy writes — launcher-owned
     // state, never the user's.
-    val containerLogFile = "/var/log/agent-egress-proxy/proxy.log"
+    val containerLogFile = "/var/log/ko-agent-egress-proxy/proxy.log"
     val proxyLogArgs = Vector(
       s"--volume=$hostLogFile:$containerLogFile:rw${if selinuxEnforcing then ",Z" else ""}",
       s"--env=EGRESS_LOG_FILE=$containerLogFile",
@@ -2677,7 +2695,7 @@ object AgentSandboxLauncher:
     // listing says whose it is and why a key is there.
     val publicDefault = permissiveProfile(rulesetText)
     val trustDir = if publicDefault then runFiles else tlsDir
-    val runCaDir = runFiles.resolve("agent-egress-proxy").resolve("allow-unless-denied")
+    val runCaDir = runFiles.resolve("ko-agent-egress-proxy").resolve("allow-unless-denied")
     val trustCertFile = if publicDefault then runCaDir.resolve("ca.crt") else caCertFile
     val bundleFile = trustDir.resolve("sandbox-ca-bundle.crt")
     val bundleStampFile = trustDir.resolve("bundle.stamp")
@@ -2885,7 +2903,7 @@ object AgentSandboxLauncher:
       // mapping.)
       val proxyTls =
         if publicDefault then
-          val mounted = "/etc/agent-egress-proxy/allow-unless-denied"
+          val mounted = "/etc/ko-agent-egress-proxy/allow-unless-denied"
           Vector(
             s"--volume=$trustCertFile:$mounted/ca.crt:ro",
             s"--volume=${runCaDir.resolve("ca.key")}:$mounted/ca.key:ro",
@@ -2895,16 +2913,16 @@ object AgentSandboxLauncher:
         else if inspectedHosts.isEmpty then Vector.empty
         else
           Vector(
-            s"--volume=${carried(leafCertFile)}:/etc/agent-egress-proxy/leaf.crt:ro",
-            s"--volume=${carried(leafKeyFile)}:/etc/agent-egress-proxy/leaf.key:ro",
-            "--env=EGRESS_TLS_CERTIFICATE=/etc/agent-egress-proxy/leaf.crt",
-            "--env=EGRESS_TLS_PRIVATE_KEY=/etc/agent-egress-proxy/leaf.key",
+            s"--volume=${carried(leafCertFile)}:/etc/ko-agent-egress-proxy/leaf.crt:ro",
+            s"--volume=${carried(leafKeyFile)}:/etc/ko-agent-egress-proxy/leaf.key:ro",
+            "--env=EGRESS_TLS_CERTIFICATE=/etc/ko-agent-egress-proxy/leaf.crt",
+            "--env=EGRESS_TLS_PRIVATE_KEY=/etc/ko-agent-egress-proxy/leaf.key",
           )
 
       // The bundle replaces the image's; the variables cover programs with a trust store of their own
       // (certifi, Node's roots), and the keystore covers the JVM, which reads neither.
       val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
-      // The CA on its own, for sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
+      // The CA on its own, for ko-sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
       // the launcher's reach, and that script hands it this file. No new exposure — the same
       // certificate is already inside the bundle above — it just saves a script parsing one out.
       val sandboxTls = Vector(
@@ -3061,7 +3079,7 @@ object AgentSandboxLauncher:
       case mode =>
         System.err.println(clipboardLine(mode))
         Vector(s"--env=$ClipboardVariable=$mode") ++
-          (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=sandbox-clipboard") else Vector.empty)
+          (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-sandbox-clipboard") else Vector.empty)
 
     // Loud for the same reason: host-native execution is authority a container session alone does
     // not have. SECURITY.md "Run on host" is what bounds it.

@@ -10,7 +10,7 @@
 # attach to another's streams. RunOnHostChannel.scala is the other side and documents the framing.
 set -eu
 
-usage() { echo "usage: sandbox-run-on-host <sbt|mill|gradle|mvn> [args...]" >&2; exit 64; }
+usage() { echo "usage: ko-sandbox-run-on-host <sbt|mill|gradle|mvn> [args...]" >&2; exit 64; }
 [ "$#" -ge 1 ] || usage
 program=$1
 shift
@@ -25,7 +25,7 @@ if [ -n "${KO_AGENT_SANDBOX_RUN_ON_HOST:-}" ]; then
   while [ ! -p "$dir/req" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.1; done
 fi
 [ -p "$dir/req" ] || {
-  echo "sandbox-run-on-host: this session was not launched with --run-on-host=$program," \
+  echo "ko-sandbox-run-on-host: this session was not launched with --run-on-host=$program," \
     "or the broker has died unexpectedly" >&2
   exit 1
 }
@@ -56,7 +56,7 @@ finish() {
   rm -f $fifos
   if [ -e "$unanswered" ]; then
     rm -f "$unanswered"
-    echo "sandbox-run-on-host: the host side did not answer within ${bound}s — report this to the user" >&2
+    echo "ko-sandbox-run-on-host: the host side did not answer within ${bound}s — report this to the user" >&2
     exit 70
   fi
   exit "$status"
@@ -111,7 +111,7 @@ wait
 # `|| true`: a timed-out substitution would otherwise trip set -e before the diagnostic below.
 code=$(timeout "$bound" cat "$dir/exit.$pid" 8>&- 9>&- || true)
 [ -n "$code" ] || {
-  echo "sandbox-run-on-host: the host side stopped answering; the command may still be" \
+  echo "ko-sandbox-run-on-host: the host side stopped answering; the command may still be" \
     "running — report this to the user" >&2
   exit 70
 }

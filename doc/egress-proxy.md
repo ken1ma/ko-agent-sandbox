@@ -223,7 +223,7 @@ image adopts its hosts.
 ## The printed ruleset
 
 `--egress-effective` and `--egress-check=<host>` ([README.md](../README.md#reference)) answer
-without starting a session; inside one, `sandbox-egress-check <host>` asks the running proxy.
+without starting a session; inside one, `ko-sandbox-egress-check <host>` asks the running proxy.
 Every start prints, in order:
 
 1. the rule file as written, one line;
@@ -307,7 +307,7 @@ The per-project CA is stored on the host, under
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
    launch's proxy starts with the certificates the launch found or issued.
 1. Under `allow-unless-denied` a launch creates a CA for the run instead, as
-   `run-<suffix>/agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
+   `run-<suffix>/ko-agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
    directory, and removes it with the run; the proxy issues each host's certificate from it at the
    host's first connection. Nothing is rotated: no session trusts another's.
 
@@ -332,7 +332,7 @@ What changes is only how an allowed address is reached:
 - the upstream proxy is asked for a tunnel to that numeric address — never for the hostname,
   which it would resolve itself, outside the check;
 - a failure on that path is an `error` line and a 502, never a direct retry;
-  `sandbox-egress-check <host>` prints the stage.
+  `ko-sandbox-egress-check <host>` prints the stage.
 
 The launch banner and the proxy's startup lines name the endpoint without its userinfo, which
 stays in the proxy container's environment (SECURITY.md, "Egress proxy"). `--egress-check=<host>`

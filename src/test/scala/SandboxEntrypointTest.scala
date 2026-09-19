@@ -11,7 +11,7 @@ import scala.jdk.CollectionConverters.*
 
 class SandboxEntrypointTest extends munit.FunSuite:
 
-  private val script = Path.of("container/ko-agent-sandbox/sandbox-entrypoint").toAbsolutePath
+  private val script = Path.of("container/ko-agent-sandbox/ko-sandbox-entrypoint").toAbsolutePath
   private val sh = Path.of("/bin/sh")
   private lazy val gnuMv =
     try
@@ -27,7 +27,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     // `mv -T` is GNU coreutils' and `jq` is the image's: the script runs only in the Debian image,
     // and so does this suite's host.
     assume(Files.isExecutable(sh) && gnuMv && jq, "runs the entrypoint under /bin/sh with GNU mv and jq")
-    val root = Files.createTempDirectory("sandbox-entrypoint")
+    val root = Files.createTempDirectory("ko-sandbox-entrypoint")
     val seed = Files.createDirectories(root.resolve("seed"))
     Vector("claude", "codex", "antigravity", "kiro", "copilot", "opencode").foreach: agent =>
       Files.createDirectory(seed.resolve(agent))
@@ -57,9 +57,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val builder =
       ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
     builder.directory(project.toFile)
-    builder.environment.put("SANDBOX_VOLUME_SEED", seed.toString)
+    builder.environment.put("KO_SANDBOX_VOLUME_SEED", seed.toString)
     builder.environment.put("HOME", home.toString)
-    builder.environment.put("SANDBOX_PROC", proc.toString)
+    builder.environment.put("KO_SANDBOX_PROC", proc.toString)
     path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
     builder.redirectErrorStream(true)
     builder.start()
@@ -71,7 +71,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     swapUsed: Long = 0,
     pressure: Option[String] = None,
   ): Path =
-    val root = Files.createTempDirectory("sandbox-entrypoint-proc")
+    val root = Files.createTempDirectory("ko-sandbox-entrypoint-proc")
     Files.writeString(
       root.resolve("meminfo"),
       s"""MemTotal:       $total kB
@@ -94,7 +94,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   /** A `df` answering with the given free kB, on a PATH entry to put before the real one. */
   private def fakeDf(availableKb: Long): Path =
-    val dir = Files.createTempDirectory("sandbox-entrypoint-bin")
+    val dir = Files.createTempDirectory("ko-sandbox-entrypoint-bin")
     val df = dir.resolve("df")
     Files.writeString(
       df,
@@ -114,7 +114,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
   /** A project directory with a name every agent's file must quote: a space, and for Codex a
     * double quote and a backslash, the two characters a TOML basic string escapes. */
   private lazy val Project: Path =
-    Files.createDirectories(Files.createTempDirectory("sandbox-entrypoint-project").resolve("my \"app\" \\ src"))
+    Files.createDirectories(Files.createTempDirectory("ko-sandbox-entrypoint-project").resolve("my \"app\" \\ src"))
 
   /** Every JSON file the suite reads, canonicalized with jq: keys sorted, no whitespace, after
     * `filter`. */
@@ -187,7 +187,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     val volume = home.resolve("persistent-volume")
     // Two projects, so the launches also race on a shared volume's files, not only on the seed.
-    val other = Files.createTempDirectory("sandbox-entrypoint-other")
+    val other = Files.createTempDirectory("ko-sandbox-entrypoint-other")
     val results =
       (1 to 20).toVector.map(i => start(seed, home, project = if i % 2 == 0 then other else Project)).map(finish)
     results.foreach((status, output) => assertEquals(status, 0, output))
@@ -299,7 +299,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     Files.writeString(copilot, """{"trustedFolders":["/Users/me/zzz","/Users/me/other"]}""")
     Files.createDirectories(codex.getParent)
     Files.writeString(codex, "model = \"o3\"\n\n[projects.\"/Users/me/other\"]\ntrust_level = \"trusted\"\n")
-    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    val simple = Files.createTempDirectory("ko-sandbox-entrypoint-simple")
     val (status, output) = run(seed, home, simple)
     assertEquals(status, 0, output)
     val first = Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex)
@@ -327,7 +327,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     val (_, _, _, codex) = trustFiles(home)
     Files.createDirectories(codex.getParent)
-    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    val simple = Files.createTempDirectory("ko-sandbox-entrypoint-simple")
     // A literal-string key, which a text search for the basic-string spelling would miss and then
     // define twice.
     Files.writeString(codex, s"[projects.'$simple']\ntrust_level = \"trusted\"\n")
@@ -388,7 +388,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
         """{"trustedFolders":["/Users/me/other"],"firstLaunchAt":"2026-03-11T00:00:00.000Z",""" +
         """"appTipShown":true}""" + "\n",
     )
-    val simple = Files.createTempDirectory("sandbox-entrypoint-simple")
+    val simple = Files.createTempDirectory("ko-sandbox-entrypoint-simple")
     val (status, output) = run(seed, home, simple)
     assertEquals(status, 0, output)
     assert(!output.contains("warning"), output)

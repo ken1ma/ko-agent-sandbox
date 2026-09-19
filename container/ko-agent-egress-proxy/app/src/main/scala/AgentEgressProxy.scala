@@ -34,7 +34,7 @@ object AgentEgressProxy:
     * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
     * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
     * its ephemeral port from this line. */
-  def readyLine(port: Int) = s"agent-egress-proxy listening on :$port"
+  def readyLine(port: Int) = s"ko-agent-egress-proxy listening on :$port"
   val ReadyLine = readyLine(ListenPort)
 
   val ConnectTimeoutMillis = 10_000
@@ -73,7 +73,7 @@ object AgentEgressProxy:
       case "--check-host" :: host :: Nil             => checkHost(host)
       case _ =>
         System.err.println(
-          "agent-egress-proxy takes no arguments, --print-ruleset [--provenance] to " +
+          "ko-agent-egress-proxy takes no arguments, --print-ruleset [--provenance] to " +
             "resolve the ruleset, print it, and exit, or --check-host <host> to report " +
             "one host's ruleset decision and current DNS resolution",
         )
@@ -404,7 +404,7 @@ object AgentEgressProxy:
       case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
         // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). No client
-        // shows it; the image's sandbox-egress-check reads it, and is the only way this refusal's
+        // shows it; the image's ko-sandbox-egress-check reads it, and is the only way this refusal's
         // reason reaches the sandbox.
         respondQuietly(client, 403, "Forbidden", refusalBody(ex.getMessage, Some(ex.advice)))
 
@@ -415,7 +415,7 @@ object AgentEgressProxy:
           case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
         // The stage in the body, as a refusal's reason is: the ruleset allowed this host, so the
-        // agent's next step is to report what failed, and only sandbox-egress-check shows it.
+        // agent's next step is to report what failed, and only ko-sandbox-egress-check shows it.
         respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
 
       case NonFatal(ex) =>

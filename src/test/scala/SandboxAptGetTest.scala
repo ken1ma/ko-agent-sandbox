@@ -1,4 +1,4 @@
-// sandbox-apt-get's unpack loop, run as the shell script it is: which cached archives an install
+// ko-sandbox-apt-get's unpack loop, run as the shell script it is: which cached archives an install
 // unpacks, and what a package upgrade leaves in $HOME/.local/deb and the wrappers beside it. apt is
 // stubbed — the archives placed in the cache stand in for what it would download, and the stub's
 // simulation names them as apt's would — so the test exercises the unpack, not the fetch.
@@ -13,7 +13,7 @@ import scala.util.Using
 
 class SandboxAptGetTest extends munit.FunSuite:
 
-  private val script = Path.of("container/ko-agent-sandbox/sandbox-apt-get").toAbsolutePath
+  private val script = Path.of("container/ko-agent-sandbox/ko-sandbox-apt-get").toAbsolutePath
   private val sh = Path.of("/bin/sh")
 
   // dpkg builds and lists the archives; the script runs only in the Debian image, and so does this
@@ -38,7 +38,7 @@ class SandboxAptGetTest extends munit.FunSuite:
          |Version: $version
          |Architecture: $architecture
          |Maintainer: fixture <fixture@example.invalid>
-         |Description: sandbox-apt-get fixture
+         |Description: ko-sandbox-apt-get fixture
          |""".stripMargin,
     )
     paths.foreach: path =>
@@ -161,8 +161,8 @@ class SandboxAptGetTest extends munit.FunSuite:
       assertEquals(sandboxAptGet("install", pkg), 0, s"install $pkg $version")
 
   private def fixture(check: Fixture => Unit): Unit =
-    assume(tooling, "runs sandbox-apt-get under /bin/sh with dpkg and tar")
-    val root = Files.createTempDirectory("sandbox-apt-get")
+    assume(tooling, "runs ko-sandbox-apt-get under /bin/sh with dpkg and tar")
+    val root = Files.createTempDirectory("ko-sandbox-apt-get")
     try check(Fixture(root))
     finally deleteRecursively(root)
 

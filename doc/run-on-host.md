@@ -6,7 +6,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
     │                                                                                    │
     │  ┌─ sandbox container (inside the podman machine) ────────────────────────────┐    │
-    │  │ agent → sandbox-run-on-host sbt / mill / gradle / mvn                      │    │
+    │  │ agent → ko-sandbox-run-on-host sbt / mill / gradle / mvn                   │    │
     │  └────────────────────────────────────────────────────────────────────────────┘    │
     │                       │  command       ↑  stdout, stderr, and exit status          │
     │                       ↓                │                                           │
@@ -42,7 +42,7 @@ the code that enforces each part:
 | --- | --- |
 | the security properties and their costs | `SECURITY.md` "Run on host" |
 | option syntax and write access | [README.md](../README.md#reference), `--run-on-host` |
-| the channel protocol and its teardown | `RunOnHostChannel.scala`, `sandbox-run-on-host` |
+| the channel protocol and its teardown | `RunOnHostChannel.scala`, `ko-sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
@@ -63,7 +63,7 @@ A host command's recurring cost is startup. When a start is paid, per program:
 
 - sbt and `mill`: the launch keeps one server or daemon warm across its commands from one build
   directory ("Where a host command deviates from the stock program"), so a start is paid by the
-  first command from a directory, after `sandbox-run-on-host <program> shutdown`, and after the
+  first command from a directory, after `ko-sandbox-run-on-host <program> shutdown`, and after the
   program's own idle exit — sbt's seven days (`TODO.md`, "an idle bound for the sbt server"),
   Mill's thirty minutes.
   - An sbt server keeps the `sbt.version` and options it started with until `shutdown`, as in a
@@ -484,7 +484,7 @@ staying as the group's provable leader and ended with the group first — when:
   the stock client meeting the mismatch would end the daemon and start a replacement from its own
   profile, which cannot bind, and the command would fail;
 - the daemon is gone on its own: Mill's idle exit, thirty minutes after its last client;
-  `sandbox-run-on-host mill shutdown`; or a client's disconnect mid-command, on which the daemon
+  `ko-sandbox-run-on-host mill shutdown`; or a client's disconnect mid-command, on which the daemon
   shuts itself down (measured, M5), where an sbt server survives the same disconnect.
 
 Mill's idle exit counts from the last client's disconnect, and a daemon no client has connected
@@ -823,11 +823,11 @@ Why the rows are what they are:
 
 ## The channel and the command
 
-`sandbox-run-on-host <program> [args…]` is a named command, a sibling of `sandbox-apt-get`, rather
-than a shim shadowing `sbt` on `PATH`: where each command ran is then visible in the transcript
-the user reads. It cannot inherit `sandbox-apt-get`'s discoverability — `apt-get install` *fails*
-in the sandbox and teaches the agent to look for the prefixed name, while `sbt test` in the
-container *succeeds*, slower, and nothing prompts a reconsideration.
+`ko-sandbox-run-on-host <program> [args…]` is a named command, a sibling of `ko-sandbox-apt-get`,
+rather than a shim shadowing `sbt` on `PATH`: where each command ran is then visible in the
+transcript the user reads. It cannot inherit `ko-sandbox-apt-get`'s discoverability —
+`apt-get install` *fails* in the sandbox and teaches the agent to look for the prefixed name, while
+`sbt test` in the container *succeeds*, slower, and nothing prompts a reconsideration.
 
 So the "What this session may do" section states the instruction, and only where it can be true:
 the launcher knows the platform, so a macOS session launched without the option gets one discovery
@@ -1003,7 +1003,7 @@ where the caller is not interactive.
 - **`new` and `init` run through a server — the client model.** Stock sbt runs those two in the
   sbt process itself, in place, since a template is written where no build is, and every other
   command through its client; the broker has one path, a client to the server it starts, so
-  `sandbox-run-on-host sbt new` in an empty directory meets the runner's refusal of a directory
+  `ko-sandbox-run-on-host sbt new` in an empty directory meets the runner's refusal of a directory
   with no build, and `--allow-empty` starts the server there as the stock client's flag would.
   Whether `new` then writes its template through that server the gate does not measure.
 - **The JVM client, never `sbtn` — operability.** sbt 2 runs its native client by default, which
@@ -1152,8 +1152,9 @@ system:
   never by listing what a host happens to have, and never as a way to reach a user path.
   `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured.
 - The measured set is one file, a resource of the launcher's own artifact
-  (`src/main/resources/agentsandbox/runtime-authority.txt`): what the production wrapper grants is
-  what the probes measured. The gate and host commands use that same set of grants.
+  (`src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt`): what the production
+  wrapper grants is what the probes measured. The gate and host commands use that same set of
+  grants.
 - Do not pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the
   narrowest rule testing justifies.
 
@@ -1187,7 +1188,7 @@ A rule-file edit takes effect when a proxy is next created, never by restarting 
 which holds the lines it was created with:
 
 - at the first command from a build directory the launch has not visited;
-- after `sandbox-run-on-host <program> shutdown` followed by a proxy's own end;
+- after `ko-sandbox-run-on-host <program> shutdown` followed by a proxy's own end;
 - at the next launch, as the session's own rule file takes effect at the next launch.
 
 Until then a host removed from the file stays reachable from that proxy, and one added is not; to

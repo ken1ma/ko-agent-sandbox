@@ -89,7 +89,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
   - Its inclusion is authority — it lets that proxy read and change opaque model traffic — so it
     needs a launch-time selection and a banner line of its own.
   - Four stores are extended: the proxy's origin trust, the sandbox PEM bundle, the image JDK's
-    `cacerts`, and `sandbox-jdk-use-proxy`'s certificate.
+    `cacerts`, and `ko-sandbox-jdk-use-proxy`'s certificate.
   - An endpoint CA, for an `https` endpoint under a private CA, is carried the same way but
     extends one store only, the trust the proxy verifies the endpoint against: in any of the four
     it would be interception authority.
@@ -251,7 +251,7 @@ A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_O
 ## Deferred — an idle bound for the sbt server
 
 The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
-`sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
+`ko-sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
 (`run-on-host.md`, the startup-cost paragraph). A warm server is what a terminal user keeps on
 purpose, so its heap is the price chosen; Mill's daemon exits on Mill's own thirty minutes.
 

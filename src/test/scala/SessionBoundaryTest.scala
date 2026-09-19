@@ -209,7 +209,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("a refusal says what to do next, in the words curl, git and the check print"):
     inSession()
     // RefusalAdvice's rows as the programs show them: curl prints a 403's body
-    // as it is, git prints a text/plain body as `remote:` lines, and sandbox-egress-check is the
+    // as it is, git prints a text/plain body as `remote:` lines, and ko-sandbox-egress-check is the
     // only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
     def body(args: String*): String = curl(args*).text
@@ -230,7 +230,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     finally
       deleteRecursively(repo)
 
-    val refused = run("sandbox-egress-check", "unlisted.invalid")
+    val refused = run("ko-sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
     assert(refused.text.contains("403"), refused.text)
     assert(
@@ -239,7 +239,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       ),
       refused.text,
     )
-    val allowed = run("sandbox-egress-check", "api.github.com")
+    val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
 
@@ -247,7 +247,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     inSession()
     // Driven as a program rather than asserted against the mounted file, because what matters is
     // that the default ProxySelector acts on it — and that it does so without setting a system
-    // property (sandbox-jdk-use-proxy has why).
+    // property (ko-sandbox-jdk-use-proxy has why).
     val probe = Files.createTempDirectory("jvm-proxy-probe")
     try
       val source = probe.resolve("Probe.java")

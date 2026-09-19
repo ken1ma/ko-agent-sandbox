@@ -52,7 +52,7 @@ class ProxyContainerTest extends munit.FunSuite:
       )
       assertEquals(
         inspect(proxy, "{{json .Config.Entrypoint}}"),
-        "[\"/usr/local/bin/agent-egress-proxy\"]",
+        "[\"/usr/local/bin/ko-agent-egress-proxy\"]",
         "native entrypoint",
       )
 
@@ -84,7 +84,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(sources.exists(_.endsWith("leaf.key")), s"no leaf key is mounted: $binds")
       assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the CA private key is mounted: $binds")
       assert(!sources.exists(_.endsWith("ca.key")), s"a CA key is mounted under the default profile: $binds")
-      assertEquals(writableMounts, Vector("/var/log/agent-egress-proxy/proxy.log"))
+      assertEquals(writableMounts, Vector("/var/log/ko-agent-egress-proxy/proxy.log"))
 
       val logs = sources.filter(_.endsWith(".log"))
       assertEquals(logs.size, 1, s"expected exactly this run's audit log, got $logs")
@@ -112,7 +112,7 @@ class ProxyContainerTest extends munit.FunSuite:
       val sources = inspect(live.proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).map(_.takeWhile(_ != ':')).toVector
       val runCaDir = AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id)
-        .resolve(s"run-${live.suffix}").resolve("agent-egress-proxy").resolve("allow-unless-denied")
+        .resolve(s"run-${live.suffix}").resolve("ko-agent-egress-proxy").resolve("allow-unless-denied")
       assert(sources.contains(runCaDir.resolve("ca.crt").toString), s"the run CA is not mounted: $sources")
       assert(sources.contains(runCaDir.resolve("ca.key").toString), s"the run CA's key is not mounted: $sources")
       assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the project CA's key is mounted: $sources")
@@ -186,7 +186,7 @@ class ProxyContainerTest extends munit.FunSuite:
       // An inspected host reached through the tunnel: opened to a numeric address, never the name,
       // with the credential on that CONNECT alone; the sandbox's own variables still name this
       // run's proxy.
-      val checked = exec(live, "sandbox-egress-check", "docs.python.org")
+      val checked = exec(live, "ko-sandbox-egress-check", "docs.python.org")
       assert(checked.ok, s"${checked.text}\n${checked.err}")
       assert(checked.text.startsWith("CONNECT docs.python.org:443: 200; HEAD / -> HTTP/1.1"), checked.text)
       val heads = upstream.received.get
