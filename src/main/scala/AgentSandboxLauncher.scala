@@ -13,7 +13,7 @@
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
 //   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
 //   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
-//   FFMHelper.scala             the execvp downcall
+//   FFMHelper.scala             the downcalls into libc and kernel32
 //
 // This file is the canonical description of what the boundary is made of:
 //
@@ -1197,11 +1197,12 @@ object AgentSandboxLauncher:
       System.err.println(s"egress rules (.ko-agent-sandbox/egress/$name): ${lineSummary(text)}")
 
   /** The lines the dry run reports as granting beyond the defaults (EgressRules.wideningLines),
-    * once more, alone, tinted like the permissive profile: the lines as written print at every
-    * launch and are read as a habit; this one appears only when there is one. */
+    * once more, alone, tinted as the project's (HostCommands.weakenedByProject): the lines as
+    * written print at every launch and are read as a habit; this one appears only when there is
+    * one. */
   def printWidening(rulesetText: String): Unit =
     val widens = wideningLines(rulesetText)
-    if widens.nonEmpty then System.err.println(weakened(s"egress rules widen: ${widens.mkString("; ")}"))
+    if widens.nonEmpty then System.err.println(weakenedByProject(s"egress rules widen: ${widens.mkString("; ")}"))
 
   /**
    * The ruleset this project would apply, without a session: the same readRuleFiles +
@@ -1894,12 +1895,13 @@ object AgentSandboxLauncher:
   // Main
   // -------------------------------------------------------------------------
 
-  /** The launch's host-command lines: the programs chosen and what running them on the host costs
-    * the user; under `--write=reject` an extra line, red as a boundary weaker than the option
-    * says, since a host command writes the project as its program does while the session's own
-    * writes are refused (SECURITY.md "Run on host"). */
+  /** The launch's host-command lines: the programs chosen — authority a container session alone
+    * does not have, so tinted as the user's weakening (HostCommands.weakenedByUser) — and what
+    * running them on the host costs the user; under `--write=reject` an extra line, tinted alike
+    * as a boundary weaker than the option says, since a host command writes the project as its
+    * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
   def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
-    val programs = s"sandbox-run-on-host: ${chosen(runOnHost.mkString(", "), color)} on host"
+    val programs = weakenedByUser(s"sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
@@ -1907,13 +1909,41 @@ object AgentSandboxLauncher:
       s"your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
     )
     val reject = Option.when(writeMode == "reject")(
-      weakened(
+      weakenedByUser(
         "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
           " project as its program does",
         color,
       ),
     )
     Vector(programs) ++ shutdown ++ reject
+
+  def nestingLine(mode: String, color: Boolean = colorStderr): String =
+    weakenedByUser(
+      s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
+        "disabled and CAP_SYS_CHROOT added, for the whole session",
+      color,
+    )
+
+  def clipboardLine(mode: String, color: Boolean = colorStderr): String =
+    weakenedByUser(
+      s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
+        (if mode == "bidirectional" then " and set your clipboard" else ""),
+      color,
+    )
+
+  /** One line per program whose rule file names hosts, each a grant beyond the program's Maven
+    * Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for this line
+    * alone: the broker reads them again at a program's first command, where a refusal reaches the
+    * agent and not the user. */
+  def runOnHostWideningLines(
+    programHosts: Seq[(String, Vector[String])],
+    color: Boolean = colorStderr,
+  ): Vector[String] =
+    programHosts.toVector.collect:
+      case (program, hosts) if hosts.nonEmpty =>
+        val grants = hosts.map(host => printable(s"allow https://$host/ read")).mkString("; ")
+        val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
+        weakenedByProject(s"run-on-host egress rules ($file) widen: $grants", color)
 
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
@@ -2944,8 +2974,8 @@ object AgentSandboxLauncher:
     // The workspace mode and the egress profile with their relevant state, said every launch — and
     // rules that arrived with the repository never take effect unseen: the files as written, then
     // the dry run's counts, the proxy's own answers to exactly what is enforced. Each line tints
-    // the mode it states; a branch weaker than the default is tinted whole instead, red
-    // (HostCommands.weakened), so no line ever has two colours.
+    // the mode it states; a line stating a boundary weaker than the default is tinted whole
+    // instead, by who weakened it (HostCommands.weakenedByUser, weakenedByProject).
     // The path is said on every line: on Windows this is where the user learns the /mnt/<drive>
     // spelling the agent will print.
     System.err.println(filteredWorkspace match
@@ -2956,8 +2986,7 @@ object AgentSandboxLauncher:
     noGit.foreach(cause => warn(noGitWarning(cause)))
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     printWidening(rulesetText)
-    val egressLine = egressBanner(rulesetText)
-    System.err.println(if publicDefault then weakened(egressLine) else egressLine)
+    System.err.println(egressBanner(rulesetText))
     // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
     // parse, so what is on the screen is what is used — never a launcher-side reading of the
     // variable.
@@ -3021,10 +3050,7 @@ object AgentSandboxLauncher:
     val nestedArgs = nesting match
       case "none" => Vector(nestingEnv)
       case mode =>
-        System.err.println(
-          s"nested containers: ${chosen(mode)} by $NestingVariable; /proc unmasked, SELinux label " +
-            "disabled and CAP_SYS_CHROOT added, for the whole session",
-        )
+        System.err.println(nestingLine(mode))
         NestingLoosenings :+ nestingEnv
 
     // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code and Copilot copy through
@@ -3033,10 +3059,7 @@ object AgentSandboxLauncher:
     val clipboardArgs = clipboard match
       case "off" => Vector.empty
       case mode =>
-        System.err.println(
-          s"clipboard: ${chosen(mode)} by $ClipboardVariable; the agent can read an image you copy" +
-            (if mode == "bidirectional" then " and set your clipboard" else ""),
-        )
+        System.err.println(clipboardLine(mode))
         Vector(s"--env=$ClipboardVariable=$mode") ++
           (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-agent-clipboard") else Vector.empty)
 
@@ -3046,6 +3069,12 @@ object AgentSandboxLauncher:
       if runOnHost.isEmpty then Vector.empty
       else
         runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
+        val programHosts = RunOnHostPrereqs.Program.values.toVector.filter(program => runOnHost.contains(program.name))
+          .map: program =>
+            RunOnHostSandbox.readProgramRules(projectDir, program) match
+              case Right(hosts)  => program.name -> hosts
+              case Left(refusal) => fail(s"error: ${printable(refusal)}")
+        runOnHostWideningLines(programHosts).foreach(System.err.println)
         System.err.println(pathLine("host command log", channelLogFile, os))
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 

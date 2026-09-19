@@ -158,11 +158,10 @@ class HostCommandsTest extends munit.FunSuite:
     assert(!consented(None))
 
   test("colour is for a terminal that will render it, and for no one else"):
-    assertEquals(colorAllowed(Os.Linux, None, Some("xterm-256color")), true)
-    assertEquals(colorAllowed(Os.Mac, None, None), true)
-    assertEquals(colorAllowed(Os.Windows, None, Some("xterm-256color")), false)
-    assertEquals(colorAllowed(Os.Linux, Some("1"), Some("xterm-256color")), false)
-    assertEquals(colorAllowed(Os.Linux, None, Some("dumb")), false)
+    assertEquals(colorAllowed(None, Some("xterm-256color")), true)
+    assertEquals(colorAllowed(None, None), true)
+    assertEquals(colorAllowed(Some("1"), Some("xterm-256color")), false)
+    assertEquals(colorAllowed(None, Some("dumb")), false)
 
   test("emphasis tints the severity label and leaves every other word as it was written"):
     val warning = "warning: podman runs on 3.0G of memory\n  raise it with `podman machine set`"
@@ -174,7 +173,7 @@ class HostCommandsTest extends munit.FunSuite:
     // A block has a label per line, and a line that has none keeps its own spelling.
     assertEquals(
       emphasized("error: no\nplain\nwarning: yes", color = true),
-      "\u001b[38;5;208merror:\u001b[0m no\nplain\n\u001b[38;5;208mwarning:\u001b[0m yes",
+      "\u001b[31merror:\u001b[0m no\nplain\n\u001b[38;5;208mwarning:\u001b[0m yes",
     )
     // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
     assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
@@ -189,13 +188,22 @@ class HostCommandsTest extends munit.FunSuite:
       FailDuringShutdown.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]],
     ).map(location).distinct.mkString(java.io.File.pathSeparator)
     val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
-    // Native access as the jar's manifest grants it, for the isatty behind colorStderr. What the
-    // JVM prints before the first refusal line is its own: _JAVA_OPTIONS echoed back.
-    val staged = run(
+    // Native access as the jar's manifest grants it, for the isatty or console-mode call behind
+    // colorStderr: this JVM's stderr is a pipe, so the plain labels below are also that call
+    // answering for a redirected stream, which sbt's own JVM, run from a console, cannot show.
+    // The environment is set so that colorAllowed passes and the call is what decides.
+    // What the JVM prints before the first refusal line is its own: _JAVA_OPTIONS echoed back.
+    val builder = ProcessBuilder(
       jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, "agentsandbox.launcher.FailDuringShutdown",
     )
+    builder.environment().remove("NO_COLOR")
+    builder.environment().put("TERM", "xterm-256color")
+    val process = builder.start()
+    process.getOutputStream.close()
+    process.getInputStream.readAllBytes()
+    val stagedErr = String(process.getErrorStream.readAllBytes())
     assertEquals(
-      staged.err.linesIterator.dropWhile(!_.startsWith("error:")).toVector,
+      stagedErr.linesIterator.dropWhile(!_.startsWith("error:")).toVector,
       Vector(
         "error: the launch was interrupted; the failure below is its consequence, not a fault of its own",
         "error: podman failed",
@@ -203,7 +211,7 @@ class HostCommandsTest extends munit.FunSuite:
         "hook: removed",
       ),
     )
-    assertEquals(staged.exit, 130)
+    assertEquals(process.waitFor(), 130)
 
   test("every warning and refusal the launcher writes goes through the one label"):
     // warn and fail are where the label is spelled and tinted; a println of its own prints it

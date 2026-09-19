@@ -1076,6 +1076,8 @@ provides the confinement for these commands; they execute outside the container.
   Maven Central.
   - The file takes `allow https://<host>/ read` lines only; unrecognized configuration entries are
     refused, as in the parent directory.
+  - A launch selecting the program prints the file's hosts, so a host that arrived with the
+    repository does not take effect unseen.
   - The proxy reads the file when it starts: a host removed from the file stays reachable from the
     broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
   - The proxy runs under a profile of its own, granting its executable, the runtime authority as
@@ -1217,7 +1219,7 @@ provides the confinement for these commands; they execute outside the container.
 - **`--write=reject` composes, and the project is then no longer read-only to the session.** A host
   command can write `target/` and any other path allowed by the profile's project grant. Selecting
   both options authorizes those writes despite the container's read-only mount, and the launch
-  says so in a red line. A session that must leave the project untouched must not enable
+  says so on a line of its own. A session that must leave the project untouched must not enable
   `--run-on-host`.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness.
