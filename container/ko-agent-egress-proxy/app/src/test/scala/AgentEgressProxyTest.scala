@@ -2077,7 +2077,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val (ca, caKey) = X509HelperTest.testCa(now, days = 825)
     val directory = java.nio.file.Files.createTempDirectory("material")
     val (caFile, caKeyFile) = X509HelperTest.writePem(directory, "ca", ca, caKey)
-    val leaf = X509Helper.issueLeaf("docs.example", ca, caKey, now)
+    val leaf = X509Helper.issueLeaf(Vector("docs.example"), ca, caKey, now)
     val (leafFile, leafKeyFile) = X509HelperTest.writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
     val leafPair = Map(CertificateVariable -> leafFile.toString, PrivateKeyVariable -> leafKeyFile.toString)
     val caPair = Map(CaCertificateVariable -> caFile.toString, CaPrivateKeyVariable -> caKeyFile.toString)

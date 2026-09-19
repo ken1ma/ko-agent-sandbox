@@ -8,9 +8,9 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import scala.jdk.CollectionConverters.*
 
-import BouncyCastleHelper.*
+import CertificateHelper.*
 
-class BouncyCastleHelperTest extends munit.FunSuite:
+class CertificateHelperTest extends munit.FunSuite:
 
   private def parse(pem: String): X509Certificate =
     CertificateFactory
@@ -121,12 +121,11 @@ class BouncyCastleHelperTest extends munit.FunSuite:
     assert(!signedBy(leaf.certificatePem, ""))
 
   test("a leaf the proxy issues from a run CA chains to it, matches its key and names its host alone"):
-    // The two builders meet here: the CA BouncyCastle created on the host, the leaf the JDK's own
-    // builder issued as the proxy does (X509Helper); curl in the sandbox is the third reader,
-    // EgressSessionTest's.
+    // The run CA reaches the proxy as the launcher's PEM text; this issues from that text as the
+    // proxy does. EgressSessionTest has curl in the sandbox verify such a leaf.
     val ca = createCa("run-1a2b3c4d")
     val issued = agentsandbox.egress.X509Helper.issueLeaf(
-      "docs.example", parse(ca.certificatePem), parseEcPrivateKey(ca.privateKeyPem),
+      Vector("docs.example"), parse(ca.certificatePem), parseEcPrivateKey(ca.privateKeyPem),
     )
     val leafPem = toPem("CERTIFICATE", issued.certificate.getEncoded)
     assert(signedBy(leafPem, ca.certificatePem))

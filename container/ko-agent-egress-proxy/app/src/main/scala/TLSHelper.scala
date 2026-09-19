@@ -142,7 +142,7 @@ object TLSHelper:
       new TlsInspection(host =>
         contexts.synchronized:
           Option(contexts.get(host)).getOrElse:
-            val leaf = X509Helper.issueLeaf(host, ca, key)
+            val leaf = X509Helper.issueLeaf(Vector(host), ca, key)
             val context = contextOf(Vector(leaf.certificate), leaf.privateKey)
             contexts.put(host, context)
             context,

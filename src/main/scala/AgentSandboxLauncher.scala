@@ -11,7 +11,7 @@
 //   EgressRules.scala           this project's egress rules, their resolution, and the audit log
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
-//   BouncyCastleHelper.scala    building certificates and PEM (its header has the import rule)
+//   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
 //   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
 //   FFMHelper.scala             the execvp downcall
 //
@@ -80,7 +80,7 @@ import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
 
-import BouncyCastleHelper.*
+import CertificateHelper.*
 import ContainerfileSources.*
 import JdkTrust.*
 import EgressRules.*

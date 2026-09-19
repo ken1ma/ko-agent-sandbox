@@ -6,40 +6,19 @@ import java.security.{KeyStore, PrivateKey}
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.{Base64, Date}
+import java.util.Base64
 import javax.net.ssl.{SNIHostName, SNIServerName, SSLContext, SSLSocket, TrustManagerFactory, X509TrustManager}
 import scala.jdk.CollectionConverters.*
-import sun.security.x509.*
 
 import TLSHelper.*
 import X509Helper.*
 import X509HelperTest.*
 
 object X509HelperTest:
-  /** A CA of the kind the launcher creates for a run, built here with the same JDK classes: the
-    * proxy never creates one, and this build has no BouncyCastle. */
+  /** A CA of the kind the launcher creates for a run. */
   def testCa(now: Instant, days: Long): (X509Certificate, PrivateKey) =
-    val keyPair = newEcKeyPair()
-    val name = X500Name("CN=ko-agent-sandbox egress CA (test)")
-    val info = X509CertInfo()
-    info.setVersion(CertificateVersion(CertificateVersion.V3))
-    info.setSerialNumber(CertificateSerialNumber(randomSerial()))
-    info.setAlgorithmId(CertificateAlgorithmId(AlgorithmId.get("SHA256withECDSA")))
-    info.setIssuer(name)
-    info.setValidity(CertificateValidity(Date.from(now), Date.from(now.plus(days, ChronoUnit.DAYS))))
-    info.setSubject(name)
-    info.setKey(CertificateX509Key(keyPair.getPublic))
-    val extensions = CertificateExtensions()
-    extensions.setExtension(BasicConstraintsExtension.NAME, BasicConstraintsExtension(true, true, 0))
-    val keyUsage = KeyUsageExtension()
-    keyUsage.set(KeyUsageExtension.KEY_CERTSIGN, true)
-    extensions.setExtension(KeyUsageExtension.NAME, keyUsage)
-    extensions.setExtension(
-      SubjectKeyIdentifierExtension.NAME,
-      SubjectKeyIdentifierExtension(KeyIdentifier(keyPair.getPublic).getIdentifier),
-    )
-    info.setExtensions(extensions)
-    (X509CertImpl.newSigned(info, keyPair.getPrivate, "SHA256withECDSA"), keyPair.getPrivate)
+    val ca = createCa("ko-agent-sandbox egress CA (test)", now, days)
+    (ca.certificate, ca.privateKey)
 
   /** The two files as the launcher writes them: PEM, the key PKCS#8. */
   def writePem(directory: Path, name: String, certificate: X509Certificate, key: PrivateKey): (Path, Path) =
@@ -65,6 +44,9 @@ class X509HelperTest extends munit.FunSuite:
     trusting(ca).getTrustManagers.collectFirst { case manager: X509TrustManager => manager }.get
       .checkServerTrusted(Array(leaf), "ECDHE_ECDSA")
 
+  private def keyUsageBits(certificate: X509Certificate): Set[Int] =
+    certificate.getKeyUsage.zipWithIndex.collect { case (true, bit) => bit }.toSet
+
   /** The DER bytes read back through the JDK's parser, as every client will read them. */
   private def reparsed(certificate: X509Certificate): X509Certificate =
     CertificateFactory.getInstance("X.509")
@@ -74,7 +56,7 @@ class X509HelperTest extends munit.FunSuite:
   test("an issued leaf names its host alone, is a serverAuth non-CA, chains to the CA and matches its key"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
-    val issued = issueLeaf("docs.example", ca, caKey, now)
+    val issued = issueLeaf(Vector("docs.example"), ca, caKey, now)
     val leaf = reparsed(issued.certificate)
 
     assertEquals(TLSHelper.TlsInspection.subjectAlternativeNames(leaf), Set("docs.example"))
@@ -98,10 +80,34 @@ class X509HelperTest extends munit.FunSuite:
     assert(verifier.verify(signature))
     assertNotEquals(leaf.getPublicKey, ca.getPublicKey)
 
+  test("the CA signs certificates and CRLs only, with no CA below it, under a name RFC 5280 admits"):
+    val ca = reparsed(createCa("c" * MaxCommonNameLength, Instant.now(), days = 825).certificate)
+    assertEquals(ca.getBasicConstraints, 0)
+    assertEquals(keyUsageBits(ca), Set(5, 6)) // keyCertSign, cRLSign
+    assertEquals(ca.getCriticalExtensionOIDs.asScala.toSet, Set("2.5.29.19", "2.5.29.15"))
+    ca.verify(ca.getPublicKey)
+    intercept[IllegalArgumentException](createCa("c" * (MaxCommonNameLength + 1), Instant.now(), days = 825))
+
+  test("a leaf names every host asked for, in order, with basic constraints and key usage critical"):
+    val now = Instant.now()
+    val (ca, caKey) = testCa(now, days = 825)
+    val hosts = Vector("github.com", "gitlab.com", "docs.example.org")
+    val leaf = reparsed(issueLeaf(hosts, ca, caKey, now).certificate)
+    assertEquals(leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector, hosts)
+    assertEquals(keyUsageBits(leaf), Set(0, 4)) // digitalSignature, keyAgreement
+    assertEquals(leaf.getCriticalExtensionOIDs.asScala.toSet, Set("2.5.29.19", "2.5.29.15"))
+
+  test("CA and leaf are backdated against VM clock skew"):
+    val now = Instant.now()
+    val (ca, caKey) = testCa(now, days = 825)
+    val leaf = issueLeaf(Vector("docs.example"), ca, caKey, now).certificate
+    Seq(ca, leaf).foreach: certificate =>
+      assert(certificate.getNotBefore.toInstant.isBefore(now.minus(4, ChronoUnit.MINUTES)))
+
   test("the chain has the key identifiers strict verifiers require"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
-    val leaf = reparsed(issueLeaf("docs.example", ca, caKey, now).certificate)
+    val leaf = reparsed(issueLeaf(Vector("docs.example"), ca, caKey, now).certificate)
     val SkiOid = "2.5.29.14"
     val AkiOid = "2.5.29.35"
     val caSki = ca.getExtensionValue(SkiOid)
@@ -116,14 +122,14 @@ class X509HelperTest extends munit.FunSuite:
     // To the second: X.509 validity carries no finer time.
     val now = Instant.now().truncatedTo(ChronoUnit.SECONDS)
     val (ca, caKey) = testCa(now, days = 40)
-    val leaf = issueLeaf("docs.example", ca, caKey, now).certificate
+    val leaf = issueLeaf(Vector("docs.example"), ca, caKey, now).certificate
     assert(!leaf.getNotAfter.after(ca.getNotAfter))
     val (longCa, longKey) = testCa(now, days = 3650)
     assertEquals(
-      issueLeaf("docs.example", longCa, longKey, now).certificate.getNotAfter.toInstant,
+      issueLeaf(Vector("docs.example"), longCa, longKey, now).certificate.getNotAfter.toInstant,
       now.plus(LeafValidityDays, ChronoUnit.DAYS),
     )
-    val again = issueLeaf("docs.example", ca, caKey, now).certificate
+    val again = issueLeaf(Vector("docs.example"), ca, caKey, now).certificate
     assertNotEquals(again.getSerialNumber, leaf.getSerialNumber)
     assertNotEquals(again.getPublicKey, leaf.getPublicKey)
 
@@ -181,7 +187,7 @@ class X509HelperTest extends munit.FunSuite:
     val (_, otherKeyFile) = writePem(directory, "other", other, otherKey)
     val mismatched = intercept[IllegalArgumentException](TlsInspection.issuing(certificateFile, otherKeyFile))
     assert(mismatched.getMessage.contains("does not match"), mismatched.getMessage)
-    val leaf = issueLeaf("docs.example", ca, caKey, now)
+    val leaf = issueLeaf(Vector("docs.example"), ca, caKey, now)
     val (leafFile, leafKeyFile) = writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
     val notCa = intercept[IllegalArgumentException](TlsInspection.issuing(leafFile, leafKeyFile))
     assert(notCa.getMessage.contains("not a CA certificate"), notCa.getMessage)
