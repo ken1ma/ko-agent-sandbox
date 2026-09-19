@@ -3,8 +3,15 @@
 ## Adding project instructions
 
 Put a project's working conventions in `AGENTS.md` at the project root: `codex`, `agy`,
-`kiro-cli`, `copilot` and `opencode` read it. `claude` reads `CLAUDE.md` instead; give it one
-whose content is `@AGENTS.md`, as this repository's [CLAUDE.md](../CLAUDE.md) is.
+`kiro-cli`, `copilot` and `opencode` read it.
+
+For `claude`, add a `.claude/CLAUDE.md` whose content is `@../AGENTS.md`, as this repository's
+[.claude/CLAUDE.md](../.claude/CLAUDE.md) is. The import loads that one file: `claude` skips a
+subdirectory's `AGENTS.md` unless that subdirectory has its own `.claude/CLAUDE.md` importing it.
+
+Claude Code 2.1.277 and later read `AGENTS.md` themselves, subdirectories included, but not under
+the image's `allowManagedHooksOnly`:
+https://code.claude.com/docs/en/memory#when-agents-md-support-is-unavailable
 
 The sandbox's own instructions describe the container and the session's permissions, not how to
 work ([design.md](design.md#the-image-carries-no-working-conventions)).
