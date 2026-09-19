@@ -1538,10 +1538,10 @@ object RunOnHostSandbox:
       name => Option.when(name == "SBT_GLOBAL_SERVER_DIR")(sessionTmp.toString)
     sbtServerSocket(buildDirectory, serverDir, Path.of("/"))
 
-  /** Where a server's output goes, stdout and stderr: in the session directory, which the profile grants no process
-    * — a file under `tmp/` the server could replace with a link or a FIFO before the broker
-    * opens it for the next server — and where appendSessionLogs keeps it with the session's
-    * other logs; appended to across the servers of one build directory. */
+  /** Where a server's output goes, stdout and stderr: in the session directory, which the profile
+    * grants no process, rather than under `tmp/`, where the server could replace the file with a
+    * link or a FIFO before the broker opens it for the next server; appendSessionLogs keeps it
+    * there with the session's other logs. Appended to across the servers of one build directory. */
   def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
 
   /** How long a starting server may make no progress — neither its log nor the proxy

@@ -141,17 +141,20 @@ object RunOnHostChannel:
         case 0  => remaining -= 1
         case _  => ()
 
+  /** The field and the bytes it consumed, its NUL included, as drainFields charges them. The bound
+    * is tested before each read: a field refused after its NUL was read would leave the caller's
+    * drain waiting for one NUL more than the requester writes. */
   private def readField(in: InputStream, budget: Int): Either[String, (String, Int)] =
     val buffer = ByteArrayOutputStream()
     var result: Option[Either[String, (String, Int)]] = None
     while result.isEmpty do
-      in.read() match
-        case -1 => result = Some(Left("the stream ended inside a request"))
-        case 0  => result = Some(Right((String(buffer.toByteArray, UTF_8), buffer.size)))
-        case byte =>
-          if buffer.size >= budget then
-            result = Some(Left(s"the request passed the $MaxRequestBytes-byte bound"))
-          else buffer.write(byte)
+      if buffer.size >= budget then
+        result = Some(Left(s"the request passed the $MaxRequestBytes-byte bound"))
+      else
+        in.read() match
+          case -1   => result = Some(Left("the stream ended inside a request"))
+          case 0    => result = Some(Right((String(buffer.toByteArray, UTF_8), buffer.size + 1)))
+          case byte => buffer.write(byte)
     result.get
 
   // ---------------------------------------------------------------------------

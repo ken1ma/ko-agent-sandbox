@@ -3061,7 +3061,7 @@ object AgentSandboxLauncher:
       case mode =>
         System.err.println(clipboardLine(mode))
         Vector(s"--env=$ClipboardVariable=$mode") ++
-          (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-agent-clipboard") else Vector.empty)
+          (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=sandbox-clipboard") else Vector.empty)
 
     // Loud for the same reason: host-native execution is authority a container session alone does
     // not have. SECURITY.md "Run on host" is what bounds it.

@@ -982,7 +982,7 @@ Clipboard access is off by default because the host clipboard may contain sensit
     reads requests through a `podman exec` on the FIFO `/tmp/ko-agent-sandbox/clipboard/req` in
     the sandbox, and answers each through another on `rsp` beside it.
   - No host listener, no port, no proxy rule, no file in the project, and nothing moves until a
-    clipboard call from inside (`ClipboardBroker`, the image's `ko-agent-clipboard` shim).
+    clipboard call from inside (`ClipboardBroker`, the image's `sandbox-clipboard` shim).
 - **A request is read to a fixed size and no further.** Anything in the sandbox can write the
   FIFO.
   - What the host reads of one exec's stream is cut at `ClipboardBroker.MaxRequestBytes` whatever

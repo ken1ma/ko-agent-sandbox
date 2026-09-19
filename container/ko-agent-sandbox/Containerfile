@@ -587,10 +587,10 @@ RUN set -euxo pipefail; \
 # them from the instructions.
 COPY --chmod=0755 \
     sandbox-jdk-use-proxy sandbox-apt-get sandbox-install-podman sandbox-run-on-host sandbox-egress-check \
-    ko-agent-clipboard \
+    sandbox-clipboard \
     sandbox-entrypoint \
     /usr/local/bin/
-RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-agent-clipboard /usr/local/bin/$name; done
+RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s sandbox-clipboard /usr/local/bin/$name; done
 
 COPY AGENTS-SANDBOX.md /etc/ko-agent-sandbox/AGENTS.md
 

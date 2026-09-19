@@ -35,11 +35,11 @@ class ClipboardBrokerTest extends munit.FunSuite:
     * either, which is why the copy is tracked rather than the value forced. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
-    val source = Paths.get("container/ko-agent-sandbox/ko-agent-clipboard").toAbsolutePath
+    val source = Paths.get("container/ko-agent-sandbox/sandbox-clipboard").toAbsolutePath
     val text = Files.readString(source)
     val line = s"dir=${ClipboardBroker.SandboxDir}"
     require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
-    val copy = Files.createTempFile("ko-agent-clipboard", "")
+    val copy = Files.createTempFile("sandbox-clipboard", "")
     Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
     Files.setPosixFilePermissions(copy, PosixFilePermissions.fromString("rwxr-xr-x"))
     shimCopy = Some(copy)

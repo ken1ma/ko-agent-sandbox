@@ -88,6 +88,18 @@ class RunOnHostChannelTest extends munit.FunSuite:
     refused(Array.fill(MaxLineBytes + 1)('a'.toByte)) // a header that never ends
     refused("sbt 2\n/Users/me/app\u0000only-one\u0000".getBytes(UTF_8)) // ends inside the request
 
+  test("the request bound charges the NUL delimiters, as the drain does"):
+    // An empty argument is its delimiter alone, so MaxArguments of them put into the frame the most
+    // NULs an accepted request can hold.
+    def withCwdOf(bytes: Int): Array[Byte] =
+      framed("sbt", "a" * bytes, Vector.fill(MaxArguments)("")*)
+    val fits = withCwdOf(MaxRequestBytes - MaxArguments - 1)
+    assertEquals(fits.length - s"sbt $MaxArguments\n".length, MaxRequestBytes, "fields and NULs fill the bound")
+    assert(readRequest(ByteArrayInputStream(fits)).isRight, "a request at the bound")
+    val over = ByteArrayInputStream(withCwdOf(MaxRequestBytes - MaxArguments))
+    assert(readRequest(over).isLeft, "one byte past it")
+    assertEquals(over.available(), 0, "the refused frame is drained whole")
+
   test("a NUL-dense frame is bounded by bytes, not by its claimed field count"):
     // The drain must charge the NUL delimiters too: with an argument count near Int.MaxValue and
     // an endless all-NUL stream, only the byte budget ends this read — returning at all is the
