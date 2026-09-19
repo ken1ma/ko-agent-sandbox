@@ -62,15 +62,16 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, dev: u64, in
   semantics"). The remaining resolve flags, and the bounded `EAGAIN` retry a
   concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
 - **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
-  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored
-  path that stops naming its inode once the tree moves, which either side may do and no later
-  lookup repairs: the kernel goes on addressing a renamed directory by the inode it holds rather
-  than looking the new name up. `RESOLVE_NO_SYMLINKS` is what makes that merely stale instead of
-  wrong — the chain then resolves to whatever now bears those names, which those same names
-  classify, or it fails (`fs.rs`, `open_ino`). The fd-per-inode alternative trades the staleness for
-  its own mirror quirk (an fd to a renamed-away subtree keeps operating on the moved inode) plus one
-  open fd per live inode, which at 100k files is real fd pressure. The path model holds one fd for
-  the root and transient fds per op.
+  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored path
+  that stops naming its inode once the tree moves, which either side may do and no later lookup
+  repairs: the kernel goes on addressing a renamed directory by the inode it holds rather than
+  looking the new name up. `RESOLVE_NO_SYMLINKS` and an identity comparison are what make that
+  merely stale instead of wrong — the chain resolves to the object the node was classified as, or it
+  fails: `ELOOP` through a symlink, `ESTALE` at another object, which a second name of a guarded
+  entry would otherwise let an ordinary chain reach (`fs.rs`, `open_ino`). The fd-per-inode
+  alternative trades the staleness for its own mirror quirk (an fd to a renamed-away subtree keeps
+  operating on the moved inode) plus one open fd per live inode, which at 100k files is real fd
+  pressure. The path model holds one fd for the root and transient fds per op.
 - **Backing identity, so a replacement is a new inode.** `dev`/`ino_id` are the `(st_dev, st_ino)`
   the position named when the entry was allocated. `lookup` re-stats the name and reuses the entry
   only when identity still matches; a host replacement — a different object left at the same name —
@@ -97,9 +98,13 @@ At hundreds of thousands of files the two risks are table growth and per-op poli
   tens of MB, not a leak that grows with every file the compiler ever stat'd.
 - **`git` is a cached, incremental context.** `GitContext` is computed once at `lookup` from the
   parent's context plus this name (O(1)), never by re-walking. The overwhelming majority of files in
-  a Scala build are outside any `.git`, so their context is a single "not in a gitdir" tag and every
-  mutation on them takes an immediate allow — no classification, no path scan. The policy core only
-  does real work inside a gitdir, which is a vanishing fraction of the op stream.
+  a Scala build are outside any `.git`, so their context is a single "not in a gitdir" tag and the
+  policy core allows every mutation on them without a path scan. The policy core only does real
+  work inside a gitdir, which is a vanishing fraction of the op stream.
+  - The name is not always the one the session used: an entry that is the same backing object as
+    the `.git` or `.ko-agent-sandbox` beside it takes that name's context (`fs.rs`,
+    `policy_name`; `security-research.md`, "Windows 8.3 short names", has why). Outside a gitdir
+    that costs a lookup two `fstatat` calls, and an operation on a parent and a name one more.
 
 
 ## Data path: userspace I/O, and the `FUSE_PASSTHROUGH` accelerator it does not use

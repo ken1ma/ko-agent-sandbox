@@ -1,14 +1,33 @@
 # TODO
 
 What `ko-agent-fs` still needs, ordered by what separates it from a first release anyone should
-trust. Items under **P1 — platform verification** are the ones that *cannot* be settled by reasoning
-at all — only the backing filesystem answers them, and until a row runs, the claim it would confirm
-is an assumption. Which machine settles a row depends on the backing: ext4 and the two Linux
-architectures the dev rig already reaches, APFS and NTFS a real macOS or Windows host. Everything
-below them is ordinary work.
+trust. The open security gap comes first. Items under **P1 — platform verification** are the ones
+that *cannot* be settled by reasoning at all — only the backing filesystem answers them, and until a
+row runs, the claim it would confirm is an assumption. Which machine settles a row depends on the
+backing: ext4 and the two Linux architectures the dev rig already reaches, APFS and NTFS a real
+macOS or Windows host. Everything below them is ordinary work.
 
 Decisions that research has already closed are in **Non-TODOs** so they stop resurfacing.
 
+
+## P1 — A second name arriving during a name-based mutation (open)
+
+`rename`, `unlink` and `rmdir` act on the name the policy decided about, and a concurrent host
+change can put a second name of a guarded entry there first (`security-research.md`, "Windows 8.3
+short names"; `SECURITY.md` states the exception to its claims).
+
+- [ ] A deterministic reproducer with its recorded outcome: the host's change placed between
+  `allow_child` or `allow_create` and the backing syscall, for a rename source, a rename
+  destination, a `RENAME_EXCHANGE` operand and a removal, with a hard link and with an NTFS short
+  name.
+- [ ] A design in which the decision holds through the mutation. Candidates, none examined: a
+  backing-name resolution that cannot select a second name of a guarded entry; enforcement inside
+  the backing filesystem; coordination that covers every writer of the backing tree, which a lock
+  in the daemon does not; refusing `--write=live` where second names can arise. A scan at launch
+  does not qualify, since the host can create a second name mid-session, and turning 8.3 name
+  generation off leaves the existing short names (`fsutil 8dot3name strip` removes those).
+  Staged mode keeps session mutations off the host tree, and its apply step needs the same
+  protection against a concurrent replacement.
 
 ## P1 — Platform verification (needs real filesystems)
 
@@ -35,8 +54,9 @@ cleanup). The corpus:
 - Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
 - Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
 - A Windows 8.3 short name, `GIT~1`, on NTFS: creating it where no `.git` exists must not make
-  one. The recorded run met `EEXIST`, another entry having that short name, so this is
-  unverified; the short name of an *existing* `.git` is the open row below.
+  one. The short names an existing `.git` and `.ko-agent-sandbox` have, `GIT~1` and `KO-AGE~1`,
+  are rows of their own, run by hand: a write, a create and a rename through them must fail
+  with `EPERM`, and the host's files must be unchanged afterwards.
 - `.ko-agent-sandbox`, matched through the same fold: the name itself, `.KO-AGENT-SANDBOX`,
   `.Ko-Agent-Sandbox`, `.<U+212A>o-agent-sandbox` (KELVIN SIGN), `.ko-agent-<U+017F>andbox`
   (LONG S), `.ko-agent<U+00AD>-sandbox`, `.ko-agent-sandbox.`; allowed,
@@ -50,21 +70,21 @@ it succeeds *and* host `lstat` of `.git` and of `.ko-agent-sandbox` still finds 
 on any row means the fold rule needs widening in `policy::folds_to` — fix the code, not the test.
 Fold tables are version-specific, which is why the recorded versions matter here.
 
-The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2), the
-8.3 creation row excepted — `verification-log.md` has the runs; `probe/name-rule-cs-apfs.sh`
-drives the case-sensitive APFS one end to end. What is left:
+The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2; the
+8.3 rows on Windows Server 2025) — `verification-log.md` has the runs;
+`probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS one end to end. What is left:
 
 - [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS; case-insensitive APFS and NTFS pass
   (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
 - [ ] ext4, the control.
-- [ ] **NTFS 8.3 short names reach a guarded directory** (`security-research.md`, "Windows 8.3
-  short names"): a session writes `.git/config` and `.ko-agent-sandbox/egress/rule` through
-  `GIT~1` and `KO-AGE~1`. A fix by name cannot enumerate generated names; the candidates are a
-  by-identity check of the backing object at lookup, a launcher-side refusal of a project whose
-  guarded directories have a short name — turning generation off leaves existing ones — or a
-  mount that does not resolve short names, if one exists. Decide the layer,
-  then add the two short names to the corpus as rows that must be refused for writes and
-  creates, and rerun on NTFS.
+- [ ] The NTFS 8.3 short-name rows with the identity comparisons of the resolver and of `setattr`
+  and `link` (`fs.rs`, `open_ino`, `apply_setattr`, `link`): the run `verification-log.md` records
+  ("Verified: NTFS 8.3 short names") has the check in `lookup` and the `O_EXCL` in `create`, and
+  none of those.
+  - `sbt dist`, `--build`, then the entry's commands over a host-created project.
+  - Add `chmod`, `touch` and `ln` on an ordinary file: every file's metadata change and hard link
+    go through an `O_PATH` descriptor and its `/proc` path, which the rig shows on its own backing
+    and not on the WSL drive mount.
 
 ### End-to-end coherency through the real host share
 
@@ -148,8 +168,8 @@ What is left:
 
 Windows stays **experimental**: the name rule and coherency rows are measured
 (`verification-log.md` — fold tables are per-volume, so the name-rule run verifies the volume it
-ran on, and coherency comes with the share-lock cost recorded there), the 8.3 short-name row
-above is an open hole, and the performance row is unmeasured.
+ran on, and coherency comes with the share-lock cost recorded there), and the performance row is
+unmeasured.
 
 
 ## Test infrastructure
@@ -186,6 +206,11 @@ On the real tree the path-walk term is the 2.2× between the two `lstat` rows (`
   in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
   mandatory on.
 - [ ] **Run it on Windows/WSL**, same reason, lowest priority.
+- [ ] **Measure what the identity checks add.** A lookup of an ordinarily named entry outside a
+  gitdir makes two more `fstatat` calls (`fs.rs`, `policy_name`), an operation on a parent and a
+  name one more, and every resolution an `fstat` of the descriptor it opened (`open_ino`). The
+  recorded runs (`verification-log.md`, "The cost of a path walk") have none of them; rerun
+  `probe/perf-probe.py` on the same machine and record the new ratio.
 - [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.4 ms
   of a depth-1 `lstat`'s 0.44 ms is the container→daemon FUSE hop plus the daemon's own work per op
   — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op fd
@@ -202,6 +227,8 @@ On the real tree the path-walk term is the 2.2× between the two `lstat` rows (`
   would also align `readdir`'s `d_ino` with the synthetic `st_ino`, since each entry would carry a
   real lookup (Non-TODOs, inode-number reuse).
 - [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
+  `fs.rs`, `mount_config`, has what rests on one request at a time; each needs its own answer
+  first.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
   `doc/plan-staged.md`; restrict passthrough to live mode unless research first establishes a safe
@@ -340,17 +367,18 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 - **`RESOLVE_NO_XDEV`.** A mount the host placed inside the workspace should stay visible; crossing
   into it is lateral, and `RESOLVE_IN_ROOT` already blocks escaping above the root.
 - **A guard against inode-number reuse for *classification*.** Reusing a number for a recreated
-  `(parent, name)` is safe for the policy: context and resolution derive from the *same* names
-  rather than from the backing inode's identity, and `RESOLVE_NO_SYMLINKS` keeps the two from
-  parting company (`fs.rs`, `open_ino`). The stale-handle tests hold their handle one level below a
-  recreated name so that the filter's own `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table
-  artifact, is what they measure (`tests/mounted_mutate.rs`). Reuse for *coherency* is a different
-  question and is guarded: `lookup` gives a replaced object a fresh number so it does not inherit
-  the old one's page cache (`architecture.md`, "Inode model"). What stays advisory is `readdir`'s
-  `d_ino` — the backing number, which differs from the synthetic `st_ino` `getattr` returns;
-  aligning the two needs the per-entry lookup READDIRPLUS would do (Performance). The entry *type*
-  is not advisory: a `DT_UNKNOWN` entry is stat'd for its real type rather than assumed regular
-  (`fs.rs`, `opendir`).
+  `(parent, name)` is safe for the policy: the context derives from the names, and the resolver
+  serves a node only the object recorded for it, without following a symlink (`fs.rs`, `open_ino`).
+  The one place identity enters classification is a second name of `.git` or `.ko-agent-sandbox`,
+  and there a changed answer takes a fresh number (`fs.rs`, `policy_name`; `inode.rs`, `lookup`).
+  The stale-handle tests hold their handle one level below a recreated name so that the filter's own
+  `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table artifact, is what they measure
+  (`tests/mounted_mutate.rs`). Reuse for *coherency* is a different question and is guarded:
+  `lookup` gives a replaced object a fresh number so it does not inherit the old one's page cache
+  (`architecture.md`, "Inode model"). What stays advisory is `readdir`'s `d_ino` — the backing
+  number, which differs from the synthetic `st_ino` `getattr` returns; aligning the two needs the
+  per-entry lookup READDIRPLUS would do (Performance). The entry *type* is not advisory: a
+  `DT_UNKNOWN` entry is stat'd for its real type rather than assumed regular (`fs.rs`, `opendir`).
 - **`FOPEN_DIRECT_IO` for coherency.** It would work, and it disables shared `mmap`, which git needs
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **An always-on nonzero cache TTL.** Real-time bidirectional visibility is the defining

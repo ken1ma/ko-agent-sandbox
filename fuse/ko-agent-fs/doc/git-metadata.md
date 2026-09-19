@@ -183,6 +183,10 @@ the one code point that normalizes to an ASCII letter is U+212A, to `K`, and the
 it. Both are settled decisions, in `TODO.md`'s Non-TODOs, on the research `security-research.md`
 records.
 
+A rule over spellings covers the names a filesystem folds to `.git`, not a second name it gives
+an existing `.git` — an NTFS 8.3 short name, a hard link to a pointer file. Those the filter
+recognizes by the backing object (`security-research.md`, "Windows 8.3 short names").
+
 **The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it. On
 each supported backing, create every candidate name through the mount and assert host
 `lstat("<dir>/.git")` finds nothing. `TODO.md` ("Platform verification") has the corpus, the
@@ -232,9 +236,11 @@ operands. Creation-side name matching and destination-side protection must both 
 path-based classification: `link <gitdir>/hooks/pre-commit → src/alias` gives the frozen inode a
 second, *writable* name, and a write through `src/alias` then mutates the hook. So `link` is refused
 both destination-side (a link named into a protected tree) **and source-side** (aliasing a protected
-inode out — `authorize(source, Link)`). Symlinks need no such rule: they redirect by *path*, and the
-target path is re-classified through the resolver's own walk, so a symlink into `hooks/` is caught
-when the resolved target is opened for write.
+inode out — `authorize(source, Link)`). The source-side decision is about the node, so the link is
+made from the descriptor the resolver compared with the node's object, never from the node's name,
+which can lead elsewhere by then (`fs.rs`, `link`). Symlinks need no such rule: they redirect by
+*path*, and the target path is re-classified through the resolver's own walk, so a symlink into
+`hooks/` is caught when the resolved target is opened for write.
 
 Residual: a hardlink the *host* already created between a protected inode and a worktree path lets
 a write to the worktree path reach the frozen inode. Detecting that needs every write to prove its
@@ -412,6 +418,15 @@ into, `renameat2` `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git
 
 **Pointer rewrite (group 3b):** with an existing `.git` file present, every mutation op above must
 fail against it.
+
+**A second name (groups 3a, 3b):** with a host hard link to a `.git` file and to a
+`.ko-agent-sandbox` file, append, `open(O_CREAT)`, `unlink`, `rename` from and onto, and `link`
+through the link's name must fail; while the host keeps making such a file and link, an
+`open(O_CREAT)` of the link's name never opens the host's file; and a directory handle opened on
+ordinary names that come to lead through a second name of `.git` or `.ko-agent-sandbox` must
+fail with `ESTALE`, and so must `fchmod`, `futimens` and a link through a file descriptor whose
+name has become such a second name, leaving the guarded file's metadata and link count as they
+were.
 
 **Hooks (group 1):** `write`, `pwrite`, `truncate`, `ftruncate`, `open O_TRUNC`, `chmod`, `chown`,
 `unlink`, `rmdir`, `rename` from/to, `link`, `symlink`, `mknod` against `<gitdir>/hooks/**` — each

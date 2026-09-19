@@ -23,10 +23,10 @@ use fuser::{
 };
 use nix::dir::Dir;
 use nix::errno::Errno as NixErrno;
-use nix::fcntl::{AtFlags, FcntlArg, OFlag, OpenHow, ResolveFlag, fcntl, openat2};
+use nix::fcntl::{AT_FDCWD, AtFlags, FcntlArg, OFlag, OpenHow, ResolveFlag, fcntl, openat2};
 use nix::sys::stat::{
-    FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags, fchmod, fchmodat, fstat, fstatat,
-    futimens, mkdirat, mknodat, utimensat,
+    FchmodatFlags, FileStat, Mode, SFlag, fchmod, fchmodat, fstat, fstatat, futimens, mkdirat,
+    mknodat,
 };
 use nix::sys::time::TimeSpec;
 use nix::sys::uio::{pread, pwrite};
@@ -35,8 +35,10 @@ use nix::unistd::{
     unlinkat,
 };
 
-use crate::inode::InodeTable;
-use crate::policy::{Decision, GitContext, Mutation, authorize, authorize_create, child_context};
+use crate::inode::{InodeTable, ROOT_INO};
+use crate::policy::{
+    Decision, GUARDED_NAMES, GitContext, Mutation, authorize, authorize_create, child_context,
+};
 
 /// Entry/attribute TTL. Zero, always: the host writes the backing tree concurrently, so the kernel
 /// must re-ask on every access or it would serve a stale view (`doc/architecture.md`, coherency).
@@ -50,6 +52,11 @@ const TTL: Duration = Duration::ZERO;
 /// different uids by construction makes unavoidable; `DefaultPermissions` is what keeps widening
 /// *who* may reach the mount from widening what they may do. `doc/architecture.md`, "Who may reach
 /// the mount", has the argument for both.
+///
+/// `n_threads` stays at fuser's one, and two things rest on requests being served one at a time:
+/// `write` brings the backing descriptor's `O_APPEND` into step without a lock, and no request of
+/// the session's own runs between a name-based mutation's policy decision and its syscall
+/// (`doc/security-research.md`, "Windows 8.3 short names", has what that interval still admits).
 pub fn mount_config() -> Config {
     let mut config = Config::default();
     config.mount_options = vec![
@@ -148,21 +155,45 @@ impl KoAgentFs {
     /// placed inside the workspace should stay visible, and crossing into it is lateral, not an
     /// escape above the root.
     ///
-    /// `RESOLVE_NO_SYMLINKS` is what keeps the object this resolves and the object the policy
-    /// classified the same object, and it is the flag to understand before changing anything here.
-    /// The path above names an inode by the names it was looked up under, and the tree moves after
-    /// that: the kernel goes on addressing a renamed directory by the inode it already holds, while
-    /// this walk still spells the name that directory vacated. Refusing a symlink costs nothing
-    /// legitimate, because the kernel resolves the sandbox's own symlinks — it reads the link and
-    /// looks up each resolved component in turn — so every component of a live chain is a directory
-    /// and a symlink can only appear in one that has gone stale. Following one there is exactly
-    /// what would let writable project data resolve into a gitdir. With the
-    /// flag, the resolved object's path *is* the chain the context was computed from, and a stale
-    /// chain fails closed with `ELOOP` — no `DENY` line, because no policy decision was reached.
+    /// Two things keep the object this resolves and the object the policy classified the same
+    /// object, and they are what to understand before changing anything here. The path above names
+    /// an inode by the names it was looked up under, and the tree moves after that: the kernel goes
+    /// on addressing a renamed directory by the inode it already holds, while this walk still
+    /// spells the name that directory vacated.
     ///
-    /// The callers that must see a link still do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is
-    /// how `getattr` and `setattr` stat one, and `readlink` goes through its parent's fd instead.
+    /// `RESOLVE_NO_SYMLINKS` is the first. Refusing a symlink costs nothing legitimate, because the
+    /// kernel resolves the sandbox's own symlinks — it reads the link and looks up each resolved
+    /// component in turn — so every component of a live chain is a directory and a symlink can
+    /// only appear in one that has gone stale. Following one there is exactly what would let
+    /// writable project data resolve into a gitdir. A stale chain fails closed with `ELOOP` — no
+    /// `DENY` line, because no policy decision was reached. The callers that must see a link still
+    /// do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is how `getattr` and `setattr` stat one,
+    /// and `readlink` goes through its parent's fd instead.
+    ///
+    /// The identity comparison is the second, because a chain of directories can be stale too: an
+    /// ordinarily named component can be a second name of a guarded entry ([`Self::policy_name`]),
+    /// which `lookup` sees for the chain as it stood then and nothing sees for a chain that moved
+    /// since. So the opened object must be the one the node recorded at `lookup`, or the answer is
+    /// `ESTALE`. On a path the kernel has just walked, `ESTALE` makes it walk again with
+    /// `LOOKUP_REVAL`, and the fresh lookup rekeys the name to the new object's own node — which
+    /// also keeps two backing objects from sharing one node's page cache (`inode.rs`, `lookup`).
+    /// `O_TRUNC` waits for that comparison, so a refused open has truncated nothing.
     fn open_ino(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
+        let fd = self.open_ino_unchecked(ino, oflag & !OFlag::O_TRUNC)?;
+        // The root is inserted, never looked up, so it records no identity (`inode.rs`, `Inode`).
+        if ino != ROOT_INO {
+            let recorded = self.inner.lock().unwrap().table.identity(ino);
+            if recorded != Some(identity(&fstat(&fd)?)) {
+                return Err(NixErrno::ESTALE);
+            }
+        }
+        if oflag.contains(OFlag::O_TRUNC) {
+            ftruncate(&fd, 0)?;
+        }
+        Ok(fd)
+    }
+
+    fn open_ino_unchecked(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
         let rel = self.relpath(ino).ok_or(NixErrno::ESTALE)?;
         let how = OpenHow::new().flags(oflag | OFlag::O_CLOEXEC).resolve(
             ResolveFlag::RESOLVE_IN_ROOT
@@ -224,8 +255,61 @@ impl KoAgentFs {
         }
     }
 
+    /// The name the policy classifies the entry `name` under `parentfd` by: `name` itself, or the
+    /// guarded name that resolves to the same backing object `st`. NTFS gives `.git` the 8.3 short
+    /// name `GIT~1`, `GIT~2` or a hashed `GI1234~1`, and WSL's drive mount resolves it, so no rule
+    /// over spellings can list a guarded entry's other names
+    /// (`doc/security-research.md`, "Windows 8.3 short names"); a host hard link to a `.git`
+    /// pointer file is the same case. Only an ordinary directory's children are asked: elsewhere
+    /// [`child_context`] does not read the name for a guarded one.
+    fn policy_name<'a>(
+        &self,
+        parent_context: &GitContext,
+        parentfd: &OwnedFd,
+        name: &'a OsStr,
+        st: &FileStat,
+    ) -> &'a OsStr {
+        if *parent_context != GitContext::NotGit
+            || child_context(parent_context, name.as_bytes()) != GitContext::NotGit
+        {
+            return name;
+        }
+        for guarded in GUARDED_NAMES {
+            let Ok(guarded_cname) = CString::new(guarded) else {
+                continue;
+            };
+            if fstatat(
+                parentfd,
+                guarded_cname.as_c_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            )
+            .is_ok_and(|guarded_st| identity(&guarded_st) == identity(st))
+            {
+                return OsStr::from_bytes(guarded);
+            }
+        }
+        name
+    }
+
+    /// [`Self::policy_name`] for an operation that holds only `(parent, name)`. A name with nothing
+    /// behind it is its own policy name.
+    fn existing_policy_name<'a>(&self, parent: u64, name: &'a OsStr) -> Result<&'a OsStr, Errno> {
+        let parent_context = self.context(parent);
+        if parent_context != GitContext::NotGit {
+            return Ok(name);
+        }
+        let (cname, parentfd) = self.child_target(parent, name)?;
+        match fstatat(&parentfd, cname.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(st) => Ok(self.policy_name(&parent_context, &parentfd, name, &st)),
+            Err(NixErrno::ENOENT) => Ok(name),
+            Err(err) => Err(to_errno(err)),
+        }
+    }
+
     fn allow_create(&self, parent: u64, name: &OsStr, op: &str) -> Result<(), Errno> {
-        match authorize_create(&self.context(parent), name.as_bytes()) {
+        // An existing entry too: `rename` replaces one.
+        let policy_name = self.existing_policy_name(parent, name)?;
+        match authorize_create(&self.context(parent), policy_name.as_bytes()) {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
         }
@@ -238,7 +322,8 @@ impl KoAgentFs {
         mutation: Mutation,
         op: &str,
     ) -> Result<(), Errno> {
-        let child = child_context(&self.context(parent), name.as_bytes());
+        let policy_name = self.existing_policy_name(parent, name)?;
+        let child = child_context(&self.context(parent), policy_name.as_bytes());
         match authorize(&child, mutation) {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
@@ -278,7 +363,7 @@ impl KoAgentFs {
             .lock()
             .unwrap()
             .table
-            .lookup(parent, name, false, dev, ino_id);
+            .lookup(parent, name, name, false, dev, ino_id);
         reply.entry(&TTL, &to_file_attr(ino, &st), Generation(0));
     }
 
@@ -313,9 +398,9 @@ impl KoAgentFs {
     /// they arrive without a handle and go the path route below. The other fields are still applied
     /// here in case a request ever bundles them behind a handle, and every change lands on that
     /// descriptor's own object — the correct target after the name was unlinked or replaced, where
-    /// [`Self::apply_setattr`] re-resolves the stored path and would find a different object or
-    /// none. It needs none of that path form's `O_NOFOLLOW`/`NoFollowSymlink` guards, since nothing
-    /// is resolved by name here.
+    /// [`Self::apply_setattr`] re-resolves the stored path and refuses a different object or finds
+    /// none. It needs none of that path form's `O_NOFOLLOW`, since nothing is resolved by name
+    /// here.
     #[allow(clippy::too_many_arguments)] // one per settable attribute; a struct would only rename it
     fn apply_setattr_fd(
         fd: &OwnedFd,
@@ -352,56 +437,58 @@ impl KoAgentFs {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
     ) -> Result<(), NixErrno> {
-        // O_NOFOLLOW, and NoFollowSymlink on the chmod below, for the reason the module header
-        // gives: this re-resolves by name after the policy decided on the *inode*, so following a
-        // final symlink would let one swapped in after that decision redirect the mutation. Neither
-        // costs a legitimate operation — a size or mode change arrives for the resolved target, so
-        // the name it re-resolves is never the link. `fchownat` and `utimensat` already say so.
+        // Every change lands on a descriptor `open_ino` compared with the node's recorded object,
+        // never on the node's name: the name can come to lead to another object while its parent
+        // stays the same — a guarded entry under a second name — and a change made by name would
+        // reach that object before any comparison. `O_NOFOLLOW` opens a final symlink itself, since
+        // a size or mode change arrives for the resolved target and never for the link.
         if let Some(size) = size {
             let fd = self.open_ino(ino, OFlag::O_WRONLY | OFlag::O_NOFOLLOW)?;
             ftruncate(&fd, size as i64)?;
         }
-        // The root has no parent to act through, so it acts on itself: `.` against the backing
-        // root's own fd names the same directory. Returning early instead would answer a
-        // `chmod`/`chown`/`touch` of the mount root with a success it never performed. Bound before
-        // the match, or the lock guard would still be held while the arms take it again.
-        let position = self.inner.lock().unwrap().table.parent_and_name(ino);
-        let (parentfd, cname) = match position {
-            Some((parent, name)) => (self.parent_dir(parent)?, cstr(&name)?),
-            None => (
-                self.open_ino(ino, OFlag::O_PATH | OFlag::O_DIRECTORY)?,
-                cstr(OsStr::new("."))?,
-            ),
-        };
+        let target = self.open_ino(ino, OFlag::O_PATH | OFlag::O_NOFOLLOW)?;
         if let Some(mode) = mode {
-            let perm = Mode::from_bits_truncate(mode & 0o7777);
+            // `fchmod` refuses an `O_PATH` descriptor, and `fchmodat` takes `AT_EMPTY_PATH` only
+            // from Linux 6.6 (`fchmodat2`).
             fchmodat(
-                &parentfd,
-                cname.as_c_str(),
-                perm,
-                FchmodatFlags::NoFollowSymlink,
+                AT_FDCWD,
+                proc_fd_path(&target).as_c_str(),
+                Mode::from_bits_truncate(mode & 0o7777),
+                FchmodatFlags::FollowSymlink,
             )?;
         }
         if uid.is_some() || gid.is_some() {
             fchownat(
-                &parentfd,
-                cname.as_c_str(),
+                &target,
+                c"",
                 uid.map(Uid::from_raw),
                 gid.map(Gid::from_raw),
-                AtFlags::AT_SYMLINK_NOFOLLOW,
+                AtFlags::AT_EMPTY_PATH,
             )?;
         }
         if atime.is_some() || mtime.is_some() {
-            utimensat(
-                &parentfd,
-                cname.as_c_str(),
-                &time_spec(atime),
-                &time_spec(mtime),
-                UtimensatFlags::NoFollowSymlink,
-            )?;
+            // nix's `utimensat` has no `AT_EMPTY_PATH`, and `futimens` refuses an `O_PATH` descriptor.
+            let times = [*time_spec(atime).as_ref(), *time_spec(mtime).as_ref()];
+            let result = unsafe {
+                libc::utimensat(
+                    target.as_raw_fd(),
+                    c"".as_ptr(),
+                    times.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                )
+            };
+            if result != 0 {
+                return Err(NixErrno::last());
+            }
         }
         Ok(())
     }
+}
+
+/// The path of an `O_PATH` descriptor's object, for a call that takes a path and no `AT_EMPTY_PATH`.
+/// Resolving it reaches the descriptor's object whatever its names lead to by now.
+fn proc_fd_path(fd: &OwnedFd) -> CString {
+    CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("digits hold no NUL")
 }
 
 /// The `open`/`create` flags this filter carries through to the backing store, out of whatever the
@@ -725,13 +812,14 @@ impl Filesystem for KoAgentFs {
             Err(err) => return reply.error(to_errno(err)),
         };
         let root = self.is_gitdir_root(parent.0, &dirfd, name, &st);
+        let policy_name = self.policy_name(&self.context(parent.0), &dirfd, name, &st);
         let (dev, ino_id) = identity(&st);
-        let ino = self
-            .inner
-            .lock()
-            .unwrap()
-            .table
-            .lookup(parent.0, name, root, dev, ino_id);
+        let ino =
+            self.inner
+                .lock()
+                .unwrap()
+                .table
+                .lookup(parent.0, name, policy_name, root, dev, ino_id);
         reply.entry(&TTL, &to_file_attr(ino, &st), Generation(0));
     }
 
@@ -799,23 +887,6 @@ impl Filesystem for KoAgentFs {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
-        // `lookup` and `open` are separate kernel round trips; the name can be replaced between
-        // them, and `open_ino` resolves the path, so the object opened here may not be the one the
-        // node records. Attaching it anyway would put two backing objects behind one FUSE node and
-        // its single page cache — the very sharing the identity rekey exists to prevent, only inside
-        // the `LOOKUP`→`OPEN` window (`inode.rs`, `lookup`). `ESTALE` makes the kernel re-resolve
-        // with `LOOKUP_REVAL`; that fresh lookup sees the new identity and rekeys the name to its
-        // own node. A descriptor already open on the old object keeps it.
-        match fstat(&fd) {
-            Ok(st) => {
-                let opened = identity(&st);
-                let recorded = self.inner.lock().unwrap().table.identity(ino.0);
-                if recorded.is_some_and(|recorded| recorded != opened) {
-                    return reply.error(Errno::ESTALE);
-                }
-            }
-            Err(err) => return reply.error(to_errno(err)),
-        }
         let mut inner = self.inner.lock().unwrap();
         let fh = inner.next_fh;
         inner.next_fh += 1;
@@ -980,11 +1051,23 @@ impl Filesystem for KoAgentFs {
             Ok(pair) => pair,
             Err(err) => return reply.error(err),
         };
-        // O_EXCL is not forced but is carried through (`passthrough_flags`): create() may reopen an
-        // existing allowed file, and only the caller knows whether it meant to. O_NOFOLLOW stops a
-        // pre-planted symlink at the target from redirecting the create elsewhere.
+        // The kernel sends `CREATE` after a lookup found nothing, so an entry here by now arrived
+        // in between, unclassified: reopening it would skip the identity check `lookup` makes
+        // (`policy_name`), and a host's new `.git` pointer file under a second name would open for
+        // writing. `O_EXCL` on the backing open refuses any such entry. A caller that did not ask
+        // for `O_EXCL` must still reopen an existing allowed file, and `ESTALE` gets it that: the
+        // kernel walks the path once more (`do_filp_open`, `LOOKUP_REVAL`), its lookup finds and
+        // classifies the entry, and an `OPEN` follows. O_NOFOLLOW stops a pre-planted symlink at
+        // the target from redirecting the create elsewhere.
+        let caller_asked_excl = flags & libc::O_EXCL != 0;
         let how = OpenHow::new()
-            .flags(passthrough_flags(flags) | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .flags(
+                passthrough_flags(flags)
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_CLOEXEC,
+            )
             .mode(Mode::from_bits_truncate(mode & !umask & 0o7777))
             .resolve(
                 ResolveFlag::RESOLVE_IN_ROOT
@@ -993,6 +1076,7 @@ impl Filesystem for KoAgentFs {
             );
         let fd = match openat2(&parentfd, cname.as_c_str(), how) {
             Ok(fd) => fd,
+            Err(NixErrno::EEXIST) if !caller_asked_excl => return reply.error(Errno::ESTALE),
             Err(err) => return reply.error(to_errno(err)),
         };
         let st = match fstat(&fd) {
@@ -1001,7 +1085,7 @@ impl Filesystem for KoAgentFs {
         };
         let (dev, ino_id) = identity(&st);
         let mut inner = self.inner.lock().unwrap();
-        let ino = inner.table.lookup(parent.0, name, false, dev, ino_id);
+        let ino = inner.table.lookup(parent.0, name, name, false, dev, ino_id);
         let fh = inner.next_fh;
         inner.next_fh += 1;
         inner.handles.insert(
@@ -1134,28 +1218,23 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.allow_create(newparent.0, newname, "link") {
             return reply.error(err);
         }
-        let (oldparent, oldname) = match self.inner.lock().unwrap().table.parent_and_name(ino.0) {
-            Some(pair) => pair,
-            None => return reply.error(Errno::EINVAL),
-        };
-        let oldcname = match cstr(&oldname) {
-            Ok(value) => value,
-            Err(err) => return reply.error(to_errno(err)),
-        };
         let (newcname, newparentfd) = match self.child_target(newparent.0, newname) {
             Ok(pair) => pair,
             Err(err) => return reply.error(err),
         };
-        let oldparentfd = match self.parent_dir(oldparent) {
+        // The source by descriptor, for `apply_setattr`'s reason: linking the node's name would
+        // alias whatever that name leads to by now. `AT_EMPTY_PATH` needs `CAP_DAC_READ_SEARCH`
+        // here, and the descriptor's `/proc` path, followed, does not; it links a symlink itself.
+        let source = match self.open_ino(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
         if let Err(err) = linkat(
-            &oldparentfd,
-            oldcname.as_c_str(),
+            AT_FDCWD,
+            proc_fd_path(&source).as_c_str(),
             &newparentfd,
             newcname.as_c_str(),
-            AtFlags::empty(),
+            AtFlags::AT_SYMLINK_FOLLOW,
         ) {
             return reply.error(to_errno(err));
         }

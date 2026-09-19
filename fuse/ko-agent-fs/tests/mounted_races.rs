@@ -7,8 +7,8 @@
 
 mod common;
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -137,4 +137,121 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
         HOOK,
         "the host's hook was modified under concurrency"
     );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name() {
+    // The host keeps making a `.git` pointer file and a second name for it, a hard link standing
+    // in for an NTFS short name, while the sandbox keeps creating that second name. The kernel
+    // sends `CREATE` after a lookup that found nothing, so the link can arrive before the backing
+    // open; that open must not hand the sandbox the host's file.
+    const POINTER: &str = "gitdir: /host/real/.git\n";
+    let mount = TestMount::new(|_| {});
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let churn = {
+        let stop = Arc::clone(&stop);
+        let backing = mount.backing.clone();
+        thread::spawn(move || {
+            let pointer = backing.join(".git");
+            let second_name = backing.join("GIT~1");
+            while !stop.load(Ordering::Relaxed) {
+                fs::write(&pointer, POINTER).unwrap();
+                // Fails while the sandbox's own `GIT~1` holds the name.
+                let linked = fs::hard_link(&pointer, &second_name).is_ok();
+                assert_eq!(
+                    fs::read_to_string(&pointer).unwrap(),
+                    POINTER,
+                    "SECURITY: the sandbox wrote the pointer file"
+                );
+                if linked {
+                    fs::remove_file(&second_name).unwrap();
+                }
+                fs::remove_file(&pointer).unwrap();
+            }
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut created = 0usize;
+    while Instant::now() < deadline {
+        // No `O_EXCL`: the form that reopens an entry.
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(mount.at("GIT~1"))
+        {
+            Ok(mut file) => {
+                // Read through the handle: an `fstat` goes by path (`fs.rs`, `getattr`) and fails
+                // once the host has removed its link. The sandbox's own file never holds this.
+                let mut content = String::new();
+                let _ = file.read_to_string(&mut content);
+                assert_ne!(
+                    content, POINTER,
+                    "SECURITY: a create opened the host's pointer file"
+                );
+                let _ = file.write_all(b"evil");
+                created += 1;
+                let _ = fs::remove_file(mount.at("GIT~1"));
+            }
+            Err(err) if err.raw_os_error() == Some(libc::EPERM) => {}
+            // The kernel retries a stale create once; a second arrival within the retry ends here.
+            Err(err) if err.raw_os_error() == Some(libc::ESTALE) => {}
+            // The lookup found the host's link, so the kernel sent `OPEN`, and the link was gone
+            // by then.
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => panic!("the create failed for the wrong reason: {err}"),
+        }
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    churn
+        .join()
+        .expect("the host saw its pointer file rewritten");
+    assert!(created > 0, "the sandbox never created its own file");
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_create_without_o_excl_reopens_an_ordinary_file_that_arrives_meanwhile() {
+    // The other side of the backing `O_EXCL` (`fs.rs`, `create`): an ordinary file the host makes
+    // between the kernel's lookup and the backing open is reopened, and `EEXIST` never reaches a
+    // caller that did not ask for `O_EXCL`.
+    let mount = TestMount::new(|_| {});
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let churn = {
+        let stop = Arc::clone(&stop);
+        let shared = mount.backing_at("shared");
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = fs::write(&shared, b"host\n");
+                let _ = fs::remove_file(&shared);
+            }
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut opened = 0usize;
+    while Instant::now() < deadline {
+        match OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(mount.at("shared"))
+        {
+            Ok(_) => opened += 1,
+            Err(err) if err.raw_os_error() == Some(libc::ESTALE) => {}
+            // The opposite order: found by the lookup, removed before the `OPEN` it led to.
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => panic!("an ordinary create failed during host churn: {err}"),
+        }
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    churn.join().expect("the churn thread panicked");
+    assert!(opened > 0, "the sandbox never opened the file");
 }

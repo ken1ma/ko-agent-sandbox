@@ -67,8 +67,8 @@ impl InodeTable {
     }
 
     /// The backing identity `(st_dev, st_ino)` recorded for `ino` at its last allocating `lookup`,
-    /// or `None` if the number is unknown. `open` compares it against the object it actually opened
-    /// to catch a replacement that slipped in between the kernel's `LOOKUP` and its `OPEN`.
+    /// or `None` if the number is unknown. The resolver compares it against the object it actually
+    /// opened (`fs.rs`, `open_ino`).
     pub fn identity(&self, ino: u64) -> Option<(u64, u64)> {
         self.by_ino.get(&ino).map(|node| (node.dev, node.ino_id))
     }
@@ -96,6 +96,11 @@ impl InodeTable {
     /// lookup stays a namespace — protected — until the kernel forgets it. Both drift directions
     /// give the stricter answer.
     ///
+    /// `policy_name` is the name the context is computed from: `name`, or the guarded name `name`
+    /// is an alias of (`fs.rs`, `policy_name`). An entry whose context differs from the one
+    /// `policy_name` gives is not reused, so a name that becomes an alias after its first lookup —
+    /// a host hard link — does not keep its ordinary context.
+    ///
     /// `(dev, ino_id)` is the freshly-stat'd backing identity of what the name resolves to now. An
     /// existing entry is reused only when it matches: a host replacement leaves size and mtime free
     /// to coincide (`tar -x`, `cp -p`, `touch -r`), so identity is the only signal that separates
@@ -115,31 +120,35 @@ impl InodeTable {
         &mut self,
         parent: u64,
         name: &OsStr,
+        policy_name: &OsStr,
         is_gitdir_root: bool,
         dev: u64,
         ino_id: u64,
     ) -> u64 {
+        let context = |table: &Self| {
+            let parent_git = table
+                .by_ino
+                .get(&parent)
+                .map_or(GitContext::NotGit, |node| node.git.clone());
+            match child_context(&parent_git, policy_name.as_bytes()) {
+                GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
+                other => other,
+            }
+        };
+        let is_alias = policy_name != name;
+
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key)
-            && self
-                .by_ino
-                .get(&ino)
-                .is_some_and(|node| node.dev == dev && node.ino_id == ino_id)
+            && self.by_ino.get(&ino).is_some_and(|node| {
+                node.dev == dev && node.ino_id == ino_id && (!is_alias || node.git == context(self))
+            })
         {
             if let Some(node) = self.by_ino.get_mut(&ino) {
                 node.nlookup += 1;
             }
             return ino;
         }
-
-        let parent_git = self
-            .by_ino
-            .get(&parent)
-            .map_or(GitContext::NotGit, |node| node.git.clone());
-        let git = match child_context(&parent_git, name.as_bytes()) {
-            GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
-            other => other,
-        };
+        let git = context(self);
 
         let ino = self.next_ino;
         self.next_ino += 1;
@@ -223,7 +232,7 @@ mod tests {
     /// An ordinary lookup: nothing outside a `modules/` namespace is ever a gitdir root, so the
     /// hint is `false` everywhere but the one test that exercises it.
     fn look(table: &mut InodeTable, parent: u64, name: &str) -> u64 {
-        table.lookup(parent, os(name), false, 0, ident(name))
+        table.lookup(parent, os(name), os(name), false, 0, ident(name))
     }
 
     #[test]
@@ -281,17 +290,17 @@ mod tests {
         // would hand the new object the old one's cached pages (`lookup`), so the name must be
         // re-pointed at a fresh number.
         let mut table = InodeTable::new();
-        let first = table.lookup(ROOT_INO, os("x"), false, 7, 100);
-        let again = table.lookup(ROOT_INO, os("x"), false, 7, 100);
+        let first = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 100);
+        let again = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 100);
         assert_eq!(first, again, "an unchanged object keeps its number");
 
-        let replaced = table.lookup(ROOT_INO, os("x"), false, 7, 200);
+        let replaced = table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200);
         assert_ne!(
             replaced, first,
             "a replacement must not reuse the old number"
         );
         assert_eq!(
-            table.lookup(ROOT_INO, os("x"), false, 7, 200),
+            table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200),
             replaced,
             "the name now resolves to the replacement's number",
         );
@@ -311,9 +320,32 @@ mod tests {
             "the vacated number is dropped at zero references"
         );
         assert_eq!(
-            table.lookup(ROOT_INO, os("x"), false, 7, 200),
+            table.lookup(ROOT_INO, os("x"), os("x"), false, 7, 200),
             replaced,
             "forgetting the vacated number left the live mapping intact",
+        );
+    }
+
+    #[test]
+    fn an_alias_takes_the_context_of_the_guarded_name_even_after_an_ordinary_lookup() {
+        let mut table = InodeTable::new();
+        let ordinary = table.lookup(ROOT_INO, os("GIT~1"), os("GIT~1"), false, 7, 100);
+        assert_eq!(table.get(ordinary).unwrap().git, GitContext::NotGit);
+
+        // The same object, since found to be what `.git` resolves to.
+        let alias = table.lookup(ROOT_INO, os("GIT~1"), os(".git"), false, 7, 100);
+        assert_ne!(alias, ordinary, "the ordinary context must not be reused");
+        assert_eq!(table.get(alias).unwrap().git, gitdir_root());
+        assert_eq!(table.components(alias), Some(vec![b"GIT~1".to_vec()]));
+        assert_eq!(
+            table.lookup(ROOT_INO, os("GIT~1"), os(".git"), false, 7, 100),
+            alias,
+        );
+
+        let config = look(&mut table, alias, "config");
+        assert_eq!(
+            classify(&table.get(config).unwrap().git),
+            GitPathClass::Protected,
         );
     }
 
@@ -358,7 +390,7 @@ mod tests {
         let dotgit = look(&mut table, ROOT_INO, ".git");
         let modules = look(&mut table, dotgit, "modules");
         let libs = look(&mut table, modules, "libs");
-        let foo = table.lookup(libs, os("foo"), true, 0, ident("foo"));
+        let foo = table.lookup(libs, os("foo"), os("foo"), true, 0, ident("foo"));
 
         let objects = look(&mut table, foo, "objects");
         let pack = look(&mut table, objects, "pack");

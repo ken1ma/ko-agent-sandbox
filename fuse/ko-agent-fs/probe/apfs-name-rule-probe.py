@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The platform-verification probe for the .git and .ko-agent-sandbox name rules (doc/TODO.md,
 "P1 — Platform verification"): creates each candidate spelling through the mounted filter and
-reports which were denied, with which errno. The corpus in doc/TODO.md carries one row this script
-does not — the Windows 8.3 short name GIT~1 — because it means nothing off NTFS; run that one by
-hand there.
+reports which were denied, with which errno. The corpus in doc/TODO.md carries rows this script
+does not — the Windows 8.3 short names — because they mean nothing off NTFS; run those by hand
+there.
 Run INSIDE a filtered sandbox session, from the root of a scratch project:
 
     cp .../apfs-name-rule-probe.py <scratch-project>/
