@@ -101,6 +101,11 @@ fn self_test() -> ExitCode {
     }
 }
 
+/// fuser reports a refused mount as fusermount3's stderr verbatim, which ends in a newline.
+fn mount_error_text(err: &std::io::Error) -> String {
+    err.to_string().trim_end().to_owned()
+}
+
 fn self_test_run() -> Result<(), SelfTestFailure> {
     let base = std::env::temp_dir().join(format!("ko-agent-fs-selftest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -135,10 +140,11 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
     let session =
         fuser::spawn_mount(KoAgentFs::new(root), mountpoint, &mount_config()).map_err(|err| {
             SelfTestFailure::Setup(format!(
-                "mount failed: {err}\n\
+                "mount failed: {}\n\
                  Usual causes: no fusermount3 on PATH, or allow_other refused because\n\
                  /etc/fuse.conf lacks user_allow_other\n\
-                 (fix: sudo sh -c 'echo user_allow_other >> /etc/fuse.conf')"
+                 (fix: sudo sh -c 'echo user_allow_other >> /etc/fuse.conf')",
+                mount_error_text(&err),
             ))
         })?;
 
@@ -376,7 +382,7 @@ fn main() -> ExitCode {
     match fuser::mount(KoAgentFs::new(root), &args.mount, &mount_config()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("ko-agent-fs: mount failed: {err}");
+            eprintln!("ko-agent-fs: mount failed: {}", mount_error_text(&err));
             ExitCode::FAILURE
         }
     }
@@ -384,7 +390,16 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::coherency_check;
+    use super::{coherency_check, mount_error_text};
+
+    #[test]
+    fn a_mount_error_loses_the_newline_that_ends_fusermount3_stderr() {
+        let refused = std::io::Error::other("fusermount3: option allow_other refused\n");
+        assert_eq!(
+            mount_error_text(&refused),
+            "fusermount3: option allow_other refused"
+        );
+    }
 
     /// The check itself, not the mount (that is `--self-test`'s): with one directory playing both
     /// the backing and the mountpoint, a live page cache satisfies it by construction, so a wrong
