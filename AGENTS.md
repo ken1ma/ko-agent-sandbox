@@ -64,7 +64,7 @@ shorter instruction. Test each sentence by what the reader does differently in t
 Put supporting details in subitems when they interrupt an action or choice; keep conditions inline.
 For a reader seeking understanding, explain mechanisms; test what the reader understands
 differently. The reader's state determines the mode, not the filename; a document can hold both.
-Errors, refusals and prompts say what to do next.
+Errors, refusals and prompts say what to do next when naming what failed does not.
 
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present

@@ -888,7 +888,7 @@ object AgentSandboxLauncher:
   /**
    * Each command echoed before it runs, so what follows is what podman prints for exactly that
    * line. A build's output says where its cache hit; a --quiet pull prints only the image id, so
-   * the launcher reads the id before and after and says whether the tag moved, as its own
+   * the launcher reads the id before and after and says whether the image changed, as its own
    * `pull:` line.
    */
   def runBuilds(context: Path, commands: Vector[Vector[String]]): Unit =
@@ -921,9 +921,9 @@ object AgentSandboxLauncher:
 
   def pullVerdict(before: Option[String], after: Option[String]): String =
     (before, after) match
-      case (Some(old), Some(now)) if old == now => "unchanged"
-      case (Some(old), Some(_)) => s"updated from ${shortId(old)}"
-      case (None, Some(_)) => "new on this machine"
+      case (Some(old), Some(now)) if old == now => "up to date"
+      case (Some(old), Some(_)) => s"tag updated; was ${shortId(old)}"
+      case (None, Some(_)) => "tag added"
       case (_, None) => "no local image after the pull"
 
   private def buildContextReader(context: Path): String => String =
