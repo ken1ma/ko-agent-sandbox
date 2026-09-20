@@ -3,9 +3,9 @@
 Check that the local links in Markdown files resolve, so an agent that renamed a heading or moved
 a file runs one command instead of opening every link's target.
 
-    ko-sandbox-link-check          # every *.md file of the repository that git does not ignore,
-                                   # tracked or not, from any directory in it
-    ko-sandbox-link-check FILE...  # these files
+    ko-sandbox-markdown-link-check          # every *.md file of the repository that git does not
+                                            # ignore, tracked or not, from any directory in it
+    ko-sandbox-markdown-link-check FILE...  # these files
 
 Run it without FILE after renaming a heading or moving a file: the broken link can be in a file
 the change did not touch.
@@ -38,9 +38,9 @@ The last line counts what was checked. `external excluded` are the links to othe
 Exit 1 when a reference is broken; 2 when the check could not run; otherwise 0, unchecked
 fragments included: their writer has nothing to repair.
 
-Anchors follow lychee's rules. SandboxLinkCheckTest has the cases where they are the rules GitHub
-documents — lowercase, punctuation removed, spaces to hyphens, `-1` for a repeated heading — and
-an `<a id>` anchor. Not compared with a page GitHub renders: lychee accepts `#Setup` for the
+Anchors follow lychee's rules. SandboxMarkdownLinkCheckTest has the cases where they are the rules
+GitHub documents — lowercase, punctuation removed, spaces to hyphens, `-1` for a repeated heading
+— and an `<a id>` anchor. Not compared with a page GitHub renders: lychee accepts `#Setup` for the
 heading `Setup`.
 """
 
@@ -53,10 +53,10 @@ import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-NAME = "ko-sandbox-link-check"
+NAME = "ko-sandbox-markdown-link-check"
 
-# The file types lychee looks for a fragment in, compared in lowercase. SandboxLinkCheckTest has a
-# missing anchor in each: a lychee release that stops checking one fails it.
+# The file types lychee looks for a fragment in, compared in lowercase. SandboxMarkdownLinkCheckTest
+# has a missing anchor in each: a lychee release that stops checking one fails it.
 FRAGMENT_CHECKED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 
 

@@ -1,8 +1,8 @@
-// ko-sandbox-link-check on one set of fixture files, run two ways:
+// ko-sandbox-markdown-link-check on one set of fixture files, run two ways:
 //
 // - directly, as the Python script in this repository. It needs lychee on PATH (the version is the
 //   Containerfile's LYCHEE_VERSION), and a machine without it skips.
-// - in the image, under `sbt "testWithPodman *SandboxLinkCheckTest"` (WithPodman has the gate).
+// - in the image, under `sbt "testWithPodman *SandboxMarkdownLinkCheckTest"` (WithPodman has the gate).
 //   Nothing there is assumed: an image without lychee or the script fails the run.
 //
 // Only the second run shows that the image's lychee and script work together.
@@ -15,11 +15,11 @@ import HostCommands.*
 import FileHelper.*
 import WithPodman.*
 
-class SandboxLinkCheckTest extends munit.FunSuite:
+class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(15, "min")
 
-  private val script = Path.of("container/ko-agent-sandbox/ko-sandbox-link-check").toAbsolutePath
+  private val script = Path.of("container/ko-agent-sandbox/ko-sandbox-markdown-link-check").toAbsolutePath
 
   private val Fixtures = Vector(
     "target.md" ->
@@ -161,7 +161,7 @@ class SandboxLinkCheckTest extends munit.FunSuite:
     val lycheeOnPath = sys.env.getOrElse("PATH", "").split(java.io.File.pathSeparator)
       .exists(directory => Files.isExecutable(Path.of(directory, "lychee")))
     assume(lycheeOnPath, "needs lychee on PATH; `sbt testWithPodman` runs the image's")
-    val fixtures = Files.createTempDirectory("ko-sandbox-link-check").toRealPath()
+    val fixtures = Files.createTempDirectory("ko-sandbox-markdown-link-check").toRealPath()
     try
       writeFixtures(fixtures)
       assertReports: (directory, args) =>
@@ -174,6 +174,6 @@ class SandboxLinkCheckTest extends munit.FunSuite:
     try
       writeFixtures(project)
       val session = launch(project, project.resolve("session.log"))
-      try assertReports((directory, args) => exec(session, runIn(directory, "ko-sandbox-link-check" +: args)*))
+      try assertReports((directory, args) => exec(session, runIn(directory, "ko-sandbox-markdown-link-check" +: args)*))
       finally stop(session)
     finally discard(project)

@@ -121,12 +121,12 @@ Renaming a heading or moving a file breaks links in files the change did not tou
 shows it. An agent looking for them greps for the old name, which misses a link spelled another
 way, and opens each target to compare headings.
 
-The image has `ko-sandbox-link-check`, which the sandbox's own instructions tell every agent to
-run after such a change:
+The image has `ko-sandbox-markdown-link-check`, which the sandbox's own instructions tell every
+agent to run after such a change:
 
 ```sh
-ko-sandbox-link-check          # every *.md file of the repository that git does not ignore
-ko-sandbox-link-check FILE...  # these files
+ko-sandbox-markdown-link-check          # every *.md file of the repository that git does not ignore
+ko-sandbox-markdown-link-check FILE...  # these files
 ```
 
 ```text
