@@ -15,6 +15,7 @@ LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 ARG UV_VERSION=0.12.13
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
+ARG LYCHEE_VERSION=0.24.2
 ARG NODE_VERSION=24.21.0
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,17 @@ RUN set -euxo pipefail; \
 # ko-sandbox-text-width's import comment explains why this is outside site-packages.
 RUN set -euxo pipefail; \
     uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"
+
+# ko-sandbox-link-check runs lychee. The musl asset is static, so it needs nothing from the base image.
+RUN set -euxo pipefail; \
+    LYCHEE_ASSET="lychee-$(uname -m)-unknown-linux-musl.tar.gz"; \
+    LYCHEE_RELEASE="https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -O "${LYCHEE_RELEASE}/${LYCHEE_ASSET}"; \
+    curl -fsSL "${LYCHEE_RELEASE}/${LYCHEE_ASSET}.sha256" | sha256sum -c -; \
+    tar -xzf "$LYCHEE_ASSET" --strip-components=1 -C /usr/local/bin "${LYCHEE_ASSET%.tar.gz}/lychee"; \
+    rm "$LYCHEE_ASSET"; \
+    lychee --version
 
 ENV PATH="/home/nonroot/.local/bin:$PATH"
 
@@ -597,7 +609,7 @@ RUN set -euxo pipefail; \
 # (AgentSandboxLauncher.LauncherVariablePrefix).
 COPY --chmod=0755 \
     ko-sandbox-jdk-use-proxy ko-sandbox-apt-get ko-sandbox-install-podman ko-sandbox-run-on-host \
-    ko-sandbox-egress-check ko-sandbox-clipboard ko-sandbox-text-width \
+    ko-sandbox-egress-check ko-sandbox-clipboard ko-sandbox-text-width ko-sandbox-link-check \
     ko-sandbox-entrypoint \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipboard /usr/local/bin/$name; done

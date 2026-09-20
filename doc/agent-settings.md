@@ -114,3 +114,36 @@ project-permitted exceptions, such as a URL, without opening the file.
 4. East Asian Ambiguous characters (`—`, `“`, `…`, `→`, `α`, `§`, `é`) also count as 2,
    matching Japanese, Korean or Chinese display settings configured to draw them wide.
    An editor drawing them in 1 column shows such a line shorter than the reported width.
+
+## Finding the links a rename broke
+
+Renaming a heading or moving a file breaks links in files the change did not touch, and nothing
+shows it. An agent looking for them greps for the old name, which misses a link spelled another
+way, and opens each target to compare headings.
+
+The image has `ko-sandbox-link-check`, which the sandbox's own instructions tell every agent to
+run after such a change:
+
+```sh
+ko-sandbox-link-check          # every *.md file of the repository that git does not ignore
+ko-sandbox-link-check FILE...  # these files
+```
+
+```text
+doc/setup.md:18: missing-file: scripts/install.sh
+doc/setup.md:42: missing-anchor: README.md#install
+doc/setup.md:57: unchecked-fragment: src/Main.scala#L10
+summary: files 8; local references 40: valid 37, broken 2, unchecked 1; external excluded 12
+```
+
+1. [lychee](https://lychee.cli.rs) finds and checks the links; the program chooses its options
+   and shortens its report. A project's own `lychee.toml` and `.lycheeignore` are not read: either
+   can exclude a broken link, and the summary would count it as external.
+2. Anchors follow lychee's rules; the program's `--help` says how far they are GitHub's. Another
+   renderer can build anchors differently.
+3. The working tree is checked, not the commit: a link to an untracked or ignored file is valid.
+4. lychee looks for a fragment only in Markdown and HTML files. A fragment on any other file,
+   such as `#L10` on a source file, is reported as `unchecked-fragment` and does not fail the run.
+5. Links to `https:` and other schemes are counted and never fetched.
+6. A link that resolves can still point at the wrong section. The program says that references
+   resolve, not that they are right.
