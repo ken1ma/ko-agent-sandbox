@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""
+Measure the display width of each line of UTF-8 text files, so an agent holding a project to a
+column limit runs one command instead of counting characters itself.
+
+    ko-sandbox-text-width --over 100 FILE...  # every line wider than 100 columns
+    ko-sandbox-text-width FILE...             # per file, its widest line: the first of that width
+
+Both forms print `path:line:width`; an empty file prints `path:0:0`. The limit, which files it
+applies to, which lines may exceed it and the distance between tab stops are the caller's: this
+program only measures.
+
+Add --show-text to append `: ` and the original line, without its line ending, to each result.
+An empty file has no line to show, so its result stays `path:0:0`.
+
+A file containing a tab is an error unless `--tab-width COLUMNS` is given: the file's first tab
+is reported and the file is not measured.
+
+Exit 2 when a file had a tab without --tab-width or could not be read as UTF-8; otherwise 1 when
+--over printed a line; otherwise 0.
+
+Width counts display columns:
+
+- A line measures the same in NFC and NFD: a base character and its combining marks take the base
+  character's columns.
+- East Asian Wide and Fullwidth characters take 2 columns.
+- East Asian Ambiguous characters (`—`, `“`, `…`, `→`, `α`, `§`) take 2 columns.
+  Counting 2 accommodates readers whose Japanese, Korean or Chinese display settings draw these
+  characters wide; otherwise an accepted line can exceed the limit on their screen.
+  Editors configured to draw them in 1 column show such a line shorter than the reported width.
+- An emoji sequence — ZWJ, variation selector, skin tone, flag — takes 2 columns.
+
+    line                      width
+    全角ab                        6   2 + 2 + 1 + 1
+    がぎ, in NFC or in NFD        4
+    👨‍👩‍👧❤️🇯🇵👍🏽                      8   four sequences of 2
+    — “x” …                      11   2 + 1 + 2 + 1 + 2 + 1 + 2
+    <tab>x, --tab-width 8         9
+    abcdef<CR><LF>                6   the line ending is not measured
+"""
+
+import argparse
+import sys
+import unicodedata
+
+# The image keeps wcwidth outside site-packages so session installs cannot replace it; prefer
+# that copy over project dependencies. Outside the image, use the caller's installation.
+sys.path.insert(0, "/opt/ko-sandbox/python")
+
+import wcwidth  # noqa: E402
+
+NAME = "ko-sandbox-text-width"
+
+
+class TabWithoutWidth(Exception):
+    pass
+
+
+def line_widths(path, tab_width):
+    with open(path, encoding="utf-8", newline="") as file:
+        for number, line in enumerate(file, start=1):
+            if tab_width is None and "\t" in line:
+                raise TabWithoutWidth(f"line {number} has a tab; pass --tab-width COLUMNS to measure this file")
+            original = line.rstrip("\r\n")
+            text = unicodedata.normalize("NFC", original)
+            width = wcwidth.width(text, ambiguous_width=2, tabsize=tab_width or 0)
+            yield number, width, original
+
+
+def positive(text):
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog=NAME,
+        description=__doc__.strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--over", type=int, metavar="COLUMNS", help="print every line wider than COLUMNS")
+    parser.add_argument("--tab-width", type=positive, metavar="COLUMNS", help="distance between tab stops")
+    parser.add_argument("--show-text", action="store_true", help="append the original line to each result")
+    parser.add_argument("files", nargs="+", metavar="FILE")
+    args = parser.parse_args()
+
+    exit_code = 0
+    for path in args.files:
+        try:
+            widths = list(line_widths(path, args.tab_width))
+        except (OSError, UnicodeDecodeError, TabWithoutWidth) as ex:
+            print(f"{NAME}: {path}: {ex}", file=sys.stderr)
+            exit_code = 2
+            continue
+        if args.over is None:
+            selected = [max(widths, key=lambda entry: entry[1], default=(0, 0, ""))]
+        else:
+            selected = [entry for entry in widths if entry[1] > args.over]
+            if selected:
+                exit_code = max(exit_code, 1)
+        for number, width, original in selected:
+            suffix = f": {original}" if args.show_text and number > 0 else ""
+            print(f"{path}:{number}:{width}{suffix}")
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

@@ -81,3 +81,36 @@ stay as-is.
    even when the format is empty or displayed values have not changed.
 4. The command accepts at most 2 MiB of status JSON, runs no external tools or network requests,
    and writes no files.
+
+## Holding agents to a line width
+
+Without a program that measures, an agent checking a width limit spends tokens three ways:
+
+1. It counts a line it has written and can still misjudge its width. Claude Fable 5.1 miscounted.
+2. The commands it improvises disagree wherever a line is not ASCII, so one check leads to
+   another. On this repository's Markdown files at a limit of 100, `awk 'length($0) > 100'`
+   reports 130 lines, because the image's `awk` counts bytes; Python's `len()` reports 24, because
+   it counts code points; 71 lines are wider than 100 columns.
+3. It rewraps lines a wrong count reported, and counts again.
+
+The image has `ko-sandbox-text-width`, which the sandbox's own instructions tell every agent to
+use in place of counting:
+
+```sh
+ko-sandbox-text-width --over 100 FILE...  # path:line:width for every line wider than 100 columns
+ko-sandbox-text-width FILE...             # per file, its widest line: the first of that width
+```
+
+Add `--show-text` to include the original line after each result, so the agent can inspect it for
+project-permitted exceptions, such as a URL, without opening the file.
+
+1. The program has no limit of its own. State yours in the project's `AGENTS.md`, with the files
+   it applies to and the lines that may exceed it, as this repository's
+   [AGENTS.md](../AGENTS.md#coding-style) does.
+2. A file containing a tab is an error unless `--tab-width COLUMNS` is given. If your files have
+   tabs, state the tab width beside the limit.
+3. East Asian Wide and Fullwidth characters and emoji sequences count as 2 columns, and a line
+   counts the same in NFC and NFD.
+4. East Asian Ambiguous characters (`—`, `“`, `…`, `→`, `α`, `§`, `é`) also count as 2,
+   matching Japanese, Korean or Chinese display settings configured to draw them wide.
+   An editor drawing them in 1 column shows such a line shorter than the reported width.
