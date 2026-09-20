@@ -248,6 +248,20 @@ One form would, and it waits on a measurement:
 
 A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_OPTIONS` banner.
 
+## Deferred — container mill beside a host mill daemon
+
+Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in the project's
+`out/mill-daemon`, and a `./mill` run in the container without `MILL_OUTPUT_DIR` uses the same
+`out/`. The rules allow the bootstrap's downloads by default, so an agent can run it.
+
+- [ ] Measure, on a small mill build with a host daemon up: what the container's `./mill` does
+  with the host's lock and port, and what the host's next command does with what the container
+  left.
+  - The same run gives a cold compile with and without `MILL_OUTPUT_DIR` under `~/.cache`, which
+    `fuse/ko-agent-fs/doc/troubleshooting.md` ("Everything works but slowly") says is not measured.
+  - If the two conflict, the run-on-host text the launcher appends is the place to tell an agent
+    to set the variable.
+
 ## Deferred — an idle bound for the sbt server
 
 The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
