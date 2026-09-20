@@ -381,7 +381,7 @@ are the image's Mach services, which the same mode measures once it starts.
 
 ## Before the first release — continuous integration
 
-There is no CI. [README.md](../README.md#development) gives the launcher, proxy and filter
+There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter
 test commands. `--self-test` runs the filter suites on demand. A user's `--build` instead performs
 the gates whose answers belong to that artifact and machine: `cargo deny check licenses bans
 sources`, compilation, binary identity, and the installed filter's mount self-test.
