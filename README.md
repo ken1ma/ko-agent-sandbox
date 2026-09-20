@@ -448,9 +448,7 @@ Run the commands below from the repository root.
        KO_AGENT_SANDBOX_SESSION_START=immediate \
            java -jar target/dist/ko-agent-sandbox.jar bash
 
-   Inside that session, remove dangling host-cache links as described in
-   [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md#host-cache-links),
-   then run `sbt testFull`, which also runs `SessionBoundaryTest`.
+   Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
 1. `testFull` executes every test every time, unlike `test` which is incremental.
 

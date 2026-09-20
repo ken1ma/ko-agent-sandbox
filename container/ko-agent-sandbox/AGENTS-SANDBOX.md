@@ -28,14 +28,16 @@ stdin. Without clipboard access, paste reports no image; tell the user to save i
 project and pass its path instead.
 
 With the default `ko-agent-fs` guard, new symlinks in the project must have relative targets
-staying inside it; even absolute targets inside it fail. Programs caching outside it, such
-as `sbt`, fall back to copying. The appended section identifies unfiltered direct bind mounts.
+staying inside it; even absolute targets inside it fail. The appended section identifies
+unfiltered direct bind mounts.
 
-### Host-cache links
-
-Host-created symlinks keep their targets, which may be absent here. Host sbt leaves `target/`
-class files linked into its cache. If compilation fails on those links, remove dangling links from
-every `target` tree, including the meta-build and subprojects:
+sbt 2 here writes what a build derives from `rootOutputDirectory` — by default its classes and
+packaged jars, the meta-build's included — under `~/.cache/sbt-out/<the build's absolute path>`,
+not under the project's `target/out`. A build that names an output path itself still writes the
+project, where the host's sbt leaves its cached outputs, class files included, as links into the
+host's cache. If a compile there fails with `NoSuchFileException` on `error writing … .class`,
+check whether that class file is a dangling link (`find <path> -xtype l` prints it); if so,
+remove the dangling links and build again:
 
 ```sh
 find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \

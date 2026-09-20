@@ -47,7 +47,8 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
 
   - Absolute targets and targets that climb above the workspace root are refused (`fs.rs`,
     `target_has_portable_syntax`).
-  - sbt falls back to copying from its cache after the first refusal.
+  - sbt 2 falls back to copying from its cache after the first refusal, where a build keeps
+    its output in the project ("Everything works but slowly" has where the image puts it).
   - For `python3 -m venv`, create the environment under `~`, or use `--copies` if it must be in
     the project. A virtualenv created in the container still names container paths in
     `pyvenv.cfg` and shebangs; copying does not make it usable on the host.
@@ -119,6 +120,17 @@ set on the host (a session cannot write `.git/config`):
   an ignored directory without entering it, and walks every entry of one it must enter.
 - The tracked-file pass itself shortens only with fewer or shallower tracked files; the rest is
   the filter's per-operation cost, and `TODO.md`, "Performance", is where that is being worked.
+
+A build in the session that writes its output into the project pays that cost per file written,
+and a compiler writes deep: this repository's sbt compile takes 604 s into `target/out` and 28 s
+into a directory outside the mount (`verification-log.md`, "an sbt build"). The image moves what
+an sbt 2 build derives from `rootOutputDirectory` to `~/.cache/sbt-out`, so by default a jar
+`sbt package` builds in a session is there, not under `target/`, and is discarded with the
+session; a build that names an output path itself still writes the project, and can fail there
+with `NoSuchFileException` on links the host's sbt left
+(`container/ko-agent-sandbox/AGENTS-SANDBOX.md` has the cleanup). For another build program, point
+its output directory under `~/.cache` the same way, or run it on the host with `--run-on-host`
+(macOS).
 
 ## The whole machine degrades (every podman command slow or erroring)
 

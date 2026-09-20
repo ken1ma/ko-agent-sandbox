@@ -510,6 +510,12 @@ are linked inline where that decision is recorded; these are the broader sources
 - Anthropic Claude Code — composed filesystem/network confinement, and its settings/credential
   model: https://www.anthropic.com/engineering/claude-code-sandboxing
   https://docs.anthropic.com/en/docs/claude-code/settings
+- OpenAI's Codex Windows sandbox — proxy variables cannot enforce network isolation; dedicated
+  Windows users let firewall rules cover spawned commands, while host ACL changes carry setup
+  and policy-update costs. The account does not establish protection for guarded directories
+  created during execution, the Windows host-command requirement in
+  ["Why only macOS"](run-on-host.md#why-only-macos):
+  https://openai.com/index/building-codex-windows-sandbox/
 - Docker AI sandboxes' upstream-proxy configuration — the comparison point for `HTTPS_PROXY`:
   https://docs.docker.com/ai/sandboxes/configuration/upstream-proxy/
 - Stripe Smokescreen — mature egress-proxy prior art; its ACL-bypass advisories are permanent

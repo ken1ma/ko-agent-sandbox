@@ -216,18 +216,83 @@ where a user meets it.
   fd open/close, the inode-table lock, and the single-threaded session serializing round trips.
   Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
   This is the only gain available to programs like `find`, which hold directory fds and never pay
-  the walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
-  directory-fd cache *across* operations is excluded: it holds the directory open, so one the host
-  replaces (`rm -rf` then recreate — `npm install`, `cargo clean`) keeps serving its old contents
-  through the stale fd, unbounded in time, which is worse than any TTL.
+  the walk; it composes with the cache-TTL option below, which reaches only path-walking ones.
+  Reuse *across* operations is the directory-fd cache row below.
+- [ ] A path-based `getattr` stats one descriptor twice: `open_ino` for the identity comparison,
+  then `getattr` for the reply. Reusing the first result saves a stat per `getattr`. Two cases
+  the change must keep right, each with a test: the root, whose identity `open_ino` does not
+  check and so does not stat; and an `O_TRUNC` open, whose comparison runs before the truncation,
+  so its stat must never become a reply's attributes.
+- [ ] **A directory-fd cache for the requests that change nothing.** Every request re-walks its
+  full path (`fs.rs`, `open_ino`), so its cost grows with depth. Counted from the code, in path
+  components resolved plus stat calls: a `lookup` at depth k costs k + 3 — the walk, the
+  identity `fstat`, the `fstatat` of the name and `policy_name`'s two of `.git` and
+  `.ko-agent-sandbox` — and a `getattr` k + 2: the walk, the identity `fstat` and a second `fstat`
+  for the attributes. An `lstat` sums to 34 at depth 4 and 124 at depth 9. How many virtiofs
+  requests the guest kernel sends for them is unmeasured; at one each and the ~56 µs of a guest
+  lookup, the 34 are 1.9 ms of the measured 3.05 ms. The daemon keeps an `O_PATH` descriptor per
+  *directory* inode, bounded, with today's walk on a miss. `lookup`, `getattr`, `readdir`,
+  `readlink` and a read-only `open` go through the parent's descriptor: the walk and the identity
+  `fstat` go, since a descriptor never comes to name another object. `policy_name`'s two stay —
+  without them a second name of a guarded entry is classified as ordinary — so a `lookup` costs 3
+  at any depth and a `getattr` 1: 15 for the `lstat` at depth 4, 35 at depth 9. Measure the gain;
+  the counts predict its shape, not its size. Every mutation, an `open` for writing included,
+  keeps the full walk and the identity comparison, so the policy decides on exactly what it
+  decides on today.
+    - A path the sandbox walks stays fresh: under TTL 0 the kernel asks for each component, and
+      `fstatat(parent_fd, name)` answers from the live tree, so a directory the host replaced
+      (`rm -rf` then recreate — `npm install`, `cargo clean`) takes a new inode at the next walk.
+    - Accepted (2026-09-20): through a directory the sandbox *holds* — its working directory, an
+      open descriptor — reads follow the object when the host moves it, where today they fail
+      `ESTALE` or `ENOENT`. A mutation through it fails as it does today: it walks the stored
+      names.
+      That differs from a local filesystem, where a create through a held descriptor lands in
+      the moved directory (measured on xfs); the difference is what keeps a directory the host
+      moved into a gitdir from being written under its old classification.
+    - Accepted (2026-09-20), provided it is documented: when the host moves a held directory
+      *out of* the project, the sandbox can still read that subtree through it, where
+      `RESOLVE_IN_ROOT` refuses today. An unfiltered bind mount behaves the same; `..` does not
+      climb from there, since the kernel resolves it.
+    - [ ] Docs, in the change that adds the cache — the second acceptance is conditional on them:
+        - `SECURITY.md`, "Not defended": a directory the session holds stays readable after the
+          host moves it out of the project, and what that lets a session read;
+        - `architecture.md`, "Inode model": a held directory follows the object the host moved,
+          reads through the descriptor and mutations through the walk, and why the split keeps
+          the policy's decisions as they are;
+        - `troubleshooting.md`: a write that fails `ESTALE` or `ENOENT` in a directory that still
+          lists — the host moved it; `cd` to it by its path again.
+    - Verify first: a host move of a directory held in the guest over virtiofs behaves as xfs
+      does; and how many held descriptors the hypervisor's virtiofs bears, which sets the bound.
+    - What the argument rests on, each with a test:
+        - every `Filesystem` method has an explicit route, asserted over all of them — `open`
+          with `O_TRUNC` on a read-only access mode and `link`'s source are mutations;
+        - a child looked up through a moved directory carries that directory's old context, so
+          the identity comparison in `open_ino` is what refuses a mutation on it: the stored
+          names lead to nothing, or to another object;
+        - a descriptor leaves the cache under the lock that drops its inode, so a reused inode
+          number never meets an old descriptor;
+        - files are opened `openat(parent_fd, name, O_NOFOLLOW)` with one identity `fstat`, not
+          by reopening a cached descriptor through `/proc/self/fd`, a magic link.
+    - Live mode alone, for the reason `FUSE_PASSTHROUGH` below gives.
 - [ ] READDIRPLUS — batches lookup+getattr for the walk itself. Expect it to help a walk that only
   lists entries, not one that stats each as `ls -lR` does: under TTL 0 the attributes it returns
   expire immediately, so follow-up per-file stats still round-trip. Measure before and after. It
   would also align `readdir`'s `d_ino` with the synthetic `st_ino`, since each entry would carry a
   real lookup (Non-TODOs, inode-number reuse).
-- [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing.
-  `fs.rs`, `mount_config`, has what rests on one request at a time; each needs its own answer
-  first.
+- [ ] Multi-threading (`Config::n_threads`, `clone_fd`) — parallel clients stop serializing:
+  throughput is flat from 1 to 8 client threads (`verification-log.md`, "an sbt build"). `fs.rs`,
+  `mount_config`, has what rests on one request at a time, a list not shown complete; each needs
+  its own answer first. The host races every such interval today and is trusted; threads let the
+  sandbox time them, so each needs an argument against the sandbox as the second party.
+    - A narrower form leaves less to prove: one reader/writer lock for the session, shared by
+      `lookup`, `getattr`, `read`, `readdir`, `readlink` and a read-only `open`, exclusive for
+      every mutation, `write` included. What `mount_config` says of `write` and of a mutation's
+      interval stays true as written — no request of the session's own runs inside either.
+      Unproven: `lookup` against `lookup`, and `lookup` against `forget`, on the inode table.
+      Writes stay serialized; a build whose output is outside the mount sends mostly the shared
+      operations.
+    - Measure first what the kernel serializes: without `FUSE_PARALLEL_DIROPS` it admits one
+      lookup per directory at a time, which bounds the gain of either form.
 - [ ] `FUSE_PASSTHROUGH` for bulk data, capability-checked with a userspace fallback. A backing fd
   registered with the kernel cannot be rebound across the staged generation barrier in
   `doc/plan-staged.md`; restrict passthrough to live mode unless research first establishes a safe

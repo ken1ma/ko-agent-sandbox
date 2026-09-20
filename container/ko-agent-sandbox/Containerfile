@@ -602,6 +602,13 @@ COPY --chmod=0755 \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipboard /usr/local/bin/$name; done
 
+# sbt 2 reads its global settings from ~/.config/sbt/2, not ~/.sbt/2, unless SBT_CONFIG_HOME or
+# XDG_CONFIG_HOME names another place; the image sets neither. sbt 1 has no rootOutputDirectory,
+# so there is no such file for ~/.sbt/1.0.
+# nonroot-owned: sbt keeps its staging and zinc directories beside the settings.
+RUN install -d -o nonroot -g nonroot /home/nonroot/.config/sbt /home/nonroot/.config/sbt/2
+COPY --chown=nonroot:nonroot --chmod=0644 config/sbt/2/ /home/nonroot/.config/sbt/2/
+
 COPY AGENTS-SANDBOX.md /etc/ko-agent-sandbox/AGENTS.md
 
 RUN set -euxo pipefail; \

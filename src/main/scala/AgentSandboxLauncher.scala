@@ -2037,9 +2037,9 @@ object AgentSandboxLauncher:
            |The daemons of sbt, mill and gradle stay warm across invocations. To run several
            |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
            |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
-           |resort, not an alternative: host and container builds compile with different JVMs
-           |against different caches over the same `target/`, so a container build costs the host a
-           |rebuild or the symlink cleanup described above. Under sbt and mvn the host grants no
+           |resort, not an alternative: by default its output is outside the project and discarded
+           |with the session, so it compiles everything once per session, while the host keeps its
+           |build between sessions. Under sbt and mvn the host grants no
            |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
            |suite alone runs in the container. Under mill and gradle a build's processes can bind
            |listeners.
@@ -2054,8 +2054,7 @@ object AgentSandboxLauncher:
            |`ko-sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
            |builds here are slow, or the machine is short on memory, tell the user: relaunching with
            |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host — memory reclaimed on exit
-           |rather than left with the podman machine, at host speed, and without the symlink cleanup
-           |that switching between container and host commands needs, as described above.
+           |rather than left with the podman machine, and at host speed.
            |""".stripMargin
       else ""
     // `allow-unless-denied` inverts the default's reading of the lines: what is listed is the
