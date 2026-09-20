@@ -1,3 +1,46 @@
+# Tests
+
+Run the commands in this section from the repository root.
+
+## launcher
+
+1. On the host, run the container-launching suites against the jar and images from
+   [Build the launcher and images](../README.md#build-the-launcher-and-images). `test` and
+   `testFull` skip these suites:
+
+       sbt testWithPodman
+
+    1. `testOnly` patterns can follow, quoted with the command:
+       `sbt "testWithPodman *RunTopologyTest"`.
+    1. One test is skipped unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
+       bucket you own: the refusal of an owner-signed upload inside the inspected tunnel.
+
+        1. The case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign
+           the URL and the test command, which uses `sbt --server` so the variable reaches the
+           tests.
+
+1. On the host, start a sandbox with the default egress rules:
+
+       KO_AGENT_SANDBOX_SESSION_START=immediate \
+           java -jar target/dist/ko-agent-sandbox.jar bash
+
+   Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
+
+1. `testFull` executes every test every time, unlike `test` which is incremental.
+
+## egress-proxy
+
+    (cd container/ko-agent-egress-proxy/app; sbt testFull)
+
+## ko-agent-fs
+
+    java -jar target/dist/ko-agent-sandbox.jar --self-test
+
+1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
+   privileged container, on any machine with podman; running either suite directly is documented in
+   [testing.md](../fuse/ko-agent-fs/doc/testing.md).
+
+
 # Test environments
 
 ## On macOS
