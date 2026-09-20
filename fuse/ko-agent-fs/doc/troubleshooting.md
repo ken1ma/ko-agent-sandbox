@@ -132,6 +132,15 @@ with `NoSuchFileException` on links the host's sbt left
 its output directory under `~/.cache` the same way, or run it on the host with `--run-on-host`
 (macOS).
 
+For mill the image sets nothing. mill takes its output directory from the environment variable
+`MILL_OUTPUT_DIR`, one value for every build that environment runs, where sbt's setting is computed
+per build; set in the image, it would give two mill builds in one session the same directory. Set
+it per command instead, keyed by the build:
+`MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path> ./mill …`. Use the same value
+on every command of that build: another value starts from an empty directory with a daemon of its
+own. What this saves for a mill build is not measured. `--run-on-host` does not forward the
+variable, so a host mill build keeps `out/`.
+
 ## The whole machine degrades (every podman command slow or erroring)
 
 Check the machine's available memory, disk space and OOM reports:

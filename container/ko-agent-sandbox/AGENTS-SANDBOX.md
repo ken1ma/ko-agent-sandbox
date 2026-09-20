@@ -31,18 +31,22 @@ With the default `ko-agent-fs` guard, new symlinks in the project must have rela
 staying inside it; even absolute targets inside it fail. The appended section identifies
 unfiltered direct bind mounts.
 
-sbt 2 here writes what a build derives from `rootOutputDirectory` — by default its classes and
-packaged jars, the meta-build's included — under `~/.cache/sbt-out/<the build's absolute path>`,
-not under the project's `target/out`. A build that names an output path itself still writes the
-project, where the host's sbt leaves its cached outputs, class files included, as links into the
-host's cache. If a compile there fails with `NoSuchFileException` on `error writing … .class`,
-check whether that class file is a dangling link (`find <path> -xtype l` prints it); if so,
-remove the dangling links and build again:
+Build output:
 
-```sh
-find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
-    -type d -name target -exec find {} -xtype l -delete \;
-```
+- sbt 2 here writes its classes and packaged jars under
+  `~/.cache/sbt-out/<the build's absolute path>`, not the project's `target/out`.
+- A build that names an output path itself still writes the project, where the host's sbt leaves
+  class files as links into the host's cache.
+  - If a compile there fails with `NoSuchFileException` on `error writing … .class`, check whether
+    that class file is a dangling link: `find <path> -xtype l` prints it.
+  - If so, remove the dangling links and build again:
+
+    ```sh
+    find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
+        -type d -name target -exec find {} -xtype l -delete \;
+    ```
+- When a mill build in the project is slow, run it as
+  `MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path> ./mill …`.
 
 
 ## Use what is already installed
