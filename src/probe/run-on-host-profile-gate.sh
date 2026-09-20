@@ -14,8 +14,8 @@
 # RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile and be ended by
 # the wrapper (one server per build directory). Each wrapper row scavenges, publishes a command directory, starts the
-# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session — runs
-# the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
+# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session —
+# runs the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
 # profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
 # profile, which is the measurement.
 #
@@ -1614,7 +1614,8 @@ $(grep -v 'Picked up' "$work/chan-mill-tmp.log.err" | tail -1 | cut -c1-50)"; fi
         channel_settled
         printf '%s' "$port_saved" > "$port_file"; port_saved=""
         if [ "$planted_status" -ne 0 ] \
-            && grep -q 'Operation not permitted' "$work/chan-mill-planted-port.log" "$work/chan-mill-planted-port.log.err" \
+            && grep -q 'Operation not permitted' \
+                "$work/chan-mill-planted-port.log" "$work/chan-mill-planted-port.log.err" \
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ]
         then report PASS "$port_row" "exit $planted_status; daemon $mill_daemon kept"
         else report FAIL "$port_row" "exit $planted_status; daemon now \
@@ -2098,7 +2099,8 @@ listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
                     && kill -0 "$planted_sleep" 2>/dev/null
                 then report PASS "$planted_mill_row" "daemon $adopted; the planted port heard nothing, the pid lives"
                 else report FAIL "$planted_mill_row" "exit $status, daemon ${adopted:-none}, connects: \
-$(grep -c connect "$work/planted-tcp.log"), planted pid $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
+$(grep -c connect "$work/planted-tcp.log"), planted pid \
+$(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
             fi
             kill -TERM "$channel_broker" 2>/dev/null
             tries=0

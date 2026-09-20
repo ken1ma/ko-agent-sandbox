@@ -2084,7 +2084,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
 
-  test("the material a proxy starts with is keyed by profile: a leaf under the finite ones, the run CA under the public default"):
+  test(
+    "the material a proxy starts with is keyed by profile: " +
+      "a leaf under the finite ones, the run CA under the public default",
+  ):
     val now = java.time.Instant.now()
     val (ca, caKey) = X509HelperTest.testCa(now, days = 825)
     val directory = java.nio.file.Files.createTempDirectory("material")

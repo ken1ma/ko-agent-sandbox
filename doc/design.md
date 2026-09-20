@@ -14,8 +14,8 @@ What remains to do is TODO.md; the security model is SECURITY.md.
 
 The words the documents share, each defined where it binds and listed here once:
 
-- **sandbox** — the container the agent runs in, rootless, as `nonroot`; its boundary is the subject
-  of SECURITY.md.
+- **sandbox** — the container the agent runs in, rootless, as `nonroot`; its boundary is the
+  subject of SECURITY.md.
 - **proxy** — the egress proxy, one per session in its own container, which every request of the
   session leaves through (`egress-proxy.md`).
   - Under `--run-on-host`, a host proxy beside it per program and build directory, kept across the
@@ -467,8 +467,8 @@ Conflating them is what makes verification look larger than it is.
 - **The code's own logic** depends on neither of the others. The privileged dev rig settles it once,
   on whichever host a developer has (`../fuse/ko-agent-fs/doc/testing.md`).
 - **The kernel** is not one kernel: every podman machine runs its own — Fedora CoreOS on macOS, a
-  Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on what
-  a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
+  Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on
+  what a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
   (`../fuse/ko-agent-fs/doc/architecture.md`).
 - **The share**, and the backing under it: the host project directory as it arrives inside the
   machine, over virtiofs on macOS and the WSL share on Windows. On native Linux the upper varies

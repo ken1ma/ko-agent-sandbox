@@ -71,8 +71,8 @@ Findings the rule rests on:
     name. The other folds into the names' characters are to `ss` (U+00DF, U+1E9E) and `st`
     (U+FB05, U+FB06), sequences neither name has.
 - **Invisible/ignorable code points are a real collapse vector**, so the rule drops U+00AD,
-  U+200B–U+200D, U+2060 and U+FEFF before comparing. This is the HFS+ half of CVE-2014-9390; whether
-  APFS still ignores them is exactly the sort of table detail we should not have to know.
+  U+200B–U+200D, U+2060 and U+FEFF before comparing. This is the HFS+ half of CVE-2014-9390;
+  whether APFS still ignores them is exactly the sort of table detail we should not have to know.
 - **NTFS folds through a *per-volume* `$UpCase` table** — table-driven and volume-specific, so the
   exact fold set is *not statically knowable*, and a crafted volume can even remap ASCII (out of our
   threat model, but it shows the mechanism). This is the strongest argument for the

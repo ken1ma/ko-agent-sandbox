@@ -42,8 +42,8 @@ Hooks are not the only file whose *content* git executes. The rebase/cherry-pick
 lines, and a later host `git rebase --continue` (or `cherry-pick --continue`) runs them. This is the
 same class as a hook, and easy to miss precisely because git writes these paths during ordinary
 operation: watching what git writes suggests "operational, keep writable", but the execution
-question — can a write here make host git execute? — says "frozen". The filter protects them against
-modification.
+question — can a write here make host git execute? — says "frozen". The filter protects them
+against modification.
 
 **Vector:** write a `rebase-merge`/`rebase-apply`/`sequencer` todo the host later continues.
 
@@ -113,8 +113,8 @@ From the three groups, the state that must be immutable to the sandbox:
 3. **Within any gitdir**, the protected entries:
    - `config`, `config.worktree`
    - `hooks/**`
-   - `commondir` and `gitdir` — the redirections of group 3 above, which relocate where `config` and
-     `hooks` are resolved from
+   - `commondir` and `gitdir` — the redirections of group 3 above, which relocate where `config`
+     and `hooks` are resolved from
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
@@ -260,8 +260,8 @@ into the **worktree**, two ways:
 - `core.hooksPath` in the host's config already names a worktree directory (`./githooks`).
 
 In both cases the files host `git` executes are stored at an ordinary worktree path, which this
-filter classifies as writable project data — so no per-operation rule can protect them. **The filter
-therefore refuses to serve such a tree at all** (`guard::check_hook_location`, run before the
+filter classifies as writable project data — so no per-operation rule can protect them. **The
+filter therefore refuses to serve such a tree at all** (`guard::check_hook_location`, run before the
 mount); the mounted suite verifies both the refusal and its necessity
 (`relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them`).
 
@@ -291,11 +291,12 @@ component traversed must classify as `Protected`, or the resolution has permanen
 workspace. Components, not only symlink nodes: an operational *directory* on a chain is a future
 symlink slot the sandbox can rename away and replant, and a chain that leaves the workspace
 re-enters the rule if a link points back in. `canonicalize` cannot express this — it returns the
-endpoint and erases the chain — so the walk is explicit and depth-bounded, and it classifies against
-the same submodule gitdir roots the runtime discovers by their `HEAD`, so guard-`Protected` means
-runtime-`Protected` (`.git/modules/<sub>/objects` is writable at runtime and no exemption here).
-Existence cannot weaken the answer — a missing operational name is one the sandbox can create — and
-only NotFound means absent: an unreadable step, or a config that is not UTF-8, refuses the mount.
+endpoint and erases the chain — so the walk is explicit and depth-bounded, and it classifies
+against the same submodule gitdir roots the runtime discovers by their `HEAD`, so guard-`Protected`
+means runtime-`Protected` (`.git/modules/<sub>/objects` is writable at runtime and no exemption
+here). Existence cannot weaken the answer — a missing operational name is one the sandbox can
+create — and only NotFound means absent: an unreadable step, or a config that is not UTF-8, refuses
+the mount.
 
 The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths its
 subject cannot mutate, and every allowed chain is made of `Protected` components the sandbox can
@@ -365,8 +366,8 @@ project directory", has the security reason for each):
   The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror` write
   only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name rule can
   refuse without refusing legitimate projects that have them. The guard refuses a bare layout at the
-  workspace root at mount; one the sandbox creates — below the root, or at the root after that check
-  — is the gap SECURITY.md records ("The project directory"): running host git inside an
+  workspace root at mount; one the sandbox creates — below the root, or at the root after that
+  check — is the gap SECURITY.md records ("The project directory"): running host git inside an
   agent-created directory is running the agent's output.
 - `git worktree add <path>` with `<path>` in the project — writes a `.git` **file** at the new
   worktree. Blocked.
@@ -440,8 +441,8 @@ recursion. Not `setxattr`/`removexattr` ("Operations that make these mutations" 
 `!command` in an agent-written `.gitmodules` is not honored.
 
 **Operational writability (classifier):** the happy-path Git-integration suite —
-`status/add/commit/checkout/switch/fetch/merge` on a host repo through the mount — must pass, so the
-writable set is complete enough. Under the allowlist choice, a missing operational path fails
+`status/add/commit/checkout/switch/fetch/merge` on a host repo through the mount — must pass, so
+the writable set is complete enough. Under the allowlist choice, a missing operational path fails
 here. Separately, `git rebase`/`am`/ranged `cherry-pick` must **fail** (their todo state is frozen);
 assert the block, so a later widening of the allowlist that reopened them would be caught.
 

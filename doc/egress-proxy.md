@@ -253,9 +253,9 @@ allow https://github.com/login/device/code read git-fetch method=POST
   serialization of the ruleset, not a rule file: it has no `deny defaults` header, nothing reads
   it as input, and it is not promised to re-parse to itself.
 - Those lines are what the proxy's digest names — one stable log line per run, comparable across
-  runs — what the leaf certificate's names are read from, and what `KO_AGENT_SANDBOX_EGRESS_RULESET`
-  holds, so two files resolving to one ruleset print one digest and the same lines, and the same
-  file under two profiles never does.
+  runs — what the leaf certificate's names are read from, and what
+  `KO_AGENT_SANDBOX_EGRESS_RULESET` holds, so two files resolving to one ruleset print one digest
+  and the same lines, and the same file under two profiles never does.
 - Metadata follows outside the digest: a summary of inspected and tunnel hosts, denial patterns
   and widening lines, then the widening line.
 - `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its

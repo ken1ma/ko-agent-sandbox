@@ -56,8 +56,8 @@ Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-15
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it
-— and whose resident memory, once grown to hold a build, macOS never gets back. On the host the same
-build runs on memory reclaimed when it exits, at host speed.
+— and whose resident memory, once grown to hold a build, macOS never gets back. On the host the
+same build runs on memory reclaimed when it exits, at host speed.
 
 A host command's recurring cost is startup. When a start is paid, per program:
 
@@ -1198,7 +1198,8 @@ preserve"), and a relaunch is the one step that applies an edit to both proxies 
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
 `dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts the
-proxy by re-invoking its own executable — `java -jar` or the native binary — under a private action.
+proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
+action.
 
 - That executable must still exist at its launch path, as spelled at launch — the link, when
   launched through a symlink — in either form: each is one file built under `target/dist`, which

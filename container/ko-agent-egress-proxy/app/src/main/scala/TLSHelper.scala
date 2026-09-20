@@ -321,8 +321,8 @@ object TLSHelper:
 
           if accumulated.length < messageLength + 4 then loop()
           else if accumulated.length > messageLength + 4 then
-            // never legitimate before the ServerHello — and wireBytes is forwarded verbatim on opaque tunnels, so exact
-            // parsing keeps unexamined bytes from being forwarded
+            // never legitimate before the ServerHello — and wireBytes is forwarded verbatim on opaque tunnels, so
+            // exact parsing keeps unexamined bytes from being forwarded
             throw BadTls("trailing bytes after ClientHello")
           else
             val payload = accumulated.slice(4, messageLength + 4)

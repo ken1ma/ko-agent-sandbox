@@ -257,7 +257,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):
     val both = Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://proxy.example:3128")
     assertEquals(upstreamProxyVariable(both.get), Some("https_proxy" -> "http://proxy.example:3128"))
-    assertEquals(upstreamProxyVariable(Map("HTTPS_PROXY" -> "http://a.example:1").get), Some("HTTPS_PROXY" -> "http://a.example:1"))
+    assertEquals(
+      upstreamProxyVariable(Map("HTTPS_PROXY" -> "http://a.example:1").get),
+      Some("HTTPS_PROXY" -> "http://a.example:1"),
+    )
     assertEquals(upstreamProxyVariable(Map.empty[String, String].get), None)
     assertEquals(carrierName("TOKEN"), "KO_AGENT_RUN_ON_HOST_ENV_TOKEN")
 

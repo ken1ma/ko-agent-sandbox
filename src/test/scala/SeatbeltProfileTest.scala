@@ -437,7 +437,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val mvnHome = Paths.get(s"$home/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f")
   private val m2Repository = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/m2/repository")
   private val mvnPrereqs = prereqs.copy(program = Program.Mvn, executable = mvnHome.resolve("bin/mvn"))
-  private def mvnInputs = millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
+  private def mvnInputs =
+    millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
 
   test("mvn grants its distribution to run and its local repository to write, and no sbt cache"):
     val text = render(mvnInputs).fold(reason => fail(reason), identity)
