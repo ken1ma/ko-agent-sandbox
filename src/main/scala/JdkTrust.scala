@@ -47,6 +47,12 @@ object JdkTrust:
     * despite its usual .cer examples. */
   val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
+  /** One CA certificate file can be mounted into the throwaway JDK container, the proxy and the
+    * sandbox: the launcher copies a file per run only when it lies outside the run's directory,
+    * and allow-unless-denied writes its CA inside. The certificate is public, so no container
+    * needs it kept from the others. */
+  val caCertificateReaders = FileBindReaders.SeveralContainers
+
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
    * bundle's technique one layer over: take the image's own files, add this session's part, mount
@@ -66,6 +72,7 @@ object JdkTrust:
     caCertFile: Path,
     proxyHost: String,
     proxyPort: Int,
+    selinuxEnforcing: Boolean,
   ): Vector[(Path, String)] =
     javaHomeOf(imageEnv).toVector.flatMap: javaHome =>
       val cacertsPath = s"$javaHome/lib/security/cacerts"
@@ -80,20 +87,12 @@ object JdkTrust:
         // `cp -L` first: the Debian Temurin packages link `cacerts` into /etc/ssl/certs, and a copy
         // out of the container must contain the store, not the link.
         val prepared = "/prepared-jdk"
-        // --entrypoint=: this container depends on nothing but sh and the script. The stock
-        // ko-sandbox-entrypoint would come through — it skips seeding when the root this runs as has
-        // no $HOME/persistent-volume — but that guard is the stock image's, and a
-        // KO_AGENT_SANDBOX_IMAGE promises only to ship ko-sandbox-jdk-use-proxy, not an ENTRYPOINT
-        // that tolerates this container or execs its arguments at all. Nothing an entrypoint does
-        // is for this container anyway.
-        val created = run((
-          Vector(
-            podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-            s"--volume=$caCertFile:$SandboxEgressProxyCaPath:ro",
-            s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
-            image,
-          ) ++ quoteFreeSh(prepareScript(prepared), javaHome)
-        )*)
+        val created = run(
+          jdkPreparationCreateCommand(
+            podman, image, caCertFile, proxyHost, proxyPort, selinuxEnforcing,
+            quoteFreeSh(prepareScript(prepared), javaHome),
+          )*
+        )
         if !created.ok then fail(s"error: could not create a container of $image to prepare its JDK\n${created.err}")
         val container = created.text
         // The failure is raised after the container is removed: `fail` exits the JVM, which skips
@@ -113,6 +112,30 @@ object JdkTrust:
         writeReadable(stampFile, stamp + "\n")
 
       files
+
+  /**
+   * --entrypoint=: this container depends on nothing but sh and the script. The stock
+   * ko-sandbox-entrypoint would come through — it skips seeding when the root this runs as has
+   * no $HOME/persistent-volume — but that guard is the stock image's, and a
+   * KO_AGENT_SANDBOX_IMAGE promises only to ship ko-sandbox-jdk-use-proxy, not an ENTRYPOINT
+   * that tolerates this container or execs its arguments at all. Nothing an entrypoint does
+   * is for this container anyway.
+   */
+  def jdkPreparationCreateCommand(
+    podman: String,
+    image: String,
+    caCertFile: Path,
+    proxyHost: String,
+    proxyPort: Int,
+    selinuxEnforcing: Boolean,
+    containerCommand: Vector[String],
+  ): Vector[String] =
+    Vector(
+      podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
+      fileBind(caCertFile, SandboxEgressProxyCaPath, "ro", selinuxEnforcing, caCertificateReaders),
+      s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
+      image,
+    ) ++ containerCommand
 
   /** What `net.properties` cannot say for itself: the route. `http.*` too, as HTTP_PROXY is set —
     * an `http://` attempt is then recorded in the proxy log instead of failing unexplained. */
