@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  By default Maven takes its proxy from here alone: its resolver reads no HTTPS_PROXY, and the
+  JVM's https.proxyHost, in conf/net.properties or as a -D option, only under
+  -Daether.connector.http.useSystemProperties=true, which the run-on-host broker passes and a
+  project's `./mvnw` does not. A build without this entry fails resolving its first plugin with
+  "Temporary failure in name resolution".
+
+  The address is literal because Maven refuses a property in <port> ("must be an integer");
+  AgentSandboxLauncherTest holds it equal to the launcher's. nonProxyHosts is the session's
+  NO_PROXY.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+  <proxies>
+    <proxy>
+      <id>ko-agent-sandbox-egress</id>
+      <protocol>https</protocol>
+      <host>egress-proxy</host>
+      <port>3128</port>
+      <nonProxyHosts>localhost|127.0.0.1</nonProxyHosts>
+    </proxy>
+  </proxies>
+</settings>

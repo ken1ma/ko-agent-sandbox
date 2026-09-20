@@ -376,6 +376,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(agentsandbox.egress.RulesetHelper.CatalogLines.nonEmpty)
     assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
 
+  test("the image's Maven settings name the proxy the launcher names"):
+    // Maven takes no property in <port>, so the file spells the address a second time.
+    val settings = Files.readString(Paths.get("container/ko-agent-sandbox/m2/settings.xml"))
+    def element(name: String): Vector[String] =
+      s"<$name>([^<]*)</$name>".r.findAllMatchIn(settings).map(_.group(1)).toVector
+    assertEquals(element("host"), Vector(EgressProxyHost))
+    assertEquals(element("port"), Vector(EgressProxyPort.toString))
+    assertEquals(element("protocol"), Vector("https"))
+
   test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
     // A variable in one but not the other is either undocumented or warned about as a typo. This
     // is also why the pair is beside UsageText rather than in HostCommands, whose contract is

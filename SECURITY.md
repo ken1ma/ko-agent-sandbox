@@ -814,6 +814,11 @@ Programs not covered by the launcher's prepared trust stores need separate handl
   `ko-sandbox-jdk-use-proxy` gives it both the CA and the proxy from inside, in one command; the
   certificate it reads is mounted beside the agent instructions, and is the same public one already
   inside the bundle.
+- Maven, which a project's `./mvnw` brings, trusts what its JDK trusts but by default takes the
+  proxy from its settings, neither `HTTPS_PROXY` nor the JDK's `net.properties`; the image ships a
+  `~/.m2/settings.xml` naming it (`container/ko-agent-sandbox/m2/settings.xml`). On the host the
+  broker passes the resolver's `aether.connector.http.useSystemProperties` instead
+  (`doc/run-on-host.md`, "Maven").
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
   agent passes by hand.

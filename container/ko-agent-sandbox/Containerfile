@@ -609,6 +609,12 @@ RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipbo
 RUN install -d -o nonroot -g nonroot /home/nonroot/.config/sbt /home/nonroot/.config/sbt/2
 COPY --chown=nonroot:nonroot --chmod=0644 config/sbt/2/ /home/nonroot/.config/sbt/2/
 
+# The image has no Maven, so there is no ${maven.home}/conf to hold this: a project's `./mvnw`
+# brings its own, and the user settings are the one file every Maven reads.
+# nonroot-owned: Maven keeps its local repository beside it.
+RUN install -d -o nonroot -g nonroot /home/nonroot/.m2
+COPY --chown=nonroot:nonroot --chmod=0644 m2/settings.xml /home/nonroot/.m2/settings.xml
+
 COPY AGENTS-SANDBOX.md /etc/ko-agent-sandbox/AGENTS.md
 
 RUN set -euxo pipefail; \

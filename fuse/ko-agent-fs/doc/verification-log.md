@@ -327,6 +327,25 @@ the mount. For sbt, moving the output outside the mount removed most of the extr
 gradle's remaining time is spent on — operations on the inputs, or files gradle creates in the
 mount and removes during the build — is not measured.
 
+### Measured: a Maven build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+The gradle entry's 202 classes as two Maven modules under a parent POM, in a session, under
+Maven 3.9.16 and Java 25. Each row is `mvn -q -B package` on a fresh copy, with the plugins
+already in `~/.m2`.
+
+| the build's files | `target/` | time |
+|---|---|---|
+| in the mount | in the mount | 85 s |
+| in the mount | in the mount, with `-Dproject.build.directory=<a path under ~/.cache>` | 81 s |
+| in the mount | `~/.cache`, by `<build><directory>` in the parent POM | 47 s |
+| under `~` | under `~` | 1.9 s |
+
+Maven ignores the property: each module keeps its `target/` in the project, and nothing appears
+at the path given. The POM's `<directory>`, keyed by `${project.artifactId}`, moves both modules'
+output, and no `target/` remains in the mount. That run still takes 45 s more than the build
+outside the mount: as with gradle, most of the extra build time remains after moving the
+persistent output outside the mount. What the remaining time is spent on is not measured.
+
 ### Measured: sbt over dangling cache links (macOS 26.4.1, podman 6.1.1, sbt 2.0.8; 2026-09-20)
 
 A one-source sbt 2.0.8 project that keeps its output in the project. On the host, a build, then
