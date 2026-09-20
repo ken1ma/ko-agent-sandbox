@@ -440,7 +440,8 @@ Run the commands below from the repository root.
        bucket you own: the refusal of an owner-signed upload inside the inspected tunnel.
 
         1. The case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign
-           the URL and the test command, which uses `sbt --server` so the variable reaches the tests.
+           the URL and the test command, which uses `sbt --server` so the variable reaches the
+           tests.
 
 1. On the host, start a sandbox with the default egress rules:
 

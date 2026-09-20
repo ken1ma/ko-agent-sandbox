@@ -2,8 +2,8 @@
 
 What `ko-agent-fs` still needs, ordered by what separates it from a first release anyone should
 trust. The open security gap comes first. Items under **P1 — platform verification** are the ones
-that *cannot* be settled by reasoning at all — only the backing filesystem answers them, and until a
-row runs, the claim it would confirm is an assumption. Which machine settles a row depends on the
+that *cannot* be settled by reasoning at all — only the backing filesystem answers them, and until
+a row runs, the claim it would confirm is an assumption. Which machine settles a row depends on the
 backing: ext4 and the two Linux architectures the dev rig already reaches, APFS and NTFS a real
 macOS or Windows host. Everything below them is ordinary work.
 
@@ -39,8 +39,8 @@ only re-running notices a platform default changing underneath a row.
 
 The decisive question is not "what do our name-matching rules cover" but the property itself:
 
-> After the sandbox creates a name `N` through the mount, does host `git` — `lstat("<dir>/.git")` on
-> the real backing filesystem — find a repository?
+> After the sandbox creates a name `N` through the mount, does host `git` — `lstat("<dir>/.git")`
+> on the real backing filesystem — find a repository?
 
 This cannot be reasoned to a conclusion: the fold tables are per-volume on NTFS and tied to a
 Unicode version on APFS (`git-metadata.md`, "The name rule"). Reasoning bounds the candidate list;
@@ -190,9 +190,9 @@ reports per-entry times per workload. Run it once in a filtered session and once
 answer, and the control isolates the filter's cost from the backing share. The runs are
 `verification-log.md`, "The cost of a path walk".
 
-The margin over the unfiltered bind mount is **~6–18×**, and it is this layer's cost alone: one FUSE
-round trip through the daemon per path component, which TTL 0 makes unavoidable. On Windows it is
-~5–30× over a share that is itself 5–13× slower.
+The margin over the unfiltered bind mount is **~6–18×**, and it is this layer's cost alone: one
+FUSE round trip through the daemon per path component, which TTL 0 makes unavoidable. On Windows it
+is ~5–30× over a share that is itself 5–13× slower.
 
 Cost scales with syscall count, so linear extrapolation to a 100k-file tree: a readdir walk ~40 s
 (tolerable); walk+stat ~2.3 min; a stat per entry as `ls -lR` does, ~21 min — the `sbt`/`metals`
@@ -200,8 +200,9 @@ stat storm, this project's own stated target workload. The Windows figures for t
 ~7 min, ~24 min and ~2.8 h. The dominant term is per-syscall LOOKUPs: entry TTL 0 means every path
 component of every syscall is a fresh round trip, which no batching downstream can amortize.
 
-On the real tree the path-walk term is the 3.8× between the two `lstat` rows (`verification-log.md`,
-"a real tree"), and `git status` — which Claude Code runs at startup — is where a user meets it.
+On the real tree the path-walk term is the 3.8× between the two `lstat` rows
+(`verification-log.md`, "a real tree"), and `git status` — which Claude Code runs at startup — is
+where a user meets it.
 
 - [ ] **Run it on Linux**, where there is no virtiofs under the filter and the ratio should differ
   in kind rather than degree — that number is unknown today, and Linux is a platform the filter is
@@ -211,8 +212,8 @@ On the real tree the path-walk term is the 3.8× between the two `lstat` rows (`
   entries. What git asks per directory that `find` does not is unmeasured.
 - [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.6 ms
   of a depth-1 `lstat`'s 0.64 ms is the container→daemon FUSE hop plus the daemon's own work per op
-  — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op fd
-  open/close, the inode-table lock, and the single-threaded session serializing round trips.
+  — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op
+  fd open/close, the inode-table lock, and the single-threaded session serializing round trips.
   Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
   This is the only gain available to programs like `find`, which hold directory fds and never pay
   the walk; it composes with the cache-TTL option below, which reaches only path-walking ones. A
@@ -262,9 +263,9 @@ created within the last T can be missing from one `git status`. Policy is untouc
 git context is computed once at creation (`inode.rs`, `lookup`), so it already outlives any kernel
 cache, and every mutation reaches the daemon whatever is cached.
 
-Expected gain: the 3.8× measured above on git's stat pass, so about 40 % of `git status` on the real
-tree, more if the untracked walk gains too; nothing for programs like `find` (the profiling row is
-what would help them). The bursts that pay set the break-even point: a cached component is
+Expected gain: the 3.8× measured above on git's stat pass, so about 40 % of `git status` on the
+real tree, more if the untracked walk gains too; nothing for programs like `find` (the profiling row
+is what would help them). The bursts that pay set the break-even point: a cached component is
 re-asked once per T while a walk stays under it. How much of the gain a given T keeps is
 unmeasured; the sweep below decides.
 

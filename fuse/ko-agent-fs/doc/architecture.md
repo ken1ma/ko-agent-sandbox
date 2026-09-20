@@ -62,21 +62,21 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, dev: u64, in
   semantics"). The remaining resolve flags, and the bounded `EAGAIN` retry a
   concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
 - **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
-  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored path
-  that stops naming its inode once the tree moves, which either side may do and no later lookup
+  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored
+  path that stops naming its inode once the tree moves, which either side may do and no later lookup
   repairs: the kernel goes on addressing a renamed directory by the inode it holds rather than
   looking the new name up. `RESOLVE_NO_SYMLINKS` and an identity comparison are what make that
-  merely stale instead of wrong — the chain resolves to the object the node was classified as, or it
-  fails: `ELOOP` through a symlink, `ESTALE` at another object, which a second name of a guarded
+  merely stale instead of wrong — the chain resolves to the object the node was classified as, or
+  it fails: `ELOOP` through a symlink, `ESTALE` at another object, which a second name of a guarded
   entry would otherwise let an ordinary chain reach (`fs.rs`, `open_ino`). The fd-per-inode
   alternative trades the staleness for its own mirror quirk (an fd to a renamed-away subtree keeps
   operating on the moved inode) plus one open fd per live inode, which at 100k files is real fd
   pressure. The path model holds one fd for the root and transient fds per op.
 - **Backing identity, so a replacement is a new inode.** `dev`/`ino_id` are the `(st_dev, st_ino)`
   the position named when the entry was allocated. `lookup` re-stats the name and reuses the entry
-  only when identity still matches; a host replacement — a different object left at the same name —
-  re-points the name to a freshly allocated inode number for the new object (`inode.rs`, `lookup`).
-  This is what keeps the FUSE inode identity tracking the *object*, not just the name.
+  only when identity still matches; a host replacement — a different object left at the same name
+  — re-points the name to a freshly allocated inode number for the new object (`inode.rs`,
+  `lookup`). This is what keeps the FUSE inode identity tracking the *object*, not just the name.
   Without it, the kernel keeps one inode — and one page cache — across the replacement, and
   `AUTO_INVAL_DATA` cannot save it: that mechanism invalidates on a size or mtime change, so a
   replacement at equal size and mtime (`tar -x`, `cp -p`, `touch -r` all produce one) would serve
@@ -217,8 +217,8 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
 
 1. **`sbt dist`** bundles `fuse/ko-agent-fs/**` into the jar next to the container build contexts,
    minus this `doc/` directory and `probe/`, neither of which is a build input or distribution
-   (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot be
-   enumerated at runtime, so an `INDEX` lists what is there.
+   (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot
+   be enumerated at runtime, so an `INDEX` lists what is there.
 2. **`--build`** unpacks that bundle to a temporary directory and runs `podman build` from it
    (`AgentSandboxLauncher.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
    `KoAgentFs.scala`). For this image the launcher first

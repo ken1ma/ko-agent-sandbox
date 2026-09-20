@@ -326,8 +326,8 @@ still write there is data which your git then parses, so a memory-safety bug in 
 reachable, exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but
 can only invoke filter commands your host configuration already defines).
 
-Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries —
-is output from an untrusted execution environment: editing them is the job, and confining their
+Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries
+— is output from an untrusted execution environment: editing them is the job, and confining their
 author says nothing about what running them on the host will do. Review the diff first, exactly as
 for a contribution from a stranger. That includes a repository the agent created deeper in the
 tree: the filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
@@ -1277,8 +1277,8 @@ The default excludes both forms of additional container execution:
   capability settings, as detailed below. In particular, a nested container cannot mount its own
   `/proc` while the locked overmounts remain in place. Those relaxations also apply to untrusted
   repository code running in the outer container.
-- **Sibling** — a service container beside the sandbox would be a new host-level object with its own
-  attack surface, reachable laterally from the sandbox and running outside its confinement.
+- **Sibling** — a service container beside the sandbox would be a new host-level object with its
+  own attack surface, reachable laterally from the sandbox and running outside its confinement.
 
 Test services can instead run as ordinary processes inside the sandbox, with the same uid,
 capabilities and egress confinement: PostgreSQL through `initdb`/`pg_ctl`, for example, or an S3

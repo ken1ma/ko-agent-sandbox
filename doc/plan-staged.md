@@ -61,8 +61,8 @@ one settles which part of the staged contract.
 | upper and lower names differing only by case       | in situ, APFS and NTFS      |
 | upper durability and reflink behavior             | in situ, each Linux backing |
 
-A successful `--self-test` stamps the filter's source id and the machine it proved — podman version,
-machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
+A successful `--self-test` stamps the filter's source id and the machine it proved — podman
+version, machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
 non-matching stamp, which is what makes "failure aborts staged launch" above a mechanism rather than
 an intention, and what turns "re-run after a podman or macOS upgrade" from a row someone remembers
 into a refused launch until `--self-test` runs again. The stamp records that a machine was proved

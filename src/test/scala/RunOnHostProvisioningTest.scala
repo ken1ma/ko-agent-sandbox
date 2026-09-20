@@ -29,7 +29,8 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
 
   private val GradleDistributionDir = ".gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv"
 
-  private val MvnDistributionUrl = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"
+  private val MvnDistributionUrl =
+    "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"
 
   /** A project whose only-script wrapper names Maven 3.9.16. */
   private def mvnProject(dir: Path): Path =
