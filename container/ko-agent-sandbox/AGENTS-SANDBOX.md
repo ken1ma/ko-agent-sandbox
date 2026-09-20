@@ -62,8 +62,8 @@ If the project limits line width, do not count columns yourself: `ko-sandbox-tex
 FILE...` prints `path:line:width` for every line wider than 100 columns. Add `--show-text` to see
 those lines in the same report.
 
-After renaming a heading or moving a file, run `ko-sandbox-link-check` to find broken local links
-across the repository's Markdown files.
+After renaming a heading or moving a file, run `ko-sandbox-markdown-link-check` to find broken
+local links across the repository's Markdown files.
 
 
 ## git
