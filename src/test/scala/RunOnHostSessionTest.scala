@@ -17,6 +17,21 @@ object RunOnHostSessionTest:
   val underRunOnHostProfile: Boolean =
     sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
 
+  /**
+   * A session root for a test that binds the sbt server's socket under a session's `tmp/`. That
+   * socket is up to 52 characters past the root, `/b<up to 20 digits>/tmp/<20 hex digits>/sock`,
+   * and macOS allows a socket path 103: a root under its `java.io.tmpdir`,
+   * `/var/folders/<2>/<30>/T`, is too long, and the wrapper's own root is
+   * `/private/tmp/ko-agent-<uid>` for the same reason (RunOnHostPrereqs.SessionTmpMaxLength). The
+   * test deletes the root it got.
+   */
+  def socketSessionRoot(prefix: String): Path =
+    try Files.createTempDirectory(Path.of("/tmp").toRealPath(), prefix)
+    catch
+      case ex: java.nio.file.FileSystemException =>
+        munit.Assertions.assume(false, s"needs a directory under /tmp, short enough for the server's socket: $ex")
+        throw ex
+
 class RunOnHostSessionTest extends munit.FunSuite:
 
   // --------------------------------------------------------------------------
