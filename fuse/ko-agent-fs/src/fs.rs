@@ -53,10 +53,13 @@ const TTL: Duration = Duration::ZERO;
 /// *who* may reach the mount from widening what they may do. `doc/architecture.md`, "Who may reach
 /// the mount", has the argument for both.
 ///
-/// `n_threads` stays at fuser's one, and two things rest on requests being served one at a time:
-/// `write` brings the backing descriptor's `O_APPEND` into step without a lock, and no request of
+/// `n_threads` stays at fuser's one, and three things rest on requests being served one at a time:
+/// `write` brings the backing descriptor's `O_APPEND` into step without a lock; no request of
 /// the session's own runs between a name-based mutation's policy decision and its syscall
-/// (`doc/security-research.md`, "Windows 8.3 short names", has what that interval still admits).
+/// (`doc/security-research.md`, "Windows 8.3 short names", has what that interval still admits);
+/// and `lookup` stats a name before it takes the inode table's lock, so two lookups record their
+/// identities in the order they read them. The list is what has been found, not a proof that
+/// nothing else rests on it (`doc/TODO.md`, "Performance").
 pub fn mount_config() -> Config {
     let mut config = Config::default();
     config.mount_options = vec![
@@ -1174,13 +1177,17 @@ impl Filesystem for KoAgentFs {
         // an approximation; SECURITY.md, "The project directory", has the threat.
         //
         // The population is programs that cache outside the project and link into it, and sbt 2 is the
-        // measured case at both ends. Unrefused, it materializes a build-cache hit as a link into
-        // its own store — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas` on the
-        // host — and the host's next compile of a changed source dies with `NoSuchFileException`
-        // writing its own class files through the dangling link, until `git clean -xdf`. Refused,
-        // its `DiskActionCacheStore` matches the `Operation not permitted` this returns, stops
-        // linking for the session and copies out of the store instead: builds keep working, and the
-        // cost is a copy per cached output rather than a link.
+        // measured case. Unrefused, it materializes a build-cache hit as links into its own store,
+        // the class files included — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas`
+        // on the host — and neither side has the other's. Measured in the direction the refusal
+        // leaves possible: over the host's links a compile in a session dies with
+        // `NoSuchFileException` writing its own class files, since a write through a link whose
+        // target directory is absent cannot create the target (`doc/verification-log.md`, "sbt
+        // over dangling cache links"). What the host's compile does over a session's links is not
+        // measured: the refusal leaves none. Refused, sbt's `DiskActionCacheStore` matches the
+        // `Operation not permitted` this returns, stops linking for the session and copies out of
+        // the store instead: builds keep working, and the cost is a copy per cached output rather
+        // than a link.
         let depth = match self.inner.lock().unwrap().table.components(parent.0) {
             Some(components) => components.len(),
             None => return reply.error(Errno::ESTALE),

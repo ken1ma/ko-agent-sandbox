@@ -1027,8 +1027,7 @@ fn ordinary_project_work_is_unaffected() {
 fn a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not() {
     // Syntax is asserted and nothing more: `fs.rs`, `target_has_portable_syntax`.
     //
-    // sbt 2 is why it exists: a build-cache hit is materialized as a link into ~/.cache/sbt, and the
-    // host's next compile fails writing its own class files through what the session left behind.
+    // sbt 2 is why it exists: `fs.rs`, `symlink`.
     let mount = TestMount::new(repository);
     allowed(
         "a subdirectory to link from",

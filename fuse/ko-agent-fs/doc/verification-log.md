@@ -266,6 +266,69 @@ pays 1.95 ms over the same entries.
 over virtiofs 1.65 s (0.22 ms), the container through the filter 14.7 s (1.95 ms) — the filter is
 89 % of the total.
 
+### Measured: an sbt build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+`sbt 'testOnly *SandboxTextWidthTest'` on this repository — sbt 2.0.8 compiling 35 main and 41
+test sources from nothing, then one suite of 10 tests — on the machine of the tables above:
+
+| where sbt runs, and its `rootOutputDirectory`            | from nothing | rerun |
+| -------------------------------------------------------- | ------------ | ----- |
+| the host                                                 | 12 s         | 0 s   |
+| the container, `target/out` through the filter           | 604 s        | —     |
+| the container, `~/.cache/sbt-out` outside the filter     | 28 s         | 21 s  |
+
+The 604 s run also downloaded its dependencies; the same run with the output outside the filter
+took 43 s with those downloads and 28 s without. The image sets the third row's directory
+(`container/ko-agent-sandbox/config/sbt/2/ko-sandbox-output.sbt`). The host rows compile and do
+not test: that host has no `wcwidth`, so the suite skips its 10 tests.
+
+Two measurements from inside a session say why the output dominates. Throughput does not rise
+with client threads — `lstat` at depth 4 serves 328, 363 and 372 operations a second from 1, 4
+and 8 threads — so a parallel compiler shares one request stream (`fs.rs`, `mount_config`). And a
+class file sits at depth 9, about 8 ms per path operation in the depth table above.
+
+A rerun of the third row under `-Dsbt.task.timings=true`, nothing to compile: 23.7 s. sbt reports
+two evaluations of the task graph for one `testOnly`, 6.8 s and 16.7 s, and each repeats the
+first two rows:
+
+| what                                                              | total   |
+| ----------------------------------------------------------------- | ------- |
+| `managedResources`: `build.sbt` copies 64 files out of the mount  | 9.9 s   |
+| listing, stamping and hashing sources and resources in the mount  | ~5.5 s  |
+| the suite, which starts a Python script about 30 times            | 8.4 s   |
+
+The copy costs 77 ms a file. One run of the script costs 261 ms from the mount and 177 ms from a
+copy outside it, so the filter's share of the suite is about a third and Python's start is the
+rest. About 18 s of the 23.7 s is operations in the mount. The copy and the script runs issue
+theirs one after another, so threads in the daemon would not shorten their 12 s; a shorter
+per-operation path would (`TODO.md`, "Performance").
+
+### Measured: sbt over dangling cache links (macOS 26.4.1, podman 6.1.1, sbt 2.0.8; 2026-09-20)
+
+A one-source sbt 2.0.8 project that keeps its output in the project. On the host, a build, then
+`rm -rf target project/target`, then a build again: the second is a build-cache hit, and it leaves
+35 symlinks under `target/` into `~/Library/Caches/sbt/v2/cas`, the 5 class files among them; a
+build that compiles leaves class files as regular files. In a filtered session all 35 dangle.
+`sbt package` there, with the image's `rootOutputDirectory` setting turned off
+(`-Dsbt.global.base=<an empty directory>`, which also gives the run its own cache):
+
+| sources   | the session's sbt cache | result                                                   |
+| --------- | ----------------------- | -------------------------------------------------------- |
+| unchanged | empty                   | exit 1, `error writing … .class: NoSuchFileException`    |
+| unchanged | populated               | the same                                                 |
+| changed   | populated               | the same                                                 |
+
+Each run leaves 16 of the 35 dangling. Afterwards the host compiles a changed source over what
+the session left and succeeds: the filter refuses the session's own absolute links, so sbt left
+copies (`fs.rs`, `symlink`).
+
+The failure is a write through a link whose target *directory* is absent. Planting dangling links
+by hand in a session: with targets in a directory that does not exist, the build fails in the
+same words; with targets beside the link, it succeeds and a file of the target's name appears
+there; and on xfs, links into sbt's own store succeed once sbt has recreated that store's
+directory. After `find … -type d -name target -exec find {} -xtype l -delete \;` the failing
+build succeeds.
+
 ## What a staged lower can represent
 
 ### Measured: the staged lower on APFS (macOS 26.4.1, podman 6.0.2; 2026-08-22)
