@@ -40,6 +40,52 @@ commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patt
   finally System.clearProperty(TestWithPodmanProperty)
 }
 
+// munit prints `==> s <test> skipped` without the clue its `assume` gave (doc/upstream-issues.md,
+// "scalameta/munit"), and the clue is what tells one passing run from another:
+//
+// - A clue names a missing program, a command to use (`sbt testWithPodman`, for the
+//   container-launching suites), or why the test cannot run in this environment.
+// - A suite can skip whole: a host without wcwidth runs none of SandboxTextWidthTest.
+// - A thin client attaches to whichever sbt server is running, so `sbt testFull` typed in a host
+//   shell can run under the run-on-host profile. Its skips differ there, and the clues show which
+//   environment ran the tests.
+//
+// The event sbt receives still carries the exception, so the clues of a run's skipped tests are
+// printed before sbt's totals, grouped by clue, with each suite's count:
+//
+//     skipped 10: needs python3 with wcwidth (SandboxTextWidthTest: 10)
+//
+// A test event names its test as `<suite>.<test name>` and not its suite, so the suite is the
+// started group that name begins with.
+Test / testListeners += new TestsListener {
+  private val suites = scala.collection.mutable.Set.empty[String]
+  private val suitesByReason = scala.collection.mutable.LinkedHashMap.empty[String, Vector[String]]
+
+  def doInit(): Unit = synchronized {
+    suites.clear()
+    suitesByReason.clear()
+  }
+  def startGroup(name: String): Unit = synchronized(suites += name)
+  def testEvent(event: TestEvent): Unit = synchronized {
+    for (detail <- event.detail if detail.status == sbt.testing.Status.Skipped) {
+      val reason =
+        if (detail.throwable.isDefined) Option(detail.throwable.get.getMessage).getOrElse("no reason given")
+        else "no reason given"
+      val test = detail.fullyQualifiedName
+      val suite = suites.filter(name => test.startsWith(name + ".")).maxByOption(_.length).getOrElse(test)
+      suitesByReason(reason) = suitesByReason.getOrElse(reason, Vector.empty) :+ suite
+    }
+  }
+  def endGroup(name: String, thrown: Throwable): Unit = ()
+  def endGroup(name: String, result: TestResult): Unit = ()
+  def doComplete(finalResult: TestResult): Unit = synchronized {
+    for ((reason, skipped) <- suitesByReason) {
+      val counts = skipped.distinct.map(suite => s"${suite.split('.').last}: ${skipped.count(_ == suite)}")
+      println(s"skipped ${skipped.size}: $reason (${counts.mkString(", ")})")
+    }
+  }
+}
+
 // --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject, compiled into
 // this jar from the same sources so an installed launcher carries it — the Scala sources, and the
 // /defaults resources their class initialization loads eagerly. The subproject's own build still
