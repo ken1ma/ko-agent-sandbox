@@ -767,7 +767,7 @@ The `java -D` properties:
   applies these properties after command-line options.
 - Path values use `RunOnHostSandbox.jvmProperty`'s HotSpot quoting syntax. This variable reaches
   HotSpot without the sbt script copying quoted values into argv;
-  [sbt-issues.md](sbt-issues.md#quoted-jvm-options-are-copied-into-arguments) has the
+  [upstream-issues.md](upstream-issues.md#quoted-jvm-options-are-copied-into-arguments) has the
   reproducer.
 - Both sbt clients and servers also receive `sbt.global.base` as one argument for the script's
   preloaded-cache lookup (`RunOnHostSandbox.sbtCommand`).
@@ -921,7 +921,7 @@ compilers in one content-addressed store, which is why container and host comman
 source and never on the outputs. Nor can an invocation opt out: sbt's build directory is always
 its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every invocation either
 attaches to the portfile's server or contends for it; the upstream request that would add one is
-in `sbt-issues.md`. Mill's `out/mill-daemon` lock is the same exclusivity over `out/`.
+in `upstream-issues.md`. Mill's `out/mill-daemon` lock is the same exclusivity over `out/`.
 
 The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
 changed its mind or gave up on a command that sat silent.

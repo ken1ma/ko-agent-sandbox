@@ -326,7 +326,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
     leaves that path 53 characters, of which the root and Java's 20-digit temp-directory name
     take 51.
   - Either sbt's boot socket comes to need fewer than its 50 characters past the directory
-    (`sbt-issues.md`, the thin-client entry — its fix as requested only turns the crash into a
+    (`upstream-issues.md`, the thin-client entry — its fix as requested only turns the crash into a
     message, and lifts no length), or the session names get a shorter random part of their own,
     with the collision retry `Files.createTempDirectory` does today.
 - [ ] Name the root after the launcher and the feature,
