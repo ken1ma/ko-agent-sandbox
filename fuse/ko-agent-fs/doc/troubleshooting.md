@@ -159,6 +159,13 @@ it moved, and 4.5 s wholly outside the mount, so most of the extra build time re
 moving the persistent output outside the mount (`verification-log.md`, "a gradle build").
 `--project-cache-dir` for the project's `.gradle/` takes off 3 s more.
 
+For Maven the image supplies nothing that moves `target/` from outside the project:
+`-Dproject.build.directory=…` is ignored, and a core extension could do it but none is written.
+`<build><directory>` in the project's own POM works, and takes the same generated build from 85 s
+to 47 s, against 1.9 s wholly outside the mount (`verification-log.md`, "a Maven build"). Where
+the POM is not to change, build a copy of the project under `~`, or run Maven on the host with
+`--run-on-host`.
+
 ## The whole machine degrades (every podman command slow or erroring)
 
 Check the machine's available memory, disk space and OOM reports:
