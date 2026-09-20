@@ -638,7 +638,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
-    val root = Files.createTempDirectory("brk")
+    val root = RunOnHostSessionTest.socketSessionRoot("brk")
     val project = Files.createDirectory(root.resolve("project"))
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     val endedGroups = scala.collection.mutable.ListBuffer[Long]()
@@ -958,6 +958,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         spawn.descendants().forEach(_.destroyForcibly())
         spawn.destroyForcibly()
       session.close()
+      FileHelper.deleteRecursively(root)
 
   test("another live broker's server is taken over by its record alone; a build file without one reserves nothing"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
@@ -1279,7 +1280,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     * member listed, the socket with it. `onEnd` runs between a group's proof and its signal,
     * `onAssemble` at each assembly — the tests' seams for what another process does meanwhile. */
   private class Brokers(program: Program):
-    val root: Path = Files.createTempDirectory("share")
+    val root: Path =
+      if program == Program.Sbt then RunOnHostSessionTest.socketSessionRoot("share")
+      else Files.createTempDirectory("share")
     val project: Path = Files.createDirectory(root.resolve("project"))
     val dir: Path = Files.createDirectory(project.resolve("app"))
     val hash: String = RunOnHostSession.buildHash(dir)
@@ -1393,6 +1396,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def close(): Unit =
       listeners.values.foreach(_.close())
       owner.close(); sharer.close(); taker.close()
+      FileHelper.deleteRecursively(root)
 
   def inThread[A](body: => A): java.util.concurrent.Future[A] =
     val task = java.util.concurrent.FutureTask[A](() => body)
@@ -1408,10 +1412,6 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     catch case _: java.util.concurrent.TimeoutException => false
 
   test("a second launch attaches to another launch's sbt server it would start alike, and takes over one it would not"):
-    assume(
-      !RunOnHostSessionTest.underRunOnHostProfile,
-      "the socket derived under the host's temporary directory is longer than sun_path",
-    )
     val two = Brokers(Program.Sbt)
     import two.*
     val proxyName = s"proxy-sbt-$hash"
@@ -1509,7 +1509,6 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     finally close()
 
   test("the owner's teardown against a taker: the taker waits on the lock, and the group is signalled once"):
-    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the socket derived under the host's temporary directory")
     val two = Brokers(Program.Sbt)
     import two.*
     try
@@ -1538,9 +1537,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     finally
       listeners.values.foreach(_.close())
       sharer.close(); taker.close()
+      FileHelper.deleteRecursively(root)
 
   test("a takeover ends the recorded group, never what the portfile or a planted link leads to"):
-    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the socket derived under the host's temporary directory")
     val two = Brokers(Program.Sbt)
     import two.*
     val other = Files.createDirectory(project.resolve("lib"))
