@@ -538,9 +538,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("a --quiet pull's verdict comes from the image id before and after"):
     val old = "sha256:7e3898f7b011a107d0ef7393d5f604a6e0c0ff05ac4f2476630a8af21059ec9b"
     val now = "sha256:e46eecd22d3291011dd3f0b1c627d5a7222406fc1429e537bf0e6a2bd9f55c92"
-    assertEquals(pullVerdict(Some(old), Some(old)), "unchanged")
-    assertEquals(pullVerdict(Some(old), Some(now)), "updated from 7e3898f7b011")
-    assertEquals(pullVerdict(None, Some(now)), "new on this machine")
+    assertEquals(pullVerdict(Some(old), Some(old)), "up to date")
+    assertEquals(pullVerdict(Some(old), Some(now)), "tag updated; was 7e3898f7b011")
+    assertEquals(pullVerdict(None, Some(now)), "tag added")
+    assertEquals(pullVerdict(Some(old), None), "no local image after the pull")
 
   test("remote image parsing reads every pattern the bundled Containerfiles use"):
     assertEquals(
