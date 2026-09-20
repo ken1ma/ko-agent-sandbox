@@ -303,6 +303,30 @@ rest. About 18 s of the 23.7 s is operations in the mount. The copy and the scri
 theirs one after another, so threads in the daemon would not shorten their 12 s; a shorter
 per-operation path would (`TODO.md`, "Performance").
 
+### Measured: a gradle build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
+
+A generated build in a session, under gradle 9.7.1 and Java 25: two `java-library` projects of 100
+one-method classes each, a `buildSrc` and an included build of one class each, no dependencies to
+download. Each row is `gradle build :included:build` on a fresh copy with no daemon running, after
+one discarded run that pays gradle's first-use setup.
+
+| the build's files | `build/` | the project's `.gradle/` | time |
+|---|---|---|---|
+| in the mount | in the mount | in the mount | 75 s |
+| in the mount | `~/.cache`, by an init script | in the mount | 44 s |
+| in the mount | `~/.cache`, by an init script | `~/.cache`, by `--project-cache-dir` | 41 s |
+| under `~` | under `~` | under `~` | 4.5 s |
+
+The init script sets `layout.buildDirectory` in `allprojects`, keyed by each project's absolute
+path, and reaches `buildSrc` and the included build: none of the four projects keeps a `build/`
+in the mount. Moving the output takes 31 s off. After the run with `--project-cache-dir` too, the
+mount contains only the 202 sources and 7 build scripts. No `.gradle/` directory remains,
+including under `buildSrc` or the included build. That run still takes 36 s more than the build
+outside the mount: most of the extra build time remains after moving the persistent output outside
+the mount. For sbt, moving the output outside the mount removed most of the extra build time. What
+gradle's remaining time is spent on — operations on the inputs, or files gradle creates in the
+mount and removes during the build — is not measured.
+
 ### Measured: sbt over dangling cache links (macOS 26.4.1, podman 6.1.1, sbt 2.0.8; 2026-09-20)
 
 A one-source sbt 2.0.8 project that keeps its output in the project. On the host, a build, then

@@ -141,6 +141,24 @@ on every command of that build: another value starts from an empty directory wit
 own. What this saves for a mill build is not measured. `--run-on-host` does not forward the
 variable, so a host mill build keeps `out/`.
 
+For gradle the image sets nothing either. An init script can move every project's `build/`,
+`buildSrc` and included builds too, keyed by the project's path:
+
+    // ~/.gradle/init.d/out.init.gradle
+    allprojects { project ->
+        def key = project.projectDir.absolutePath.substring(1)
+        project.layout.buildDirectory.set(
+            new File(System.getProperty('user.home'), ".cache/gradle-out/${key}"))
+    }
+
+The image does not ship it because a gradle build, and the scripts around one, often name
+`build/` literally — `file("build/libs/…")`, a Containerfile's `COPY build/libs` — and those
+break with the directory moved. Check the project for such paths before using it. It also saves less
+than sbt's setting: a generated 202-class build takes 75 s with `build/` in the mount, 44 s with
+it moved, and 4.5 s wholly outside the mount, so most of the extra build time remains after
+moving the persistent output outside the mount (`verification-log.md`, "a gradle build").
+`--project-cache-dir` for the project's `.gradle/` takes off 3 s more.
+
 ## The whole machine degrades (every podman command slow or erroring)
 
 Check the machine's available memory, disk space and OOM reports:
