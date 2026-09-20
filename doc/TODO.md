@@ -248,7 +248,7 @@ One form would, and it waits on a measurement:
 
 A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_OPTIONS` banner.
 
-## Deferred — container mill beside a host mill daemon
+## Deferred — a container mill or gradle beside the host's daemon
 
 Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in the project's
 `out/mill-daemon`, and a `./mill` run in the container without `MILL_OUTPUT_DIR` uses the same
@@ -261,6 +261,10 @@ Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in 
     `fuse/ko-agent-fs/doc/troubleshooting.md` ("Everything works but slowly") says is not measured.
   - If the two conflict, the run-on-host text the launcher appends is the place to tell an agent
     to set the variable.
+- [ ] The same conflict for gradle. The two sides' daemon registries are separate — the host's
+  is under the broker's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
+  in its gradle user home — but both builds use the project's `build/` and the locks under its
+  `.gradle/`, and the rules allow `./gradlew`'s download by default.
 
 ## Deferred — an idle bound for the sbt server
 

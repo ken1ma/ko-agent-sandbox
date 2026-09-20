@@ -210,6 +210,10 @@ where a user meets it.
 - [ ] **Profile git's untracked walk.** It is 32.7 s of the real tree's 71.5 s `git status`
   (`verification-log.md`, "a real tree"): 4.3 ms per entry, where `find` pays 1.95 ms over the same
   entries. What git asks per directory that `find` does not is unmeasured.
+- [ ] **Profile a gradle build whose output is outside the mount.** A 202-class build then takes
+  41 s, and 4.5 s outside the mount altogether (`verification-log.md`, "a gradle build"): 36 s
+  with about 210 input files as all the mount holds afterwards. Which operations gradle issues,
+  on the inputs or on files it creates and removes during the build, is unmeasured.
 - [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.6 ms
   of a depth-1 `lstat`'s 0.64 ms is the container→daemon FUSE hop plus the daemon's own work per op
   — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op
