@@ -263,6 +263,32 @@ object HostCommands:
     val wrapper = "IFS=; set -f; script=$(printf %s $1 | base64 -d); shift; eval $script"
     Vector("sh", "-c", wrapper, "sh", encoded) ++ arguments
 
+  /** How many containers read one bind-mounted file, which decides its SELinux relabel option. */
+  enum FileBindReaders:
+    case OneContainer, SeveralContainers
+
+  /**
+   * The `--volume` argument for a file under the launcher's state root. On an SELinux-enforcing
+   * host a container reads a bind-mounted file only once it is relabeled: podman mounts an
+   * unlabeled one without complaint, and the container's own read fails with EACCES. `Z` gives
+   * the file the one container's private MCS categories, which keep a key from every other
+   * container that runs under SELinux separation — not from one with `label=disable`. `z` gives
+   * it none, for a file a second container mounts, whose `Z` would take it from the first. Never
+   * for the project tree: SECURITY.md ("the project tree's SELinux labels").
+   */
+  def fileBind(
+    source: Path,
+    containerPath: String,
+    access: String,
+    selinuxEnforcing: Boolean,
+    readers: FileBindReaders = FileBindReaders.OneContainer,
+  ): String =
+    val relabel =
+      if !selinuxEnforcing then ""
+      else if readers == FileBindReaders.OneContainer then ",Z"
+      else ",z"
+    s"--volume=$source:$containerPath:$access$relabel"
+
   def run(command: String*): Run =
     val process = ProcessBuilder(command*).start()
     // stdin is closed at once, so a child that unexpectedly prompts reads EOF and fails loudly

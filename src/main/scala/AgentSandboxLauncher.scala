@@ -2309,6 +2309,78 @@ object AgentSandboxLauncher:
 
       case None => launch(parsed)
 
+  /** The TLS material a proxy mounts; the launch's call of proxyTlsArgs has which profile gets which. */
+  enum ProxyTlsMaterial:
+    case RunCa(certificate: Path, key: Path)
+    case Leaf(certificate: Path, key: Path)
+    case Uninspected
+
+  def proxyTlsArgs(material: ProxyTlsMaterial, selinuxEnforcing: Boolean): Vector[String] =
+    material match
+      case ProxyTlsMaterial.RunCa(certificate, key) =>
+        val mounted = "/etc/ko-agent-egress-proxy/allow-unless-denied"
+        Vector(
+          fileBind(certificate, s"$mounted/ca.crt", "ro", selinuxEnforcing, caCertificateReaders),
+          fileBind(key, s"$mounted/ca.key", "ro", selinuxEnforcing),
+          s"--env=EGRESS_TLS_CA_CERTIFICATE=$mounted/ca.crt",
+          s"--env=EGRESS_TLS_CA_PRIVATE_KEY=$mounted/ca.key",
+        )
+      case ProxyTlsMaterial.Leaf(certificate, key) =>
+        Vector(
+          fileBind(certificate, "/etc/ko-agent-egress-proxy/leaf.crt", "ro", selinuxEnforcing),
+          fileBind(key, "/etc/ko-agent-egress-proxy/leaf.key", "ro", selinuxEnforcing),
+          "--env=EGRESS_TLS_CERTIFICATE=/etc/ko-agent-egress-proxy/leaf.crt",
+          "--env=EGRESS_TLS_PRIVATE_KEY=/etc/ko-agent-egress-proxy/leaf.key",
+        )
+      case ProxyTlsMaterial.Uninspected => Vector.empty
+
+  def proxyLogArgs(hostLogFile: Path, selinuxEnforcing: Boolean): Vector[String] =
+    val containerLogFile = "/var/log/ko-agent-egress-proxy/proxy.log"
+    Vector(
+      fileBind(hostLogFile, containerLogFile, "rw", selinuxEnforcing),
+      s"--env=EGRESS_LOG_FILE=$containerLogFile",
+    )
+
+  val AgentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
+
+  /**
+   * The files the launcher mounts over the sandbox image's own. The bundle replaces the image's;
+   * the variables cover programs with a trust store of their own (certifi, Node's roots), and the
+   * JDK files cover the JVM, which reads neither.
+   *
+   * The CA on its own is for ko-sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
+   * the launcher's reach, and that script hands it this file. No new exposure — the same
+   * certificate is already inside the bundle — it just saves a script parsing one out.
+   */
+  def sandboxFileArgs(
+    caBundle: Path,
+    caCertificate: Path,
+    jdkFiles: Vector[(Path, String)],
+    agentDoc: Path,
+    selinuxEnforcing: Boolean,
+  ): Vector[String] =
+    val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
+    Vector(
+      fileBind(caBundle, sandboxCaBundle, "ro", selinuxEnforcing),
+      fileBind(caCertificate, SandboxEgressProxyCaPath, "ro", selinuxEnforcing, caCertificateReaders),
+      s"--env=SSL_CERT_FILE=$sandboxCaBundle",
+      s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
+      s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
+      s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
+      s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
+    ) ++ jdkFiles.map((file, at) => fileBind(file, at, "ro", selinuxEnforcing))
+      :+ fileBind(agentDoc, AgentDocPath, "ro", selinuxEnforcing)
+
+  /**
+   * The project's `--volume` value. Never relabeled: a FUSE mountpoint must not be, the reject gate
+   * established the tree is already container-readable, and relabeling is the host write that mode
+   * withholds.
+   */
+  def projectBind(filteredMountpoint: Option[String], projectDir: Path, mountPath: String): String =
+    filteredMountpoint match
+      case Some(mountpoint) => s"$mountpoint:$mountPath:rw"
+      case None             => s"$projectDir:$mountPath:ro"
+
   /**
    * Whether the directory's own SELinux context already allows container reads, so an unfiltered
    * bind mount needs no relabel: a container type with no MCS categories. A context with categories
@@ -2390,7 +2462,7 @@ object AgentSandboxLauncher:
     val mountPath = mountPathOf(os, projectDir).fold(fail(_), identity)
 
     // Detected this early because reject's refusal below must come before any resource exists;
-    // the log-file mount reads it again further down. Enforcing specifically:
+    // every fileBind reads it again further down. Enforcing specifically:
     // permissive and disabled hosts read every mount unrelabeled, so relabeling there would be
     // a host-metadata write with no benefit.
     val selinuxEnforcing = os == Os.Linux &&
@@ -2676,14 +2748,6 @@ object AgentSandboxLauncher:
     val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
     val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
 
-    // :Z relabels privately, right for a file only this run's proxy writes — launcher-owned
-    // state, never the user's.
-    val containerLogFile = "/var/log/ko-agent-egress-proxy/proxy.log"
-    val proxyLogArgs = Vector(
-      s"--volume=$hostLogFile:$containerLogFile:rw${if selinuxEnforcing then ",Z" else ""}",
-      s"--env=EGRESS_LOG_FILE=$containerLogFile",
-    )
-
     // -----------------------------------------------------------------------
     // This project's TLS inspection CA, and this run's mount sources
     // -----------------------------------------------------------------------
@@ -2725,7 +2789,6 @@ object AgentSandboxLauncher:
     // the host list in every prompt. Read the image's file, append the session's instructions, and
     // mount the result over it. All installed agents' instruction files link to this path, so one
     // mount reaches all of them. agentDocumentStamp keys the cached assembly.
-    val agentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
     val agentDocFile = rulesetCacheDir.resolve("agents.md")
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
     // The profile and provider need no stamp input of their own — the resolved text's first line
@@ -2736,7 +2799,7 @@ object AgentSandboxLauncher:
       imageId, writeMode, rulesetText, runOnHost, gitInstruction,
     )
 
-    val (sandboxTlsArgs, agentDocArgs) = withFileLock(tlsDir.resolve(".lock")):
+    val sandboxFiles = withFileLock(tlsDir.resolve(".lock")):
       // Which of this project's runs a container still names, for every pruning decision this
       // launch makes. Listed under the lock and in every state, because a run's files — its audit
       // log, its run directory — are written under this lock and its proxy created before the
@@ -2877,6 +2940,7 @@ object AgentSandboxLauncher:
       // the image ships no JDK.
       val jdkFileMounts = jdkMounts(
         podman, image, imageEnv, trustDir, bundleStamp, trustCertFile, EgressProxyHost, EgressProxyPort,
+        selinuxEnforcing,
       )
 
       if readIfPresent(agentDocFile).forall(_.isEmpty)
@@ -2885,7 +2949,7 @@ object AgentSandboxLauncher:
         // --entrypoint= for the same reason as the bundle read above.
         val imageDoc = run(
           podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          image, "cat", agentDocPath,
+          image, "cat", AgentDocPath,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
@@ -2919,40 +2983,19 @@ object AgentSandboxLauncher:
       // without it the key would have to be world-readable on the host. (The userns flag itself
       // stays on the create call: the proxy writes its owner-only log file through the same
       // mapping.)
-      val proxyTls =
-        if publicDefault then
-          val mounted = "/etc/ko-agent-egress-proxy/allow-unless-denied"
-          Vector(
-            s"--volume=$trustCertFile:$mounted/ca.crt:ro",
-            s"--volume=${runCaDir.resolve("ca.key")}:$mounted/ca.key:ro",
-            s"--env=EGRESS_TLS_CA_CERTIFICATE=$mounted/ca.crt",
-            s"--env=EGRESS_TLS_CA_PRIVATE_KEY=$mounted/ca.key",
-          )
-        else if inspectedHosts.isEmpty then Vector.empty
-        else
-          Vector(
-            s"--volume=${carried(leafCertFile)}:/etc/ko-agent-egress-proxy/leaf.crt:ro",
-            s"--volume=${carried(leafKeyFile)}:/etc/ko-agent-egress-proxy/leaf.key:ro",
-            "--env=EGRESS_TLS_CERTIFICATE=/etc/ko-agent-egress-proxy/leaf.crt",
-            "--env=EGRESS_TLS_PRIVATE_KEY=/etc/ko-agent-egress-proxy/leaf.key",
-          )
+      val proxyTls = proxyTlsArgs(
+        if publicDefault then ProxyTlsMaterial.RunCa(trustCertFile, runCaDir.resolve("ca.key"))
+        else if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
+        else ProxyTlsMaterial.Leaf(carried(leafCertFile), carried(leafKeyFile)),
+        selinuxEnforcing,
+      )
 
-      // The bundle replaces the image's; the variables cover programs with a trust store of their own
-      // (certifi, Node's roots), and the keystore covers the JVM, which reads neither.
-      val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
-      // The CA on its own, for ko-sandbox-jdk-use-proxy: a JVM the agent installs itself is out of
-      // the launcher's reach, and that script hands it this file. No new exposure — the same
-      // certificate is already inside the bundle above — it just saves a script parsing one out.
-      val sandboxTls = Vector(
-        s"--volume=${carried(bundleFile)}:$sandboxCaBundle:ro",
-        s"--volume=${carried(trustCertFile)}:$SandboxEgressProxyCaPath:ro",
-        s"--env=SSL_CERT_FILE=$sandboxCaBundle",
-        s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
-        s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
-        s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
-        s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
-      ) ++ jdkFileMounts.map((file, at) => s"--volume=${carried(file)}:$at:ro")
-        // The same facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
+      val preparedSandboxFiles = sandboxFileArgs(
+        carried(bundleFile), carried(trustCertFile),
+        jdkFileMounts.map((file, at) => (carried(file), at)), carried(agentDocFile),
+        selinuxEnforcing,
+      )
+        // The JDK files' facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
         ++ javaHomeOf(imageEnv).map(home =>
           s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
         ).toVector
@@ -2987,12 +3030,12 @@ object AgentSandboxLauncher:
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
           ) ++ rulesetEnvArgs(egressProfile, provider, ruleFiles) ++ upstreamProxyArgs(env)
-          ++ proxyTls ++ proxyLogArgs ++ Vector(proxyImage)*
+          ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImage)*
       )
       if !proxyCreated.ok then
         fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
 
-      (sandboxTls, Vector(s"--volume=${carried(agentDocFile)}:$agentDocPath:ro"))
+      preparedSandboxFiles
 
     val proxyStarted = run(podman, "start", proxyContainer)
     if !proxyStarted.ok then
@@ -3078,7 +3121,7 @@ object AgentSandboxLauncher:
       // The entrypoint holds its machine-health warning on screen under the same setting as
       // holdForReader, for the same reason: the TUI clears it otherwise.
       s"--env=$SessionStartVariable=$sessionStartMode",
-    ) ++ sandboxTlsArgs ++ agentDocArgs
+    ) ++ sandboxFiles
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
     // they apply: the weaker boundary must never be the silent one.
@@ -3117,11 +3160,7 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     // Project bind mount
     // -----------------------------------------------------------------------
-    // Never :Z: a FUSE mountpoint must not be relabelled, the reject gate above established the
-    // tree is already container-readable, and relabeling is the host write that mode withholds.
-    val projectVolume = filteredWorkspace match
-      case Some(prepared) => s"${prepared.mountpoint}:$mountPath:rw"
-      case None           => s"$projectDir:$mountPath:ro"
+    val projectVolume = projectBind(filteredWorkspace.map(_.mountpoint), projectDir, mountPath)
 
     // -----------------------------------------------------------------------
     // Memory limit
