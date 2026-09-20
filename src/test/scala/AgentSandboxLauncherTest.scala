@@ -1196,6 +1196,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     // The Containerfile's COPY of it fails the build of an image whose context lacks it.
     assert(index.contains("ko-agent-sandbox/ko-sandbox-text-width"), "ko-sandbox-text-width script missing")
+    assert(index.contains("ko-agent-sandbox/ko-sandbox-link-check"), "ko-sandbox-link-check script missing")
     assert(
       index.contains("ko-agent-sandbox/ko-sandbox-install-podman"),
       "ko-sandbox-install-podman script missing",
