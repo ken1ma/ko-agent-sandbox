@@ -14,6 +14,7 @@ LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 
 ARG UV_VERSION=0.12.13
 ARG PYTHON_VERSION=3.14
+ARG WCWIDTH_VERSION=0.8.4
 ARG NODE_VERSION=24.21.0
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,10 @@ RUN set -euxo pipefail; \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install "${PYTHON_VERSION}" --default
+
+# ko-sandbox-text-width's import comment explains why this is outside site-packages.
+RUN set -euxo pipefail; \
+    uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"
 
 ENV PATH="/home/nonroot/.local/bin:$PATH"
 
@@ -592,7 +597,7 @@ RUN set -euxo pipefail; \
 # (AgentSandboxLauncher.LauncherVariablePrefix).
 COPY --chmod=0755 \
     ko-sandbox-jdk-use-proxy ko-sandbox-apt-get ko-sandbox-install-podman ko-sandbox-run-on-host \
-    ko-sandbox-egress-check ko-sandbox-clipboard \
+    ko-sandbox-egress-check ko-sandbox-clipboard ko-sandbox-text-width \
     ko-sandbox-entrypoint \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipboard /usr/local/bin/$name; done

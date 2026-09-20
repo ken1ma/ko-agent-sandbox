@@ -52,6 +52,10 @@ Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Pytho
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
 
+If the project limits line width, do not count columns yourself: `ko-sandbox-text-width --over 100
+FILE...` prints `path:line:width` for every line wider than 100 columns. Add `--show-text` to see
+those lines in the same report.
+
 
 ## git
 
