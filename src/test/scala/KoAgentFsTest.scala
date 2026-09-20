@@ -165,7 +165,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // session that is gone — a launch in flight has a created container for `container exists` to
     // answer for. Deterministic because the stub podman answers "no such container" for every
     // marker.
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
       survivingMarkers(podmanExit = 1, Seq("fresh" -> 5L, "crashed" -> 3600L)),
       Set(),
@@ -177,7 +177,7 @@ class KoAgentFsTest extends munit.FunSuite:
     )
 
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
       survivingMarkers(podmanExit = 125, Seq("crashed" -> 3600L, "fresh" -> 5L)),
       Set("crashed", "fresh"),
@@ -216,7 +216,7 @@ class KoAgentFsTest extends munit.FunSuite:
       deleteRecursively(home)
 
   test("a reap unmounts at zero sessions, and never when it cannot tell how many there are"):
-    assume(!isWindows)
+    assume(!isWindows, "the stub podman is a /bin/sh script")
     assume(System.getProperty("user.name") != "root", "root reads an unreadable directory fine")
     assert(unmountRequested(readable = true, Seq.empty), "no sessions left, yet no unmount")
     assert(!unmountRequested(readable = true, Seq("live")), "unmounted under a live session")

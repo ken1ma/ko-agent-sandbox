@@ -56,7 +56,7 @@ class SandboxProjectTest extends munit.FunSuite:
     )
 
   test("home boundary refuses homes and their ancestors, never the projects inside"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
 
     Seq(
@@ -72,7 +72,7 @@ class SandboxProjectTest extends munit.FunSuite:
       assertEquals(isForbiddenProjectDir(Paths.get(path), homes), expected, path)
 
   test("well-known home containers are refused on POSIX, wherever HOME points"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     Seq(Os.Linux -> "/srv/homes/user", Os.Mac -> "/srv/homes/user").foreach: (os, home) =>
       val homes = protectedHomes(os, Map("HOME" -> home))
       Seq("/home", "/Users", "/root", "/var/root").foreach: container =>
@@ -94,14 +94,14 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(windows.paths.exists(_.endsWith("Users")), windows.paths.toString)
 
   test("a home that does not resolve to a real path is refused by its spelling, with a warning"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val result = protectedHomes(Os.Linux, Map("HOME" -> "/nonexistent-launcher-home/user"))
     assert(result.warnings.exists(_.contains("real path")))
     assert(isForbiddenProjectDir(Paths.get("/nonexistent-launcher-home/user"), result))
     assert(isForbiddenProjectDir(Paths.get("/nonexistent-launcher-home"), result))
 
   test("macOS data-volume spellings protect the same boundary as their aliases"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val homes = protectedHomes(Os.Mac, Map("HOME" -> "/Users/user"))
     assert(isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users/user"), homes))
     assert(isForbiddenProjectDir(Paths.get("/System/Volumes/Data/Users"), homes))
@@ -113,7 +113,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(isForbiddenProjectDir(Paths.get("/Users/user"), reversed))
 
   test("the refusal reason names the rule that fired"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
     assert(forbiddenProjectDirReason(Paths.get("/"), homes).exists(_.contains("filesystem root")))
     assert(forbiddenProjectDirReason(Paths.get("/home/user"), homes).exists(_.contains("home directory")))
@@ -138,7 +138,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(mount(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
 
   test("a macOS launch from the data-volume alias is the same project as one from its own spelling"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val alias = Paths.get("/System/Volumes/Data/Users/me/src/app")
     assertEquals(canonicalProjectDir(alias, Os.Mac), Paths.get("/Users/me/src/app"))
     assertEquals(canonicalProjectDir(Paths.get("/Users/me/src/app"), Os.Mac), Paths.get("/Users/me/src/app"))
@@ -150,7 +150,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(canonicalProjectDir(alias, Os.Linux), alias)
 
   test("a dot-prefixed current or ancestor directory is refused"):
-    assume(!isWindows)
+    assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val homes = protectedHomes(Os.Linux, Map("HOME" -> "/home/user"))
 
     Seq("/work/.hidden/project", "/work/src/.project").foreach { path =>
@@ -208,7 +208,7 @@ class SandboxProjectTest extends munit.FunSuite:
       assert(homes.paths.contains(protectedHome), protectedHome.toString)
 
   test("canonical home aliases protect the same boundary"):
-    assume(!isWindows)
+    assume(!isWindows, "creates a symbolic link and gives the host's own paths to the Linux home rules")
     val base = Files.createTempDirectory("canonical-home").toRealPath()
     val realHome = Files.createDirectories(base.resolve("real/users/user"))
     val linkedHome = Files.createSymbolicLink(base.resolve("home"), realHome)
@@ -221,7 +221,7 @@ class SandboxProjectTest extends munit.FunSuite:
     assert(!isForbiddenProjectDir(realHome.resolve("project"), homes))
 
   test("drive and UNC roots are refused on Windows"):
-    assume(isWindows)
+    assume(isWindows, "this test requires Windows drive-letter and UNC path semantics")
     val homes = protectedHomes(Os.Windows, Map("USERPROFILE" -> "C:\\Users\\me"))
 
     assert(isForbiddenProjectDir(Paths.get("C:\\"), homes))
