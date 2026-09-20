@@ -10,7 +10,7 @@ package agentsandbox.egress
 
 import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintStream}
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
-import java.nio.file.Path
+import java.nio.file.{AccessDeniedException, NoSuchFileException, Path}
 import java.time.{Duration, Instant}
 import java.security.GeneralSecurityException
 import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
@@ -239,9 +239,8 @@ object AgentEgressProxy:
           System.err.println(ex.getMessage)
           sys.exit(2)
 
-        // What TlsInspection.load throws for material that exists but cannot be read or parsed.
         case ex: (IOException | GeneralSecurityException) =>
-          System.err.println(s"cannot load the TLS inspection material: ${ex.getMessage}")
+          System.err.println(inspectionLoadFailure(ex))
           sys.exit(2)
 
     // Before the ready line: the launcher reads the log once that line is written, and relays this one.
@@ -312,6 +311,21 @@ object AgentEgressProxy:
               "with nothing to inspect the material can only be a mistake",
           )
         TlsInspection.load(certificate, key, resolved.inspected)
+
+  /**
+   * What loadInspection throws for material that cannot be read or parsed. A missing file and a
+   * denied one get their reason spelled out: the JDK's message for both is the path alone. A
+   * denied file is the case whose path misleads: podman mounts a file the container cannot read
+   * without complaint, so the path exists on the host and in the container.
+   */
+  def inspectionLoadFailure(ex: IOException | GeneralSecurityException): String =
+    val reason = ex match
+      case denied: AccessDeniedException =>
+        s"${denied.getFile}: permission denied; check the file's mode and owner against this " +
+          "container's user, and on an SELinux-enforcing host the file's label"
+      case missing: NoSuchFileException => s"${missing.getFile}: no such file"
+      case _                            => ex.getMessage
+    s"cannot load the TLS inspection material: $reason"
 
   case class Run(
     resolved: ResolvedEgress,

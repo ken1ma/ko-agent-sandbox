@@ -2113,6 +2113,19 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(refusal(open, Map.empty).contains("are unset under allow-unless-denied"))
     assert(refusal(open, leafPair).contains("takes none"))
     assert(refusal(open, leafPair ++ caPair).contains("takes none"))
+
+    // Material that cannot be read: the JDK's message for these two is the path alone.
+    val absent = directory.resolve("absent.crt")
+    val missing = intercept[java.nio.file.NoSuchFileException]:
+      loadInspection(one, (leafPair + (CertificateVariable -> absent.toString)).get)
+    assertEquals(inspectionLoadFailure(missing), s"cannot load the TLS inspection material: $absent: no such file")
+    val denied = inspectionLoadFailure(java.nio.file.AccessDeniedException(leafKeyFile.toString))
+    assert(denied.startsWith(s"cannot load the TLS inspection material: $leafKeyFile: permission denied"), denied)
+    assert(denied.contains("SELinux"), denied)
+    assertEquals(
+      inspectionLoadFailure(java.security.cert.CertificateException("no certificate")),
+      "cannot load the TLS inspection material: no certificate",
+    )
     assert(refusal(open, caPair - CaPrivateKeyVariable).contains("must be set together"))
 
   test("a request is decided against the resolved scope of its longest literal match, and no match is refused"):
