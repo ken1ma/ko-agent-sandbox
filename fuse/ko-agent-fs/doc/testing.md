@@ -21,7 +21,7 @@ prevents adding targets during a session.
 
 ## Both suites, anywhere podman runs — `--self-test`
 
-Run `--build` first to provide the sandbox image, then:
+Run `--build` first to provide the sandbox image and pull the Rust image, then:
 
     java -jar target/dist/ko-agent-sandbox.jar --self-test
     java -jar target/dist/ko-agent-sandbox.jar --self-test a_handle_held

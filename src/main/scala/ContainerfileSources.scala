@@ -211,7 +211,7 @@ object ContainerfileSources:
    */
   val BuildCommandFlags =
     Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true,
-      "--no-cache" -> false)
+      "--no-cache" -> false, "--pull=never" -> false)
 
   /**
    * The Containerfile and build arguments one launcher build command hands podman, read back from

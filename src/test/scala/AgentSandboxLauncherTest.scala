@@ -483,8 +483,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       remoteImagePullCommands("podman", buildImages),
       buildImages.map(image => Vector("podman", "pull", image, "--quiet")),
     )
-    buildCommands.foreach: command =>
-      assert(!command.exists(_.startsWith("--pull")), command.mkString(" "))
+    val generated = buildCommands ++ updateCommands("podman", "1.2-3", "sandboxid") ++
+      selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid")
+    generated.foreach: command =>
+      assertEquals(command.filter(_.startsWith("--pull")), Vector(NoRegistryLookup), command.mkString(" "))
 
   test("self-test builds refresh no remote source of their own"):
     // --self-test pulls nothing (selfTest), sound only while every remote source of its

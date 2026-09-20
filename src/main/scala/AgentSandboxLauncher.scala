@@ -706,6 +706,16 @@ object AgentSandboxLauncher:
     )
 
   /**
+   * Every launcher build passes this and reads its `FROM` images from local storage alone. The
+   * launcher-built bases have short names (`debian-coursier:<version>`). Without the flag, podman
+   * on Fedora, whose registries.conf lists several unqualified-search registries, asks the terminal
+   * which registry holds such a base although the image is local. The registry-held images are in
+   * storage before any build starts: --build and --update pull each one themselves
+   * (remoteImagePullCommands), and selfTest refuses to start without the ones --build pulled.
+   */
+  val NoRegistryLookup = "--pull=never"
+
+  /**
    * The product images and named build caches, in dependency order. Leaf images stay on
    * `latest`: a
    * rebuild there picks up new agent releases, which the base version says
@@ -733,34 +743,34 @@ object AgentSandboxLauncher:
     proxyBundleId: String,
   ): Vector[Vector[String]] =
     Vector(
-      Vector(podman, "build", "-t", s"debian-temurin:$version", "debian-temurin"),
+      Vector(podman, "build", NoRegistryLookup, "-t", s"debian-temurin:$version", "debian-temurin"),
       Vector(
-        podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "-t", s"debian-coursier:$version", "debian-coursier",
       ),
       Vector(
-        podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
       ),
       Vector(
-        podman, "build", "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
         "-t", ProxyBuildImage, "ko-agent-egress-proxy",
       ),
       Vector(
-        podman, "build", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$proxyBundleId",
         "--label", s"$BundleLabel=$proxyBundleId",
         "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy",
       ),
       Vector(
-        podman, "build", "--target", "build",
+        podman, "build", NoRegistryLookup, "--target", "build",
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "-t", KoAgentFsBuildImage, "ko-agent-fs",
       ),
       Vector(
-        podman, "build", "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
+        podman, "build", NoRegistryLookup, "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "-t", "ko-agent-fs:latest", "ko-agent-fs",
       ),
     )
@@ -798,7 +808,7 @@ object AgentSandboxLauncher:
   ): Vector[Vector[String]] =
     Vector(
       Vector(
-        podman, "build", "--target", "build",
+        podman, "build", NoRegistryLookup, "--target", "build",
         "--build-arg", s"RUST_VERSION=$rustVersion",
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "--label", s"$BundleLabel=$selfTestBundleId",
@@ -806,7 +816,7 @@ object AgentSandboxLauncher:
         "-t", SelfTestBuildImage, ".",
       ),
       Vector(
-        podman, "build",
+        podman, "build", NoRegistryLookup,
         "--build-arg", s"RUST_VERSION=$rustVersion",
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "--label", s"$BundleLabel=$selfTestBundleId",
@@ -851,7 +861,7 @@ object AgentSandboxLauncher:
   def updateCommands(podman: String, version: String, sandboxBundleId: String): Vector[Vector[String]] =
     Vector(
       Vector(
-        podman, "build", "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
@@ -1086,6 +1096,15 @@ object AgentSandboxLauncher:
         fsSourceId,
         bundleId,
       )
+      remoteImagesForBuildCommands(commands, buildContextReader(context), managedImageTags(ImgTagVersion).toSet)
+        .filterNot(image => runOk(podman, "image", "exists", image))
+        .foreach: image =>
+          deleteRecursively(context)
+          fail(
+            s"""error: $image is not in local storage, and --self-test does not pull it
+               |
+               |Run --build first; it pulls the images the self-test suites compile with.""".stripMargin
+          )
       val images = buildOutputImages(commands)
       val candidates = prepareImageCleanupJournal(
         journal,
