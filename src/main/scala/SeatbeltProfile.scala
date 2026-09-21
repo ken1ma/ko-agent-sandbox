@@ -55,7 +55,7 @@ object SeatbeltProfile:
    * it, never the directories above. Measured: with only the deep grants, `java -version` dies in
    * the loader; with the chain present it runs, and the chain is what a coarse `/Users` grant was
    * standing in for. Metadata and not `file-read*`, because on a directory `file-read*` is its
-   * listing: src/probe/run-on-host-profile-gate.sh showed a chain granted that way listing all of
+   * listing: src/probe/run-on-host-acceptance-test.sh showed a chain granted that way listing all of
    * `~/Library/Caches`. Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with
@@ -97,9 +97,9 @@ object SeatbeltProfile:
     s"(allow mach-lookup ${MachServices.map(name => s"(global-name ${sbpl(name)})").mkString(" ")})"
 
   /** What the command may reach, beyond the prerequisites' paths, to start a JVM at all. Discovered by
-    * running a real build under this profile and reading the denials, never guessed: the contract allows a
-    * runtime path only where testing proves the read is stable. */
-  case class RuntimeAuthority(reads: Seq[Path], executes: Seq[Path])
+    * running a real build under this profile and reading the denials, never guessed: a system path is
+    * granted only where testing proves the read is stable. */
+  case class SystemPaths(reads: Seq[Path], executes: Seq[Path])
 
   /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
     * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
@@ -129,7 +129,7 @@ object SeatbeltProfile:
     gradleUserHome: Option[Path],
     m2Repository: Option[Path],
     proxyPort: Int,
-    runtime: RuntimeAuthority,
+    systemPaths: SystemPaths,
     network: Network,
   )
 
@@ -157,7 +157,7 @@ object SeatbeltProfile:
       case Network.MillClient(port) => Some(port)
       case _                        => None
     val everyPath =
-      readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ serverTmp
+      readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
 
     val program = prereqs.program
     everyPath.find(path => !isAbsoluteNormalized(path)) match
@@ -209,8 +209,8 @@ object SeatbeltProfile:
         // the JVM cannot open /dev/urandom — SecureRandom then fails with "NativePRNG not
         // available", which names the algorithm rather than the path.
         (ancestorLiterals(
-          readOnly ++ readWriteExec ++ readWrite ++ inputs.runtime.reads ++ inputs.runtime.executes ++ DevicePaths
-            ++ serverTmp,
+          readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
+            ++ DevicePaths ++ serverTmp,
         ))
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
@@ -219,9 +219,9 @@ object SeatbeltProfile:
         lines += MachLookup
         lines += Devices
         lines += ""
-        lines += ";; Runtime authority: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
-        inputs.runtime.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
-        inputs.runtime.executes.foreach: path =>
+        lines += ";; System paths: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
+        inputs.systemPaths.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
+        inputs.systemPaths.executes.foreach: path =>
           lines += s"(allow process-exec* file-read* ${subpath(path)})"
         lines += ""
         lines += ";; The command's own programs, never writable by it."
@@ -235,12 +235,12 @@ object SeatbeltProfile:
         lines += ";; The command's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the
         // only host the filter compiler accepts besides *, and it covers native 127.0.0.1 and ::1 —
-        // not a dual-stack JVM's v4-mapped connect, which is why the environment contract sets
+        // not a dual-stack JVM's v4-mapped connect, which is why the command's environment sets
         // preferIPv4Stack (src/probe/jvm-proxy-rule.sh measured all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network: without this, sbt's server gets EPERM
         // from bind() on its boot socket and the client waits for it forever. Confined to the
-        // command's temporary directory, where the environment contract points XDG_RUNTIME_DIR and
+        // command's temporary directory, where the command's environment points XDG_RUNTIME_DIR and
         // SBT_GLOBAL_SERVER_DIR; measured that a socket outside the subpath stays denied.
         lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
@@ -289,9 +289,9 @@ object SeatbeltProfile:
   /**
    * The host proxy's inputs (run-on-host.md "The command's egress proxy"): what it runs from —
    * the native image, or the JDK of the jar form — what it loads, the class-path entries of the
-   * jar form, and the runtime authority the command profile grants (RunOnHostSandbox.proxyInputs).
+   * jar form, and the system paths the command profile grants (RunOnHostSandbox.proxyInputs).
    */
-  case class ProxyInputs(executables: Seq[Path], reads: Seq[Path], runtime: RuntimeAuthority)
+  case class ProxyInputs(executables: Seq[Path], reads: Seq[Path], systemPaths: SystemPaths)
 
   /**
    * The profile every host proxy runs under, or the first reason it cannot be built. Nothing of
@@ -300,7 +300,7 @@ object SeatbeltProfile:
    * (RunOnHostSandbox.startProxy).
    */
   def renderProxy(inputs: ProxyInputs): Either[String, String] =
-    val everyPath = inputs.executables ++ inputs.reads ++ inputs.runtime.reads ++ inputs.runtime.executes
+    val everyPath = inputs.executables ++ inputs.reads ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
     everyPath.find(path => !isAbsoluteNormalized(path)) match
       case Some(bad) => Left(invalidPathReason(bad))
       case None if inputs.executables.isEmpty => Left("a proxy profile needs the executable the proxy runs from")
@@ -316,7 +316,7 @@ object SeatbeltProfile:
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         // The resolver's client spells its socket /var/run/mDNSResponder, and the root link is
         // not in the canonical chain above: without it every lookup fails with "nodename nor
-        // servname provided" (measured: the gate's proxy fetch rows, /var alone suffices).
+        // servname provided" (measured: the acceptance test's proxy fetch rows, /var alone suffices).
         lines += ";; The root link the resolver's socket path goes through."
         lines += s"(allow file-read-metadata file-test-existence ${literal(ResolverSocketLink)})"
         lines += ""
@@ -328,8 +328,8 @@ object SeatbeltProfile:
         lines += MachLookup
         lines += Devices
         lines += ""
-        lines += ";; The runtime authority as reads alone: the proxy executes nothing but itself."
-        (inputs.runtime.reads ++ inputs.runtime.executes).foreach: path =>
+        lines += ";; The system paths as reads alone: the proxy executes nothing but itself."
+        (inputs.systemPaths.reads ++ inputs.systemPaths.executes).foreach: path =>
           lines += s"(allow file-read* ${subpath(path)})"
         lines += ""
         lines += ";; The proxy's own executable, and what it loads."

@@ -261,7 +261,7 @@ class HostileInputTest extends munit.FunSuite:
     assert(framed > 0, "every header set was refused; the table asserts nothing about framing")
 
   test("no control character survives into a forwarded request or an audit line"):
-    // The request head's two halves. The parser is the single gate for both sinks: what is
+    // The request head's two halves. The parser is the only check before both destinations: what is
     // forwarded to an origin, and what is written to a log the operator later reads on a terminal —
     // where a tab breaks the audit grammar's own fields and an escape sequence rewrites the line
     // around it. CR and LF are tested elsewhere, as smuggling; these are the ones a whitespace test

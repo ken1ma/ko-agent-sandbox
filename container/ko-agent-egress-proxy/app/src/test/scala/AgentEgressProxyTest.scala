@@ -1252,7 +1252,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
       val refused = intercept[BadRequest](request.bodyFraming)
       assert(refused.getMessage.contains(name), refused.getMessage)
-      // The relay's own gate, before any byte goes to the origin.
+      // The relay's own check, before any byte goes to the origin.
       intercept[BadRequest](authorizeInspectedRequest("github.com", request, whole("git-fetch")))
 
       val response = HttpResponseHead.parse(
@@ -2685,8 +2685,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
   // Refusal advice: the 403 body's second line, RefusalAdvice's table
   // ---------------------------------------------------------------------------
 
-  /** One row per outcome of a `throw Refusal(` in the sources, keyed by the site. The
-    * population test counts the sites against the sources, so a refusal added without a row
+  /** One row per outcome of a `throw Refusal(` in the sources, keyed by the site. A
+    * test counts the sites against the sources, so a refusal added without a row
     * fails it. `host` is the request's own — the one host an advice may name without the ruleset allowing it. */
   private case class RefusalRow(site: String, host: String, expected: String, refuse: () => Unit)
 

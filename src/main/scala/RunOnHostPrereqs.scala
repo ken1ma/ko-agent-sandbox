@@ -430,8 +430,8 @@ object RunOnHostPrereqs:
 
   /**
    * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
-   * bootstrap spells it, for a bare `<v>` and a `<v>-jvm` pin alike. The bootstrap would run the
-   * native image for a bare pin, and that image cannot be the launch's client: it takes no
+   * bootstrap spells it, for a `<v>` with no suffix and a `<v>-jvm` pin alike. The bootstrap would run the
+   * native image for `<v>`, and that image cannot be the launch's client: it takes no
    * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
    * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
    * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,

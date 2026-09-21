@@ -514,7 +514,7 @@ object SandboxProject:
    * config, the same rule each entry applies inside itself. The files inside egress/ are vetted
    * where they are read (EgressRules.readRuleFiles), and run-on-host/ where the host command
    * wrapper reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
-   * configuration, never a directory to materialize.
+   * configuration, never a directory to create.
    */
   def boundaryDirError(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =

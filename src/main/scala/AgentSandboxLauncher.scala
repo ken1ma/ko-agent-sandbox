@@ -111,7 +111,7 @@ object AgentSandboxLauncher:
   /**
    * Whether a container runtime may run inside the sandbox: `none` — the default, what an unset
    * variable means — or `same-uid`, which grants the listed loosenings for the whole session,
-   * the cost SECURITY.md's "No containers inside the sandbox by default" section prices. `unmask=ALL`
+   * at the cost SECURITY.md's "No containers inside the sandbox by default" section describes. `unmask=ALL`
    * because a nested pid namespace must mount a fresh /proc, and the kernel refuses that while
    * the masked entries remain mounted on it (measured: EPERM from a bare unshare with the masks in
    * place, SELinux permitting the mount and SYS_CHROOT granted);
@@ -425,8 +425,8 @@ object AgentSandboxLauncher:
       s"the machine has ${SandboxStats.humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
-  /** After requirePodman's gate, every podman action says the machine's headroom once, beside the
-    * `using:` line — the figure the memory limit and the build gate act on, visible before
+  /** After requirePodman's check, every podman action says the machine's headroom once, beside the
+    * `using:` line — the figure the memory limit and the build's memory check act on, visible before
     * they act, and tinted on the action's scale (launchMemoryHeadroom, buildMemoryHeadroom). A
     * figure the machine cannot give prints nothing. */
   def machineMemoryLine(
@@ -582,7 +582,7 @@ object AgentSandboxLauncher:
       name.drop(prefix.length).forall(ch => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))
 
   /**
-   * The gate every podman-talking action runs first: a client that runs, and a service that
+   * The check every podman-talking action runs first: a client that runs, and a service that
    * answers. On macOS and Windows the service is the podman machine, started here when stopped —
    * never created or resized, the boundary SECURITY.md draws ("Silent changes to what you own") —
    * so `machine init` stays the one manual step of a fresh install: the next action, usually
@@ -628,7 +628,7 @@ object AgentSandboxLauncher:
     )
 
   /** Both build actions run this after requirePodman: --update rebuilds the leaves through the
-    * same `podman build` without a memory limit, so it shares --build's gate. */
+    * same `podman build` without a memory limit, so it shares --build's memory check. */
   def confirmMemoryForBuilds(os: Os): Unit =
     buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
       warn(message)
@@ -2407,7 +2407,7 @@ object AgentSandboxLauncher:
       :+ fileBind(agentDoc, AgentDocPath, "ro", selinuxEnforcing)
 
   /**
-   * The project's `--volume` value. Never relabeled: a FUSE mountpoint must not be, the reject gate
+   * The project's `--volume` value. Never relabeled: a FUSE mountpoint must not be, the reject check
    * established the tree is already container-readable, and relabeling is the host write that mode
    * withholds.
    */
@@ -2751,7 +2751,7 @@ object AgentSandboxLauncher:
     // every refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
     val cleanup = armRunCleanup(removeWhatThisRunCreated)
 
-    // The filter's gate and its mountpoint now; the mount itself once the sandbox container
+    // The filter's checks and its mountpoint now; the mount itself once the sandbox container
     // exists (mountKoAgentFs has why), which is after the proxy and the hold.
     val filteredWorkspace = Option.when(writeMode == "live")(prepareKoAgentFs(podman, os, projectId))
 
@@ -2797,7 +2797,7 @@ object AgentSandboxLauncher:
     // cannot span further — podman resolves bind sources at container *start*, past the
     // interactive hold — and the per-run copies are what close that remainder. What the lock
     // cannot cover is a launch that
-    // *died* between two writes, which is the coherence gates' job below: they test that key and
+    // *died* between two writes, which is the coherence checks' job below: they test that key and
     // certificate match each other, not merely that both look fine.
     val caCertFile = tlsDir.resolve("ca.crt")
     val caKeyFile = tlsDir.resolve("ca.key")
@@ -2928,7 +2928,7 @@ object AgentSandboxLauncher:
 
       // The leaf is reissued when the CA is (emptied just above), when the list of inspected names changes, and before
       // it expires — and not issued at all for a ruleset that inspects nothing. Its own coherence
-      // gate, plus the chain to this CA: a leaf another launch issued under a CA since replaced
+      // check, plus the chain to this CA: a leaf another launch issued under a CA since replaced
       // is internally consistent and still fails every handshake.
       if !publicDefault && inspectedHosts.nonEmpty
         && (!certificateExpiresAfter(readIfPresent(leafCertFile), reissueDeadline)

@@ -772,7 +772,7 @@ object RulesetHelper:
   // ---------------------------------------------------------------------------
 
   /**
-   * The one gate an inspected request passes. The request is classified once, into what it is — a
+   * The one check every inspected request must pass. The request is classified once, into what it is — a
    * read, fetch discovery, upload-pack, push discovery, or a request using another method — with its path vetted for
    * the boundary it falls in, and that classification is decided once against the resolved scope
    * of its longest literal match: GET and HEAD under `read`, bodyless; fetch discovery and

@@ -3,12 +3,12 @@ package agentsandbox.launcher
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
-class RunOnHostGateTest extends munit.FunSuite:
+class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
 
-  private val setup = Path.of("src/probe/run-on-host-gate-setup.sh").toAbsolutePath.toString
+  private val setup = Path.of("src/probe/run-on-host-acceptance-setup.sh").toAbsolutePath.toString
 
   private def preflight(root: Path, projects: String*): (Int, String) =
-    // The lock file stands in for lsof's observed open descriptors. The real gate function runs
+    // The lock file stands in for lsof's observed open descriptors. The real setup function runs
     // unchanged; these cases need neither macOS nor a live broker in the developer's checkout.
     val process = ProcessBuilder(
       (Seq(
@@ -16,9 +16,9 @@ class RunOnHostGateTest extends munit.FunSuite:
         """. "$1"
           |shift
           |lsof() { cat "$2"; }
-          |gate_require_idle "$@"
+          |acceptance_require_idle "$@"
           |""".stripMargin,
-        "gate-test", setup, root.toString,
+        "acceptance-test", setup, root.toString,
       ) ++ projects)*,
     ).redirectErrorStream(true).start()
     val output = String(process.getInputStream.readAllBytes(), UTF_8)
@@ -34,7 +34,7 @@ class RunOnHostGateTest extends munit.FunSuite:
   test("preflight refuses an owning broker even with no server or portfile"):
     val project = "/Users/test/my project"
     for name <- Seq("b1", "condemned/b1") do
-      val root = Files.createTempDirectory("gate-owner")
+      val root = Files.createTempDirectory("acceptance-owner")
       val owner = broker(root, name, project)
       val (status, output) = preflight(root, project)
       assertEquals(status, 1, clue = name)
@@ -51,14 +51,14 @@ class RunOnHostGateTest extends munit.FunSuite:
       ("/elsewhere", Some("build-0123456789abcdef"), project + "/nested"),
     )
     for (ownerProject, record, requested) <- cases do
-      val root = Files.createTempDirectory("gate-build")
+      val root = Files.createTempDirectory("acceptance-build")
       val owner = broker(root, "b1", ownerProject)
       record.foreach(name => Files.writeString(owner.resolve("records").resolve(name), project + "\n"))
       assertEquals(preflight(root, "/unrelated", requested)._1, 1, clue = (ownerProject, record, requested))
 
   test("preflight permits unrelated, ended and unpublished claims"):
     val project = "/Users/test/project"
-    val root = Files.createTempDirectory("gate-unowned")
+    val root = Files.createTempDirectory("acceptance-unowned")
     assertEquals(preflight(root, project), 0 -> "")
     broker(root, "b1", project + "-other")
     broker(root, "b2", project, open = false)
@@ -69,7 +69,7 @@ class RunOnHostGateTest extends munit.FunSuite:
 
   test("preflight names the sandbox to stop instead of suggesting sbt shutdown or a broker kill"):
     val project = "/Users/test/my project"
-    val root = Files.createTempDirectory("gate-remedy")
+    val root = Files.createTempDirectory("acceptance-remedy")
     val owner = broker(root, "b1", project)
     val container = "ko-agent-sandbox-my-project-0123456789ab-abcdef123456"
     Files.writeString(owner.resolve("run"), container + "\n")
@@ -83,7 +83,7 @@ class RunOnHostGateTest extends munit.FunSuite:
     assertEquals(Files.readString(owner.resolve("run")), container + "\n")
 
   test("an unusable sandbox name does not become a suggested shell command"):
-    val root = Files.createTempDirectory("gate-remedy-name")
+    val root = Files.createTempDirectory("acceptance-remedy-name")
     val owner = broker(root, "b1", "/project")
     for name <- Seq("", "--all", "name; echo injected", "$(echo injected)", "one\ntwo") do
       Files.writeString(owner.resolve("run"), name + "\n")
@@ -102,9 +102,9 @@ class RunOnHostGateTest extends munit.FunSuite:
         """. "$1"
           |alive=$2; started=$3
           |kill() { test "$alive" = yes; }
-          |gate_wait_started 1234 0 test "$started" = yes
+          |acceptance_wait_started 1234 0 test "$started" = yes
           |""".stripMargin,
-        "gate-test", setup, alive, started,
+        "acceptance-test", setup, alive, started,
       ).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       assertEquals(process.waitFor(), if alive == "yes" && started == "yes" then 0 else 1,
@@ -115,7 +115,7 @@ class RunOnHostGateTest extends munit.FunSuite:
       kind <- Seq("sbt", "mill", "gradle", "proxy")
       state <- Seq("owned", "ended", "unrelated", "unknown", "reused")
     do
-      val root = Files.createTempDirectory("gate-cleanup")
+      val root = Files.createTempDirectory("acceptance-cleanup")
       broker(root, "b1", if state == "unrelated" then "/other" else "/project",
         open = state != "ended" && state != "reused")
       val process = ProcessBuilder(
@@ -132,9 +132,9 @@ class RunOnHostGateTest extends munit.FunSuite:
           |  elif [ "$state" != unknown ]; then echo "n/project/$kind"; fi
           |}
           |kill() { echo "SIGNALLED $1"; }
-          |gate_end_unclaimed_process "$root" 123
+          |acceptance_end_unclaimed_process "$root" 123
           |""".stripMargin,
-        "gate-test", setup, root.toString, state, kind,
+        "acceptance-test", setup, root.toString, state, kind,
       ).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       val status = process.waitFor()
@@ -143,10 +143,10 @@ class RunOnHostGateTest extends munit.FunSuite:
       assertEquals(status, if permitted then 0 else 1, clue = (kind, state, output))
 
   test("failed wrapper setup skips cache-dependent sbt rows but retains the failure"):
-    val gate = Files.readString(Path.of("src/probe/run-on-host-profile-gate.sh"))
-    val start = gate.indexOf("if want sbt; then", gate.indexOf("echo \"positive rows\""))
-    val rows = gate.substring(start, gate.indexOf("\nif want mill; then", start))
-    val work = Files.createTempDirectory("gate-setup-failure")
+    val script = Files.readString(Path.of("src/probe/run-on-host-acceptance-test.sh"))
+    val start = script.indexOf("if want sbt; then", script.indexOf("echo \"positive rows\""))
+    val rows = script.substring(start, script.indexOf("\nif want mill; then", start))
+    val work = Files.createTempDirectory("acceptance-setup-failure")
     Files.createDirectories(work.resolve("project"))
     Files.writeString(work.resolve("project/build.properties"), "sbt.version=2.0.8\n")
     for failedCommand <- Seq("compile", "test") do
@@ -169,7 +169,7 @@ class RunOnHostGateTest extends munit.FunSuite:
           |}
           |report() { printf '%s|%s|%s\n' "$1" "$2" "${3:-}"; }
           |""".stripMargin + rows,
-        "gate-test", work.toString, failedCommand,
+        "acceptance-test", work.toString, failedCommand,
       ).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       assertEquals(process.waitFor(), 0, clue = output)

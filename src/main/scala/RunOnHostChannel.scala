@@ -162,7 +162,7 @@ object RunOnHostChannel:
   // ---------------------------------------------------------------------------
 
   /**
-   * How the broker reaches the sandbox, as data so the gate and the tests can substitute a local
+   * How the broker reaches the sandbox, as data so the acceptance test and the tests can substitute a local
    * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
    */
   final case class Transport(
@@ -563,7 +563,7 @@ object RunOnHostChannel:
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
     * [--env=<name>...] <mount>`: spawned by the launcher before it hands over to podman, detached
     * like the reaper. The trailing mount is what the project is mounted at inside the container;
-    * the gate's shim passes the project's path too. */
+    * the acceptance test's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
     args match
@@ -607,9 +607,9 @@ object RunOnHostChannel:
         try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
         catch case ex: IOException => log(s"the broker's run file: ${ex.getMessage}")
         // The forwarded values, from this process's environment under their carrier names, as
-        // the wrapper reads them; the runtime authority the artifact bundles, as the wrapper's.
+        // the wrapper reads them; the system paths the artifact bundles, as the wrapper's.
         val runtimes = RunOnHostSandbox.BrokerRuntimes(
-          session, project, log, RunOnHostSandbox.bundledRuntimeAuthority(),
+          session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
         )(scavenge = () =>
           RunOnHostSession

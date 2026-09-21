@@ -22,9 +22,9 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   Windows the containers run inside the default Podman machine, whose Fedora-based images do not
   provide AppArmor, so using it would require a dedicated machine with an AppArmor-capable kernel
   and the policy loaded — not the user's normal default machine.
-- **fanotify pre-content permission events** (Linux 6.14) — gate access on the real mount, no FUSE.
-  Its permission model gates *access to existing content*; it does not cleanly express the rule
-  we most need, *refusing creation of an entry named `.git`*. Partial fit.
+- **fanotify pre-content permission events** (Linux 6.14) — allow or deny access on the real mount,
+  no FUSE. Its permission model decides *access to existing content*; it does not cleanly express
+  the rule we most need, *refusing creation of an entry named `.git`*. Partial fit.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in-kernel.
   Elegant and native-speed, and the alternative to revisit if constraints change. Rejected for the
   three reasons below.
@@ -151,7 +151,7 @@ Therefore these are fixed, not settings:
       then `touch -r`): same object, so no rekey, and no attribute change, so no invalidation — a
       cached `read` can serve the old bytes;
     - a mapping read purely through memory, with no `read` or `stat` in between: the invalidation
-      hangs off a `GETATTR`, and a page fault issues none, so an already-cached page can lag until
+      depends on a `GETATTR`, and a page fault issues none, so an already-cached page can lag until
       some call does. The self-test's share probe reads before it checks the mapping, so its `mmap`
       row measures invalidation-after-a-read, not a mapping left entirely to itself.
   Negotiating it is not the same as it working: `--self-test` measures the invalidation itself in
@@ -204,8 +204,8 @@ per-session mounts would make a cheap restart expensive and give collaborating s
 locks and caches.
 
 `allow_other` from an unprivileged user additionally requires `user_allow_other` in
-`/etc/fuse.conf`, which stock images do not set. Getting it there is consent-gated and never
-silent: `SECURITY.md`, "Silent changes to what you own", has the rule, and
+`/etc/fuse.conf`, which stock images do not set. The launcher adds it only with the user's
+consent, never silently: `SECURITY.md`, "Silent changes to what you own", has the rule, and
 `ensureUserAllowOther` is what runs it.
 
 
@@ -229,7 +229,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
        podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
            -t ko-agent-fs:latest ko-agent-fs
 
-   The build gates on licences (`deny.toml`) before it produces a binary. The test suite runs in
+   The build checks licences (`deny.toml`) before it produces a binary. The test suite runs in
    the separately built `ko-agent-self-test` image (`testing.md`).
 3. **Extract the binary.** The image's final stage is `scratch` holding only `/ko-agent-fs`, so
    the binary is the only file to take:
@@ -256,8 +256,8 @@ code: `KoAgentFs.koAgentFsSourceId`.
 
 **All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
-`--write=live` session** (`--write=reject` binds the tree read-only without it): each launch gates
-on the installed binary's identity and self-test, then mounts the project through a per-project
+`--write=live` session** (`--write=reject` binds the tree read-only without it): each launch checks
+the installed binary's identity and self-test, then mounts the project through a per-project
 daemon shared by its sessions and binds the mountpoint at the project's own path. The lifecycle's
 design and reasoning are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount
 lifecycle".

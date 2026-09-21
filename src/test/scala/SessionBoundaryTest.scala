@@ -2,7 +2,7 @@
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
-// the gate because the launcher sets it for every session and nothing else does. The project is
+// the condition because the launcher sets it for every session and nothing else does. The project is
 // the working directory: the launcher starts the session there, at the project's own path.
 //
 // The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
@@ -45,7 +45,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     run((Vector("curl", "-sS", "--max-time", "25") ++ args)*)
 
   /** The HTTP status, or "000" when the connection never became one — which is what a refusal at
-    * the CONNECT gate looks like, as opposed to a 403 handed back inside a tunnel. */
+    * the CONNECT checks looks like, as opposed to a 403 handed back inside a tunnel. */
   private def status(args: String*): String =
     curl((Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
@@ -83,15 +83,15 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(run("id", "-g").text, "65532")
     assertEquals(field("/proc/self/status", "NoNewPrivs"), "1")
 
-    // "All capabilities dropped" is the wrong assertion: the nesting opt-in prices exactly one, so
+    // "All capabilities dropped" is the wrong assertion: the nesting opt-in grants exactly one, so
     // demanding an empty set fails a correctly configured nested session while missing the failure
-    // that matters — a capability arriving without the variable that pays for it.
+    // that matters — a capability arriving without the variable that grants it.
     val nesting = env(AgentSandboxLauncher.NestingVariable).getOrElse("none")
-    val priced = nesting match
+    val expectedCapabilities = nesting match
       case "none"     => "0000000000000000"
       case "same-uid" => "0000000000040000" // cap_sys_chroot, and only that
       case other      => fail(s"unknown nesting mode $other")
-    assertEquals(field("/proc/self/status", "CapEff"), priced, s"nesting=$nesting")
+    assertEquals(field("/proc/self/status", "CapEff"), expectedCapabilities, s"nesting=$nesting")
 
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/pids.max")).trim, "2048")
@@ -143,7 +143,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     Vector("example.com", "secret-payload.attacker.example").foreach: name =>
       assert(!run("getent", "hosts", name).ok, s"$name resolved; a resolver is reachable")
 
-  test("the CONNECT gate refuses everything but a listed host on 443"):
+  test("the CONNECT checks refuse everything but a listed host on 443"):
     inSession()
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error with the proxy's status instead of as an HTTP code.

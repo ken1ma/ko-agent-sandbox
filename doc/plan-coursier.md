@@ -186,8 +186,8 @@ Change `container/debian-coursier/Containerfile`, the canonical producer of the 
 5. Detect the Temurin JDK in the parent image. Do not let setup install another JDK under its
    temporary home.
 6. Create an empty `/home/nonroot/.cache/coursier` owned by UID/GID 65532. This gives Coursier a
-   writable parent for session-local `arc` and `jvm` siblings after home copy-up. The final
-   descendant-image guard below owns the content and ownership assertion.
+   writable parent for session-local `arc` and `jvm` siblings after home copy-up. The check at
+   the end of the final image build, below, asserts the directory's contents and owner.
 
 `container/ko-agent-egress-proxy/Containerfile` also consumes `debian-coursier` and invokes `sbt`
 during its build. Give that trusted build step explicit Buildah cache mounts for the Coursier and
@@ -198,11 +198,12 @@ relocation there is no inherited cache, and a nonroot build instead determines o
 explicit build-cache mounts and session-created state.
 
 Do not relocate or remove unrelated runtime caches in this increment. At the end of
-`container/ko-agent-sandbox/Containerfile`, after every descendant-image producer has run, add the
-binding population guard over image `/home/nonroot`. It enforces the directory contract in step 6,
-requires `.local/share/coursier` to be absent, records the allowed top-level entries, and enforces
+`container/ko-agent-sandbox/Containerfile`, after every step that builds on the parent images has
+run, check every entry under image `/home/nonroot` and fail the build if the requirements below
+are violated. The check enforces the directory contract in step 6, requires
+`.local/share/coursier` to be absent, records the allowed top-level entries, and enforces
 conservative apparent-size and inode limits. A later Scala smoke test or future program that
-repopulates image home must fail this guard instead of silently restoring copy-up latency.
+repopulates image home must fail this check instead of silently restoring copy-up latency.
 
 ## Launch topology
 
@@ -285,8 +286,8 @@ The workspace decision remains unchanged.
 - Keep platform discovery and path validation pure so every OS branch is unit-testable on one host.
 - Update the file's canonical boundary diagram and home-volume statement.
 
-If extracting the sandbox create-command builder is necessary to test the complete mount
-population, do it once and make every launch use it. Do not leave a tested cache helper beside an
+If extracting the sandbox create-command builder is necessary to test the complete set of
+mounts, do it once and make every launch use it. Do not leave a tested cache helper beside an
 inline command that can omit or reorder it.
 
 ### Tests
@@ -353,9 +354,9 @@ on removing the copy-up regression, not a brittle CI wall-clock threshold:
 
 ### Documentation
 
-Update each claim at its binding site:
+Update each claim in the place that records it:
 
-| claim | canonical site | dependent site |
+| claim | recorded in | depends on it |
 | --- | --- | --- |
 | option syntax, defaults and exact `v1` meaning | README Reference/`--help` | parser tests |
 | complete host-readable boundary | launcher diagram | README diagram, `SECURITY.md` |
@@ -380,7 +381,8 @@ can prevent the download. It does not need to teach how podman implements overla
 - [ ] Default launch reads no host Coursier path and starts with a small home copy-up.
 - [ ] Auto-discovered and explicit-directory Coursier modes mount exactly one `v1` directory.
 - [ ] The copied `.cache/coursier` parent remains nonroot-owned and accepts session-local siblings.
-- [ ] Help prices the cold default, including repeated downloads and egress-dependent failure.
+- [ ] Help says what the default without a cache overlay costs: repeated downloads, and failure
+  when the egress rules block a repository.
 - [ ] Installed Scala launchers remain available with an empty session cache.
 - [ ] Overlay writes, including rename and deletion, leave the host cache and metadata unchanged.
 - [ ] Normal exit, Ctrl-C, forced removal and reset leave no upper layer or new named volume.

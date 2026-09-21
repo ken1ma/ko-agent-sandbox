@@ -8,7 +8,7 @@
 // it only when the reaper's spawn fails — which nothing outside the process can make happen, and
 // design.md declines the test hook that would.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *RunTopologyTest"
 

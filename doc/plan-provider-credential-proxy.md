@@ -13,10 +13,10 @@ egress ruleset       -> whether each target is reachable
 
 The existing plan remains canonical for placeholder construction, exact-token substitution in a
 declared header or named query parameter, per-request auditing and the rule that a real value
-never enters the sandbox. This plan owns what that primitive does not: one service spanning
-several domains, persistent host custody, dynamic sources, expiry and refresh, explicit mechanism
-choice and provider endpoints whose writable traffic must be TLS-terminated before a header or
-parameter can be mediated.
+never enters the sandbox. This plan specifies what that primitive does not: one service spanning
+several domains, credentials stored on the host across runs, dynamic sources, expiry and refresh,
+explicit mechanism choice and provider endpoints whose writable traffic must be TLS-terminated
+before a header or parameter can be mediated.
 
 An existing `--env=NAME@HOST` binding remains a one-run, one-host binding. Provider mediation is a
 separate session option; it neither changes that grammar nor turns a stored credential on by
@@ -24,14 +24,15 @@ itself.
 
 ## Document boundary
 
-Facts have one binding site:
+Each fact is specified in one place:
 
-- `plan-credential-broker-proxy.md` owns the proxy's placeholder-to-value rewrite and its tests.
-- This document owns service composition, credential sources, refresh and mediated TLS.
-- The egress ruleset owns path matching; a credential target refers to that matcher
+- `plan-credential-broker-proxy.md` specifies the proxy's placeholder-to-value rewrite and its
+  tests.
+- This document specifies service composition, credential sources, refresh and mediated TLS.
+- The egress ruleset defines path matching; a credential target refers to that matcher
   (`plan-credential-broker-proxy.md`, the `PREFIX` form) and defines no other.
-- The egress ruleset owns reachability. A credential service never adds a host.
-- `SECURITY.md` owns the resulting trust model once implementation ships.
+- The egress ruleset alone decides reachability. A credential service never adds a host.
+- `SECURITY.md` records the resulting trust model once implementation ships.
 
 ## Required use cases
 
@@ -148,11 +149,11 @@ A launch selects instances explicitly and repeatably:
 ```
 
 Do not infer credential selection from the agent command, selected model provider, environment,
-project directory or presence in the store. Stored authority is dormant until the host selects it.
+project directory or presence in the store. A stored credential is unused until the host selects it.
 
 `--egress-effective` accepts `--credential` and shows every allowed injection target, excluded
 target and TLS treatment without resolving a source. `--egress-check=<host>` may test reachability
-and TLS compatibility but never spends or refreshes a credential.
+and TLS compatibility but never sends or refreshes a credential.
 
 ## Service definitions
 
@@ -191,7 +192,7 @@ repository cannot supply a definition. Add a host-owned custom-definition format
 concrete service cannot reasonably enter the reviewed catalog; it needs its own provenance and
 approval design.
 
-## Credential sources and custody
+## Credential sources and storage
 
 The host credential backend stores static values and OAuth refresh material. Prefer the operating
 system keychain. On a headless Linux host without one, an owner-only file under the launcher's
@@ -202,9 +203,9 @@ Source metadata and values are separate. Metadata contains the service, instance
 source kind, descriptor digest and refresh times. The secret backend contains only the value or
 OAuth material. Project state contains neither.
 
-The backend write and the generation publish are the one gate for value format: every value
-passes the base plan's value grammar (its guarantee 4) there, whatever produced it — `set`,
-`import`, an executable result, an OAuth access token at issuance or refresh, a cached
+Validate every credential value before storing it or publishing a generation: every value
+passes the base plan's value grammar (its guarantee 4) at those two steps, whatever produced it —
+`set`, `import`, an executable result, an OAuth access token at issuance or refresh, a cached
 generation being reused. A value that fails is refused at that producer with the byte's offset
 and nothing is stored; a refresh that yields one is a refresh failure, and the current
 generation stays until its expiry. Storage therefore never holds a value the proxy will refuse,
@@ -245,14 +246,14 @@ Successful stdout is one bounded UTF-8 JSON object:
 `expiresAt` is required unless the descriptor supplies `maxAgeSeconds`. Unknown fields, duplicate
 keys, control bytes, an empty token, a past expiry and trailing data refuse the result. A provider
 can instead return the fixed error codes `temporarily-unavailable` or `reauth-required`. After
-decoding, the raw token passes the gate in "Credential sources and custody"; an escaped newline
+decoding, the raw token is validated as in "Credential sources and storage"; an escaped newline
 cannot become header injection. Free-form provider text is never stored or put in a proxy
 response.
 
 ## Refresh coordinator
 
 The launcher owns one credential coordinator for the duration of a run. It resolves every selected
-instance before containers are created and materializes a private per-run credential directory.
+instance before containers are created and creates a private per-run credential directory.
 The proxy mounts that directory read-only.
 
 Each generation is an owner-only directory containing a monotonically increasing number, service
@@ -356,15 +357,17 @@ For one mediated connection:
 5. Apply the configured inspected authorization to the rewritten head when the ruleset says
    inspected (base plan, "Substitution": authorization and the origin see the same head).
 6. Relay request and response framing without interpreting provider bodies.
-7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when spent.
+7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when
+   substituted.
 
 Advertise only HTTP/1.1 initially. Server-sent events and bounded streaming bodies must work on the
-existing relay. WebSocket upgrade, HTTP/2-only clients and certificate-pinned clients refuse the
-service compatibility gate; they do not regain a real credential inside the sandbox.
+existing relay. Mediation does not support WebSocket upgrade, HTTP/2-only clients or
+certificate-pinned clients; they do not regain a real credential inside the sandbox.
 
 The Codex client remains excluded from OpenAI mediation until its compiled-in trust behavior can
 be made to accept the per-run CA without weakening certificate validation. Each other installed
-agent gets the same measured compatibility gate before its service is listed as supported.
+agent's TLS and HTTP compatibility is measured the same way before its service is listed as
+supported.
 
 ## Failure and audit contract
 
@@ -384,7 +387,7 @@ The launch banner and `--egress-effective` show selected instance, mechanism, so
 targets, excluded targets, refresh deadline and TLS mediation. They show no value, placeholder,
 header contents, OAuth subject or executable output.
 
-Retained audit lines make credential spending attributable but not replayable. A refresh event is a
+Retained audit lines make credential use attributable but not replayable. A refresh event is a
 host lifecycle line in the protected credential log, not a synthetic network request in the
 project's proxy log.
 
@@ -392,7 +395,7 @@ project's proxy log.
 
 Global credential records are stored outside every project's state. Project `--reset` and
 `--reset-all` remove per-run generations and agent state but do not silently revoke or delete global
-credentials; `--credential-remove` is the only deletion authority.
+credentials; only `--credential-remove` deletes one.
 
 Normal exit, Ctrl-C, failed create/start and reset remove every per-run value, placeholder mapping
 and unavailable-status file. The host cache retains only what its source contract requires and is
@@ -418,7 +421,8 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - **On-demand execution from a request:** request traffic cannot cause host code execution. Refresh
   is scheduled by validated expiry metadata.
 - **Repository or account scoping inferred by the proxy:** scope belongs in the issued credential.
-  Literal request-path authority may narrow spending when a provider contract supports it.
+  Literal request-path authority may narrow where a credential is sent when a provider contract
+  supports it.
 - **Registry, SSH and cloud signing credentials:** their challenge, signing and socket protocols
   need separate brokers rather than exceptions in HTTP header or parameter substitution.
 - **A generic OAuth DSL:** every supported flow is code with a reviewed provider contract and test
@@ -429,7 +433,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### Catalog and authority
 
-- Test every catalog service as a population: identifiers, mechanisms, environment names, exact
+- Test every catalog service: identifiers, mechanisms, environment names, exact
   targets, header formats, path matchers and duplicate entries.
 - Assert every target exists in the proxy's own host or provider catalog and every active target is
   allowed after denials; no service adds reachability.
@@ -455,9 +459,9 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
   replacement, removal and absence from list output.
 - Test executable descriptor parsing, absolute-path enforcement, no shell, environment allowlist,
   closed stdin, timeout, output bounds, malformed JSON, expiry and protected stderr.
-- Test the value gate as a population over every producer — `set`, `import`, an executable
-  result, OAuth issuance, OAuth refresh, a cached generation — with each byte the base plan's
-  value grammar refuses: nothing is stored or published, the refusal names the offset and not
+- Test value validation at every producer — `set`, `import`, an executable result, OAuth
+  issuance, OAuth refresh, a cached generation — with each byte the base plan's value grammar
+  refuses: nothing is stored or published, the refusal names the offset and not
   the value, and a refreshed bad token leaves the prior generation in place. Test that a
   `Bearer %s` format with a conforming token yields one field, and that a format with `%s`
   twice, a control byte, or a byte outside visible ASCII and space fails catalog parsing.
@@ -497,7 +501,7 @@ order and its reason.
 6. Add provider OAuth implementations one at a time, each with a host-owned client identity,
    compatibility fixture and refresh/revocation tests.
 7. Update README, launcher help, agent instructions and the `--egress-effective` reference. Remove
-   completed plan facts after their canonical code and security sites bind them.
+   completed plan facts after the code and `SECURITY.md` record them.
 
 Do not expose provider mediation as complete until multi-domain isolation, cross-service
 independence, single-flight refresh, expiry fail-closed, TLS compatibility, secret scanning and

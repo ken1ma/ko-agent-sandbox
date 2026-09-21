@@ -1,8 +1,8 @@
 // How a run ends: the handover to podman, and the removal of the proxy and networks that run
 // created. Both removal paths are here together on purpose — the detached reaper (POSIX, after the
-// exec) and removeRunResources (Windows, or any launch that stayed resident) are twins, and a change
-// to one is nearly always a change to the other. Splitting them by platform would put the twins in
-// different files.
+// exec) and removeRunResources (Windows, or any launch that stayed resident) perform the same removal, and a
+// change to one is nearly always a change to the other. Splitting them by platform would put the
+// two in different files.
 
 package agentsandbox.launcher
 
@@ -26,7 +26,7 @@ object SandboxLifecycle:
    * wait, forward the exit code, and let the run's own hook remove what it
    * made once podman has exited (armRunCleanup).
    *
-   * Accepted edges: podman never exiting blocks the hook, as it would block
+   * Accepted failure cases: podman never exiting blocks the hook, as it would block
    * podman alone; a Windows console close allows ~5 seconds, which the wait
    * plus rm can exceed — the run's proxy and networks then linger for a
    * reset; execvp failing after the reaper spawned cleans up twice, the
@@ -61,14 +61,14 @@ object SandboxLifecycle:
   // One proxy and two networks per run: nothing shared, so removal needs no coordination; each run's ruleset and
   // certificate are its own; nothing worth keeping dies with any of it (the audit log is a host file).
   //
-  // Every open edge fails toward a LINGERING proxy or network — visible, never reused, swept by --reset — never
-  // toward a removed proxy under a live sandbox:
+  // Every accepted failure leaves a LINGERING proxy or network — visible, never reused, swept by --reset — and
+  // none removes a proxy under a live sandbox:
   //
   //   - a reaper that dies after a successful spawn removes nothing;
   //   - a launcher SIGKILLed mid-start leaves a running proxy with no reaper,
   //     because no hook runs either. Not swept at the next launch: that is
   //     also what a concurrent launcher mid-start looks like. If it ever
-  //     matters, age-gate the sweep on container creation time;
+  //     matters, limit the sweep to containers older than some age;
   //   - a failed `podman rm` is not retried.
 
   /**
@@ -157,11 +157,11 @@ object SandboxLifecycle:
    *
    * The clipboard broker is a job of this script rather than a process of
    * its own because its lifetime is exactly the wait below: from the
-   * sandbox running to the sandbox stopped. A background job, so `podman
-   * wait` stays the authority for removal and a broker blocked in a host
+   * sandbox running to the sandbox stopped. A background job, so removal
+   * waits on `podman wait` alone and a broker blocked in a host
    * clipboard command delays nothing; killed after the wait, so it never
    * outlives the container it serves. ClipboardBroker has the protocol it
-   * speaks and the Windows twin; the sandbox side is the image's
+   * speaks and the Windows counterpart; the sandbox side is the image's
    * ko-sandbox-clipboard shim.
    */
   val ReaperScript: String =

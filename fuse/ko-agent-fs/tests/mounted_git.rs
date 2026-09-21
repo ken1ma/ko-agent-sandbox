@@ -238,7 +238,7 @@ fn super_with_nested_submodule(backing: &Path) {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_submodule_in_a_subdirectory_works_like_any_other() {
     // A submodule's name defaults to its path, so `libs/foo` puts the gitdir at
-    // `.git/modules/libs/foo`. Reading it never needed anything — the filter gates no read — so
+    // `.git/modules/libs/foo`. Reading it never needed anything — the filter checks no read — so
     // what this checks is the writing: the operational state of a nested-name submodule must be as
     // writable as a top-level one's, or every ordinary command in it fails on `index`.
     let mount = TestMount::new(super_with_nested_submodule);

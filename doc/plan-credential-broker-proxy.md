@@ -34,13 +34,13 @@ a declared header or one named parameter, never a body or a response.
 
 What brokering does not change: the bound host still receives authenticated requests, within the
 method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
-`git-fetch` hosts). It answers "the token leaks", not "the agent spends the token on
+`git-fetch` hosts). It answers "the token leaks", not "the agent uses the token against
 an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
 One property it relies on already holds: the rewrite is the one route by which a host-held
 credential enters a request, since no other host channel that authenticates — an SSH agent's
-socket, a key — is mounted (SECURITY.md, "Credential theft"; `SessionBoundaryTest`'s mount
-population). What the sandbox holds of its own toward the same host — an agent's login, an
-unbrokered forward, a file in the project — is priced in SECURITY.md and unchanged by this. That
+socket, a key — is mounted (SECURITY.md, "Credential theft"; `SessionBoundaryTest`'s check of
+every mount). What the sandbox holds of its own toward the same host — an agent's login, an
+unbrokered forward, a file in the project — is covered in SECURITY.md and unchanged by this. That
 socket is the route of docker/sbx-releases #121.
 
 ## Guarantees
@@ -50,8 +50,9 @@ socket is the route of docker/sbx-releases #121.
 1. An explicit `--env` binding names exactly one host, which must be inspected in the
    resolved profile. A `tunnel` host is opaque, where no substitution can
    happen; a denied or absent host is a binding to nothing. Both refuse the launch with the
-   reason. A service instance (`plan-provider-credential-proxy.md`) spends on its finite
-   target list instead, under the same rewrite.
+   reason. For a service instance (`plan-provider-credential-proxy.md`), the proxy instead
+   substitutes its credential only in requests matching its finite target list, under the same
+   rewrite.
 1. Substitution happens in one declared place only — `Authorization`, the header a binding
    names, or the query parameter a binding names — and only when the whole credential token
    equals the placeholder. Never in the request path, another header or parameter, a body, or a
@@ -76,8 +77,8 @@ socket is the route of docker/sbx-releases #121.
    token syntax before sending keep working; nothing can be derived from it.
 1. The placeholder, its name and its bound host are printed at launch beside the forwarded
    names, and shown by `--egress-effective`; the rules have one home and one display.
-1. A request that spent a credential is marked in the audit line, so `--proxy-log` shows every
-   authenticated request the session made and to where.
+1. The audit line marks each allowed request forwarded with a substituted credential, so
+   `--proxy-log` shows every request the session sent a credential with and to where.
 
 ## Command-line contract
 
@@ -100,7 +101,7 @@ inside the sandbox: `"sv=…&sp=rl&sig=$AZURE_SAS_SIG"`.
 The prefix form takes the ruleset's own matcher: the canonical-form rule for `PREFIX` and the
 literal comparison are the proxy's rule-path ones (doc/egress-proxy.md, "The rule file";
 SECURITY.md, "Adding hosts, not patterns"), and the ruleset's own path, if the host's line
-has one, applies first. Where requests may go and where a credential may be spent are two facts
+has one, applies first. Where requests may go and where a credential may be sent are two facts
 and stay two lines; the comparison is one function.
 
 `EnvironmentName` accepts no `@`, so a bound forward cannot be mistaken for a plain one. `--env`
@@ -121,7 +122,7 @@ Refusals, each fatal at launch and naming the fix:
   cannot be carried in a query".
 - both `:HEADER` and `?PARAM`: refused; one binding, one place.
 
-## Custody
+## Where the value is held
 
 The value takes the CA leaf's route ("Who holds the CA key"): written by the launcher to a
 per-run file under the project's state directory, owner-only, bind-mounted read-only into the
@@ -137,9 +138,9 @@ explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProx
 fails with the message.
 
 "Removed with the run" is the run directory's lifetime, which `SandboxLifecycle` ("Removing
-what the run created") defines, open edges included: where those edges leave a lingering proxy
+what the run created") defines, accepted failure cases included: where those leave a lingering proxy
 and two networks, a binding leaves a lingering value too — owner-only on the host, gone with
-`--reset` — at the same price and for the reason that comment gives. A lingering value is never
+`--reset` — accepted for the reason that comment gives. A lingering value is never
 reused: the next run has its own directory and placeholder.
 
 ## Substitution
@@ -167,8 +168,8 @@ so that authorization and the origin see the same head:
 
 The `allow` line, printed once the origin leg connects, gains one field, `inject=NAME`, when the
 head it forwards had a header or parameter substituted; absent otherwise. A request denied after
-substitution spent nothing and its `deny` line carries no `inject`. The value and the placeholder
-never appear in the log, on either line: the target is recorded whole, query included
+substitution sent no credential and its `deny` line carries no `inject`. The value and the
+placeholder never appear in the log, on either line: the target is recorded whole, query included
 (SECURITY.md, "The audit line grammar"), so a bound parameter's value prints as the binding's
 name — `?sig=AZURE_SAS_SIG`.
 
@@ -239,19 +240,19 @@ Not brokered, for reasons that hold independently of effort:
 
 ## Security model
 
-Additions to SECURITY.md, each at its binding site:
+Additions to SECURITY.md, each in the section that covers it:
 
 - "Exfiltration through allowed network traffic": a brokered `--env` value is not in the sandbox;
   the gap narrows to unbrokered forwards and credentials in the project directory.
 - "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, proxy
   container, nowhere else; the proxy was already the ruleset's single point of trust and becomes
-  a holder of what the ruleset allows spending. Compromising it compromises both ruleset and
+  a holder of the credentials sent under it. Compromising it compromises both ruleset and
   credential — one boundary. What a lost reaper leaves, and that `--reset` is what removes it
-  ("Custody").
+  ("Where the value is held").
 - "The audit line grammar": the `inject` field, and the one exception to "query string
   included": a bound parameter's value prints as the binding's name.
 
-Gaps that stay, stated: the credential is still spent by the agent on the bound host within
+Gaps that stay, stated: the credential is still used by the agent against the bound host within
 the allowed methods; the placeholder tells a hostile project that a `GH_TOKEN` exists and
 where it is honoured (harmless); an origin echoing a credential in a response is not rewritten.
 
@@ -267,10 +268,10 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   `--print-ruleset` (what the leaf certificate's names are derived from, so no second host list).
 - `CredentialGrammar`: the value, header-name and parameter-name checks of guarantee 4, one
   object in the proxy's main sources, which `build.sbt` compiles into the launcher jar for
-  `--serve-proxy-on-host`, so both sides run the same check. Not the proxy dry run, the
-  launcher's authority for rule arithmetic: the gate must fire in
+  `--serve-proxy-on-host`, so both sides run the same check. Not the proxy dry run, which
+  resolves the ruleset for the launcher: validation must run in
   `plan-provider-credential-proxy.md`'s management actions before any run exists, and the dry run
-  mounts nothing by design — a secret file in it would be one more custody site. The
+  mounts nothing by design — a secret file in it would be one more place holding the secret. The
   executable-source result there passes through the same object.
 - Placeholder generation: `SecureRandom`, format rules from guarantee 5.
 - Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
@@ -292,7 +293,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 - Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`, `?PARAM`, each with `/PREFIX/`),
   every refusal with its message;
-  `CredentialGrammar` over the population of bytes a header cannot carry — CR, LF, NUL, tab,
+  `CredentialGrammar` over every value a header cannot carry — CR, LF, NUL, tab,
   space, `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused from the
   environment and from `=VALUE` alike, and each header name outside the set, `Host` and
   `Transfer-Encoding` among them;
@@ -322,7 +323,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   directory.
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
   the persistent volume and the project contain neither the value nor the placeholder-to-value
-  mapping — the openai/codex #30971 check, population-level over every agent's state directory.
+  mapping — the openai/codex #30971 check, run over every agent's state directory.
 
 ### Documentation
 

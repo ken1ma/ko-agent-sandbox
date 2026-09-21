@@ -2,7 +2,7 @@
 // no session can see, because from inside the sandbox the proxy is reachable and opaque, which is
 // the point of it.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *ProxyContainerTest"
 

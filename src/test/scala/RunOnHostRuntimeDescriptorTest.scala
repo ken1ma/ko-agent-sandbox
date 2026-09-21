@@ -33,14 +33,14 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
         RunOnHostPrereqs.CommandPrereqs(Path.of("/p"), Path.of(jdk), Path.of("/v1"), program, Path.of("/exe")),
         Some(Path.of("/dist")), Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
       )
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin/sh")))
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin/sh")))
     def inputs(
       jdk: String = "/jdk", tmp: String = "/t", port: Int = 7001, forwards: Vector[(String, String)] = Vector.empty,
-      reads: Seq[Path] = authority.reads, network: SeatbeltProfile.Network = SeatbeltProfile.Network.ProxyOnly,
+      reads: Seq[Path] = systemPaths.reads, network: SeatbeltProfile.Network = SeatbeltProfile.Network.ProxyOnly,
       home: String = "/home/u",
     ) =
       RunOnHostSandbox.runtimeInputs(
-        assembled(jdk), Path.of(tmp), port, authority.copy(reads = reads), forwards, network,
+        assembled(jdk), Path.of(tmp), port, systemPaths.copy(reads = reads), forwards, network,
         host = name => Option.when(name == "HOME")(home), userName = "u",
       )
     def fingerprint(in: RunOnHostSandbox.RuntimeInputs, rules: String = "deny defaults") =
@@ -58,7 +58,7 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
       "port" -> fingerprint(inputs(port = 7002)),
       "forward" -> fingerprint(inputs(forwards = Vector("TOKEN" -> "t"))),
       "forwarded value" -> fingerprint(inputs(forwards = Vector("TOKEN" -> "u"))),
-      "authority" -> fingerprint(inputs(reads = Seq.empty)),
+      "systemPaths" -> fingerprint(inputs(reads = Seq.empty)),
       "network" -> fingerprint(inputs(network = SeatbeltProfile.Network.MillDaemon)),
       "passed-through HOME" -> fingerprint(inputs(home = "/home/v")),
       "rules" -> fingerprint(inputs(), rules = "deny defaults\nallow https://example.org/ read"),

@@ -227,7 +227,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       ),
     )
 
-  test("the memory figure's scale is the action's: the session floor at a launch, the build gate before a build"):
+  test("the memory figure's scale is the action's: the session floor at a launch, the build check before a build"):
     import HostCommands.Headroom
     assertEquals(launchMemoryHeadroom(MinimumMemoryLimit), Headroom.Ample)
     assertEquals(launchMemoryHeadroom(MinimumMemoryLimit - 1), Headroom.Warned)
@@ -262,7 +262,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(refused.contains("the only values are none and same-uid, exactly"), refused)
     assert(refused.contains("Unset it (or set it to none) to allow no runtime"), refused)
     // What a nesting-enabled session loosens is these three flags and nothing else; SECURITY.md
-    // prices exactly this set, so a fourth entry here is a doc change too.
+    // describes the cost of exactly this set, so a fourth entry here is a doc change too.
     assertEquals(
       NestingLoosenings,
       Vector("--security-opt=unmask=ALL", "--security-opt=label=disable", "--cap-add=SYS_CHROOT"),
@@ -362,8 +362,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     program("ps", "#!/bin/sh\nexit 0\n")
     val mutePs = hostBackend("paste", Os.Mac, bin.toString)
     assert(mutePs.swap.exists(_.contains("pid=,ppid=")), mutePs.toString)
-    // A ps answering the probed arguments with this JVM's own row, pid and parent — the parent baked in by
-    // the test, so the fake proves the parser and needs no ps of the host's own.
+    // A ps answering the probed arguments with this JVM's own row, pid and parent — the parent written into the
+    // script by the test, so the fake proves the parser and needs no ps of the host's own.
     val parent = ProcessHandle.current.parent.map[String](_.pid.toString).orElse("1")
     val ps = program("ps", s"#!/bin/sh\nprintf '%s %s\\n' \"$$PPID\" $parent\n")
     assertEquals(hostBackend("paste", Os.Mac, bin.toString), Right(HostBackend(ps = ps)))
@@ -1292,7 +1292,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(
       BundledBuildContext.resource("ko-agent-sandbox/ko-sandbox-install-podman").contains("same-uid"),
-      "ko-sandbox-install-podman does not gate on the nesting opt-in",
+      "ko-sandbox-install-podman does not check the nesting opt-in",
     )
 
     // ko-agent-fs is compiled from source on the user's machine rather than shipped as a binary, so its sources —

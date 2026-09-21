@@ -242,9 +242,9 @@ where a user meets it.
   `fstat` go, since a descriptor never comes to name another object. `policy_name`'s two stay —
   without them a second name of a guarded entry is classified as ordinary — so a `lookup` costs 3
   at any depth and a `getattr` 1: 15 for the `lstat` at depth 4, 35 at depth 9. Measure the gain;
-  the counts predict its shape, not its size. Every mutation, an `open` for writing included,
-  keeps the full walk and the identity comparison, so the policy decides on exactly what it
-  decides on today.
+  the counts predict how it scales with depth, not how large it is. Every mutation, an `open` for
+  writing included, keeps the full walk and the identity comparison, so the policy decides on
+  exactly what it decides on today.
     - A path the sandbox walks stays fresh: under TTL 0 the kernel asks for each component, and
       `fstatat(parent_fd, name)` answers from the live tree, so a directory the host replaced
       (`rm -rf` then recreate — `npm install`, `cargo clean`) takes a new inode at the next walk.
@@ -341,8 +341,8 @@ re-asked once per T while a walk stays under it. How much of the gain a given T 
 unmeasured; the sweep below decides.
 
 - [ ] Daemon: `--cache-ttl <ms>`; in `lookup`/`getattr` a directory replies `(T, T)`, anything
-      else `(0, T)`. A pure `ttls(mode, ttl)` with a population test: every non-directory mode
-      yields attribute TTL 0 for every option value.
+      else `(0, T)`. A pure `ttls(mode, ttl)` with a test over every mode and option value: every
+      non-directory mode yields attribute TTL 0.
 - [ ] Rig: the coherency suite at T = 0 and T = 5 s — host append, delete and create visible at
       once under both. `--self-test` stays at 0, which is what "every mount is the same mount"
       (`fs.rs`, `mount_config`) is there to prove.
@@ -367,7 +367,7 @@ unmeasured; the sweep below decides.
 
 What exists is what `troubleshooting.md` reads from: the banner, the `DENY` line, the previous
 daemon's log, the bounded deny log (`fs.rs`, `deny_log_action`), and a reasoned message on every
-launch gate. The gap:
+launch check. The gap:
 
 - [ ] Op-level tracing behind a flag (`--trace`?), for the performance profiling above and for
   diagnosing hangs — off by default, never in the launcher's normal invocation.
@@ -404,7 +404,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 ## Non-TODOs — settled, do not reopen without new evidence
 
 - **Extended attributes.** Unimplemented, so the daemon answers `ENOSYS` — which the kernel
-  rewrites to `ENOTSUP` for the caller and then latches, never sending the op again. The mount
+  rewrites to `ENOTSUP` for the caller and then never sends the op again. The mount
   therefore reads to programs as a filesystem that has no extended attributes, and that is an
   answer every xattr-aware program already knows how to take. The cost is cosmetic: `cp -a` drops
   them silently (`verification-log.md`, "Extended attributes", has the run and why).

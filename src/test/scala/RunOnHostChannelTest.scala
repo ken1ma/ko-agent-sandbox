@@ -5,7 +5,7 @@
 // streamed output carried whole with the command's own exit code, and teardown by descriptor
 // lifetime — a dead shim ends the running command, a handshake whose requester died expires
 // with no command started, and a competing shim waits its turn rather than attaching to a
-// predecessor's streams. The macOS gate re-runs the protocol against real sbt; these rows hold
+// predecessor's streams. The acceptance test re-runs the protocol against real sbt; these rows hold
 // everywhere.
 
 package agentsandbox.launcher

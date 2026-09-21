@@ -1,4 +1,4 @@
-// What the container-launching suites share: the testWithPodman gate, a scratch project of their
+// What the container-launching suites share: the testWithPodman condition, a scratch project of their
 // own, and starting and stopping real sessions.
 //
 // Split out so each suite reads as its assertions rather than its setup — and so a run's

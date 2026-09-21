@@ -15,8 +15,8 @@
 // that died during the command is — the daemon's pid is its group id, so the record is one like
 // any registered spawn's, written after the fact — and either is confined, holds nothing, and
 // exits on Gradle's idle timeout (SECURITY.md "Run on host"). macOS only, like the wrapper: the
-// observations are pgrep and ps, so BrokerRuntimes takes `gradleDaemons` as a seam and the
-// profile gate measures it.
+// observations are pgrep and ps, so BrokerRuntimes takes `gradleDaemons` as a parameter tests replace and the
+// acceptance test measures it.
 
 package agentsandbox.launcher
 

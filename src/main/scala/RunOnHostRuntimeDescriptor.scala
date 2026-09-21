@@ -116,11 +116,11 @@ object RunOnHostRuntimeDescriptor:
     * fingerprinted. */
   def fingerprint(inputs: RunOnHostSandbox.RuntimeInputs, rules: String): String =
     val SeatbeltProfile.ProfileInputs(
-      prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, authority,
+      prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, systemPaths,
       network,
     ) = inputs.profile
     val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
-    val SeatbeltProfile.RuntimeAuthority(reads, executes) = authority
+    val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
     val networkName = network match
       case SeatbeltProfile.Network.ProxyOnly        => "proxy-only"
       case SeatbeltProfile.Network.SbtClient(tmp)   => s"sbt-client $tmp"

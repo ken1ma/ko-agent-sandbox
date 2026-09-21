@@ -208,8 +208,8 @@ object EgressRules:
   /**
    * A --print-ruleset dry run of the proxy image (--rm, --network=none,
    * nothing mounted): the ruleset, or the reason it is invalid. The
-   * proxy owns the defaults and the profile arithmetic; this one dry run is
-   * the authority both --egress-effective and every launch consult — for
+   * proxy combines its defaults, the profile and the project's rules; both
+   * --egress-effective and every launch use this one dry run's result — for
    * the banner and for the leaf certificate's names alike. `provenance`
    * additionally reports every line's sources (--egress-effective's view).
    */

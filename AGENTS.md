@@ -50,9 +50,9 @@ stand for in the same sentence. For what a tool or service does, use the verb it
 documentation uses. Read each sentence alone: compared nouns must be the same kind, and `only` or
 `every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
 
-Record a standing practice or fact once, where it binds — the document that made the decision or
-the code enforcing it — and reference it elsewhere. Record a deliberate absence and its reason
-once; do not repeat the explanation elsewhere.
+Record a standing practice or fact once, in the document that made the decision or the code
+enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
+repeat the explanation elsewhere.
 
 After inserting, trimming or rewriting, compare the old and new meanings, then re-read the whole
 passage and check each sentence against Writing style. Unless the user authorized the change, ask
@@ -62,8 +62,8 @@ working list: preserve them, link to where the reader needs them, or, when the r
 give a concrete reason they do not belong. Check for duplication and clauses more specific or
 general than their neighbors: those belong in a different document.
 
-In a completeness checklist — a security boundary, deny surface or test checklist — each element
-states its contribution. Restatement there serves the audit.
+In a completeness checklist — a security boundary, list of refused operations or test checklist —
+each element states its contribution. Restatement there serves the audit.
 
 For a reader about to act, say what to do and expect; explain mechanisms only when the why is the
 shorter instruction. Test each sentence by what the reader does differently in the task described.
@@ -75,7 +75,7 @@ Errors, refusals and prompts say what to do next when naming what failed does no
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present
 measurements.
-Delete completed TODO rows once their facts are recorded at their canonical sites.
+Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate
 the process only when necessary. For a proposal, objection or decision, first say how far you agree.

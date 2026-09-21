@@ -1,6 +1,6 @@
 // The workspace filter's mount lifecycle and its reference count, against real sessions.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *MountLifecycleTest"
 //

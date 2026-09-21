@@ -1,11 +1,11 @@
 //! The FUSE filesystem (the path inode model — `doc/architecture.md`): a coherent passthrough of the
-//! backing tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
+//! backing tree, with every mutation checked by the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
 //! on a denial, with structured `DENY` log lines capped by `log_deny`.
 //!
-//! Resolution: `doc/architecture.md`, "Inode model". The deny surface, xattrs included: the note above
-//! `impl Filesystem`.
+//! Resolution: `doc/architecture.md`, "Inode model". Mutation coverage, xattrs included: the note
+//! above `impl Filesystem`.
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
@@ -761,17 +761,17 @@ fn entry_kind(
     }
 }
 
-// Mutation coverage — the deny surface. Every FUSE operation that can change the filesystem is
+// Mutation coverage. Every FUSE operation that can change the filesystem is
 // accounted for one of two ways:
 //
-//   - implemented below and gated through `policy` before it touches the backing store, or
+//   - implemented below and checked by `policy` before it touches the backing store, or
 //   - left unimplemented, so it fails closed with ENOSYS — setxattr, removexattr, fallocate,
 //     copy_file_range, ioctl. (fuser's default for an unimplemented op is an error, not success,
 //     so an op we forgot cannot silently succeed. For the xattr family the kernel rewrites that
 //     ENOSYS to ENOTSUP and stops sending the op, which changes what a caller sees but not what
 //     reaches the backing store: nothing.)
 //
-// The gated ops and what each checks:
+// The implemented ops and what each checks:
 //
 //   create, mkdir, mknod, symlink  the `.git` name rule + destination classification (allow_create)
 //   link                           source (refuse aliasing a protected inode out) AND destination
@@ -780,10 +780,10 @@ fn entry_kind(
 //   setattr (chmod/chown/truncate) the target inode's classification
 //   open (write intent)            classification; write() then uses the already-authorized handle
 //
-// So the deny surface is closed by construction: unimplemented ops fail, and every implemented op is
-// gated on *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never gated. This
-// is the deny side only; whether the *policy* is complete is `doc/git-metadata.md`, resting on the
-// git-behavior premises `doc/git-metadata.md` records under "Premises".
+// So no mutation skips the policy: unimplemented ops fail, and every implemented op is checked on
+// *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never checked. This shows
+// only that mutations reach the policy; whether the *policy* is complete is
+// `doc/git-metadata.md`, resting on the git-behavior premises it records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
@@ -880,8 +880,8 @@ impl Filesystem for KoAgentFs {
         let wants_write =
             accmode == libc::O_WRONLY || accmode == libc::O_RDWR || (flags.0 & libc::O_TRUNC) != 0;
 
-        // The write gate: opening a protected target for writing is where mutation is refused, so a
-        // subsequent write() on the returned handle never needs re-checking.
+        // The write check: opening a protected target for writing is where mutation is refused, so
+        // a subsequent write() on the returned handle never needs re-checking.
         if wants_write && let Err(err) = self.allow_ino(ino.0, Mutation::Write, "open-write") {
             return reply.error(err);
         }
@@ -1176,8 +1176,8 @@ impl Filesystem for KoAgentFs {
         // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only
         // an approximation; SECURITY.md, "The project directory", has the threat.
         //
-        // The population is programs that cache outside the project and link into it, and sbt 2 is the
-        // measured case. Unrefused, it materializes a build-cache hit as links into its own store,
+        // This affects programs that cache outside the project and link into it, and sbt 2 is the
+        // measured case. Unrefused, it writes a build-cache hit as links into its own store,
         // the class files included — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas`
         // on the host — and neither side has the other's. Measured in the direction the refusal
         // leaves possible: over the host's links a compile in a session dies with
@@ -1297,7 +1297,7 @@ impl Filesystem for KoAgentFs {
             Ok(pair) => pair,
             Err(err) => return reply.error(err),
         };
-        // The raw syscall, not a libc wrapper. nix gates its `renameat2` behind glibc, and the
+        // The raw syscall, not a libc wrapper. nix compiles its `renameat2` only for glibc, and the
         // static-musl release links Rust's *bundled* musl libc.a, which lacks the wrapper — the
         // symbol is absent at link time even though the libc crate declares it. The syscall itself
         // is in every kernel since 3.15, which is the actual dependency. The kernel rejects flags it
@@ -1337,7 +1337,7 @@ impl Filesystem for KoAgentFs {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // The gate classifies the *inode* (`allow_ino`, name-derived and stable), so it holds
+        // The check classifies the *inode* (`allow_ino`, name-derived and stable), so it holds
         // whether or not a handle accompanies this call. A write handle was already authorized at
         // `open`; this covers the rest — a `chmod`/`chown`/`touch` on a read handle, and every
         // path-based change.
