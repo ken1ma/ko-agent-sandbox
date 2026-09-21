@@ -1,6 +1,6 @@
 // The launch's mill daemon (run-on-host.md "mill"): started by the project's stock bootstrap under
 // the daemon profile — whose denied connect leaves the daemon behind in the starter's group —
-// identified there by its command line, proved by pid and start time, and granted the one
+// identified there by its command line, checked by pid and start time, and granted the one
 // port `lsof` shows it listening on, which `out/mill-daemon/socketPort` may name but
 // never authorizes. The stock bootstrap, not a helper over `ServerLauncher(openSocket = false)`:
 // the launcher writes the daemon's fingerprint (`DaemonConfig`) with the code every client
@@ -8,10 +8,10 @@
 // `mill.launcher` internals pinned to one version, and a fingerprint that differs is the mismatch
 // on which the next client ends the daemon. The connect is denied because the daemon inherits the
 // starter's profile (SeatbeltProfile.Network.MillDaemon has why no outbound is granted); the
-// starter is ended once its daemon is proved listening, so the denied connect's ten-second retry
+// starter is ended once its daemon is observed listening, so the denied connect's ten-second retry
 // is not waited out. The helper would return for a Mill version whose daemon does not survive the
 // starter's end. Before the broker's starts, a daemon of the user's own for the build directory
-// is ended by proof once idle, as the user's sbt server is shut down by protocol.
+// is ended once idle, after its start-time check, as the user's sbt server is shut down by protocol.
 // macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
 // `start` as a parameter tests replace and the acceptance test measures it.
 
@@ -30,7 +30,7 @@ import RunOnHostSession.HostProcesses.lines
 object RunOnHostMillDaemons:
 
   /** A daemon on the host: its pid with the `ps -o lstart=` start time every later reuse or
-    * signal proves first, and the port it listens on. */
+    * signal checks first, and the port it listens on. */
   case class Daemon(pid: Long, start: String, port: Int)
 
   /** The daemon's main class, on its command line and nowhere on the launcher's. */
@@ -46,18 +46,18 @@ object RunOnHostMillDaemons:
     * sbt server gets for its shutdown (shutdownForeignServer), for the same reason. */
   val ForeignIdleDeadlineMillis = 120_000L
 
-  /** The bound on proving the port after the starter's exit: the launcher's connect retry
+  /** The bound on observing the daemon listen on the port after the starter's exit: the launcher's connect retry
     * (`MillServerLauncher.serverInitWaitMillis`, 10 s), within which a daemon listens and
     * `socketPort` is written, so a port not verifiable this long after is a daemon that is not
     * listening. It matters for a starter that exited on its own; one the broker ended was ended
-    * behind that very proof. */
+    * after that very observation. */
   val PortDeadlineMillis = 10_000L
 
   /**
    * The daemon of `start`'s runtime: no foreign daemon holds the build directory — the user's
    * own is ended here — then the starter runs, registered at `start.record`, is ended once the
-   * daemon it spawned is proved listening (awaitStarter), and the daemon it left in that group
-   * is proved and its port verified. A daemon that appeared between the
+   * daemon it spawned is observed listening (awaitStarter), and the daemon it left in that group
+   * is identified by pid and start time and its port verified. A daemon that appeared between the
    * foreign check and the starter's lock is attached to by the starter, whose group then holds
    * no daemon: it is ended like the first and the starter runs once more. A start that fails
    * leaves no group behind its record (the caller discards it).
@@ -127,7 +127,7 @@ object RunOnHostMillDaemons:
 
   /**
    * The starter's end, in the exit file the leader writes: ended by the broker once its daemon is
-   * proved listening on the port `socketPort` names (endStarter), or, without that proof, exited
+   * observed listening on the port `socketPort` names (endStarter), or, without that, exited
    * on its own, nonzero, at the end of the launcher's denied-connect retry. The TERM is sent once:
    * a launcher it does not end reaches that retry bound anyway. The group is looked at every half
    * second until then, `lsof` only once a daemon row exists. A starter making no progress —
@@ -167,11 +167,12 @@ object RunOnHostMillDaemons:
     result.get
 
   /**
-   * TERM to the launcher, alone, once the daemon it spawned is proved listening on the candidate
+   * TERM to the launcher, alone, once the daemon it spawned is observed listening on the candidate
    * port; whether it was sent. The launcher is the daemon's parent in the group (starterOf), its
    * start time taken from the same `ps` listing — a second `ps` would leave a window between the
-   * two for the pid to be recycled in — and proved again immediately before the signal. Never
-   * the group: the daemon is a member, and the leader is its proof. The daemon, spawned with
+   * two for the pid to be recycled in — and checked again immediately before the signal. Never
+   * the group: the daemon is a member, and the leader's start time is checked before the
+   * group is ended. The daemon, spawned with
    * `destroyOnExit = false` (MillProcessLauncher.scala), survives its launcher's TERM as it
    * survives the launcher's exit (measured, run-on-host-broker-session.sh M8). The observations
    * are parameters so that the tests can interleave them.
@@ -187,13 +188,13 @@ object RunOnHostMillDaemons:
     members: Record => Vector[Member],
     listening: (Path, Long) => Option[Int],
   ): Boolean =
-    val proved =
+    val listeningDaemon =
       for
         leader <- recordedLeader(record)
         (daemon, launcher) <- starterOf(members(leader), leader.pgid)
         port <- listening(buildDirectory, daemon.pid)
       yield (daemon, launcher, port)
-    proved.exists: (daemon, launcher, port) =>
+    listeningDaemon.exists: (daemon, launcher, port) =>
       signal(launcher.pid, launcher.start, "TERM", processes) && {
         log(s"TERM to the mill starter (pid ${launcher.pid}): its daemon (pid ${daemon.pid}) listens on port $port")
         true
@@ -208,8 +209,8 @@ object RunOnHostMillDaemons:
   /**
    * `ps -ww -o pid=,ppid=,lstart=,command=` lines as members. The start time is not parsed as a
    * date, whose spelling is `ps`'s own: it is split off at the width of the leader's, which the
-   * record spells, and only from a listing whose leader row carries that very start — the proof
-   * that the width applies; any other listing is empty. A line that is no row is skipped.
+   * record spells, and only from a listing whose leader row carries that very start — which
+   * shows that the width applies; any other listing is empty. A line that is no row is skipped.
    */
   def parseMembers(lines: Vector[String], leader: Record): Vector[Member] =
     val rows = lines.collect { case MemberLine(pid, ppid, rest) => (pid.toLong, ppid.toLong, rest) }
@@ -244,7 +245,7 @@ object RunOnHostMillDaemons:
     yield (daemon, launcher)
 
   /** The daemon in the record's group: the member whose command line names DaemonMain, with the
-    * start time that proves it from now on, from the same listing. */
+    * start time later checks compare with, from the same listing. */
   private def memberDaemon(record: Path): Option[(Long, String)] =
     recordedLeader(record).flatMap: leader =>
       groupMembers(leader).find(_.command.contains(DaemonMain)).map(member => member.pid -> member.start)
@@ -263,7 +264,8 @@ object RunOnHostMillDaemons:
   private def listeningCandidate(buildDirectory: Path, pid: Long): Option[Int] =
     portCandidate(buildDirectory).filter(listeningPorts(pid).contains)
 
-  /** The port a client is confined to, proved within the bound. The file is the build's to
+  /** The port a client is confined to: the one the daemon was observed listening on within the
+    * bound. The file is the build's to
     * write, so a candidate the daemon does not listen on is a refusal, and so is no candidate at
     * all: the client reads the same file and would fail anyway. */
   private def verifiedPort(buildDirectory: Path, pid: Long): Either[String, Int] =
@@ -395,8 +397,8 @@ object RunOnHostMillDaemons:
       Option.when(cwd.exists(_.startsWith(daemonDir)))(pid).flatMap(pid => processes.startOf(pid).map(pid -> _))
 
   /**
-   * End every foreign daemon of the build directory, each once idle and proved again — pid and
-   * start time — immediately before its TERM, then KILL behind the same proof: a daemon holding
+   * End every foreign daemon of the build directory, each once idle and checked again — pid and
+   * start time — immediately before its TERM, then KILL after the same check: a daemon holding
    * `out/mill-daemon` runs the build outside this launch's ownership, and the stock launcher
    * would attach to one whose fingerprint matches. One that stays busy past the bound, or whose
    * idleness cannot be observed, is a refusal naming it. Between the observation and the TERM a
@@ -430,7 +432,7 @@ object RunOnHostMillDaemons:
             else Thread.sleep(500)
     result.get
 
-  /** TERM, then KILL after a grace, each behind the start-time proof: whether the pid went. */
+  /** TERM, then KILL after a grace, each after the start-time check: whether the pid went. */
   private def end(pid: Long, start: String, processes: Processes): Boolean =
     def alive = processes.startOf(pid).contains(start)
     signal(pid, start, "TERM", processes)
@@ -440,12 +442,12 @@ object RunOnHostMillDaemons:
       (1 to 50).exists(_ => !alive || { Thread.sleep(100); false })
     }
 
-  /** One signal to the pid, sent only while the pid bears the start time observed: the proof
+  /** One signal to the pid, sent only while the pid bears the start time observed: the check
     * immediately before the signal, against a pid recycled since. Whether it was sent. */
   private def signal(pid: Long, start: String, name: String, processes: Processes): Boolean =
-    val proved = processes.startOf(pid).contains(start)
-    if proved then processes.signal(pid, name)
-    proved
+    val startMatches = processes.startOf(pid).contains(start)
+    if startMatches then processes.signal(pid, name)
+    startMatches
 
   /** A starter's group ended behind its leader, under the record's retirement lock, and its
     * record and exit file removed, before the same record name is spawned again: the failed

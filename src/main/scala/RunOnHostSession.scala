@@ -9,7 +9,8 @@
 // own group's leader and publishes `<pgid> <leader start time>` by rename before it runs the
 // command, aborting when the rename fails — so a kill at any instant leaves a complete record or
 // a child that ends itself. The spawn stays after the command ends, publishing its exit status
-// beside the record, so the group stays provable through teardown. The scavenger condemns a
+// beside the record, so teardown can still check the leader's start time before it signals the
+// group. The scavenger condemns a
 // directory (rename out of the scanned root) before it reads records, ends what they name, and
 // only then deletes. Every ending of a runtime's recorded group, by whichever process, runs
 // under that group's retirement lock (retirementLockFile).
@@ -72,7 +73,8 @@ object RunOnHostSession:
     /** Whether `ps` lists no member of the group; IOException when it could not say. */
     def groupEmpty(pgid: Long): Boolean
 
-    /** `kill -<name> <pid>`, one process; the caller proves the pid by its start time first. */
+    /** `kill -<name> <pid>`, one process; the caller checks first that the pid still has the start time it
+      * observed. */
     def signal(pid: Long, name: String): Unit
 
   /** How one collected session ended up, for the wrapper's report. */
@@ -235,10 +237,10 @@ object RunOnHostSession:
    * every process ending a runtime's recorded group — the broker replacing or retiring its own
    * (RunOnHostSandbox.BrokerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
    * and another launch taking the runtime over (RunOnHostSandbox.BrokerRuntimes.takeOver) —
-   * holds across the leader's proof and the group's signal,
-   * and across nothing else. Two processes running that proof-then-signal on one group would
+   * holds across the leader's start-time check and the group's signal,
+   * and across nothing else. Two processes running that check-then-signal on one group would
    * correlate the pid recycling window: the first's kill frees the pids at the moment the
-   * second's already proved kill is on its way. Not the build lock, which a command holds for its
+   * second's kill, its check already passed, is on its way. Not the build lock, which a command holds for its
    * whole life: a teardown would wait on another launch's build before ending its own server.
    * The record is read only under the lock, so a holder acts on what the previous holder left.
    *
@@ -325,7 +327,7 @@ object RunOnHostSession:
     * rename before the first record of the hash and removed after the last is retired, so a
     * reader of another session takes one runtime's directory and its processes together, never
     * a directory of one runtime and a process of its successor; a record without its file is
-    * unproven and skipped. */
+    * attributed to no build directory and skipped. */
   def buildFile(sessionDirectory: Path, hash: String): Path =
     sessionDirectory.resolve(s"$BuildFilePrefix$hash")
 
@@ -406,7 +408,7 @@ object RunOnHostSession:
     betweenScan()
     inRoot.find(owns).orElse(collectingSessions(root).find(owns))
 
-  /** Whether the record's group is proved gone: the leader gone and no member listed, or the
+  /** Whether the record's group is known to be gone: the leader gone and no member listed, or the
     * leader's pid recycled — which proves the group empty at some instant, its number a
     * stranger's since (endRecordedGroup). A record that does not parse, and an observation ps
     * could not make, prove nothing: false. */
@@ -492,11 +494,12 @@ object RunOnHostSession:
   /**
    * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
    * command's grants are path-based and name the original pathname, so after the rename no process
-   * it started can redirect what `collect`'s canonicalization proves — then collect it: recorded
+   * it started can change what `collect`'s canonicalization resolves to — then collect it: recorded
    * groups ended behind their live spawn leaders, the server with them, the directory deleted.
    * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
-   * group is provable and the TERM is the proof-clean end (the server flushes its portfile on
-   * TERM). The session's own lock is held through the collection — the exclusivity every other
+   * leader is alive with its recorded start time, so the group is signalled, and TERM is the
+   * clean end (the server flushes its portfile on TERM). The session's own lock is held through
+   * the collection — the exclusivity every other
    * collector respects (scavenge) — and released only after. `beforeRemoval` sees the condemned
    * directory once its groups are ended, the wrapper's moment to read the session's logs
    * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
@@ -607,15 +610,17 @@ object RunOnHostSession:
       if !actions.exists(_.keeps) then deleteSessionTree(condemned)
     actions
 
-  /** End every group the records name and prove — the scavenger's core. */
+  /** End every group the records name, each after checking that its leader has the recorded start time —
+    * the scavenger's core. */
   def endRecordedGroups(
     root: Path, recordsDir: Path, processes: Processes, retirementDeadlineMillis: Long = RetirementDeadlineMillis,
   ): Vector[Collected] =
     listDirectory(recordsDir).flatMap(endRecordedGroup(root, _, processes, retirementDeadlineMillis))
 
-  /** End the group one record names, if it proves one; None for a file that is no record. Under
+  /** End the group one record names, if its leader is alive with the recorded start time; None
+    * for a file that is no record. Under
     * the record's retirement lock (retirementLockFile), the record read only once it is held.
-    * The record outlives anything but a proven end or a proven absence: a group with a member
+    * The record outlives anything but an observed end or an observed absence: a group with a member
     * listed — after its KILL, or behind a leader that is gone, when the members may still be the
     * record's, since a pgid is not reused while its group has one — or an observation that
     * failed, is GroupAlive, which every deleter of records keeps. A recycled leader proves the
@@ -624,18 +629,18 @@ object RunOnHostSession:
     * instant frees its number, a stranger's group can hold it, that leader can exit leaving
     * children, and a start-time recheck binds the signal to the process observed, never to the
     * record; a leaderless group with members is reached by its owner's teardown, or the
-    * scavenger, asking the server by protocol at the socket proved inside the condemned session
+    * scavenger, asking the server by protocol at the socket resolved inside the condemned session
     * (collectServers), and blocks admission until then. */
   def endRecordedGroup(
     root: Path, file: Path, processes: Processes, retirementDeadlineMillis: Long = RetirementDeadlineMillis,
   ): Option[Collected] =
     def busy(reason: String) = Some(Collected.RetirementBusy(file.getFileName.toString, reason))
     try
-      underRetirementLock(root, file, retirementDeadlineMillis)(endProvedGroup(file, processes))
+      underRetirementLock(root, file, retirementDeadlineMillis)(endGroupIfLeaderMatches(file, processes))
         .getOrElse(busy(s"the retirement lock was not free within ${retirementDeadlineMillis / 1000}s"))
     catch case ex: IOException => busy(s"the retirement lock: ${ex.getMessage}")
 
-  private def endProvedGroup(file: Path, processes: Processes): Option[Collected] =
+  private def endGroupIfLeaderMatches(file: Path, processes: Processes): Option[Collected] =
     val parsed =
       try parseRecord(Files.readString(file, UTF_8))
       catch case _: IOException => None
@@ -648,7 +653,7 @@ object RunOnHostSession:
           case Some(_) =>
             Collected.GroupSkipped(record.pgid, "pid recycled: start time differs")
           case None if processes.groupEmpty(record.pgid) =>
-            Collected.GroupSkipped(record.pgid, "leader gone: pgid no longer provable")
+            Collected.GroupSkipped(record.pgid, "leader gone: no member listed")
           case None =>
             Collected.GroupAlive(record.pgid, "leader gone, a member still listed")
       catch case ex: IOException => Collected.GroupAlive(record.pgid, s"ps could not answer: ${ex.getMessage}")
@@ -659,7 +664,7 @@ object RunOnHostSession:
    * directory's `project/target/active.json` names a `local://` socket, and one under the
    * session's *original* path is our server and no other. The socket moved with the
    * condemnation rename, so the portfile's spelling is remapped before the shutdown is sent to
-   * it — and sent only to a pathname proven inside the condemned directory: the portfile is the
+   * it — and sent only to a pathname that resolves inside the condemned directory: the portfile is the
    * command's to write, so the path it names is resolved and compared with the condemned directory
    * (containedSocket).
    */
@@ -794,8 +799,8 @@ object RunOnHostSession:
    * The observations on the real host: `ps` spellings that exist on macOS, where alone this
    * runs. TERM first and KILL after a grace — the server flushes its portfile away on TERM.
    *
-   * A listing proves itself by listing this process, selected alongside what is asked (ps ORs
-   * its selection criteria): nothing else tells an answer from a failure, since Apple's ps exits
+   * Every listing also selects this process (ps ORs its selection criteria), and its row is
+   * looked for: nothing else tells an answer from a failure, since Apple's ps exits
    * 0 with nothing printed when its process-table sysctl fails, and 1 both for nothing selected
    * and for a failed allocation. A listing without this process is no observation.
    */

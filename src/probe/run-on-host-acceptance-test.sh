@@ -872,7 +872,7 @@ commands_now() {
 }
 lifecycle_rows="two concurrent commands
 SIGTERM: the wrapper cleans up behind itself
-SIGKILL mid-command: the running group is ended provably
+SIGKILL mid-command: the running group is ended while its leader is alive
 SIGKILL: next start condemns and collects
 leaderless server ended by portfile attribution"
 # A here-doc, not a pipe: report counts, and a pipeline would count in a subshell.
@@ -883,7 +883,7 @@ EOF
 }
 # The victim's own client record, bound to it directly: the recorded spawn is started by the
 # wrapper, so its parent pid is the victim's, and the recorded start time must match the live
-# process — the same pid-plus-start proof the wrapper's own scavenger uses, so a stale record
+# process — the same pid-plus-start check the wrapper's own scavenger uses, so a stale record
 # whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
 # first.
 await_client_record() { # victim-pid
@@ -952,19 +952,19 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
     fi
 
     # SIGKILL mid-command: the spawn, the leader, survives the wrapper, so the next start ends the whole
-    # running group provably instead of refusing a leaderless one.
+    # running group while its leader is alive instead of refusing a leaderless one.
     victim_wrapper killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
-        report FAIL "SIGKILL mid-command: the running group is ended provably" \
+        report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "no client record appeared: $(tail -1 "$work/killed-mid.log" | cut -c1-50)"
     else
         kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
         wrapper sbt "$project" --version >"$work/recover-mid.log" 2>&1
         if grep -q 'GroupEnded' "$work/recover-mid.log"
-        then report PASS "SIGKILL mid-command: the running group is ended provably" \
+        then report PASS "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(grep -m1 'scavenged' "$work/recover-mid.log" | cut -c1-70)"
-        else report FAIL "SIGKILL mid-command: the running group is ended provably" \
+        else report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
@@ -1053,8 +1053,8 @@ channel: a redirected out/mill-daemon is refused before Mill's launcher acts on 
 channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched
 channel: after a cancelled mill command, the next command runs
 channel: a mill option-file edit replaces the daemon, and the next command runs under it
-channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts
-channel: a mill daemon of yours, matching, is ended by proof before the broker's starts
+channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts
+channel: a mill daemon of yours, matching, is ended once idle before the broker's starts
 channel: a mill daemon of yours mid-command is left until its client disconnects
 channel: a mill daemon of yours busy past the bound is refused, and left alive
 channel: a new launch adopts nothing planted in out/mill-daemon"
@@ -1080,12 +1080,12 @@ skip_gradle_channel() {
 $gradle_channel_rows
 EOF
 }
-# Only processes the stub podman recorded, proven by the same pid-plus-start identity the
+# Only processes the stub podman recorded, checked by the same pid-plus-start identity the
 # wrapper's scavenger uses — never a pattern kill, which would match a real session's own
 # `podman exec` command lines, and never by pid alone, which a recycled pid defeats. Each owned
 # tree goes descendants-first, while the parent still holds them: the shell behind an exec may
 # have forked its command, and a surviving orphan keeps the FIFO and pipe open (the measured
-# behavior RunOnHostChannel.end answers on the broker's side). Every signal is proved
+# behavior RunOnHostChannel.end answers on the broker's side). Every signal is checked
 # immediately before it fires — a descendant by its link to the live, owned parent, which is
 # killed after its children and spawns nothing new, so a recycled pid cannot re-enter the tree;
 # the recorded root by its start time once more.
@@ -1696,7 +1696,7 @@ ${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
         else report FAIL "$redirect_row" "exit $redirect_status, daemons: $(mill_daemons | tr '\n' ' '); \
 $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
 
-        # A daemon of yours — from a terminal, outside any launch — is ended by proof, once idle,
+        # A daemon of yours — from a terminal, outside any launch — is ended after its start-time check, once idle,
         # before the broker's starts, and the channel log says so. The broker's own is shut down
         # first, through Mill's own command, since only a start meets a foreign daemon; then an
         # unconfined ./mill leaves one — once with a JAVA_OPTS the closed environment lacks, so
@@ -1724,9 +1724,9 @@ $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
 $(kill -0 "${foreign:-0}" 2>/dev/null && echo alive || echo gone), exit $foreign_status, ours ${ours:-none}, \
 log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended_before)"; fi
         }
-        foreign_row "channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts" \
+        foreign_row "channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts" \
             JAVA_OPTS=-Dko.acceptance.foreign=1
-        foreign_row "channel: a mill daemon of yours, matching, is ended by proof before the broker's starts"
+        foreign_row "channel: a mill daemon of yours, matching, is ended once idle before the broker's starts"
 
         # A daemon of yours running a command — an established connection on its port — is left
         # until its client disconnects: the channel command waits, and completes once the daemon
@@ -1975,7 +1975,7 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
         # moment the broker is gone the command's directory, the server and every proxy are gone
         # too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe, and its EOF ends
         # the command by the same teardown; the broker's server and proxy stay, recorded in its
-        # session, until the next start scavenges them by proof — the wrapper's recovery run
+        # session, until the next start scavenges them by their records — the wrapper's recovery run
         # here. The shim is left blocked on its exit read (no timeout(1) here) and killed after.
         broker_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")

@@ -125,7 +125,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       mount = project.toString, requestDeadlineMillis = deadline,
     )
 
-  test("the working directory is translated, and proven inside the project"):
+  test("the working directory is translated, and checked to resolve inside the project"):
     val project = Files.createTempDirectory("channel-project").toRealPath()
     val sub = Files.createDirectory(project.resolve("sub"))
     val outside = Files.createTempDirectory("channel-outside").toRealPath()

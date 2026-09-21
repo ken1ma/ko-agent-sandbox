@@ -46,11 +46,12 @@ does belong, even if documented upstream: a reader who does not expect it never 
 Use names to say what methods, parameters and values are before adding comments. Replace
 comments that only do this with better names.
 
-Use concrete subject–verb–object wording. Use abstractions or metaphors ("invariant", "venue",
-"prose", the verb "mint") only when concrete wording loses meaning or precision; name what they
-stand for in the same sentence. For what a tool or service does, use the verb its own
-documentation uses. Read each sentence alone: compared nouns must be the same kind, and `only` or
-`every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
+Use concrete subject–verb–object wording. Use abstractions or metaphors (such as "invariant",
+"venue", "prose", the verb "mint") only when concrete wording loses meaning or precision; name
+what they stand for in the same sentence. Report existing names and wording that fail this. For
+what a tool or service does, use the verb its own documentation uses. Read each sentence alone:
+compared nouns must be the same kind, and `only` or `every` must match behavior. Rewrite the
+sentence rather than mechanically replacing words.
 
 Record a standing practice or fact once, in the document that made the decision or the code
 enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
@@ -103,8 +104,9 @@ Do not use one-letter names, except for
 
 # Agent memory
 
-Report each memory change you make: its location and what changed. Rules and project facts other
-agents need belong in AGENTS.md or project documents; propose that edit to the user.
+Report each memory change you make as "Agent memory: <what changed>". What would help other
+agents belongs in AGENTS.md or a project document: propose that edit to the user, as a rule for a
+class of cases, not one case.
 
 
 # git

@@ -1060,8 +1060,8 @@ provides the confinement for these commands; they execute outside the container.
 - **The profile is the boundary; the request is not.** A request names a program, a working
   directory and arguments.
   - The program must be among those `--run-on-host` named.
-  - The requested working directory is resolved and proven inside the project before anything
-    derives from it, and never changes the profile's project grant.
+  - The requested working directory is resolved and checked to lie inside the project before
+    anything derives from it, and never changes the profile's project grant.
   - The arguments are deliberately not vetted: they select code the agent already chooses
     (`sbt 'set …'` reaches arbitrary Scala without touching `build.sbt`), and the profile confines
     whatever they select.
@@ -1148,7 +1148,7 @@ provides the confinement for these commands; they execute outside the container.
   itself, inside its own profile, before the first sbt or `mill` command of a build directory, and
   every command from that directory attaches to it:
   - the sbt client through the sockets under the broker's own directory;
-  - the `mill` client through the one port the broker proved the daemon listening on, read from
+  - the `mill` client through the one port the broker observed the daemon listening on, read from
     `out/mill-daemon/socketPort` as a candidate the file never authorizes.
     - A link redirecting `out/mill-daemon` or an entry in it refuses the command, since Mill's
       launcher would otherwise act on another build directory's daemon through it.
@@ -1170,8 +1170,8 @@ provides the confinement for these commands; they execute outside the container.
     under the broker's `tmp/` — not in the per-project user home, where one launch's
     `gradle --stop` would end another launch's builds, and never yours under `~/.gradle`.
   - The broker records it after each command by pid and start time, the launch's `java.io.tmpdir`
-    in its initial environment the proof, and ends its group, workers and test executors in it,
-    with the launch.
+    in its initial environment identifying it as the launch's, and ends its group, workers and
+    test executors in it, with the launch.
   - A daemon started under a broker that died during the command is unrecorded, and so is one whose
     build code rewrote that environment in the daemon's own memory, which `ps` reads it from:
     confined and holding nothing of the launch, it exits on Gradle's idle timeout, three hours,
@@ -1270,10 +1270,10 @@ provides the confinement for these commands; they execute outside the container.
     above. A later launch adopts none whose owner is gone: a new broker publishes a new session and
     reuses nothing.
   - If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups remain, the
-    broker's servers, daemons and proxies among them, and the next start's scavenger ends them by
-    proof, never by guess:
+    broker's servers, daemons and proxies among them, and the next start's scavenger ends them — a
+    group only after checking that its leader has the recorded start time, never by guess:
     - a server whose group leader is gone, by the shutdown protocol at the socket its portfile
-      names, sent only once that socket is proven inside the dead session's directory;
+      names, sent only once that socket resolves inside the dead session's directory;
     - a daemon whose group leader is gone is nothing a file attributes, and exits on Mill's own
       idle timeout.
 

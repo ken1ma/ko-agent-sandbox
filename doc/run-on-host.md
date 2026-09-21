@@ -467,19 +467,19 @@ it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
    - Once `lsof` shows the daemon listening on the port `socketPort` names, the broker ends the
      launcher — TERM to its pid alone, the daemon's parent in the group, behind its pid and start
      time.
-   - Without that proof the launcher retries for ten seconds and exits nonzero, and a launcher
+   - Without that observation the launcher retries for ten seconds and exits nonzero, and a launcher
      the TERM does not end reaches that bound too; either way the daemon stays in the spawn's
      group (measured, M1 for the exit, M8 for the TERM: the daemon is spawned with
      `destroyOnExit = false`).
    - The group is three processes — the leader, the launcher JVM as its child, since
      `sandbox-exec`, the bootstrap and the assembly's shell prefix each `exec`, and the daemon as
-     the launcher's — and after the TERM the daemon is reparented while the leader stays as the
-     group's proof (M8).
+     the launcher's — and after the TERM the daemon is reparented while the leader stays, its
+     start time checked before the group is ended (M8).
    - The starter's output goes to `daemon-mill-<hash>.log` in the session directory, the finding
      when a start fails; a starter that neither ends nor writes anything for two minutes, the
      proxy log not growing either, is a failed start.
 2. The **daemon** is the member of that group whose command line names
-   `mill.daemon.MillDaemonMain`, proved from then on by its pid and start time.
+   `mill.daemon.MillDaemonMain`, checked from then on by its pid and start time.
    - `socketPort` is read as a candidate — an integer in port range, nothing more — and granted
      only after `lsof` shows that pid listening on it.
    - The file is the build's to write and authorizes nothing, and a candidate the daemon does not
@@ -495,7 +495,7 @@ closed environment reaches the build per command; the daemon JVM's own options, 
 settings included, are the starter's, fixed at its start.
 
 The broker replaces the daemon under the same proxy before the next command — its starter's spawn
-staying as the group's provable leader and ended with the group first — when:
+staying as the group's leader and ended with the group first — when:
 
 - what Mill's launcher restarts the daemon on has changed: the launcher version, the resolved
   JVM, `mill-jvm-opts` and `mill-repositories`, each from the source Mill reads it from, the
@@ -548,7 +548,7 @@ before the broker's starts, as your sbt server is shut down, and the channel log
 - It is found in the process table by its command line and its working directory under
   `out/mill-daemon`, never through `processId`, and ended by TERM then KILL behind its pid and
   start time, once idle — no established connection on its port, observed through `lsof`, and the
-  proof repeated immediately before the signal.
+  start-time check repeated immediately before the signal.
 - A daemon busy past two minutes is a refusal naming it.
 - Between the observation and the signal a terminal `./mill` can still connect, and its command
   then dies with the daemon; no observation closes that window.
@@ -563,9 +563,9 @@ or ended by that record and replaced, as its sbt server is ("The channel and the
   settings attaches to it and runs your build under the profile and the launch's proxy, and one
   with different settings ends it, as Mill does on a fingerprint mismatch, after which the broker
   ends yours once idle and starts its own again.
-- A daemon whose registered leader was killed on its own — the spawn, not the broker — is no
-  group the scavenger can prove and nothing a portfile attributes; it exits on Mill's idle
-  timeout.
+- A daemon whose registered leader was killed on its own — the spawn, not the broker — remains
+  in a group whose leader the scavenger cannot check, and is nothing a portfile attributes; it
+  exits on Mill's idle timeout.
 
 ### Gradle
 
@@ -617,19 +617,19 @@ later commands attach to it through Gradle's own matching, inside the profile.
   stops itself (`DaemonStateCoordinator`, `WatchForDisconnection`).
 - The daemon detaches itself into a group of its own (`DaemonMain`, `setsid`), where its workers
   and test executors are forked, so ending the client's group leaves it alive; the broker ends it
-  by proof (`RunOnHostGradleDaemons.scala`).
+  by its recorded pid and start time (`RunOnHostGradleDaemons.scala`).
 - After each command, and once more at the launch's end, the broker records every daemon started
   with the launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting
   the record of one gone; the launch's end signals the group behind each record as it does every
   recorded group.
 
-The proof is the daemon's initial environment, which the client starts it with
+What identifies a daemon as the launch's is its initial environment, which the client starts it with
 (`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the broker's `tmp/`
 as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
 
-- No path proves it: the build writes across `tmp/` and the project, and a file a daemon of yours
-  holds open, renamed into the registry under any name — the daemon log's included — is reported
-  by the kernel at that name.
+- No path identifies it: the build writes across `tmp/` and the project, and a file a daemon of
+  yours holds open, renamed into the registry under any name — the daemon log's included — is
+  reported by the kernel at that name.
 - `ps -E` reads the strings from the daemon's own memory (`sysctl_procargsx`), so build code in
   the daemon can rewrite them and hide the daemon from its own launch, and nothing else.
 - A daemon no observation reached — one started under a broker that died during the command, or
@@ -738,9 +738,9 @@ Two locks:
   waiting one says so on its stderr.
 - Ending a runtime's recorded group — the broker replacing or retiring its own, its teardown, the
   scavenger, another launch taking the runtime over — runs under a retirement lock,
-  `retire-lock/<program>-<hash>`, held across the leader's proof and the signal alone, so no two
-  processes signal one group; one not free within twenty seconds keeps the record for the next
-  collection (`RunOnHostSession.retirementLockFile` has the rules).
+  `retire-lock/<program>-<hash>`, held across the leader's start-time check and the signal
+  alone, so no two processes signal one group; one not free within twenty seconds keeps the
+  record for the next collection (`RunOnHostSession.retirementLockFile` has the rules).
 
 The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
 fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's
@@ -870,13 +870,15 @@ Before starting a server the broker checks who holds the build directory's portf
 - the *user's own* server — from a terminal, outside any launch — is shut down by protocol at the
   socket the broker derives itself;
 - a server *another launch* still owns — its broker's session names the directory, and the
-  recorded group is not proved gone — the command attaches to when the server this launch would
-  start has the same confinement and environment, and otherwise ends by that record and replaces
-  with its own (below);
-- a live socket under this launch's own directory that no record proves is a refusal naming it.
+  recorded group is not known to be gone — the command attaches to when the server this launch
+  would start has the same confinement and environment, and otherwise ends by that record and
+  replaces with its own (below);
+- a live socket under this launch's own directory, while this launch has no record identifying
+  that server, is a refusal naming it.
 
 Before starting a daemon it checks the process table the same way ("`mill`"): the user's own
-daemon is ended by proof once idle, another launch's is attached to or taken over.
+daemon is ended once idle, after its start-time check, another launch's is attached to or taken
+over.
 
 Attaching is decided per command from the owner's descriptor, `runtime-<program>-<hash>` in its
 session directory (`RunOnHostRuntimeDescriptor.scala`). Two conditions:
@@ -915,8 +917,8 @@ A runtime the command cannot attach to is taken over. The reasons:
   the directory's present configuration.
 
 The takeover: under the build lock the command holds, the broker ends the group the owner's record
-names, under the retirement lock and by the same proof every ender uses, and starts its own server
-or daemon under its own proxy, as a first command does.
+names, under the retirement lock and after the same start-time check every ender makes, and
+starts its own server or daemon under its own proxy, as a first command does.
 
 - The owner's record stays the owner's, its proxy runs on, and its next command finds the group
   dead, replaces the runtime under that proxy, and decides the same way — attaching to this
@@ -928,7 +930,7 @@ or daemon under its own proxy, as a first command does.
   another directory's server.
 - An owner tearing itself down holds the retirement lock through its own end of the group, so
   the command waits on the lock — twenty seconds at most — and then starts its own.
-- The command is refused, naming the record, when the group is not proved ended: a member still
+- The command is refused, naming the record, when the group is not observed ended: a member still
   listed after the KILL, a leaderless group, or the lock busy past its bound; retry once the
   group is gone, or use a different build directory.
 - Your own `./mill` attached to the daemon taken over dies with it, as it does when its owner
@@ -989,7 +991,7 @@ where the caller is not interactive.
   unless its fingerprint differs; a client attached to one the broker did not start would run
   the build under that process's environment and confinement, or none.
   - The user's own terminal server the broker shuts down by protocol at the socket it derives,
-    and the user's own daemon it ends by proof once idle ("`mill`").
+    and the user's own daemon it ends once idle, after its start-time check ("`mill`").
   - A server or daemon another launch still owns it attaches to only when it would start one
     under the same confinement and environment, and otherwise ends by that launch's record, under
     the retirement lock, and replaces with its own ("The channel and the command").

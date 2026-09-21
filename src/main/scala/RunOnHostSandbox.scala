@@ -1039,7 +1039,7 @@ object RunOnHostSandbox:
           // or starts one, inside the profile, and commandEnded records it.
           Right(Some(current.runtime))
         case Some(current) if lives(proxyRecord(program, hash)) =>
-          // The client is confined to the daemon's port: reuse only the daemon proved at its
+          // The client is confined to the daemon's port: reuse only the daemon identified at its
           // start, alive with its start time, under the configuration it was started from.
           // Gone — its idle exit, `shutdown`, or the cancel that ends it as stock Mill does —
           // or under a changed configuration, a fresh one starts under the same proxy, from a
@@ -1141,7 +1141,8 @@ object RunOnHostSandbox:
 
     /** The daemon of a runtime whose proxy is up, no other launch owning the build directory's
       * daemon (foreignRuntime, decided by every caller first): the start itself ends a daemon of
-      * the user's own, by proof and once idle (RunOnHostMillDaemons.start); up, it is described for other
+      * the user's own, once idle and after its start-time check (RunOnHostMillDaemons.start); up,
+      * it is described for other
       * launches (publishDescriptor). A start that fails, by refusal or exception, leaves no group
       * behind its record; a record an earlier failure kept is discarded first, as startServer
       * does. */
@@ -1212,7 +1213,8 @@ object RunOnHostSandbox:
      * decided before this (foreignRuntime): another launch's is attached to, or ended by its
      * record, never through the portfile. Beyond that:
      *
-     *  - This launch's own derived socket, live but proved by no record, is a server it left
+     *  - This launch's own derived socket, live while this launch has no record identifying
+     *    that server, is a server it left
      *    unaccounted; refused, to be ended by hand — starting a second on the same socket would
      *    fail at the bind.
      *  - Any other live portfile socket is the user's own server, ended by protocol at the
@@ -1227,7 +1229,7 @@ object RunOnHostSandbox:
         case Some(socket) if namesDerivedSocket(current.buildDirectory, session.tmp) =>
           Left(
             s"a live sbt server holds the portfile of ${current.buildDirectory} at its own derived socket " +
-              s"$socket, which no record of this launch proves; end it by hand and retry",
+              s"$socket, while this launch has no record identifying this server; end it by hand and retry",
           )
         case Some(socket) if socket == derived || RunOnHostSession.containedSocket(socket, session.tmp).isDefined =>
           Right(()) // a stale or planted/redirected portfile under this launch; our start overwrites it
@@ -1247,7 +1249,7 @@ object RunOnHostSandbox:
      * since the owner's is the one runtime the directory may have. Another launch owns the
      * directory's sbt server or mill daemon when its session — live under the root, or in
      * `condemned/` while its teardown or the scavenger is still collecting it — has a
-     * `server-sbt-<hash>` or `daemon-mill-<hash>` record whose group is not proved gone
+     * `server-sbt-<hash>` or `daemon-mill-<hash>` record whose group is not known to be gone
      * (`runtimeOwner`). The record is the ownership, not `build-<hash>`, so a launch that ran only
      * Mill in the directory — which publishes `build-<hash>` but no sbt server — reserves nothing.
      * The condemned scan keeps the claim through the owner's teardown, when its socket path has
@@ -1353,9 +1355,9 @@ object RunOnHostSandbox:
     /**
      * The runtime `owner` holds for the build directory ended, for this launch's own to start in
      * its place — `why` is what kept this launch from attaching — or the refusal when its group is
-     * not proved ended. One more holder of the record's retirement lock
+     * not observed ended. One more holder of the record's retirement lock
      * (RunOnHostSession.retirementLockFile): under the build lock its command holds, the group
-     * is ended by `endRecordedGroup`'s own proof — the record read only under the lock, the
+     * is ended by `endRecordedGroup`'s own steps — the record read only under the lock, the
      * leader's pid bearing the recorded start time, the signal to the pgid — and the record is
      * left to its owner, whose next command finds the group dead, replaces the runtime under its
      * own proxy, and decides here again: attach to this launch's, or take it over. Two launches
@@ -1415,7 +1417,7 @@ object RunOnHostSandbox:
 
     private def lives(record: Path): Boolean = RunOnHostSession.spawnLives(record, processes)
 
-    /** End what the runtime's records prove — the server or daemon, then the proxy — and delete
+    /** End the groups the runtime's records name — the server or daemon, then the proxy — and delete
       * them with the proxy log, since a successor of the same name would read this proxy's ready
       * line as its own, and the build file last, once no record of the hash remains: another
       * program's runtime for the same directory still publishes under it. Answers what became
@@ -1442,7 +1444,7 @@ object RunOnHostSandbox:
       outcomes.collectFirst { case Left(kept) => kept }
         .toLeft(outcomes.collect { case Right(what) => what }.mkString(", "))
 
-    /** End the group one record of the runtime `program` and `hash` name proves, under its
+    /** End the group one record of the runtime `program` and `hash` names, under its
       * retirement lock, and delete the record and its exit file — unless the group outlives its
       * KILL, or the lock is not free within the bound: then the record stays, and Left says so,
       * for the caller to start nothing whose spawn would rename its record over the kept one.
@@ -1852,8 +1854,8 @@ object RunOnHostSandbox:
       ).asJava,
     )
 
-    // The spawn publishes the command's exit status and then stays as the group's provable leader
-    // (RunOnHostSession), so the answer is the exit file, never the spawn's own end.
+    // The spawn publishes the command's exit status and then stays alive, for teardown to check its
+    // start time (RunOnHostSession): the answer is the exit file, never the spawn's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 

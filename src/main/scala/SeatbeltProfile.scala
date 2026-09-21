@@ -266,7 +266,7 @@ object SeatbeltProfile:
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
           case Network.MillClient(port) =>
-            lines += ";; The broker's mill daemon, on the one port it was proved listening on."
+            lines += ";; The broker's mill daemon, on the one port it was observed listening on."
             lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
           case Network.Gradle =>
             // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each
